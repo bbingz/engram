@@ -74,6 +74,9 @@ private let timelineAllProjects = "All Projects"
 struct TimelinePageView: View {
     private static let inputDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone.current
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter
     }()
@@ -85,11 +88,13 @@ struct TimelinePageView: View {
     }()
 
     @Environment(DatabaseManager.self) var db
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
+    @Environment(\.engramFixedDate) var fixedDate
     @Environment(EngramServiceStatusStore.self) var serviceStatusStore
     // Shared global escape hatch (see SessionsPageView).
     @AppStorage("sessions.showAll") private var showAllSessions = false
     @State private var timeline: [(date: String, sessions: [Session])] = []
+    @State private var sessionChartData: [(date: String, count: Int)] = []
     @State private var workTimeline: [ImplementationTimelineItem] = []
     @State private var confirmedCounts: [String: Int] = [:]
     @State private var suggestedCounts: [String: Int] = [:]
@@ -97,6 +102,14 @@ struct TimelinePageView: View {
     @State private var sortMode: TimelineSortMode = .activity
     @State private var range: TimelineRange = .month
     @State private var selectedProject: String = timelineAllProjects
+    @State private var appliedProject: String = timelineAllProjects
+    @State private var appliedRange: TimelineRange = .month
+    @State private var appliedMode: TimelineMode = .work
+    @State private var appliedSort: TimelineSortMode = .activity
+    @State private var availableProjects: [String] = []
+    @State private var timelineTotalCount = 0
+    @State private var timelineShownCount = 0
+    @State private var timelineHasMore = false
     @State private var loadError: String? = nil
     @State private var isLoading = true
     // Debounce/coalesce index-tick reloads vs. immediate filter-change reloads (#3).
@@ -111,6 +124,8 @@ struct TimelinePageView: View {
     @State private var renameText = ""
     @State private var actionStatus: String? = nil
     @State private var exportState: SessionExportState = .idle
+    /// Keyboard focus for session rows (Wave 8-1, mirrors SessionsPageView 7-1).
+    @FocusState private var focusedSessionId: String?
 
     /// Pure gate for concurrent timeline loads (filter/range change mid-flight).
     static func shouldApplyLoad(
@@ -119,6 +134,21 @@ struct TimelinePageView: View {
         isCancelled: Bool = false
     ) -> Bool {
         !isCancelled && resultGeneration == currentGeneration
+    }
+
+    static func reconciledProjectSelection(
+        selectedProject: String,
+        availableProjects: [String]
+    ) -> String {
+        guard selectedProject != timelineAllProjects,
+              !availableProjects.contains(selectedProject) else {
+            return selectedProject
+        }
+        return timelineAllProjects
+    }
+
+    static func rangeBadge(range: String, shown: Int, total: Int, hasMore: Bool) -> String {
+        hasMore ? "\(range) · \(shown) of \(total)" : range
     }
 
     private var handlers: SessionActionHandlers {
@@ -151,19 +181,9 @@ struct TimelinePageView: View {
         }
     }
 
-    // Distinct projects across the loaded window, for the client-side filter.
+    // Distinct projects across the loaded window.
     private var projectOptions: [String] {
-        let names = Set(timeline.flatMap(\.sessions).compactMap(\.project))
-        return [timelineAllProjects] + names.sorted()
-    }
-
-    // Timeline filtered client-side by the selected project (timeline-4).
-    private var filteredTimeline: [(date: String, sessions: [Session])] {
-        guard selectedProject != timelineAllProjects else { return timeline }
-        return timeline.compactMap { group in
-            let matched = group.sessions.filter { $0.project == selectedProject }
-            return matched.isEmpty ? nil : (date: group.date, sessions: matched)
-        }
+        [timelineAllProjects] + availableProjects
     }
 
     private var workChartData: [(date: String, count: Int)] {
@@ -175,18 +195,35 @@ struct TimelinePageView: View {
 
     var body: some View {
         let projectOptionsSnapshot = projectOptions
-        let filteredTimelineSnapshot = filteredTimeline
-        let visibleChartDataSnapshot = timelineMode == .work
+        let timelineSnapshot = timeline
+        let visibleModeSnapshot = appliedMode
+        let visibleChartDataSnapshot = visibleModeSnapshot == .work
             ? workChartData
-            : filteredTimelineSnapshot.reversed().map { (date: $0.date, count: $0.sessions.count) }
-        let hasVisibleContentSnapshot = timelineMode == .work
+            : sessionChartData
+        let hasVisibleContentSnapshot = visibleModeSnapshot == .work
             ? !workTimeline.isEmpty
-            : !filteredTimelineSnapshot.isEmpty
+            : !timelineSnapshot.isEmpty
+        let headerSnapshotMatchesSelection = !isLoading
+            && selectedProject == appliedProject
+            && range == appliedRange
+            && timelineMode == appliedMode
+            && sortMode == appliedSort
 
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .center, spacing: 12) {
-                    SectionHeader(icon: "chart.bar.xaxis", title: "Timeline", badge: range.badge)
+                    SectionHeader(
+                        icon: "chart.bar.xaxis",
+                        title: "Timeline",
+                        badge: Self.rangeBadge(
+                            range: appliedRange.badge,
+                            shown: timelineShownCount,
+                            total: timelineTotalCount,
+                            hasMore: headerSnapshotMatchesSelection
+                                && appliedMode == .sessions
+                                && timelineHasMore
+                        )
+                    )
                     Spacer(minLength: 12)
                     Picker("Mode", selection: $timelineMode) {
                         ForEach(TimelineMode.allCases) { mode in
@@ -214,16 +251,14 @@ struct TimelinePageView: View {
                     .disabled(timelineMode == .work)
                     .accessibilityIdentifier("timeline_sortPicker")
                 }
-                if projectOptionsSnapshot.count > 1 {
-                    Picker("Project", selection: $selectedProject) {
-                        ForEach(projectOptionsSnapshot, id: \.self) { name in
-                            Text(name).tag(name)
-                        }
+                Picker("Project", selection: $selectedProject) {
+                    ForEach(projectOptionsSnapshot, id: \.self) { name in
+                        Text(name).tag(name)
                     }
-                    .pickerStyle(.menu)
-                    .frame(maxWidth: 280, alignment: .leading)
-                    .accessibilityIdentifier("timeline_projectPicker")
                 }
+                .pickerStyle(.menu)
+                .frame(maxWidth: 280, alignment: .leading)
+                .accessibilityIdentifier("timeline_projectPicker")
                 if let loadError {
                     AlertBanner(message: "Failed to load timeline: \(loadError)", action: ("Retry", { Task { await loadData() } }))
                         .accessibilityIdentifier("timeline_loadError")
@@ -234,20 +269,37 @@ struct TimelinePageView: View {
                 }
                 SessionExportStatusBanner(state: exportState)
                     .accessibilityIdentifier("timeline_exportStatus")
-                if !visibleChartDataSnapshot.isEmpty {
+                if !isLoading && selectedProject == appliedProject
+                    && visibleModeSnapshot == .sessions && timelineHasMore {
+                    Text("Showing \(timelineShownCount) of \(timelineTotalCount)")
+                        .font(.caption)
+                        .foregroundStyle(Theme.tertiaryText)
+                        .accessibilityIdentifier("timeline_resultCount")
+                }
+                if headerSnapshotMatchesSelection
+                    && !visibleChartDataSnapshot.isEmpty {
                     ActivityChart(data: visibleChartDataSnapshot)
                         .frame(height: 120)
                         .accessibilityIdentifier("timeline_chart")
                 }
-                if isLoading && !hasVisibleContentSnapshot {
+                if isLoading {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 40)
+                        .accessibilityIdentifier("timeline_loading")
+                } else if selectedProject != appliedProject {
                     ProgressView()
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 40)
                         .accessibilityIdentifier("timeline_loading")
                 } else if !hasVisibleContentSnapshot && loadError == nil && !isLoading {
-                    EmptyState(icon: "calendar", title: "No activity", message: emptyMessage)
+                    EmptyState(
+                        icon: "calendar",
+                        title: "No activity",
+                        message: emptyMessage(for: visibleModeSnapshot)
+                    )
                         .accessibilityIdentifier("timeline_emptyState")
-                } else if timelineMode == .work {
+                } else if visibleModeSnapshot == .work {
                     LazyVStack(alignment: .leading, spacing: 12) {
                         ForEach(workTimeline, id: \.id) { item in
                             WorkTimelineCard(
@@ -259,7 +311,7 @@ struct TimelinePageView: View {
                     }
                 } else {
                     LazyVStack(alignment: .leading, spacing: 16) {
-                        ForEach(filteredTimelineSnapshot, id: \.date) { group in
+                        ForEach(timelineSnapshot, id: \.date) { group in
                             VStack(alignment: .leading, spacing: 6) {
                                 HStack {
                                     Text(formatDateLabel(group.date))
@@ -277,8 +329,7 @@ struct TimelinePageView: View {
                                         confirmedChildCount: confirmedCounts[session.id] ?? 0,
                                         suggestedChildCount: suggestedCounts[session.id] ?? 0,
                                         onTap: {
-                                            handlers.recordAccess(session)
-                                            NotificationCenter.default.post(name: .openSession, object: SessionBox(session))
+                                            open(session)
                                         },
                                         onChildTap: { child in
                                             NotificationCenter.default.post(name: .openSession, object: SessionBox(child))
@@ -302,6 +353,22 @@ struct TimelinePageView: View {
                                             )
                                         },
                                         isHidden: session.hiddenAt != nil
+                                    )
+                                    // Keyboard navigation (Wave 8-1): plain-styled
+                                    // card buttons draw no focus ring; add focus +
+                                    // ring + Enter/Space to open (mirrors 7-1).
+                                    .focusable()
+                                    .focused($focusedSessionId, equals: session.id)
+                                    .onKeyPress(keys: [.return, .space]) { _ in
+                                        guard focusedSessionId == session.id else { return .ignored }
+                                        open(session)
+                                        return .handled
+                                    }
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: Theme.cornerRadius)
+                                            .stroke(Theme.accent, lineWidth: 2)
+                                            .opacity(focusedSessionId == session.id ? 1 : 0)
+                                            .allowsHitTesting(false)
                                     )
                                 }
                             }
@@ -368,28 +435,93 @@ struct TimelinePageView: View {
         }
         do {
             let database = db
-            let sort = sortMode.databaseSort
+            let requestedSort = sortMode
+            let sort = requestedSort.databaseSort
             let days = range.days
             let humanDriven = !showAllSessions
-            let selectedProjectFilter = selectedProject == timelineAllProjects ? nil : selectedProject
-            let data = try await Task.detached { [database, sort, days, humanDriven, selectedProjectFilter] in
-                let tl = try database.sessionTimeline(days: days, sort: sort, humanDriven: humanDriven)
-                let allSessions = tl.flatMap(\.sessions)
+            let now = fixedDate ?? Date()
+            let mode = timelineMode
+            let requestedRange = range
+            let requestedProject = selectedProject
+            let data = try await Task.detached { [database, sort, requestedSort, days, humanDriven, now, mode, requestedRange, requestedProject] in
+                let projects = switch mode {
+                case .sessions:
+                    try database.sessionTimelineProjects(
+                        days: days,
+                        sort: sort,
+                        humanDriven: humanDriven,
+                        now: now
+                    )
+                case .work:
+                    try database.implementationTimelineProjects(
+                        days: days,
+                        humanDriven: humanDriven,
+                        now: now
+                    )
+                }
+                let reconciledProject = Self.reconciledProjectSelection(
+                    selectedProject: requestedProject,
+                    availableProjects: projects
+                )
+                let selectedProjectFilter = reconciledProject == timelineAllProjects ? nil : reconciledProject
+                let tl = try database.sessionTimeline(
+                    days: days,
+                    sort: sort,
+                    humanDriven: humanDriven,
+                    project: selectedProjectFilter,
+                    now: now
+                )
+                let favoriteIds = Set((try? database.listFavorites())?.map(\.id) ?? [])
+                let annotatedTimeline = tl.groups.map { group in
+                    (
+                        date: group.date,
+                        sessions: Session.applyingFavoriteIds(group.sessions, favoriteIds: favoriteIds)
+                    )
+                }
+                let allSessions = annotatedTimeline.flatMap(\.sessions)
                 let parentIds = allSessions.map(\.id)
                 let confirmed = try database.childCount(parentIds: parentIds)
                 let suggested = try database.suggestedChildCount(parentIds: parentIds)
-                let work = try database.implementationTimeline(days: days, project: selectedProjectFilter, humanDriven: humanDriven)
-                return (tl, confirmed, suggested, work)
+                let work = try database.implementationTimeline(
+                    days: days,
+                    project: selectedProjectFilter,
+                    humanDriven: humanDriven,
+                    now: now
+                )
+                return (
+                    timeline: annotatedTimeline,
+                    chart: tl.dailyCounts,
+                    totalCount: tl.totalCount,
+                    hasMore: tl.hasMore,
+                    confirmed: confirmed,
+                    suggested: suggested,
+                    work: work,
+                    projects: projects,
+                    range: requestedRange,
+                    mode: mode,
+                    sort: requestedSort,
+                    selectedProject: reconciledProject
+                )
             }.value
             guard Self.shouldApplyLoad(
                 resultGeneration: requestGeneration,
                 currentGeneration: loadGeneration,
                 isCancelled: Task.isCancelled
             ) else { return }
-            timeline = data.0
-            confirmedCounts = data.1
-            suggestedCounts = data.2
-            workTimeline = data.3
+            timeline = data.timeline
+            sessionChartData = data.chart
+            timelineTotalCount = data.totalCount
+            timelineShownCount = data.timeline.reduce(0) { $0 + $1.sessions.count }
+            timelineHasMore = data.hasMore
+            confirmedCounts = data.confirmed
+            suggestedCounts = data.suggested
+            workTimeline = data.work
+            availableProjects = data.projects
+            selectedProject = data.selectedProject
+            appliedProject = data.selectedProject
+            appliedRange = data.range
+            appliedMode = data.mode
+            appliedSort = data.sort
             loadError = nil
         } catch {
             guard Self.shouldApplyLoad(
@@ -398,8 +530,24 @@ struct TimelinePageView: View {
                 isCancelled: Task.isCancelled
             ) else { return }
             EngramLogger.error("TimelinePage load failed", module: .ui, error: error)
+            clearVisibleSnapshot()
+            appliedProject = selectedProject
+            appliedRange = range
+            appliedMode = timelineMode
+            appliedSort = sortMode
             loadError = ServiceErrorPresenter.displayMessage(for: error)
         }
+    }
+
+    private func clearVisibleSnapshot() {
+        timeline = []
+        sessionChartData = []
+        workTimeline = []
+        confirmedCounts = [:]
+        suggestedCounts = [:]
+        timelineTotalCount = 0
+        timelineShownCount = 0
+        timelineHasMore = false
     }
 
     private func confirmSuggestion(_ child: Session) {
@@ -440,10 +588,27 @@ struct TimelinePageView: View {
         renameTarget = session
     }
 
+    /// The navigation notification shared by tap and keyboard. Static and pure
+    /// so tests can verify the contract without a service client (Wave 8-1).
+    static func openNotification(for session: Session) -> Notification {
+        Notification(name: .openSession, object: SessionBox(session))
+    }
+
+    /// Shared by card tap and keyboard Enter/Space so both paths record access
+    /// and navigate identically.
+    func open(_ session: Session) {
+        handlers.recordAccess(session)
+        NotificationCenter.default.post(Self.openNotification(for: session))
+    }
+
     private func formatDateLabel(_ dateStr: String) -> String {
         guard let date = Self.inputDateFormatter.date(from: dateStr) else { return dateStr }
-        if Calendar.current.isDateInToday(date) { return String(localized: "Today") }
-        if Calendar.current.isDateInYesterday(date) { return String(localized: "Yesterday") }
+        let now = fixedDate ?? Date()
+        if Calendar.current.isDate(date, inSameDayAs: now) { return String(localized: "Today") }
+        if let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: now),
+           Calendar.current.isDate(date, inSameDayAs: yesterday) {
+            return String(localized: "Yesterday")
+        }
         return Self.outputDateFormatter.string(from: date)
     }
 
@@ -466,8 +631,8 @@ struct TimelinePageView: View {
         }
     }
 
-    private var emptyMessage: String {
-        switch timelineMode {
+    private func emptyMessage(for mode: TimelineMode) -> String {
+        switch mode {
         case .work:
             String(localized: "No summarized work in this range")
         case .sessions:
@@ -533,5 +698,7 @@ private struct WorkTimelineCard: View {
             RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous)
                 .stroke(Theme.border, lineWidth: 1)
         )
+        // One VoiceOver stop per card instead of five disconnected text runs.
+        .accessibilityElement(children: .combine)
     }
 }

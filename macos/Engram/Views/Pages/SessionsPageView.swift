@@ -3,8 +3,9 @@ import SwiftUI
 
 struct SessionsPageView: View {
     @Environment(DatabaseManager.self) var db
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
     @Environment(EngramServiceStatusStore.self) var serviceStatusStore
+    @Environment(\.engramFixedDate) var fixedDate
     @AppStorage("sessions.showHidden") private var showHiddenSessions = false
     // Global escape hatch from the human-driven default view. Shared key across
     // SessionsPage / Home / Timeline so one toggle reveals everything everywhere.
@@ -13,6 +14,9 @@ struct SessionsPageView: View {
     @AppStorage(SessionsFilterPersistence.timeFilterKey) private var timeFilterStorage = "All Time"
     /// Empty string sentinel for Optional source (AppStorage cannot hold String?).
     @AppStorage(SessionsFilterPersistence.sourceFilterKey) private var sourceFilterStorage = ""
+    /// Wave 6C-1 (design §9): restrict the list to sessions ingested on the HQ
+    /// machine. SQL-side, not post-filter, because the page paginates.
+    @AppStorage(SessionsFilterPersistence.hqOnlyKey) private var hqOnly = false
 
     @State private var sessions: [Session] = []
     @State private var confirmedCounts: [String: Int] = [:]
@@ -32,6 +36,9 @@ struct SessionsPageView: View {
     @State private var relateTarget: Session? = nil
     @State private var actionStatus: String? = nil
     @State private var exportState: SessionExportState = .idle
+    /// Keyboard focus for list rows (extends the 6A-5 SearchPageView pattern):
+    /// ring + Enter/Space opens the session.
+    @FocusState private var focusedSessionId: String?
     // Filter signature at the last load; distinguishes a filter change (reload
     // immediately from page one) from a background index tick (debounce + keep
     // pagination). See BrowseReloadCoalescer / #3.
@@ -101,6 +108,19 @@ struct SessionsPageView: View {
         )
     }
 
+    /// True when any list filter differs from the first-launch defaults, so the
+    /// empty state can offer a one-tap reset instead of a dead end.
+    private var hasActiveFilters: Bool {
+        sessionFilter != "All" || timeFilter != "All Time" || sourceFilter != nil || hqOnly
+    }
+
+    private func clearFilters() {
+        sessionFilterStorage = "All"
+        timeFilterStorage = "All Time"
+        sourceFilterStorage = ""
+        hqOnly = false
+    }
+
     private var handlers: SessionActionHandlers {
         SessionActionHandlers(
             serviceClient: serviceClient,
@@ -151,6 +171,14 @@ struct SessionsPageView: View {
                 if let actionStatus {
                     AlertBanner(message: actionStatus)
                         .accessibilityIdentifier("sessions_actionStatus")
+                        // VoiceOver does not auto-announce a banner whose text
+                        // swaps in place; announce each new status transition.
+                        .onAppear {
+                            AccessibilityNotification.Announcement(actionStatus).post()
+                        }
+                        .onChange(of: actionStatus) { _, message in
+                            AccessibilityNotification.Announcement(message).post()
+                        }
                 }
                 SessionExportStatusBanner(state: exportState)
                     .accessibilityIdentifier("sessions_exportStatus")
@@ -176,6 +204,7 @@ struct SessionsPageView: View {
                     Toggle("Show hidden sessions", isOn: $showHiddenSessions)
                         .toggleStyle(.checkbox)
                         .accessibilityIdentifier("sessions_showHiddenToggle")
+                        .help("Include sessions you hid from the list")
                     if !availableSources.isEmpty {
                         Picker("Source", selection: sourceFilterBinding) {
                             Text("All Sources").tag("All")
@@ -186,6 +215,10 @@ struct SessionsPageView: View {
                         .frame(width: 140)
                         .accessibilityIdentifier("sessions_sourcePicker")
                     }
+                    Toggle("HQ only", isOn: $hqOnly)
+                        .toggleStyle(.checkbox)
+                        .accessibilityIdentifier("sessions_hqOnlyToggle")
+                        .help("Show only sessions indexed from the HQ machine")
                 }
 
                 if isLoading && sessions.isEmpty {
@@ -194,7 +227,12 @@ struct SessionsPageView: View {
                     }
                     .accessibilityIdentifier("sessions_skeleton")
                 } else if sessions.isEmpty {
-                    EmptyState(icon: "bubble.left.and.bubble.right", title: "No sessions", message: "No sessions match your filters")
+                    EmptyState(
+                        icon: "bubble.left.and.bubble.right",
+                        title: "No sessions",
+                        message: "No sessions match your filters",
+                        action: hasActiveFilters ? ("Clear filters", { clearFilters() }) : nil
+                    )
                         .accessibilityIdentifier("sessions_emptyState")
                 } else {
                     LazyVStack(spacing: 4) {
@@ -204,10 +242,7 @@ struct SessionsPageView: View {
                                 confirmedChildCount: confirmedCounts[session.id] ?? 0,
                                 suggestedChildCount: suggestedCounts[session.id] ?? 0,
                                 includeHiddenChildren: showHiddenSessions,
-                                onTap: {
-                                    handlers.recordAccess(session)
-                                    NotificationCenter.default.post(name: .openSession, object: SessionBox(session))
-                                },
+                                onTap: { open(session) },
                                 onChildTap: { child in
                                     NotificationCenter.default.post(name: .openSession, object: SessionBox(child))
                                 },
@@ -236,6 +271,22 @@ struct SessionsPageView: View {
                                 isHidden: session.hiddenAt != nil
                             )
                             .accessibilityIdentifier("sessions_row_\(index)")
+                            // Keyboard navigation (Wave 7-1): plain-styled card
+                            // buttons draw no focus ring; add focus + ring +
+                            // Enter/Space to open, mirroring 6A-5 search rows.
+                            .focusable()
+                            .focused($focusedSessionId, equals: session.id)
+                            .onKeyPress(keys: [.return, .space]) { _ in
+                                guard focusedSessionId == session.id else { return .ignored }
+                                open(session)
+                                return .handled
+                            }
+                            .overlay(
+                                RoundedRectangle(cornerRadius: Theme.cornerRadius)
+                                    .stroke(Theme.accent, lineWidth: 2)
+                                    .opacity(focusedSessionId == session.id ? 1 : 0)
+                                    .allowsHitTesting(false)
+                            )
                             .onAppear {
                                 if index == sessions.count - 1 { loadMoreIfNeeded() }
                             }
@@ -270,12 +321,8 @@ struct SessionsPageView: View {
             )
         }
         .sheet(item: $relateTarget) { target in
-            // Candidates are deduped server-side via INSERT OR IGNORE, so the
-            // list-card path passes an empty existing set (the detail view, which
-            // already holds the related list, passes the real set).
             RelatedSessionPicker(
                 source: target,
-                existingRelatedIds: [],
                 onLinked: {}
             )
         }
@@ -288,6 +335,7 @@ struct SessionsPageView: View {
             AnyHashable(sessionFilter),
             AnyHashable(timeFilter),
             AnyHashable(sourceFilter),
+            AnyHashable(hqOnly),
             AnyHashable(showHiddenSessions),
             AnyHashable(showAllSessions),
             AnyHashable(serviceStatusStore.browseReloadToken),
@@ -300,6 +348,7 @@ struct SessionsPageView: View {
                 AnyHashable(sessionFilter),
                 AnyHashable(timeFilter),
                 AnyHashable(sourceFilter),
+                AnyHashable(hqOnly),
                 AnyHashable(showHiddenSessions),
                 AnyHashable(showAllSessions),
             ]
@@ -342,6 +391,7 @@ struct SessionsPageView: View {
             let includeHidden = showHiddenSessions
             let humanDriven = !showAllSessions
             let favoritesOnly = self.favoritesOnly
+            let origin: String? = hqOnly ? "hq" : nil
             // Preserve the loaded window on an index-tick refresh; otherwise a
             // fresh load starts at the first page.
             let pageSize = capturedPageSize
@@ -354,6 +404,7 @@ struct SessionsPageView: View {
                     topLevelOnly: true,
                     humanDriven: humanDriven,
                     favoritesOnly: favoritesOnly,
+                    origin: origin,
                     sort: .updatedDesc,
                     limit: pageSize
                 )
@@ -364,7 +415,8 @@ struct SessionsPageView: View {
                     subAgent: false,
                     topLevelOnly: true,
                     humanDriven: humanDriven,
-                    favoritesOnly: favoritesOnly
+                    favoritesOnly: favoritesOnly,
+                    origin: origin
                 )
                 let sourceOptions = try db.sessionListStats(
                     since: since,
@@ -427,7 +479,7 @@ struct SessionsPageView: View {
                 await loadData()
             } catch {
                 EngramLogger.error("SessionsPage confirm suggestion failed", module: .ui, error: error)
-                actionStatus = error.localizedDescription
+                actionStatus = ServiceErrorPresenter.displayMessage(for: error)
             }
         }
     }
@@ -444,7 +496,7 @@ struct SessionsPageView: View {
                 await loadData()
             } catch {
                 EngramLogger.error("SessionsPage dismiss suggestion failed", module: .ui, error: error)
-                actionStatus = error.localizedDescription
+                actionStatus = ServiceErrorPresenter.displayMessage(for: error)
             }
         }
     }
@@ -452,6 +504,13 @@ struct SessionsPageView: View {
     private func beginRename(_ session: Session) {
         renameText = session.customName ?? session.displayTitle
         renameTarget = session
+    }
+
+    /// Shared by card tap and keyboard Enter/Space so both paths record access
+    /// and navigate identically.
+    private func open(_ session: Session) {
+        handlers.recordAccess(session)
+        NotificationCenter.default.post(name: .openSession, object: SessionBox(session))
     }
 
     private func loadMoreIfNeeded() {
@@ -472,6 +531,7 @@ struct SessionsPageView: View {
                 let since = sinceDate(for: timeFilter)
                 let includeHidden = showHiddenSessions
                 let humanDriven = !showAllSessions
+                let origin: String? = hqOnly ? "hq" : nil
                 let offset = sessions.count
                 let pageSize = Self.pageSize
                 // Capture before begin — detail evaluates at end() (row 16).
@@ -486,6 +546,7 @@ struct SessionsPageView: View {
                         topLevelOnly: true,
                         humanDriven: humanDriven,
                         favoritesOnly: favoritesOnly,
+                        origin: origin,
                         sort: .updatedDesc,
                         limit: pageSize,
                         offset: offset
@@ -524,8 +585,11 @@ struct SessionsPageView: View {
     }
 
     private func sinceDate(for filter: String) -> String? {
+        Self.sinceDate(for: filter, now: fixedDate ?? Date())
+    }
+
+    nonisolated static func sinceDate(for filter: String, now: Date) -> String? {
         let cal = Calendar.current
-        let now = Date()
         let formatter = ISO8601DateFormatter()
         switch filter {
         case "Today": return formatter.string(from: cal.startOfDay(for: now))
@@ -555,6 +619,9 @@ struct RenameSessionSheet: View {
     @Binding var text: String
     let onCancel: () -> Void
     let onSave: () -> Void
+    // Keyboard-first: the name field owns focus when the sheet opens so the
+    // user can type immediately (sheet has exactly one editable control).
+    @FocusState private var nameFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -563,6 +630,7 @@ struct RenameSessionSheet: View {
             TextField("Session name", text: $text)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 320)
+                .focused($nameFocused)
                 .onSubmit { onSave() }
             HStack {
                 Spacer()
@@ -572,5 +640,6 @@ struct RenameSessionSheet: View {
             }
         }
         .padding(24)
+        .onAppear { nameFocused = true }
     }
 }

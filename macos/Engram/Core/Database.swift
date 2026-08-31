@@ -1,6 +1,7 @@
 // macos/Engram/Core/Database.swift
 import Foundation
 import GRDB
+import EngramCoreRead
 import Observation
 
 enum DatabaseError: Error {
@@ -8,12 +9,12 @@ enum DatabaseError: Error {
 }
 
 enum SessionSort: String, Sendable {
-    case accessedDesc = "COALESCE(last_accessed_at, start_time) DESC, start_time DESC"
-    case accessedAsc  = "COALESCE(last_accessed_at, start_time) ASC, start_time ASC"
+    case accessedDesc = "COALESCE(NULLIF(last_accessed_at, ''), NULLIF(end_time, ''), start_time) DESC, start_time DESC"
+    case accessedAsc  = "COALESCE(NULLIF(last_accessed_at, ''), NULLIF(end_time, ''), start_time) ASC, start_time ASC"
     case createdDesc = "start_time DESC"
     case createdAsc  = "start_time ASC"
-    case updatedDesc = "COALESCE(end_time, start_time) DESC"
-    case updatedAsc  = "COALESCE(end_time, start_time) ASC"
+    case updatedDesc = "COALESCE(NULLIF(end_time, ''), start_time) DESC"
+    case updatedAsc  = "COALESCE(NULLIF(end_time, ''), start_time) ASC"
 
     var usesActivityTime: Bool {
         switch self {
@@ -36,9 +37,9 @@ enum SessionSort: String, Sendable {
     var timelineTimestampSQL: String {
         switch self {
         case .accessedDesc, .accessedAsc:
-            "COALESCE(last_accessed_at, end_time, start_time)"
+            "COALESCE(NULLIF(last_accessed_at, ''), NULLIF(end_time, ''), start_time)"
         case .updatedDesc, .updatedAsc:
-            "COALESCE(end_time, start_time)"
+            "COALESCE(NULLIF(end_time, ''), start_time)"
         case .createdDesc, .createdAsc:
             "start_time"
         }
@@ -67,6 +68,16 @@ struct SessionListStats {
     let totalMessages: Int
     let avgDurationSeconds: Double?
     let sources: [String]
+}
+
+struct SessionTimelineResult {
+    typealias Group = (date: String, sessions: [Session])
+    typealias DailyCount = (date: String, count: Int)
+
+    let groups: [Group]
+    let dailyCounts: [DailyCount]
+    let totalCount: Int
+    let hasMore: Bool
 }
 
 private struct StoredAmbiguousSuggestionCandidate: Decodable {
@@ -101,15 +112,7 @@ final class DatabaseManager: @unchecked Sendable {
     @ObservationIgnored private var pool: DatabasePool?
     @ObservationIgnored private let poolLock = NSLock()
     @ObservationIgnored private static let sessionTimelineMaxLimit = 10_000
-    @ObservationIgnored private static let timelineDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter
-    }()
-
+    @ObservationIgnored private static let maxSearchSnippetLength = 600
     /// File path to the SQLite database (for background FileManager access)
     var path: String { dbPath }
 
@@ -120,7 +123,8 @@ final class DatabaseManager: @unchecked Sendable {
     }
 
     init(path: String? = nil) {
-        self.dbPath = path ?? FileManager.default.homeDirectoryForCurrentUser
+        // docs/invariants.md #6: default XCTest reads stay under the injected home.
+        self.dbPath = path ?? EngramUserDataDirectory.resolvedHomeDirectory()
             .appendingPathComponent(".engram/index.sqlite").path
     }
 
@@ -145,15 +149,12 @@ final class DatabaseManager: @unchecked Sendable {
     }
 
     private static func openReadOnlyPool(at path: String) throws -> DatabasePool {
-        var configuration = Configuration()
-        configuration.readonly = true
-        // Match SQLiteConnectionPolicy.cacheSizeKiB (16 MiB page cache) so the GUI
-        // read path — including searchWithSnippets over the hundreds-of-MB FTS
-        // index — keeps hot FTS pages resident across queries instead of the
-        // ~2 MiB default. (mmap is intentionally NOT enabled; see
-        // SQLiteConnectionPolicy for the VACUUM/SIGBUS rationale.)
+        var configuration = SQLiteConnectionPolicy.readerConfiguration()
         configuration.prepareDatabase { db in
-            try db.execute(sql: "PRAGMA cache_size = -\(SharedDBConfig.cacheSizeKiB)")
+            db.add(function: DatabaseFunction("engram_realpath", argumentCount: 1, pure: true) { values in
+                guard let path = String.fromDatabaseValue(values[0]) else { return nil }
+                return FileSystemPathIdentity.realpathPath(path)
+            })
         }
         return try DatabasePool(path: path, configuration: configuration)
     }
@@ -169,7 +170,8 @@ final class DatabaseManager: @unchecked Sendable {
         subAgent: Bool?,
         topLevelOnly: Bool,
         humanDriven: Bool,
-        favoritesOnly: Bool
+        favoritesOnly: Bool,
+        origin: String? = nil
     ) {
         if !includeHidden {
             parts.append("AND \(SessionVisibilityFilter.notHiddenSQL)")
@@ -178,9 +180,14 @@ final class DatabaseManager: @unchecked Sendable {
             parts.append("AND id IN (SELECT session_id FROM favorites)")
         }
         if topLevelOnly {
-            parts.append("AND \(SessionVisibilityFilter.topLevelSQL)")
+            let visibility = SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL(
+                alias: "sessions",
+                applyHumanDrivenOnHost: humanDriven,
+                applyHumanDrivenOnChild: humanDriven
+            )
+            parts.append("AND \(visibility)")
         }
-        if humanDriven {
+        if humanDriven && !topLevelOnly {
             parts.append("AND (\(HumanDrivenFilter.sqlPredicate))")
         }
         if !sources.isEmpty {
@@ -194,7 +201,7 @@ final class DatabaseManager: @unchecked Sendable {
             projects.forEach { args.append($0) }
         }
         if let since {
-            parts.append("AND COALESCE(end_time, start_time) >= ?")
+            parts.append("AND COALESCE(NULLIF(end_time, ''), start_time) >= ?")
             args.append(since)
         }
         // L7: skip-tier is noise and must stay hidden on default browse paths.
@@ -202,9 +209,14 @@ final class DatabaseManager: @unchecked Sendable {
         // `nil` and `false` both exclude them so ActivityView.openMostRecent and
         // any other default-nil caller cannot surface subagent noise.
         if subAgent == true {
-            parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')")
+            parts.append("AND agent_role IS NOT NULL")
         } else {
             parts.append("AND \(SessionVisibilityFilter.nonSkipTierSQL)")
+        }
+        // HQ machine filter (design §9): exact match, nil = all machines.
+        if let origin {
+            parts.append("AND origin = ?")
+            args.append(origin)
         }
     }
 
@@ -222,6 +234,7 @@ final class DatabaseManager: @unchecked Sendable {
         topLevelOnly: Bool = false,
         humanDriven: Bool = false,
         favoritesOnly: Bool = false,
+        origin: String? = nil,       // nil = all machines; "hq" = HQ-ingested only
         sort: SessionSort = .accessedDesc,
         limit: Int = 200,
         offset: Int = 0
@@ -242,13 +255,64 @@ final class DatabaseManager: @unchecked Sendable {
                 subAgent: subAgent,
                 topLevelOnly: topLevelOnly,
                 humanDriven: humanDriven,
-                favoritesOnly: favoritesOnly
+                favoritesOnly: favoritesOnly,
+                origin: origin
             )
             let orderSQL = sort.orderSQL(hasAccessMetadata: try Self.hasSessionAccessMetadata(in: db))
             parts.append("ORDER BY \(orderSQL) LIMIT ? OFFSET ?")
             args.append(limit); args.append(offset)
             return try Session.fetchAll(db, sql: parts.joined(separator: " "),
                                         arguments: StatementArguments(args))
+        }
+    }
+
+    /// SQL-scoped candidate search for parent/related pickers. Query and
+    /// exclusions are applied before LIMIT so older sessions remain findable.
+    nonisolated func sessionPickerCandidates(
+        query: String,
+        topLevelOnly: Bool,
+        excluding sessionIDs: Set<String>,
+        limit: Int = 200
+    ) throws -> [Session] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try readInBackground { db in
+            var parts = ["SELECT * FROM sessions WHERE 1=1"]
+            var args: [DatabaseValueConvertible] = []
+            Self.appendSessionFilters(
+                to: &parts,
+                args: &args,
+                sources: [],
+                projects: [],
+                since: nil,
+                includeHidden: false,
+                subAgent: false,
+                topLevelOnly: topLevelOnly,
+                humanDriven: false,
+                favoritesOnly: false
+            )
+            if !sessionIDs.isEmpty {
+                let ids = sessionIDs.sorted()
+                parts.append("AND id NOT IN (\(Array(repeating: "?", count: ids.count).joined(separator: ", ")))")
+                args.append(contentsOf: ids)
+            }
+            if !needle.isEmpty {
+                let pattern = "%\(CJKText.escapeLikePattern(needle))%"
+                parts.append("""
+                    AND (
+                      COALESCE(NULLIF(custom_name, ''), NULLIF(generated_title, ''), NULLIF(summary, ''), 'Untitled') LIKE ? ESCAPE '\\'
+                      OR COALESCE(project, '') LIKE ? ESCAPE '\\'
+                    )
+                    """)
+                args.append(pattern)
+                args.append(pattern)
+            }
+            parts.append("ORDER BY COALESCE(NULLIF(end_time, ''), start_time) DESC, id ASC LIMIT ?")
+            args.append(limit)
+            return try Session.fetchAll(
+                db,
+                sql: parts.joined(separator: " "),
+                arguments: StatementArguments(args)
+            )
         }
     }
 
@@ -260,7 +324,8 @@ final class DatabaseManager: @unchecked Sendable {
         subAgent: Bool? = nil,
         topLevelOnly: Bool = false,
         humanDriven: Bool = false,
-        favoritesOnly: Bool = false
+        favoritesOnly: Bool = false,
+        origin: String? = nil
     ) throws -> SessionListStats {
         try readInBackground { db in
             if favoritesOnly {
@@ -280,7 +345,8 @@ final class DatabaseManager: @unchecked Sendable {
                 subAgent: subAgent,
                 topLevelOnly: topLevelOnly,
                 humanDriven: humanDriven,
-                favoritesOnly: favoritesOnly
+                favoritesOnly: favoritesOnly,
+                origin: origin
             )
             let fromWhere = parts.joined(separator: " ")
             let row = try Row.fetchOne(db, sql: """
@@ -352,12 +418,14 @@ final class DatabaseManager: @unchecked Sendable {
 
     func sourceStats() throws -> [SourceStat] {
         try readInBackground { db in
-            // R3/M5: exclude skip-tier so Search source filters match browsable set.
+            // Invariant 3: Search facets must use keyword-search visibility,
+            // where both skip and list-visible lite sessions are excluded.
             let rows = try Row.fetchAll(db, sql: """
-                SELECT source, COUNT(*) as count, MAX(indexed_at) as latest_indexed
-                FROM sessions
-                WHERE \(SessionVisibilityFilter.listVisibleSQL)
-                GROUP BY source
+                SELECT s.source, COUNT(*) as count, MAX(s.indexed_at) as latest_indexed
+                FROM sessions s
+                WHERE \(SessionVisibilityFilter.notHiddenSQL(alias: "s"))
+                  AND \(SessionSemanticSearchPolicy.searchableTierSQL)
+                GROUP BY s.source
             """)
             return rows.map { row in
                 SourceStat(
@@ -371,12 +439,13 @@ final class DatabaseManager: @unchecked Sendable {
 
     func countsByProject() throws -> [String: Int] {
         try readInBackground { db in
-            // R3/M5: project counts exclude skip-tier noise.
+            // Invariant 3: keep Search project counts aligned with keyword hits.
             let rows = try Row.fetchAll(db, sql: """
-                SELECT project, COUNT(*) as n FROM sessions
-                WHERE project IS NOT NULL
-                  AND \(SessionVisibilityFilter.listVisibleSQL)
-                GROUP BY project
+                SELECT s.project, COUNT(*) as n FROM sessions s
+                WHERE s.project IS NOT NULL
+                  AND \(SessionVisibilityFilter.notHiddenSQL(alias: "s"))
+                  AND \(SessionSemanticSearchPolicy.searchableTierSQL)
+                GROUP BY s.project
             """)
             return Dictionary(uniqueKeysWithValues: rows.map { ($0["project"] as String, $0["n"] as Int) })
         }
@@ -394,7 +463,7 @@ final class DatabaseManager: @unchecked Sendable {
                 args  = []
             }
             if subAgent == true {
-                parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')")
+                parts.append("AND agent_role IS NOT NULL")
             } else {
                 parts.append("AND \(SessionVisibilityFilter.nonSkipTierSQL)")
             }
@@ -430,12 +499,68 @@ final class DatabaseManager: @unchecked Sendable {
                 projects.forEach { args.append($0) }
             }
             if subAgent == true {
-                parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')")
+                parts.append("AND agent_role IS NOT NULL")
             } else {
                 parts.append("AND \(SessionVisibilityFilter.nonSkipTierSQL)")
             }
             return try Int.fetchOne(db, sql: parts.joined(separator: " "),
                                     arguments: StatementArguments(args)) ?? 0
+        }
+    }
+
+    struct AgentSessionStats: Equatable {
+        let total: Int
+        let active: Int
+    }
+
+    /// Returns only visible top-level sessions that own a confirmed or suggested
+    /// child. The qualification happens before pagination.
+    nonisolated func agentParentSessions(limit: Int, offset: Int) throws -> [Session] {
+        guard limit > 0, offset >= 0 else { return [] }
+        return try readInBackground { db in
+            // Invariant 3: parent browse rows are list-visible top-level sessions;
+            // child subagents remain queryable even when their tier is `skip`.
+            try Session.fetchAll(db, sql: """
+                SELECT s.*
+                FROM sessions s
+                WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
+                  AND \(SessionVisibilityFilter.topLevelSQL(alias: "s"))
+                  AND (
+                    EXISTS (
+                        SELECT 1 FROM sessions child
+                        WHERE child.parent_session_id = s.id
+                          AND \(SessionVisibilityFilter.notHiddenSQL(alias: "child"))
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM sessions child
+                        WHERE child.suggested_parent_id = s.id
+                          AND child.parent_session_id IS NULL
+                          AND \(SessionVisibilityFilter.notHiddenSQL(alias: "child"))
+                    )
+                  )
+                ORDER BY COALESCE(s.last_accessed_at, s.start_time) DESC
+                LIMIT ? OFFSET ?
+            """, arguments: [limit, offset])
+        }
+    }
+
+    /// Exact agent-session KPIs over the full population, never a materialized
+    /// UI page. Active is a session count (not a distinct role count).
+    nonisolated func agentSessionStats(activeSince: String) throws -> AgentSessionStats {
+        try readInBackground { db in
+            let row = try Row.fetchOne(db, sql: """
+                SELECT COUNT(*) AS total,
+                       COALESCE(SUM(
+                           CASE WHEN COALESCE(NULLIF(end_time, ''), start_time) >= ? THEN 1 ELSE 0 END
+                       ), 0) AS active
+                FROM sessions s
+                WHERE \(SessionVisibilityFilter.notHiddenSQL)
+                  AND agent_role IS NOT NULL
+            """, arguments: [activeSince])
+            return AgentSessionStats(
+                total: (row?["total"] as Int?) ?? 0,
+                active: (row?["active"] as Int?) ?? 0
+            )
         }
     }
 
@@ -455,11 +580,13 @@ final class DatabaseManager: @unchecked Sendable {
         args: inout [DatabaseValueConvertible],
         sources: Set<String>,
         projects: Set<String>,
+        origin: String?,
         since: String?
     ) {
         let clauses = SearchFilterPredicates.clauses(
             sources: Array(sources),
             projects: Array(projects),
+            origin: origin,
             since: since
         )
         for clause in clauses {
@@ -481,28 +608,92 @@ final class DatabaseManager: @unchecked Sendable {
     /// offline-fallback GUI path. Ordering (`m0.rank, s.start_time DESC`) and the
     /// hidden/tier/source/project/since filters are preserved exactly.
     static func keywordSearchSQL(
+        rawTokens: [String],
         termMatches: [String],
-        snippetMatch: String,
         sources: Set<String>,
         projects: Set<String>,
         since: String?,
         limit: Int,
-        withSnippet: Bool
+        withSnippet: Bool,
+        origin: String? = nil
     ) -> (sql: String, args: [DatabaseValueConvertible]) {
         var ctes: [String] = []
         var joins: [String] = []
         var args: [DatabaseValueConvertible] = []
-        for (index, termMatch) in termMatches.enumerated() {
+        for (index, rawTerm) in rawTokens.enumerated() {
+            let termMatch = termMatches[index]
             let alias = "m\(index)"
-            ctes.append("""
-                \(alias) AS (
-                    SELECT session_id, MIN(rank) AS rank
-                    FROM sessions_fts
-                    WHERE sessions_fts MATCH ?
-                    GROUP BY session_id
-                )
-            """)
-            args.append(termMatch)
+            // mixed-token-1: classify the original whitespace token. Peeling
+            // the escaped MATCH phrase first turns quoted `"I"` into `%I%` and
+            // empty quotes into a broad `%%` LIKE.
+            if CJKText.containsCJK(rawTerm) || rawTerm.count < 3 {
+                if withSnippet {
+                    ctes.append("""
+                        \(alias)_hits AS (
+                            SELECT rowid, session_id, content,
+                                   ROW_NUMBER() OVER (
+                                       PARTITION BY session_id
+                                       ORDER BY instr(lower(content), lower(?)), rowid
+                                   ) AS match_position
+                            FROM sessions_fts
+                            WHERE content LIKE ? ESCAPE '\\'
+                        ),
+                        \(alias) AS (
+                            SELECT session_id, 0.0 AS rank,
+                                   substr(content, MAX(1, instr(lower(content), lower(?)) - 200), ?) AS snippet
+                            FROM \(alias)_hits
+                            WHERE match_position = 1
+                        )
+                    """)
+                    args.append(rawTerm)
+                    args.append("%\(CJKText.escapeLikePattern(rawTerm))%")
+                    args.append(rawTerm)
+                    args.append(Self.maxSearchSnippetLength)
+                } else {
+                    ctes.append("""
+                        \(alias) AS (
+                            SELECT session_id, 0.0 AS rank
+                            FROM sessions_fts
+                            WHERE content LIKE ? ESCAPE '\\'
+                            GROUP BY session_id
+                        )
+                    """)
+                    args.append("%\(CJKText.escapeLikePattern(rawTerm))%")
+                }
+            } else if withSnippet {
+                ctes.append("""
+                    \(alias)_hits AS (
+                        SELECT rowid, session_id, rank
+                        FROM sessions_fts
+                        WHERE sessions_fts MATCH ?
+                    ),
+                    \(alias) AS (
+                        SELECT hits.session_id, MIN(hits.rank) AS rank,
+                               (
+                                   SELECT snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 64)
+                                   FROM sessions_fts
+                                   WHERE sessions_fts MATCH ?
+                                     AND sessions_fts.session_id = hits.session_id
+                                   ORDER BY rank
+                                   LIMIT 1
+                               ) AS snippet
+                        FROM \(alias)_hits hits
+                        GROUP BY hits.session_id
+                    )
+                """)
+                args.append(termMatch)
+                args.append(termMatch)
+            } else {
+                ctes.append("""
+                    \(alias) AS (
+                        SELECT session_id, MIN(rank) AS rank
+                        FROM sessions_fts
+                        WHERE sessions_fts MATCH ?
+                        GROUP BY session_id
+                    )
+                """)
+                args.append(termMatch)
+            }
             if index > 0 {
                 joins.append("JOIN \(alias) ON \(alias).session_id = m0.session_id")
             }
@@ -515,7 +706,14 @@ final class DatabaseManager: @unchecked Sendable {
                 WHERE s.hidden_at IS NULL
                   AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
             """]
-            appendSearchFilters(to: &parts, args: &args, sources: sources, projects: projects, since: since)
+            appendSearchFilters(
+                to: &parts,
+                args: &args,
+                sources: sources,
+                projects: projects,
+                origin: origin,
+                since: since
+            )
             parts.append("""
                 ORDER BY s.start_time DESC
                 LIMIT ?
@@ -523,17 +721,10 @@ final class DatabaseManager: @unchecked Sendable {
             args.append(limit)
             return (parts.joined(separator: " "), args)
         }
-        // The `?` placeholders bind in textual order: CTE MATCH terms, then the
-        // snippet MATCH (SELECT list), then filters, then LIMIT.
-        let snippetColumn = withSnippet ? """
-            , (
-                SELECT snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 32)
-                FROM sessions_fts
-                WHERE sessions_fts MATCH ? AND session_id = s.id
-                ORDER BY rank
-                LIMIT 1
-            ) AS snippet
-        """ : ""
+        let snippetExpression = rawTokens.indices
+            .map { "COALESCE(m\($0).snippet, '')" }
+            .joined(separator: " || '\n…\n' || ")
+        let snippetColumn = withSnippet ? ", \(snippetExpression) AS snippet" : ""
         var parts = ["""
             WITH \(ctes.joined(separator: ", "))
             SELECT s.*\(snippetColumn)
@@ -543,10 +734,14 @@ final class DatabaseManager: @unchecked Sendable {
             WHERE s.hidden_at IS NULL
               AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
         """]
-        if withSnippet {
-            args.append(snippetMatch)
-        }
-        appendSearchFilters(to: &parts, args: &args, sources: sources, projects: projects, since: since)
+        appendSearchFilters(
+            to: &parts,
+            args: &args,
+            sources: sources,
+            projects: projects,
+            origin: origin,
+            since: since
+        )
         parts.append("""
             ORDER BY m0.rank, s.start_time DESC
             LIMIT ?
@@ -560,55 +755,25 @@ final class DatabaseManager: @unchecked Sendable {
         limit: Int = 10,
         sources: Set<String> = [],
         projects: Set<String> = [],
-        since: String? = nil
+        since: String? = nil,
+        origin: String? = nil
     ) throws -> [Session] {
-        guard query.count >= 2 else { return [] }
-
-        // CJK uses LIKE because trigram MATCH is unreliable for CJK/Hangul.
-        // Two-character Latin abbreviations ("AI", "PR", "UI") also need LIKE
-        // because the trigram tokenizer cannot MATCH terms shorter than three
-        // characters. Escape wildcards so literal "%"/"_" match verbatim.
-        if CJKText.containsCJK(query) || query.count < 3 {
-            let pattern = "%\(CJKText.escapeLikePattern(query))%"
-            return try readInBackground { db in
-                var parts = ["""
-                    SELECT DISTINCT s.* FROM sessions_fts f
-                    JOIN sessions s ON s.id = f.session_id
-                    WHERE f.content LIKE ? ESCAPE '\\' AND s.hidden_at IS NULL
-                      AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
-                """]
-                var args: [DatabaseValueConvertible] = [pattern]
-                Self.appendSearchFilters(
-                    to: &parts,
-                    args: &args,
-                    sources: sources,
-                    projects: projects,
-                    since: since
-                )
-                parts.append("""
-                    ORDER BY s.start_time DESC
-                    LIMIT ?
-                """)
-                args.append(limit)
-                return try Session.fetchAll(db, sql: """
-                    \(parts.joined(separator: " "))
-                """, arguments: StatementArguments(args))
-            }
+        let rawTokens = CJKText.searchableTerms(query)
+        guard !rawTokens.isEmpty || query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return []
         }
 
-        // ASCII/Latin: use fast FTS MATCH
-        guard query.count >= 3 else { return [] }
         return try readInBackground { db in
-            let termMatches = CJKText.ftsMatchTerms(query)
-            let snippetMatch = termMatches.first ?? CJKText.ftsMatchQuery(query)
+            let termMatches = CJKText.ftsMatchTerms(rawTokens)
             let built = Self.keywordSearchSQL(
+                rawTokens: rawTokens,
                 termMatches: termMatches,
-                snippetMatch: snippetMatch,
                 sources: sources,
                 projects: projects,
                 since: since,
                 limit: limit,
-                withSnippet: false
+                withSnippet: false,
+                origin: origin
             )
             return try Session.fetchAll(
                 db,
@@ -627,54 +792,90 @@ final class DatabaseManager: @unchecked Sendable {
         limit: Int = 10,
         sources: Set<String> = [],
         projects: Set<String> = [],
-        since: String? = nil
+        since: String? = nil,
+        origin: String? = nil
     ) throws -> [(session: Session, snippet: String)] {
-        guard query.count >= 2 else { return [] }
-
-        if CJKText.containsCJK(query) || query.count < 3 {
-            let pattern = "%\(CJKText.escapeLikePattern(query))%"
-            return try readInBackground { db in
-                var parts = ["""
-                    SELECT s.*, f.content AS snippet FROM sessions_fts f
-                    JOIN sessions s ON s.id = f.session_id
-                    WHERE f.content LIKE ? ESCAPE '\\' AND s.hidden_at IS NULL
-                      AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
-                """]
-                var args: [DatabaseValueConvertible] = [pattern]
-                Self.appendSearchFilters(to: &parts, args: &args, sources: sources, projects: projects, since: since)
-                parts.append("GROUP BY s.id ORDER BY s.start_time DESC LIMIT ?")
-                args.append(limit)
-                let rows = try Row.fetchAll(db, sql: parts.joined(separator: " "), arguments: StatementArguments(args))
-                return try rows.map { row in
-                    let content = (row["snippet"] as String?) ?? ""
-                    let snippet = CJKText.cjkHighlightedSnippet(content: content, query: query) ?? content
-                    return (try Session(row: row), snippet)
-                }
-            }
+        let rawTokens = CJKText.searchableTerms(query)
+        guard !rawTokens.isEmpty || query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return []
         }
 
-        guard query.count >= 3 else { return [] }
         return try readInBackground { db in
-            let termMatches = CJKText.ftsMatchTerms(query)
-            let snippetMatch = termMatches.first ?? CJKText.ftsMatchQuery(query)
+            let termMatches = CJKText.ftsMatchTerms(rawTokens)
             // Search at session granularity: every query token must exist
             // somewhere in the session, not necessarily in the same FTS row. The
             // FTS5 `<mark>` snippet is a bounded per-result lookup keyed by
             // session_id (not the old per-sessions-row MATCH scan), so the
             // highlighted-window behavior is preserved.
             let built = Self.keywordSearchSQL(
+                rawTokens: rawTokens,
                 termMatches: termMatches,
-                snippetMatch: snippetMatch,
                 sources: sources,
                 projects: projects,
                 since: since,
                 limit: limit,
-                withSnippet: true
+                withSnippet: true,
+                origin: origin
             )
             let rows = try Row.fetchAll(db, sql: built.sql, arguments: StatementArguments(built.args))
             return try rows.map { row in
-                (try Session(row: row), (row["snippet"] as String?) ?? "")
+                let rawSnippet = (row["snippet"] as String?) ?? ""
+                let cleanSnippet = CJKText.removingHighlightMarks(from: rawSnippet)
+                let snippet = CJKText.highlightedSnippet(content: cleanSnippet, query: query)
+                    ?? cleanSnippet
+                return (try Session(row: row), snippet)
             }
+        }
+    }
+
+    /// SQL-scoped source for the Today follow-up panel. Eligibility is applied
+    /// before LIMIT so child/noise rows cannot exhaust a small FTS result page.
+    nonisolated func todayFollowUpSessions(
+        queries: [String],
+        startedSince: String,
+        excluding sessionIDs: Set<String>,
+        limit: Int
+    ) throws -> [Session] {
+        guard !queries.isEmpty, limit > 0 else { return [] }
+        return try readInBackground { db in
+            var matchQueries: [String] = []
+            var args: [DatabaseValueConvertible] = []
+            for query in queries {
+                if CJKText.containsCJK(query) || query.count < 3 {
+                    matchQueries.append("SELECT session_id FROM sessions_fts WHERE content LIKE ? ESCAPE '\\'")
+                    args.append("%\(CJKText.escapeLikePattern(query))%")
+                } else {
+                    matchQueries.append("SELECT session_id FROM sessions_fts WHERE sessions_fts MATCH ?")
+                    args.append(CJKText.ftsMatchQuery(query))
+                }
+            }
+
+            // Invariant 3: browse surfaces expose only top-level, list-visible
+            // sessions; apply both predicates before the result cap.
+            var parts = ["""
+                WITH matching_sessions AS (
+                    \(matchQueries.joined(separator: " UNION "))
+                )
+                SELECT DISTINCT s.*
+                FROM matching_sessions m
+                JOIN sessions s ON s.id = m.session_id
+                WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
+                  AND \(SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL(alias: "s"))
+                  AND \(SearchFilterPredicates.activityTimeSQL(alias: "s")) >= ?
+            """]
+            args.append(startedSince)
+            let excluded = sessionIDs.sorted()
+            if !excluded.isEmpty {
+                parts.append("AND s.id NOT IN (\(excluded.map { _ in "?" }.joined(separator: ", ")))")
+                excluded.forEach { args.append($0) }
+            }
+            parts.append("ORDER BY s.start_time DESC LIMIT ?")
+            args.append(limit)
+            return try Session.fetchAll(
+                db,
+                sql: parts.joined(separator: " "),
+                arguments: StatementArguments(args)
+            )
         }
     }
 
@@ -699,9 +900,11 @@ final class DatabaseManager: @unchecked Sendable {
     func implementationTimeline(
         days: Int = 30,
         project: String? = nil,
-        humanDriven: Bool = false
+        humanDriven: Bool = false,
+        now: Date = Date()
     ) throws -> [ImplementationTimelineItem] {
-        try readInBackground { db in
+        let nowString = ProjectWorkWindow.referenceTimestamp(now: now)
+        return try readInBackground { db in
             guard try Self.tableExists("session_work_beats", db: db) else { return [] }
             // work_item_titles is service/writer-owned, so the read-only app pool
             // must guard it and fall back to heuristic titles when the table is absent.
@@ -718,13 +921,18 @@ final class DatabaseManager: @unchecked Sendable {
                 JOIN sessions s ON s.id = b.session_id
                 \(titleJoin)
                 WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
-                  AND \(SessionVisibilityFilter.topLevelSQL(alias: "s"))
+                  AND \(SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL(
+                      alias: "s",
+                      applyHumanDrivenOnHost: humanDriven,
+                      applyHumanDrivenOnChild: humanDriven
+                  ))
+                  AND b.action_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
             """]
             var args: [DatabaseValueConvertible] = []
-            if days < 100_000,
-               let cutoff = Calendar(identifier: .gregorian).date(byAdding: .day, value: -days, to: Date()) {
-                parts.append("AND b.action_date >= ?")
-                args.append(Self.timelineDateFormatter.string(from: cutoff))
+            if let modifier = ProjectWorkWindow.cutoffModifier(days: days) {
+                parts.append("AND b.action_date >= date(?, 'localtime', ?)")
+                args.append(nowString)
+                args.append(modifier)
             }
             if let project, !project.isEmpty {
                 parts.append("AND s.project = ?")
@@ -753,6 +961,46 @@ final class DatabaseManager: @unchecked Sendable {
                 copy.semanticTitle = titleByWorkKey[item.workKey]
                 return copy
             }
+        }
+    }
+
+    func implementationTimelineProjects(
+        days: Int = 30,
+        humanDriven: Bool = false,
+        now: Date = Date()
+    ) throws -> [String] {
+        let nowString = ProjectWorkWindow.referenceTimestamp(now: now)
+        return try readInBackground { db in
+            guard try Self.tableExists("session_work_beats", db: db) else { return [] }
+            var parts = ["""
+                SELECT DISTINCT s.project
+                FROM session_work_beats b
+                JOIN sessions s ON s.id = b.session_id
+                WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
+                  AND \(SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL(
+                      alias: "s",
+                      applyHumanDrivenOnHost: humanDriven,
+                      applyHumanDrivenOnChild: humanDriven
+                  ))
+                  AND s.project IS NOT NULL
+                  AND TRIM(s.project) != ''
+                  AND b.action_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+            """]
+            var args: [DatabaseValueConvertible] = []
+            if let modifier = ProjectWorkWindow.cutoffModifier(days: days) {
+                parts.append("AND b.action_date >= date(?, 'localtime', ?)")
+                args.append(nowString)
+                args.append(modifier)
+            }
+            if humanDriven {
+                parts.append("AND \(HumanDrivenFilter.sqlPredicate(alias: "s"))")
+            }
+            parts.append("ORDER BY s.project")
+            return try String.fetchAll(
+                db,
+                sql: parts.joined(separator: " "),
+                arguments: StatementArguments(args)
+            )
         }
     }
 
@@ -892,14 +1140,20 @@ final class DatabaseManager: @unchecked Sendable {
         throws -> [(filePath: String, action: String, totalCount: Int, sessionCount: Int)] {
         try readInBackground { db in
             guard try Self.tableExists("session_files", db: db) else { return [] }
-            var conditions = [SessionVisibilityFilter.listVisibleSQL(alias: "s")]
+            // docs/invariants.md #3: Top Files uses the same visible,
+            // top-level, human-driven population as the default browse views.
+            var conditions = [
+                SessionVisibilityFilter.listVisibleSQL(alias: "s"),
+                SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL(alias: "s"),
+                "s.orphan_status IS NULL",
+            ]
             var args: [DatabaseValueConvertible] = []
             if let project {
                 conditions.append("s.project = ?")
                 args.append(project)
             }
             if let since {
-                conditions.append("s.start_time >= ?")
+                conditions.append("COALESCE(NULLIF(s.end_time, ''), s.start_time) >= ?")
                 args.append(since)
             }
             let whereClause = "WHERE \(conditions.joined(separator: " AND "))"
@@ -924,20 +1178,44 @@ final class DatabaseManager: @unchecked Sendable {
         }
     }
 
-    // Related sessions for a repo via an anchored cwd-prefix match (cwd LIKE path%),
-    // replacing getContext's unanchored project-substring/cwd-substring over-match.
+    // Related sessions use the same alias + longest-boundary repo identity as
+    // RepoDiscovery.recount, so nested repos never bleed into their parents.
     func sessionsForRepo(path: String, limit: Int = 10) throws -> [Session] {
-        // Anchor at a path boundary so "/Users/a/app" matches the repo and its
-        // subdirectories but NOT a sibling like "/Users/a/app-v2". Escape LIKE
-        // metacharacters (\ % _) in the prefix — "_" is common in directory names.
-        let escaped = path
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "%", with: "\\%")
-            .replacingOccurrences(of: "_", with: "\\_")
         return try readInBackground { db in
             try Session.fetchAll(db,
-                sql: "SELECT * FROM sessions WHERE \(SessionVisibilityFilter.listVisibleSQL) AND (cwd = ? OR cwd LIKE ? ESCAPE '\\') ORDER BY start_time DESC LIMIT ?",
-                arguments: [path, "\(escaped)/%", limit])
+                sql: """
+                    SELECT s.* FROM sessions s
+                    WHERE \(SessionVisibilityFilter.listVisibleSQL)
+                      -- docs/invariants.md #3: repo drill-in is a default browse
+                      -- surface, so filter children and non-human roots before LIMIT.
+                      AND \(SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL(alias: "s"))
+                      AND (
+                        SELECT candidate.repo_path
+                        FROM (
+                          SELECT a.repo_path
+                          FROM git_repo_cwd_aliases a
+                          WHERE a.cwd = s.cwd OR a.real_cwd = s.cwd
+                          UNION
+                          SELECT r.path AS repo_path
+                          FROM git_repos r
+                          WHERE r.path != '/'
+                            AND (s.cwd = r.path OR substr(s.cwd, 1, length(r.path) + 1) = r.path || '/')
+                          UNION
+                          SELECT r.path AS repo_path
+                          FROM git_repos r
+                          WHERE r.path != '/'
+                            AND (
+                              engram_realpath(s.cwd) = engram_realpath(r.path)
+                              OR substr(engram_realpath(s.cwd), 1, length(engram_realpath(r.path)) + 1)
+                                 = engram_realpath(r.path) || '/'
+                            )
+                        ) AS candidate
+                        ORDER BY length(candidate.repo_path) DESC
+                        LIMIT 1
+                      ) = ?
+                    ORDER BY \(SearchFilterPredicates.activityTimeSQL(alias: "s")) DESC, s.id ASC LIMIT ?
+                    """,
+                arguments: [path, limit])
         }
     }
 
@@ -951,6 +1229,19 @@ final class DatabaseManager: @unchecked Sendable {
                 WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
                 ORDER BY f.created_at DESC
             """)
+        }
+    }
+
+    /// Raw membership for annotating child rows. Unlike `listFavorites`, this
+    /// intentionally does not apply browse visibility: skip-tier children must
+    /// still be removable from favorites after they are expanded from a parent.
+    func favoriteIds() throws -> [String] {
+        try readInBackground { db in
+            guard try Self.tableExists("favorites", db: db) else { return [] }
+            return try String.fetchAll(
+                db,
+                sql: "SELECT session_id FROM favorites ORDER BY session_id"
+            )
         }
     }
 
@@ -1001,8 +1292,8 @@ final class DatabaseManager: @unchecked Sendable {
                 (hasAccessMetadata ? "MIN(COALESCE(last_accessed_at, start_time))" : "MIN(start_time)", "ASC")
             case .createdDesc: ("MAX(start_time)", "DESC")
             case .createdAsc:  ("MIN(start_time)", "ASC")
-            case .updatedDesc: ("MAX(COALESCE(end_time, start_time))", "DESC")
-            case .updatedAsc:  ("MIN(COALESCE(end_time, start_time))", "ASC")
+            case .updatedDesc: ("MAX(COALESCE(NULLIF(end_time, ''), start_time))", "DESC")
+            case .updatedAsc:  ("MIN(COALESCE(NULLIF(end_time, ''), start_time))", "ASC")
             }
 
             var parts = ["""
@@ -1026,7 +1317,7 @@ final class DatabaseManager: @unchecked Sendable {
             }
             // Match listSessions: default/false hide skip-tier noise; true keeps subagents.
             if subAgent == true {
-                parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')")
+                parts.append("AND agent_role IS NOT NULL")
             } else {
                 parts.append("AND \(SessionVisibilityFilter.nonSkipTierSQL)")
             }
@@ -1082,7 +1373,7 @@ final class DatabaseManager: @unchecked Sendable {
             guard let row = try Row.fetchOne(db, sql: """
                 SELECT COUNT(*) as n FROM sessions
                 WHERE \(SessionVisibilityFilter.listVisibleSQL)
-                  AND start_time >= ?
+                  AND COALESCE(NULLIF(end_time, ''), start_time) >= ?
             """, arguments: [since]) else {
                 return 0
             }
@@ -1115,28 +1406,34 @@ final class DatabaseManager: @unchecked Sendable {
 
     func dailyActivity(days: Int = 30) throws -> [(date: String, count: Int)] {
         try readInBackground { db in
+            let activityTime = SearchFilterPredicates.activityTimeSQL(alias: "s")
             let rows = try Row.fetchAll(db, sql: """
-                SELECT date(start_time, 'localtime') as day, COUNT(*) as count
-                FROM sessions
-                WHERE \(SessionVisibilityFilter.listVisibleSQL)
-                  AND date(start_time, 'localtime') >= date('now', 'localtime', '-\(days) days')
+                SELECT date(\(activityTime), 'localtime') as day, COUNT(*) as count
+                FROM sessions s
+                WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
+                  AND date(\(activityTime), 'localtime') >= date('now', 'localtime', '-\(days) days')
                 GROUP BY day ORDER BY day
             """)
             return rows.map { (date: $0["day"] as String, count: $0["count"] as Int) }
         }
     }
 
-    func dailySourceActivity(days: Int = 30) throws -> [(date: String, segments: [(source: String, count: Int)])] {
-        try readInBackground { db in
+    func dailySourceActivity(
+        days: Int = 30,
+        now: Date = Date()
+    ) throws -> [(date: String, segments: [(source: String, count: Int)])] {
+        let nowString = ISO8601DateFormatter().string(from: now)
+        return try readInBackground { db in
+            let activityTime = SearchFilterPredicates.activityTimeSQL(alias: "s")
             // M5: exclude skip-tier so activity aggregates match browsable sessions.
             let rows = try Row.fetchAll(db, sql: """
-                SELECT date(start_time, 'localtime') as day, source, COUNT(*) as count
-                FROM sessions
-                WHERE \(SessionVisibilityFilter.listVisibleSQL)
-                  AND date(start_time, 'localtime') >= date('now', 'localtime', '-\(days) days')
+                SELECT date(\(activityTime), 'localtime') as day, s.source, COUNT(*) as count
+                FROM sessions s
+                WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
+                  AND date(\(activityTime), 'localtime') >= date(?, 'localtime', '-\(days) days')
                 GROUP BY day, source
                 ORDER BY day
-            """)
+            """, arguments: [nowString])
 
             var result: [(date: String, segments: [(source: String, count: Int)])] = []
             var currentDay: String?
@@ -1162,12 +1459,14 @@ final class DatabaseManager: @unchecked Sendable {
 
     func hourlyActivity() throws -> [Int] {
         try readInBackground { db in
+            let activityTime = SearchFilterPredicates.activityTimeSQL(alias: "s")
             // M5: exclude skip-tier noise from heatmap hour buckets.
             let rows = try Row.fetchAll(db, sql: """
-                SELECT CAST(strftime('%H', start_time, 'localtime') AS INTEGER) as hour,
+                SELECT CAST(strftime('%H', \(activityTime), 'localtime') AS INTEGER) as hour,
                        COUNT(*) as count
-                FROM sessions
-                WHERE \(SessionVisibilityFilter.listVisibleSQL)
+                FROM sessions s
+                WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
+                  AND date(\(activityTime), 'localtime') >= date('now', 'localtime', '-30 days')
                 GROUP BY hour ORDER BY hour
             """)
             var hours = Array(repeating: 0, count: 24)
@@ -1217,15 +1516,17 @@ final class DatabaseManager: @unchecked Sendable {
     }
 
     func recentSessions(limit: Int = 8, humanDriven: Bool = false) throws -> [Session] {
-        let humanClause = humanDriven ? "AND (\(HumanDrivenFilter.sqlPredicate))" : ""
+        let activityTime = SearchFilterPredicates.activityTimeSQL()
         return try readInBackground { db in
             try Session.fetchAll(db, sql: """
-                SELECT * FROM sessions
-                WHERE \(SessionVisibilityFilter.listVisibleSQL)
-                  AND parent_session_id IS NULL
-                  AND suggested_parent_id IS NULL
-                  \(humanClause)
-                ORDER BY start_time DESC LIMIT ?
+                SELECT s.* FROM sessions s
+                WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
+                  AND \(SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL(
+                      alias: "s",
+                      applyHumanDrivenOnHost: humanDriven,
+                      applyHumanDrivenOnChild: humanDriven
+                  ))
+                ORDER BY \(activityTime) DESC, s.id ASC LIMIT ?
             """, arguments: [limit])
         }
     }
@@ -1234,37 +1535,78 @@ final class DatabaseManager: @unchecked Sendable {
         days: Int = 30,
         sort: SessionSort = .updatedDesc,
         humanDriven: Bool = false,
-        limit: Int = 2_000
-    ) throws -> [(date: String, sessions: [Session])] {
-        let humanClause = humanDriven ? "AND (\(HumanDrivenFilter.sqlPredicate))" : ""
+        project: String? = nil,
+        limit: Int = 2_000,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) throws -> SessionTimelineResult {
+        let projectClause = project == nil ? "" : "AND project = ?"
         let boundedLimit = min(max(limit, 1), Self.sessionTimelineMaxLimit)
+        let nowString = ISO8601DateFormatter().string(from: now)
+        let timelineWhereSQL = """
+            WHERE \(SessionVisibilityFilter.listVisibleSQL)
+              AND \(SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL(
+                  alias: "sessions",
+                  applyHumanDrivenOnHost: humanDriven,
+                  applyHumanDrivenOnChild: humanDriven
+              ))
+              AND date(\(sort.timelineTimestampSQL), 'localtime') >= date(?, 'localtime', '-\(days) days')
+              \(projectClause)
+        """
+        var filterArguments: [DatabaseValueConvertible?] = [nowString]
+        if let project { filterArguments.append(project) }
         return try readInBackground { db in
-            let timestampSQL = sort.timelineTimestampSQL
+            let totalCount = try Int.fetchOne(
+                db,
+                sql: """
+                    SELECT COUNT(*)
+                    FROM sessions
+                    \(timelineWhereSQL)
+                """,
+                arguments: StatementArguments(filterArguments)
+            ) ?? 0
+            var dataArguments = filterArguments
+            dataArguments.append(boundedLimit)
             let sessions = try Session.fetchAll(db, sql: """
                 SELECT * FROM sessions
-                WHERE \(SessionVisibilityFilter.listVisibleSQL)
-                  AND parent_session_id IS NULL
-                  AND suggested_parent_id IS NULL
-                  AND \(timestampSQL) >= DATE('now', '-\(days) days')
-                  \(humanClause)
+                \(timelineWhereSQL)
                 ORDER BY \(sort.rawValue)
                 LIMIT ?
-            """, arguments: [boundedLimit])
+            """, arguments: StatementArguments(dataArguments))
+            let dailyCounts: [SessionTimelineResult.DailyCount] = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT date(\(sort.timelineTimestampSQL), 'localtime') AS day,
+                           COUNT(*) AS count
+                    FROM sessions
+                    \(timelineWhereSQL)
+                    GROUP BY day
+                    ORDER BY day
+                """,
+                arguments: StatementArguments(filterArguments)
+            ).compactMap { row in
+                guard let date: String = row["day"] else { return nil }
+                return (date: date, count: row["count"] as Int)
+            }
             func timelineTimestamp(_ session: Session) -> String {
-                switch sort {
+                func nonempty(_ value: String?) -> String? {
+                    guard let value, !value.isEmpty else { return nil }
+                    return value
+                }
+                return switch sort {
                 case .accessedDesc, .accessedAsc:
-                    session.lastAccessedAt ?? session.endTime ?? session.startTime
+                    nonempty(session.lastAccessedAt) ?? nonempty(session.endTime) ?? session.startTime
                 case .updatedDesc, .updatedAsc:
-                    session.endTime ?? session.startTime
+                    nonempty(session.endTime) ?? session.startTime
                 case .createdDesc, .createdAsc:
                     session.startTime
                 }
             }
 
             let grouped = Dictionary(grouping: sessions) {
-                EngramTimestampParser.localDateKey(from: timelineTimestamp($0))
+                EngramTimestampParser.localDateKey(from: timelineTimestamp($0), calendar: calendar)
             }
-            return grouped
+            let groups = grouped
                 .sorted { sort.isDescending ? $0.key > $1.key : $0.key < $1.key }
                 .map { group in
                     let sortedSessions = group.value.sorted {
@@ -1272,6 +1614,36 @@ final class DatabaseManager: @unchecked Sendable {
                     }
                     return (date: group.key, sessions: sortedSessions)
                 }
+            return SessionTimelineResult(
+                groups: groups,
+                dailyCounts: dailyCounts,
+                totalCount: totalCount,
+                hasMore: totalCount > sessions.count
+            )
+        }
+    }
+
+    func sessionTimelineProjects(
+        days: Int = 30,
+        sort: SessionSort = .updatedDesc,
+        humanDriven: Bool = false,
+        now: Date = Date()
+    ) throws -> [String] {
+        let nowString = ISO8601DateFormatter().string(from: now)
+        return try readInBackground { db in
+            try String.fetchAll(db, sql: """
+                SELECT DISTINCT project FROM sessions
+                WHERE \(SessionVisibilityFilter.listVisibleSQL)
+                  AND \(SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL(
+                      alias: "sessions",
+                      applyHumanDrivenOnHost: humanDriven,
+                      applyHumanDrivenOnChild: humanDriven
+                  ))
+                  AND project IS NOT NULL
+                  AND TRIM(project) != ''
+                  AND date(\(sort.timelineTimestampSQL), 'localtime') >= date(?, 'localtime', '-\(days) days')
+                ORDER BY project
+            """, arguments: [nowString])
         }
     }
 
@@ -1295,31 +1667,56 @@ final class DatabaseManager: @unchecked Sendable {
     /// for sessions whose cwd equals repoPath or is a subdirectory of it.
     func sparklineData(for repoPath: String) throws -> [Int] {
         try readInBackground { db in
+            let activityTime = SearchFilterPredicates.activityTimeSQL(alias: "s")
             // Bucket by LOCAL calendar day so it agrees with the Swift side, which
             // compares against the local start-of-day. Without 'localtime' the SQL
             // bucketed by UTC day and the day string was reparsed in local time,
             // causing an off-by-one bucket for sessions near midnight.
             //
-            // L6: anchor at a path boundary (cwd = path OR cwd LIKE path/%) so a
-            // repo at `/Users/a/app` does not over-count sibling `/Users/a/app-v2`.
-            let escaped = CJKText.escapeLikePattern(repoPath)
             let rows = try Row.fetchAll(db, sql: """
-                SELECT date(start_time, 'localtime') as day, COUNT(*) as n
-                FROM sessions
-                WHERE \(SessionVisibilityFilter.listVisibleSQL)
-                  AND (cwd = ? OR cwd LIKE ? ESCAPE '\\')
-                  AND date(start_time, 'localtime') >= date('now', 'localtime', '-6 days')
+                SELECT date(\(activityTime), 'localtime') as day, COUNT(*) as n
+                FROM sessions s
+                WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
+                  AND (
+                    SELECT candidate.repo_path
+                    FROM (
+                      SELECT a.repo_path
+                      FROM git_repo_cwd_aliases a
+                      WHERE a.cwd = s.cwd OR a.real_cwd = s.cwd
+                      UNION
+                      SELECT r.path AS repo_path
+                      FROM git_repos r
+                      WHERE r.path != '/'
+                        AND (s.cwd = r.path OR substr(s.cwd, 1, length(r.path) + 1) = r.path || '/')
+                      UNION
+                      SELECT r.path AS repo_path
+                      FROM git_repos r
+                      WHERE r.path != '/'
+                        AND (
+                          engram_realpath(s.cwd) = engram_realpath(r.path)
+                          OR substr(engram_realpath(s.cwd), 1, length(engram_realpath(r.path)) + 1)
+                             = engram_realpath(r.path) || '/'
+                        )
+                    ) AS candidate
+                    ORDER BY length(candidate.repo_path) DESC
+                    LIMIT 1
+                  ) = ?
+                  AND date(\(activityTime), 'localtime') >= date('now', 'localtime', '-6 days')
                 GROUP BY day
-            """, arguments: [repoPath, "\(escaped)/%"])
+            """, arguments: [repoPath])
             var counts = [Int](repeating: 0, count: 7)
-            let today = Calendar.current.startOfDay(for: Date())
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = .current
+            let today = calendar.startOfDay(for: Date())
             let fmt = DateFormatter()
+            fmt.calendar = calendar
+            fmt.locale = Locale(identifier: "en_US_POSIX")
             fmt.dateFormat = "yyyy-MM-dd"
             fmt.timeZone = .current
             for row in rows {
                 guard let dayStr = row["day"] as String?,
                       let date = fmt.date(from: dayStr) else { continue }
-                let daysAgo = Calendar.current.dateComponents([.day], from: date, to: today).day ?? 99
+                let daysAgo = calendar.dateComponents([.day], from: date, to: today).day ?? 99
                 if daysAgo >= 0 && daysAgo < 7 {
                     counts[6 - daysAgo] = row["n"]
                 }
@@ -1328,19 +1725,27 @@ final class DatabaseManager: @unchecked Sendable {
         }
     }
 
-    func listSessionsByProject(limit: Int = 100) throws -> [ProjectGroup] {
+    func listSessionsByProject(limit: Int = 100, humanDriven: Bool = false) throws -> [ProjectGroup] {
         try readInBackground { db in
             // H1: count and list projects via SQL GROUP BY over the full filtered
             // set — never truncate to limit*10 rows before grouping (that drops
             // whole projects and undercounts sessionCount for heavy users).
+            // docs/invariants.md #3: the caller may relax human-driven scoring,
+            // but tier visibility and top-level grouping remain mandatory.
+            let activityTime = SearchFilterPredicates.activityTimeSQL()
             let countRows = try Row.fetchAll(db, sql: """
                 SELECT project,
                        COUNT(*) AS n,
-                       MAX(start_time) AS last_active
-                FROM sessions
+                       MAX(\(activityTime)) AS last_active
+                FROM sessions s
                 WHERE project IS NOT NULL
                   AND \(SessionVisibilityFilter.listVisibleSQL)
-                  AND \(SessionVisibilityFilter.topLevelSQL)
+                  AND \(SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL(
+                      alias: "s",
+                      applyHumanDrivenOnHost: humanDriven,
+                      applyHumanDrivenOnChild: humanDriven
+                  ))
+                  AND orphan_status IS NULL
                 GROUP BY project
                 ORDER BY last_active DESC
             """)
@@ -1352,11 +1757,16 @@ final class DatabaseManager: @unchecked Sendable {
                 let sessionCount = row["n"] as Int
                 let lastActive = (row["last_active"] as String?) ?? ""
                 let previews = try Session.fetchAll(db, sql: """
-                    SELECT * FROM sessions
+                    SELECT * FROM sessions s
                     WHERE project = ?
                       AND \(SessionVisibilityFilter.listVisibleSQL)
-                      AND \(SessionVisibilityFilter.topLevelSQL)
-                    ORDER BY start_time DESC
+                      AND \(SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL(
+                          alias: "s",
+                          applyHumanDrivenOnHost: humanDriven,
+                          applyHumanDrivenOnChild: humanDriven
+                      ))
+                      AND orphan_status IS NULL
+                    ORDER BY \(activityTime) DESC
                     LIMIT ?
                 """, arguments: [project, limit])
                 groups.append(
@@ -1386,7 +1796,7 @@ final class DatabaseManager: @unchecked Sendable {
             return try Session.fetchAll(db, sql: """
                 SELECT * FROM sessions
                 WHERE parent_session_id = ? \(hiddenClause)
-                ORDER BY start_time ASC
+                ORDER BY start_time DESC
                 LIMIT ? OFFSET ?
             """, arguments: [parentId, limit, offset])
         }
@@ -1727,4 +2137,58 @@ final class DatabaseManager: @unchecked Sendable {
             return results
         }
     }
+
+    /// Imported HQ snapshot: summary plus FTS lines. Never a filesystem path.
+    nonisolated func remoteSnapshot(sessionId: String) throws -> (summary: String?, lines: [String])? {
+        try readInBackground { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT summary, file_path FROM sessions WHERE id = ?",
+                arguments: [sessionId]
+            ) else {
+                return nil
+            }
+            let filePath = (row["file_path"] as String?) ?? ""
+            guard Session.isRemoteSnapshotLocator(filePath) || sessionId.hasPrefix("remote:") else {
+                return nil
+            }
+            let summary = row["summary"] as String?
+            let lines = (try? String.fetchAll(
+                db,
+                sql: "SELECT content FROM sessions_fts WHERE session_id = ? ORDER BY rowid",
+                arguments: [sessionId]
+            )) ?? []
+            return (summary, lines)
+        }
+    }
+
+    nonisolated func liveIngestStatus(peer: String = "hq") throws -> LiveIngestStatus {
+        try readInBackground { db in
+            func meta(_ key: String) -> String? {
+                try? String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = ?", arguments: [key])
+            }
+            let imported = (try? Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM sessions WHERE origin = ?",
+                arguments: [peer]
+            )) ?? 0
+            return LiveIngestStatus(
+                lastPullAt: meta("live_ingest.\(peer).last_pull_at"),
+                lastGeneration: meta("live_ingest.\(peer).last_generation"),
+                occupancySkipped: Int(meta("live_ingest.\(peer).occupancy_skipped") ?? "") ?? 0,
+                lastError: meta("live_ingest.\(peer).last_error"),
+                shrinkGuardLatched: meta("live_ingest.\(peer).shrink_guard_latched") == "1",
+                importedCount: imported
+            )
+        }
+    }
+}
+
+struct LiveIngestStatus: Sendable, Equatable {
+    var lastPullAt: String?
+    var lastGeneration: String?
+    var occupancySkipped: Int
+    var lastError: String?
+    var shrinkGuardLatched: Bool
+    var importedCount: Int
 }

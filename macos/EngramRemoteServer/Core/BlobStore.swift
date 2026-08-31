@@ -115,6 +115,10 @@ public struct BlobStore: Sendable {
     /// unrelated `catalog.*` blobs do not consume a peer slot before filtering.
     func listKeys(prefix: String, suffix: String, maximumCount: Int) throws -> [String] {
         guard maximumCount >= 0 else { throw BlobStoreError.limitExceeded }
+        let rootValues = try root.resourceValues(forKeys: [.isDirectoryKey])
+        guard rootValues.isDirectory == true else {
+            throw CocoaError(.fileReadUnknown)
+        }
         var enumerationError: Error?
         guard let enumerator = FileManager.default.enumerator(
             at: root,

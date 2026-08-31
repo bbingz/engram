@@ -2,6 +2,14 @@ import Darwin
 import CryptoKit
 import Foundation
 
+struct JSONLIdentityTestHooks: Sendable {
+    var beforeFinalIdentityValidation: @Sendable () -> Void
+
+    init(beforeFinalIdentityValidation: @escaping @Sendable () -> Void = {}) {
+        self.beforeFinalIdentityValidation = beforeFinalIdentityValidation
+    }
+}
+
 enum JSONLAdapterSupport {
     typealias JSONObject = [String: Any]
     private static let checkpointBoundaryBytes = 4 * 1024
@@ -22,6 +30,22 @@ enum JSONLAdapterSupport {
         let messages: [NormalizedMessage]
         let totalKnownComplete: Bool
         let truncatedAt: Int?
+        let maxRawMessages: Int?
+        let parseFailure: ParserFailure?
+
+        init(
+            messages: [NormalizedMessage],
+            totalKnownComplete: Bool,
+            truncatedAt: Int?,
+            maxRawMessages: Int? = nil,
+            parseFailure: ParserFailure? = nil
+        ) {
+            self.messages = messages
+            self.totalKnownComplete = totalKnownComplete
+            self.truncatedAt = truncatedAt
+            self.maxRawMessages = maxRawMessages
+            self.parseFailure = parseFailure
+        }
 
         var truncated: Bool { truncatedAt != nil || !totalKnownComplete }
     }
@@ -102,11 +126,18 @@ enum JSONLAdapterSupport {
     static func readString(
         locator: String,
         limits: ParserLimits,
-        encoding: String.Encoding = .utf8
+        encoding: String.Encoding = .utf8,
+        beforeIdentityValidation: () -> Void = {}
     ) throws -> String {
         let (url, before) = try prepareFile(locator: locator, limits: limits)
         let content = try String(contentsOf: url, encoding: encoding)
-        let after = try limits.fileIdentity(for: url)
+        beforeIdentityValidation()
+        let after: FileIdentity
+        do {
+            after = try limits.fileIdentity(for: url)
+        } catch {
+            throw ParserFailure.fileModifiedDuringParse
+        }
         guard limits.isSameFileIdentity(before, after) else {
             throw ParserFailure.fileModifiedDuringParse
         }
@@ -116,32 +147,45 @@ enum JSONLAdapterSupport {
     static func readObjects(
         locator: String,
         limits: ParserLimits,
-        reportFailures: Bool = false
+        reportFailures: Bool = false,
+        countsTowardMessageLimit: ((JSONObject) -> Bool)? = nil,
+        beforeIdentityValidation: () -> Void = {}
     ) throws -> ([JSONObject], ParserFailure?) {
         try autoreleasepool {
             let (url, before) = try prepareFile(locator: locator, limits: limits)
             let reader = try StreamingLineReader(fileURL: url, maxLineBytes: limits.maxLineBytes)
             var objects: [JSONObject] = []
+            var messageCount = 0
             var exceededMessageLimit = false
 
             for line in try reader.readLines() {
                 guard let object = parseObject(line) else { continue }
-                guard objects.count < limits.maxMessages else {
-                    exceededMessageLimit = true
-                    continue
+                if countsTowardMessageLimit?(object) ?? true {
+                    guard messageCount < limits.maxMessages else {
+                        exceededMessageLimit = true
+                        break
+                    }
+                    messageCount += 1
                 }
                 objects.append(object)
             }
 
-            let after = try limits.fileIdentity(for: url)
-            guard limits.isSameFileIdentity(before, after) else {
-                return (objects, .fileModifiedDuringParse)
+            beforeIdentityValidation()
+            let capFailure: ParserFailure? = reportFailures && exceededMessageLimit
+                ? .messageLimitExceeded
+                : nil
+            let after: FileIdentity
+            do {
+                after = try limits.fileIdentity(for: url)
+            } catch {
+                return (objects, capFailure ?? .fileModifiedDuringParse)
             }
+            guard limits.isSameFileIdentity(before, after) else {
+                return (objects, capFailure ?? .fileModifiedDuringParse)
+            }
+            if let capFailure { return (objects, capFailure) }
             if reportFailures, let failure = reader.failures.first {
                 return (objects, failure)
-            }
-            if reportFailures, exceededMessageLimit {
-                return (objects, .messageLimitExceeded)
             }
             return (objects, nil)
         }
@@ -162,7 +206,8 @@ enum JSONLAdapterSupport {
         locator: String,
         from parsedOffset: Int64,
         expectedBoundaryHash: String,
-        limits: ParserLimits
+        limits: ParserLimits,
+        countsTowardMessageLimit: (JSONObject) -> Bool = { _ in true }
     ) throws -> TailObjectsResult {
         try autoreleasepool {
             let (url, before) = try prepareFile(locator: locator, limits: limits)
@@ -180,6 +225,7 @@ enum JSONLAdapterSupport {
             let completeLength = completePrefixLength(tail)
             let completeData = tail.prefix(completeLength)
             var objects: [JSONObject] = []
+            var producedMessageCount = 0
 
             for lineData in completeData.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false) {
                 if lineData.isEmpty { continue }
@@ -202,13 +248,16 @@ enum JSONLAdapterSupport {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
                 guard !trimmed.isEmpty else { continue }
                 guard let object = parseObject(trimmed) else { continue }
-                guard objects.count < limits.maxMessages else {
-                    return TailObjectsResult(
-                        objects: objects,
-                        parsedOffset: parsedOffset + Int64(completeLength),
-                        boundaryHash: try boundaryHash(fileURL: url, offset: parsedOffset + Int64(completeLength)),
-                        failure: .messageLimitExceeded
-                    )
+                if countsTowardMessageLimit(object) {
+                    guard producedMessageCount < limits.maxMessages else {
+                        return TailObjectsResult(
+                            objects: objects,
+                            parsedOffset: parsedOffset + Int64(completeLength),
+                            boundaryHash: try boundaryHash(fileURL: url, offset: parsedOffset + Int64(completeLength)),
+                            failure: .messageLimitExceeded
+                        )
+                    }
+                    producedMessageCount += 1
                 }
                 objects.append(object)
             }
@@ -343,7 +392,9 @@ enum JSONLAdapterSupport {
         StreamMessagesResult(
             messages: stream(result.messages),
             totalKnownComplete: result.totalKnownComplete,
-            truncatedAt: result.truncatedAt
+            truncatedAt: result.truncatedAt,
+            maxRawMessages: result.maxRawMessages,
+            parseFailure: result.parseFailure
         )
     }
 
@@ -357,35 +408,89 @@ enum JSONLAdapterSupport {
         return Array(suffix.prefix(max(limit, 0)))
     }
 
+    static func boundedWindowWithMetadata(
+        _ messages: [NormalizedMessage],
+        options: StreamMessagesOptions,
+        maxMessages: Int,
+        hasMoreMessages: Bool = false,
+        parseFailure: ParserFailure? = nil
+    ) -> WindowedMessagesResult {
+        let cap = max(maxMessages, 0)
+        let bounded = Array(messages.prefix(cap))
+        let window = applyWindow(bounded, options: options)
+        let offset = max(options.offset ?? 0, 0)
+        let reachedCap = (hasMoreMessages || messages.count > cap)
+            && (offset >= cap || offset + window.count >= cap)
+        let truncatedAt = reachedCap ? cap : nil
+        let filledRequestedWindow = options.limit.map { window.count >= max($0, 0) } ?? false
+        let windowParseFailure = filledRequestedWindow ? nil : parseFailure
+        return WindowedMessagesResult(
+            messages: window,
+            totalKnownComplete: truncatedAt == nil && windowParseFailure == nil,
+            truncatedAt: truncatedAt,
+            maxRawMessages: reachedCap ? bounded.count : nil,
+            parseFailure: windowParseFailure
+        )
+    }
+
     static func wholeDocumentMessagesWithMetadata(
         locator: String,
         options: StreamMessagesOptions,
         limits: ParserLimits,
-        transform: ([JSONObject]) -> [NormalizedMessage]
+        transform: ([JSONObject]) -> [NormalizedMessage],
+        countsTowardMessageLimit: ((JSONObject) -> Bool)? = nil,
+        countsProducedMessageTowardLimit: ((NormalizedMessage) -> Bool)? = nil,
+        beforeIdentityValidation: () -> Void = {}
     ) throws -> WindowedMessagesResult {
-        let (objects, failure) = try readObjects(locator: locator, limits: limits, reportFailures: true)
-        var truncatedAt: Int?
-        if let failure {
-            guard failure == .messageLimitExceeded else { throw failure }
-            truncatedAt = limits.maxMessages
+        let (objects, failure) = try readObjects(
+            locator: locator,
+            limits: limits,
+            reportFailures: true,
+            countsTowardMessageLimit: countsTowardMessageLimit,
+            beforeIdentityValidation: beforeIdentityValidation
+        )
+        let produced = transform(objects)
+        var capped: [NormalizedMessage] = []
+        var billedMessages = 0
+        var producedExceededLimit = false
+        for message in produced {
+            if countsProducedMessageTowardLimit?(message) ?? true {
+                guard billedMessages < limits.maxMessages else {
+                    producedExceededLimit = true
+                    break
+                }
+                billedMessages += 1
+            }
+            capped.append(message)
         }
+        let window = applyWindow(capped, options: options)
+        let offset = max(options.offset ?? 0, 0)
+        let reachedCap = (failure == .messageLimitExceeded || producedExceededLimit)
+            && offset + window.count >= capped.count
+        let truncatedAt = reachedCap ? limits.maxMessages : nil
+        let fileFailure = failure == .messageLimitExceeded ? nil : failure
+        let filledRequestedWindow = options.limit.map { window.count >= max($0, 0) } ?? false
+        // A later malformed/oversized line does not poison an earlier full
+        // page. Surface the file-level failure only on the window that reaches
+        // the end of the successfully parsed prefix so Load all can keep going.
+        let parseFailure = filledRequestedWindow ? nil : fileFailure
         return WindowedMessagesResult(
-            messages: applyWindow(transform(objects), options: options),
-            totalKnownComplete: truncatedAt == nil,
-            truncatedAt: truncatedAt
+            messages: window,
+            totalKnownComplete: truncatedAt == nil && parseFailure == nil,
+            truncatedAt: truncatedAt,
+            maxRawMessages: reachedCap ? capped.count : nil,
+            parseFailure: parseFailure
         )
     }
 
     /// Window a per-line JSONL transcript with offset/limit, mapping each line
     /// through `transform`.
     ///
-    /// When `options.limit` is set, this reads line by line and STOPS as soon as
-    /// it has skipped `offset` produced messages and collected `limit` of them —
-    /// so a paged read costs O(offset + limit) parsed lines, not O(file). This is
-    /// what makes transcript paging O(N) per page instead of O(N) re-parses per
-    /// page (O(N²) overall). When `limit` is nil (whole-transcript request) it
-    /// falls back to `readObjects` (preserving the message-cap and during-parse
-    /// file-identity failure semantics) and windows in memory.
+    /// When `options.limit` is set, this reads line by line through EOF or the
+    /// first billable message beyond `maxMessages`. The extra observation is
+    /// required to distinguish an exact cap from a truncated transcript. When
+    /// `limit` is nil (whole-transcript request) it falls back to `readObjects`
+    /// and windows in memory.
     ///
     /// `offset`/`limit` count PRODUCED messages (post-`transform`, nils skipped),
     /// matching `applyWindow` exactly. `transform` must be a pure per-line mapping
@@ -396,12 +501,14 @@ enum JSONLAdapterSupport {
         locator: String,
         options: StreamMessagesOptions,
         limits: ParserLimits,
+        countsTowardMessageLimit: ((NormalizedMessage) -> Bool)? = nil,
         transform: (JSONObject) -> NormalizedMessage?
     ) throws -> [NormalizedMessage] {
         try windowedMessagesWithMetadata(
             locator: locator,
             options: options,
             limits: limits,
+            countsTowardMessageLimit: countsTowardMessageLimit,
             transform: transform
         ).messages
     }
@@ -410,26 +517,66 @@ enum JSONLAdapterSupport {
         locator: String,
         options: StreamMessagesOptions,
         limits: ParserLimits,
-        detectTruncation: Bool = false,
+        countsTowardMessageLimit: ((NormalizedMessage) -> Bool)? = nil,
         transform: (JSONObject) -> NormalizedMessage?
     ) throws -> WindowedMessagesResult {
         guard let limit = options.limit else {
-            let (objects, failure) = try readObjects(locator: locator, limits: limits, reportFailures: true)
-            var truncatedAt: Int?
-            if let failure {
-                // Truncate-and-succeed on the message cap: `readObjects` already
-                // capped `objects` at `maxMessages`, so return that window instead
-                // of throwing. Throwing here routes display/read callers (e.g.
-                // MessageParser) into the uncapped legacy parser, which re-buffers
-                // the entire multi-hundred-MB file. Other failures still propagate.
-                guard failure == .messageLimitExceeded else { throw failure }
-                truncatedAt = limits.maxMessages
+            return try autoreleasepool {
+                let (url, before) = try prepareFile(locator: locator, limits: limits)
+                let reader = try StreamingLineReader(fileURL: url, maxLineBytes: limits.maxLineBytes)
+                var messages: [NormalizedMessage] = []
+                var billedMessages = 0
+                var truncatedAt: Int?
+
+                for line in try reader.readLines() {
+                    guard let object = parseObject(line), let message = transform(object) else { continue }
+                    if countsTowardMessageLimit?(message) ?? true {
+                        guard billedMessages < limits.maxMessages else {
+                            truncatedAt = limits.maxMessages
+                            break
+                        }
+                        billedMessages += 1
+                    }
+                    messages.append(message)
+                }
+
+                let after: FileIdentity
+                do {
+                    after = try limits.fileIdentity(for: url)
+                } catch {
+                    guard !messages.isEmpty else { throw error }
+                    return WindowedMessagesResult(
+                        messages: applyWindow(messages, options: options),
+                        totalKnownComplete: false,
+                        truncatedAt: truncatedAt,
+                        maxRawMessages: truncatedAt == nil ? nil : messages.count,
+                        parseFailure: truncatedAt == nil ? .fileModifiedDuringParse : .messageLimitExceeded
+                    )
+                }
+                if !limits.isSameFileIdentity(before, after) {
+                    return WindowedMessagesResult(
+                        messages: applyWindow(messages, options: options),
+                        totalKnownComplete: false,
+                        truncatedAt: truncatedAt,
+                        maxRawMessages: truncatedAt == nil ? nil : messages.count,
+                        parseFailure: truncatedAt == nil ? .fileModifiedDuringParse : .messageLimitExceeded
+                    )
+                }
+                if truncatedAt == nil, let failure = reader.failures.first {
+                    return WindowedMessagesResult(
+                        messages: applyWindow(messages, options: options),
+                        totalKnownComplete: false,
+                        truncatedAt: nil,
+                        parseFailure: failure
+                    )
+                }
+                return WindowedMessagesResult(
+                    messages: applyWindow(messages, options: options),
+                    totalKnownComplete: truncatedAt == nil,
+                    truncatedAt: truncatedAt,
+                    maxRawMessages: truncatedAt == nil ? nil : messages.count
+                )
             }
-            return WindowedMessagesResult(
-                messages: applyWindow(objects.compactMap(transform), options: options),
-                totalKnownComplete: truncatedAt == nil,
-                truncatedAt: truncatedAt
-            )
         }
 
         let cappedLimit = max(limit, 0)
@@ -439,13 +586,24 @@ enum JSONLAdapterSupport {
         let offset = max(options.offset ?? 0, 0)
 
         return try autoreleasepool {
-            let (url, _) = try prepareFile(locator: locator, limits: limits)
+            let (url, before) = try prepareFile(locator: locator, limits: limits)
             let reader = try StreamingLineReader(fileURL: url, maxLineBytes: limits.maxLineBytes)
             var produced = 0
+            var billedMessages = 0
             var messages: [NormalizedMessage] = []
 
+            var exceededMessageLimit = false
+            var producedAtMessageLimit: Int?
             for line in try reader.readLines() {
                 guard let object = parseObject(line), let message = transform(object) else { continue }
+                if countsTowardMessageLimit?(message) ?? true {
+                    if billedMessages >= limits.maxMessages {
+                        exceededMessageLimit = true
+                        producedAtMessageLimit = produced
+                        break
+                    }
+                    billedMessages += 1
+                }
                 produced += 1
                 if produced <= offset {
                     continue
@@ -453,16 +611,48 @@ enum JSONLAdapterSupport {
                 if messages.count < cappedLimit {
                     messages.append(message)
                 }
-                if messages.count >= cappedLimit { break }
             }
 
-            if let failure = reader.failures.first, messages.count < cappedLimit {
-                throw failure
+            if !exceededMessageLimit, let failure = reader.failures.first, messages.count < cappedLimit {
+                return WindowedMessagesResult(
+                    messages: messages,
+                    totalKnownComplete: false,
+                    truncatedAt: nil,
+                    maxRawMessages: producedAtMessageLimit,
+                    parseFailure: failure
+                )
+            }
+            let truncatedAt = exceededMessageLimit
+                && offset + messages.count >= (producedAtMessageLimit ?? produced)
+                ? limits.maxMessages
+                : nil
+            let after: FileIdentity
+            do {
+                after = try limits.fileIdentity(for: url)
+            } catch {
+                guard !messages.isEmpty else { throw error }
+                return WindowedMessagesResult(
+                    messages: messages,
+                    totalKnownComplete: false,
+                    truncatedAt: truncatedAt,
+                    maxRawMessages: exceededMessageLimit ? producedAtMessageLimit : nil,
+                    parseFailure: exceededMessageLimit ? .messageLimitExceeded : .fileModifiedDuringParse
+                )
+            }
+            if !limits.isSameFileIdentity(before, after) {
+                return WindowedMessagesResult(
+                    messages: messages,
+                    totalKnownComplete: false,
+                    truncatedAt: truncatedAt,
+                    maxRawMessages: exceededMessageLimit ? producedAtMessageLimit : nil,
+                    parseFailure: exceededMessageLimit ? .messageLimitExceeded : .fileModifiedDuringParse
+                )
             }
             return WindowedMessagesResult(
                 messages: messages,
-                totalKnownComplete: true,
-                truncatedAt: nil
+                totalKnownComplete: truncatedAt == nil,
+                truncatedAt: truncatedAt,
+                maxRawMessages: exceededMessageLimit ? producedAtMessageLimit : nil
             )
         }
     }
@@ -478,22 +668,33 @@ enum JSONLAdapterSupport {
     }
 }
 
+struct CodexAdapterTestHooks: Sendable {
+    var beforeFinalIdentityValidation: @Sendable () -> Void
+
+    init(beforeFinalIdentityValidation: @escaping @Sendable () -> Void = {}) {
+        self.beforeFinalIdentityValidation = beforeFinalIdentityValidation
+    }
+}
+
 final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchiveSourceAdapter, Sendable {
     let source: SourceName = .codex
     private let sessionRoots: [URL]
     private let archiveReplayUsesNamedRoots: Bool
     private let limits: ParserLimits
+    private let testHooks: CodexAdapterTestHooks
 
     init(
         sessionsRoot: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex/sessions")
             .path,
-        limits: ParserLimits = .default
+        limits: ParserLimits = .default,
+        testHooks: CodexAdapterTestHooks = CodexAdapterTestHooks()
     ) {
         let requestedRoot = URL(fileURLWithPath: sessionsRoot)
         self.sessionRoots = Self.expandSessionRoots(requestedRoot)
         self.archiveReplayUsesNamedRoots = requestedRoot.lastPathComponent == "sessions"
         self.limits = limits
+        self.testHooks = testHooks
     }
 
     func detect() async -> Bool {
@@ -543,115 +744,11 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
             let (objects, failure) = try JSONLAdapterSupport.readObjects(
                 locator: locator,
                 limits: limits,
-                reportFailures: true
+                reportFailures: true,
+                countsTowardMessageLimit: { Self.message(from: $0) != nil }
             )
             if let failure { return .failure(failure) }
-
-            var meta: JSONLAdapterSupport.JSONObject?
-            var userCount = 0
-            var assistantCount = 0
-            var toolCount = 0
-            var systemCount = 0
-            var firstUserText = ""
-            var lastTimestamp = ""
-            var detectedModel: String?
-            var turnContextModel: String?
-
-            for object in objects {
-                if let timestamp = JSONLAdapterSupport.string(object["timestamp"]) {
-                    lastTimestamp = timestamp
-                }
-
-                if JSONLAdapterSupport.string(object["type"]) == "session_meta", meta == nil {
-                    meta = JSONLAdapterSupport.object(object["payload"])
-                }
-
-                if JSONLAdapterSupport.string(object["type"]) == "turn_context",
-                   turnContextModel == nil,
-                   let payload = JSONLAdapterSupport.object(object["payload"]),
-                   let model = JSONLAdapterSupport.string(payload["model"]) {
-                    turnContextModel = model
-                }
-
-                guard JSONLAdapterSupport.string(object["type"]) == "response_item",
-                      let payload = JSONLAdapterSupport.object(object["payload"])
-                else {
-                    continue
-                }
-
-                if detectedModel == nil, let model = JSONLAdapterSupport.string(payload["model"]) {
-                    detectedModel = model
-                }
-
-                let payloadType = JSONLAdapterSupport.string(payload["type"])
-                if payloadType == "message", JSONLAdapterSupport.string(payload["role"]) == "user" {
-                    let rawText = Self.extractText(JSONLAdapterSupport.array(payload["content"]))
-                    let normalized = Self.normalizeUserText(rawText)
-                    if normalized.strippedSystemContent {
-                        systemCount += 1
-                    }
-                    if let text = normalized.userText {
-                        userCount += 1
-                        if firstUserText.isEmpty { firstUserText = text }
-                    } else if !normalized.strippedSystemContent, Self.isSystemInjection(rawText) {
-                        systemCount += 1
-                    }
-                } else if payloadType == "message", JSONLAdapterSupport.string(payload["role"]) == "assistant" {
-                    assistantCount += 1
-                } else if payloadType == "function_call"
-                    || payloadType == "function_call_output"
-                    || payloadType == "custom_tool_call"
-                    || payloadType == "custom_tool_call_output" {
-                    // streamMessages emits both the call and its output as tool
-                    // messages; counts must match so session cards agree with the
-                    // transcript (M6).
-                    toolCount += 1
-                }
-            }
-
-            guard let meta,
-                  let id = JSONLAdapterSupport.string(meta["id"]),
-                  let startTime = JSONLAdapterSupport.string(meta["timestamp"])
-            else {
-                return .failure(.malformedJSON)
-            }
-            // R184-3: metadata-only / empty Codex files must not become browsable
-            // zero-count sessions. Terminal, same as Claude/Qwen/VS Code.
-            guard userCount + assistantCount + toolCount > 0 else {
-                return .failure(.noVisibleMessages)
-            }
-
-            let explicitRole = JSONLAdapterSupport.string(meta["agent_role"])
-            let originator = JSONLAdapterSupport.string(meta["originator"])
-            let effectiveRole = explicitRole ?? (OriginatorClassifier.isClaudeCode(originator) ? "dispatched" : nil)
-            return .success(
-                NormalizedSessionInfo(
-                    id: id,
-                    source: .codex,
-                    startTime: startTime,
-                    endTime: lastTimestamp.isEmpty ? nil : lastTimestamp,
-                    cwd: JSONLAdapterSupport.string(meta["cwd"]) ?? "",
-                    project: nil,
-                    model: detectedModel ?? turnContextModel ?? JSONLAdapterSupport.string(meta["model"]),
-                    messageCount: userCount + assistantCount + toolCount,
-                    userMessageCount: userCount,
-                    assistantMessageCount: assistantCount,
-                    toolMessageCount: toolCount,
-                    systemMessageCount: systemCount,
-                    summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200)),
-                    filePath: locator,
-                    sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
-                    indexedAt: nil,
-                    agentRole: effectiveRole,
-                    originator: originator,
-                    origin: nil,
-                    summaryMessageCount: nil,
-                    tier: nil,
-                    qualityScore: nil,
-                    parentSessionId: nil,
-                    suggestedParentId: nil
-                )
-            )
+            return Self.sessionInfo(from: objects, locator: locator)
         } catch let failure as ParserFailure {
             return .failure(failure)
         } catch {
@@ -666,7 +763,8 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
         let result = try Self.messages(
             locator: locator,
             options: options,
-            limits: limits
+            limits: limits,
+            testHooks: testHooks
         )
         return JSONLAdapterSupport.stream(result.messages)
     }
@@ -678,41 +776,55 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
         let result = try Self.messages(
             locator: locator,
             options: options,
-            limits: limits
+            limits: limits,
+            testHooks: testHooks
         )
         return StreamMessagesResult(
             messages: JSONLAdapterSupport.stream(result.messages),
-            totalKnownComplete: result.truncatedAt == nil,
-            truncatedAt: result.truncatedAt
+            totalKnownComplete: result.truncatedAt == nil && result.parseFailure == nil,
+            truncatedAt: result.truncatedAt,
+            parseFailure: result.parseFailure
         )
     }
 
     /// Single-pass info + messages for the indexer (M7 tail-resume prep).
     func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
-        switch try await parseSessionInfo(locator: locator) {
-        case .failure(let failure):
-            return .failure(failure)
-        case .success(let info):
-            let result = try Self.messages(
+        do {
+            let (objects, failure) = try JSONLAdapterSupport.readObjects(
                 locator: locator,
-                options: StreamMessagesOptions(),
-                limits: limits
+                limits: limits,
+                reportFailures: true,
+                countsTowardMessageLimit: { Self.message(from: $0) != nil }
             )
-            if result.truncatedAt != nil {
-                return .failure(.messageLimitExceeded)
+            if let failure, failure != .fileModifiedDuringParse { return .failure(failure) }
+            let messages = Self.messages(from: objects)
+            if failure == .fileModifiedDuringParse, messages.isEmpty {
+                return .failure(.fileModifiedDuringParse)
             }
-            let checkpoint = try JSONLAdapterSupport.checkpoint(locator: locator, limits: limits)
-            let checkpointBoundaryHash = checkpoint.parsedOffset == info.sizeBytes
-                ? checkpoint.boundaryHash
+            let info: NormalizedSessionInfo
+            switch Self.sessionInfo(from: objects, locator: locator) {
+            case .failure(let reason): return .failure(reason)
+            case .success(let value): info = value
+            }
+            let checkpoint = failure == nil
+                ? try JSONLAdapterSupport.checkpoint(locator: locator, limits: limits)
+                : nil
+            let checkpointBoundaryHash = checkpoint?.parsedOffset == info.sizeBytes
+                ? checkpoint?.boundaryHash
                 : nil
             return .success(
                 IndexingScan(
                     info: info,
-                    messages: result.messages,
-                    checkpointParsedOffset: checkpoint.parsedOffset,
+                    messages: messages,
+                    parseFailure: failure,
+                    checkpointParsedOffset: checkpoint?.parsedOffset,
                     checkpointBoundaryHash: checkpointBoundaryHash
                 )
             )
+        } catch let failure as ParserFailure {
+            return .failure(failure)
+        } catch {
+            return .failure(.malformedJSON)
         }
     }
 
@@ -726,7 +838,8 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
                 locator: locator,
                 from: parsedOffset,
                 expectedBoundaryHash: expectedBoundaryHash,
-                limits: limits
+                limits: limits,
+                countsTowardMessageLimit: { Self.message(from: $0) != nil }
             )
             guard !result.boundaryHash.isEmpty else { return .fallback }
             if let failure = result.failure { return .failure(failure) }
@@ -789,6 +902,147 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
         JSONLAdapterSupport.fileExists(locator)
     }
 
+    private static func sessionInfo(
+        from objects: [JSONLAdapterSupport.JSONObject],
+        locator: String
+    ) -> AdapterParseResult<NormalizedSessionInfo> {
+        var meta: JSONLAdapterSupport.JSONObject?
+        var userCount = 0
+        var assistantCount = 0
+        var toolCount = 0
+        var systemCount = 0
+        var firstUserText = ""
+        var lastTimestamp = ""
+        var detectedModel: String?
+        var turnContextModel: String?
+
+        for object in objects {
+            if let timestamp = JSONLAdapterSupport.string(object["timestamp"]) {
+                lastTimestamp = timestamp
+            }
+            if JSONLAdapterSupport.string(object["type"]) == "session_meta", meta == nil {
+                meta = JSONLAdapterSupport.object(object["payload"])
+            }
+            if JSONLAdapterSupport.string(object["type"]) == "turn_context",
+               turnContextModel == nil,
+               let payload = JSONLAdapterSupport.object(object["payload"]),
+               let model = JSONLAdapterSupport.string(payload["model"]) {
+                turnContextModel = model
+            }
+            guard JSONLAdapterSupport.string(object["type"]) == "response_item",
+                  let payload = JSONLAdapterSupport.object(object["payload"])
+            else { continue }
+            if detectedModel == nil, let model = JSONLAdapterSupport.string(payload["model"]) {
+                detectedModel = model
+            }
+            let payloadType = JSONLAdapterSupport.string(payload["type"])
+            if payloadType == "message", JSONLAdapterSupport.string(payload["role"]) == "user" {
+                let rawText = extractText(JSONLAdapterSupport.array(payload["content"]))
+                let normalized = normalizeUserText(rawText)
+                if normalized.strippedSystemContent { systemCount += 1 }
+                if let text = normalized.userText {
+                    userCount += 1
+                    if firstUserText.isEmpty { firstUserText = text }
+                } else if !normalized.strippedSystemContent, isSystemInjection(rawText) {
+                    systemCount += 1
+                }
+            } else if payloadType == "message", JSONLAdapterSupport.string(payload["role"]) == "assistant" {
+                assistantCount += 1
+            } else if payloadType == "function_call"
+                || payloadType == "function_call_output"
+                || payloadType == "custom_tool_call"
+                || payloadType == "custom_tool_call_output" {
+                toolCount += 1
+            }
+        }
+
+        guard let meta,
+              let id = JSONLAdapterSupport.string(meta["id"]),
+              let startTime = JSONLAdapterSupport.string(meta["timestamp"])
+        else { return .failure(.malformedJSON) }
+        guard userCount + assistantCount + toolCount > 0 else {
+            return .failure(.noVisibleMessages)
+        }
+        let explicitRole = JSONLAdapterSupport.string(meta["agent_role"])
+        let originator = JSONLAdapterSupport.string(meta["originator"])
+        let effectiveRole = explicitRole ?? (OriginatorClassifier.isClaudeCode(originator) ? "dispatched" : nil)
+        return .success(
+            NormalizedSessionInfo(
+                id: id,
+                source: .codex,
+                startTime: startTime,
+                endTime: lastTimestamp.isEmpty ? nil : lastTimestamp,
+                cwd: JSONLAdapterSupport.string(meta["cwd"]) ?? "",
+                project: nil,
+                model: detectedModel ?? turnContextModel ?? JSONLAdapterSupport.string(meta["model"]),
+                messageCount: userCount + assistantCount + toolCount,
+                userMessageCount: userCount,
+                assistantMessageCount: assistantCount,
+                toolMessageCount: toolCount,
+                systemMessageCount: systemCount,
+                summary: firstUserText.isEmpty ? nil : firstUserText,
+                filePath: locator,
+                sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
+                indexedAt: nil,
+                agentRole: effectiveRole,
+                originator: originator,
+                origin: nil,
+                summaryMessageCount: nil,
+                tier: nil,
+                qualityScore: nil,
+                parentSessionId: nil,
+                suggestedParentId: nil
+            )
+        )
+    }
+
+    private static func messages(
+        from objects: [JSONLAdapterSupport.JSONObject]
+    ) -> [NormalizedMessage] {
+        var messages: [NormalizedMessage] = []
+        var pendingMessage: NormalizedMessage?
+        var pendingUsageCameFromTokenCount = false
+        var pendingUsage: TokenUsage?
+        var lastTokenCountSnapshot: [Int?]?
+
+        func flushPendingMessage() {
+            guard let message = pendingMessage else { return }
+            messages.append(message)
+            pendingMessage = nil
+            pendingUsageCameFromTokenCount = false
+        }
+
+        for object in objects {
+            if JSONLAdapterSupport.string(object["type"]) == "response_item" {
+                lastTokenCountSnapshot = nil
+            }
+            if let tokenCount = tokenCountUsage(from: object) {
+                if tokenCount.snapshot == lastTokenCountSnapshot { continue }
+                lastTokenCountSnapshot = tokenCount.snapshot
+                if var message = pendingMessage, message.role != .user {
+                    if pendingUsageCameFromTokenCount || message.usage == nil {
+                        message.usage = mergeUsage(message.usage, tokenCount.usage)
+                        pendingUsageCameFromTokenCount = true
+                        pendingMessage = message
+                    }
+                } else {
+                    pendingUsage = mergeUsage(pendingUsage, tokenCount.usage)
+                }
+                continue
+            }
+            guard var message = message(from: object) else { continue }
+            flushPendingMessage()
+            if message.role != .user, let usage = pendingUsage {
+                if message.usage == nil { message.usage = usage }
+                pendingUsage = nil
+            }
+            pendingMessage = message
+            pendingUsageCameFromTokenCount = false
+        }
+        flushPendingMessage()
+        return messages
+    }
+
     private static func expandSessionRoots(_ root: URL) -> [URL] {
         guard root.lastPathComponent == "sessions" else { return [root] }
         return [
@@ -800,22 +1054,24 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
     private struct MessageReadResult {
         let messages: [NormalizedMessage]
         let truncatedAt: Int?
+        let parseFailure: ParserFailure?
     }
 
     private static func messages(
         locator: String,
         options: StreamMessagesOptions,
-        limits: ParserLimits
+        limits: ParserLimits,
+        testHooks: CodexAdapterTestHooks
     ) throws -> MessageReadResult {
         let cappedLimit = options.limit.map { max($0, 0) } ?? Int.max
-        let shouldApplyMessageCap = options.limit == nil
-        guard cappedLimit > 0 else { return MessageReadResult(messages: [], truncatedAt: nil) }
+        guard cappedLimit > 0 else {
+            return MessageReadResult(messages: [], truncatedAt: nil, parseFailure: nil)
+        }
         let offset = max(options.offset ?? 0, 0)
-
         return try autoreleasepool {
             let (url, before) = try JSONLAdapterSupport.prepareFile(locator: locator, limits: limits)
             let reader = try StreamingLineReader(fileURL: url, maxLineBytes: limits.maxLineBytes)
-            var parsedObjects = 0
+            var producedMessages = 0
             var skipped = 0
             var messages: [NormalizedMessage] = []
             var pendingMessage: NormalizedMessage?
@@ -832,7 +1088,7 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
                 if messages.count < cappedLimit {
                     messages.append(message)
                 }
-                return messages.count >= cappedLimit && !shouldApplyMessageCap
+                return messages.count >= cappedLimit
             }
 
             func flushPendingMessage() -> Bool {
@@ -844,14 +1100,6 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
 
             for line in try reader.readLines() {
                 guard let object = JSONLAdapterSupport.parseObject(line) else { continue }
-                parsedObjects += 1
-                if shouldApplyMessageCap, parsedObjects > limits.maxMessages {
-                    // Truncate-and-succeed: stop reading at the cap rather than
-                    // throwing. Throwing sends MessageParser into the uncapped
-                    // legacy parser, which buffers the whole file into memory.
-                    truncatedAt = limits.maxMessages
-                    break
-                }
 
                 if JSONLAdapterSupport.string(object["type"]) == "response_item" {
                     lastTokenCountSnapshot = nil
@@ -875,6 +1123,13 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
                 }
 
                 guard var message = message(from: object) else { continue }
+                if producedMessages >= limits.maxMessages {
+                    // Truncate-and-succeed at the produced-message cap. Envelope
+                    // and token-accounting records never consume this budget.
+                    truncatedAt = limits.maxMessages
+                    break
+                }
+                producedMessages += 1
                 if flushPendingMessage() { break }
                 if message.role != .user, let usage = pendingUsage {
                     if message.usage == nil {
@@ -890,16 +1145,22 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
                 _ = flushPendingMessage()
             }
 
-            if let failure = reader.failures.first, messages.count < cappedLimit {
-                throw failure
-            }
-            if options.limit == nil {
+            let parseFailure: ParserFailure?
+            testHooks.beforeFinalIdentityValidation()
+            do {
                 let after = try limits.fileIdentity(for: url)
-                guard limits.isSameFileIdentity(before, after) else {
-                    throw ParserFailure.fileModifiedDuringParse
-                }
+                parseFailure = limits.isSameFileIdentity(before, after)
+                    ? reader.failures.first
+                    : .fileModifiedDuringParse
+            } catch {
+                guard !messages.isEmpty else { throw error }
+                parseFailure = .fileModifiedDuringParse
             }
-            return MessageReadResult(messages: messages, truncatedAt: truncatedAt)
+            return MessageReadResult(
+                messages: messages,
+                truncatedAt: truncatedAt,
+                parseFailure: parseFailure
+            )
         }
     }
 
@@ -1031,10 +1292,7 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
     }
 
     private static func isSystemInjection(_ text: String) -> Bool {
-        text.hasPrefix("# AGENTS.md instructions for ") ||
-            text.contains("<INSTRUCTIONS>") ||
-            text.hasPrefix("<local-command-caveat>") ||
-            text.hasPrefix("<environment_context>")
+        SystemMessageClassifier.classify(content: text, source: "codex") != .none
     }
 
     private static func normalizeUserText(_ text: String) -> (userText: String?, strippedSystemContent: Bool) {

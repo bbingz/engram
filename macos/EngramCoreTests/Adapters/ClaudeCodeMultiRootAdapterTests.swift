@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import XCTest
 @testable import EngramCoreRead
 
@@ -24,6 +25,78 @@ final class ClaudeCodeMultiRootAdapterTests: XCTestCase {
         homeDirectory = nil
         settingsURL = nil
         try super.tearDownWithError()
+    }
+
+    func testDefaultFactoryUsesInjectedHomeDirectory_repro() async throws {
+        let projectsRoot = try makeProjectsRoot(
+            parent: homeDirectory.appendingPathComponent(".claude")
+        )
+        let transcript = try makeTranscript(
+            root: projectsRoot,
+            project: "-Users-fixture",
+            name: "factory-home"
+        )
+
+        let adapter = try XCTUnwrap(
+            SessionAdapterFactory.defaultAdapters(homeDirectory: homeDirectory)
+                .first { $0.source == .claudeCode }
+        )
+        let locators = try await adapter.listSessionLocators()
+
+        XCTAssertEqual(
+            locators,
+            [transcript.resolvingSymlinksInPath().standardizedFileURL.path]
+        )
+    }
+
+    func testDefaultFactoryUsesInjectedHomeForCodexGeminiAndOpenCode_repro() async throws {
+        // docs/invariants.md #6: adapter tests must stay inside the injected temporary home.
+        let codexTranscript = homeDirectory
+            .appendingPathComponent(".codex/sessions/2026/08/23/rollout-injected.jsonl")
+        let geminiTranscript = homeDirectory
+            .appendingPathComponent(".gemini/tmp/project/chats/injected.json")
+        for transcript in [codexTranscript, geminiTranscript] {
+            try FileManager.default.createDirectory(
+                at: transcript.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data("{}\n".utf8).write(to: transcript)
+        }
+
+        let openCodeDatabase = homeDirectory
+            .appendingPathComponent(".local/share/opencode/opencode.db")
+        try FileManager.default.createDirectory(
+            at: openCodeDatabase.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let database = try DatabaseQueue(path: openCodeDatabase.path)
+        try await database.write { db in
+            try db.execute(sql: """
+                CREATE TABLE session (
+                    id TEXT PRIMARY KEY,
+                    time_archived INTEGER,
+                    time_updated INTEGER NOT NULL
+                );
+                INSERT INTO session (id, time_archived, time_updated)
+                VALUES ('injected-session', NULL, 1);
+                """)
+        }
+
+        let adapters = SessionAdapterFactory.defaultAdapters(homeDirectory: homeDirectory)
+        let codex = try XCTUnwrap(adapters.first { $0.source == .codex })
+        let gemini = try XCTUnwrap(adapters.first { $0.source == .geminiCli })
+        let openCode = try XCTUnwrap(adapters.first { $0.source == .opencode })
+
+        let codexLocators = try await codex.listSessionLocators()
+        let geminiLocators = try await gemini.listSessionLocators()
+        let openCodeLocators = try await openCode.listSessionLocators()
+        XCTAssertEqual(codexLocators.count, 1)
+        XCTAssertEqual(geminiLocators.count, 1)
+        XCTAssertTrue(codexLocators[0].hasSuffix("/.codex/sessions/2026/08/23/rollout-injected.jsonl"))
+        XCTAssertTrue(geminiLocators[0].hasSuffix("/.gemini/tmp/project/chats/injected.json"))
+        XCTAssertFalse(codexLocators[0].hasPrefix(FileManager.default.homeDirectoryForCurrentUser.path))
+        XCTAssertFalse(geminiLocators[0].hasPrefix(FileManager.default.homeDirectoryForCurrentUser.path))
+        XCTAssertEqual(openCodeLocators, ["\(openCodeDatabase.path)::injected-session"])
     }
 
     func testListingMergesRootsAndCanonicalizesDuplicateRootsAndLocators() async throws {
@@ -367,7 +440,8 @@ final class ClaudeCodeMultiRootAdapterTests: XCTestCase {
         name: String,
         model: String = "claude-sonnet-4",
         subagentSession: String? = nil,
-        workflowRun: String? = nil
+        workflowRun: String? = nil,
+        messagePairs: Int = 1
     ) throws -> URL {
         var directory = root.appendingPathComponent(project, isDirectory: true)
         if let subagentSession {
@@ -399,23 +473,25 @@ final class ClaudeCodeMultiRootAdapterTests: XCTestCase {
         } else {
             agentId = "agent-\(name)"
         }
-        let records: [[String: Any]] = [
+        let records: [[String: Any]] = (0..<messagePairs).flatMap { index in
             [
+                [
                 "type": "user",
                 "sessionId": "session-\(name)",
                 "agentId": agentId,
                 "cwd": "/Users/test/\(name)",
-                "timestamp": "2026-07-13T00:00:00Z",
-                "message": ["role": "user", "content": "request \(name)"],
-            ],
-            [
+                "timestamp": String(format: "2026-07-13T00:00:%02dZ", index * 2),
+                "message": ["role": "user", "content": "request \(name) \(index)"],
+                ],
+                [
                 "type": "assistant",
                 "sessionId": "session-\(name)",
                 "agentId": agentId,
-                "timestamp": "2026-07-13T00:00:01Z",
-                "message": ["role": "assistant", "model": model, "content": "response \(name)"],
-            ],
-        ]
+                "timestamp": String(format: "2026-07-13T00:00:%02dZ", index * 2 + 1),
+                "message": ["role": "assistant", "model": model, "content": "response \(name) \(index)"],
+                ],
+            ]
+        }
         let lines = try records.map { record -> String in
             let data = try JSONSerialization.data(withJSONObject: record, options: [.withoutEscapingSlashes])
             return String(decoding: data, as: UTF8.self)
@@ -493,12 +569,95 @@ final class ClaudeCodeMultiRootAdapterTests: XCTestCase {
         case .success(let session):
             XCTAssertEqual(session.agentRole, "subagent")
             XCTAssertEqual(session.parentSessionId, parentUUID)
-            // Row id is agentId, not the parent UUID.
-            XCTAssertEqual(session.id, "agent-worker")
+            XCTAssertEqual(
+                session.id,
+                "sub:\(parentUUID):workflows/wf_run1/agent-worker.jsonl"
+            )
             XCTAssertNotEqual(session.id, parentUUID)
         case .failure(let error):
             XCTFail("parseSessionInfo failed: \(error)")
         }
+    }
+
+    func testClaudeWorkflowSubagentIdsIncludeWorkflowPath_repro() async throws {
+        let root = try makeProjectsRoot(parent: homeDirectory.appendingPathComponent(".claude"))
+        let parentUUID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        let first = try makeTranscript(
+            root: root,
+            project: "-Users-workflow-identity",
+            name: "worker",
+            subagentSession: parentUUID,
+            workflowRun: "wf_first"
+        )
+        let second = try makeTranscript(
+            root: root,
+            project: "-Users-workflow-identity",
+            name: "worker",
+            subagentSession: parentUUID,
+            workflowRun: "wf_second"
+        )
+        let adapter = ClaudeCodeAdapter(projectsRoot: root.path)
+
+        let firstInfo = try await adapter.parseSessionInfo(locator: first.path)
+        let secondInfo = try await adapter.parseSessionInfo(locator: second.path)
+        guard case .success(let firstSession) = firstInfo,
+              case .success(let secondSession) = secondInfo else {
+            XCTFail("workflow subagents must parse")
+            return
+        }
+
+        XCTAssertNotEqual(firstSession.id, secondSession.id)
+        XCTAssertEqual(firstSession.id, "sub:\(parentUUID):workflows/wf_first/agent-worker.jsonl")
+        XCTAssertEqual(secondSession.id, "sub:\(parentUUID):workflows/wf_second/agent-worker.jsonl")
+    }
+
+    func testCustomProjectsRootContainingSubagentsDoesNotMisclassifyTopLevelSession_repro() async throws {
+        let root = homeDirectory
+            .appendingPathComponent("custom/subagents/projects", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let file = try makeTranscript(
+            root: root,
+            project: "-Users-custom",
+            name: "top-level",
+            messagePairs: 10
+        )
+        let adapter = ClaudeCodeAdapter(projectsRoot: root.path)
+
+        let scan = try success(await adapter.scanForIndexing(locator: file.path))
+        let info = scan.info
+
+        XCTAssertNil(info.agentRole)
+        XCTAssertNil(info.parentSessionId)
+        XCTAssertEqual(info.id, "session-top-level")
+        XCTAssertEqual(info.messageCount, 20)
+        XCTAssertEqual(
+            SessionTier.compute(
+                TierInput(
+                    messageCount: info.messageCount,
+                    agentRole: info.agentRole,
+                    filePath: info.filePath,
+                    project: info.project
+                )
+            ),
+            .premium
+        )
+    }
+
+    func testPartialClaudeListingReturnsHealthySubtreesWithoutStampingEnumerationRoots_repro() async throws {
+        let root = try makeProjectsRoot(parent: homeDirectory.appendingPathComponent("partial-list"))
+        let healthy = try makeTranscript(root: root, project: "healthy", name: "visible")
+        let unreadable = root.appendingPathComponent("unreadable", isDirectory: true)
+        try FileManager.default.createDirectory(at: unreadable, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: unreadable.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: unreadable.path)
+        }
+        let adapter = ClaudeCodeAdapter(projectsRoot: root.path)
+
+        let locators = try await adapter.listSessionLocators()
+
+        XCTAssertEqual(locators, [healthy.path])
+        XCTAssertTrue(adapter.enumerationRoots.isEmpty)
     }
 
     private func writeSettings(autoDiscover: Bool, customProjectsRoots: [String]) throws {

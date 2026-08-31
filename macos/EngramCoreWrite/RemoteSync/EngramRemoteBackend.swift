@@ -167,7 +167,9 @@ public final class EngramRemoteBackend: RemoteStorageBackend, @unchecked Sendabl
            h.hasPrefix("fd7a:115c:a1e0") || h.hasPrefix("[fd7a:115c:a1e0") {
             return true
         }
-        let octets = h.split(separator: ".").compactMap { UInt8($0) }  // IPv4 literal → 4 in-range octets
+        let labels = h.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count == 4 else { return false }
+        let octets = labels.compactMap { UInt8($0) }
         guard octets.count == 4 else { return false }
         switch (octets[0], octets[1]) {
         case (10, _): return true                 // 10.0.0.0/8

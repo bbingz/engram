@@ -2,6 +2,23 @@
 import XCTest
 @testable import Engram
 
+private final class LockedAdvancedPersistenceHistory: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Double] = []
+
+    func append(_ value: Double) {
+        lock.lock()
+        defer { lock.unlock() }
+        values.append(value)
+    }
+
+    func snapshot() -> [Double] {
+        lock.lock()
+        defer { lock.unlock() }
+        return values
+    }
+}
+
 /// Source-honesty + behavior tests for WP12: the Settings surface must not
 /// advertise persisted-but-unread controls, must not surface the deleted HTTP
 /// transcript Web UI, and must report title regeneration honestly.
@@ -75,6 +92,73 @@ final class SettingsHonestyTests: XCTestCase {
         XCTAssertTrue(source.contains(#"removeValue(forKey: "webUIEnabled")"#))
     }
 
+    /// concurrency-5: Advanced settings file reads and exclusive-lock writes
+    /// must run off MainActor; only the state snapshot/application stays on it.
+    func testAdvancedSettingsFileIOIsOffMain_repro() throws {
+        let text = try source("macos/Engram/Views/SettingsView.swift")
+        XCTAssertTrue(text.contains(".task { await loadAdvancedSettings() }"))
+        XCTAssertFalse(text.contains(".onAppear { loadAdvancedSettings() }"))
+
+        let loadStart = try XCTUnwrap(text.range(of: "private func loadAdvancedSettings() async"))
+        let loadEnd = try XCTUnwrap(
+            text.range(of: "private func clearLoadingSettingsAfterViewUpdate", range: loadStart.lowerBound..<text.endIndex)
+        )
+        let loadBody = String(text[loadStart.lowerBound..<loadEnd.lowerBound])
+        XCTAssertTrue(loadBody.contains("await AdvancedSettingsIO.loadOffMain()"))
+        XCTAssertFalse(loadBody.contains("readEngramSettings()"))
+
+        let saveStart = try XCTUnwrap(text.range(of: "private func saveAdvancedSettings"))
+        let saveEnd = try XCTUnwrap(
+            text.range(of: "private func addUsageLimitRow", range: saveStart.lowerBound..<text.endIndex)
+        )
+        let saveBody = String(text[saveStart.lowerBound..<saveEnd.lowerBound])
+        XCTAssertTrue(saveBody.contains("AdvancedSettingsIO.persistOffMain"))
+        XCTAssertFalse(saveBody.contains("mutateEngramSettings"))
+
+        let ioStart = try XCTUnwrap(text.range(of: "enum AdvancedSettingsIO"))
+        let ioBody = String(text[ioStart.lowerBound...])
+        XCTAssertTrue(ioBody.contains("Task.detached"))
+        XCTAssertTrue(ioBody.contains("actor Mailbox"))
+        XCTAssertTrue(ioBody.contains("mutateEngramSettings"))
+    }
+
+    @MainActor
+    func testAdvancedSettingsNewestSubmissionWinsWhenDetachedArrivalInverts_repro() async {
+        let history = LockedAdvancedPersistenceHistory()
+        let hooks = AdvancedSettingsPersistenceHooks(
+            beforeMailbox: { snapshot in
+                if snapshot.dailyCostBudget == 1 {
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                }
+            },
+            persist: { snapshot in
+                history.append(snapshot.dailyCostBudget)
+            }
+        )
+
+        AdvancedSettingsIO.persistOffMain(
+            advancedSnapshot(dailyCostBudget: 1),
+            testHooks: hooks,
+            onPersisted: {}
+        )
+        AdvancedSettingsIO.persistOffMain(
+            advancedSnapshot(dailyCostBudget: 2),
+            testHooks: hooks,
+            onPersisted: {}
+        )
+
+        var completed = false
+        for _ in 0..<100 {
+            if history.snapshot().count >= 2 {
+                completed = true
+                break
+            }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertTrue(completed)
+        XCTAssertEqual(history.snapshot().last, 2)
+    }
+
     func testServiceCoreDoesNotLinkDeletedHttpStack() throws {
         let source = try source("macos/project.yml")
         let serviceCoreBlock = try XCTUnwrap(
@@ -132,5 +216,108 @@ final class SettingsHonestyTests: XCTestCase {
         let status = TitleRegenerationStatus.service(response.status, response.total)
         XCTAssertEqual(status, .service("started", 17))
         XCTAssertNotNil(status.label)
+    }
+
+    func testLiveIngestToggleFailedWriteRestoresPersistedStateAndShowsError_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-live-ingest-toggle-failure-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let target = root.appendingPathComponent("persisted-settings.json")
+        let linked = root.appendingPathComponent("settings.json")
+        let original = Data(#"{"liveIngestEnabled":false}"#.utf8)
+        try original.write(to: target)
+        try FileManager.default.createSymbolicLink(at: linked, withDestinationURL: target)
+
+        let result = persistLiveIngestEnabled(
+            requestedValue: true,
+            currentPersistedValue: false,
+            serviceIsRunning: true,
+            mutateSettings: { transform in
+                mutateEngramSettingsIfNeeded(at: linked) { settings in
+                    transform(&settings)
+                    return true
+                }
+            }
+        )
+
+        XCTAssertFalse(result.enabled)
+        XCTAssertFalse(result.restartNeeded)
+        XCTAssertEqual(
+            result.message,
+            "Could not save HQ live ingest setting. The previous setting remains active."
+        )
+        XCTAssertEqual(try Data(contentsOf: target), original)
+    }
+
+    func testLiveIngestToggleSuccessfulWriteKeepsRequestedStateAndRestartHint_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-live-ingest-toggle-success-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("settings.json")
+
+        let result = persistLiveIngestEnabled(
+            requestedValue: true,
+            currentPersistedValue: false,
+            serviceIsRunning: true,
+            mutateSettings: { transform in
+                mutateEngramSettingsIfNeeded(at: file) { settings in
+                    transform(&settings)
+                    return true
+                }
+            }
+        )
+
+        XCTAssertTrue(result.enabled)
+        XCTAssertTrue(result.restartNeeded)
+        XCTAssertNil(result.message)
+        let data = try XCTUnwrap(readEngramSettingsData(at: file))
+        let settings = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(settings["liveIngestEnabled"] as? Bool, true)
+        XCTAssertEqual(settings["liveIngestSources"] as? [String], ["hq"])
+        XCTAssertEqual(settings["liveIngestPeerId"] as? String, "hq")
+    }
+
+    // UI-iteration 2026-08-30 (Wave-1 item 6): the mock previously hardcoded a
+    // success result for liveIngestResetShrinkGuard, so previews/tests could
+    // not drive the Settings failure branch. Init injection must win.
+    func testLiveIngestResetShrinkGuardInjectedFailure_repro() async throws {
+        struct StubError: Error {}
+        let failing = MockEngramServiceClient(
+            liveIngestResetShrinkGuardResult: .failure(StubError())
+        )
+        do {
+            _ = try await failing.liveIngestResetShrinkGuard(peer: "hq")
+            XCTFail("expected injected failure to throw")
+        } catch {
+            XCTAssertTrue(error is StubError)
+        }
+
+        let succeeding = MockEngramServiceClient()
+        let response = try await succeeding.liveIngestResetShrinkGuard(peer: "hq")
+        XCTAssertTrue(response.ok)
+        XCTAssertEqual(response.peer, "hq")
+    }
+
+    private func advancedSnapshot(dailyCostBudget: Double) -> AdvancedSettingsPersistSnapshot {
+        AdvancedSettingsPersistSnapshot(
+            monitorEnabled: true,
+            dailyCostBudget: dailyCostBudget,
+            monthlyCostBudget: 0,
+            longSessionMinutes: 180,
+            notifyOnCostThreshold: true,
+            notifyOnUsagePressure: true,
+            notifyOnLongSession: true,
+            usageLimitRows: [],
+            removedUsageLimitSourceIDs: [],
+            logLevel: "info",
+            logRetentionDays: 7,
+            aiAuditEnabled: true,
+            aiAuditRetentionDays: 30,
+            aiAuditMaxBodySize: 10_000,
+            aiAuditLogBodies: false,
+            devMode: false
+        )
     }
 }

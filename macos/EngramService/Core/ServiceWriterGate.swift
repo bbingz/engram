@@ -32,6 +32,7 @@ public actor ServiceWriterGate {
     /// migration is legitimately waiting, then holding, for minutes (audit M1).
     private var pendingOrActiveLongWrites = 0
     private var writeInProgress = false
+    private var acceptingWrites = true
     private let indexStatusCacheTTL: TimeInterval
     private let now: @Sendable () -> Date
     // Upper bound a queued write may wait for the gate before giving up. Sized
@@ -45,6 +46,7 @@ public actor ServiceWriterGate {
     public init(
         databasePath: String,
         runtimeDirectory: URL,
+        acquireRuntimeLock: Bool = true,
         queueTimeoutNanoseconds: UInt64? = 60_000_000_000,
         indexStatusCacheTTL: TimeInterval = 10,
         now: @escaping @Sendable () -> Date = { Date() },
@@ -56,7 +58,7 @@ public actor ServiceWriterGate {
         try Self.validateRuntimeDirectory(runtimeDirectory)
         self.databasePath = databasePath
         lockPath = runtimeDirectory.appendingPathComponent("engram-service.lock").path
-        lockFD = try Self.acquireProcessLock(path: lockPath)
+        lockFD = acquireRuntimeLock ? try Self.acquireProcessLock(path: lockPath) : -1
         databaseLockPath = URL(fileURLWithPath: databasePath)
             .deletingLastPathComponent()
             .appendingPathComponent(".lock")
@@ -64,8 +66,10 @@ public actor ServiceWriterGate {
         do {
             databaseLockFD = try Self.acquireProcessLock(path: databaseLockPath)
         } catch {
-            flock(lockFD, LOCK_UN)
-            close(lockFD)
+            if lockFD >= 0 {
+                flock(lockFD, LOCK_UN)
+                close(lockFD)
+            }
             throw error
         }
 
@@ -74,8 +78,10 @@ public actor ServiceWriterGate {
         } catch {
             flock(databaseLockFD, LOCK_UN)
             close(databaseLockFD)
-            flock(lockFD, LOCK_UN)
-            close(lockFD)
+            if lockFD >= 0 {
+                flock(lockFD, LOCK_UN)
+                close(lockFD)
+            }
             throw error
         }
     }
@@ -83,8 +89,10 @@ public actor ServiceWriterGate {
     deinit {
         flock(databaseLockFD, LOCK_UN)
         close(databaseLockFD)
-        flock(lockFD, LOCK_UN)
-        close(lockFD)
+        if lockFD >= 0 {
+            flock(lockFD, LOCK_UN)
+            close(lockFD)
+        }
     }
 
     /// Snapshot of the monotonic generation counter (for long-op waiters that
@@ -97,6 +105,9 @@ public actor ServiceWriterGate {
         name: String,
         operation: @Sendable (EngramDatabaseWriter) async throws -> Value
     ) async throws -> ServiceWriterGateResult<Value> {
+        guard acceptingWrites || Self.isShutdownCheckpointCommand(name) else {
+            throw EngramServiceError.serviceUnavailable(message: "EngramService is shutting down")
+        }
         let isLongRunning = Self.isLongRunningWriteCommand(name)
         // Count pending long writes *before* wait so short followers enqueued
         // behind a still-queued migration get timeout=nil (M1).
@@ -127,6 +138,17 @@ public actor ServiceWriterGate {
                 pendingOrActiveLongWrites = max(0, pendingOrActiveLongWrites - 1)
             }
             throw error
+        }
+        // The actor is reentrant while the semaphore wait is suspended. A
+        // command that queued before SIGTERM must re-check the shutdown fence
+        // after receiving the permit, otherwise it can begin a fresh write
+        // after the listener and existing handlers have already been stopped.
+        guard acceptingWrites || Self.isShutdownCheckpointCommand(name) else {
+            if isLongRunning {
+                pendingOrActiveLongWrites = max(0, pendingOrActiveLongWrites - 1)
+            }
+            await writeSemaphore.signal()
+            throw EngramServiceError.serviceUnavailable(message: "EngramService is shutting down")
         }
         longRunningWriteInProgress = isLongRunning
         writeInProgress = true
@@ -178,14 +200,8 @@ public actor ServiceWriterGate {
     }
 
     public func checkpointWal() async throws {
-        try await writeSemaphore.wait()
-        do {
-            try Task.checkCancellation()
+        _ = try await performWriteCommand(name: "checkpointWal") { writer in
             try writer.checkpointPassive()
-            await writeSemaphore.signal()
-        } catch {
-            await writeSemaphore.signal()
-            throw error
         }
     }
 
@@ -223,22 +239,31 @@ public actor ServiceWriterGate {
         await writeSemaphore.waiterCount
     }
 
+    func beginShutdown() {
+        // docs/invariants.md #1: once shutdown starts, the single service writer
+        // admits only the final WAL checkpoints; queued/product writes must not
+        // begin after the listener and client handlers are stopped.
+        acceptingWrites = false
+    }
+
+    func isIdleForShutdown() async -> Bool {
+        // docs/invariants.md #1: shutdown maintenance may run only after every
+        // service-owned writer has released the single-writer gate.
+        guard !writeInProgress, pendingOrActiveLongWrites == 0 else { return false }
+        return await writeSemaphore.waiterCount == 0
+    }
+
     /// Best-effort TRUNCATE checkpoint. Returns the SQLite result tuple so the
     /// caller can decide whether to log/retry. Throws only if the underlying
     /// pool write fails outright; a `busy=1` result is considered a normal
     /// outcome (a reader held the WAL) — caller inspects the tuple.
     @discardableResult
-    public func checkpointTruncate() async throws -> (busy: Int64, logFrames: Int64, checkpointed: Int64) {
-        try await writeSemaphore.wait()
-        do {
-            try Task.checkCancellation()
-            let result = try writer.checkpointTruncate()
-            await writeSemaphore.signal()
-            return result
-        } catch {
-            await writeSemaphore.signal()
-            throw error
-        }
+    public func checkpointTruncate(
+        waitForReaders: Bool = true
+    ) async throws -> (busy: Int64, logFrames: Int64, checkpointed: Int64) {
+        try await performWriteCommand(name: "checkpointTruncate") { writer in
+            try writer.checkpointTruncate(waitForReaders: waitForReaders)
+        }.value
     }
 
     private static func validateRuntimeDirectory(_ directory: URL) throws {
@@ -258,9 +283,17 @@ public actor ServiceWriterGate {
     }
 
     private static func acquireProcessLock(path: String) throws -> Int32 {
-        let fd = open(path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        let fd = open(path, O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
         guard fd >= 0 else {
             throw EngramServiceError.writerBusy(message: "Cannot open EngramService writer lock")
+        }
+        var info = stat()
+        guard fstat(fd, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_uid == geteuid(),
+              fchmod(fd, S_IRUSR | S_IWUSR) == 0 else {
+            close(fd)
+            throw EngramServiceError.writerBusy(message: "Cannot secure EngramService writer lock")
         }
         guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
             close(fd)
@@ -272,12 +305,14 @@ public actor ServiceWriterGate {
     /// Classifies maintenance/index holders so followers skip the 60s queue timeout.
     /// Internal for unit tests (Wave 7C H02).
     static func isLongRunningWriteCommand(_ name: String) -> Bool {
+        // docs/invariants.md #1: every product write stays serialized here, so
+        // healthy maintenance holders must be classified before followers queue.
         switch name {
         case "projectMove", "projectArchive", "projectUndo", "projectMoveBatch":
             return true
         // VACUUM rebuilds the whole DB file; let user writes queue (unbounded)
         // rather than hit the 60s WriterBusy timeout while it runs.
-        case "remoteVacuum", "userDataBackup":
+        case "remoteVacuum", "userDataBackup", "checkpointWal", "checkpointTruncate":
             return true
         // Wave 7C H02: multi-minute index/backfill/FTS/embed phases hold the gate
         // under healthy progress — do not false-timeout followers at 60s.
@@ -289,6 +324,8 @@ public actor ServiceWriterGate {
              "indexRecent",
              "indexAll",
              "periodicFtsDrain",
+             "scheduledFtsRetryDrain",
+             "deferredActivityFtsDrain",
              "ftsOptimize",
              "embeddingBackfill",
              "embeddingDrain",
@@ -299,11 +336,16 @@ public actor ServiceWriterGate {
             // Prefix match for runner-owned maintenance names.
             if name.hasPrefix("index") || name.hasPrefix("fts") || name.hasPrefix("embed")
                 || name.hasPrefix("backfill") || name.hasPrefix("initialScan")
+                || name.hasPrefix("periodic") || name.contains("EmbeddingBackfill")
             {
                 return true
             }
             return false
         }
+    }
+
+    private static func isShutdownCheckpointCommand(_ name: String) -> Bool {
+        name == "checkpointWal" || name == "checkpointTruncate"
     }
 }
 

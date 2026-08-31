@@ -130,8 +130,8 @@ final class SessionActionsTests: XCTestCase {
             "parent, confirmed-child, and suggested-child export menus must inherit the guard"
         )
         XCTAssertTrue(
-            componentSource.contains(".disabled(exportsDisabled)"),
-            "the shared export menu must visibly disable duplicate actions"
+            componentSource.contains(".disabled(exportsDisabled || !exportAllowed)"),
+            "the shared export menu must visibly disable duplicate actions and remote snapshots"
         )
 
         let handlerSource = try String(

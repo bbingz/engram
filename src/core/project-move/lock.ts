@@ -11,7 +11,8 @@
 //   - Contents: JSON { pid, startedAt, migrationId }
 //   - Stale detection: if owning pid is gone (kill -0 fails), break lock.
 
-import { mkdir, open, readFile, stat, unlink } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { link, mkdir, open, readFile, stat, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -35,9 +36,9 @@ export function defaultLockPath(home?: string): string {
 }
 
 /**
- * Try to acquire the lock. Atomic: uses O_EXCL ('wx' flag) so only one
- * process can create the file. If it already exists, check the holder —
- * if alive, throw LockBusyError; if stale (PID gone), remove and retry.
+ * Try to acquire the lock. A fully written candidate is atomically linked at
+ * the lock path. If the holder is stale, an inode-linked break claim ensures
+ * exactly one process may remove that stale inode.
  *
  * (Codex blocker #2a): the previous read→probe→write sequence had a
  * TOCTOU window where two processes could both conclude "stale" and both
@@ -55,54 +56,143 @@ export async function acquireLock(
   };
   const payload = JSON.stringify(info, null, 2);
 
-  // Up to 2 attempts: first create, if EEXIST probe holder, maybe break, retry.
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const handle = await open(lockPath, 'wx'); // O_EXCL | O_CREAT
-      try {
-        await handle.writeFile(payload);
-      } finally {
-        await handle.close();
+  // Publish a fully written inode with one atomic link. Creating lockPath and
+  // filling it in separate async calls exposes a transient empty file that a
+  // concurrent acquirer can misclassify as corrupt/stale and unlink.
+  const candidatePath = `${lockPath}.${process.pid}.${randomUUID()}.candidate`;
+  const staleBreakPath = `${lockPath}.stale-break`;
+  const handle = await open(candidatePath, 'wx', 0o600);
+  try {
+    await handle.writeFile(payload);
+  } finally {
+    await handle.close();
+  }
+
+  try {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (await pathExists(staleBreakPath)) {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        continue;
       }
-      return; // acquired
-    } catch (err) {
-      const e = err as { code?: string };
-      if (e.code !== 'EEXIST') throw err;
+      try {
+        await link(candidatePath, lockPath);
+        return; // acquired
+      } catch (err) {
+        const e = err as { code?: string };
+        if (e.code !== 'EEXIST') throw err;
+      }
+      // EEXIST — read the holder and decide
+      let holder: LockInfo | null = null;
+      try {
+        holder = JSON.parse(await readFile(lockPath, 'utf8')) as LockInfo;
+      } catch {
+        // Corrupt lock — treat as stale
+      }
+      if (holder && isProcessAlive(holder.pid)) {
+        throw new LockBusyError(holder);
+      }
+
+      // Atomically claim this exact lock inode. A contender that read the old
+      // stale bytes but arrives after a live replacement links that live inode
+      // here, then the fresh PID check below prevents its removal.
+      try {
+        await link(lockPath, staleBreakPath);
+      } catch (err) {
+        const e = err as { code?: string };
+        if (e.code === 'ENOENT' || e.code === 'EEXIST') continue;
+        throw err;
+      }
+      try {
+        let claimedHolder: LockInfo | null = null;
+        try {
+          claimedHolder = JSON.parse(
+            await readFile(staleBreakPath, 'utf8'),
+          ) as LockInfo;
+        } catch {
+          // A corrupt claimed inode is stale, but still requires identity proof.
+        }
+        if (claimedHolder && isProcessAlive(claimedHolder.pid)) {
+          throw new LockBusyError(claimedHolder);
+        }
+
+        let stillClaimed = false;
+        try {
+          const [current, claimed] = await Promise.all([
+            stat(lockPath),
+            stat(staleBreakPath),
+          ]);
+          stillClaimed =
+            current.dev === claimed.dev && current.ino === claimed.ino;
+        } catch (err) {
+          const e = err as { code?: string };
+          if (e.code !== 'ENOENT') throw err;
+        }
+        if (!stillClaimed) continue;
+
+        await unlink(lockPath);
+        try {
+          await link(candidatePath, lockPath);
+          return;
+        } catch (err) {
+          const e = err as { code?: string };
+          if (e.code !== 'EEXIST') throw err;
+          // A contender may have filled the unlink/link gap. It owns the lock;
+          // never remove it on behalf of this stale-break attempt.
+        }
+      } finally {
+        await unlink(staleBreakPath).catch((err: { code?: string }) => {
+          if (err.code !== 'ENOENT') throw err;
+        });
+      }
     }
-    // EEXIST — read the holder and decide
-    let holder: LockInfo | null = null;
-    try {
-      holder = JSON.parse(await readFile(lockPath, 'utf8')) as LockInfo;
-    } catch {
-      // Corrupt lock — treat as stale
-    }
-    if (holder && isProcessAlive(holder.pid)) {
-      throw new LockBusyError(holder);
-    }
-    // Stale — remove and retry. unlink may race with another break attempt;
-    // swallow ENOENT since that means someone already broke it.
-    await unlink(lockPath).catch((err: { code?: string }) => {
+    throw new Error(
+      'acquireLock: exhausted attempts (race with another stale-break)',
+    );
+  } finally {
+    await unlink(candidatePath).catch((err: { code?: string }) => {
       if (err.code !== 'ENOENT') throw err;
     });
-    // fall through to retry open('wx')
   }
-  throw new Error(
-    'acquireLock: exhausted attempts (race with another stale-break)',
-  );
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch (err) {
+    const e = err as { code?: string };
+    if (e.code === 'ENOENT') return false;
+    throw err;
+  }
 }
 
 export async function releaseLock(
   lockPath: string = defaultLockPath(),
 ): Promise<void> {
+  const releaseClaimPath = `${lockPath}.stale-break`;
   try {
-    // Only release if it's our lock — defensive against races where we
-    // already broke a stale lock and the original owner came back.
-    const data = await readFile(lockPath, 'utf8');
+    // Serialize release against both peer releases and stale breakers by
+    // claiming this exact inode. Only the claim winner may unlink lockPath.
+    await link(lockPath, releaseClaimPath);
+  } catch {
+    // Missing lock or another active/abandoned claim — fail closed.
+    return;
+  }
+  try {
+    const data = await readFile(releaseClaimPath, 'utf8');
     const holder = JSON.parse(data) as LockInfo;
     if (holder.pid !== process.pid) return;
+
+    const [current, claimed] = await Promise.all([
+      stat(lockPath),
+      stat(releaseClaimPath),
+    ]);
+    if (current.dev !== claimed.dev || current.ino !== claimed.ino) return;
     await unlink(lockPath);
   } catch {
     // lock file missing or unreadable — ok, already gone
+  } finally {
+    await unlink(releaseClaimPath).catch(() => {});
   }
 }
 

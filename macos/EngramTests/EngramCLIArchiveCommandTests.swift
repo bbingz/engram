@@ -44,4 +44,28 @@ final class EngramCLIArchiveCommandTests: XCTestCase {
         XCTAssertThrowsError(try EngramCLIArchiveCommand.parse(arguments: ["archive", "token", "set", "--replica", "hq", "--stdin", canonical]))
         XCTAssertThrowsError(try EngramCLIArchiveCommand.parse(arguments: ["archive", "token", "set", "--replica", "hq", "--token", canonical]))
     }
+
+    func testArchiveRunnerBindsSocketAndCapabilityTokenToEnvironmentOverride_repro() throws {
+        let socket = "/tmp/engram-archive-cli/custom.sock"
+
+        let selected = try EngramCLIArchiveRunner.socketPath(
+            environment: ["ENGRAM_SERVICE_SOCKET": socket]
+        )
+
+        XCTAssertEqual(selected, socket)
+        XCTAssertEqual(
+            ServiceCapabilityToken.path(forSocketPath: selected),
+            "/tmp/engram-archive-cli/custom.sock.cmd.token"
+        )
+    }
+
+    func testArchiveRunnerPrefersMCPServiceSocket_repro() throws {
+        XCTAssertEqual(
+            try EngramCLIArchiveRunner.socketPath(environment: [
+                "ENGRAM_MCP_SERVICE_SOCKET": "/tmp/mcp.sock",
+                "ENGRAM_SERVICE_SOCKET": "/tmp/service.sock",
+            ]),
+            "/tmp/mcp.sock"
+        )
+    }
 }

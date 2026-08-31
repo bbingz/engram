@@ -25,6 +25,7 @@ const repoRoot = resolve(import.meta.dirname, '../..');
 const verifyScript = resolve(repoRoot, 'macos/scripts/release-verify.sh');
 const releaseScript = resolve(repoRoot, 'macos/scripts/build-release.sh');
 const releaseWorkflow = resolve(repoRoot, '.github/workflows/release.yml');
+const deployLocalScript = resolve(repoRoot, 'macos/scripts/deploy-local.sh');
 
 let workdir: string;
 
@@ -39,6 +40,16 @@ function buildStubApp(opts?: {
   const contents = join(app, 'Contents');
   mkdirSync(join(contents, 'MacOS'), { recursive: true });
   mkdirSync(join(contents, 'Helpers'), { recursive: true });
+  for (const framework of [
+    'EngramServiceCore',
+    'EngramCoreRead',
+    'EngramCoreWrite',
+    'GRDB-dynamic',
+  ]) {
+    mkdirSync(join(contents, 'Frameworks', `${framework}.framework`), {
+      recursive: true,
+    });
+  }
   writeFileSync(join(contents, 'MacOS', 'Engram'), '#!/bin/sh\nexit 0\n');
   writeFileSync(join(contents, 'Helpers', 'EngramMCP'), 'stub');
   writeFileSync(join(contents, 'Helpers', 'EngramService'), 'stub');
@@ -234,6 +245,28 @@ describe('macOS release-verify bundle hygiene', () => {
         "CFBundleShortVersionString '0.1.0' != expected '1.0.3'",
       );
     });
+  });
+});
+
+describe('deploy-local process gate', () => {
+  it('re-terminates app and service while treating MCP as best effort (repro)', () => {
+    const source = readFileSync(deployLocalScript, 'utf8');
+    expect(source).toContain('BLOCKING_PROCESS_NAMES=(Engram EngramService)');
+    const waitLoop = source.slice(
+      source.indexOf('for _ in 1 2 3'),
+      source.indexOf('# Remove the existing install'),
+    );
+    const afterInstall = source.slice(
+      source.indexOf('ditto "$SRC_APP" "$DEST_APP"'),
+    );
+    expect(waitLoop).toContain('pkill -TERM -x EngramMCP');
+    expect(afterInstall).toContain('pkill -TERM -x EngramMCP');
+    expect(source).toMatch(
+      /for _ in 1 2 3[\s\S]*for process_name in "\$\{BLOCKING_PROCESS_NAMES\[@\]\}"; do[\s\S]*pkill -TERM -x "\$process_name"/,
+    );
+    expect(source).not.toContain(
+      'PROCESS_NAMES=(Engram EngramService EngramMCP)',
+    );
   });
 });
 

@@ -24,6 +24,10 @@ struct ProjectsScreen {
         app.element(id: "projects_checkbox_\(index)")
     }
 
+    func result(containingText text: String) -> XCUIElement {
+        projectList.element(containingText: text)
+    }
+
     // MARK: - Waits
 
     func waitForLoad(timeout: TimeInterval = 5) {

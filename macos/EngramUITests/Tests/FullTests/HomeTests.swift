@@ -31,8 +31,8 @@ final class HomeTests: XCTestCase {
 
         let home = HomeScreen(app: app)
         home.waitForLoad()
-        XCTAssertTrue(home.followUps.waitForExistence(timeout: 5),
-                      "Follow-ups section should be visible on the home page")
+        XCTAssertTrue(home.followUpSession(at: 0).waitForExistence(timeout: 5),
+                      "Follow-up data should be visible on the home page")
         ScreenshotCapture.capture(name: "home_followUps", app: app, screen: "home", test: #function)
     }
 
@@ -42,8 +42,8 @@ final class HomeTests: XCTestCase {
 
         let home = HomeScreen(app: app)
         home.waitForLoad()
-        XCTAssertTrue(home.changedRepos.waitForExistence(timeout: 5),
-                      "Changed repos section should be visible on the home page")
+        XCTAssertTrue(home.changedRepo(at: 0).waitForExistence(timeout: 5),
+                      "Changed repository data should be visible on the home page")
         XCTAssertTrue(home.serviceState.waitForExistence(timeout: 5),
                       "Service state section should be visible on the home page")
         ScreenshotCapture.capture(name: "home_workbench", app: app, screen: "home", test: #function)

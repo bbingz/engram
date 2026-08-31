@@ -175,6 +175,38 @@ final class SessionModelTests: XCTestCase {
         XCTAssertEqual(session.accessSortTime, "2026-03-20T10:00:00Z")
     }
 
+    func testAppSessionDecodesOriginBadge_repro() throws {
+        let hq = makeSession(id: "remote:hq:abc", filePath: "remote://hq/abc")
+        // makeSession omits origin — missing key must stay badge-less.
+        XCTAssertNil(hq.origin)
+        XCTAssertNil(hq.originBadge)
+
+        let data = """
+        {
+          "id": "remote:hq:abc",
+          "source": "codex",
+          "start_time": "2026-03-20T10:00:00Z",
+          "cwd": "",
+          "message_count": 1,
+          "user_message_count": 1,
+          "assistant_message_count": 0,
+          "system_message_count": 0,
+          "file_path": "remote://hq/abc",
+          "size_bytes": 1,
+          "indexed_at": "2026-03-20T10:00:00Z",
+          "tool_message_count": 0,
+          "origin": "hq"
+        }
+        """.data(using: .utf8)!
+        let session = try JSONDecoder().decode(Session.self, from: data)
+        XCTAssertEqual(session.origin, "hq")
+        XCTAssertEqual(session.originBadge, "HQ")
+        XCTAssertTrue(session.isRemoteSnapshot)
+        let local = makeSession(id: "local-1", filePath: "/tmp/local.jsonl")
+        XCTAssertNil(local.originBadge)
+        XCTAssertFalse(local.isRemoteSnapshot)
+    }
+
     // MARK: - formattedSize tests
 
     /// 6. formattedSize for small bytes
@@ -382,6 +414,20 @@ final class SessionModelTests: XCTestCase {
             handlers.contains("@MainActor (Bool) -> Void"),
             "setFavorite completion must be @MainActor (Bool) -> Void"
         )
+    }
+
+    func testTimelineAnnotatesFavoritesBeforeRendering_repro() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let timelinePage = try String(
+            contentsOf: root.appendingPathComponent("macos/Engram/Views/Pages/TimelinePageView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(timelinePage.contains("listFavorites()"))
+        XCTAssertTrue(timelinePage.contains("Session.applyingFavoriteIds"))
     }
 
     // MARK: - M19 expanded-child favorite local state (post-toggle)

@@ -268,6 +268,12 @@ final class MigrationRunnerTests: XCTestCase {
         XCTAssertTrue(indexes.contains("idx_offload_queue_status"))
         XCTAssertTrue(indexes.contains("idx_rehydrate_queue_status"))
         XCTAssertTrue(indexes.contains("idx_sync_ledger_session"))
+        XCTAssertTrue(indexes.contains("idx_sync_ledger_peer_direction_session"))
+
+        let ledgerColumns = try writer.read { db in
+            Set(try String.fetchAll(db, sql: "SELECT name FROM pragma_table_info('sync_ledger')"))
+        }
+        XCTAssertTrue(ledgerColumns.contains("source_snapshot_hash"))
 
         // The status CHECK constraint accepts a documented state and rejects others.
         try writer.write { db in
@@ -549,7 +555,7 @@ final class MigrationRunnerTests: XCTestCase {
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT content FROM insights_fts WHERE insight_id = 'deleted'"))
             XCTAssertEqual(
                 try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'swift_aux_schema_version'"),
-                "4"
+                "5"
             )
             // Lifecycle columns are added even when the v2 rebuild path runs first.
             XCTAssertNotNil(try Int.fetchOne(db, sql: "SELECT 1 FROM pragma_table_info('insights') WHERE name = 'superseded_by'"))

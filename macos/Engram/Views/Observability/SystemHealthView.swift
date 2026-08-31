@@ -8,10 +8,6 @@
 // hardcoded "healthy" payload with zero app callers; surfacing it would be a
 // false all-clear.
 //
-// observability-2 (deferred): the app's currentProcess `OSLogStore` cannot read
-// `com.engram.service` entries cross-process, so the error count reflects only
-// the app's own `com.engram.app` subsystem. A readable service-side log feed
-// (IPC ring) is a backend change tracked separately.
 import SwiftUI
 import GRDB
 import Combine
@@ -19,10 +15,12 @@ import Combine
 struct SystemHealthView: View {
     @Environment(DatabaseManager.self) var db
     @Environment(EngramServiceStatusStore.self) var serviceStatusStore
+    @Environment(\.engramServiceClient) var serviceClient
     @State private var dbSize: Int64 = 0
     @State private var walMode: String? = nil
-    @State private var errorCount24h: Int = 0
+    @State private var errorCount24h: Int? = nil
     @State private var logsAvailable = true
+    @State private var logCoverageComplete = true
     @State private var indexJobCounts: [String: Int] = [:]
     @State private var isLoading = true
 
@@ -73,11 +71,22 @@ struct SystemHealthView: View {
                 if logsAvailable {
                     StatusRow(
                         label: "Errors logged (com.engram.*)",
-                        status: errorCount24h == 0 ? .ok : (errorCount24h > 10 ? .error : .warning)
+                        status: errorCount24h.map {
+                            $0 == 0 ? .ok : ($0 > 10 ? .error : .warning)
+                        } ?? .warning
                     )
-                    Text("\(errorCount24h) error-level entries in the unified log over the last 24h (includes warning-level entries, which the unified log stores at the error type).")
-                        .font(.caption)
-                        .foregroundStyle(Theme.secondaryText)
+                    if let errorCount24h {
+                        Text("\(errorCount24h) error-level entries across app and service logs over the last 24h.")
+                            .font(.caption)
+                            .foregroundStyle(Theme.secondaryText)
+                    } else {
+                        Text("—")
+                            .font(.caption)
+                            .foregroundStyle(Theme.secondaryText)
+                        Text("24-hour app and service log coverage is incomplete; partial counts are not shown.")
+                            .font(.caption)
+                            .foregroundStyle(Theme.secondaryText)
+                    }
                 } else {
                     // OBS-C1: if OSLogStore is not accessible, say so honestly
                     // rather than rendering a false "all clear".
@@ -159,22 +168,31 @@ struct SystemHealthView: View {
         defer { isLoading = false }
         let db = self.db
         // UI-C1/C2 + OBS-C1: run DB PRAGMA + OSLogStore reads off the main thread.
-        let loaded = await Task.detached { () -> (Int64, String?, [String: Int], Int, Bool) in
+        let appCoverageStartedAt = NSRunningApplication.current.launchDate ?? Date()
+        let cutoff = Date().addingTimeInterval(-24 * 60 * 60)
+        let loaded = await Task.detached { () -> (Int64, String?, [String: Int], Int, Bool, Bool) in
             let size = db.dbSizeBytes()
             let wal = (try? db.journalMode())
             let indexJobs = (try? db.indexJobCountsByStatus()) ?? [:]
             do {
                 let count = try OSLogReader.countErrors(hours: 24)
-                return (size, wal, indexJobs, count, true)
+                return (size, wal, indexJobs, count, true, appCoverageStartedAt <= cutoff)
             } catch {
-                return (size, wal, indexJobs, 0, false)
+                return (size, wal, indexJobs, 0, false, false)
             }
         }.value
+        let serviceSnapshot = try? await serviceClient.serviceLogs(level: "error", category: nil, limit: nil)
+        let serviceErrors = serviceSnapshot.map {
+            ObservabilityLogUnion.serviceEntries($0, hours: 24).count
+        } ?? 0
         dbSize = loaded.0
         walMode = loaded.1
         indexJobCounts = loaded.2
-        errorCount24h = loaded.3
-        logsAvailable = loaded.4
+        logsAvailable = loaded.4 || serviceSnapshot != nil
+        logCoverageComplete = loaded.5 && serviceSnapshot.map {
+            ObservabilityLogUnion.covers($0, hours: 24)
+        } == true
+        errorCount24h = logCoverageComplete ? loaded.3 + serviceErrors : nil
     }
 
     private func formatBytes(_ bytes: Int64) -> String {
@@ -226,14 +244,14 @@ private struct StatusRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: status.icon)
-                .font(.system(size: 12))
+                .scaledFont(12)
                 .foregroundStyle(status.color)
             Text(label)
-                .font(.system(size: 12))
+                .scaledFont(12)
                 .foregroundStyle(Theme.primaryText)
             Spacer()
             Text(status.text)
-                .font(.system(size: 11, weight: .medium))
+                .scaledFont(11, weight: .medium)
                 .foregroundStyle(status.color)
         }
         .accessibilityElement(children: .ignore)

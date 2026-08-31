@@ -86,8 +86,42 @@ func runContextCommandIfRequested() -> Int32? {
 }
 
 func execSwiftMCPHelper() -> Never {
-    guard let helperPath = mcpHelperCandidates().first(where: isExecutableFile) else {
-        writeStderr("EngramCLI: EngramMCP helper not found. Use /Applications/Engram.app/Contents/Helpers/EngramMCP for MCP stdio.\n")
+    let environment = ProcessInfo.processInfo.environment
+    let socketPath: String
+    let databasePath: String
+    do {
+        socketPath = try UnixSocketEngramServiceTransport.resolvedSocketPath(environment: environment)
+        let rawDatabasePath = environment["ENGRAM_MCP_DB_PATH"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let rawDatabasePath, !rawDatabasePath.isEmpty {
+            guard let normalized = UnixSocketEngramServiceTransport.normalizedAbsolutePath(rawDatabasePath) else {
+                throw EngramServiceError.invalidRequest(
+                    message: "ENGRAM_MCP_DB_PATH requires a non-empty absolute path"
+                )
+            }
+            databasePath = normalized
+        } else {
+            databasePath = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".engram/index.sqlite")
+                .path
+        }
+    } catch {
+        writeStderr("EngramCLI: \(error)\n")
+        exit(64)
+    }
+    setenv("ENGRAM_MCP_SERVICE_SOCKET", socketPath, 1)
+    setenv("ENGRAM_SERVICE_SOCKET", socketPath, 1)
+    setenv("ENGRAM_MCP_DB_PATH", databasePath, 1)
+    let executablePath = EngramCLIContextCommand.resolvedExecutablePath(
+        argv0: CommandLine.arguments.first ?? ""
+    ) ?? ""
+    let candidates = EngramCLIContextCommand.mcpHelperCandidates(
+        explicit: nil,
+        executablePath: executablePath,
+        environment: environment
+    )
+    guard let helperPath = candidates.first(where: EngramCLIContextCommand.isExecutableFile) else {
+        writeStderr("EngramCLI: EngramMCP helper not found: \(candidates.joined(separator: ", "))\n")
         exit(1)
     }
 
@@ -105,38 +139,6 @@ func execSwiftMCPHelper() -> Never {
     }
     writeStderr("EngramCLI: failed to exec EngramMCP at \(helperPath): \(String(cString: strerror(errno)))\n")
     exit(1)
-}
-
-func mcpHelperCandidates(
-    executablePath: String = CommandLine.arguments.first ?? "",
-    environment: [String: String] = ProcessInfo.processInfo.environment
-) -> [String] {
-    var candidates: [String] = []
-    if let override = environment["ENGRAM_CLI_MCP_HELPER"], !override.isEmpty {
-        candidates.append(override)
-    }
-
-    let executableURL = URL(fileURLWithPath: executablePath).resolvingSymlinksInPath()
-    let executableDirectory = executableURL.deletingLastPathComponent()
-    candidates.append(executableDirectory.appendingPathComponent("EngramMCP").path)
-    candidates.append(
-        executableDirectory
-            .deletingLastPathComponent()
-            .appendingPathComponent("Helpers", isDirectory: true)
-            .appendingPathComponent("EngramMCP")
-            .path
-    )
-    candidates.append("/Applications/Engram.app/Contents/Helpers/EngramMCP")
-
-    var seen = Set<String>()
-    return candidates.filter { seen.insert($0).inserted }
-}
-
-func isExecutableFile(_ path: String) -> Bool {
-    var isDirectory: ObjCBool = false
-    return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
-        && !isDirectory.boolValue
-        && FileManager.default.isExecutableFile(atPath: path)
 }
 
 func writeStderr(_ text: String) {

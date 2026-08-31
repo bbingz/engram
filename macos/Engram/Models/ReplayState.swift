@@ -21,6 +21,8 @@ class ReplayState {
     var playbackSpeed: PlaybackSpeed = .x1
     var isLoading: Bool = false
     var error: String? = nil
+    private(set) var totalEntries: Int = 0
+    private(set) var hasMoreEntries: Bool = false
 
     private var playTimer: Timer?
 
@@ -61,7 +63,28 @@ class ReplayState {
     }
 
     var progress: String {
-        "\(currentIndex + 1) / \(entries.count)"
+        if hasMoreEntries {
+            return "\(currentIndex + 1) / \(entries.count)+"
+        }
+        return "\(currentIndex + 1) / \(entries.count)"
+    }
+
+    var truncationNotice: String? {
+        guard hasMoreEntries else { return nil }
+        let lowerBound = max(totalEntries, entries.count + 1)
+        return "Showing first \(entries.count) entries. At least \(lowerBound) exist."
+    }
+
+    func replaceTimeline(
+        _ entries: [ReplayTimelineEntry],
+        totalEntries: Int,
+        hasMore: Bool
+    ) {
+        pause()
+        self.entries = entries
+        self.totalEntries = max(totalEntries, entries.count)
+        hasMoreEntries = hasMore
+        currentIndex = 0
     }
 
     var progressFraction: Double {

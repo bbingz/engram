@@ -408,8 +408,43 @@ public enum OffloadRepo {
         public let summaryMessageCount: Int?
         public let sizeBytes: Int
         public let tier: String?
+        public let agentRole: String?
+        public let parentSessionId: String?
+        public let suggestedParentId: String?
         public let syncVersion: Int
+        public let snapshotHash: String
         public let ftsContents: [String]
+        /// Latest published bundle identity for the requested live peer.
+        public let publishedContentHash: String?
+        /// True when the source row has not been indexed since that ledger row.
+        /// In that case `ftsContents` is intentionally empty: callers can reuse
+        /// `publishedContentHash` without reading or hashing the FTS corpus.
+        public let bundleIsCurrent: Bool
+        /// True only when FTS has no versioned job history (legacy row), or the
+        /// job targeting this exact session version completed successfully.
+        public let ftsSnapshotReady: Bool
+    }
+
+    public struct LivePublishDeltaToken: Sendable, Equatable {
+        public struct ReadySession: Sendable, Equatable {
+            public let id: String
+            public let syncVersion: Int
+            public let snapshotHash: String
+
+            public init(id: String, syncVersion: Int, snapshotHash: String) {
+                self.id = id
+                self.syncVersion = syncVersion
+                self.snapshotHash = snapshotHash
+            }
+        }
+
+        public let readySessions: [ReadySession]
+        public let retractionSessionIds: [String]
+
+        public init(readySessions: [ReadySession], retractionSessionIds: [String]) {
+            self.readySessions = readySessions
+            self.retractionSessionIds = retractionSessionIds
+        }
     }
 
     /// Scope a project by case-insensitive `project` OR the deterministic dev cwd,
@@ -420,8 +455,22 @@ public enum OffloadRepo {
     private static let projectScopeSQL =
         "(lower(COALESCE(project, '')) = lower(?) OR (? <> '' AND cwd = ?))"
 
+    private static func livePublishableSessionSQL(alias: String) -> String {
+        """
+        (\(alias).origin IS NULL OR \(alias).origin = 'local')
+          AND \(SessionVisibilityFilter.nonSkipTierSQL(alias: alias))
+          AND \(alias).agent_role IS NULL
+          AND COALESCE(\(alias).offload_state, 'local') = 'local'
+          AND \(alias).parent_session_id IS NULL
+          AND \(alias).suggested_parent_id IS NULL
+        """
+    }
+
+    private static let changedLivePublishCandidateSQL =
+        "(latest.content_hash IS NULL OR latest.source_sync_version IS NULL OR latest.source_sync_version != s.sync_version OR latest.source_snapshot_hash IS NULL OR latest.source_snapshot_hash != COALESCE(s.snapshot_hash, ''))"
+
     /// Local-origin top-level sessions of a project, eligible to PUSH. Excluded:
-    /// imported rows (origin = a peer) and skip/subagent rows (echo-loop guard), and
+    /// imported rows (origin = a peer) and skip/agent-role rows (echo-loop guard), and
     /// already-OFFLOADED rows — pushing an offloaded session would read its collapsed
     /// one-line FTS shadow and republish that as the session's content, also
     /// overwriting the rehydrate ledger key. The subagent guard is explicit on
@@ -435,12 +484,13 @@ public enum OffloadRepo {
             SELECT id, source, start_time, end_time, generated_title, custom_name, project,
                    message_count, user_message_count, assistant_message_count,
                    system_message_count, tool_message_count, summary, summary_message_count,
-                   size_bytes, tier, sync_version
+                   size_bytes, tier, agent_role, parent_session_id, suggested_parent_id,
+                   sync_version, COALESCE(snapshot_hash, '') AS snapshot_hash
             FROM sessions
             WHERE \(projectScopeSQL)
               AND (origin IS NULL OR origin = 'local')
               AND \(SessionVisibilityFilter.nonSkipTierSQL)
-              AND (agent_role IS NULL OR agent_role != 'subagent')
+              AND agent_role IS NULL
               AND COALESCE(offload_state, 'local') = 'local'
               AND parent_session_id IS NULL
               AND suggested_parent_id IS NULL
@@ -448,20 +498,220 @@ public enum OffloadRepo {
             """,
             arguments: [project, cwd, cwd]
         )
-        return try rows.map { row in
-            let id: String = row["id"]
-            let contents = try String.fetchAll(
-                db, sql: "SELECT content FROM sessions_fts WHERE session_id = ?", arguments: [id]
+        return try rows.map { try pushCandidate(from: $0, db: db) }
+    }
+
+    /// Same publishable predicates as `pushCandidates`, without a project scope.
+    /// Pages by `(start_time, id)` so equal timestamps cannot skip a row.
+    public static func livePublishCandidates(
+        _ db: Database,
+        limit: Int,
+        afterStart: String? = nil,
+        afterId: String? = nil,
+        peer: String? = nil,
+        includeFtsContents: Bool = true,
+        onlyChanged: Bool = false
+    ) throws -> [PushCandidate] {
+        let page = max(1, limit)
+        let ftsReady = liveFTSSnapshotReadySQL(sessionAlias: "s")
+        let predicate = livePublishableSessionSQL(alias: "s")
+        let select = """
+        SELECT s.id, s.source, s.start_time, s.end_time, s.generated_title, s.custom_name, s.project,
+               s.message_count, s.user_message_count, s.assistant_message_count,
+               s.system_message_count, s.tool_message_count, s.summary, s.summary_message_count,
+               s.size_bytes, s.tier, s.agent_role, s.parent_session_id, s.suggested_parent_id,
+               s.sync_version, COALESCE(s.snapshot_hash, '') AS snapshot_hash,
+               latest.content_hash AS published_content_hash,
+               \(ftsReady) AS fts_snapshot_ready,
+               CASE
+                 WHEN latest.content_hash IS NOT NULL
+                  AND latest.source_sync_version = s.sync_version
+                  AND latest.source_snapshot_hash = COALESCE(s.snapshot_hash, '')
+                  AND \(ftsReady)
+                 THEN 1 ELSE 0
+               END AS bundle_is_current
+        FROM sessions s
+        LEFT JOIN (
+            SELECT session_id, content_hash, source_sync_version, source_snapshot_hash, synced_at,
+                   ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY synced_at DESC, id DESC) AS rn
+            FROM sync_ledger
+            WHERE remote_peer = ? AND direction = 'out' AND content_hash IS NOT NULL
+        ) latest ON latest.session_id = s.id AND latest.rn = 1
+        WHERE \(predicate)
+          AND \(ftsReady)
+        """
+        let changed = onlyChanged
+            ? "AND \(changedLivePublishCandidateSQL)"
+            : ""
+        let order = """
+        ORDER BY s.start_time, s.id
+        LIMIT ?
+        """
+        let rows: [Row]
+        if let afterStart, let afterId {
+            rows = try Row.fetchAll(
+                db,
+                sql: """
+                \(select)
+                  \(changed)
+                  AND (
+                    s.start_time > ?
+                    OR (s.start_time = ? AND s.id > ?)
+                  )
+                \(order)
+                """,
+                arguments: [peer, afterStart, afterStart, afterId, page]
             )
+        } else {
+            rows = try Row.fetchAll(
+                db,
+                sql: "\(select)\n\(changed)\n\(order)",
+                arguments: [peer, page]
+            )
+        }
+        return try rows.map { try pushCandidate(from: $0, db: db, includeFtsContents: includeFtsContents) }
+    }
+
+    /// Unready FTS rows do not consume a publish page, but they still prevent a
+    /// complete manifest from certifying the local snapshot set.
+    public static func hasUnreadyLivePublishCandidates(_ db: Database) throws -> Bool {
+        let ftsReady = liveFTSSnapshotReadySQL(sessionAlias: "s")
+        let predicate = livePublishableSessionSQL(alias: "s")
+        return try Bool.fetchOne(
+            db,
+            sql: """
+            SELECT EXISTS(
+                SELECT 1 FROM sessions s
+                WHERE \(predicate)
+                  AND NOT \(ftsReady)
+            )
+            """
+        ) ?? false
+    }
+
+    public static func hasLivePublishDelta(_ db: Database, peer: String) throws -> Bool {
+        if try !livePublishCandidates(
+            db,
+            limit: 1,
+            peer: peer,
+            includeFtsContents: false,
+            onlyChanged: true
+        ).isEmpty {
+            return true
+        }
+
+        return try !livePublishedRetractionSessionIds(db, peer: peer).isEmpty
+    }
+
+    /// Stable identity of the actual outbound delta in one read snapshot.
+    /// It deliberately excludes FTS payloads and unrelated writer/job activity.
+    public static func livePublishDeltaToken(
+        _ db: Database,
+        peer: String
+    ) throws -> LivePublishDeltaToken? {
+        let ftsReady = liveFTSSnapshotReadySQL(sessionAlias: "s")
+        let predicate = livePublishableSessionSQL(alias: "s")
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT s.id, s.sync_version, COALESCE(s.snapshot_hash, '') AS snapshot_hash
+            FROM sessions s
+            LEFT JOIN (
+                SELECT session_id, content_hash, source_sync_version, source_snapshot_hash,
+                       ROW_NUMBER() OVER (
+                         PARTITION BY session_id ORDER BY synced_at DESC, id DESC
+                       ) AS rn
+                FROM sync_ledger
+                WHERE remote_peer = ? AND direction = 'out' AND content_hash IS NOT NULL
+            ) latest ON latest.session_id = s.id AND latest.rn = 1
+            WHERE \(predicate)
+              AND \(ftsReady)
+              AND \(changedLivePublishCandidateSQL)
+            ORDER BY s.start_time, s.id
+            """,
+            arguments: [peer]
+        )
+        let readySessions = rows.map { row in
+            LivePublishDeltaToken.ReadySession(
+                id: row["id"],
+                syncVersion: row["sync_version"],
+                snapshotHash: row["snapshot_hash"]
+            )
+        }
+        let retractionSessionIds = try livePublishedRetractionSessionIds(db, peer: peer)
+        guard !readySessions.isEmpty || !retractionSessionIds.isEmpty else { return nil }
+        return LivePublishDeltaToken(
+            readySessions: readySessions,
+            retractionSessionIds: retractionSessionIds
+        )
+    }
+
+    public static func livePublishedRetractionSessionIds(
+        _ db: Database,
+        peer: String
+    ) throws -> [String] {
+        let predicate = livePublishableSessionSQL(alias: "s")
+        return try String.fetchAll(
+            db,
+            sql: """
+            SELECT latest.session_id
+            FROM (
+                SELECT session_id,
+                       ROW_NUMBER() OVER (
+                         PARTITION BY session_id ORDER BY synced_at DESC, id DESC
+                       ) AS rn
+                FROM sync_ledger
+                WHERE direction = 'out'
+                  AND remote_peer = ?
+                  AND remote_key IS NOT NULL AND content_hash IS NOT NULL
+            ) latest
+            LEFT JOIN sessions s ON s.id = latest.session_id
+            WHERE latest.rn = 1
+              AND (s.id IS NULL OR NOT (\(predicate)))
+            ORDER BY latest.session_id
+            """,
+            arguments: [peer]
+        )
+    }
+
+    /// Latest `out` ledger row per session for this peer, joined to still-
+    /// publishable local-origin rows. Unlike `publishedManifestEntries`, this
+    /// does not rewrite `project` and refuses offloaded rows.
+    public static func livePublishedEntries(_ db: Database, peer: String) throws -> [SyncManifestEntry] {
+        let predicate = livePublishableSessionSQL(alias: "s")
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT s.id, s.source, s.project, s.generated_title, s.custom_name,
+                   s.start_time, s.end_time, s.message_count, s.user_message_count,
+                   s.assistant_message_count, s.system_message_count, s.tool_message_count,
+                   s.summary, s.summary_message_count, s.size_bytes, s.tier,
+                   s.agent_role, s.parent_session_id, s.suggested_parent_id,
+                   l.remote_key, l.content_hash
+            FROM sessions s
+            JOIN (
+                SELECT session_id, remote_key, content_hash,
+                       ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY synced_at DESC, id DESC) AS rn
+                FROM sync_ledger
+                WHERE direction = 'out'
+                  AND remote_peer = ?
+                  AND remote_key IS NOT NULL AND content_hash IS NOT NULL
+            ) l ON l.session_id = s.id AND l.rn = 1
+            WHERE \(predicate)
+            ORDER BY s.start_time, s.id
+            """,
+            arguments: [peer]
+        )
+        return rows.map { row in
             let custom: String? = row["custom_name"]
             let generated: String? = row["generated_title"]
-            return PushCandidate(
-                id: id,
+            return SyncManifestEntry(
+                sessionId: row["id"],
                 source: row["source"],
+                project: row["project"],
+                title: (custom?.isEmpty == false ? custom : generated),
                 startTime: row["start_time"],
                 endTime: row["end_time"],
-                title: (custom?.isEmpty == false ? custom : generated),
-                project: row["project"],
                 messageCount: row["message_count"] ?? 0,
                 userMessageCount: row["user_message_count"] ?? 0,
                 assistantMessageCount: row["assistant_message_count"] ?? 0,
@@ -471,16 +721,199 @@ public enum OffloadRepo {
                 summaryMessageCount: row["summary_message_count"],
                 sizeBytes: row["size_bytes"] ?? 0,
                 tier: row["tier"],
-                syncVersion: row["sync_version"] ?? 0,
-                ftsContents: contents
+                remoteKey: row["remote_key"],
+                contentHash: row["content_hash"],
+                agentRole: row["agent_role"],
+                parentSessionId: row["parent_session_id"],
+                suggestedParentId: row["suggested_parent_id"]
             )
         }
+    }
+
+    /// Live-path only: drop older `out` rows for `(peer, session_id)` after a
+    /// newer hash is recorded. Does not change `publishOnlyCommit`.
+    public static func compactLivePublishLedger(_ db: Database, peer: String, sessionId: String) throws {
+        guard let keepId = try Int64.fetchOne(
+            db,
+            sql: """
+            SELECT id FROM sync_ledger
+            WHERE session_id = ? AND remote_peer = ? AND direction = 'out'
+            ORDER BY synced_at DESC, id DESC
+            LIMIT 1
+            """,
+            arguments: [sessionId, peer]
+        ) else { return }
+        try db.execute(
+            sql: """
+            DELETE FROM sync_ledger
+            WHERE session_id = ? AND remote_peer = ? AND direction = 'out' AND id != ?
+            """,
+            arguments: [sessionId, peer, keepId]
+        )
+    }
+
+    /// Drop outbound membership only after a complete live head has omitted it.
+    public static func acknowledgeLivePublishedRetractions(
+        _ db: Database,
+        peer: String,
+        sessionIds: [String]
+    ) throws {
+        for sessionId in Set(sessionIds) {
+            try db.execute(
+                sql: """
+                DELETE FROM sync_ledger
+                WHERE session_id = ? AND remote_peer = ? AND direction = 'out'
+                """,
+                arguments: [sessionId, peer]
+            )
+        }
+    }
+
+    /// Confirms a live bundle only while the local row is still the exact
+    /// snapshot read before network I/O. The stored version and snapshot hash
+    /// are also the currentness predicate for later zero-FTS-read cycles.
+    public static func commitLivePublishedSnapshot(
+        _ db: Database,
+        sessionId: String,
+        remoteKey: String,
+        contentHash: String,
+        peer: String,
+        expectedSyncVersion: Int,
+        expectedSnapshotHash: String
+    ) throws -> Bool {
+        let ftsReady = liveFTSSnapshotReadySQL(sessionAlias: "s")
+        guard try Bool.fetchOne(
+            db,
+            sql: """
+            SELECT EXISTS(
+                SELECT 1 FROM sessions s
+                WHERE s.id = ? AND s.sync_version = ?
+                  AND COALESCE(s.snapshot_hash, '') = ?
+                  AND \(ftsReady)
+            )
+            """,
+            arguments: [sessionId, expectedSyncVersion, expectedSnapshotHash]
+        ) == true else { return false }
+
+        let latest = try Row.fetchOne(
+            db,
+            sql: """
+            SELECT id, content_hash FROM sync_ledger
+            WHERE session_id = ? AND remote_peer = ? AND direction = 'out'
+            ORDER BY synced_at DESC, id DESC
+            LIMIT 1
+            """,
+            arguments: [sessionId, peer]
+        )
+        let latestHash: String? = latest?["content_hash"]
+        if let latest, latestHash == contentHash {
+            let id: Int64 = latest["id"]
+            try db.execute(
+                sql: """
+                UPDATE sync_ledger
+                SET remote_session_id = ?, remote_key = ?, source_sync_version = ?,
+                    source_snapshot_hash = ?,
+                    synced_at = datetime('now')
+                WHERE id = ?
+                """,
+                arguments: [sessionId, remoteKey, expectedSyncVersion, expectedSnapshotHash, id]
+            )
+        } else {
+            try db.execute(
+                sql: """
+                INSERT INTO sync_ledger(
+                    session_id, remote_peer, remote_session_id, remote_key,
+                    direction, content_hash, source_sync_version, source_snapshot_hash
+                ) VALUES (?, ?, ?, ?, 'out', ?, ?, ?)
+                """,
+                arguments: [
+                    sessionId, peer, sessionId, remoteKey, contentHash,
+                    expectedSyncVersion, expectedSnapshotHash,
+                ]
+            )
+        }
+        return true
+    }
+
+    private static func pushCandidate(
+        from row: Row,
+        db: Database,
+        includeFtsContents: Bool = true
+    ) throws -> PushCandidate {
+        let id: String = row["id"]
+        let hasLiveState = row.columnNames.contains("bundle_is_current")
+        let bundleIsCurrent: Bool = hasLiveState && ((row["bundle_is_current"] as Int?) ?? 0) == 1
+        let ftsSnapshotReady: Bool = !hasLiveState || ((row["fts_snapshot_ready"] as Int?) ?? 0) == 1
+        let publishedContentHash: String? = hasLiveState ? row["published_content_hash"] : nil
+        let contents: [String]
+        if includeFtsContents, ftsSnapshotReady, !bundleIsCurrent {
+            contents = try String.fetchAll(
+                db, sql: "SELECT content FROM sessions_fts WHERE session_id = ?", arguments: [id]
+            )
+        } else {
+            contents = []
+        }
+        let custom: String? = row["custom_name"]
+        let generated: String? = row["generated_title"]
+        return PushCandidate(
+            id: id,
+            source: row["source"],
+            startTime: row["start_time"],
+            endTime: row["end_time"],
+            title: (custom?.isEmpty == false ? custom : generated),
+            project: row["project"],
+            messageCount: row["message_count"] ?? 0,
+            userMessageCount: row["user_message_count"] ?? 0,
+            assistantMessageCount: row["assistant_message_count"] ?? 0,
+            systemMessageCount: row["system_message_count"] ?? 0,
+            toolMessageCount: row["tool_message_count"] ?? 0,
+            summary: row["summary"],
+            summaryMessageCount: row["summary_message_count"],
+            sizeBytes: row["size_bytes"] ?? 0,
+            tier: row["tier"],
+            agentRole: row["agent_role"],
+            parentSessionId: row["parent_session_id"],
+            suggestedParentId: row["suggested_parent_id"],
+            syncVersion: row["sync_version"] ?? 0,
+            snapshotHash: row["snapshot_hash"] ?? "",
+            ftsContents: contents,
+            publishedContentHash: publishedContentHash,
+            bundleIsCurrent: bundleIsCurrent,
+            ftsSnapshotReady: ftsSnapshotReady
+        )
+    }
+
+    private static func liveFTSSnapshotReadySQL(sessionAlias: String) -> String {
+        """
+        (
+          NOT EXISTS (
+            SELECT 1 FROM session_index_jobs any_fts
+            WHERE any_fts.session_id = \(sessionAlias).id AND any_fts.job_kind = 'fts'
+          )
+          OR (
+            EXISTS (
+              SELECT 1 FROM session_index_jobs completed_fts
+              WHERE completed_fts.session_id = \(sessionAlias).id
+                AND completed_fts.job_kind = 'fts'
+                AND completed_fts.target_sync_version = \(sessionAlias).sync_version
+                AND completed_fts.status = 'completed'
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM session_index_jobs incomplete_fts
+              WHERE incomplete_fts.session_id = \(sessionAlias).id
+                AND incomplete_fts.job_kind = 'fts'
+                AND incomplete_fts.target_sync_version = \(sessionAlias).sync_version
+                AND incomplete_fts.status != 'completed'
+            )
+          )
+        )
+        """
     }
 
     /// Record a published session WITHOUT collapsing local FTS or flipping
     /// `offload_state` (unlike `commitOffloaded`). Idempotent: skips when an 'out'
     /// row with the same session_id + content_hash already exists, so re-publishing
-    /// unchanged content is a no-op.
+    /// unchanged content is a no-op for that peer.
     public static func publishOnlyCommit(
         _ db: Database,
         sessionId: String,
@@ -493,9 +926,9 @@ public enum OffloadRepo {
             db,
             sql: """
             SELECT COUNT(*) FROM sync_ledger
-            WHERE session_id = ? AND direction = 'out' AND content_hash = ?
+            WHERE session_id = ? AND remote_peer = ? AND direction = 'out' AND content_hash = ?
             """,
-            arguments: [sessionId, contentHash]
+            arguments: [sessionId, peer, contentHash]
         ) ?? 0
         guard existing == 0 else { return }
         try db.execute(
@@ -526,6 +959,7 @@ public enum OffloadRepo {
                    s.start_time, s.end_time, s.message_count, s.user_message_count,
                    s.assistant_message_count, s.system_message_count, s.tool_message_count,
                    s.summary, s.summary_message_count, s.size_bytes, s.tier,
+                   s.agent_role, s.parent_session_id, s.suggested_parent_id,
                    l.remote_key, l.content_hash
             FROM sessions s
             JOIN (
@@ -536,6 +970,12 @@ public enum OffloadRepo {
             ) l ON l.session_id = s.id AND l.rn = 1
             WHERE \(projectScopeSQL)
               AND (s.origin IS NULL OR s.origin = 'local')
+              -- Invariants 2/3: linking or classifying a session must never make a
+              -- skip/subagent/child visible through a previously published row.
+              AND \(SessionVisibilityFilter.nonSkipTierSQL(alias: "s"))
+              AND s.agent_role IS NULL
+              AND s.parent_session_id IS NULL
+              AND s.suggested_parent_id IS NULL
             ORDER BY s.start_time
             """,
             arguments: [project, cwd, cwd]
@@ -560,7 +1000,10 @@ public enum OffloadRepo {
                 sizeBytes: row["size_bytes"] ?? 0,
                 tier: row["tier"],
                 remoteKey: row["remote_key"],
-                contentHash: row["content_hash"]
+                contentHash: row["content_hash"],
+                agentRole: row["agent_role"],
+                parentSessionId: row["parent_session_id"],
+                suggestedParentId: row["suggested_parent_id"]
             )
         }
     }

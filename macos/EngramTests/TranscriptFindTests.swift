@@ -41,10 +41,14 @@ final class TranscriptFindTests: XCTestCase {
 
     // MARK: - Source-contract assertions
 
-    func testSessionBoxCarriesSearchTerm() throws {
+    func testSessionBoxCarriesSearchTerm_repro() throws {
         let notifications = try normalized("macos/Engram/AppNotifications.swift")
         XCTAssertTrue(notifications.contains("letsearchTerm:String?"))
-        XCTAssertTrue(notifications.contains("init(_session:Session,searchTerm:String?=nil)"))
+        XCTAssertTrue(
+            notifications.contains(
+                "init(_session:Session,searchTerm:String?=nil,navigationId:UUID?=nil)"
+            )
+        )
     }
 
     func testMainWindowPassesAndClearsSearchTerm() throws {
@@ -59,8 +63,8 @@ final class TranscriptFindTests: XCTestCase {
     func testSearchPageEmitsSearchTerm() throws {
         let searchPage = try source("macos/Engram/Views/Pages/SearchPageView.swift")
         XCTAssertTrue(
-            searchPage.contains("SessionBox(session, searchTerm: query)"),
-            "Search result taps must carry the active query into the transcript find bar"
+            searchPage.contains("openNotification(for: session, searchTerm: query)"),
+            "Search result opens must carry the active query into the transcript find bar"
         )
     }
 
@@ -76,16 +80,228 @@ final class TranscriptFindTests: XCTestCase {
         XCTAssertTrue(detail.contains("currentMatchIndex=0"))
     }
 
+    func testSameSessionSearchTermChangeReprimesFindWithoutChangingViewIdentity_repro() throws {
+        let detail = try normalized("macos/Engram/Views/SessionDetailView.swift")
+        let mainWindow = try normalized("macos/Engram/Views/MainWindowView.swift")
+
+        XCTAssertTrue(detail.contains(".onChange(of:searchTerm)"))
+        XCTAssertTrue(detail.contains("searchText=newSearchTerm??\"\""))
+        XCTAssertTrue(detail.contains("showFind=(newSearchTerm?.isEmpty==false)"))
+        XCTAssertFalse(detail.contains(".task(id:searchTerm)"))
+        XCTAssertTrue(mainWindow.contains(".id(session.id)"))
+        XCTAssertFalse(mainWindow.contains(".id(searchTerm)"))
+    }
+
     func testTextModeRowsAnchorAndHighlight() throws {
         let detail = try normalized("macos/Engram/Views/SessionDetailView.swift")
         XCTAssertTrue(detail.contains(".id(msg.id)"))
-        XCTAssertTrue(detail.contains("RawMessageRow(message:msg,searchText:searchText)"))
+        XCTAssertTrue(detail.contains("RawMessageRow(message:msg,searchText:findNeedle)"))
+    }
+
+    func testTextModeFindUsesTheSameAllMessageCollection_repro() throws {
+        let detail = try normalized("macos/Engram/Views/SessionDetailView.swift")
+        XCTAssertTrue(detail.contains("privatevarfindIndexedMessages:[IndexedMessage]"))
+        XCTAssertTrue(detail.contains("viewMode==.text?indexedMessages:displayIndexed"))
+        XCTAssertTrue(detail.contains("letsnapshot=findIndexedMessages"))
+        XCTAssertTrue(detail.contains("letdisplayed=findIndexedMessages"))
+        XCTAssertFalse(
+            detail.contains("letsnapshot=displayIndexed"),
+            "Text mode renders every message, so its match count cannot use session-filtered rows"
+        )
+    }
+
+    func testParentTranscriptOffersChildSessionLoadMore_repro() throws {
+        let detail = try source("macos/Engram/Views/SessionDetailView.swift")
+        XCTAssertTrue(detail.contains("loadMoreChildSessions"))
+        XCTAssertTrue(detail.contains("Button(\"Load more agent sessions\")"))
+        XCTAssertTrue(detail.contains("let offset = childrenSessions.count"))
+        XCTAssertTrue(detail.contains("offset: offset"))
+    }
+
+    func testChildLoadMoreDoesNotCancelParentRefresh_repro() throws {
+        let detail = try source("macos/Engram/Views/SessionDetailView.swift")
+        XCTAssertTrue(detail.contains("@State private var childLoadMoreTask"))
+        XCTAssertTrue(detail.contains("@State private var childLoadMoreToken"))
+        XCTAssertTrue(detail.contains("@State private var isLoadingParentInfo"))
+
+        let start = try XCTUnwrap(detail.range(of: "private func loadMoreChildSessions()"))
+        let end = try XCTUnwrap(
+            detail.range(of: "private func removeRelated(", range: start.upperBound..<detail.endIndex)
+        )
+        let body = detail[start.lowerBound..<end.lowerBound]
+        XCTAssertTrue(body.contains("!isLoadingParentInfo"))
+        XCTAssertTrue(body.contains("childLoadMoreTask = Task.detached"))
+        XCTAssertTrue(body.contains("currentLoadToken: childLoadMoreToken"))
+        XCTAssertFalse(body.contains("parentInfoTask?.cancel()"))
+        XCTAssertFalse(body.contains("parentInfoLoadSessionId = loadToken"))
     }
 
     func testFindBarReturnAdvances() throws {
         let bar = try source("macos/Engram/Views/Transcript/TranscriptFindBar.swift")
         XCTAssertTrue(bar.contains("onSubmit"))
         XCTAssertTrue(bar.contains("onNext"))
+    }
+
+    // MARK: - Round 4 AA30: structured/collapsed transcript find
+
+    func testTranscriptFindShowsRawToolPreambleAndExpandsCollapsedRegions_repro() throws {
+        let call = try source("macos/Engram/Views/Transcript/ToolCallView.swift")
+        let result = try source("macos/Engram/Views/Transcript/ToolResultView.swift")
+
+        XCTAssertTrue(call.contains("preambleSlice"),
+                      "A raw-only tool match must expose a highlighted preamble slice")
+        XCTAssertTrue(call.contains("value.range(of: needle"),
+                      "An active match in a truncated tool parameter must expand it")
+        XCTAssertTrue(result.contains("parsed.output.range(of: needle"),
+                      "An active match in collapsed tool output must expand it")
+    }
+
+    func testTranscriptFindScansTheRenderedToolResultContent_repro() throws {
+        let detail = try source("macos/Engram/Views/SessionDetailView.swift")
+        XCTAssertTrue(detail.contains("findableContent(for: msg, query: q)"))
+        XCTAssertTrue(detail.contains("ToolCallParser.parseToolResult(message.content)"))
+        XCTAssertFalse(
+            detail.contains("msg.message.content.lowercased().contains(query)"),
+            "The match scan must not count wrapper text that structured rendering removes"
+        )
+    }
+
+    func testTranscriptFindRebindsCurrentMatchByMessageIdentity_repro() throws {
+        let detail = try source("macos/Engram/Views/SessionDetailView.swift")
+        XCTAssertTrue(detail.contains("currentFindMatchMessageID"))
+        XCTAssertTrue(detail.contains("reboundFindMatchIndex"))
+        XCTAssertTrue(detail.contains("snapshot[messageIndex].id == previousMatchedMessageID"))
+    }
+
+    func testTranscriptFindRebindsFromLastCommittedMessageIdentity_repro() {
+        let earlier = indexed(content: "earlier needle", type: .user)
+        let retained = indexed(content: "retained needle", type: .assistant)
+        let later = indexed(content: "later needle", type: .assistant)
+        let rebuilt = [earlier, retained, later]
+
+        XCTAssertEqual(
+            SessionDetailView.reboundFindMatchIndex(
+                previousMessageID: retained.id,
+                indices: [0, 1, 2],
+                snapshot: rebuilt
+            ),
+            1
+        )
+        XCTAssertNotEqual(rebuilt[0].id, retained.id)
+    }
+
+    func testTextModeFindScansRawContentWhileSessionModeScansRenderedToolResult_repro() {
+        let toolResult = indexed(
+            content: "tool_result\nvisible output",
+            type: .toolResult
+        )
+
+        XCTAssertEqual(
+            SessionDetailView.findContent(for: toolResult, viewMode: .text),
+            "tool_result\nvisible output"
+        )
+        XCTAssertEqual(
+            SessionDetailView.findContent(for: toolResult, viewMode: .session),
+            "visible output"
+        )
+    }
+
+    func testToolParametersStartAfterMatchedHeader_repro() {
+        let parsed = ToolCallParser.parseToolCall("prose mentions `Read` before the header\n`Read`:\npath: needle.txt")
+
+        XCTAssertEqual(parsed?.toolName, "Read")
+        XCTAssertEqual(parsed?.parameters.map(\.key), ["path"])
+        XCTAssertEqual(parsed?.parameters.first?.value, "needle.txt")
+    }
+
+    func testToolFindExposesSameLineHeaderRemainderAndUnparsedBody_repro() throws {
+        let parsed = try XCTUnwrap(ToolCallParser.parseToolCall(
+            "`Read`: /a/needle.swift\n\n`Read`: /b/other.swift"
+        ))
+        XCTAssertTrue(parsed.parameters.contains { $0.value == "/a/needle.swift" })
+
+        let unparsed = try XCTUnwrap(ToolCallParser.parseToolCall(
+            "`Read`:\nunstructured needle phrase\npath: /b/other.swift"
+        ))
+        XCTAssertTrue(unparsed.parameters.contains { $0.key == "path" && $0.value == "/b/other.swift" })
+        XCTAssertEqual(
+            ToolCallView.renderedRemainder(parsed: unparsed, searchText: "needle phrase"),
+            "unstructured needle phrase"
+        )
+    }
+
+    func testToolCallParserSupportsLegacyBareParenHeaderAfterProse_repro() {
+        let legacy = ToolCallParser.parseToolCall(
+            "prose only mentions `Read` here\n`Read(\npath: legacy-needle.txt\n)"
+        )
+        let bareLegacy = ToolCallParser.parseToolCall(
+            "prose only mentions `Read` here\nRead(\npath: bare-legacy-needle.txt\n)"
+        )
+        let colon = ToolCallParser.parseToolCall(
+            "prose only mentions `Read` here\n`Read`:\npath: colon-needle.txt"
+        )
+
+        XCTAssertEqual(legacy?.toolName, "Read")
+        XCTAssertEqual(legacy?.parameters.map(\.key), ["path"])
+        XCTAssertEqual(legacy?.parameters.first?.value, "legacy-needle.txt")
+        XCTAssertEqual(bareLegacy?.toolName, "Read")
+        XCTAssertEqual(bareLegacy?.parameters.first?.value, "bare-legacy-needle.txt")
+        XCTAssertEqual(colon?.toolName, "Read")
+        XCTAssertEqual(colon?.parameters.map(\.key), ["path"])
+        XCTAssertNil(ToolCallParser.parseToolCall("prose only mentions `Read` here"))
+    }
+
+    func testToolCallParserCarriesExactRawOnlyPreambleForAcceptedHeaders_repro() throws {
+        let cases = [
+            ("alpha raw-only needle\n`Read`:\n", "alpha raw-only needle"),
+            ("beta raw-only needle\n`Read(\n", "beta raw-only needle"),
+            ("gamma raw-only needle\nRead(\n", "gamma raw-only needle"),
+        ]
+
+        for (content, expectedPreamble) in cases {
+            let parsed = try XCTUnwrap(ToolCallParser.parseToolCall(content))
+            XCTAssertEqual(parsed.preamble, expectedPreamble)
+            XCTAssertEqual(
+                ToolCallView.renderedPreamble(parsed: parsed, searchText: "raw-only needle"),
+                expectedPreamble
+            )
+        }
+    }
+
+    func testMultilineSystemFindPresentationExpandsAndHighlightsNeedleAfterFirstLine_repro() {
+        let content = "System reminder\nKeep the needle visible\nFinal line"
+        let presentation = CollapsibleSystemBubble.findPresentation(
+            content: content,
+            searchText: "needle",
+            isManuallyExpanded: false
+        )
+
+        XCTAssertTrue(presentation.isExpanded)
+        XCTAssertEqual(presentation.highlightInput, content)
+        XCTAssertNotNil(presentation.highlightInput?.range(of: "needle", options: .caseInsensitive))
+    }
+
+    func testWhitespacePaddedFindUsesOneTrimmedNeedleAcrossStructuredRows_repro() throws {
+        XCTAssertEqual(ColorBarMessageView.normalizedFindNeedle("  needle \n"), "needle")
+
+        let highlighted = ColorBarMessageView.highlightRendered(
+            AttributedString("a needle value"),
+            query: "needle "
+        )
+        XCTAssertNotEqual(highlighted, AttributedString("a needle value"))
+
+        let system = CollapsibleSystemBubble.findPresentation(
+            content: "needle in system",
+            searchText: " needle ",
+            isManuallyExpanded: false
+        )
+        XCTAssertTrue(system.isExpanded)
+
+        let parsed = try XCTUnwrap(ToolCallParser.parseToolCall("needle preamble\n`Read`:\npath: /tmp/a"))
+        XCTAssertEqual(
+            ToolCallView.renderedPreamble(parsed: parsed, searchText: "needle "),
+            "needle preamble"
+        )
     }
 
     // MARK: - Row 10: honest hidden-type match count
@@ -129,9 +345,137 @@ final class TranscriptFindTests: XCTestCase {
         XCTAssertEqual(buckets[0].label, MessageType.tool.label)
     }
 
-    // B3: agentComm classifies as MessageType.system/toolCall but must bucket
-    // under revealKind .agentComm, never .typeVisibility(.system).
-    func testHiddenSystemMatchBucketsBySystemCategory_repro() {
+    func testFindCountsStructuredToolCallAndSystemRowsWithHighlights_repro() {
+        let messages = [
+            indexed(content: "`Read`:\n{\"file\":\"needle.txt\"}", type: .toolCall),
+            indexed(content: "needle system payload", type: .system)
+        ]
+        let buckets = SessionDetailView.hiddenTypeMatchSummary(
+            messages,
+            query: "needle",
+            typeVisibility: Self.defaultVisibility,
+            showSystemPrompts: false,
+            showAgentComm: false
+        )
+        XCTAssertEqual(buckets.map(\.label).sorted(), [MessageType.system.label, MessageType.toolCall.label].sorted())
+        XCTAssertEqual(buckets.reduce(0) { $0 + $1.count }, 2)
+    }
+
+    func testHiddenToolResultMatchesRenderedOutputNotWrapperToken_repro() {
+        let messages = [
+            indexed(content: "tool_result\nactual needle", type: .toolResult)
+        ]
+
+        let wrapperBuckets = SessionDetailView.hiddenTypeMatchSummary(
+            messages,
+            query: "tool_result",
+            typeVisibility: Self.defaultVisibility,
+            showSystemPrompts: false,
+            showAgentComm: false
+        )
+        let outputBuckets = SessionDetailView.hiddenTypeMatchSummary(
+            messages,
+            query: "actual needle",
+            typeVisibility: Self.defaultVisibility,
+            showSystemPrompts: false,
+            showAgentComm: false
+        )
+
+        XCTAssertTrue(wrapperBuckets.isEmpty)
+        XCTAssertEqual(outputBuckets.first?.revealKind, .typeVisibility(.toolResult))
+        XCTAssertEqual(outputBuckets.first?.count, 1)
+    }
+
+    func testFailedToolResultUsesCleanedRenderedOutputForFind_repro() {
+        let failed = indexed(
+            content: "tool_result\nExit code: 1",
+            type: .error
+        )
+
+        XCTAssertFalse(
+            SessionDetailView.findContent(
+                for: failed,
+                viewMode: .session,
+                query: "tool_result"
+            ).localizedCaseInsensitiveContains("tool_result")
+        )
+        XCTAssertTrue(
+            SessionDetailView.findContent(
+                for: failed,
+                viewMode: .session,
+                query: "Exit code"
+            ).localizedCaseInsensitiveContains("Exit code")
+        )
+        XCTAssertTrue(ColorBarMessageView.rendersParsedToolResult(failed))
+    }
+
+    func testGenericToolRoleUsesCleanedToolResultForFind_repro() {
+        let result = indexed(content: "tool_result\nactual output", type: .tool)
+        XCTAssertEqual(
+            SessionDetailView.findContent(for: result, viewMode: .session, query: "actual"),
+            "actual output"
+        )
+        XCTAssertTrue(ColorBarMessageView.rendersParsedToolResult(result))
+    }
+
+    func testGenericToolCallRoleUsesStructuredToolView_repro() throws {
+        let source = try normalized("macos/Engram/Views/Transcript/ColorBarMessageView.swift")
+        let bodyStart = try XCTUnwrap(source.range(of: "varbody:someView"))
+        XCTAssertTrue(source[bodyStart.lowerBound...].contains("case.toolCall,.tool:"))
+    }
+
+    func testToolCallFindOnlyExposesTheRawSliceContainingTheNeedle_repro() {
+        let parsed = ParsedToolCall(
+            toolName: "Read",
+            parameters: [(key: "path", value: "/tmp/x")],
+            rawContent: "needle preamble\n`Read`:\npath: /tmp/x\nunrelated remainder",
+            preamble: "needle preamble",
+            remainder: "unrelated remainder"
+        )
+
+        XCTAssertEqual(
+            ToolCallView.renderedPreamble(parsed: parsed, searchText: "needle"),
+            "needle preamble"
+        )
+        XCTAssertNil(ToolCallView.renderedRemainder(parsed: parsed, searchText: "needle"))
+    }
+
+    func testToolCallFindDoesNotRepaintParsedParametersAsRemainder_repro() throws {
+        let parsed = try XCTUnwrap(ToolCallParser.parseToolCall(
+            "`Read`:\npath: /tmp/needle\nunstructured tail"
+        ))
+        XCTAssertNil(ToolCallView.renderedRemainder(parsed: parsed, searchText: "needle"))
+        XCTAssertEqual(
+            ToolCallView.renderedRemainder(parsed: parsed, searchText: "unstructured"),
+            "unstructured tail"
+        )
+    }
+
+    func testHeaderOnlyToolCallFindableContentDoesNotDuplicateHeader_repro() throws {
+        let parsed = try XCTUnwrap(ToolCallParser.parseToolCall("`Read`:"))
+        XCTAssertEqual(
+            ToolCallView.findableContent(parsed: parsed, searchText: "Read"),
+            "Read"
+        )
+    }
+
+    func testWhitespacePaddingDoesNotResetFindNavigation_repro() throws {
+        let detail = try normalized("macos/Engram/Views/SessionDetailView.swift")
+        XCTAssertTrue(
+            detail.contains(
+                "ColorBarMessageView.normalizedFindNeedle(oldValue)" +
+                    "!=ColorBarMessageView.normalizedFindNeedle(newValue)"
+            )
+        )
+    }
+
+    func testFavoriteReadUsesLiveGenerationToken_repro() throws {
+        let detail = try source("macos/Engram/Views/SessionDetailView.swift")
+        XCTAssertTrue(detail.contains("favoriteLoadGeneration"))
+        XCTAssertTrue(detail.contains("generation == favoriteLoadGeneration"))
+    }
+
+    func testHiddenAgentCommunicationSystemRowsAreCounted_repro() {
         let messages = [
             indexed(content: "agent-comm-marker", category: .agentComm, type: .system)
         ]
@@ -142,10 +486,13 @@ final class TranscriptFindTests: XCTestCase {
             showSystemPrompts: false,
             showAgentComm: false
         )
-        XCTAssertEqual(buckets.count, 1)
-        XCTAssertEqual(buckets[0].revealKind, .agentComm)
-        XCTAssertNotEqual(buckets[0].revealKind, .typeVisibility(.system))
-        XCTAssertEqual(buckets[0].label, "Agent Comm")
+        XCTAssertEqual(buckets, [
+            SessionDetailView.HiddenMatchBucket(
+                label: "Agent Comm",
+                revealKind: .agentComm,
+                count: 1
+            )
+        ])
     }
 
     func testHiddenMatchRevealFlipsCorrectGate() {

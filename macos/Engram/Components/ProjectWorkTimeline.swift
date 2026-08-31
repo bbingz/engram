@@ -12,11 +12,15 @@ import SwiftUI
 struct ProjectWorkTimeline: View {
     let project: String
     @Environment(DatabaseManager.self) private var db
-    @Environment(EngramServiceClient.self) private var serviceClient
+    @Environment(\.engramServiceClient) private var serviceClient
+    @Environment(\.engramFixedDate) private var fixedDate
     @State private var items: [ImplementationTimelineItem] = []
     @State private var isLoading = true
     /// Projects that already requested semantic title generation, preventing a load -> generate -> reload loop.
     @State private var requestedTitleGen: Set<String> = []
+    @State private var openRequestId: UUID?
+    /// Keyboard focus for timeline rows (Wave 8-6): .plain buttons draw no ring.
+    @FocusState private var focusedItemId: String?
 
     private static let inputDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -33,6 +37,7 @@ struct ProjectWorkTimeline: View {
     }()
 
     var body: some View {
+        let now = fixedDate ?? Date()
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(icon: "chart.bar.xaxis", title: "Timeline")
             if isLoading {
@@ -59,7 +64,7 @@ struct ProjectWorkTimeline: View {
                                 )
                                 TimelineNode(
                                     item: item,
-                                    dateLabel: Self.dateRange(item),
+                                    dateLabel: Self.dateRange(item, now: now),
                                     kindLabel: Self.kindLabel(item.kind),
                                     kindColor: Self.kindColor(item.kind)
                                 )
@@ -68,7 +73,23 @@ struct ProjectWorkTimeline: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        // Single VoiceOver stop: rail + node read as one button.
+                        .accessibilityElement(children: .combine)
                         .accessibilityIdentifier("projectTimeline_card")
+                        // Keyboard navigation (Wave 8-6): visible ring + Enter/Space.
+                        .focusable()
+                        .focused($focusedItemId, equals: item.id)
+                        .onKeyPress(keys: [.return, .space]) { _ in
+                            guard focusedItemId == item.id else { return .ignored }
+                            open(item)
+                            return .handled
+                        }
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Theme.accent, lineWidth: 2)
+                                .opacity(focusedItemId == item.id ? 1 : 0)
+                                .allowsHitTesting(false)
+                        )
                     }
                 }
                 .accessibilityIdentifier("projectTimeline_list")
@@ -77,6 +98,7 @@ struct ProjectWorkTimeline: View {
         .accessibilityIdentifier("projectTimeline_container")
         // Reload when the user switches to a different project.
         .task(id: project) { await load() }
+        .onDisappear { openRequestId = nil }
     }
 
     /// - Parameter showSpinner: Shows loading only on first load or project switch.
@@ -85,10 +107,16 @@ struct ProjectWorkTimeline: View {
         if showSpinner { isLoading = true }
         let db = self.db
         let project = self.project
+        let now = fixedDate ?? Date()
         do {
             // Off the main thread (UI-C1/C2), same as the global Timeline page.
             items = try await Task.detached {
-                try db.implementationTimeline(days: 90, project: project, humanDriven: true)
+                try db.implementationTimeline(
+                    days: ProjectWorkWindow.defaultDays,
+                    project: project,
+                    humanDriven: true,
+                    now: now
+                )
             }.value
         } catch {
             EngramLogger.error("ProjectWorkTimeline load failed", module: .ui, error: error)
@@ -103,7 +131,7 @@ struct ProjectWorkTimeline: View {
               !requestedTitleGen.contains(project) else { return }
         requestedTitleGen.insert(project)
         _ = try? await serviceClient.generateProjectWorkTitles(
-            EngramServiceGenerateProjectWorkTitlesRequest(project: project)
+            EngramServiceGenerateProjectWorkTitlesRequest(project: project, now: now)
         )
         await load(showSpinner: false)
     }
@@ -111,12 +139,24 @@ struct ProjectWorkTimeline: View {
     /// Opens the latest beat's session through the existing .openSession path.
     private func open(_ item: ImplementationTimelineItem) {
         guard let sessionId = item.beats.last?.sessionId else { return }
+        let requestId = UUID()
+        openRequestId = requestId
+        let token = SessionNavigationGate.begin()
         let db = self.db
         Task {
-            guard let session = try? await Task.detached(operation: {
+            let session = try? await Task.detached(operation: {
                 try db.getSession(id: sessionId)
-            }).value else { return }
-            NotificationCenter.default.post(name: .openSession, object: SessionBox(session))
+            }).value
+            guard openRequestId == requestId,
+                  SessionNavigationGate.isCurrent(token) else { return }
+            guard let session else {
+                SessionNavigationGate.complete(token)
+                return
+            }
+            NotificationCenter.default.post(
+                name: .openSession,
+                object: SessionBox(session, navigationId: token)
+            )
         }
     }
 
@@ -133,16 +173,20 @@ struct ProjectWorkTimeline: View {
         }
     }
 
-    private static func dateLabel(_ dateStr: String) -> String {
+    private static func dateLabel(_ dateStr: String, now: Date) -> String {
         guard let date = inputDateFormatter.date(from: dateStr) else { return dateStr }
-        if Calendar.current.isDateInToday(date) { return String(localized: "Today") }
-        if Calendar.current.isDateInYesterday(date) { return String(localized: "Yesterday") }
+        let calendar = Calendar.current
+        if calendar.isDate(date, inSameDayAs: now) { return String(localized: "Today") }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+           calendar.isDate(date, inSameDayAs: yesterday) {
+            return String(localized: "Yesterday")
+        }
         return outputDateFormatter.string(from: date)
     }
 
-    private static func dateRange(_ item: ImplementationTimelineItem) -> String {
-        let start = dateLabel(item.startDate)
-        let end = dateLabel(item.endDate)
+    private static func dateRange(_ item: ImplementationTimelineItem, now: Date) -> String {
+        let start = dateLabel(item.startDate, now: now)
+        let end = dateLabel(item.endDate, now: now)
         return item.startDate == item.endDate ? start : "\(start) - \(end)"
     }
 

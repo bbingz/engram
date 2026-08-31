@@ -70,10 +70,10 @@ final class SessionSourcesTests: XCTestCase {
         )
     }
 
-    func testEncodeProjectDirSetForGroupedSourcesOnly() {
+    func testCommandCodeProjectDirectoryUsesLiveSlugEncoding_repro() {
         let roots = SessionSources.roots(homeDirectory: URL(fileURLWithPath: "/h"))
         let withEncoder = roots.filter { $0.encodeProjectDir != nil }.map(\.id)
-        XCTAssertEqual(withEncoder, [.claudeCode, .geminiCli, .iflow, .qwen, .qoder])
+        XCTAssertEqual(withEncoder, [.claudeCode, .geminiCli, .iflow, .qwen, .qoder, .commandcode])
 
         let cc = roots.first { $0.id == .claudeCode }?.encodeProjectDir
         XCTAssertEqual(cc?("/Users/a/b/proj"), "-Users-a-b-proj")
@@ -106,6 +106,26 @@ final class SessionSourcesTests: XCTestCase {
 
         let qoder = roots.first { $0.id == .qoder }?.encodeProjectDir
         XCTAssertEqual(qoder?("/Users/a/b/proj"), "-Users-a-b-proj")
+
+        let commandCode = roots.first { $0.id == .commandcode }?.encodeProjectDir
+        XCTAssertEqual(commandCode?("/Users/bing/-Code-/engram"), "users-bing-code-engram")
+        XCTAssertEqual(
+            commandCode?("/Users/BING/项目/FOO_42"),
+            "users-bing-foo-42",
+            "CommandCode's live slug accepts ASCII alphanumerics only"
+        )
+    }
+
+    func testProjectDirectoryEncodingPreservesLiveDarwinTmpSpelling_repro() {
+        let roots = SessionSources.roots(homeDirectory: URL(fileURLWithPath: "/h"))
+        for id in [SourceId.claudeCode, .qoder, .qwen, .commandcode] {
+            let encode = roots.first { $0.id == id }?.encodeProjectDir
+            XCTAssertNotEqual(
+                encode?("/tmp/engram-project-move-alias"),
+                encode?("/private/tmp/engram-project-move-alias"),
+                "\(id.rawValue) must encode the live cwd spelling"
+            )
+        }
     }
 
     // Audit SRC-QWEN-002: Qwen sanitizeCwd never truncates or appends Claude's hash suffix.
@@ -537,6 +557,23 @@ final class SessionSourcesTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: target.appendingPathComponent("session.jsonl").path))
     }
 
+    func testGroupedDirReconcileAppliesMisencodedCommandCodeDirectory_repro() throws {
+        let cwd = "/Users/bing/-Code-/Service_Asset"
+        let root = try groupedReconcileRoot(id: .commandcode)
+        let stale = root.appendingPathComponent("-Users-bing--Code--Service_Asset", isDirectory: true)
+        let target = root.appendingPathComponent("users-bing-code-service-asset", isDirectory: true)
+        try writeGroupedReconcileSession(cwd: cwd, under: stale)
+
+        let result = GroupedDirReconcile.run(
+            roots: [groupedReconcileSourceRoot(id: .commandcode, path: root.path)]
+        )
+
+        XCTAssertEqual(result.plannedRenames, 1)
+        XCTAssertEqual(result.appliedRenames, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: target.appendingPathComponent("session.jsonl").path))
+    }
+
     func testGroupedDirReconcileDryRunDoesNotRenameDirectory() throws {
         let cwd = "/Users/bing/-Code-/my proj"
         let root = try groupedReconcileRoot(id: .claudeCode)
@@ -702,7 +739,12 @@ final class SessionSourcesTests: XCTestCase {
     }
 
     private func groupedReconcileSourceRoot(id: SourceId, path: String) -> SourceRoot {
-        SourceRoot(id: id, path: path, encodeProjectDir: { cwd in ClaudeCodeProjectDir.encode(cwd) })
+        SourceRoot(id: id, path: path, encodeProjectDir: { cwd in
+            if id == .commandcode {
+                return SessionSources.encodeCommandCode(cwd)
+            }
+            return ClaudeCodeProjectDir.encode(cwd)
+        })
     }
 
     private func writeGroupedReconcileSession(cwd: String, under dir: URL) throws {

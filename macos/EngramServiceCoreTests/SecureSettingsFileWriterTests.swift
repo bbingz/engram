@@ -91,6 +91,55 @@ final class SecureSettingsFileWriterTests: XCTestCase {
         XCTAssertEqual(object["disabledSources"] as? [String], ["codex"])
     }
 
+    func testMutateJSONRefusesTruncatedExistingSettings_repro() throws {
+        let file = tempDir.appendingPathComponent("settings.json")
+        let original = Data(#"{"aiApiKey":"plaintext-secret""#.utf8)
+        try original.write(to: file)
+        chmod(file.path, 0o600)
+
+        XCTAssertThrowsError(
+            try EngramServiceCommandHandler.writeDisabledSourcesForTests(
+                source: "codex",
+                enabled: false,
+                settingsURL: file
+            )
+        )
+        XCTAssertEqual(try Data(contentsOf: file), original)
+    }
+
+    func testMutateJSONRefusesSymlinkWithoutTouchingTarget_repro() throws {
+        let target = tempDir.appendingPathComponent("outside.json")
+        let linked = tempDir.appendingPathComponent("settings.json")
+        let original = Data(#"{"disabledSources":[]}"#.utf8)
+        try original.write(to: target)
+        chmod(target.path, 0o644)
+        try FileManager.default.createSymbolicLink(at: linked, withDestinationURL: target)
+
+        XCTAssertThrowsError(
+            try SecureSettingsFileWriter.mutateJSON(at: linked) { object in
+                object["disabledSources"] = ["codex"]
+            }
+        )
+
+        var info = stat()
+        XCTAssertEqual(lstat(target.path, &info), 0)
+        XCTAssertEqual(info.st_mode & 0o777, 0o644)
+        XCTAssertEqual(try Data(contentsOf: target), original)
+    }
+
+    func testMutateJSONRefusesFIFOWithoutBlocking_repro() throws {
+        let fifo = tempDir.appendingPathComponent("settings.json")
+        XCTAssertEqual(mkfifo(fifo.path, S_IRUSR | S_IWUSR), 0)
+
+        let started = Date()
+        XCTAssertThrowsError(
+            try SecureSettingsFileWriter.mutateJSON(at: fifo) { object in
+                object["disabledSources"] = ["codex"]
+            }
+        )
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.5)
+    }
+
     func testSettingsFileLockSerializesSameProcessCallers() throws {
         let file = tempDir.appendingPathComponent("settings.json")
         let firstEntered = expectation(description: "first entered")
@@ -139,5 +188,41 @@ final class SecureSettingsFileWriterTests: XCTestCase {
         XCTAssertEqual(child.terminationStatus, 0)
         let text = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
         XCTAssertEqual(text?.trimmingCharacters(in: .whitespacesAndNewlines), "acquired")
+    }
+
+    func testSettingsFileLockWaitsForChildProcessOwner_repro() throws {
+        let file = tempDir.appendingPathComponent("settings.json")
+        let child = Process()
+        let output = Pipe()
+        child.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        child.arguments = [
+            "-c",
+            "import fcntl,sys,time; f=open(sys.argv[1],'a+'); fcntl.flock(f,fcntl.LOCK_EX); print('locked', flush=True); time.sleep(0.25)",
+            file.appendingPathExtension("lock").path,
+        ]
+        child.standardOutput = output
+        try child.run()
+        let ready = output.fileHandleForReading.readData(ofLength: 7)
+        XCTAssertEqual(String(data: ready, encoding: .utf8), "locked\n")
+
+        let started = Date()
+        XCTAssertNoThrow(
+            try EngramSettingsFileLock.withExclusiveLock(for: file) {}
+        )
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 0.15)
+        child.waitUntilExit()
+        XCTAssertEqual(child.terminationStatus, 0)
+    }
+
+    func testSettingsFileLockRejectsFIFO_repro() throws {
+        let file = tempDir.appendingPathComponent("settings.json")
+        let lockPath = file.appendingPathExtension("lock").path
+        XCTAssertEqual(mkfifo(lockPath, S_IRUSR | S_IWUSR), 0)
+
+        XCTAssertThrowsError(
+            try EngramSettingsFileLock.withExclusiveLock(for: file) {
+                XCTFail("operation must not run with a FIFO lock")
+            }
+        )
     }
 }

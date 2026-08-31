@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ToolCallView: View {
     let parsed: ParsedToolCall
+    var searchText: String = ""
     @AppStorage("contentFontSize") var fontSize: Double = 14
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var copied = false
@@ -16,6 +17,53 @@ struct ToolCallView: View {
         Theme.scaledFontSize(base: fontSize, category: dynamicTypeSize)
     }
 
+    private var rawContentMatchesSearch: Bool {
+        let needle = ColorBarMessageView.normalizedFindNeedle(searchText)
+        return !needle.isEmpty
+            && parsed.remainder?.range(of: needle, options: .caseInsensitive) != nil
+    }
+
+    nonisolated static func renderedPreamble(parsed: ParsedToolCall, searchText: String) -> String? {
+        let needle = ColorBarMessageView.normalizedFindNeedle(searchText)
+        guard !needle.isEmpty,
+              let preamble = parsed.preamble,
+              preamble.range(of: needle, options: .caseInsensitive) != nil else { return nil }
+        return preamble
+    }
+
+    nonisolated static func renderedRemainder(parsed: ParsedToolCall, searchText: String) -> String? {
+        let needle = ColorBarMessageView.normalizedFindNeedle(searchText)
+        guard !needle.isEmpty,
+              let remainder = parsed.remainder,
+              remainder.range(of: needle, options: .caseInsensitive) != nil else { return nil }
+        return remainder
+    }
+
+    nonisolated static func findableContent(parsed: ParsedToolCall, searchText: String) -> String {
+        var slices = [parsed.toolName]
+        for parameter in parsed.parameters {
+            slices.append(parameter.key)
+            slices.append(parameter.value)
+        }
+        if let preamble = renderedPreamble(parsed: parsed, searchText: searchText) {
+            slices.append(preamble)
+        }
+        if let remainder = renderedRemainder(parsed: parsed, searchText: searchText) {
+            slices.append(remainder)
+        }
+        return slices.joined(separator: "\n")
+    }
+
+    /// Expose parser-owned prose before a tool header only when compact tool
+    /// rendering hides the active raw-content match.
+    private var preambleSlice: String? {
+        Self.renderedPreamble(parsed: parsed, searchText: searchText)
+    }
+
+    private var remainderSlice: String? {
+        Self.renderedRemainder(parsed: parsed, searchText: searchText)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Header: tool name badge
@@ -23,7 +71,7 @@ struct ToolCallView: View {
                 Image(systemName: "wrench.and.screwdriver")
                     .font(.system(size: effectiveFontSize - 2))
                     .foregroundStyle(tintColor)
-                Text(parsed.toolName)
+                Text(highlighted(parsed.toolName))
                     .font(.system(size: effectiveFontSize - 1, weight: .semibold))
                     .foregroundStyle(tintColor)
                 Spacer()
@@ -51,6 +99,26 @@ struct ToolCallView: View {
             .padding(.vertical, 6)
             .background(tintColor.opacity(0.10))
 
+            if let preambleSlice {
+                Divider().overlay(tintColor.opacity(0.15))
+                Text(highlighted(preambleSlice))
+                    .font(.system(size: effectiveFontSize - 2, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+            }
+
+            if let remainderSlice {
+                Divider().overlay(tintColor.opacity(0.15))
+                Text(highlighted(remainderSlice))
+                    .font(.system(size: effectiveFontSize - 2, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+            }
+
             // Parameters
             if !parsed.parameters.isEmpty {
                 Divider().overlay(tintColor.opacity(0.15))
@@ -62,7 +130,7 @@ struct ToolCallView: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
-            } else if parsed.rawContent.count > 0 {
+            } else if parsed.remainder != nil, remainderSlice == nil {
                 // No structured params — show raw content collapsed
                 rawFallbackView
             }
@@ -79,11 +147,13 @@ struct ToolCallView: View {
     @ViewBuilder
     private func parameterRow(idx: Int, key: String, value: String) -> some View {
         let isLong = value.count > 200
+        let needle = ColorBarMessageView.normalizedFindNeedle(searchText)
         let isExpanded = expandedParams.contains(idx)
+            || (isLong && !needle.isEmpty && value.range(of: needle, options: .caseInsensitive) != nil)
 
         VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .top, spacing: 0) {
-                Text(verbatim: key)
+                Text(highlighted(key))
                     .font(.system(size: effectiveFontSize - 2, weight: .medium, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .frame(minWidth: 80, alignment: .leading)
@@ -94,7 +164,7 @@ struct ToolCallView: View {
 
                 if isLong && !isExpanded {
                     HStack(alignment: .top, spacing: 4) {
-                        Text(verbatim: String(value.prefix(200)) + "…")
+                        Text(highlighted(String(value.prefix(200)) + "…"))
                             .font(.system(size: effectiveFontSize - 2, design: .monospaced))
                             .foregroundStyle(.primary)
                         Button("expand") {
@@ -106,7 +176,7 @@ struct ToolCallView: View {
                     }
                 } else {
                     VStack(alignment: .leading, spacing: 0) {
-                        Text(verbatim: value)
+                        Text(highlighted(value))
                             .font(.system(size: effectiveFontSize - 2, design: .monospaced))
                             .foregroundStyle(.primary)
                             .textSelection(.enabled)
@@ -126,13 +196,14 @@ struct ToolCallView: View {
 
     @ViewBuilder
     private var rawFallbackView: some View {
-        let lines = parsed.rawContent.components(separatedBy: "\n")
+        let content = parsed.remainder ?? ""
+        let lines = content.components(separatedBy: "\n")
         let isLong = lines.count > 5
-        let isExpanded = expandedParams.contains(-1)
+        let isExpanded = expandedParams.contains(-1) || rawContentMatchesSearch
 
         VStack(alignment: .leading, spacing: 4) {
             Divider().overlay(tintColor.opacity(0.15))
-            Text(verbatim: isLong && !isExpanded ? lines.prefix(5).joined(separator: "\n") + "\n…" : parsed.rawContent)
+            Text(highlighted(isLong && !isExpanded ? lines.prefix(5).joined(separator: "\n") + "\n…" : content))
                 .font(.system(size: effectiveFontSize - 2, design: .monospaced))
                 .foregroundStyle(.primary)
                 .textSelection(.enabled)
@@ -149,5 +220,9 @@ struct ToolCallView: View {
                 .padding(.bottom, 6)
             }
         }
+    }
+
+    private func highlighted(_ text: String) -> AttributedString {
+        ColorBarMessageView.highlightRendered(AttributedString(text), query: searchText)
     }
 }

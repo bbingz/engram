@@ -4,13 +4,14 @@ import SwiftUI
 struct ResumeDialog: View {
     let session: Session
     private let availableTerminals: [TerminalType]
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
     @Environment(\.dismiss) var dismiss
     @State private var resumeResult: ResumeInfo?
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var fallbackContextPrimer: String?
     @State private var selectedTerminal: TerminalType
+    @State private var launchTask: Task<Void, Never>?
 
     struct ResumeInfo {
         let tool: String
@@ -59,28 +60,38 @@ struct ResumeDialog: View {
 
             Divider()
 
-            if isLoading {
-                ProgressView("Detecting CLI...")
-                    .frame(maxWidth: .infinity)
-            } else if let error = errorMessage {
-                Label(error, systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.red)
-                    .font(.caption)
-            } else if let info = resumeResult {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Circle().fill(.green).frame(width: 8, height: 8)
-                        Text(info.tool).font(.system(size: 13, weight: .medium))
-                        Text("detected").font(.caption).foregroundStyle(.green)
+            // Min-height anchor: loading → error/success swaps must not resize
+            // the dialog under the user's cursor.
+            Group {
+                if isLoading {
+                    ProgressView("Detecting CLI...")
+                        .frame(maxWidth: .infinity)
+                } else if let error = errorMessage {
+                    Label(error, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(Theme.red)
+                        .font(.caption)
+                        // VoiceOver reads the icon glyph as "exclamationmark triangle";
+                        // spell out the role so the failure is announced plainly.
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Unable to resume session")
+                        .accessibilityValue(error)
+                } else if let info = resumeResult {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Circle().fill(Theme.green).frame(width: 8, height: 8)
+                            Text(info.tool).scaledFont(13, weight: .medium)
+                            Text("detected").font(.caption).foregroundStyle(Theme.green)
+                        }
+                        Text(([info.command] + info.args).joined(separator: " "))
+                            .scaledFont(11, design: .monospaced)
+                            .foregroundStyle(.secondary)
+                            .padding(8)
+                            .background(Color(nsColor: .controlBackgroundColor))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
                     }
-                    Text(([info.command] + info.args).joined(separator: " "))
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .padding(8)
-                        .background(Color(nsColor: .controlBackgroundColor))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
             }
+            .frame(minHeight: 64, alignment: .top)
 
             if let primer = availableContextPrimer {
                 VStack(alignment: .leading, spacing: 6) {
@@ -98,7 +109,7 @@ struct ResumeDialog: View {
 
                     ScrollView {
                         Text(primer)
-                            .font(.system(size: 11, design: .monospaced))
+                            .scaledFont(11, design: .monospaced)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .textSelection(.enabled)
@@ -125,20 +136,32 @@ struct ResumeDialog: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
+                Button("Cancel") {
+                    launchTask?.cancel()
+                    dismiss()
+                }
                     .keyboardShortcut(.cancelAction)
                 if let info = resumeResult {
                     Button("Resume") {
-                        switch TerminalLauncher.launch(
-                            command: info.command,
-                            args: info.args,
-                            cwd: info.cwd,
-                            terminal: selectedTerminal
-                        ) {
-                        case .success:
-                            dismiss()
-                        case .failure(let error):
-                            errorMessage = error.localizedDescription
+                        launchTask?.cancel()
+                        launchTask = Task {
+                            do {
+                                switch try await TerminalLauncher.launch(
+                                    command: info.command,
+                                    args: info.args,
+                                    cwd: info.cwd,
+                                    terminal: selectedTerminal
+                                ) {
+                                case .success:
+                                    dismiss()
+                                case .failure(let error):
+                                    errorMessage = error.localizedDescription
+                                }
+                            } catch is CancellationError {
+                                return
+                            } catch {
+                                errorMessage = error.localizedDescription
+                            }
                         }
                     }
                     .keyboardShortcut(.defaultAction)
@@ -150,6 +173,9 @@ struct ResumeDialog: View {
         .frame(width: 400)
         .task {
             await fetchResumeInfo()
+        }
+        .onDisappear {
+            launchTask?.cancel()
         }
     }
 

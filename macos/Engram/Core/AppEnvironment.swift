@@ -1,5 +1,17 @@
 // macos/Engram/Core/AppEnvironment.swift
 import Foundation
+import SwiftUI
+
+private struct EngramFixedDateEnvironmentKey: EnvironmentKey {
+    static let defaultValue: Date? = nil
+}
+
+extension EnvironmentValues {
+    var engramFixedDate: Date? {
+        get { self[EngramFixedDateEnvironmentKey.self] }
+        set { self[EngramFixedDateEnvironmentKey.self] = newValue }
+    }
+}
 
 struct AppEnvironment {
     let dbPath: String
@@ -11,6 +23,8 @@ struct AppEnvironment {
     let popoverStandalone: Bool
     let windowSize: NSSize?
     let mockDaemon: Bool
+    let showOnboarding: Bool
+    let isTestMode: Bool
 
     static let production = AppEnvironment(
         dbPath: FileManager.default.homeDirectoryForCurrentUser
@@ -22,7 +36,9 @@ struct AppEnvironment {
         fixedDate: nil,
         popoverStandalone: false,
         windowSize: nil,
-        mockDaemon: false
+        mockDaemon: false,
+        showOnboarding: false,
+        isTestMode: false
     )
 
     static func test(fixturePath: String) -> AppEnvironment {
@@ -36,7 +52,9 @@ struct AppEnvironment {
             fixedDate: Date(timeIntervalSince1970: 1742601600), // 2025-03-22 fixed
             popoverStandalone: false,
             windowSize: nil,
-            mockDaemon: false
+            mockDaemon: false,
+            showOnboarding: false,
+            isTestMode: true
         )
     }
 
@@ -62,6 +80,7 @@ struct AppEnvironment {
 
             // Parse --mock-daemon
             let mockDaemon = args.contains("--mock-daemon")
+            let showOnboarding = args.contains("--show-onboarding")
 
             // Parse --fixed-date (override default)
             var fixedDate = Date(timeIntervalSince1970: 1742601600) // existing default
@@ -92,7 +111,9 @@ struct AppEnvironment {
                 fixedDate: fixedDate,
                 popoverStandalone: popoverStandalone,
                 windowSize: windowSize,
-                mockDaemon: mockDaemon
+                mockDaemon: mockDaemon,
+                showOnboarding: showOnboarding,
+                isTestMode: true
             )
         }
         // Unit-test host (EngramTests) loads into the app process without
@@ -112,7 +133,9 @@ struct AppEnvironment {
                 fixedDate: nil,
                 popoverStandalone: false,
                 windowSize: nil,
-                mockDaemon: false
+                mockDaemon: false,
+                showOnboarding: false,
+                isTestMode: false
             )
         }
         return .production

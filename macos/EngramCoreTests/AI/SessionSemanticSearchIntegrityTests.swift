@@ -1,11 +1,76 @@
 import EngramCoreRead
 import Foundation
 import GRDB
+import SQLite3
 import XCTest
 
 /// Wave 8A lane 1A unit coverage for H07 model equality helpers, M09
 /// constant-memory top-K accumulation, and shared semantic policy contracts.
 final class SessionSemanticSearchIntegrityTests: XCTestCase {
+    func testImplicitDimensionUsesStoredNativeDimension_repro() {
+        let result = SessionVectorSearchAvailability.queryCompatibility(
+            configuredModel: "native-model",
+            configuredDimension: 1_536,
+            dimensionsWereSent: false,
+            snapshot: .init(
+                isUsable: true,
+                model: "native-model",
+                dimension: 1_024
+            )
+        )
+
+        XCTAssertEqual(result, .compatible(model: "native-model", dimension: 1_024))
+    }
+
+    func testAdoptedNativeDimensionUsesOmittedCompatibility_repro() {
+        let config = EmbeddingConfig(
+            baseURL: "https://api.example.com/v1",
+            apiKey: "k",
+            model: "native-model",
+            dimension: 1_024,
+            dimensionWasExplicit: true
+        )
+        let dimensionsWereSent = EmbeddingRequestPolicy.dimensionsWereSentForCompatibility(
+            config,
+            storedDimension: 2_560
+        )
+
+        XCTAssertFalse(dimensionsWereSent)
+        XCTAssertEqual(
+            SessionVectorSearchAvailability.queryCompatibility(
+                configuredModel: config.model,
+                configuredDimension: config.dimension,
+                dimensionsWereSent: dimensionsWereSent,
+                snapshot: .init(isUsable: true, model: config.model, dimension: 2_560)
+            ),
+            .compatible(model: config.model, dimension: 2_560)
+        )
+    }
+
+    func testExplicitBGEConfigUsesStoredNativeDimensionWhenRequestOmitsDimensions_repro() {
+        let config = EmbeddingConfig(
+            baseURL: "https://api.example.com/v1",
+            apiKey: "k",
+            model: "BAAI/bge-m3",
+            dimension: 1_536,
+            dimensionWasExplicit: true
+        )
+        XCTAssertFalse(EmbeddingRequestPolicy.sendsDimensions(for: config))
+
+        let result = SessionVectorSearchAvailability.queryCompatibility(
+            configuredModel: config.model,
+            configuredDimension: config.dimension,
+            dimensionsWereSent: EmbeddingRequestPolicy.sendsDimensions(for: config),
+            snapshot: .init(
+                isUsable: true,
+                model: config.model,
+                dimension: 1_024
+            )
+        )
+
+        XCTAssertEqual(result, .compatible(model: config.model, dimension: 1_024))
+    }
+
     // MARK: - H07 query compatibility
 
     func testQueryCompatibilityRequiresExactModelAndDimensionMatch() {
@@ -134,7 +199,10 @@ final class SessionSemanticSearchIntegrityTests: XCTestCase {
             .appendingPathComponent("engram-avail-\(UUID().uuidString).sqlite")
         defer { try? FileManager.default.removeItem(at: url) }
 
-        let queue = try DatabaseQueue(path: url.path)
+        let queue = try DatabaseQueue(
+            path: url.path,
+            configuration: SQLiteConnectionPolicy.writerConfiguration()
+        )
         try queue.write { db in
             try db.execute(sql: """
                 CREATE TABLE embedding_meta (
@@ -144,7 +212,8 @@ final class SessionSemanticSearchIntegrityTests: XCTestCase {
                 );
                 CREATE TABLE sessions (
                   id TEXT PRIMARY KEY,
-                  tier TEXT
+                  tier TEXT,
+                  hidden_at TEXT
                 );
                 CREATE TABLE semantic_chunks (
                   id TEXT PRIMARY KEY,
@@ -181,5 +250,82 @@ final class SessionSemanticSearchIntegrityTests: XCTestCase {
         XCTAssertTrue(usable.isUsable)
         XCTAssertEqual(usable.model, "model-a")
         XCTAssertEqual(usable.dimension, 3)
+
+        try queue.write { db in
+            try db.execute(sql: "UPDATE sessions SET hidden_at = datetime('now') WHERE id = 's0'")
+        }
+        XCTAssertFalse(
+            SessionVectorSearchAvailability.probe(databasePath: url.path).isUsable,
+            "hidden-only embeddings must not advertise semantic search"
+        )
+    }
+
+    func testHybridAvailabilityProbeFailsClosedImmediatelyOnExclusiveDatabaseLock_repro() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-avail-busy-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        do {
+            let queue = try DatabaseQueue(
+                path: url.path,
+                configuration: SQLiteConnectionPolicy.writerConfiguration()
+            )
+            try queue.write { db in
+                try db.execute(sql: """
+                    CREATE TABLE embedding_meta (id INTEGER PRIMARY KEY, model TEXT, dimension INTEGER);
+                    CREATE TABLE sessions (id TEXT PRIMARY KEY, tier TEXT, hidden_at TEXT);
+                    CREATE TABLE semantic_chunks (
+                      id TEXT PRIMARY KEY, session_id TEXT, embedding BLOB, model TEXT, dim INTEGER
+                    );
+                    INSERT INTO embedding_meta (id, model, dimension) VALUES (1, 'model-a', 3);
+                    INSERT INTO sessions (id, tier) VALUES ('s0', 'normal');
+                    """)
+                try db.execute(
+                    sql: "INSERT INTO semantic_chunks VALUES ('c0', 's0', ?, 'model-a', 3)",
+                    arguments: [VectorMath.encode([1, 0, 0])]
+                )
+            }
+        }
+
+        let lockAcquired = expectation(description: "exclusive lock acquired")
+        let lockReleased = expectation(description: "exclusive lock released")
+        let release = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer { lockReleased.fulfill() }
+            var connection: OpaquePointer?
+            guard sqlite3_open_v2(
+                url.path,
+                &connection,
+                SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
+                nil
+            ) == SQLITE_OK,
+                  let connection
+            else {
+                return
+            }
+            defer { sqlite3_close(connection) }
+            guard sqlite3_exec(connection, "PRAGMA locking_mode = EXCLUSIVE", nil, nil, nil) == SQLITE_OK,
+                  sqlite3_exec(connection, "BEGIN EXCLUSIVE", nil, nil, nil) == SQLITE_OK
+            else {
+                return
+            }
+            lockAcquired.fulfill()
+            _ = release.wait(timeout: .now() + 2)
+            _ = sqlite3_exec(connection, "COMMIT", nil, nil, nil)
+        }
+        wait(for: [lockAcquired], timeout: 2)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 1.0) {
+            release.signal()
+        }
+
+        let startedAt = Date()
+        let snapshot = SessionVectorSearchAvailability.probe(databasePath: url.path)
+        XCTAssertFalse(snapshot.isUsable, "a path-only probe has no safe snapshot to reuse while locked")
+        XCTAssertLessThan(
+            Date().timeIntervalSince(startedAt),
+            1,
+            "availability probes must not inherit the normal 30-second reader timeout"
+        )
+        wait(for: [lockReleased], timeout: 2)
     }
 }

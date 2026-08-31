@@ -39,7 +39,7 @@ extension EngramServiceCommandHandler {
     /// Manually run one offload/rehydrate/reclaim cycle now (protected command).
     /// Returns enabled=false (a no-op) when remote offload is not configured.
     static func remoteOffloadNow(writerGate: ServiceWriterGate) async throws -> EngramServiceRemoteSyncCycleResponse {
-        guard let coordinator = RemoteSyncCoordinator.makeIfEnabled(
+        guard let coordinator = try RemoteSyncCoordinator.makeIfEnabled(
             gate: writerGate,
             environment: ProcessInfo.processInfo.environment
         ) else {
@@ -59,7 +59,7 @@ extension EngramServiceCommandHandler {
         _ request: EngramServiceRemoteRehydrateRequest,
         writerGate: ServiceWriterGate
     ) async throws -> EngramServiceRemoteRehydrateResponse {
-        guard let coordinator = RemoteSyncCoordinator.makeIfEnabled(
+        guard let coordinator = try RemoteSyncCoordinator.makeIfEnabled(
             gate: writerGate,
             environment: ProcessInfo.processInfo.environment
         ) else {
@@ -70,8 +70,18 @@ extension EngramServiceCommandHandler {
     }
 
     /// Read-only status: offload counts + pending queue depths + config (no token).
-    static func remoteSyncStatus(writerGate: ServiceWriterGate) async throws -> EngramServiceRemoteSyncStatusResponse {
-        let config = RemoteSyncConfig.read(environment: ProcessInfo.processInfo.environment)
+    static func remoteSyncStatus(
+        writerGate: ServiceWriterGate,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) async throws -> EngramServiceRemoteSyncStatusResponse {
+        let config = RemoteSyncConfig.read(
+            environment: environment,
+            homeDirectory: RemoteSyncConfig.homeDirectory(environment: environment)
+        )
+        let enabled = try RemoteSyncCoordinator.makeIfEnabled(
+            gate: writerGate,
+            environment: environment
+        ) != nil
         let counts = try await writerGate.performReadCommand(name: "remoteSyncStatus") { writer in
             try writer.read { db -> [Int] in
                 [
@@ -83,7 +93,7 @@ extension EngramServiceCommandHandler {
             }
         }.value
         return EngramServiceRemoteSyncStatusResponse(
-            enabled: config.enabled,
+            enabled: enabled,
             backendKind: config.backendKind,
             localCount: counts[0],
             offloadedCount: counts[1],
@@ -100,7 +110,7 @@ extension EngramServiceCommandHandler {
         writerGate: ServiceWriterGate
     ) async throws -> EngramServiceRemoteProjectSyncPreviewResponse {
         let dir = request.direction == "pull" ? "pull" : "push"
-        guard let coordinator = RemoteSyncCoordinator.makeIfEnabled(
+        guard let coordinator = try RemoteSyncCoordinator.makeIfEnabled(
             gate: writerGate,
             environment: ProcessInfo.processInfo.environment
         ) else {
@@ -135,7 +145,7 @@ extension EngramServiceCommandHandler {
         _ request: EngramServiceRemoteProjectSyncRequest,
         writerGate: ServiceWriterGate
     ) async throws -> EngramServiceRemotePushProjectResponse {
-        guard let coordinator = RemoteSyncCoordinator.makeIfEnabled(
+        guard let coordinator = try RemoteSyncCoordinator.makeIfEnabled(
             gate: writerGate,
             environment: ProcessInfo.processInfo.environment
         ) else {
@@ -151,7 +161,7 @@ extension EngramServiceCommandHandler {
         _ request: EngramServiceRemoteProjectSyncRequest,
         writerGate: ServiceWriterGate
     ) async throws -> EngramServiceRemotePullProjectResponse {
-        guard let coordinator = RemoteSyncCoordinator.makeIfEnabled(
+        guard let coordinator = try RemoteSyncCoordinator.makeIfEnabled(
             gate: writerGate,
             environment: ProcessInfo.processInfo.environment
         ) else {

@@ -128,6 +128,692 @@ final class SessionSnapshotClassificationTests: XCTestCase {
         }
     }
 
+    func testOpenCodeNilRoleClearsStoredDispatchedClassificationOnSameHash_repro() throws {
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "ordinary-fork",
+                    source: .opencode,
+                    hash: "same",
+                    tier: .skip,
+                    agentRole: "dispatched"
+                )
+            )
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "ordinary-fork",
+                    source: .opencode,
+                    hash: "same",
+                    tier: .normal,
+                    agentRole: nil
+                )
+            )
+
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = 'ordinary-fork'")
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'ordinary-fork'"),
+                "normal"
+            )
+        }
+    }
+
+    func testOpenCodeReindexPreservesCheckedDispatchedProbe_repro() throws {
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "checked-probe",
+                    source: .opencode,
+                    hash: "same",
+                    tier: .skip,
+                    agentRole: "dispatched"
+                )
+            )
+            try db.execute(
+                sql: "UPDATE sessions SET link_checked_at = '2026-08-23T12:00:00Z' WHERE id = 'checked-probe'"
+            )
+            try db.execute(sql: "DELETE FROM session_index_jobs WHERE session_id = 'checked-probe'")
+
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "checked-probe",
+                    source: .opencode,
+                    hash: "same",
+                    tier: .normal,
+                    agentRole: nil
+                )
+            )
+
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = 'checked-probe'"),
+                "dispatched"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'checked-probe'"),
+                "skip"
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM session_index_jobs WHERE session_id = 'checked-probe' AND job_kind = 'fts'"
+                ),
+                0
+            )
+        }
+    }
+
+    func testOpenCodeCheckedOrdinaryForkDoesNotPinSkipTier_repro() throws {
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(id: "ordinary", source: .opencode, hash: "old", tier: .skip)
+            )
+            try db.execute(
+                sql: "UPDATE sessions SET link_checked_at = '2026-08-23T12:00:00Z' WHERE id = 'ordinary'"
+            )
+
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(id: "ordinary", source: .opencode, hash: "new", tier: .normal)
+            )
+
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = 'ordinary'"))
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'ordinary'"),
+                "normal"
+            )
+        }
+    }
+
+    func testOpenCodeParentBackfillLinksChildAfterHostArrives_repro() throws {
+        let externalURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("opencode-parent-backfill-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: externalURL) }
+        let external = try DatabaseQueue(path: externalURL.path)
+        try external.write { db in
+            try db.execute(sql: """
+                CREATE TABLE session (
+                    id TEXT PRIMARY KEY,
+                    parent_id TEXT,
+                    time_archived INTEGER
+                );
+                INSERT INTO session VALUES ('host', NULL, NULL);
+                INSERT INTO session VALUES ('child', 'host', NULL);
+                """)
+        }
+
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "child",
+                    source: .opencode,
+                    hash: "child",
+                    sourceLocator: "\(externalURL.path)::child"
+                )
+            )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'child'")
+            )
+            _ = try w.writeAuthoritativeSnapshot(snapshot(id: "host", source: .opencode, hash: "host"))
+
+            let result = try StartupBackfills.backfillParentLinks(db)
+
+            XCTAssertEqual(result.linked, 1)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'child'"),
+                "host"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT link_source FROM sessions WHERE id = 'child'"),
+                "path"
+            )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'child'"),
+                "an ordinary OpenCode fork must not receive a skip-pinning classification stamp"
+            )
+        }
+    }
+
+    func testOpenCodeWriteWalksMissingVendorIntermediateToHost_repro() throws {
+        let externalURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("opencode-missing-intermediate-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: externalURL) }
+        let external = try DatabaseQueue(path: externalURL.path)
+        try external.write { db in
+            try db.execute(sql: """
+                CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, time_archived INTEGER);
+                INSERT INTO session VALUES ('host', NULL, NULL);
+                INSERT INTO session VALUES ('fork', 'host', NULL);
+                INSERT INTO session VALUES ('task', 'fork', NULL);
+                """)
+        }
+
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            _ = try w.writeAuthoritativeSnapshot(snapshot(id: "host", source: .opencode, hash: "host"))
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "task",
+                    source: .opencode,
+                    hash: "task",
+                    tier: .skip,
+                    agentRole: "dispatched",
+                    sourceLocator: "\(externalURL.path)::task"
+                )
+            )
+
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'task'"),
+                "host",
+                "authoritative OpenCode writes should resolve external ancestry immediately"
+            )
+            XCTAssertEqual(
+                try StartupBackfills.backfillParentLinks(db).linked,
+                0,
+                "startup backfill should have no stale parent left to repair"
+            )
+            let row = try XCTUnwrap(Row.fetchOne(
+                db,
+                sql: "SELECT parent_session_id, agent_role, tier FROM sessions WHERE id = 'task'"
+            ))
+            XCTAssertEqual(row["parent_session_id"] as String?, "host")
+            XCTAssertEqual(row["agent_role"] as String?, "dispatched")
+            XCTAssertEqual(row["tier"] as String?, "skip")
+        }
+    }
+
+    func testOpenCodeWriteWalksArchivedVendorForkToLiveHostAndPreservesSkip_repro() throws {
+        let externalURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("opencode-archived-fork-write-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: externalURL) }
+        let external = try DatabaseQueue(path: externalURL.path)
+        try external.write { db in
+            try db.execute(sql: """
+                CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, time_archived INTEGER);
+                INSERT INTO session VALUES ('host', NULL, NULL);
+                INSERT INTO session VALUES ('archived-fork', 'host', 1);
+                INSERT INTO session VALUES ('task', 'archived-fork', NULL);
+                """)
+        }
+
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            _ = try w.writeAuthoritativeSnapshot(snapshot(id: "host", source: .opencode, hash: "host"))
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "task",
+                    source: .opencode,
+                    hash: "task",
+                    tier: .skip,
+                    agentRole: "dispatched",
+                    sourceLocator: "\(externalURL.path)::task"
+                )
+            )
+
+            let row = try XCTUnwrap(Row.fetchOne(
+                db,
+                sql: "SELECT parent_session_id, agent_role, tier FROM sessions WHERE id = 'task'"
+            ))
+            XCTAssertEqual(row["parent_session_id"] as String?, "host")
+            XCTAssertEqual(row["agent_role"] as String?, "dispatched")
+            XCTAssertEqual(row["tier"] as String?, "skip")
+        }
+    }
+
+    func testOpenCodeBackfillWalksArchivedVendorForkToLiveHostAndPreservesSkip_repro() throws {
+        let externalURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("opencode-archived-fork-backfill-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: externalURL) }
+        let external = try DatabaseQueue(path: externalURL.path)
+        try external.write { db in
+            try db.execute(sql: """
+                CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, time_archived INTEGER);
+                INSERT INTO session VALUES ('host', NULL, NULL);
+                INSERT INTO session VALUES ('archived-fork', 'host', 1);
+                INSERT INTO session VALUES ('task', 'archived-fork', NULL);
+                """)
+        }
+
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "task",
+                    source: .opencode,
+                    hash: "task",
+                    tier: .skip,
+                    agentRole: "dispatched",
+                    sourceLocator: "\(externalURL.path)::task"
+                )
+            )
+            _ = try w.writeAuthoritativeSnapshot(snapshot(id: "host", source: .opencode, hash: "host"))
+
+            XCTAssertEqual(try StartupBackfills.backfillParentLinks(db).linked, 1)
+            let row = try XCTUnwrap(Row.fetchOne(
+                db,
+                sql: "SELECT parent_session_id, agent_role, tier FROM sessions WHERE id = 'task'"
+            ))
+            XCTAssertEqual(row["parent_session_id"] as String?, "host")
+            XCTAssertEqual(row["agent_role"] as String?, "dispatched")
+            XCTAssertEqual(row["tier"] as String?, "skip")
+        }
+    }
+
+    func testOpenCodeCheckedOrdinaryForkReindexStaysDispatchedSkip_repro() throws {
+        let externalURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("opencode-checked-ordinary-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: externalURL) }
+        let external = try DatabaseQueue(path: externalURL.path)
+        try external.write { db in
+            try db.execute(sql: """
+                CREATE TABLE session (
+                    id TEXT PRIMARY KEY, parent_id TEXT, title TEXT,
+                    agent TEXT, slug TEXT, time_archived INTEGER
+                );
+                INSERT INTO session VALUES ('host', NULL, 'Host', NULL, NULL, NULL);
+                INSERT INTO session VALUES ('checked-task', 'host', 'quick ping', 'build', NULL, NULL);
+                """)
+        }
+
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            let locator = "\(externalURL.path)::checked-task"
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "checked-task",
+                    source: .opencode,
+                    hash: "same",
+                    tier: .skip,
+                    agentRole: "dispatched",
+                    sourceLocator: locator
+                )
+            )
+            try db.execute(
+                sql: "UPDATE sessions SET link_checked_at = '2026-08-24T00:00:00Z' WHERE id = 'checked-task'"
+            )
+            try db.execute(sql: "DELETE FROM session_index_jobs WHERE session_id = 'checked-task'")
+
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "checked-task",
+                    source: .opencode,
+                    hash: "same",
+                    tier: .normal,
+                    agentRole: nil,
+                    sourceLocator: locator
+                )
+            )
+
+            let row = try XCTUnwrap(Row.fetchOne(
+                db,
+                sql: "SELECT agent_role, tier, link_checked_at FROM sessions WHERE id = 'checked-task'"
+            ))
+            XCTAssertEqual(row["agent_role"] as String?, "dispatched")
+            XCTAssertEqual(row["tier"] as String?, "skip")
+            XCTAssertNotNil(row["link_checked_at"] as String?)
+            XCTAssertEqual(
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM session_index_jobs WHERE session_id = 'checked-task' AND job_kind = 'fts'"
+                ),
+                0
+            )
+        }
+    }
+
+    func testOpenCodeReindexKeepsValidatedParentWhenExternalDatabaseIsUnavailable_repro() throws {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("missing-opencode-\(UUID().uuidString).sqlite")
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            _ = try w.writeAuthoritativeSnapshot(snapshot(id: "host", source: .opencode, hash: "host"))
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "child",
+                    source: .opencode,
+                    hash: "child",
+                    parentSessionId: "host",
+                    sourceLocator: "\(missing.path)::child"
+                )
+            )
+
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'child'"),
+                "host",
+                "an unreadable vendor database is not authoritative evidence that the parent disappeared"
+            )
+        }
+    }
+
+    func testOpenCodeBackfillRemovesExistingPathLinkWhenExternalHostIsArchived_repro() throws {
+        let externalURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("opencode-existing-archived-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: externalURL) }
+        let external = try DatabaseQueue(path: externalURL.path)
+        try external.write { db in
+            try db.execute(sql: """
+                CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, time_archived INTEGER);
+                INSERT INTO session VALUES ('host', NULL, NULL);
+                INSERT INTO session VALUES ('child', 'host', NULL);
+                """)
+        }
+
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            _ = try w.writeAuthoritativeSnapshot(snapshot(id: "host", source: .opencode, hash: "host"))
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "child",
+                    source: .opencode,
+                    hash: "child",
+                    parentSessionId: "host",
+                    sourceLocator: "\(externalURL.path)::child"
+                )
+            )
+            try external.write { externalDB in
+                try externalDB.execute(sql: "UPDATE session SET time_archived = 1 WHERE id = 'host'")
+            }
+
+            _ = try StartupBackfills.backfillParentLinks(db)
+
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'child'")
+            )
+        }
+    }
+
+    func testOpenCodeTaskToolBackfillRetargetsTopLevelHostAndStaysSkip_repro() throws {
+        let externalURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("opencode-nested-task-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: externalURL) }
+        let external = try DatabaseQueue(path: externalURL.path)
+        try external.write { db in
+            try db.execute(sql: """
+                CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, time_archived INTEGER);
+                INSERT INTO session VALUES ('host', NULL, NULL);
+                INSERT INTO session VALUES ('fork', 'host', NULL);
+                INSERT INTO session VALUES ('task', 'fork', NULL);
+                """)
+        }
+
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            _ = try w.writeAuthoritativeSnapshot(snapshot(id: "host", source: .opencode, hash: "host"))
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "fork",
+                    source: .opencode,
+                    hash: "fork",
+                    parentSessionId: "host",
+                    sourceLocator: "\(externalURL.path)::fork"
+                )
+            )
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "task",
+                    source: .opencode,
+                    hash: "task",
+                    tier: .skip,
+                    agentRole: "dispatched",
+                    parentSessionId: "fork",
+                    sourceLocator: "\(externalURL.path)::task"
+                )
+            )
+            _ = try StartupBackfills.backfillParentLinks(db)
+
+            let row = try Row.fetchOne(
+                db,
+                sql: "SELECT parent_session_id, agent_role, tier FROM sessions WHERE id = 'task'"
+            )
+            XCTAssertEqual(row?["parent_session_id"], "host")
+            XCTAssertEqual(row?["agent_role"], "dispatched")
+            XCTAssertEqual(row?["tier"], "skip")
+        }
+    }
+
+    func testOpenCodeSameHashDropsHiddenOrphanPathParent_repro() throws {
+        let externalURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("opencode-hidden-parent-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: externalURL) }
+        let external = try DatabaseQueue(path: externalURL.path)
+        try external.write { db in
+            try db.execute(sql: """
+                CREATE TABLE session (
+                    id TEXT PRIMARY KEY,
+                    parent_id TEXT,
+                    time_archived INTEGER
+                );
+                INSERT INTO session VALUES ('host', NULL, NULL);
+                INSERT INTO session VALUES ('child', 'host', NULL);
+                """)
+        }
+
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            _ = try w.writeAuthoritativeSnapshot(snapshot(id: "host", source: .opencode, hash: "host"))
+            let child = snapshot(
+                id: "child",
+                source: .opencode,
+                hash: "same",
+                messageCount: 1,
+                userMessageCount: 1,
+                assistantMessageCount: 0,
+                parentSessionId: "host",
+                sourceLocator: "\(externalURL.path)::child"
+            )
+            _ = try w.writeAuthoritativeSnapshot(child)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'child'"),
+                "host"
+            )
+
+            try db.execute(
+                sql: "UPDATE sessions SET hidden_at = datetime('now'), orphan_status = 'archive_pending' WHERE id = 'host'"
+            )
+            let result = try w.writeAuthoritativeSnapshot(child)
+
+            XCTAssertEqual(result.action, .merge)
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'child'")
+            )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT link_source FROM sessions WHERE id = 'child'")
+            )
+
+            _ = try StartupBackfills.backfillParentLinks(db)
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'child'"),
+                "startup backfill must not reattach to a hidden/orphan host"
+            )
+        }
+    }
+
+    func testOpenCodeBackfillDoesNotWalkNestedForkIntoHiddenHost_repro() throws {
+        let externalURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("opencode-hidden-nested-host-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: externalURL) }
+        let external = try DatabaseQueue(path: externalURL.path)
+        try external.write { db in
+            try db.execute(sql: """
+                CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, time_archived INTEGER);
+                INSERT INTO session VALUES ('host', NULL, NULL);
+                INSERT INTO session VALUES ('fork', 'host', NULL);
+                INSERT INTO session VALUES ('task', 'fork', NULL);
+                """)
+        }
+
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            _ = try w.writeAuthoritativeSnapshot(snapshot(id: "host", source: .opencode, hash: "host"))
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "fork",
+                    source: .opencode,
+                    hash: "fork",
+                    parentSessionId: "host",
+                    sourceLocator: "\(externalURL.path)::fork"
+                )
+            )
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "task",
+                    source: .opencode,
+                    hash: "task",
+                    tier: .skip,
+                    agentRole: "dispatched",
+                    sourceLocator: "\(externalURL.path)::task"
+                )
+            )
+            try db.execute(
+                sql: "UPDATE sessions SET hidden_at = datetime('now'), orphan_status = 'archive_pending' WHERE id = 'host'"
+            )
+            try db.execute(
+                sql: "UPDATE sessions SET parent_session_id = NULL, link_source = NULL WHERE id = 'task'"
+            )
+
+            XCTAssertEqual(try StartupBackfills.backfillParentLinks(db).linked, 0)
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'task'")
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'task'"),
+                "skip"
+            )
+        }
+    }
+
+    func testOpenCodeBackfillRejectsArchivedExternalHost_repro() throws {
+        let externalURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("opencode-archived-parent-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: externalURL) }
+        let external = try DatabaseQueue(path: externalURL.path)
+        try external.write { db in
+            try db.execute(sql: """
+                CREATE TABLE session (
+                    id TEXT PRIMARY KEY,
+                    parent_id TEXT,
+                    time_archived INTEGER
+                );
+                INSERT INTO session VALUES ('host', NULL, 1);
+                INSERT INTO session VALUES ('child', 'host', NULL);
+                """)
+        }
+
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            _ = try w.writeAuthoritativeSnapshot(snapshot(id: "host", source: .opencode, hash: "host"))
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "child",
+                    source: .opencode,
+                    hash: "child",
+                    sourceLocator: "\(externalURL.path)::child"
+                )
+            )
+
+            XCTAssertEqual(try StartupBackfills.backfillParentLinks(db).linked, 0)
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'child'"))
+        }
+    }
+
+    func testOpenCodeReindexClearsNativePathParentWhenExternalParentBecomesNil_repro() throws {
+        let externalURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("opencode-cleared-parent-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: externalURL) }
+        let external = try DatabaseQueue(path: externalURL.path)
+        try external.write { db in
+            try db.execute(sql: """
+                CREATE TABLE session (
+                    id TEXT PRIMARY KEY,
+                    parent_id TEXT,
+                    time_archived INTEGER
+                );
+                INSERT INTO session VALUES ('host', NULL, NULL);
+                INSERT INTO session VALUES ('child', 'host', NULL);
+                """)
+        }
+
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            _ = try w.writeAuthoritativeSnapshot(snapshot(id: "host", source: .opencode, hash: "host"))
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "child",
+                    source: .opencode,
+                    hash: "before",
+                    parentSessionId: "host",
+                    sourceLocator: "\(externalURL.path)::child"
+                )
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'child'"),
+                "host"
+            )
+
+            try external.write { externalDB in
+                try externalDB.execute(sql: "UPDATE session SET parent_id = NULL WHERE id = 'child'")
+            }
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "child",
+                    source: .opencode,
+                    hash: "after",
+                    parentSessionId: nil,
+                    sourceLocator: "\(externalURL.path)::child"
+                )
+            )
+
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'child'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT link_source FROM sessions WHERE id = 'child'"))
+        }
+    }
+
+    func testOpenCodeReindexDropsPathParentWhenExternalHostBecomesArchived_repro() throws {
+        let externalURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("opencode-reindex-archived-parent-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: externalURL) }
+        let external = try DatabaseQueue(path: externalURL.path)
+        try external.write { db in
+            try db.execute(sql: """
+                CREATE TABLE session (
+                    id TEXT PRIMARY KEY,
+                    parent_id TEXT,
+                    time_archived INTEGER
+                );
+                INSERT INTO session VALUES ('host', NULL, NULL);
+                INSERT INTO session VALUES ('child', 'host', NULL);
+                """)
+        }
+
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            _ = try w.writeAuthoritativeSnapshot(snapshot(id: "host", source: .opencode, hash: "host"))
+            let child = snapshot(
+                id: "child",
+                source: .opencode,
+                hash: "same",
+                parentSessionId: "host",
+                sourceLocator: "\(externalURL.path)::child"
+            )
+            _ = try w.writeAuthoritativeSnapshot(child)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'child'"),
+                "host"
+            )
+
+            try external.write { externalDB in
+                try externalDB.execute(sql: "UPDATE session SET time_archived = 1 WHERE id = 'host'")
+            }
+            _ = try w.writeAuthoritativeSnapshot(child)
+
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'child'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT link_source FROM sessions WHERE id = 'child'"))
+        }
+    }
+
     func testReindexPreservesInstructionSignalsOnEmptyRestream() throws {
         try writer.write { db in
             let w = SessionSnapshotWriter(db: db)

@@ -4,7 +4,7 @@ import SwiftUI
 // MARK: - Main View
 
 struct HygieneView: View {
-    @Environment(EngramServiceClient.self) private var serviceClient
+    @Environment(\.engramServiceClient) private var serviceClient
     @State private var result: EngramServiceHygieneResponse? = nil
     @State private var isLoading = true
     @State private var isRefreshing = false
@@ -14,6 +14,7 @@ struct HygieneView: View {
     @State private var infoExpanded = false
     @State private var pendingHideConfirm = false
     @State private var resultToast: String? = nil
+    @State private var loadGeneration = UUID()
 
     private var errorIssues: [EngramServiceHygieneIssue] {
         result?.issues.filter { $0.severity == "error" } ?? []
@@ -52,7 +53,8 @@ struct HygieneView: View {
                         .accessibilityIdentifier("hygiene_resultToast")
                 }
                 if let error {
-                    AlertBanner(message: error)
+                    AlertBanner(message: error, action: ("Retry", { Task { await loadData(force: true) } }))
+                        .accessibilityIdentifier("hygiene_errorBanner")
                 }
                 if isLoading {
                     skeletonSection
@@ -135,15 +137,16 @@ struct HygieneView: View {
                         ProgressView().controlSize(.mini)
                     } else {
                         Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 11))
+                            .scaledFont(11)
                     }
                     Text("Refresh")
-                        .font(.system(size: 11))
+                        .scaledFont(11)
                 }
             }
             .buttonStyle(.plain)
             .foregroundStyle(Theme.accent)
             .disabled(isRefreshing)
+            .help("Re-run the hygiene scan")
             .accessibilityIdentifier("hygiene_refreshButton")
         }
     }
@@ -153,7 +156,7 @@ struct HygieneView: View {
     private var skeletonSection: some View {
         VStack(spacing: 8) {
             ForEach(0..<3, id: \.self) { _ in
-                RoundedRectangle(cornerRadius: 8)
+                RoundedRectangle(cornerRadius: Theme.cornerRadius)
                     .fill(Theme.border)
                     .frame(height: 72)
                     .opacity(0.5)
@@ -167,7 +170,7 @@ struct HygieneView: View {
         VStack(spacing: 12) {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 48))
-                .foregroundStyle(.green)
+                .foregroundStyle(Theme.green)
             Text("All clean!")
                 .font(.title3)
                 .fontWeight(.semibold)
@@ -241,20 +244,25 @@ struct HygieneView: View {
     // MARK: - Data Loading
 
     private func loadData(force: Bool) async {
+        let generation = UUID()
+        loadGeneration = generation
         if force {
             isRefreshing = true
         } else {
             isLoading = true
         }
         error = nil
-        defer {
+        do {
+            let loaded = try await serviceClient.hygiene(force: force)
+            guard !Task.isCancelled, generation == loadGeneration else { return }
+            result = loaded
+        } catch {
+            guard !Task.isCancelled, generation == loadGeneration else { return }
+            self.error = "Could not load hygiene data: \(ServiceErrorPresenter.displayMessage(for: error))"
+        }
+        if generation == loadGeneration {
             isLoading = false
             isRefreshing = false
-        }
-        do {
-            result = try await serviceClient.hygiene(force: force)
-        } catch {
-            self.error = "Could not load hygiene data: \(error.localizedDescription)"
         }
     }
 
@@ -307,17 +315,22 @@ private struct IssueSection: View {
                 MotionAware.animate(.easeInOut(duration: 0.2), reduceMotion: reduceMotion) {
                     isExpanded.toggle()
                 }
+                // VoiceOver: the chevron swap alone is silent — announce the new
+                // state (same contract as ExpandableSessionCard, 6A-6).
+                AccessibilityNotification.Announcement(
+                    isExpanded ? "Expanded \(title), \(count) issues" : "Collapsed \(title)"
+                ).post()
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
+                        .scaledFont(10, weight: .semibold)
                         .foregroundStyle(Theme.secondaryText)
                         .frame(width: 12)
                     Text(title)
-                        .font(.system(size: 12, weight: .semibold))
+                        .scaledFont(12, weight: .semibold)
                         .foregroundStyle(Theme.primaryText)
                     Text("\(count)")
-                        .font(.system(size: 10, weight: .medium))
+                        .scaledFont(10, weight: .medium)
                         .foregroundStyle(.white)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
@@ -327,6 +340,9 @@ private struct IssueSection: View {
                 }
             }
             .buttonStyle(.plain)
+            // Section header is a disclosure control: announce state + count.
+            .accessibilityLabel(isExpanded ? "Collapse \(title)" : "Expand \(title)")
+            .accessibilityValue("\(count) issues")
 
             if isExpanded {
                 ForEach(issues) { issue in
@@ -367,7 +383,7 @@ private struct IssueCard: View {
             // Kind badge + repo
             HStack(spacing: 6) {
                 Text(issue.kind)
-                    .font(.system(size: 10, weight: .medium))
+                    .scaledFont(10, weight: .medium)
                     .foregroundStyle(severityColor)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
@@ -375,7 +391,7 @@ private struct IssueCard: View {
                     .clipShape(RoundedRectangle(cornerRadius: 4))
                 if let repo = issue.repo, !repo.isEmpty {
                     Text(repo)
-                        .font(.system(size: 10))
+                        .scaledFont(10)
                         .foregroundStyle(Theme.tertiaryText)
                 }
                 Spacer()
@@ -383,14 +399,14 @@ private struct IssueCard: View {
 
             // Message
             Text(issue.message)
-                .font(.system(size: 12))
+                .scaledFont(12)
                 .foregroundStyle(Theme.primaryText)
                 .fixedSize(horizontal: false, vertical: true)
 
             // Detail (optional)
             if let detail = issue.detail, !detail.isEmpty {
                 Text(detail)
-                    .font(.system(size: 11))
+                    .scaledFont(11)
                     .foregroundStyle(Theme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -401,7 +417,7 @@ private struct IssueCard: View {
                     onHideEmptySessions()
                 } label: {
                     Text("Hide empty sessions")
-                        .font(.system(size: 11, weight: .medium))
+                        .scaledFont(11, weight: .medium)
                         .foregroundStyle(.white)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
@@ -409,15 +425,16 @@ private struct IssueCard: View {
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
                 .buttonStyle(.plain)
+                .help("Hide all sessions with no messages (asks for confirmation first)")
                 .accessibilityIdentifier("hygiene_hideEmptyButton")
             }
         }
         .padding(12)
         .background(Theme.surface)
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: Theme.cornerRadius)
                 .stroke(Theme.border, lineWidth: 1)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadius))
     }
 }

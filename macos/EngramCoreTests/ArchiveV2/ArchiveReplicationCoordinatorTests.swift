@@ -911,7 +911,7 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
         )
     }
 
-    func testCancellationLeavesInflightClaimWithoutIncrementingAttempts() async throws {
+    func testCancellationReleasesObjectUploadClaimWithoutIncrementingAttempts_repro() async throws {
         let store = try makeStore(name: "cancelled")
         let fixture = try addBinding(to: store, seed: "cancelled", eligibility: .eligible)
         let hq = FakeArchiveReplicaBackend(replicaID: "hq")
@@ -928,7 +928,7 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
             manifestSHA256: fixture.binding.manifestSHA256,
             replicaID: "hq"
         )
-        XCTAssertEqual(row?.state, .uploadingObjects)
+        XCTAssertEqual(row?.state, .pending)
         XCTAssertEqual(row?.attempts, 0)
         XCTAssertNil(row?.lastError)
     }
@@ -942,12 +942,12 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
         let boundaries: [Boundary] = [
             .init(
                 operation: "headObject",
-                expectedState: .uploadingObjects,
+                expectedState: .pending,
                 expectedEvents: ["headObject"]
             ),
             .init(
                 operation: "putObject",
-                expectedState: .uploadingObjects,
+                expectedState: .pending,
                 expectedEvents: ["headObject", "putObject"]
             ),
             .init(
@@ -1042,7 +1042,7 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
             manifestSHA256: fixture.binding.manifestSHA256,
             replicaID: "hq"
         )
-        XCTAssertEqual(row?.state, .uploadingObjects)
+        XCTAssertEqual(row?.state, .pending)
         XCTAssertEqual(row?.attempts, 0)
         XCTAssertNil(row?.lastError)
     }

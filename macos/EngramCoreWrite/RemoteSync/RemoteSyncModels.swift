@@ -21,6 +21,13 @@ public struct RemoteSessionBundle: Codable, Sendable, Equatable {
     public let assistantMessageCount: Int
     public let toolMessageCount: Int
     public let systemMessageCount: Int
+    /// Visibility metadata participates in the content identity for Layer 2
+    /// project sync. Optional fields preserve decode/hash compatibility with
+    /// bundles written before visibility-aware publishing.
+    public let tier: String?
+    public let agentRole: String?
+    public let parentSessionId: String?
+    public let suggestedParentId: String?
     /// SHA-256 (hex) of the canonical payload, excluding this field. Doubles as
     /// the storage key so identical content is idempotent (HEAD-then-PUT skips).
     public let contentHash: String
@@ -36,7 +43,11 @@ public struct RemoteSessionBundle: Codable, Sendable, Equatable {
         assistantMessageCount: Int,
         toolMessageCount: Int,
         systemMessageCount: Int,
-        contentHash: String
+        contentHash: String,
+        tier: String? = nil,
+        agentRole: String? = nil,
+        parentSessionId: String? = nil,
+        suggestedParentId: String? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.sessionId = sessionId
@@ -49,6 +60,10 @@ public struct RemoteSessionBundle: Codable, Sendable, Equatable {
         self.toolMessageCount = toolMessageCount
         self.systemMessageCount = systemMessageCount
         self.contentHash = contentHash
+        self.tier = tier
+        self.agentRole = agentRole
+        self.parentSessionId = parentSessionId
+        self.suggestedParentId = suggestedParentId
     }
 }
 
@@ -58,6 +73,12 @@ public enum RemoteSyncError: Error, Equatable {
     case sessionIdMismatch(expected: String, actual: String)
     case invalidStorageKey(String)
     case bundleNotFound(key: String)
+    case catalogTooLarge
+    case liveManifestTooLarge
+    case liveShrinkGuardLatched(String)
+    case livePeerMismatch(expected: String, actual: String)
+    case liveManifestKeyMismatch(expected: String, actual: String)
+    case invalidCatalog
     /// The session was re-indexed (or removed) between capturing its bundle and
     /// committing the offload, so purging now would collapse content that no
     /// longer matches the uploaded bundle. The offload is aborted and re-queued.

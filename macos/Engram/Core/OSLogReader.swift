@@ -5,10 +5,10 @@
 // through os_log (subsystems `com.engram.app` and `com.engram.service`). The
 // panels therefore showed a perpetual "all clear" even during a real incident.
 //
-// This reader repoints those panels at the unified system log via
-// `OSLogStore(scope: .system)` when available, filtered to Engram's two
-// subsystems. If system-scope access is denied, it falls back to the current
-// process store; if neither store can be opened, callers receive
+// This reader repoints those panels at the current app process unified log.
+// Service logs come from the sanitized service ring, so reading system scope
+// here would duplicate them and require broader log-store access. If the
+// current-process store cannot be opened, callers receive
 // `OSLogReaderError.unavailable` so the UI can mark the panel "not available"
 // instead of rendering a false all-clear.
 import Foundation
@@ -24,7 +24,7 @@ enum OSLogReaderError: Error {
 /// All methods are blocking (`OSLogStore` enumeration is synchronous) and must be
 /// called off the main thread — callers wrap them in `Task.detached`.
 enum OSLogReader {
-    static let engramSubsystems: Set<String> = ["com.engram.app", "com.engram.service"]
+    static let engramSubsystems: Set<String> = ["com.engram.app"]
     private static let maxRecentLogEntries = 5_000
 
     /// Map an `OSLogEntryLog.Level` to the textual level the UI filters on.
@@ -42,13 +42,9 @@ enum OSLogReader {
 
     private static func makeStore() throws -> OSLogStore {
         do {
-            return try OSLogStore(scope: .system)
+            return try OSLogStore(scope: .currentProcessIdentifier)
         } catch {
-            do {
-                return try OSLogStore(scope: .currentProcessIdentifier)
-            } catch {
-                throw OSLogReaderError.unavailable(error.localizedDescription)
-            }
+            throw OSLogReaderError.unavailable(error.localizedDescription)
         }
     }
 
@@ -86,6 +82,7 @@ enum OSLogReader {
         var modules = Set<String>()
         var nextId: Int64 = 0
         let timestampFormatter = ISO8601DateFormatter()
+        timestampFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         try forEachEngramLog(hours: hours) { log in
             let lvl = levelString(log.level)
             let cat = log.category.isEmpty ? log.subsystem : log.category

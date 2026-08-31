@@ -10,6 +10,7 @@ import {
   scoreCandidate,
 } from '../parent-detection.js';
 import { computeQualityScore } from '../session-scoring.js';
+import { subagentTranscriptLayout } from '../subagent-transcript-path.js';
 import { addProjectAlias } from './alias-repo.js';
 import { deleteSubagentFtsForRebuild } from './fts-rebuild-policy.js';
 import { finishMigration } from './migration-log-repo.js';
@@ -84,7 +85,6 @@ export function backfillTiers(db: BetterSqlite3.Database): void {
   db.exec(`
     UPDATE sessions SET tier = CASE
       WHEN agent_role IS NOT NULL THEN 'skip'
-      WHEN file_path LIKE '%/subagents/%' THEN 'skip'
       WHEN message_count <= 1 THEN 'skip'
       WHEN message_count >= 20 THEN 'premium'
       WHEN message_count >= 10 AND project IS NOT NULL THEN 'premium'
@@ -270,9 +270,9 @@ export function backfillParentLinks(db: BetterSqlite3.Database): {
     if (candidates.length === 0) break;
     let progressed = 0;
     for (const { id, file_path } of candidates) {
-      const match = file_path.match(/\/([^/]+)\/subagents\/[^/]+\.jsonl$/);
-      if (!match) continue;
-      const parentId = match[1];
+      const layout = subagentTranscriptLayout(file_path);
+      if (!layout) continue;
+      const parentId = layout.parentSessionId;
       const validation = validateParentLink(db, id, parentId);
       if (validation !== 'ok') continue;
       setParentSession(db, id, parentId, 'path');

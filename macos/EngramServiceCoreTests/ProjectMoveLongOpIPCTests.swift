@@ -9,7 +9,7 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
     override func tearDown() {
         for id in [
             "preflight-cache", "preflight-conflict", "gate-hold-op", "batch-unsafe-op",
-            "writer-busy-term", "capacity-a", "capacity-b", "capacity-c",
+            "writer-busy-term", "capacity-a", "capacity-b", "capacity-c", "batch-dry-run",
         ] {
             ProjectMoveBatchCancelRegistry.shared.remove(operationId: id)
         }
@@ -487,6 +487,106 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
                 1,
                 "same-ID reconnect must not replay the batch terminal log"
             )
+        }
+    }
+
+    func testProjectMoveBatchRequestDryRunOverridesDocumentDefault_repro() async throws {
+        try await withTemporaryHome { home in
+            let paths = try makePaths()
+            try migrateDatabase(at: paths.database.path)
+            let gate = try ServiceWriterGate(
+                databasePath: paths.database.path,
+                runtimeDirectory: paths.runtime
+            )
+            let handler = EngramServiceCommandHandler(writerGate: gate)
+            let src = home.appendingPathComponent("batch-dry-src", isDirectory: true)
+            let dst = home.appendingPathComponent("batch-dry-dst", isDirectory: true)
+            try FileManager.default.createDirectory(at: src, withIntermediateDirectories: true)
+            try "keep".write(
+                to: src.appendingPathComponent("keep.txt"),
+                atomically: true,
+                encoding: .utf8
+            )
+            let yaml = """
+            {"version":1,"defaults":{"dry_run":false},"operations":[{"src":"\(src.path)","dst":"\(dst.path)"}]}
+            """
+            let response = await handler.handle(
+                EngramServiceRequestEnvelope(
+                    command: "projectMoveBatch",
+                    payload: try JSONEncoder().encode(
+                        EngramServiceProjectMoveBatchRequest(
+                            yaml: yaml,
+                            dryRun: true,
+                            force: true,
+                            actor: "test",
+                            operationId: "batch-dry-run"
+                        )
+                    )
+                )
+            )
+
+            _ = try assertSuccessData(response)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: src.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: dst.path))
+
+            let conflictingResponse = await handler.handle(
+                EngramServiceRequestEnvelope(
+                    command: "projectMoveBatch",
+                    payload: try JSONEncoder().encode(
+                        EngramServiceProjectMoveBatchRequest(
+                            yaml: yaml,
+                            dryRun: false,
+                            force: true,
+                            actor: "test",
+                            operationId: "batch-dry-run"
+                        )
+                    )
+                )
+            )
+            guard case .failure(_, let error) = conflictingResponse else {
+                return XCTFail("reusing an operation id with a different dry_run must fail")
+            }
+            XCTAssertEqual(error.name, "InvalidRequest")
+            XCTAssertTrue(error.message.contains("operation_id already used"), error.message)
+        }
+    }
+
+    func testProjectArchiveDryRunStillProbesReadmeOnlyCategory_repro() async throws {
+        try await withTemporaryHome { home in
+            let paths = try makePaths()
+            try migrateDatabase(at: paths.database.path)
+            let gate = try ServiceWriterGate(
+                databasePath: paths.database.path,
+                runtimeDirectory: paths.runtime
+            )
+            let handler = EngramServiceCommandHandler(writerGate: gate)
+            let src = home.appendingPathComponent("readme-only", isDirectory: true)
+            try FileManager.default.createDirectory(at: src, withIntermediateDirectories: true)
+            try "# placeholder".write(
+                to: src.appendingPathComponent("README.md"),
+                atomically: true,
+                encoding: .utf8
+            )
+            let response = await handler.handle(
+                EngramServiceRequestEnvelope(
+                    command: "projectArchive",
+                    payload: try JSONEncoder().encode(
+                        EngramServiceProjectArchiveRequest(
+                            src: src.path,
+                            archiveTo: nil,
+                            dryRun: true,
+                            force: false,
+                            auditNote: nil,
+                            actor: "test"
+                        )
+                    )
+                )
+            )
+
+            let data = try assertSuccessData(response)
+            let result = try JSONDecoder().decode(EngramServiceProjectMoveResult.self, from: data)
+            XCTAssertEqual(result.suggestion?.category, "空项目")
+            XCTAssertTrue(FileManager.default.fileExists(atPath: src.path))
         }
     }
 

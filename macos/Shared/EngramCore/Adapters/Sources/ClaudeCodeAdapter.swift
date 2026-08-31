@@ -88,34 +88,60 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         // One profile refresh feeds both the keep-set and enumerationRoots.
         lastListingRoots.replace(with: [])
         let profiles = refreshProfilesForListing().filter(\.available)
-        let locators = try await listSessionLocators(profiles: profiles)
-        lastListingRoots.replace(with: Self.enumerationRoots(from: profiles))
-        return locators
+        let listing = try await listSessionLocators(profiles: profiles)
+        if listing.complete {
+            lastListingRoots.replace(with: Self.enumerationRoots(from: profiles))
+        }
+        return listing.locators
     }
 
-    private func listSessionLocators(profiles: [ClaudeCodeProfile]) async throws -> [String] {
+    private struct LocatorListing {
+        var locators: [String]
+        var complete: Bool
+    }
+
+    private func listSessionLocators(profiles: [ClaudeCodeProfile]) async throws -> LocatorListing {
         try Task.checkCancellation()
         var locators = Set<String>()
+        var complete = true
         for profile in profiles {
             try Task.checkCancellation()
             let projectsRoot = URL(fileURLWithPath: profile.projectsRoot, isDirectory: true)
-            for locator in try await listSessionLocators(projectsRoot: projectsRoot) {
+            let listing = try await listSessionLocators(projectsRoot: projectsRoot)
+            complete = complete && listing.complete
+            for locator in listing.locators {
                 let canonicalLocator = Self.canonicalURL(path: locator).path
                 guard Self.isDescendant(canonicalLocator, of: profile.projectsRoot) else { continue }
                 locators.insert(canonicalLocator)
             }
         }
         try Task.checkCancellation()
-        return locators.sorted()
+        return LocatorListing(locators: locators.sorted(), complete: complete)
     }
 
-    private func listSessionLocators(projectsRoot: URL) async throws -> [String] {
+    private func listSessionLocators(projectsRoot: URL) async throws -> LocatorListing {
         var locators: [String] = []
-        for projectURL in try JSONLAdapterSupport.requiredDirectChildren(of: projectsRoot, includingHidden: true)
+        var complete = true
+        let projects: [URL]
+        do {
+            projects = try JSONLAdapterSupport.requiredDirectChildren(of: projectsRoot, includingHidden: true)
+        } catch {
+            try Task.checkCancellation()
+            return LocatorListing(locators: [], complete: false)
+        }
+        for projectURL in projects
             where JSONLAdapterSupport.isDirectory(projectURL)
         {
             try Task.checkCancellation()
-            for entryURL in try JSONLAdapterSupport.requiredDirectChildren(of: projectURL) {
+            let entries: [URL]
+            do {
+                entries = try JSONLAdapterSupport.requiredDirectChildren(of: projectURL)
+            } catch {
+                try Task.checkCancellation()
+                complete = false
+                continue
+            }
+            for entryURL in entries {
                 try Task.checkCancellation()
                 if entryURL.pathExtension == "jsonl" {
                     locators.append(entryURL.path)
@@ -124,11 +150,16 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
 
                 let subagentsURL = entryURL.appendingPathComponent("subagents")
                 guard JSONLAdapterSupport.isDirectory(subagentsURL) else { continue }
-                for subagentURL in try JSONLAdapterSupport.requiredDirectChildren(of: subagentsURL)
-                    where subagentURL.pathExtension == "jsonl"
-                {
+                do {
+                    for subagentURL in try JSONLAdapterSupport.requiredDirectChildren(of: subagentsURL)
+                        where subagentURL.pathExtension == "jsonl"
+                    {
+                        try Task.checkCancellation()
+                        locators.append(subagentURL.path)
+                    }
+                } catch {
                     try Task.checkCancellation()
-                    locators.append(subagentURL.path)
+                    complete = false
                 }
 
                 // Row 32: Claude Code workflow runs nest agents under
@@ -138,22 +169,35 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
                 // workflows/ siblings).
                 let workflowsURL = subagentsURL.appendingPathComponent("workflows")
                 guard JSONLAdapterSupport.isDirectory(workflowsURL) else { continue }
-                for runURL in try JSONLAdapterSupport.requiredDirectChildren(of: workflowsURL)
+                let runs: [URL]
+                do {
+                    runs = try JSONLAdapterSupport.requiredDirectChildren(of: workflowsURL)
+                } catch {
+                    try Task.checkCancellation()
+                    complete = false
+                    continue
+                }
+                for runURL in runs
                     where JSONLAdapterSupport.isDirectory(runURL)
                     && runURL.lastPathComponent.hasPrefix("wf_")
                 {
                     try Task.checkCancellation()
-                    for agentURL in try JSONLAdapterSupport.requiredDirectChildren(of: runURL)
-                        where agentURL.pathExtension == "jsonl"
-                        && agentURL.deletingPathExtension().lastPathComponent.hasPrefix("agent-")
-                    {
+                    do {
+                        for agentURL in try JSONLAdapterSupport.requiredDirectChildren(of: runURL)
+                            where agentURL.pathExtension == "jsonl"
+                            && agentURL.deletingPathExtension().lastPathComponent.hasPrefix("agent-")
+                        {
+                            try Task.checkCancellation()
+                            locators.append(agentURL.path)
+                        }
+                    } catch {
                         try Task.checkCancellation()
-                        locators.append(agentURL.path)
+                        complete = false
                     }
                 }
             }
         }
-        return locators
+        return LocatorListing(locators: locators, complete: complete)
     }
 
     func profile(for locator: String) -> ClaudeCodeProfile? {
@@ -206,7 +250,8 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         let profiles = refreshProfilesForListing()
         let defaultProfiles = profiles.filter { $0.available && $0.origin == .default }
         var locators: [String] = []
-        for locator in try await listSessionLocators(profiles: defaultProfiles) {
+        let listing = try await listSessionLocators(profiles: defaultProfiles)
+        for locator in listing.locators {
             try Task.checkCancellation()
             guard Self.profile(for: locator, profiles: profiles)?.origin == .default else {
                 continue
@@ -227,7 +272,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             }
         }
         await sourceHintCache.flush()
-        return (locators, Self.enumerationRoots(from: defaultProfiles))
+        return (locators, listing.complete ? Self.enumerationRoots(from: defaultProfiles) : [])
     }
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
@@ -238,12 +283,20 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             let (objects, failure) = try JSONLAdapterSupport.readObjects(
                 locator: locator,
                 limits: limits,
-                reportFailures: true
+                reportFailures: true,
+                countsTowardMessageLimit: {
+                    Self.message(
+                        from: $0,
+                        seenUsageMessageIds: UsageMessageIdSet(),
+                        unknownKinds: nil
+                    ) != nil
+                }
             )
             if let failure { return .failure(failure) }
             return Self.sessionInfo(
                 from: objects,
                 locator: locator,
+                projectsRoot: profile.projectsRoot,
                 forceClaudeCodeSource: profile.origin != .default
             )
         } catch let failure as ParserFailure {
@@ -253,10 +306,9 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         }
     }
 
-    /// Parse info and messages from a single file read. Mirrors
-    /// `parseSessionInfo` + `streamMessages(options: StreamMessagesOptions())`
-    /// exactly (same `sessionInfo(from:)` builder, same `message(from:)`
-    /// transform) but reads the transcript once. `readObjects(reportFailures:)`
+    /// Parse info and indexable messages from a single file read. System
+    /// injections remain visible to transcript rendering, but are intentionally
+    /// excluded here so they do not add indexing noise. `readObjects(reportFailures:)`
     /// surfaces the same failures the streamed path throws, so the indexer
     /// records an identical outcome on failure.
     func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
@@ -267,29 +319,44 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             let (objects, failure) = try JSONLAdapterSupport.readObjects(
                 locator: locator,
                 limits: limits,
-                reportFailures: true
+                reportFailures: true,
+                countsTowardMessageLimit: {
+                    Self.message(
+                        from: $0,
+                        seenUsageMessageIds: UsageMessageIdSet(),
+                        unknownKinds: nil
+                    ) != nil
+                }
             )
-            if let failure { return .failure(failure) }
+            if let failure, failure != .fileModifiedDuringParse { return .failure(failure) }
             // One sink feeds both gates so unknown kinds form a set, not a double count.
             let unknownKinds = UnknownRecordKindSink()
+            let messages = Self.messages(from: objects, unknownKinds: unknownKinds)
+            if failure == .fileModifiedDuringParse, messages.isEmpty {
+                return .failure(.fileModifiedDuringParse)
+            }
             switch Self.sessionInfo(
                 from: objects,
                 locator: locator,
+                projectsRoot: profile.projectsRoot,
                 forceClaudeCodeSource: profile.origin != .default,
                 unknownKinds: unknownKinds
             ) {
             case .failure(let reason):
                 return .failure(reason)
             case .success(let info):
-                let checkpoint = try JSONLAdapterSupport.checkpoint(locator: locator, limits: limits)
-                let checkpointBoundaryHash = checkpoint.parsedOffset == info.sizeBytes
-                    ? checkpoint.boundaryHash
+                let checkpoint = failure == nil
+                    ? try JSONLAdapterSupport.checkpoint(locator: locator, limits: limits)
+                    : nil
+                let checkpointBoundaryHash = checkpoint?.parsedOffset == info.sizeBytes
+                    ? checkpoint?.boundaryHash
                     : nil
                 return .success(
                     IndexingScan(
                         info: info,
-                        messages: Self.messages(from: objects, unknownKinds: unknownKinds),
-                        checkpointParsedOffset: checkpoint.parsedOffset,
+                        messages: messages,
+                        parseFailure: failure,
+                        checkpointParsedOffset: checkpoint?.parsedOffset,
                         checkpointBoundaryHash: checkpointBoundaryHash,
                         unknownRecordKinds: unknownKinds.kinds
                     )
@@ -311,20 +378,23 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             return .failure(.unsupportedVirtualLocator)
         }
         do {
+            let countsTowardMessageLimit = Self.makeMessageTransform()
             let result = try JSONLAdapterSupport.readTailObjects(
                 locator: locator,
                 from: parsedOffset,
                 expectedBoundaryHash: expectedBoundaryHash,
-                limits: limits
+                limits: limits,
+                countsTowardMessageLimit: { countsTowardMessageLimit($0) != nil }
             )
             guard !result.boundaryHash.isEmpty else { return .fallback }
             if let failure = result.failure { return .failure(failure) }
             let messages = Self.messages(from: result.objects, unknownKinds: nil)
+            guard !messages.isEmpty else { return .fallback }
             let aggregate = Self.aggregateSessionInfo(from: result.objects, unknownKinds: nil)
             return .success(
                 IndexingTailScan(
                     infoDelta: IndexingTailInfoDelta(
-                        id: aggregate.id(locator: locator),
+                        id: aggregate.id(locator: locator, projectsRoot: profile.projectsRoot),
                         source: profile.origin == .default
                             ? aggregate.source(locator: locator)
                             : .claudeCode,
@@ -352,6 +422,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
     private static func sessionInfo(
         from objects: [JSONLAdapterSupport.JSONObject],
         locator: String,
+        projectsRoot: String,
         forceClaudeCodeSource: Bool,
         unknownKinds: UnknownRecordKindSink? = nil
     ) -> AdapterParseResult<NormalizedSessionInfo> {
@@ -359,7 +430,10 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         guard aggregate.messageCount > 0 else {
             return objects.isEmpty ? .failure(.malformedJSON) : .failure(.noVisibleMessages)
         }
-        guard let id = aggregate.id(locator: locator) else { return .failure(.malformedJSON) }
+        let subagent = SubagentTranscriptPath.layout(locator: locator, projectsRoot: projectsRoot)
+        guard let id = aggregate.id(locator: locator, projectsRoot: projectsRoot) else {
+            return .failure(.malformedJSON)
+        }
 
         return .success(
             NormalizedSessionInfo(
@@ -377,17 +451,17 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
                 assistantMessageCount: aggregate.assistantCount,
                 toolMessageCount: aggregate.toolCount,
                 systemMessageCount: aggregate.systemCount,
-                summary: aggregate.firstUserText.isEmpty ? nil : String(aggregate.firstUserText.prefix(200)),
+                summary: aggregate.firstUserText.isEmpty ? nil : aggregate.firstUserText,
                 filePath: locator,
                 sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
                 indexedAt: nil,
-                agentRole: locator.contains("/subagents/") ? "subagent" : nil,
+                agentRole: subagent == nil ? nil : "subagent",
                 originator: forceClaudeCodeSource ? "claude-code" : nil,
                 origin: nil,
                 summaryMessageCount: nil,
                 tier: nil,
                 qualityScore: nil,
-                parentSessionId: locator.contains("/subagents/") ? Self.parentSessionId(from: locator) : nil,
+                parentSessionId: subagent?.parentSessionId,
                 suggestedParentId: nil
             )
         )
@@ -410,16 +484,15 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             userCount + assistantCount + toolCount
         }
 
-        func id(locator: String) -> String? {
+        func id(locator: String, projectsRoot: String) -> String? {
             guard !sessionId.isEmpty else { return nil }
-            let isSubagent = locator.contains("/subagents/")
+            let subagent = SubagentTranscriptPath.layout(locator: locator, projectsRoot: projectsRoot)
             // R1.P1.identity-key-collision: empty agentId must not fall back to
             // parent sessionId (ON CONFLICT(id) would clobber the parent row).
-            if isSubagent {
-                if !agentId.isEmpty { return agentId }
+            if let subagent {
                 return ClaudeCodeAdapter.stableSubagentFallbackId(
-                    parentSessionId: sessionId,
-                    locator: locator
+                    parentSessionId: subagent.parentSessionId,
+                    relativePath: subagent.relativePath
                 )
             }
             return sessionId
@@ -506,7 +579,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             locator: locator,
             options: options,
             limits: limits,
-            transform: Self.makeMessageTransform()
+            transform: Self.makeMessageTransform(includeSystemInjections: true)
         )
         return JSONLAdapterSupport.stream(messages)
     }
@@ -522,14 +595,9 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             locator: locator,
             options: options,
             limits: limits,
-            detectTruncation: options.limit == nil,
-            transform: Self.makeMessageTransform()
+            transform: Self.makeMessageTransform(includeSystemInjections: true)
         )
-        return StreamMessagesResult(
-            messages: JSONLAdapterSupport.stream(result.messages),
-            totalKnownComplete: result.totalKnownComplete,
-            truncatedAt: result.truncatedAt
-        )
+        return JSONLAdapterSupport.stream(result)
     }
 
     func isAccessible(locator: String) async -> Bool {
@@ -585,11 +653,23 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         return URL(fileURLWithPath: trimmed).lastPathComponent
     }
 
-    /// Stable primary key for `/subagents/` transcripts that never recorded an
-    /// `agentId`. Must never equal `parentSessionId` so `ON CONFLICT(id)` cannot
-    /// overwrite the parent session row (R1.P1.identity-key-collision).
+    /// Stable primary key for `/subagents/` transcripts. Claude reuses agentId
+    /// across workflow runs, so the path relative to `subagents/` is the unique
+    /// identity namespace; it also cannot collide with the parent row.
     static func stableSubagentFallbackId(parentSessionId: String, locator: String) -> String {
-        let pathKey = URL(fileURLWithPath: locator).lastPathComponent
+        let components = URL(fileURLWithPath: locator).standardizedFileURL.pathComponents
+        let relativePath: String
+        if let subagentsIndex = components.lastIndex(of: "subagents"),
+           subagentsIndex + 1 < components.count {
+            relativePath = components[(subagentsIndex + 1)...].joined(separator: "/")
+        } else {
+            relativePath = URL(fileURLWithPath: locator).lastPathComponent
+        }
+        return stableSubagentFallbackId(parentSessionId: parentSessionId, relativePath: relativePath)
+    }
+
+    private static func stableSubagentFallbackId(parentSessionId: String, relativePath: String) -> String {
+        let pathKey = relativePath
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let leaf = pathKey.isEmpty ? "unknown" : pathKey
         return "sub:\(parentSessionId):\(leaf)"
@@ -749,10 +829,17 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
     /// Stateful transform so response-level usage is attached only once per
     /// non-empty Claude `message.id` (content blocks still stream separately).
     /// Streaming paths discard unknown-kind accumulation (no IndexingScan).
-    private static func makeMessageTransform() -> (JSONLAdapterSupport.JSONObject) -> NormalizedMessage? {
+    private static func makeMessageTransform(
+        includeSystemInjections: Bool = false
+    ) -> (JSONLAdapterSupport.JSONObject) -> NormalizedMessage? {
         let seenUsageMessageIds = UsageMessageIdSet()
         return { object in
-            message(from: object, seenUsageMessageIds: seenUsageMessageIds, unknownKinds: nil)
+            message(
+                from: object,
+                seenUsageMessageIds: seenUsageMessageIds,
+                unknownKinds: nil,
+                includeSystemInjections: includeSystemInjections
+            )
         }
     }
 
@@ -769,7 +856,8 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
     private static func message(
         from object: JSONLAdapterSupport.JSONObject,
         seenUsageMessageIds: UsageMessageIdSet,
-        unknownKinds: UnknownRecordKindSink?
+        unknownKinds: UnknownRecordKindSink?,
+        includeSystemInjections: Bool = false
     ) -> NormalizedMessage? {
         guard let type = JSONLAdapterSupport.string(object["type"]),
               type == "user" || type == "assistant"
@@ -786,13 +874,16 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         // a user turn. Drop it when it surfaces no content so the streamed
         // transcript matches parseSessionInfo's counts.
         let isToolResultRecord = type == "user" && isToolResult(rawContent)
-        if type == "user", !isToolResultRecord, isSystemInjection(content) {
+        let isSystemInjectionRecord = type == "user" && !isToolResultRecord && isSystemInjection(content)
+        if isSystemInjectionRecord, !includeSystemInjections {
             return nil
         }
         if isToolResultRecord, content.isEmpty {
             return nil
         }
-        let role: NormalizedMessageRole = isToolResultRecord ? .tool : (type == "user" ? .user : .assistant)
+        let role: NormalizedMessageRole = isSystemInjectionRecord
+            ? .system
+            : (isToolResultRecord ? .tool : (type == "user" ? .user : .assistant))
         var usage = JSONLAdapterSupport.usage(from: JSONLAdapterSupport.object(message?["usage"]))
         if role == .assistant,
            let messageId = JSONLAdapterSupport.string(message?["id"]),
@@ -815,15 +906,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
     }
 
     private static func isSystemInjection(_ text: String) -> Bool {
-        text.hasPrefix("# AGENTS.md instructions for ") ||
-            text.contains("<INSTRUCTIONS>") ||
-            text.hasPrefix("<local-command-caveat>") ||
-            text.hasPrefix("<local-command-stdout>") ||
-            text.contains("<command-name>") ||
-            text.contains("<command-message>") ||
-            text.hasPrefix("Unknown skill: ") ||
-            text.hasPrefix("Invoke the superpowers:") ||
-            text.hasPrefix("Base directory for this skill:")
+        SystemMessageClassifier.classify(content: text, source: "claude-code") != .none
     }
 
     private static func isToolResult(_ content: Any?) -> Bool {
@@ -967,15 +1050,6 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         }
     }
 
-    private static func parentSessionId(from locator: String) -> String? {
-        let parts = locator.split(separator: "/").map(String.init)
-        guard let subagentsIndex = parts.firstIndex(of: "subagents"),
-              subagentsIndex > 0
-        else {
-            return nil
-        }
-        return parts[subagentsIndex - 1]
-    }
 }
 
 private actor ClaudeCodeSourceHintCache {

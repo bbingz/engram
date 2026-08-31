@@ -4,15 +4,18 @@ final class IflowAdapter: SessionAdapter, Sendable {
     let source: SourceName = .iflow
     private let projectsRoot: URL
     private let limits: ParserLimits
+    private let testHooks: JSONLIdentityTestHooks
 
     init(
         projectsRoot: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".iflow/projects")
             .path,
-        limits: ParserLimits = .default
+        limits: ParserLimits = .default,
+        testHooks: JSONLIdentityTestHooks = JSONLIdentityTestHooks()
     ) {
         self.projectsRoot = URL(fileURLWithPath: projectsRoot)
         self.limits = limits
+        self.testHooks = testHooks
     }
 
     func detect() async -> Bool {
@@ -38,9 +41,17 @@ final class IflowAdapter: SessionAdapter, Sendable {
             let (objects, failure) = try JSONLAdapterSupport.readObjects(
                 locator: locator,
                 limits: limits,
-                reportFailures: true
+                reportFailures: true,
+                countsTowardMessageLimit: Self.countsTowardMessageLimit,
+                beforeIdentityValidation: testHooks.beforeFinalIdentityValidation
             )
-            if let failure { return .failure(failure) }
+            if let failure {
+                guard failure == .fileModifiedDuringParse,
+                      !objects.compactMap(Self.message(from:)).isEmpty
+                else {
+                    return .failure(failure)
+                }
+            }
 
             var sessionId = ""
             var cwd = ""
@@ -76,6 +87,8 @@ final class IflowAdapter: SessionAdapter, Sendable {
                 if detectedModel == nil, let value = JSONLAdapterSupport.string(message?["model"]) {
                     detectedModel = value
                 }
+
+                guard !Self.isIgnoredUserSidecar(object) else { continue }
 
                 if type == "assistant" {
                     assistantCount += 1
@@ -140,17 +153,19 @@ final class IflowAdapter: SessionAdapter, Sendable {
             let (objects, failure) = try JSONLAdapterSupport.readObjects(
                 locator: locator,
                 limits: limits,
-                reportFailures: true
+                reportFailures: true,
+                countsTowardMessageLimit: Self.countsTowardMessageLimit,
+                beforeIdentityValidation: testHooks.beforeFinalIdentityValidation
             )
-            if let failure { throw failure }
-            return JSONLAdapterSupport.stream(
-                JSONLAdapterSupport.applyWindow(objects.compactMap(Self.message(from:)), options: options)
-            )
+            let messages = objects.compactMap(Self.message(from:))
+            if let failure, messages.isEmpty { throw failure }
+            return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
         }
         let messages = try JSONLAdapterSupport.windowedMessages(
             locator: locator,
             options: options,
             limits: limits,
+            countsTowardMessageLimit: { $0.role != .system },
             transform: Self.message(from:)
         )
         return JSONLAdapterSupport.stream(messages)
@@ -164,6 +179,7 @@ final class IflowAdapter: SessionAdapter, Sendable {
             locator: locator,
             options: options,
             limits: limits,
+            countsTowardMessageLimit: { $0.role != .system },
             transform: Self.message(from:)
         )
         return JSONLAdapterSupport.stream(result)
@@ -175,7 +191,8 @@ final class IflowAdapter: SessionAdapter, Sendable {
 
     private static func message(from object: JSONLAdapterSupport.JSONObject) -> NormalizedMessage? {
         guard let type = JSONLAdapterSupport.string(object["type"]),
-              type == "user" || type == "assistant"
+              type == "user" || type == "assistant",
+              !isIgnoredUserSidecar(object)
         else {
             return nil
         }
@@ -193,10 +210,25 @@ final class IflowAdapter: SessionAdapter, Sendable {
         )
     }
 
+    private static func countsTowardMessageLimit(_ object: JSONLAdapterSupport.JSONObject) -> Bool {
+        guard let message = message(from: object) else { return false }
+        return message.role != .system
+    }
+
+    private static func isIgnoredUserSidecar(_ object: JSONLAdapterSupport.JSONObject) -> Bool {
+        guard JSONLAdapterSupport.string(object["type"]) == "user" else { return false }
+        if object["isMeta"] as? Bool == true || object["isCompactSummary"] as? Bool == true {
+            return true
+        }
+        let message = JSONLAdapterSupport.object(object["message"])
+        guard let content = JSONLAdapterSupport.array(message?["content"]) else { return false }
+        return content.contains { item in
+            JSONLAdapterSupport.string(JSONLAdapterSupport.object(item)?["type"]) == "tool_result"
+        }
+    }
+
     private static func isSystemInjection(_ text: String) -> Bool {
-        text.hasPrefix("# AGENTS.md instructions for ") ||
-            text.contains("<INSTRUCTIONS>") ||
-            text.hasPrefix("<local-command-caveat>")
+        SystemMessageClassifier.classify(content: text, source: "iflow") != .none
     }
 
     private static func extractContent(_ content: Any?) -> String {

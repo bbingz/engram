@@ -37,6 +37,10 @@ struct ColorBarMessageView: View {
     }
 
     private var parsedRow: ParsedRow {
+        if Self.rendersParsedToolResult(indexed),
+           let result = ToolCallParser.parseToolResult(indexed.message.content) {
+            return .toolResult(result)
+        }
         switch indexed.messageType {
         case .toolCall, .tool:
             return .toolCall(ToolCallParser.parseToolCall(indexed.message.content))
@@ -45,6 +49,11 @@ struct ColorBarMessageView: View {
         default:
             return .plain
         }
+    }
+
+    nonisolated static func rendersParsedToolResult(_ indexed: IndexedMessage) -> Bool {
+        (indexed.messageType == .toolResult || indexed.messageType == .error || indexed.messageType == .tool)
+            && ToolCallParser.parseToolResult(indexed.message.content) != nil
     }
 
     /// Header label for a transcript row. Tool rows surface the concrete tool
@@ -89,7 +98,7 @@ struct ColorBarMessageView: View {
         if indexed.messageType == .user {
             HStack(spacing: 6) {
                 Text(label)
-                    .font(.system(size: 10, weight: .bold))
+                    .scaledFont(10, weight: .bold)
                     .foregroundStyle(barColor)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 2)
@@ -100,11 +109,11 @@ struct ColorBarMessageView: View {
         } else if indexed.messageType == .assistant {
             HStack(spacing: 6) {
                 Text(label)
-                    .font(.system(size: 10, weight: .bold))
+                    .scaledFont(10, weight: .bold)
                     .foregroundStyle(barColor)
                 if let seconds = indexed.turnDurationSeconds {
                     Text(TurnDurationFormat.chip(seconds))
-                        .font(.system(size: 10, weight: .medium))
+                        .scaledFont(10, weight: .medium)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                         .accessibilityLabel("Turn duration \(TurnDurationFormat.chip(seconds))")
@@ -113,35 +122,37 @@ struct ColorBarMessageView: View {
             }
         } else {
             Text(label)
-                .font(.system(size: 10, weight: .semibold))
+                .scaledFont(10, weight: .semibold)
                 .foregroundStyle(barColor)
         }
     }
 
     private func highlightedText(_ text: String) -> AttributedString {
-        guard !searchText.isEmpty else { return AttributedString(text) }
+        let needle = Self.normalizedFindNeedle(searchText)
+        guard !needle.isEmpty else { return AttributedString(text) }
         // Memoize per query: unrelated re-renders (scroll, font-size change)
         // must not re-scan the full row content on the main thread (#27). The
         // cache lives per row, so the effective key is (message id, searchText).
-        if highlightCache.query == searchText, let cached = highlightCache.value {
+        if highlightCache.query == needle, let cached = highlightCache.value {
             return cached
         }
-        let attr = Self.computeHighlight(text, searchText: searchText)
-        highlightCache.query = searchText
+        let attr = Self.computeHighlight(text, searchText: needle)
+        highlightCache.query = needle
         highlightCache.value = attr
         return attr
     }
 
     static func computeHighlight(_ text: String, searchText: String) -> AttributedString {
         var attr = AttributedString(text)
-        guard !searchText.isEmpty else { return attr }
+        let needle = normalizedFindNeedle(searchText)
+        guard !needle.isEmpty else { return attr }
         // Search and map ranges against the SAME string (`text`) using a
         // case-insensitive search. Searching a lowercased copy and mapping the
         // indices back to the original misaligns on length-changing Unicode
         // (e.g. "ß".lowercased() stays one char but other casings change length).
         var searchStart = text.startIndex
         while let range = text.range(
-            of: searchText,
+            of: needle,
             options: .caseInsensitive,
             range: searchStart..<text.endIndex
         ) {
@@ -180,12 +191,13 @@ struct ColorBarMessageView: View {
         query: String,
         backgroundOnly: Bool = false
     ) -> AttributedString {
-        guard !query.isEmpty else { return attr }
+        let needle = normalizedFindNeedle(query)
+        guard !needle.isEmpty else { return attr }
         var result = attr
         let rendered = String(attr.characters)
         var searchStart = rendered.startIndex
         while let range = rendered.range(
-            of: query,
+            of: needle,
             options: .caseInsensitive,
             range: searchStart..<rendered.endIndex
         ) {
@@ -203,13 +215,18 @@ struct ColorBarMessageView: View {
         return result
     }
 
+    static func normalizedFindNeedle(_ query: String) -> String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     var body: some View {
+        let needle = Self.normalizedFindNeedle(searchText)
         // Parse the row once; header label and tool sub-views share this result.
         let parsed = parsedRow
         let label = Self.headerLabel(
             for: indexed.messageType,
             typeIndex: indexed.typeIndex,
-            toolName: parsed.toolName
+            toolName: indexed.messageType == .error ? nil : parsed.toolName
         )
         return HStack(spacing: 0) {
             Rectangle()
@@ -219,18 +236,21 @@ struct ColorBarMessageView: View {
             VStack(alignment: .leading, spacing: 4) {
                 roleHeader(label)
 
+                if case let .toolResult(toolResult?) = parsed {
+                    ToolResultView(parsed: toolResult, searchText: needle)
+                } else {
                 switch indexed.messageType {
                 case _ where Self.usesSegmentedView(for: indexed.messageType):
-                    SegmentedMessageView(content: indexed.message.content, searchText: searchText)
+                    SegmentedMessageView(content: indexed.message.content, searchText: needle)
                 case .thinking:
                     Text(highlightedText(indexed.message.content))
                         .font(.system(size: effectiveFontSize))
                         .textSelection(.enabled)
                         .foregroundStyle(.secondary)
                         .italic()
-                case .toolCall:
+                case .toolCall, .tool:
                     if case let .toolCall(toolCall?) = parsed {
-                        ToolCallView(parsed: toolCall)
+                        ToolCallView(parsed: toolCall, searchText: needle)
                     } else {
                         Text(highlightedText(indexed.message.content))
                             .font(.system(size: effectiveFontSize))
@@ -238,19 +258,20 @@ struct ColorBarMessageView: View {
                     }
                 case .toolResult:
                     if case let .toolResult(toolResult?) = parsed {
-                        ToolResultView(parsed: toolResult)
+                        ToolResultView(parsed: toolResult, searchText: needle)
                     } else {
                         Text(highlightedText(indexed.message.content))
                             .font(.system(size: effectiveFontSize))
                             .textSelection(.enabled)
                     }
                 case .system:
-                    CollapsibleSystemBubble(message: indexed.message)
+                    CollapsibleSystemBubble(message: indexed.message, searchText: needle)
                 default:
                     Text(highlightedText(indexed.message.content))
                         .font(.system(size: effectiveFontSize))
                         .textSelection(.enabled)
                         .foregroundStyle(indexed.messageType == .error ? barColor.opacity(0.85) : .primary)
+                }
                 }
             }
             .padding(.horizontal, 10)

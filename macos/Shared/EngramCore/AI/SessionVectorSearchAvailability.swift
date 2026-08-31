@@ -113,11 +113,13 @@ public enum SessionVectorSearchAvailability {
         )
     }
 
-    /// H07: require exact model **and** dimension equality before generating a
-    /// query embedding. Same-dimension different-model is a hard mismatch.
+    /// H07: require exact model equality and require configured dimension
+    /// equality only when this provider request actually sends `dimensions`.
+    /// Omitted-dimension providers adopt and reuse the stored native dimension.
     public static func queryCompatibility(
         configuredModel: String,
         configuredDimension: Int,
+        dimensionsWereSent: Bool = true,
         snapshot: Snapshot
     ) -> QueryCompatibility {
         let cfgModel = configuredModel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -128,7 +130,8 @@ public enum SessionVectorSearchAvailability {
               storedDim > 0 else {
             return .corpusUnavailable
         }
-        if cfgModel == storedModel, configuredDimension == storedDim {
+        if cfgModel == storedModel,
+           !dimensionsWereSent || configuredDimension == storedDim {
             return .compatible(model: storedModel, dimension: storedDim)
         }
         return .modelMismatch(
@@ -142,18 +145,27 @@ public enum SessionVectorSearchAvailability {
     /// Read-only probe of a database file. Missing/unreadable DB → unavailable.
     public static func probe(databasePath: String) -> Snapshot {
         do {
-            var configuration = Configuration()
-            configuration.readonly = true
-            let queue = try DatabaseQueue(path: databasePath, configuration: configuration)
+            let queue = try DatabaseQueue(
+                path: databasePath,
+                configuration: SQLiteConnectionPolicy.immediateReaderConfiguration()
+            )
             return try queue.read { db in
                 try probe(db: db)
             }
+        } catch let error as GRDB.DatabaseError
+            where error.resultCode == .SQLITE_BUSY || error.resultCode == .SQLITE_LOCKED {
+            // Callers without a process-long reader have no trustworthy prior
+            // visibility-filtered snapshot, so a transient lock fails closed.
+            return .unavailable
         } catch {
             return .unavailable
         }
     }
 
-    public static func probe(db: Database) throws -> Snapshot {
+    public static func probe(
+        db: Database,
+        requireUnorphanedSessions: Bool = false
+    ) throws -> Snapshot {
         guard try tableExists("embedding_meta", db: db),
               try tableExists("semantic_chunks", db: db),
               try tableExists("sessions", db: db) else {
@@ -179,6 +191,9 @@ public enum SessionVectorSearchAvailability {
             return .unavailable
         }
 
+        let orphanPredicate = requireUnorphanedSessions
+            ? "AND s.orphan_status IS NULL"
+            : ""
         let hasCompatibleChunk = try Int.fetchOne(
             db,
             sql: """
@@ -188,6 +203,8 @@ public enum SessionVectorSearchAvailability {
             WHERE sc.embedding IS NOT NULL
               AND sc.model = ?
               AND sc.dim = ?
+              AND s.hidden_at IS NULL
+              \(orphanPredicate)
               AND \(SessionSemanticSearchPolicy.searchableTierSQL)
             LIMIT 1
             """,

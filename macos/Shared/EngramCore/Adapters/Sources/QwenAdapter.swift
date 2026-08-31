@@ -1,18 +1,29 @@
 import Foundation
 
+struct QwenAdapterTestHooks: Sendable {
+    var beforeFinalIdentityValidation: @Sendable () -> Void
+
+    init(beforeFinalIdentityValidation: @escaping @Sendable () -> Void = {}) {
+        self.beforeFinalIdentityValidation = beforeFinalIdentityValidation
+    }
+}
+
 final class QwenAdapter: SessionAdapter, Sendable {
     let source: SourceName = .qwen
     private let projectsRoot: URL
     private let limits: ParserLimits
+    private let testHooks: QwenAdapterTestHooks
 
     init(
         projectsRoot: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".qwen/projects")
             .path,
-        limits: ParserLimits = .default
+        limits: ParserLimits = .default,
+        testHooks: QwenAdapterTestHooks = QwenAdapterTestHooks()
     ) {
         self.projectsRoot = URL(fileURLWithPath: projectsRoot)
         self.limits = limits
+        self.testHooks = testHooks
     }
 
     func detect() async -> Bool {
@@ -40,9 +51,17 @@ final class QwenAdapter: SessionAdapter, Sendable {
             let (objects, failure) = try JSONLAdapterSupport.readObjects(
                 locator: locator,
                 limits: limits,
-                reportFailures: true
+                reportFailures: true,
+                countsTowardMessageLimit: Self.countsTowardMessageLimit,
+                beforeIdentityValidation: testHooks.beforeFinalIdentityValidation
             )
-            if let failure { return .failure(failure) }
+            if let failure {
+                guard failure == .fileModifiedDuringParse,
+                      !Self.messages(from: objects).isEmpty
+                else {
+                    return .failure(failure)
+                }
+            }
 
             var sessionId = ""
             var cwd = ""
@@ -111,7 +130,7 @@ final class QwenAdapter: SessionAdapter, Sendable {
                     assistantMessageCount: assistantCount,
                     toolMessageCount: toolCount,
                     systemMessageCount: systemCount,
-                    summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200)),
+                    summary: firstUserText.isEmpty ? nil : firstUserText,
                     filePath: locator,
                     sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
                     indexedAt: nil,
@@ -139,24 +158,29 @@ final class QwenAdapter: SessionAdapter, Sendable {
         let (objects, failure) = try JSONLAdapterSupport.readObjects(
             locator: locator,
             limits: limits,
-            reportFailures: true
+            reportFailures: true,
+            countsTowardMessageLimit: Self.countsTowardMessageLimit,
+            beforeIdentityValidation: testHooks.beforeFinalIdentityValidation
         )
-        if let failure { throw failure }
-        return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(Self.messages(from: objects), options: options))
+        let messages = Self.messages(from: objects)
+        if let failure, messages.isEmpty {
+            throw failure
+        }
+        return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
     }
 
     func streamMessagesWithMetadata(
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> StreamMessagesResult {
-        guard options.limit == nil else {
-            return StreamMessagesResult(messages: try await streamMessages(locator: locator, options: options))
-        }
         let result = try JSONLAdapterSupport.wholeDocumentMessagesWithMetadata(
             locator: locator,
             options: options,
             limits: limits,
-            transform: Self.messages(from:)
+            transform: Self.messages(from:),
+            countsTowardMessageLimit: Self.countsTowardMessageLimit,
+            countsProducedMessageTowardLimit: { $0.role != .system },
+            beforeIdentityValidation: testHooks.beforeFinalIdentityValidation
         )
         return JSONLAdapterSupport.stream(result)
     }
@@ -215,6 +239,11 @@ final class QwenAdapter: SessionAdapter, Sendable {
             toolCalls: toolCalls,
             usage: type == "assistant" ? (metadataUsage ?? telemetryUsage) : nil
         )
+    }
+
+    private static func countsTowardMessageLimit(_ object: JSONLAdapterSupport.JSONObject) -> Bool {
+        guard let message = message(from: object, telemetryUsage: nil) else { return false }
+        return message.role != .system
     }
 
     private static func toolCalls(from message: JSONLAdapterSupport.JSONObject?) -> [NormalizedToolCall] {
@@ -335,9 +364,7 @@ final class QwenAdapter: SessionAdapter, Sendable {
     }
 
     private static func isSystemInjection(_ text: String) -> Bool {
-        text.hasPrefix("\nYou are Qwen Code") ||
-            text.hasPrefix("You are Qwen Code") ||
-            text.contains("<INSTRUCTIONS>")
+        SystemMessageClassifier.classify(content: text, source: "qwen") != .none
     }
 
     private static func extractContent(_ message: JSONLAdapterSupport.JSONObject?) -> String {

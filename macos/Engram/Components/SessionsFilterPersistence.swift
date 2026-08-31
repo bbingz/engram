@@ -7,6 +7,9 @@ enum SessionsFilterPersistence {
     static let sessionFilterKey = "sessions.sessionFilter"
     static let timeFilterKey = "sessions.timeFilter"
     static let sourceFilterKey = "sessions.sourceFilter"
+    /// Wave 6C-1 (design §9): HQ-machine-only filter on the Sessions page.
+    /// Plain Bool — AppStorage supplies the default, no sanitizer needed.
+    static let hqOnlyKey = "sessions.hqOnly"
 
     static let sessionOptions = ["All", "Starred"]
     static let timeOptions = ["Today", "This Week", "This Month", "All Time"]

@@ -9,6 +9,7 @@
 //   - `other` — under a DIFFERENT project's Claude Code dir. Historical
 //               reference left alone by design.
 import Foundation
+import EngramCoreRead
 
 public struct ReviewResult: Equatable, Sendable {
     public let own: [String]
@@ -29,21 +30,26 @@ public enum ReviewScan {
         newPath: String,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> ReviewResult {
+        let canonicalOldPath = ProjectPathVariants.canonicalEncodingPath(
+            ProjectReviewPathSupport.expandHome(oldPath, homeDirectory: homeDirectory)
+        )
+        let canonicalNewPath = ProjectPathVariants.canonicalEncodingPath(
+            ProjectReviewPathSupport.expandHome(newPath, homeDirectory: homeDirectory)
+        )
         let roots = SessionSources.roots(homeDirectory: homeDirectory)
-        let ccRoot = roots.first { $0.id == .claudeCode }?.path
-        let ownCcDir = ClaudeCodeProjectDir.encode(newPath)
+        let ownCcDir = ClaudeCodeProjectDir.encode(canonicalNewPath)
 
         var ownSet = Set<String>()
         var otherSet = Set<String>()
 
         for root in roots {
             let hits = SessionSources.findReferencingFiles(
-                root: root.path, needle: oldPath
+                root: root.path, needle: canonicalOldPath
             )
             for hit in hits {
                 let isOther: Bool
-                if let cc = ccRoot, isUnder(path: hit, parent: cc) {
-                    let firstSeg = firstSegment(of: hit, after: cc)
+                if root.id == .claudeCode, isUnder(path: hit, parent: root.path) {
+                    let firstSeg = firstSegment(of: hit, after: root.path)
                     isOther = firstSeg != ownCcDir
                 } else {
                     isOther = false
@@ -57,7 +63,7 @@ public enum ReviewScan {
             if root.id == .opencode {
                 for hit in OpenCodeSQLiteProjectMove.residualReferenceLocators(
                     root: root.path,
-                    oldPath: oldPath
+                    oldPath: canonicalOldPath
                 ) {
                     ownSet.insert(hit)
                 }

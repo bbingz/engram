@@ -284,6 +284,21 @@ function makeAdapter(source: SupportedFixtureSource, root: string) {
         join(sourceFixtureRoot, 'cursor/state.vscdb'),
         join(inputRoot, 'state.vscdb'),
       );
+      const db = new Database(dbPath);
+      const row = db
+        .prepare(
+          "SELECT value FROM cursorDiskKV WHERE key = 'composerData:abc-123'",
+        )
+        .get() as { value: string };
+      const composer = JSON.parse(row.value) as Record<string, unknown>;
+      const latest = composer.latestConversationSummary as {
+        summary?: unknown;
+      };
+      latest.summary = { summary: latest.summary };
+      db.prepare(
+        "UPDATE cursorDiskKV SET value = ? WHERE key = 'composerData:abc-123'",
+      ).run(JSON.stringify(composer));
+      db.close();
       return { adapter: new CursorAdapter(dbPath), inputRoot };
     }
     case 'vscode': {

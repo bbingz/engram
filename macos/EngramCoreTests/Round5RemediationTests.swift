@@ -28,6 +28,45 @@ final class Round5RemediationTests: XCTestCase {
         try data.write(to: url)
     }
 
+    func testReadObjectsKeepsPrefixWhenFinalIdentityLookupFails_repro() throws {
+        let root = try makeTempDir("read-objects-identity-prefix")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        func makeFile(_ name: String) throws -> URL {
+            let file = root.appendingPathComponent(name)
+            try [
+                #"{"type":"user","message":{"content":"first"}}"#,
+                #"{"type":"assistant","message":{"content":"second"}}"#,
+            ].joined(separator: "\n").appending("\n")
+                .write(to: file, atomically: true, encoding: .utf8)
+            return file
+        }
+
+        let ordinary = try makeFile("ordinary.jsonl")
+        let ordinaryResult = try JSONLAdapterSupport.readObjects(
+            locator: ordinary.path,
+            limits: .default,
+            reportFailures: true,
+            beforeIdentityValidation: { try? FileManager.default.removeItem(at: ordinary) }
+        )
+        XCTAssertEqual(ordinaryResult.0.count, 2)
+        XCTAssertEqual(ordinaryResult.1, .fileModifiedDuringParse)
+
+        let capped = try makeFile("capped.jsonl")
+        let cappedResult = try JSONLAdapterSupport.readObjects(
+            locator: capped.path,
+            limits: ParserLimits(maxMessages: 1),
+            reportFailures: true,
+            beforeIdentityValidation: { try? FileManager.default.removeItem(at: capped) }
+        )
+        XCTAssertEqual(cappedResult.0.count, 1)
+        XCTAssertEqual(
+            cappedResult.1,
+            .messageLimitExceeded,
+            "the billable cap must outrank a later identity failure"
+        )
+    }
+
     private func writeJSONL(_ objects: [[String: Any]], to url: URL) throws {
         let lines = try objects.map { object -> String in
             let data = try JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes])
@@ -60,25 +99,14 @@ final class Round5RemediationTests: XCTestCase {
         XCTAssertFalse(maintenance.contains("VALUES('optimize')"))
     }
 
-    func testDeterministicFtsParserFailuresAreTerminal() throws {
+    func testDeterministicFtsParserFailuresStayRetryableUntilTheBoundedCap() throws {
         let source = try source("EngramCoreWrite/Indexing/IndexJobRunner.swift")
-        let start = try XCTUnwrap(source.range(of: "private static func isTerminalFtsFailure"))
-        let end = try XCTUnwrap(source.range(of: "// MARK: - SQL helpers", options: [], range: start.lowerBound..<source.endIndex))
-        let classifier = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertFalse(source.contains("private static func isTerminalFtsFailure"))
 
-        let terminalBranchStart = try XCTUnwrap(classifier.range(of: "case .invalidUtf8"))
-        let terminalBranchEnd = try XCTUnwrap(classifier.range(of: "return true", options: [], range: terminalBranchStart.lowerBound..<classifier.endIndex))
-        let terminalBranch = String(classifier[terminalBranchStart.lowerBound..<terminalBranchEnd.upperBound])
-
-        for failure in [".invalidUtf8", ".malformedJSON", ".messageLimitExceeded", ".lineTooLarge"] {
-            XCTAssertTrue(terminalBranch.contains(failure), "\(failure) must stop retrying deterministic FTS failures")
-        }
-
-        let retryableStart = try XCTUnwrap(classifier.range(of: "case .truncatedJSON"))
-        let retryableEnd = try XCTUnwrap(classifier.range(of: "return false", options: [], range: retryableStart.lowerBound..<classifier.endIndex))
-        let retryableBranch = String(classifier[retryableStart.lowerBound..<retryableEnd.upperBound])
-        XCTAssertFalse(retryableBranch.contains(".messageLimitExceeded"))
-        XCTAssertFalse(retryableBranch.contains(".lineTooLarge"))
+        let catchStart = try XCTUnwrap(source.range(of: "} catch {", options: .backwards))
+        let catchEnd = try XCTUnwrap(source.range(of: "return .retryable", options: [], range: catchStart.lowerBound..<source.endIndex))
+        let retryCatch = String(source[catchStart.lowerBound..<catchEnd.upperBound])
+        XCTAssertTrue(retryCatch.contains("try Self.markRetryable"))
     }
 
     func testSnapshotWriterPrunesSupersededIndexJobsBeforeInsert() throws {
@@ -94,7 +122,7 @@ final class Round5RemediationTests: XCTestCase {
         XCTAssertTrue(inserter.contains("WHERE session_id = ?"))
         XCTAssertTrue(inserter.contains("AND job_kind = ?"))
         XCTAssertTrue(inserter.contains("AND id != ?"))
-        XCTAssertTrue(inserter.contains("status IN ('pending', 'failed_retryable', 'completed', 'not_applicable')"))
+        XCTAssertTrue(inserter.contains("status IN ('pending', 'failed_retryable', 'failed_permanent', 'completed', 'not_applicable')"))
         XCTAssertTrue(inserter.contains("jobId,"))
     }
 
@@ -140,12 +168,12 @@ final class Round5RemediationTests: XCTestCase {
 
         XCTAssertTrue(source.contains("private static let maxFtsRetryCount"))
 
-        let catchStart = try XCTUnwrap(source.range(of: "} catch {"))
+        let catchStart = try XCTUnwrap(source.range(of: "} catch {", options: .backwards))
         let catchEnd = try XCTUnwrap(source.range(of: "return .retryable", options: [], range: catchStart.lowerBound..<source.endIndex))
         let retryCatch = String(source[catchStart.lowerBound..<catchEnd.upperBound])
         XCTAssertTrue(retryCatch.contains("try Self.markRetryable"))
         XCTAssertTrue(
-            retryCatch.contains("try FTSRebuildPolicy.finalizeRebuildIfReady(db)"),
+            retryCatch.contains("try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources)"),
             "a retryable failure that hits the retry cap must not leave a rebuild permanently pending"
         )
 
@@ -253,7 +281,8 @@ final class Round5RemediationTests: XCTestCase {
         let dryRunStart = try XCTUnwrap(source.range(of: "// Dry-run:", options: [], range: runStart.lowerBound..<source.endIndex))
         let validation = String(source[runStart.lowerBound..<dryRunStart.lowerBound])
 
-        XCTAssertTrue(validation.contains("let src = canonicalizeExistingSource(options.src)"))
+        XCTAssertTrue(validation.contains("let src = canonicalizeExistingSource("))
+        XCTAssertTrue(validation.contains("ProjectPath.expandHome(options.src"))
         XCTAssertFalse(validation.contains("let src = canonicalize(options.src)"))
 
         let helperStart = try XCTUnwrap(source.range(of: "private func canonicalizeExistingSource"))
@@ -271,7 +300,7 @@ final class Round5RemediationTests: XCTestCase {
         let archiveEnd = try XCTUnwrap(batch.range(of: "} else {", options: [], range: archiveStart.lowerBound..<batch.endIndex))
         let archiveBranch = String(batch[archiveStart.lowerBound..<archiveEnd.lowerBound])
 
-        XCTAssertTrue(archiveBranch.contains("skipProbe: doc.defaults.dryRun"))
+        XCTAssertTrue(archiveBranch.contains("skipProbe: false"))
         XCTAssertFalse(batch.contains("FileManager.default.createDirectory"))
 
         let orchestrator = try source("EngramCoreWrite/ProjectMove/Orchestrator.swift")
@@ -321,7 +350,8 @@ final class Round5RemediationTests: XCTestCase {
         XCTAssertTrue(sources.contains("path.decomposedStringWithCanonicalMapping"))
 
         let patch = try source("EngramCoreWrite/ProjectMove/JsonlPatch.swift")
-        XCTAssertTrue(patch.contains("for variant in ProjectPathVariants.variants(oldPath) where variant != newPath"))
+        XCTAssertTrue(patch.contains("private static func patchingVariants("))
+        XCTAssertTrue(patch.contains("for variant in ProjectPathVariants.variants(path)"))
         XCTAssertTrue(patch.contains("replaceWithTerminator("))
         XCTAssertTrue(patch.contains("let needle = Data((variant +"))
 
@@ -444,6 +474,52 @@ final class Round5RemediationTests: XCTestCase {
         XCTAssertEqual(indexed, 1)
         XCTAssertEqual(adapter.parseCount, 1)
         XCTAssertEqual(sink.batchSizes, [1])
+    }
+
+    func testCopilotGraceDoesNotSkipNeverIndexedLocator_repro() async throws {
+        let temp = try makeTempDir("copilot-first-discovery")
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let locator = temp.appendingPathComponent("events.jsonl")
+        try "{}\n".write(to: locator, atomically: true, encoding: .utf8)
+        let size = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: locator.path)[.size] as? NSNumber
+        ).int64Value
+        let sink = Round5KnownFileStateSink(states: [:])
+        let adapter = Round5CountingFileSessionAdapter(
+            source: .copilot,
+            locator: locator.path,
+            sizeBytes: size
+        )
+
+        let indexed = try await SwiftIndexer(
+            sink: sink,
+            adapters: [adapter],
+            skipUnchangedFileLocators: true
+        ).indexAll()
+
+        XCTAssertEqual(indexed, 1)
+        XCTAssertEqual(adapter.parseCount, 1)
+    }
+
+    func testCopilotGraceDoesNotSkipForceReparse_repro() async throws {
+        let temp = try makeTempDir("copilot-force-reparse")
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let locator = temp.appendingPathComponent("events.jsonl")
+        try "{}\n".write(to: locator, atomically: true, encoding: .utf8)
+        let size = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: locator.path)[.size] as? NSNumber
+        ).int64Value
+        let sink = Round5KnownFileStateSink(states: [:])
+        let adapter = Round5CountingFileSessionAdapter(
+            source: .copilot,
+            locator: locator.path,
+            sizeBytes: size
+        )
+
+        let indexed = try await SwiftIndexer(sink: sink, adapters: [adapter]).indexAll()
+
+        XCTAssertEqual(indexed, 1)
+        XCTAssertEqual(adapter.parseCount, 1)
     }
 
     // Part B — Cline cwd extraction must anchor on ") Files" so a path that

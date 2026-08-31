@@ -36,6 +36,7 @@ export interface SessionInfo {
   toolMessageCount: number;
   systemMessageCount: number;
   summary?: string; // 首条用户消息文本（截断到 200 字符）
+  displayTitle?: string;
   filePath: string; // 原始文件路径（用于流式读取消息）
   sizeBytes: number;
   indexedAt?: string; // ISO 8601 — when this session was last indexed (set by DB)

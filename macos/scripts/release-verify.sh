@@ -99,7 +99,11 @@ ok "bundle hygiene clean (no node/node_modules/dist/daemon.js/index.js/web.js)"
 [ -f "$APP/Contents/Helpers/EngramMCP" ] || fail "missing Contents/Helpers/EngramMCP"
 [ -f "$APP/Contents/Helpers/EngramCLI" ] || fail "missing Contents/Helpers/EngramCLI"
 [ -f "$APP/Contents/Helpers/EngramService" ] || fail "missing Contents/Helpers/EngramService"
-ok "structure present (Engram + EngramCLI + EngramMCP + EngramService)"
+for framework in EngramServiceCore EngramCoreRead EngramCoreWrite GRDB-dynamic; do
+  [ -d "$APP/Contents/Frameworks/${framework}.framework" ] \
+    || fail "missing Contents/Frameworks/${framework}.framework"
+done
+ok "structure present (Engram + helpers + runtime frameworks)"
 
 if [ "$HYGIENE_ONLY" -eq 1 ]; then
   echo "release-verify: PASS (hygiene + structure only)"

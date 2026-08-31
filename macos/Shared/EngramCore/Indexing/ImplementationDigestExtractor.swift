@@ -105,6 +105,19 @@ public struct ImplementationTimelineItem: Equatable, Sendable {
     }
 }
 
+public enum ProjectWorkWindow {
+    public static let defaultDays = 90
+
+    public static func referenceTimestamp(now: Date) -> String {
+        ISO8601DateFormatter().string(from: now)
+    }
+
+    public static func cutoffModifier(days: Int) -> String? {
+        guard days < 100_000 else { return nil }
+        return "-\(max(0, days)) days"
+    }
+}
+
 public enum ImplementationDigestExtractor {
     private struct AssistantCandidate {
         var text: String
@@ -193,7 +206,9 @@ public enum ImplementationDigestExtractor {
         }
 
         let actionTimestamp = selected?.timestamp ?? pending.timestamp
-        let actionDate = dateKey(from: actionTimestamp) ?? dateKey(from: pending.timestamp) ?? "unknown"
+        guard let actionDate = dateKey(from: actionTimestamp) ?? dateKey(from: pending.timestamp) else {
+            return nil
+        }
         let title = titleFor(intent: intent, fallback: sessionTitle)
         return SessionImplementationBeat(
             sessionId: sessionId,
@@ -335,7 +350,7 @@ public enum ImplementationDigestExtractor {
 
     private static let localDayFormatter: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.calendar = Calendar.current
+        formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone.current
         formatter.dateFormat = "yyyy-MM-dd"

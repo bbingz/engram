@@ -281,7 +281,7 @@ public final class EmbeddingCircuitBreaker: @unchecked Sendable {
 /// Decorator that admits `embed` through an `EmbeddingCircuitBreaker`.
 public struct GuardedEmbeddingProvider: EmbeddingProvider {
     public let model: String
-    public let dimension: Int
+    public var dimension: Int { inner.dimension }
     public let providerKey: String
     private let inner: any EmbeddingProvider
     private let breaker: EmbeddingCircuitBreaker
@@ -295,7 +295,6 @@ public struct GuardedEmbeddingProvider: EmbeddingProvider {
         self.breaker = breaker
         self.providerKey = providerKey
         self.model = inner.model
-        self.dimension = inner.dimension
     }
 
     public init(

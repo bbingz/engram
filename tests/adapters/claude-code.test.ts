@@ -364,6 +364,7 @@ describe('ClaudeCodeAdapter', () => {
     const agentId = 'subagent-uuid-456';
     const subagentDir = join(tmpRoot, 'project-dir', parentId, 'subagents');
     const subagentFile = join(subagentDir, `${agentId}.jsonl`);
+    const missingAgentFile = join(subagentDir, 'missing-agent.jsonl');
 
     beforeAll(() => {
       mkdirSync(subagentDir, { recursive: true });
@@ -393,6 +394,16 @@ describe('ClaudeCodeAdapter', () => {
         }),
       ];
       writeFileSync(subagentFile, `${lines.join('\n')}\n`);
+      writeFileSync(
+        missingAgentFile,
+        `${lines
+          .map((line) => {
+            const record = JSON.parse(line) as Record<string, unknown>;
+            delete record.agentId;
+            return JSON.stringify(record);
+          })
+          .join('\n')}\n`,
+      );
     });
 
     afterAll(() => {
@@ -400,11 +411,22 @@ describe('ClaudeCodeAdapter', () => {
     });
 
     it('extracts parentSessionId for subagent files', async () => {
-      const info = await adapter.parseSessionInfo(subagentFile);
+      const info = await new ClaudeCodeAdapter(tmpRoot).parseSessionInfo(
+        subagentFile,
+      );
       expect(info).not.toBeNull();
       expect(info?.id).toBe(agentId);
       expect(info?.agentRole).toBe('subagent');
       expect(info?.parentSessionId).toBe(parentId);
+    });
+
+    it('uses a collision-safe subagent id when agentId is absent (repro)', async () => {
+      const info = await new ClaudeCodeAdapter(tmpRoot).parseSessionInfo(
+        missingAgentFile,
+      );
+      expect(info?.id).toBe(`sub:${parentId}:missing-agent.jsonl`);
+      expect(info?.id).not.toBe(parentId);
+      expect(info?.agentRole).toBe('subagent');
     });
 
     it('returns undefined parentSessionId for regular sessions', async () => {

@@ -29,7 +29,7 @@ func aliasConfirmation(_ value: EngramServiceJSONValue) -> String? {
 
 struct AliasSheet: View {
     let projectName: String
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
     @Environment(\.dismiss) var dismiss
 
     @State private var addInput: String = ""
@@ -38,6 +38,20 @@ struct AliasSheet: View {
     @State private var confirmation: String?
     @State private var errorMessage: String?
     @State private var activeTask: Task<Void, Never>?
+    /// Last attempted mutation so the error banner can offer a one-tap Retry
+    /// after a transient service failure.
+    @State private var failedAttempt: (action: String, input: String)?
+
+    /// Mutation launch transition (merge-gate fix): flips idle → running
+    /// synchronously at the button entry, before any Task exists, so a
+    /// double-click's second closure reads the already-set flag and is
+    /// dropped. Released by the defer in `mutate` on success AND failure, so
+    /// the error banner's Retry can re-enter.
+    static func beginMutation(isExecuting: inout Bool) -> Bool {
+        guard !isExecuting else { return false }
+        isExecuting = true
+        return true
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -65,6 +79,7 @@ struct AliasSheet: View {
                             .font(.system(.caption, design: .monospaced))
                             .disabled(isExecuting)
                         Button("Add") {
+                            guard Self.beginMutation(isExecuting: &isExecuting) else { return }
                             activeTask = Task { await mutate(action: "add", input: addInput) }
                         }
                         .disabled(isExecuting || addInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -81,6 +96,7 @@ struct AliasSheet: View {
                             .font(.system(.caption, design: .monospaced))
                             .disabled(isExecuting)
                         Button("Remove") {
+                            guard Self.beginMutation(isExecuting: &isExecuting) else { return }
                             activeTask = Task { await mutate(action: "remove", input: removeInput) }
                         }
                         .disabled(isExecuting || removeInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -94,10 +110,23 @@ struct AliasSheet: View {
                 if let confirmation {
                     Label(confirmation, systemImage: "checkmark.circle")
                         .font(.caption)
-                        .foregroundStyle(.green)
+                        .foregroundStyle(Theme.green)
                 }
                 if let errorMessage {
-                    AlertBanner(message: errorMessage)
+                    AlertBanner(
+                        message: errorMessage,
+                        action: failedAttempt.map { attempt in
+                            ("Retry", {
+                                guard Self.beginMutation(isExecuting: &isExecuting) else { return }
+                                activeTask = Task { await self.mutate(action: attempt.action, input: attempt.input) }
+                            })
+                        }
+                    )
+                    // Merge-gate fix 3: visibly disable the banner's Retry while
+                    // a mutation runs — the beginMutation guard alone would
+                    // silently drop the click. Outside AlertBanner's API.
+                    .accessibilityIdentifier("alias_errorBanner")
+                    .disabled(isExecuting)
                 }
             }
 
@@ -122,6 +151,8 @@ struct AliasSheet: View {
         confirmation = nil
         errorMessage = nil
         isExecuting = true
+        // Clear only on success: a failed attempt stays so the banner's Retry
+        // can re-run it without retyping.
         defer { isExecuting = false; activeTask = nil }
         do {
             // Both add AND remove must send newProject non-nil (service guard).
@@ -134,10 +165,12 @@ struct AliasSheet: View {
                 )
             )
             if Task.isCancelled { return }
+            failedAttempt = nil
             confirmation = aliasConfirmation(result) ?? "Alias \(action) succeeded."
             if action == "add" { addInput = "" } else { removeInput = "" }
         } catch {
             if Task.isCancelled { return }
+            failedAttempt = (action, input)
             errorMessage = projectMoveErrorMessage(error)
         }
     }

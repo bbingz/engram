@@ -67,7 +67,7 @@ enum UndoMigrationSelection {
 }
 
 struct UndoSheet: View {
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
     @Environment(\.dismiss) var dismiss
 
     @State private var migrations: [EngramServiceMigrationLogEntry] = []
@@ -140,7 +140,7 @@ struct UndoSheet: View {
                 if let error = errorMessage {
                     VStack(alignment: .leading, spacing: 6) {
                         Label(error, systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.red)
+                            .foregroundStyle(Theme.red)
                             .font(.caption)
                         HStack {
                             Text(retryPolicyExplainer(retryPolicy))
@@ -160,7 +160,7 @@ struct UndoSheet: View {
                         }
                     }
                     .padding(8)
-                    .background(Color.red.opacity(0.08))
+                    .background(Theme.red.opacity(0.08))
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
             }
@@ -252,10 +252,10 @@ struct UndoSheet: View {
                         if m.archived {
                             Text("archived")
                                 .font(.caption2)
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(Theme.orange)
                                 .padding(.horizontal, 4)
                                 .padding(.vertical, 1)
-                                .background(Color.orange.opacity(0.1))
+                                .background(Theme.orange.opacity(0.1))
                                 .clipShape(Capsule())
                         }
                     }
@@ -280,7 +280,7 @@ struct UndoSheet: View {
                     if let reason = disabledReasons[m.id] {
                         Label("Can't undo: \(reason)", systemImage: "exclamationmark.triangle")
                             .font(.caption2)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(Theme.red)
                             .padding(.top, 2)
                     }
                 }

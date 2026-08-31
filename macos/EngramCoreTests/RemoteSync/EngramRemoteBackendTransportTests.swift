@@ -159,6 +159,20 @@ final class EngramRemoteBackendTransportTests: XCTestCase {
         )
     }
 
+    func testPrivateIPv4ClassificationRejectsHostWithExtraLabels_repro() {
+        XCTAssertThrowsError(
+            try EngramRemoteBackend(
+                baseURL: URL(string: "http://10.0.0.1.attacker.com:8787")!,
+                token: "t",
+                requireTLS: false
+            )
+        ) { error in
+            guard case EngramRemoteBackendError.insecureURL = error else {
+                return XCTFail("expected insecureURL, got \(error)")
+            }
+        }
+    }
+
     // MARK: - Helpers
 
     private func makeBackend() throws -> EngramRemoteBackend {

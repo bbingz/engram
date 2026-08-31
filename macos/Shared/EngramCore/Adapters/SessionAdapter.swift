@@ -20,6 +20,46 @@ public enum SourceName: String, CaseIterable, Codable, Sendable {
     case windsurf
 }
 
+/// Canonical filesystem roots shared by project migration and read-only audit
+/// surfaces. Keep storage-only Codex roots here even though they are not
+/// independent adapter sources.
+public enum SessionStorageRootCatalog {
+    public struct Entry: Equatable, Sendable {
+        public let id: String
+        public let relativePath: String
+
+        public init(id: String, relativePath: String) {
+            self.id = id
+            self.relativePath = relativePath
+        }
+    }
+
+    public static let entries: [Entry] = [
+        Entry(id: "claude-code", relativePath: ".claude/projects"),
+        Entry(id: "codex", relativePath: ".codex/sessions"),
+        Entry(id: "codex-archived", relativePath: ".codex/archived_sessions"),
+        Entry(id: "codex-rollout-summaries", relativePath: ".codex/memories/rollout_summaries"),
+        Entry(id: "gemini-cli", relativePath: ".gemini/tmp"),
+        Entry(id: "iflow", relativePath: ".iflow/projects"),
+        Entry(id: "qwen", relativePath: ".qwen/projects"),
+        Entry(id: "qoder", relativePath: ".qoder/projects"),
+        Entry(id: "opencode", relativePath: ".local/share/opencode"),
+        Entry(id: "antigravity", relativePath: ".gemini/antigravity-cli/brain"),
+        Entry(id: "antigravity-legacy", relativePath: ".gemini/antigravity"),
+        Entry(id: "commandcode", relativePath: ".commandcode/projects"),
+        Entry(id: "copilot", relativePath: ".copilot"),
+    ]
+
+    public static func paths(homeDirectory: URL) -> [(id: String, path: String)] {
+        entries.map { entry in
+            (
+                id: entry.id,
+                path: homeDirectory.appendingPathComponent(entry.relativePath).path
+            )
+        }
+    }
+}
+
 public enum OriginatorClassifier {
     public static func isClaudeCode(_ originator: String?) -> Bool {
         guard let originator else { return false }
@@ -101,6 +141,7 @@ public struct NormalizedSessionInfo: Codable, Equatable, Sendable {
     public var toolMessageCount: Int
     public var systemMessageCount: Int
     public var summary: String?
+    public var displayTitle: String?
     public var filePath: String
     public var sizeBytes: Int64
     public var indexedAt: String?
@@ -127,6 +168,7 @@ public struct NormalizedSessionInfo: Codable, Equatable, Sendable {
         toolMessageCount: Int,
         systemMessageCount: Int,
         summary: String? = nil,
+        displayTitle: String? = nil,
         filePath: String,
         sizeBytes: Int64,
         indexedAt: String? = nil,
@@ -152,6 +194,7 @@ public struct NormalizedSessionInfo: Codable, Equatable, Sendable {
         self.toolMessageCount = toolMessageCount
         self.systemMessageCount = systemMessageCount
         self.summary = summary
+        self.displayTitle = displayTitle
         self.filePath = filePath
         self.sizeBytes = sizeBytes
         self.indexedAt = indexedAt
@@ -180,17 +223,23 @@ public struct StreamMessagesResult: Sendable {
     public var messages: AsyncThrowingStream<NormalizedMessage, Error>
     public var totalKnownComplete: Bool
     public var truncatedAt: Int?
+    public var maxRawMessages: Int?
+    public var parseFailure: ParserFailure?
 
     public var truncated: Bool { truncatedAt != nil || !totalKnownComplete }
 
     public init(
         messages: AsyncThrowingStream<NormalizedMessage, Error>,
         totalKnownComplete: Bool = true,
-        truncatedAt: Int? = nil
+        truncatedAt: Int? = nil,
+        maxRawMessages: Int? = nil,
+        parseFailure: ParserFailure? = nil
     ) {
         self.messages = messages
         self.totalKnownComplete = totalKnownComplete
         self.truncatedAt = truncatedAt
+        self.maxRawMessages = maxRawMessages
+        self.parseFailure = parseFailure
     }
 }
 
@@ -224,6 +273,7 @@ public enum AdapterParseResult<Value: Sendable>: Sendable {
 public struct IndexingScan: Sendable {
     public var info: NormalizedSessionInfo
     public var messages: [NormalizedMessage]
+    public var parseFailure: ParserFailure?
     public var checkpointParsedOffset: Int64?
     public var checkpointBoundaryHash: String?
     /// Record kinds seen on the parse-once path that the adapter deliberately
@@ -234,12 +284,14 @@ public struct IndexingScan: Sendable {
     public init(
         info: NormalizedSessionInfo,
         messages: [NormalizedMessage],
+        parseFailure: ParserFailure? = nil,
         checkpointParsedOffset: Int64? = nil,
         checkpointBoundaryHash: String? = nil,
         unknownRecordKinds: Set<String> = []
     ) {
         self.info = info
         self.messages = messages
+        self.parseFailure = parseFailure
         self.checkpointParsedOffset = checkpointParsedOffset
         self.checkpointBoundaryHash = checkpointBoundaryHash
         self.unknownRecordKinds = unknownRecordKinds
@@ -320,6 +372,25 @@ public protocol MessageAdapter {
     ) async throws -> StreamMessagesResult
 }
 
+public struct IndexingInputIdentity: Equatable, Sendable {
+    public let sizeBytes: Int64
+    public let modifiedAtNanos: Int64
+    public let locatorInode: Int64?
+    public let locatorDevice: Int64?
+
+    public init(
+        sizeBytes: Int64,
+        modifiedAtNanos: Int64,
+        locatorInode: Int64?,
+        locatorDevice: Int64?
+    ) {
+        self.sizeBytes = sizeBytes
+        self.modifiedAtNanos = modifiedAtNanos
+        self.locatorInode = locatorInode
+        self.locatorDevice = locatorDevice
+    }
+}
+
 public protocol SessionAdapter: MessageAdapter {
     func detect() async -> Bool
     func listSessionLocators() async throws -> [String]
@@ -330,6 +401,10 @@ public protocol SessionAdapter: MessageAdapter {
     /// these. Empty — the default — means the adapter declares no domain and is
     /// never pruned. Protocol requirement so it dispatches through `any SessionAdapter`.
     var enumerationRoots: [String] { get }
+    /// Physical identity of every input consumed for one locator. Adapters
+    /// backed by a single file use the default nil and the indexer stats the
+    /// locator directly.
+    func indexingInputIdentity(locator: String) -> IndexingInputIdentity?
     /// Parse a session's info and messages together. The default reuses the two
     /// existing entry points (two parses); adapters that can produce both from a
     /// single file read override this to parse once. Declared as a protocol
@@ -348,6 +423,8 @@ public protocol TailIndexingSessionAdapter: SessionAdapter {
 public extension SessionAdapter {
     /// Safe default: no declared domain → orphan prune never runs for this adapter.
     var enumerationRoots: [String] { [] }
+
+    func indexingInputIdentity(locator: String) -> IndexingInputIdentity? { nil }
 
     func streamMessagesWithMetadata(
         locator: String,
@@ -369,12 +446,25 @@ public extension SessionAdapter {
                 locator: locator,
                 options: StreamMessagesOptions()
             )
-            if result.truncated {
+            if result.truncatedAt != nil {
                 return .failure(.messageLimitExceeded)
             }
             var messages: [NormalizedMessage] = []
             for try await message in result.messages {
                 messages.append(message)
+            }
+            if let failure = result.parseFailure {
+                guard failure == .fileModifiedDuringParse, !messages.isEmpty else {
+                    return .failure(failure)
+                }
+                return .success(IndexingScan(
+                    info: info,
+                    messages: messages,
+                    parseFailure: failure
+                ))
+            }
+            if !result.totalKnownComplete {
+                return .failure(.messageLimitExceeded)
             }
             return .success(IndexingScan(info: info, messages: messages))
         }

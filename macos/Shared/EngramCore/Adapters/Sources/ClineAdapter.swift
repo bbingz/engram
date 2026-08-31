@@ -40,66 +40,11 @@ final class ClineAdapter: SessionAdapter, Sendable {
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
         do {
-            let messages = try Phase4AdapterSupport.readJSONArray(locator: locator, limits: limits)
-            if Self.messages(from: messages).count > limits.maxMessages {
+            let prefix = try Self.readPrefix(locator: locator, limits: limits)
+            if prefix.exceededMessageLimit {
                 return .failure(.messageLimitExceeded)
             }
-            guard let first = messages.first,
-                  let firstTimestamp = Phase4AdapterSupport.double(first["ts"])
-            else {
-                return .failure(.malformedJSON)
-            }
-
-            let taskId = URL(fileURLWithPath: locator).deletingLastPathComponent().lastPathComponent
-            let lastTimestamp = messages.compactMap { Phase4AdapterSupport.double($0["ts"]) }.last ?? firstTimestamp
-            let userMessages = messages.filter { object in
-                let say = JSONLAdapterSupport.string(object["say"])
-                return say == "task" || say == "user_feedback"
-            }
-            let assistantMessages = messages.filter { object in
-                JSONLAdapterSupport.string(object["say"]) == "text" && !(object["partial"] as? Bool ?? false)
-            }
-            let summary = JSONLAdapterSupport.string(
-                messages.first { JSONLAdapterSupport.string($0["say"]) == "task" }?["text"]
-            )
-            let model = messages.compactMap { message -> String? in
-                let modelInfo = JSONLAdapterSupport.object(message["modelInfo"])
-                return JSONLAdapterSupport.string(modelInfo?["modelId"])
-            }.first
-            // R184-3: timestamped metadata-only Cline files (e.g. api_req_started)
-            // must not become zero-count browsable sessions.
-            guard userMessages.count + assistantMessages.count > 0 else {
-                return .failure(.noVisibleMessages)
-            }
-
-            return .success(
-                NormalizedSessionInfo(
-                    id: taskId,
-                    source: .cline,
-                    startTime: Phase4AdapterSupport.isoFromMilliseconds(firstTimestamp),
-                    endTime: lastTimestamp != firstTimestamp ? Phase4AdapterSupport.isoFromMilliseconds(lastTimestamp) : nil,
-                    cwd: Self.extractCwd(from: messages),
-                    project: nil,
-                    model: model,
-                    messageCount: userMessages.count + assistantMessages.count,
-                    userMessageCount: userMessages.count,
-                    assistantMessageCount: assistantMessages.count,
-                    toolMessageCount: 0,
-                    systemMessageCount: 0,
-                    summary: summary.map { String($0.prefix(200)) },
-                    filePath: locator,
-                    sizeBytes: Phase4AdapterSupport.fileSize(locator),
-                    indexedAt: nil,
-                    agentRole: nil,
-                    originator: nil,
-                    origin: nil,
-                    summaryMessageCount: nil,
-                    tier: nil,
-                    qualityScore: nil,
-                    parentSessionId: nil,
-                    suggestedParentId: nil
-                )
-            )
+            return Self.sessionInfo(locator: locator, objects: prefix.objects)
         } catch let failure as ParserFailure {
             return .failure(failure)
         } catch {
@@ -116,9 +61,14 @@ final class ClineAdapter: SessionAdapter, Sendable {
         if let cached = await messageCache.cached(locator: locator, signature: signature) {
             messages = cached
         } else {
-            let objects = try Phase4AdapterSupport.readJSONArray(locator: locator, limits: limits)
-            messages = Self.messages(from: objects)
-            await messageCache.store(locator: locator, signature: signature, messages: messages)
+            let prefix = try Self.readPrefix(locator: locator, limits: limits)
+            messages = Self.messages(from: prefix.objects)
+            if options.limit == nil, prefix.exceededMessageLimit {
+                throw ParserFailure.messageLimitExceeded
+            }
+            if !prefix.exceededMessageLimit, prefix.parseFailure == nil {
+                await messageCache.store(locator: locator, signature: signature, messages: messages)
+            }
         }
         if options.limit == nil, messages.count > limits.maxMessages {
             throw ParserFailure.messageLimitExceeded
@@ -135,26 +85,124 @@ final class ClineAdapter: SessionAdapter, Sendable {
         if let cached = await messageCache.cached(locator: locator, signature: signature) {
             messages = cached
         } else {
-            let objects = try Phase4AdapterSupport.readJSONArray(locator: locator, limits: limits)
-            messages = Self.messages(from: objects)
-            await messageCache.store(locator: locator, signature: signature, messages: messages)
+            let prefix = try Phase4AdapterSupport.readJSONArrayPrefix(
+                locator: locator,
+                limits: limits,
+                countsTowardMessageLimit: { Self.message(from: $0) != nil }
+            )
+            messages = Self.messages(from: prefix.objects)
+            if !prefix.exceededMessageLimit, prefix.parseFailure == nil {
+                await messageCache.store(locator: locator, signature: signature, messages: messages)
+            }
+            return JSONLAdapterSupport.stream(
+                JSONLAdapterSupport.boundedWindowWithMetadata(
+                    messages,
+                    options: options,
+                    maxMessages: limits.maxMessages,
+                    hasMoreMessages: prefix.exceededMessageLimit,
+                    parseFailure: prefix.parseFailure
+                )
+            )
         }
-        // Silent whole-transcript cap is the P1 this override exists to mark.
-        let truncatedAt = options.limit == nil && messages.count > limits.maxMessages
-            ? limits.maxMessages
-            : nil
-        let bounded = truncatedAt == nil
-            ? JSONLAdapterSupport.applyWindow(messages, options: options)
-            : Array(messages.prefix(limits.maxMessages))
-        return StreamMessagesResult(
-            messages: JSONLAdapterSupport.stream(bounded),
-            totalKnownComplete: truncatedAt == nil,
-            truncatedAt: truncatedAt
+        return JSONLAdapterSupport.stream(
+            JSONLAdapterSupport.boundedWindowWithMetadata(
+                messages,
+                options: options,
+                maxMessages: limits.maxMessages
+            )
         )
+    }
+
+    func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
+        do {
+            let prefix = try Self.readPrefix(locator: locator, limits: limits)
+            if prefix.exceededMessageLimit { return .failure(.messageLimitExceeded) }
+            switch Self.sessionInfo(locator: locator, objects: prefix.objects) {
+            case .failure(let failure):
+                return .failure(failure)
+            case .success(let info):
+                return .success(IndexingScan(
+                    info: info,
+                    messages: Self.messages(from: prefix.objects),
+                    parseFailure: prefix.parseFailure
+                ))
+            }
+        } catch let failure as ParserFailure {
+            return .failure(failure)
+        } catch {
+            return .failure(.malformedJSON)
+        }
     }
 
     func isAccessible(locator: String) async -> Bool {
         JSONLAdapterSupport.fileExists(locator)
+    }
+
+    private static func readPrefix(
+        locator: String,
+        limits: ParserLimits
+    ) throws -> (objects: [Phase4AdapterSupport.JSONObject], exceededMessageLimit: Bool, parseFailure: ParserFailure?) {
+        try Phase4AdapterSupport.readJSONArrayPrefix(
+            locator: locator,
+            limits: limits,
+            countsTowardMessageLimit: { Self.message(from: $0) != nil }
+        )
+    }
+
+    private static func sessionInfo(
+        locator: String,
+        objects: [Phase4AdapterSupport.JSONObject]
+    ) -> AdapterParseResult<NormalizedSessionInfo> {
+        let normalizedMessages = messages(from: objects)
+        guard let first = objects.first,
+              let firstTimestamp = Phase4AdapterSupport.double(first["ts"])
+        else {
+            return .failure(.malformedJSON)
+        }
+
+        let taskId = URL(fileURLWithPath: locator).deletingLastPathComponent().lastPathComponent
+        let lastTimestamp = objects.compactMap { Phase4AdapterSupport.double($0["ts"]) }.last ?? firstTimestamp
+        let userMessages = normalizedMessages.filter { $0.role == .user }
+        let assistantMessages = normalizedMessages.filter { $0.role == .assistant }
+        let summary = JSONLAdapterSupport.string(
+            objects.first { JSONLAdapterSupport.string($0["say"]) == "task" }?["text"]
+        )
+        let model = objects.compactMap { object -> String? in
+            let modelInfo = JSONLAdapterSupport.object(object["modelInfo"])
+            return JSONLAdapterSupport.string(modelInfo?["modelId"])
+        }.first
+        // R184-3: timestamped metadata-only Cline files (e.g. api_req_started)
+        // must not become zero-count browsable sessions.
+        guard userMessages.count + assistantMessages.count > 0 else {
+            return .failure(.noVisibleMessages)
+        }
+
+        return .success(NormalizedSessionInfo(
+            id: taskId,
+            source: .cline,
+            startTime: Phase4AdapterSupport.isoFromMilliseconds(firstTimestamp),
+            endTime: lastTimestamp != firstTimestamp ? Phase4AdapterSupport.isoFromMilliseconds(lastTimestamp) : nil,
+            cwd: extractCwd(from: objects),
+            project: nil,
+            model: model,
+            messageCount: userMessages.count + assistantMessages.count,
+            userMessageCount: userMessages.count,
+            assistantMessageCount: assistantMessages.count,
+            toolMessageCount: 0,
+            systemMessageCount: 0,
+            summary: summary.map { String($0.prefix(200)) },
+            filePath: locator,
+            sizeBytes: Phase4AdapterSupport.fileSize(locator),
+            indexedAt: nil,
+            agentRole: nil,
+            originator: nil,
+            origin: nil,
+            summaryMessageCount: nil,
+            tier: nil,
+            qualityScore: nil,
+            parentSessionId: nil,
+            suggestedParentId: nil
+        ))
     }
 
     private static func messages(from objects: [Phase4AdapterSupport.JSONObject]) -> [NormalizedMessage] {

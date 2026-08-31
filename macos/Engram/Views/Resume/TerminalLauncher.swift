@@ -106,10 +106,31 @@ struct TerminalLauncher {
     /// the short-lived Warp tab config is never group/world readable (L-e).
     static func writeWarpTabConfigFile(_ toml: String, to file: URL) throws {
         try toml.write(to: file, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o600],
-            ofItemAtPath: file.path
-        )
+        do {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: file.path
+            )
+        } catch {
+            try? FileManager.default.removeItem(at: file)
+            throw error
+        }
+    }
+
+    static func keepWarpTabConfigAlive(
+        _ file: URL,
+        graceNanoseconds: UInt64 = 30_000_000_000,
+        open: () async throws -> Void
+    ) async throws {
+        // Warp materializes tab configs asynchronously after accepting the URL.
+        // Start the non-cancelling grace as soon as the secure file is written:
+        // a cold launch can succeed before the second warp:// open throws or the
+        // presenting sheet cancels its task.
+        Task.detached(priority: .utility) {
+            try? await Task.sleep(nanoseconds: graceNanoseconds)
+            try? FileManager.default.removeItem(at: file)
+        }
+        try await open()
     }
 
     static func ghosttyArguments(for shellCommand: String) -> [String] {
@@ -139,7 +160,7 @@ struct TerminalLauncher {
             .replacingOccurrences(of: "\t", with: "\\t")
     }
 
-    private static func launchInWarp(shellCommand: String, cwd: String) throws {
+    private static func launchInWarp(shellCommand: String, cwd: String) async throws {
         let tabConfigDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".warp/tab_configs")
         try FileManager.default.createDirectory(at: tabConfigDir, withIntermediateDirectories: true)
@@ -153,46 +174,39 @@ struct TerminalLauncher {
             directory: directory
         )
         try writeWarpTabConfigFile(toml, to: configFile)
+        try await keepWarpTabConfigAlive(configFile) {
+            let runningWarp = NSWorkspace.shared.runningApplications.first {
+                $0.bundleIdentifier == "dev.warp.Warp-Stable" || $0.bundleIdentifier == "dev.warp.Warp"
+            }
+            let warpIsRunning = runningWarp != nil
+            let urlString = "warp://tab_config/\(configName)" + (warpIsRunning ? "" : "?new_window=true")
+            guard let url = URL(string: urlString) else {
+                throw NSError(
+                    domain: "TerminalLauncher",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Failed to build Warp tab config URL"]
+                )
+            }
 
-        guard let url = URL(string: "warp://tab_config/\(configName)") else {
-            throw NSError(
-                domain: "TerminalLauncher",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Failed to build Warp tab config URL"]
-            )
-        }
-
-        let warpIsRunning = NSWorkspace.shared.runningApplications.contains {
-            $0.bundleIdentifier == "dev.warp.Warp-Stable" || $0.bundleIdentifier == "dev.warp.Warp"
-        }
-        if warpIsRunning {
-            guard NSWorkspace.shared.open(url) else {
+            guard let appURL = runningWarp?.bundleURL ?? warpApplicationURL() else {
                 throw NSError(
                     domain: "TerminalLauncher",
                     code: 2,
-                    userInfo: [NSLocalizedDescriptionKey: "Warp rejected the tab config URL"]
+                    userInfo: [NSLocalizedDescriptionKey: "Warp application was not found"]
                 )
             }
-        } else {
-            if let appURL = warpApplicationURL() {
-                let configuration = NSWorkspace.OpenConfiguration()
-                NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { _, _ in
-                    NSWorkspace.shared.open(url)
-                }
-            } else {
-                guard NSWorkspace.shared.open(url) else {
-                    throw NSError(
-                        domain: "TerminalLauncher",
-                        code: 3,
-                        userInfo: [NSLocalizedDescriptionKey: "No app handled the Warp tab config URL"]
-                    )
-                }
+            let configuration = NSWorkspace.OpenConfiguration()
+            if !warpIsRunning {
+                _ = try await NSWorkspace.shared.openApplication(
+                    at: appURL,
+                    configuration: configuration
+                )
             }
-        }
-
-        Task.detached {
-            try? await Task.sleep(nanoseconds: 30_000_000_000)
-            try? FileManager.default.removeItem(at: configFile)
+            _ = try await NSWorkspace.shared.open(
+                [url],
+                withApplicationAt: appURL,
+                configuration: configuration
+            )
         }
     }
 
@@ -208,7 +222,7 @@ struct TerminalLauncher {
         return nil
     }
 
-    static func launch(command: String, args: [String], cwd: String, terminal: TerminalType) -> Result<Void, LaunchError> {
+    static func launch(command: String, args: [String], cwd: String, terminal: TerminalType) async throws -> Result<Void, LaunchError> {
         let shellCmd = shellCommandLine(command: command, args: args, cwd: cwd)
         // Reuse the single AppleScript-escaping helper instead of duplicating
         // the escapeForAppleScript(shellCommandLine(...)) chain inline.
@@ -248,8 +262,10 @@ struct TerminalLauncher {
             return .failure(.ghosttyBinaryUnavailable(ghosttyBin))
         case .warp:
             do {
-                try launchInWarp(shellCommand: shellCmd, cwd: cwd)
+                try await launchInWarp(shellCommand: shellCmd, cwd: cwd)
                 return .success(())
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 return .failure(.warpLaunchFailed(error.localizedDescription))
             }

@@ -37,8 +37,19 @@ public final class EngramDatabaseWriter: Sendable {
     /// SQLite. May block on `busy_timeout` if a reader holds a frame; caller is
     /// responsible for tolerating failures (e.g. continuing to rely on PASSIVE).
     @discardableResult
-    public func checkpointTruncate() throws -> (busy: Int64, logFrames: Int64, checkpointed: Int64) {
+    public func checkpointTruncate(
+        waitForReaders: Bool = true
+    ) throws -> (busy: Int64, logFrames: Int64, checkpointed: Int64) {
         try pool.write { db in
+            let previousBusyTimeout = try Int.fetchOne(db, sql: "PRAGMA busy_timeout") ?? 0
+            if !waitForReaders {
+                try db.execute(sql: "PRAGMA busy_timeout = 0")
+            }
+            defer {
+                if !waitForReaders {
+                    try? db.execute(sql: "PRAGMA busy_timeout = \(previousBusyTimeout)")
+                }
+            }
             let row = try Row.fetchOne(db, sql: "PRAGMA wal_checkpoint(TRUNCATE)")
             let busy = row?["busy"] as Int64? ?? 1
             let log = row?["log"] as Int64? ?? 0

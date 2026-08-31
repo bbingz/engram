@@ -1,6 +1,35 @@
 import Foundation
 import SQLite3
 
+public enum OpenCodeSessionRoleClassifier {
+    public static func isDispatchedChild(
+        parentSessionId: String?,
+        title: String,
+        agent: String?,
+        slug: String?
+    ) -> Bool {
+        guard parentSessionId != nil else { return false }
+        let normalizedAgent = agent?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let isNonPrimaryAgent = normalizedAgent.map {
+            !$0.isEmpty && $0 != "build" && $0 != "plan"
+        } ?? false
+        let normalizedSlug = slug?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        return isNonPrimaryAgent
+            || normalizedSlug.hasPrefix("task-")
+            || isTaskToolTitle(title)
+    }
+
+    private static func isTaskToolTitle(_ title: String) -> Bool {
+        let normalized = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard normalized.hasSuffix(" subagent)"),
+              let marker = normalized.range(of: " (@", options: .backwards)
+        else {
+            return false
+        }
+        return marker.upperBound < normalized.index(normalized.endIndex, offsetBy: -" subagent)".count)
+    }
+}
+
 final class Phase4SQLiteDatabase {
     private var database: OpaquePointer?
 
@@ -121,14 +150,17 @@ final class OpenCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapter,
     private func listSessionLocators(modifiedSinceMilliseconds: Int64?) throws -> [String] {
         guard JSONLAdapterSupport.fileExists(dbPath) else { return [] }
         let database = try Phase4SQLiteDatabase(path: dbPath)
+        let hasParentID = try database.query("PRAGMA table_info(session)")
+            .contains { ($0["name"] ?? nil) == "parent_id" }
         let modificationClause = modifiedSinceMilliseconds.map { _ in " AND time_updated >= ?" } ?? ""
         let bindings = modifiedSinceMilliseconds.map { [String($0)] } ?? []
+        let parentOrder = hasParentID ? "CASE WHEN parent_id IS NULL THEN 0 ELSE 1 END," : ""
         return try database.query(
             """
             SELECT id
             FROM session
             WHERE time_archived IS NULL\(modificationClause)
-            ORDER BY time_updated DESC
+            ORDER BY \(parentOrder) time_updated DESC
             """,
             bindings: bindings
         )
@@ -143,9 +175,17 @@ final class OpenCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapter,
 
         do {
             let database = try Phase4SQLiteDatabase(path: locatorParts.dbPath)
+            let sessionColumns = Set(
+                try database.query("PRAGMA table_info(session)")
+                    .compactMap { $0["name"] ?? nil }
+            )
+            let optionalColumns = ["parent_id", "slug", "agent"]
+                .filter(sessionColumns.contains)
+                .map { ", \($0)" }
+                .joined()
             guard let session = try database.query(
                 """
-                SELECT id, directory, title, time_created, time_updated
+                SELECT id, directory, title, time_created, time_updated\(optionalColumns)
                 FROM session
                 WHERE id = ? AND time_archived IS NULL
                 """,
@@ -204,6 +244,14 @@ final class OpenCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapter,
             let firstMessageTime = Phase4AdapterSupport.double(messages.first?["time_created"] ?? nil)
             let lastMessageTime = Phase4AdapterSupport.double(messages.last?["time_created"] ?? nil)
             let startTime = Phase4AdapterSupport.isoFromMilliseconds(firstMessageTime ?? sessionCreated)
+            let parentSessionID = session["parent_id"] ?? nil
+            let title = (session["title"] ?? nil) ?? ""
+            let isTaskChild = OpenCodeSessionRoleClassifier.isDispatchedChild(
+                parentSessionId: parentSessionID,
+                title: title,
+                agent: session["agent"] ?? nil,
+                slug: session["slug"] ?? nil
+            )
 
             return .success(
                 NormalizedSessionInfo(
@@ -222,19 +270,21 @@ final class OpenCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapter,
                     toolMessageCount: 0,
                     systemMessageCount: 0,
                     summary: {
-                        let title = (session["title"] ?? nil) ?? ""
                         return title.isEmpty ? nil : title
                     }(),
                     filePath: locator,
                     sizeBytes: try Self.sessionPayloadSize(database: database, sessionId: locatorParts.sessionId),
                     indexedAt: nil,
-                    agentRole: nil,
+                    // docs/invariants.md #2: only true task/subagent children
+                    // enter dispatched/skip; a continued fork keeps its parent
+                    // link without being hidden.
+                    agentRole: isTaskChild ? "dispatched" : nil,
                     originator: nil,
                     origin: nil,
                     summaryMessageCount: nil,
                     tier: nil,
                     qualityScore: nil,
-                    parentSessionId: nil,
+                    parentSessionId: parentSessionID,
                     suggestedParentId: nil
                 )
             )
@@ -298,12 +348,10 @@ final class OpenCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapter,
                 bindings: [locatorParts.sessionId]
             )
             let messages = Self.messages(from: rows)
-            let truncatedAt = options.limit == nil && messages.count > maxMessages ? maxMessages : nil
-            let boundedMessages = truncatedAt == nil ? messages : Array(messages.prefix(maxMessages))
-            return JSONLAdapterSupport.WindowedMessagesResult(
-                messages: JSONLAdapterSupport.applyWindow(boundedMessages, options: options),
-                totalKnownComplete: truncatedAt == nil,
-                truncatedAt: truncatedAt
+            return JSONLAdapterSupport.boundedWindowWithMetadata(
+                messages,
+                options: options,
+                maxMessages: maxMessages
             )
         } catch let failure as ParserFailure {
             throw failure

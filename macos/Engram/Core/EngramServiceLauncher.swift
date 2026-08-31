@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 struct EngramServiceLaunchConfiguration: Equatable {
     let executablePath: String
@@ -7,7 +8,7 @@ struct EngramServiceLaunchConfiguration: Equatable {
     let foreground: Bool
 
     static func `default`(
-        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        homeDirectory: URL = EngramUserDataDirectory.resolvedHomeDirectory(),
         databasePath: String,
         bundle: Bundle = .main
     ) -> EngramServiceLaunchConfiguration {
@@ -28,6 +29,11 @@ struct EngramServiceLaunchConfiguration: Equatable {
 @MainActor
 final class EngramServiceLauncher {
     nonisolated private static let runtimeAISecretsEnvironmentKey = "ENGRAM_RUNTIME_AI_SECRETS_PATH"
+    // Cooperative shutdown can spend up to SQLite's 30s busy timeout leaving
+    // an in-flight writer before it releases the process lock. Restart callers
+    // suspend for that window plus the existing 2s handler drain; quit remains
+    // fire-and-forget and never escalates to SIGKILL.
+    nonisolated private static let cooperativeRestartShutdownTimeout: TimeInterval = 32.0
 
     typealias StatusProbe = @Sendable () async throws -> EngramServiceStatus
     typealias StatusSink = @MainActor @Sendable (EngramServiceStatus) -> Void
@@ -50,6 +56,7 @@ final class EngramServiceLauncher {
     private let startupGraceNanoseconds: UInt64
     private let maximumRestartAttempts: Int
     private var onEvent: EventSink?
+    private var onUnexpectedExit: StatusSink?
 
     init(
         healthIntervalNanoseconds: UInt64 = 5_000_000_000,
@@ -80,18 +87,25 @@ final class EngramServiceLauncher {
         var environment = baseEnvironment.filter { key, _ in
             !key.hasPrefix("ENGRAM_KEYCHAIN_") && key != runtimeAISecretsEnvironmentKey
         }
-        if let runtimeAISecretsPath,
-           writeRuntimeAISecrets(toPath: runtimeAISecretsPath, keychainReader: keychainReader) {
+        if let runtimeAISecretsPath {
+            _ = writeRuntimeAISecrets(toPath: runtimeAISecretsPath, keychainReader: keychainReader)
             environment[runtimeAISecretsEnvironmentKey] = runtimeAISecretsPath
         }
         return environment
     }
 
     nonisolated static func runtimeAISecretsPath(forSocketPath socketPath: String) -> String {
-        URL(fileURLWithPath: socketPath)
-            .deletingLastPathComponent()
-            .appendingPathComponent("ai-secrets.json")
-            .path
+        let standardized = URL(fileURLWithPath: socketPath).standardizedFileURL.path
+        let defaultSocket = URL(
+            fileURLWithPath: UnixSocketEngramServiceTransport.defaultSocketPath()
+        ).standardizedFileURL.path
+        if standardized == defaultSocket {
+            return URL(fileURLWithPath: standardized)
+                .deletingLastPathComponent()
+                .appendingPathComponent("ai-secrets.json")
+                .path
+        }
+        return standardized + ".ai-secrets.json"
     }
 
     @discardableResult
@@ -106,54 +120,67 @@ final class EngramServiceLauncher {
             }
         }
 
-        let fileManager = FileManager.default
         if secrets.isEmpty {
-            try? fileManager.removeItem(atPath: path)
+            if isOwnedRuntimeAISecretsPath(path) {
+                removeRuntimeAISecrets(atPath: path)
+            }
             return false
         }
 
         let url = URL(fileURLWithPath: path)
+        var directorySecured = false
+        var data: Data?
         do {
-            try fileManager.createDirectory(
-                at: url.deletingLastPathComponent(),
-                withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o700]
-            )
-            let data = try JSONSerialization.data(withJSONObject: secrets, options: [.sortedKeys])
-            if fileManager.fileExists(atPath: path) {
-                try fileManager.removeItem(atPath: path)
+            let directory = url.deletingLastPathComponent()
+            if directory.lastPathComponent == "run",
+               directory.deletingLastPathComponent().lastPathComponent == ".engram" {
+                try UnixSocketEngramServiceTransport.secureRuntimeDirectory(
+                    homeDirectory: directory.deletingLastPathComponent().deletingLastPathComponent()
+                )
+            } else {
+                try UnixSocketEngramServiceTransport.secureRuntimeDirectory(at: directory)
             }
-            guard fileManager.createFile(
-                atPath: path,
-                contents: data,
-                attributes: [.posixPermissions: 0o600]
-            ) else {
-                return false
-            }
+            directorySecured = true
+            let encoded = try JSONSerialization.data(withJSONObject: secrets, options: [.sortedKeys])
+            data = encoded
+            try SecureRegularFile.writeAtomically(encoded, toPath: path)
             return true
         } catch {
+            guard directorySecured, let data, isOwnedRuntimeAISecretsPath(path) else {
+                return false
+            }
+            removeRuntimeAISecrets(atPath: path)
+            do {
+                try SecureRegularFile.writeAtomically(data, toPath: path)
+                return true
+            } catch {
+                removeRuntimeAISecrets(atPath: path)
+            }
             return false
         }
     }
 
-    /// SEC-H2: remove the plaintext Keychain bridge file. Prefer overwrite-then-
-    /// unlink so residual secret bytes are not left on a reusable temp name.
+    /// SEC-H2: remove the plaintext Keychain bridge without following a
+    /// caller-controlled leaf or parent.
     nonisolated static func removeRuntimeAISecrets(atPath path: String) {
-        let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: path) else { return }
-        if let attrs = try? fileManager.attributesOfItem(atPath: path),
-           let size = attrs[.size] as? NSNumber,
-           size.intValue > 0 {
-            let zeros = Data(repeating: 0, count: min(size.intValue, 64 * 1024))
-            if let handle = FileHandle(forWritingAtPath: path) {
-                defer { try? handle.close() }
-                try? handle.seek(toOffset: 0)
-                try? handle.write(contentsOf: zeros)
-                try? handle.truncate(atOffset: UInt64(zeros.count))
-                try? handle.synchronize()
-            }
-        }
-        try? fileManager.removeItem(atPath: path)
+        _ = SecureRegularFile.removeOwnerNonDirectory(atPath: path)
+    }
+
+    nonisolated private static func isDedicatedRuntimeAISecretsPath(_ path: String) -> Bool {
+        let expected = URL(
+            fileURLWithPath: UnixSocketEngramServiceTransport.defaultSocketPath()
+        )
+        .deletingLastPathComponent()
+        .appendingPathComponent("ai-secrets.json")
+        .standardizedFileURL.path
+        return URL(fileURLWithPath: path).standardizedFileURL.path == expected
+    }
+
+    nonisolated private static func isOwnedRuntimeAISecretsPath(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path)
+        let name = url.lastPathComponent
+        return isDedicatedRuntimeAISecretsPath(path)
+            || name != "ai-secrets.json" && name.hasSuffix(".ai-secrets.json")
     }
 
     /// SEC-H2: scrub secrets next to the service socket (production bridge path).
@@ -168,12 +195,18 @@ final class EngramServiceLauncher {
     func start(configuration: EngramServiceLaunchConfiguration, onEvent: EventSink? = nil) throws {
         if let onEvent { self.onEvent = onEvent }
         guard process?.isRunning != true else { return }
+        // docs/invariants.md #1: probe the service-owned process lock before
+        // spawning so a cooperatively terminating helper is not raced by a
+        // short-lived replacement that loses the lock and exits successfully.
+        try Self.assertServiceProcessLockAvailable(socketPath: configuration.socketPath)
         let proc = Process()
+        let writerBusyObservation = ServiceWriterBusyObservation()
+        let runtimeAISecretsPath = Self.runtimeAISecretsPath(forSocketPath: configuration.socketPath)
         proc.executableURL = URL(fileURLWithPath: configuration.executablePath)
         proc.arguments = Self.arguments(for: configuration)
         proc.environment = Self.environment(
             baseEnvironment: ProcessInfo.processInfo.environment,
-            runtimeAISecretsPath: Self.runtimeAISecretsPath(forSocketPath: configuration.socketPath),
+            runtimeAISecretsPath: runtimeAISecretsPath,
             keychainReader: KeychainHelper.get
         )
         let stdoutPipe = Pipe()
@@ -181,12 +214,96 @@ final class EngramServiceLauncher {
         proc.standardOutput = stdoutPipe
         proc.standardError = stderrPipe
         drain(pipe: stdoutPipe, level: "stdout")
-        drain(pipe: stderrPipe, level: "stderr")
-        try proc.run()
+        drain(pipe: stderrPipe, level: "stderr", writerBusyObservation: writerBusyObservation)
+        proc.terminationHandler = { [weak self, weak proc] _ in
+            Self.removeRuntimeAISecrets(atPath: runtimeAISecretsPath)
+            guard let proc else { return }
+            Task { @MainActor [weak self] in
+                guard let self, self.process === proc else { return }
+                self.process = nil
+                self.stdoutPipe = nil
+                self.stderrPipe = nil
+                if proc.terminationStatus == 0, writerBusyObservation.detected {
+                    self.onUnexpectedExit?(.degraded(
+                        message: "EngramService is still shutting down; replacement not started"
+                    ))
+                } else {
+                    self.onUnexpectedExit?(
+                        .error(message: "EngramService exited unexpectedly (status \(proc.terminationStatus))")
+                    )
+                }
+            }
+        }
+        try runProcess(proc, runtimeAISecretsPath: runtimeAISecretsPath)
         process = proc
         processSocketPath = configuration.socketPath
         self.stdoutPipe = stdoutPipe
         self.stderrPipe = stderrPipe
+    }
+
+    func runProcess(_ process: Process, runtimeAISecretsPath: String) throws {
+        do {
+            try process.run()
+        } catch {
+            Self.removeRuntimeAISecrets(atPath: runtimeAISecretsPath)
+            throw error
+        }
+    }
+
+    nonisolated private static func assertServiceProcessLockAvailable(socketPath: String) throws {
+        let runtimeDirectory = URL(fileURLWithPath: socketPath).deletingLastPathComponent()
+        if runtimeDirectory.lastPathComponent == "run",
+           runtimeDirectory.deletingLastPathComponent().lastPathComponent == ".engram" {
+            _ = try UnixSocketEngramServiceTransport.secureRuntimeDirectory(
+                homeDirectory: runtimeDirectory.deletingLastPathComponent().deletingLastPathComponent()
+            )
+        } else {
+            var directoryInfo = stat()
+            guard lstat(runtimeDirectory.path, &directoryInfo) == 0 else {
+                throw EngramServiceError.serviceUnavailable(
+                    message: "Cannot stat service socket directory"
+                )
+            }
+            // Test/fake helpers historically use the shared system temp
+            // directory. A real ServiceWriterGate rejects that directory, so
+            // there is no valid service lock to probe until one already exists.
+            if (directoryInfo.st_mode & 0o077) != 0,
+               !FileManager.default.fileExists(
+                   atPath: runtimeDirectory.appendingPathComponent("engram-service.lock").path
+               ) {
+                return
+            }
+            _ = try UnixSocketEngramServiceTransport.secureRuntimeDirectory(at: runtimeDirectory)
+        }
+        let lockPath = runtimeDirectory.appendingPathComponent("engram-service.lock").path
+        let fd = open(
+            lockPath,
+            O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC,
+            S_IRUSR | S_IWUSR
+        )
+        guard fd >= 0 else {
+            throw EngramServiceError.writerBusy(
+                message: "Cannot probe EngramService writer lock"
+            )
+        }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_uid == geteuid(),
+              info.st_nlink == 1,
+              fchmod(fd, S_IRUSR | S_IWUSR) == 0
+        else {
+            throw EngramServiceError.writerBusy(
+                message: "Cannot secure EngramService writer lock probe"
+            )
+        }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+            throw EngramServiceError.writerBusy(
+                message: "EngramService is still shutting down"
+            )
+        }
+        flock(fd, LOCK_UN)
     }
 
     func startHealthMonitor(
@@ -195,6 +312,7 @@ final class EngramServiceLauncher {
         onStatus: @escaping StatusSink
     ) {
         healthTask?.cancel()
+        onUnexpectedExit = onStatus
         let interval = healthIntervalNanoseconds
         let maxRestarts = maximumRestartAttempts
         let startupGrace = startupGraceNanoseconds
@@ -232,41 +350,121 @@ final class EngramServiceLauncher {
                     return
                 } catch {
                     let message = error.localizedDescription
-                    if Self.isWithinStartupGrace(startupGraceDeadline) {
+                    guard let self else { return }
+                    let helperIsRunning = self.isRunning
+                    if Self.isWithinStartupGrace(startupGraceDeadline), helperIsRunning {
                         await MainActor.run {
                             onStatus(.starting)
                         }
                         continue
                     }
+                    if Self.isWithinStartupGrace(startupGraceDeadline), !helperIsRunning {
+                        // A launched helper that already exited is not merely
+                        // slow to open its socket. Surface the failure now and
+                        // never grant respawns a fresh startup grace window.
+                        startupGraceDeadline = nil
+                        await MainActor.run {
+                            onStatus(.error(message: "EngramService exited during startup: \(message)"))
+                        }
+                    }
                     if restartAttempts < maxRestarts {
                         restartAttempts += 1
-                        guard let self else { return }
                         // Await the bounded shutdown so the old helper releases
                         // its single-writer lock + socket before the new process
                         // spawns. The wait suspends (Task.sleep) instead of
                         // blocking, so the main run loop stays responsive.
-                        await self.stopProcessOnly()
+                        let mayStartReplacement = await self.stopProcessOnly()
                         await MainActor.run {
+                            guard mayStartReplacement else {
+                                onStatus(.degraded(
+                                    message: "EngramService is still shutting down; replacement not started"
+                                ))
+                                return
+                            }
                             do {
                                 try self.start(configuration: configuration)
                                 onStatus(.starting)
-                                startupGraceDeadline = Self.startupGraceDeadline(after: startupGrace)
                             } catch {
-                                onStatus(.degraded(message: "EngramService restart failed: \(error.localizedDescription)"))
+                                if engramServiceWriterBusyMessage(error) != nil {
+                                    onStatus(.degraded(
+                                        message: "EngramService is still shutting down; replacement not started"
+                                    ))
+                                } else {
+                                    onStatus(.degraded(message: "EngramService restart failed: \(error.localizedDescription)"))
+                                }
                             }
                         }
                     } else {
-                        // Budget exhausted: surface degraded status but keep the
-                        // monitor alive (with backoff) so the service can recover
-                        // without requiring an app relaunch.
+                        // Budget exhausted: keep probing, and keep attempting to
+                        // spawn a helper when there is no live process. A dead
+                        // child cannot recover merely because its socket is polled.
                         restartAttempts += 1
-                        await MainActor.run {
-                            onStatus(.degraded(message: "EngramService health check failed after \(maxRestarts) restart attempts: \(message)"))
+                        if helperIsRunning {
+                            await MainActor.run {
+                                onStatus(.degraded(message: "EngramService health check failed after \(maxRestarts) restart attempts: \(message)"))
+                            }
+                        } else {
+                            let mayStartReplacement = await self.stopProcessOnly()
+                            await MainActor.run {
+                                guard mayStartReplacement else {
+                                    onStatus(.degraded(
+                                        message: "EngramService is still shutting down; replacement not started"
+                                    ))
+                                    return
+                                }
+                                do {
+                                    try self.start(configuration: configuration)
+                                    onStatus(.starting)
+                                } catch {
+                                    if engramServiceWriterBusyMessage(error) != nil {
+                                        onStatus(.degraded(
+                                            message: "EngramService is still shutting down; replacement not started"
+                                        ))
+                                    } else {
+                                        onStatus(.degraded(message: "EngramService restart failed: \(error.localizedDescription)"))
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    func startOrAdopt(
+        configuration: EngramServiceLaunchConfiguration,
+        statusProbe: @escaping StatusProbe,
+        onStatus: @escaping StatusSink,
+        onEvent: EventSink? = nil
+    ) async {
+        if let status = try? await statusProbe() {
+            onStatus(status)
+            startHealthMonitor(
+                configuration: configuration,
+                statusProbe: statusProbe,
+                onStatus: onStatus
+            )
+            return
+        }
+
+        do {
+            try start(configuration: configuration, onEvent: onEvent)
+            onStatus(.starting)
+        } catch {
+            guard engramServiceWriterBusyMessage(error) != nil else {
+                onStatus(.error(message: error.localizedDescription))
+                return
+            }
+            onStatus(.degraded(
+                message: "EngramService is still shutting down; replacement not started"
+            ))
+        }
+        startHealthMonitor(
+            configuration: configuration,
+            statusProbe: statusProbe,
+            onStatus: onStatus
+        )
     }
 
     /// Single restart sequencing point: stop the running helper (releasing its
@@ -281,7 +479,10 @@ final class EngramServiceLauncher {
         onStatus: @escaping StatusSink,
         onEvent: EventSink? = nil
     ) async {
-        await stopProcessOnly()
+        guard await stopProcessOnly() else {
+            onStatus(.degraded(message: "EngramService is still shutting down; replacement not started"))
+            return
+        }
         do {
             try start(configuration: configuration, onEvent: onEvent)
             onStatus(.starting)
@@ -291,7 +492,18 @@ final class EngramServiceLauncher {
                 onStatus: onStatus
             )
         } catch {
-            onStatus(.error(message: error.localizedDescription))
+            if engramServiceWriterBusyMessage(error) != nil {
+                onStatus(.degraded(
+                    message: "EngramService is still shutting down; replacement not started"
+                ))
+                startHealthMonitor(
+                    configuration: configuration,
+                    statusProbe: statusProbe,
+                    onStatus: onStatus
+                )
+            } else {
+                onStatus(.error(message: error.localizedDescription))
+            }
         }
     }
 
@@ -322,31 +534,38 @@ final class EngramServiceLauncher {
         Task { await Self.waitForExit(terminating, timeout: 2.0) }
     }
 
-    private func stopProcessOnly() async {
+    @discardableResult
+    private func stopProcessOnly() async -> Bool {
         if let socketPath = processSocketPath {
             scrubRuntimeAISecrets(forSocketPath: socketPath)
         }
-        guard let terminating = terminateProcess() else { return }
+        guard let terminating = terminateProcess() else {
+            return process?.isRunning != true
+        }
         // Bounded wait so the old helper has actually released the
         // single-writer lock + socket before a restart spawns a new one;
         // otherwise the new process loses the lock race and exits. SIGTERM
         // on our own short-lived helper is honored quickly; cap the wait so
         // a wedged process can't block the caller indefinitely.
-        await Self.waitForExit(terminating, timeout: 2.0)
+        await Self.waitForExit(
+            terminating,
+            timeout: Self.cooperativeRestartShutdownTimeout
+        )
+        // docs/invariants.md #1: retaining a still-live helper prevents a
+        // replacement from racing it for the service's single-writer lock.
+        return !terminating.isRunning
     }
 
     /// Tears down the pipes, sends SIGTERM, and returns the still-running
     /// process so the (bounded) exit wait can happen at a later suspension
-    /// point. The launcher releases its reference immediately so `isRunning`
-    /// reflects the shutdown without waiting.
+    /// point. Keep the reference until it exits so callers cannot mistake a
+    /// delayed cooperative shutdown for permission to spawn a replacement.
     private func terminateProcess() -> Process? {
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
         stderrPipe?.fileHandleForReading.readabilityHandler = nil
         stdoutPipe = nil
         stderrPipe = nil
         let terminating = process
-        process = nil
-        processSocketPath = nil
         guard let terminating, terminating.isRunning else { return nil }
         terminating.terminate()
         return terminating
@@ -361,7 +580,11 @@ final class EngramServiceLauncher {
         }
     }
 
-    private func drain(pipe: Pipe, level: String) {
+    private func drain(
+        pipe: Pipe,
+        level: String,
+        writerBusyObservation: ServiceWriterBusyObservation? = nil
+    ) {
         let lineBuffer = ServiceOutputLineBuffer()
         pipe.fileHandleForReading.readabilityHandler = { [self] handle in
             let data = handle.availableData
@@ -370,6 +593,7 @@ final class EngramServiceLauncher {
                 return
             }
             if level == "stderr" {
+                writerBusyObservation?.append(data)
                 if let text = String(data: data, encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines),
                     !text.isEmpty {
@@ -406,6 +630,30 @@ final class EngramServiceLauncher {
                 return nil
             }
         }
+    }
+}
+
+private final class ServiceWriterBusyObservation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var suffix = Data()
+    private var hasDetected = false
+
+    var detected: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return hasDetected
+    }
+
+    func append(_ data: Data) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !hasDetected else { return }
+        suffix.append(data)
+        if suffix.count > 1_024 {
+            suffix = suffix.suffix(1_024)
+        }
+        hasDetected = String(decoding: suffix, as: UTF8.self)
+            .contains("another instance owns the writer lock; exiting")
     }
 }
 

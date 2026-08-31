@@ -90,6 +90,11 @@ enum Theme {
     /// and pills stop re-spelling the literal value.
     static let cornerRadius: CGFloat = 8
 
+    /// Vertical padding for primary list rows (session cards, memory rows,
+    /// agent rows). Compact child rows (5) and dense stat rows (4) keep their
+    /// own smaller values — different roles, not drift.
+    static let listRowVerticalPadding: CGFloat = 10
+
     // MARK: - Typography (Dynamic Type)
 
     /// Map a base point size through OS Dynamic Type. Monotonic: larger
@@ -122,12 +127,14 @@ private struct ScaledFont: ViewModifier {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let size: CGFloat
     let weight: Font.Weight
+    let design: Font.Design
 
     func body(content: Content) -> some View {
         content.font(
             .system(
                 size: Theme.scaledFontSize(base: size, category: dynamicTypeSize),
-                weight: weight
+                weight: weight,
+                design: design
             )
         )
     }
@@ -136,8 +143,8 @@ private struct ScaledFont: ViewModifier {
 extension View {
     /// Apply a Dynamic-Type-aware system font. Call sites swap
     /// `.font(.system(size: N))` for `.scaledFont(N)` (row 31).
-    func scaledFont(_ size: CGFloat, weight: Font.Weight = .regular) -> some View {
-        modifier(ScaledFont(size: size, weight: weight))
+    func scaledFont(_ size: CGFloat, weight: Font.Weight = .regular, design: Font.Design = .default) -> some View {
+        modifier(ScaledFont(size: size, weight: weight, design: design))
     }
 }
 

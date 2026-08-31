@@ -20,6 +20,7 @@ public struct AuthoritativeSessionSnapshot: Equatable, Sendable {
     public var toolMessageCount: Int
     public var systemMessageCount: Int
     public var summary: String?
+    public var displayTitle: String?
     public var summaryMessageCount: Int?
     public var instructionCount: Int?
     public var humanTurnCount: Int?
@@ -56,6 +57,7 @@ public struct AuthoritativeSessionSnapshot: Equatable, Sendable {
         toolMessageCount: Int,
         systemMessageCount: Int,
         summary: String? = nil,
+        displayTitle: String? = nil,
         summaryMessageCount: Int? = nil,
         instructionCount: Int? = nil,
         humanTurnCount: Int? = nil,
@@ -88,6 +90,7 @@ public struct AuthoritativeSessionSnapshot: Equatable, Sendable {
         self.toolMessageCount = toolMessageCount
         self.systemMessageCount = systemMessageCount
         self.summary = summary
+        self.displayTitle = displayTitle
         self.summaryMessageCount = summaryMessageCount
         self.instructionCount = instructionCount
         self.humanTurnCount = humanTurnCount

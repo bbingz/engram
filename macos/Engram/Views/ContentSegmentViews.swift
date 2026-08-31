@@ -402,7 +402,13 @@ struct TableBlockView: View {
 // MARK: - Collapsible System Bubble
 
 struct CollapsibleSystemBubble: View {
+    struct FindPresentation: Equatable {
+        let isExpanded: Bool
+        let highlightInput: String?
+    }
+
     let message: ChatMessage
+    var searchText: String = ""
     @State private var isExpanded = false
     @AppStorage("contentFontSize") var fontSize: Double = 14
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -441,7 +447,28 @@ struct CollapsibleSystemBubble: View {
         return String(first.prefix(80))
     }
 
+    nonisolated static func findPresentation(
+        content: String,
+        searchText: String,
+        isManuallyExpanded: Bool
+    ) -> FindPresentation {
+        let needle = ColorBarMessageView.normalizedFindNeedle(searchText)
+        let hasFindMatch = !needle.isEmpty
+            && content.range(of: needle, options: .caseInsensitive) != nil
+        let isExpanded = isManuallyExpanded || hasFindMatch
+        return FindPresentation(
+            isExpanded: isExpanded,
+            highlightInput: isExpanded ? content : nil
+        )
+    }
+
     var body: some View {
+        let presentation = Self.findPresentation(
+            content: message.content,
+            searchText: searchText,
+            isManuallyExpanded: isExpanded
+        )
+        let contentIsExpanded = presentation.isExpanded
         VStack(alignment: .leading, spacing: 0) {
             // Header — always visible
             Button {
@@ -450,7 +477,7 @@ struct CollapsibleSystemBubble: View {
                 }
             } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    Image(systemName: contentIsExpanded ? "chevron.down" : "chevron.right")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Image(systemName: categoryIcon)
@@ -459,8 +486,8 @@ struct CollapsibleSystemBubble: View {
                     Text(categoryLabel)
                         .font(.caption.bold())
                         .foregroundStyle(categoryColor)
-                    if !isExpanded {
-                        Text(verbatim: previewLine)
+                    if !contentIsExpanded {
+                        Text(highlighted(previewLine))
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                             .lineLimit(1)
@@ -473,8 +500,8 @@ struct CollapsibleSystemBubble: View {
             .buttonStyle(.plain)
 
             // Expanded content
-            if isExpanded {
-                Text(verbatim: message.content)
+            if contentIsExpanded {
+                Text(highlighted(presentation.highlightInput ?? message.content))
                     .font(.system(size: max(effectiveFontSize - 2, 10), design: .monospaced))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
@@ -491,5 +518,9 @@ struct CollapsibleSystemBubble: View {
         )
         .padding(.horizontal, 16)
         .padding(.top, 6)
+    }
+
+    private func highlighted(_ text: String) -> AttributedString {
+        ColorBarMessageView.highlightRendered(AttributedString(text), query: searchText)
     }
 }

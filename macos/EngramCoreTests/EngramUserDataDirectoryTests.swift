@@ -3,6 +3,21 @@ import XCTest
 
 /// SEC-L3: product subdirs under `~/.engram` must be mode 0700, not umask 0755.
 final class EngramUserDataDirectoryTests: XCTestCase {
+    func testResolvedHomeUsesFixedHomeUnderXCTest_repro() {
+        let fixedHome = URL(fileURLWithPath: "/tmp/engram-fixed-home", isDirectory: true)
+
+        XCTAssertEqual(
+            EngramUserDataDirectory.resolvedHomeDirectory(
+                environment: [
+                    "XCTestConfigurationFilePath": "/tmp/test.xctestconfiguration",
+                    "CFFIXED_USER_HOME": fixedHome.path,
+                    "HOME": "/tmp/wrong-home",
+                ],
+                processEnvironment: [:]
+            ),
+            fixedHome
+        )
+    }
     func testEnsureSecureSubdirectoryCreatesOwnerOnlyMode_repro() throws {
         let home = FileManager.default.temporaryDirectory
             .appendingPathComponent("engram-user-data-\(UUID().uuidString)", isDirectory: true)
@@ -36,5 +51,20 @@ final class EngramUserDataDirectoryTests: XCTestCase {
 
         let mode = try FileManager.default.attributesOfItem(atPath: cache.path)[.posixPermissions] as? Int
         XCTAssertEqual(mode, 0o700, "SEC-L3: repair must tighten cache from 0755 to 0700")
+    }
+
+    func testUserDataDirectoryCreationAndRepairUsePinnedDirectoryFDs_repro() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Shared/EngramCore/EngramUserDataDirectory.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("mkdirat("))
+        XCTAssertTrue(source.contains("openat("))
+        XCTAssertTrue(source.contains("fchmod("))
+        XCTAssertFalse(source.contains("setAttributes"))
     }
 }

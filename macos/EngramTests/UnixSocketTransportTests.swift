@@ -3,6 +3,45 @@ import XCTest
 @testable import Engram
 
 final class UnixSocketTransportTests: XCTestCase {
+    func testResolvedSocketPathUsesFileManagerHomeInsteadOfHOMEOverride_repro() throws {
+        XCTAssertEqual(
+            try UnixSocketEngramServiceTransport.resolvedSocketPath(
+                environment: ["HOME": "/tmp/engram-split-home"]
+            ),
+            UnixSocketEngramServiceTransport.defaultSocketPath()
+        )
+    }
+
+    func testResolvedSocketPathRejectsRelativeAndBlankOverrides_repro() throws {
+        let fallback = UnixSocketEngramServiceTransport.defaultSocketPath()
+        XCTAssertThrowsError(
+            try UnixSocketEngramServiceTransport.resolvedSocketPath(
+                environment: ["ENGRAM_MCP_SERVICE_SOCKET": "relative/service.sock"]
+            )
+        )
+        XCTAssertEqual(
+            try UnixSocketEngramServiceTransport.resolvedSocketPath(
+                environment: ["ENGRAM_SERVICE_SOCKET": "   "]
+            ),
+            fallback
+        )
+    }
+
+    func testResolvedSocketPathExpandsLeadingTildeAgainstFileManagerHome_repro() throws {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+
+        XCTAssertEqual(
+            try UnixSocketEngramServiceTransport.resolvedSocketPath(
+                environment: ["ENGRAM_SERVICE_SOCKET": "  ~/.engram/custom.sock  "]
+            ),
+            home.appendingPathComponent(".engram/custom.sock").path
+        )
+        XCTAssertEqual(
+            UnixSocketEngramServiceTransport.normalizedAbsolutePath("~/index.sqlite"),
+            home.appendingPathComponent("index.sqlite").path
+        )
+    }
+
     func testMissingSocketReturnsServiceUnavailable() async throws {
         let socketPath = temporarySocketPath()
         let transport = UnixSocketEngramServiceTransport(socketPath: socketPath)
@@ -87,6 +126,233 @@ final class UnixSocketTransportTests: XCTestCase {
         XCTAssertEqual(lstat(runDirectory.path, &runInfo), 0)
         XCTAssertEqual(rootInfo.st_mode & 0o077, 0)
         XCTAssertEqual(runInfo.st_mode & 0o077, 0)
+    }
+
+    func testSecureRuntimeDirectoryDoesNotScanProductRootLeftovers_repro() throws {
+        let home = temporaryDirectory()
+        let rootDirectory = home.appendingPathComponent(".engram", isDirectory: true)
+        try FileManager.default.createDirectory(at: rootDirectory, withIntermediateDirectories: true)
+        chmod(rootDirectory.path, 0o700)
+        let outside = home.appendingPathComponent("outside")
+        try Data("sentinel".utf8).write(to: outside)
+        let cache = rootDirectory.appendingPathComponent("cache")
+        try FileManager.default.createSymbolicLink(at: cache, withDestinationURL: outside)
+
+        let runDirectory = try UnixSocketEngramServiceTransport.secureRuntimeDirectory(homeDirectory: home)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: runDirectory.path))
+        var info = stat()
+        XCTAssertEqual(lstat(cache.path, &info), 0)
+        XCTAssertEqual(info.st_mode & S_IFMT, S_IFLNK)
+        XCTAssertEqual(try Data(contentsOf: outside), Data("sentinel".utf8))
+    }
+
+    func testCustomSocketParentAllowsUnrelatedSymlinkWithoutScanning_repro() throws {
+        let project = temporaryDirectory()
+        chmod(project.path, 0o700)
+        let outside = project.deletingLastPathComponent()
+            .appendingPathComponent("outside-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outside) }
+        try Data("sentinel".utf8).write(to: outside)
+        let unrelated = project.appendingPathComponent("unrelated-link")
+        try FileManager.default.createSymbolicLink(at: unrelated, withDestinationURL: outside)
+
+        XCTAssertEqual(
+            try UnixSocketEngramServiceTransport.secureRuntimeDirectory(at: project),
+            project
+        )
+        var info = stat()
+        XCTAssertEqual(lstat(unrelated.path, &info), 0)
+        XCTAssertEqual(info.st_mode & S_IFMT, S_IFLNK)
+        XCTAssertEqual(try Data(contentsOf: outside), Data("sentinel".utf8))
+    }
+
+    func testDedicatedRuntimeDirectoryUsesPinnedFDForRepairAndEnumeration_repro() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Shared/Service/UnixSocketEngramServiceTransport.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(source.range(of: "private static func ensureSecureRuntimeDirectory")?.lowerBound)
+        let end = try XCTUnwrap(source.range(of: "static func frameDeadline", range: start..<source.endIndex)?.lowerBound)
+        let body = source[start..<end]
+
+        XCTAssertTrue(body.contains("fchmod(directoryFD, 0o700)"))
+        XCTAssertTrue(body.contains("fdopendir"))
+        XCTAssertTrue(body.contains("readdir"))
+        XCTAssertTrue(body.contains("validateRuntimeDirectoryLeftovers(\n                directoryFD"))
+        XCTAssertFalse(body.contains("contentsOfDirectory"))
+    }
+
+    func testDedicatedRuntimeDirectoryCreatesThroughPinnedParentFD_repro() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Shared/Service/UnixSocketEngramServiceTransport.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(source.range(of: "private static func ensureSecureRuntimeDirectory")?.lowerBound)
+        let end = try XCTUnwrap(source.range(of: "private static func validateRuntimeDirectory", range: start..<source.endIndex)?.lowerBound)
+        let body = source[start..<end]
+
+        XCTAssertTrue(body.contains("mkdirat(parentFD"))
+        XCTAssertTrue(body.contains("openat(parentFD"))
+        XCTAssertFalse(body.contains("createDirectory"))
+    }
+
+    func testSecureRuntimeDirectorySafelyRemovesSymlinkLeftover_repro() throws {
+        let home = temporaryDirectory()
+        let rootDirectory = home.appendingPathComponent(".engram", isDirectory: true)
+        let runDirectory = rootDirectory.appendingPathComponent("run", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: runDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        chmod(rootDirectory.path, 0o700)
+        chmod(runDirectory.path, 0o700)
+        let outside = home.appendingPathComponent("outside")
+        try Data("sentinel".utf8).write(to: outside)
+        try FileManager.default.createSymbolicLink(
+            at: runDirectory.appendingPathComponent("cmd.token"),
+            withDestinationURL: outside
+        )
+
+        XCTAssertEqual(
+            try UnixSocketEngramServiceTransport.secureRuntimeDirectory(homeDirectory: home),
+            runDirectory
+        )
+        XCTAssertEqual(try Data(contentsOf: outside), Data("sentinel".utf8))
+        var info = stat()
+        XCTAssertEqual(lstat(runDirectory.appendingPathComponent("cmd.token").path, &info), -1)
+        XCTAssertEqual(errno, ENOENT)
+    }
+
+    func testSecureRuntimeDirectorySafelyRemovesHardlinkedKnownLeftover_repro() throws {
+        let home = temporaryDirectory()
+        let rootDirectory = home.appendingPathComponent(".engram", isDirectory: true)
+        let runDirectory = rootDirectory.appendingPathComponent("run", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: runDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        chmod(rootDirectory.path, 0o700)
+        chmod(runDirectory.path, 0o700)
+        let peer = home.appendingPathComponent("peer-token")
+        let original = Data("shared-token".utf8)
+        try original.write(to: peer)
+        let token = runDirectory.appendingPathComponent("cmd.token")
+        XCTAssertEqual(link(peer.path, token.path), 0)
+
+        XCTAssertEqual(
+            try UnixSocketEngramServiceTransport.secureRuntimeDirectory(homeDirectory: home),
+            runDirectory
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: token.path))
+        XCTAssertEqual(try Data(contentsOf: peer), original)
+    }
+
+    func testDedicatedRuntimeDirectoryCleansNamespacedSidecarLinks_repro() throws {
+        let home = temporaryDirectory()
+        let runDirectory = home
+            .appendingPathComponent(".engram", isDirectory: true)
+            .appendingPathComponent("run", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: runDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        chmod(runDirectory.deletingLastPathComponent().path, 0o700)
+        chmod(runDirectory.path, 0o700)
+        let outside = home.appendingPathComponent("outside")
+        try Data("sentinel".utf8).write(to: outside)
+        let sidecars = ["custom.sock.cmd.token", "custom.sock.ai-secrets.json"]
+        for name in sidecars {
+            try FileManager.default.createSymbolicLink(
+                at: runDirectory.appendingPathComponent(name),
+                withDestinationURL: outside
+            )
+        }
+
+        XCTAssertEqual(
+            try UnixSocketEngramServiceTransport.secureRuntimeDirectory(homeDirectory: home),
+            runDirectory
+        )
+        XCTAssertEqual(try Data(contentsOf: outside), Data("sentinel".utf8))
+        for name in sidecars {
+            var info = stat()
+            XCTAssertEqual(lstat(runDirectory.appendingPathComponent(name).path, &info), -1)
+            XCTAssertEqual(errno, ENOENT)
+        }
+    }
+
+    func testCustomSocketParentFailsClosedWithoutChmodOrUnlink_repro() throws {
+        let project = temporaryDirectory()
+        chmod(project.path, 0o755)
+        let outside = project.deletingLastPathComponent()
+            .appendingPathComponent("outside-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outside) }
+        try Data("sentinel".utf8).write(to: outside)
+        let unrelated = project.appendingPathComponent("unrelated-link")
+        try FileManager.default.createSymbolicLink(at: unrelated, withDestinationURL: outside)
+
+        XCTAssertThrowsError(
+            try UnixSocketEngramServiceTransport.secureRuntimeDirectory(at: project)
+        )
+
+        var projectInfo = stat()
+        var linkInfo = stat()
+        XCTAssertEqual(lstat(project.path, &projectInfo), 0)
+        XCTAssertEqual(projectInfo.st_mode & 0o777, 0o755)
+        XCTAssertEqual(lstat(unrelated.path, &linkInfo), 0)
+        XCTAssertEqual(linkInfo.st_mode & S_IFMT, S_IFLNK)
+        XCTAssertEqual(try Data(contentsOf: outside), Data("sentinel".utf8))
+    }
+
+    func testDedicatedRuntimeDirectoryRefusesUnknownSymlinkWithoutUnlinking_repro() throws {
+        let home = temporaryDirectory()
+        let runDirectory = home
+            .appendingPathComponent(".engram", isDirectory: true)
+            .appendingPathComponent("run", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: runDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        chmod(runDirectory.deletingLastPathComponent().path, 0o700)
+        chmod(runDirectory.path, 0o700)
+        let outside = home.appendingPathComponent("outside")
+        try Data("sentinel".utf8).write(to: outside)
+        let unknown = runDirectory.appendingPathComponent("unrelated-link")
+        try FileManager.default.createSymbolicLink(at: unknown, withDestinationURL: outside)
+
+        XCTAssertThrowsError(
+            try UnixSocketEngramServiceTransport.secureRuntimeDirectory(homeDirectory: home)
+        )
+
+        var linkInfo = stat()
+        XCTAssertEqual(lstat(unknown.path, &linkInfo), 0)
+        XCTAssertEqual(linkInfo.st_mode & S_IFMT, S_IFLNK)
+        XCTAssertEqual(try Data(contentsOf: outside), Data("sentinel".utf8))
+    }
+
+    func testConnectSocketRejectsSymlinkPath_repro() throws {
+        let root = temporaryDirectory()
+        let realPath = root.appendingPathComponent("real.sock").path
+        let aliasPath = root.appendingPathComponent("alias.sock").path
+        let listener = try UnixSocketEngramServiceTransport.bindSocket(path: realPath)
+        defer { close(listener) }
+        try FileManager.default.createSymbolicLink(atPath: aliasPath, withDestinationPath: realPath)
+
+        XCTAssertThrowsError(try UnixSocketEngramServiceTransport.connectSocket(path: aliasPath)) { error in
+            guard case EngramServiceError.serviceUnavailable = error else {
+                return XCTFail("Expected serviceUnavailable, got \(error)")
+            }
+        }
     }
 
     func testBindSocketRejectsNonSocketPath() throws {

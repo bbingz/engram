@@ -27,14 +27,14 @@ describe('computeTier()', () => {
       );
     });
 
-    it('returns skip for subagent file path', () => {
+    it('does not infer subagent tier from a path without a stamped role (repro)', () => {
       expect(
         computeTier(
           makeInput({
             filePath: '/home/user/.claude/projects/abc/subagents/xyz.jsonl',
           }),
         ),
-      ).toBe('skip');
+      ).toBe('normal');
     });
 
     it('returns skip for messageCount 0', () => {

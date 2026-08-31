@@ -6,7 +6,7 @@
  * After the test run, we copy them out to the baselines directory.
  */
 
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,9 +25,12 @@ if (fs.existsSync(sandboxDir)) {
 }
 
 console.log('Running full UI test suite...');
+execFileSync('bash', ['scripts/check-xcodeproj-drift.sh'], {
+  stdio: 'inherit',
+});
 try {
   execSync(
-    `cd macos && xcodegen generate && xcodebuild test -project Engram.xcodeproj -scheme Engram ` +
+    `cd macos && xcodebuild test -project Engram.xcodeproj -scheme Engram ` +
       `-only-testing:EngramUITests ` +
       `-destination 'platform=macOS' ` +
       `CODE_SIGN_IDENTITY="-" DEVELOPMENT_TEAM=""`,

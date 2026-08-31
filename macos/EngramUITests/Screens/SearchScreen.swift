@@ -6,36 +6,37 @@ struct SearchScreen {
     // MARK: - Elements
 
     var container: XCUIElement { app.element(id: "search_container") }
-    var searchInput: XCUIElement { app.element(id: "search_input") }
+    var searchInput: XCUIElement { app.textFields["search_input"].firstMatch }
     var results: XCUIElement { app.element(id: "search_results") }
-    var emptyState: XCUIElement { app.element(id: "search_emptyState") }
+    var idleState: XCUIElement { app.element(id: "search_idle") }
+    var tooShortState: XCUIElement { app.element(id: "search_tooShort") }
+    var failedState: XCUIElement { app.element(id: "search_failed") }
+    var noResultsState: XCUIElement { app.element(id: "search_noResults") }
     var resultCount: XCUIElement { app.staticTexts["search_resultCount"] }
 
     // MARK: - Actions
 
     func search(query: String) {
-        let container = searchInput
-        XCTAssertTrue(container.waitForExistence(timeout: 3),
+        let textField = searchInput
+        XCTAssertTrue(textField.waitForExistence(timeout: 3),
                       "Search input not found")
-        // The identifier is on the wrapper — find the actual TextField inside
-        let textField = container.textFields.firstMatch
-        if textField.exists {
-            textField.click()
-            textField.typeText(query)
-        } else {
-            container.click()
-            container.typeText(query)
-        }
+        textField.click()
+        textField.typeKey("a", modifierFlags: .command)
+        textField.typeKey(.delete, modifierFlags: [])
+        textField.typeText(query)
+        XCTAssertEqual(textField.value as? String, query, "Search field must contain the requested query")
+    }
+
+    func result(containingText text: String) -> XCUIElement {
+        results.element(containingText: text)
     }
 
     func clearSearch() {
-        let container = searchInput
-        if container.exists {
-            let textField = container.textFields.firstMatch
-            let target = textField.exists ? textField : container
-            target.click()
-            target.typeKey("a", modifierFlags: .command)
-            target.typeKey(.delete, modifierFlags: [])
+        let textField = searchInput
+        if textField.exists {
+            textField.click()
+            textField.typeKey("a", modifierFlags: .command)
+            textField.typeKey(.delete, modifierFlags: [])
         }
     }
 

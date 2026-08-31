@@ -358,9 +358,9 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
             truncatedAt: 3
         )
         let runner = IndexJobRunner(writer: writer, adapters: [adapter])
-        let summary = try await runner.runRecoverableJobs()
+        let (summary, _) = try await runner.runRecoverableJobsOnce()
         XCTAssertEqual(summary.completed, 0)
-        XCTAssertEqual(summary.notApplicable, 1)
+        XCTAssertEqual(summary.notApplicable, 0)
 
         let status = try writer.read { db in
             try String.fetchOne(
@@ -368,7 +368,7 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
                 sql: "SELECT status FROM session_index_jobs WHERE session_id = 'fts-trunc-1' AND job_kind = 'fts'"
             )
         }
-        XCTAssertEqual(status, "not_applicable")
+        XCTAssertEqual(status, "failed_retryable")
         let ftsCount = try writer.read { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'fts-trunc-1'") ?? -1
         }
@@ -449,6 +449,64 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
         }
     }
 
+    func testFtsRebuildFinalizesAfterNotApplicableOnlyTail_repro() async throws {
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions (id, source, start_time, file_path, tier)
+                VALUES ('fts-na-only', 'claude-code', '2026-03-18T11:00:00Z', '/tmp/na.jsonl', 'skip');
+                INSERT INTO session_index_jobs (
+                  id, session_id, job_kind, target_sync_version, status
+                ) VALUES ('fts-na-only:1:h:fts', 'fts-na-only', 'fts', 1, 'completed');
+                INSERT INTO sessions_fts(session_id, content)
+                VALUES ('fts-na-only', 'legacy skip content');
+                INSERT INTO metadata(key, value) VALUES ('fts_version', '2')
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                """)
+            try FTSRebuildPolicy.apply(db)
+        }
+
+        let result = try await IndexJobRunner(writer: writer, adapters: []).runRecoverableJobs()
+
+        // The rebuild policy excludes completed skip rows before the drain, so
+        // finalization needs no synthetic terminal not_applicable transition.
+        XCTAssertEqual(result.notApplicable, 0)
+        try writer.read { db in
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'fts_version'"), "3")
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'fts_rebuild_version'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT name FROM sqlite_master WHERE name = 'sessions_fts_rebuild'"))
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'fts-na-only'"),
+                0
+            )
+        }
+    }
+
+    func testFtsRebuildFinalizesWhenRecoverableDrainIsAlreadyEmpty_repro() async throws {
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions (id, source, start_time, file_path, tier)
+                VALUES ('fts-empty-tail', 'claude-code', '2026-03-18T11:00:00Z', '/tmp/empty.jsonl', 'normal');
+                INSERT INTO sessions_fts(session_id, content)
+                VALUES ('fts-empty-tail', 'legacy searchable content');
+                INSERT INTO metadata(key, value) VALUES ('fts_version', '2')
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                """)
+            try FTSRebuildPolicy.apply(db)
+        }
+
+        let result = try await IndexJobRunner(writer: writer, adapters: []).runRecoverableJobs()
+
+        XCTAssertEqual(result, StartupIndexJobRecoveryResult(completed: 0, notApplicable: 0))
+        try writer.read { db in
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'fts_version'"), "3")
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT name FROM sqlite_master WHERE name = 'sessions_fts_rebuild'"))
+            XCTAssertEqual(
+                try String.fetchAll(db, sql: "SELECT content FROM sessions_fts WHERE session_id = 'fts-empty-tail'"),
+                ["legacy searchable content"]
+            )
+        }
+    }
+
     func testEmbeddingJobsRemainPendingWithoutProvider() async throws {
         try writer.write { db in
             try db.execute(
@@ -474,6 +532,325 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
             try String.fetchOne(db, sql: "SELECT status FROM session_index_jobs WHERE id = 'emb-1:1:h:embedding'")
         }
         XCTAssertEqual(status, "pending")
+    }
+
+    func testMissingEnabledAdapterLeavesFtsJobRecoverable_repro() async throws {
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO sessions (id, source, start_time, file_path, tier)
+                VALUES ('disabled-source-fts', 'claude-code', '2026-08-21T00:00:00Z', '/tmp/disabled.jsonl', 'normal')
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO session_index_jobs (id, session_id, job_kind, target_sync_version, status)
+                VALUES ('disabled-source-fts:1:h:fts', 'disabled-source-fts', 'fts', 1, 'pending')
+                """
+            )
+        }
+
+        let runner = IndexJobRunner(writer: writer, adapters: [])
+        let summary = try await runner.runRecoverableJobs()
+        XCTAssertEqual(summary.completed, 0)
+        XCTAssertEqual(summary.notApplicable, 0)
+
+        let status = try writer.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT status FROM session_index_jobs WHERE id = 'disabled-source-fts:1:h:fts'"
+            )
+        }
+        XCTAssertEqual(status, IndexJobStatus.pending.rawValue)
+    }
+
+    func testMissingAdapterRowsDoNotStarveEnabledFtsJobs_repro() async throws {
+        try writer.write { db in
+            for index in 0 ..< IndexJobRunner.drainBatchSize {
+                try db.execute(
+                    sql: """
+                        INSERT INTO sessions (id, source, start_time, file_path, tier)
+                        VALUES (?, 'opencode', '2026-03-18T11:00:00Z', '/tmp/missing-\(index).jsonl', 'normal')
+                        """,
+                    arguments: ["missing-\(index)"]
+                )
+                try db.execute(
+                    sql: """
+                        INSERT INTO session_index_jobs (
+                          id, session_id, job_kind, target_sync_version, status
+                        ) VALUES (?, ?, 'fts', 1, 'pending')
+                        """,
+                    arguments: ["missing-\(index):1:fts", "missing-\(index)"]
+                )
+            }
+            try db.execute(sql: """
+                INSERT INTO sessions (id, source, start_time, file_path, tier)
+                VALUES ('enabled-tail', 'claude-code', '2026-03-18T11:00:00Z', '/tmp/enabled.jsonl', 'normal')
+                """)
+            try db.execute(sql: """
+                INSERT INTO session_index_jobs (
+                  id, session_id, job_kind, target_sync_version, status
+                ) VALUES ('enabled-tail:1:fts', 'enabled-tail', 'fts', 1, 'pending')
+                """)
+        }
+
+        let runner = IndexJobRunner(
+            writer: writer,
+            adapters: [StubFTSAdapter(
+                source: .claudeCode,
+                messages: [NormalizedMessage(role: .user, content: "enabled source")]
+            )]
+        )
+        let summary = try await runner.runRecoverableJobs()
+
+        XCTAssertEqual(summary.completed, 1)
+        let statuses = try writer.read { db in
+            try Row.fetchAll(
+                db,
+                sql: "SELECT session_id, status FROM session_index_jobs ORDER BY session_id"
+            ).map { ($0["session_id"] as String, $0["status"] as String) }
+        }
+        XCTAssertEqual(statuses.first { $0.0 == "enabled-tail" }?.1, "completed")
+        XCTAssertEqual(statuses.filter { $0.0.hasPrefix("missing-") && $0.1 == "pending" }.count, IndexJobRunner.drainBatchSize)
+    }
+
+    func testFtsRebuildIgnoresJobsForAbsentSources_repro() async throws {
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions (id, source, start_time, file_path, tier)
+                VALUES ('archived-tail', 'archived-default-off', '2026-03-18T11:00:00Z', '/tmp/archived.jsonl', 'normal')
+                """)
+            try db.execute(sql: """
+                INSERT INTO session_index_jobs (
+                  id, session_id, job_kind, target_sync_version, status
+                ) VALUES ('archived-tail:1:fts', 'archived-tail', 'fts', 1, 'pending')
+                """)
+            try db.execute(sql: """
+                INSERT INTO sessions_fts(session_id, content)
+                VALUES ('archived-tail', 'legacy archived content')
+                """)
+            try db.execute(sql: """
+                INSERT INTO metadata(key, value) VALUES ('fts_version', '2')
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """)
+            try FTSRebuildPolicy.apply(db)
+        }
+
+        _ = try await IndexJobRunner(writer: writer, adapters: []).runRecoverableJobs()
+
+        try writer.read { db in
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'fts_version'"), "3")
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'fts_rebuild_version'"))
+        }
+    }
+
+    func testFtsRebuildIgnoresPendingRealDisabledSourceWhileClaudeEnabled_repro() async throws {
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions (id, source, start_time, file_path, tier)
+                VALUES ('cline-disabled-tail', 'cline', '2026-08-22T00:00:00Z', '/tmp/cline.jsonl', 'normal');
+                INSERT INTO session_index_jobs (id, session_id, job_kind, target_sync_version, status)
+                VALUES ('cline-disabled-tail:1:fts', 'cline-disabled-tail', 'fts', 1, 'pending');
+                INSERT INTO sessions_fts(session_id, content)
+                VALUES ('cline-disabled-tail', 'live cline keyword row');
+                INSERT INTO metadata(key, value) VALUES ('fts_version', '2')
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                """)
+            try FTSRebuildPolicy.apply(db)
+        }
+
+        let runner = IndexJobRunner(
+            writer: writer,
+            adapters: [StubFTSAdapter(source: .claudeCode, messages: [])]
+        )
+        let result = try await runner.runRecoverableJobsOnce()
+
+        XCTAssertTrue(result.drained)
+        try writer.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT status FROM session_index_jobs WHERE id='cline-disabled-tail:1:fts'"),
+                "pending"
+            )
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key='fts_version'"), "3")
+            XCTAssertEqual(
+                try String.fetchAll(db, sql: "SELECT content FROM sessions_fts WHERE session_id='cline-disabled-tail'"),
+                ["live cline keyword row"]
+            )
+        }
+    }
+
+    func testRunOnceDoesNotReportDrainedWhileEligibleRetryableFtsJobRemains_repro() async throws {
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions (id, source, start_time, file_path, tier)
+                VALUES ('retryable-drain', 'claude-code', '2026-08-22T00:00:00Z', '/tmp/retryable.jsonl', 'normal');
+                INSERT INTO session_index_jobs (id, session_id, job_kind, target_sync_version, status)
+                VALUES ('retryable-drain:1:fts', 'retryable-drain', 'fts', 1, 'pending');
+                """)
+        }
+        let runner = IndexJobRunner(
+            writer: writer,
+            adapters: [ThrowingFTSAdapter(source: .claudeCode, error: ParserFailure.fileMissing)]
+        )
+
+        let result = try await runner.runRecoverableJobsOnce()
+
+        XCTAssertFalse(result.drained)
+        XCTAssertEqual(result.result.completed, 0)
+        XCTAssertEqual(result.result.notApplicable, 0)
+    }
+
+    func testRetryableFtsFailureGetsBackoffAndStopsCurrentDrainWave_repro() async throws {
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions (id, source, start_time, file_path, tier)
+                VALUES ('retry-wave', 'claude-code', '2026-08-23T00:00:00Z', '/tmp/retry-wave.jsonl', 'normal');
+                INSERT INTO session_index_jobs (id, session_id, job_kind, target_sync_version, status)
+                VALUES ('retry-wave:1:fts', 'retry-wave', 'fts', 1, 'pending');
+                """)
+        }
+        let runner = IndexJobRunner(
+            writer: writer,
+            adapters: [ThrowingFTSAdapter(source: .claudeCode, error: ParserFailure.fileMissing)]
+        )
+
+        _ = try await runner.runRecoverableJobsOnce()
+
+        let row = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                    SELECT status, retry_count, not_before,
+                           not_before > datetime('now') AS is_deferred
+                    FROM session_index_jobs WHERE id = 'retry-wave:1:fts'
+                    """
+            )
+        }
+        XCTAssertEqual(row?["status"] as String?, "failed_retryable")
+        XCTAssertEqual(row?["retry_count"] as Int?, 1, "one drain wave must spend at most one retry")
+        XCTAssertNotNil(row?["not_before"] as String?)
+        XCTAssertEqual(row?["is_deferred"] as Int?, 1)
+    }
+
+    func testFutureFtsJobDoesNotReportDrainedAndRunsWhenDue_repro() async throws {
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions (id, source, start_time, file_path, tier)
+                VALUES ('future-drain', 'claude-code', '2026-08-23T00:00:00Z', '/tmp/future.jsonl', 'normal');
+                INSERT INTO session_index_jobs (
+                  id, session_id, job_kind, target_sync_version, status, not_before
+                ) VALUES (
+                  'future-drain:1:fts', 'future-drain', 'fts', 1, 'pending', datetime('now', '+1 second')
+                );
+                """)
+        }
+        let runner = IndexJobRunner(
+            writer: writer,
+            adapters: [StubFTSAdapter(
+                source: .claudeCode,
+                messages: [NormalizedMessage(role: .user, content: "future searchable content")]
+            )]
+        )
+
+        let first = try await runner.runRecoverableJobsOnce()
+        XCTAssertFalse(first.drained)
+        let result = try await runner.runRecoverableJobs()
+
+        XCTAssertEqual(result.completed, 1)
+        try writer.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT content FROM sessions_fts WHERE session_id = 'future-drain'"
+                ),
+                "future searchable content"
+            )
+        }
+    }
+
+    func testDeferredRetryDoesNotStopWaveWhileDueFtsWorkRemains_repro() throws {
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions (id, source, start_time, file_path, tier) VALUES
+                  ('deferred-wave', 'claude-code', '2026-08-23T00:00:00Z', '/tmp/deferred.jsonl', 'normal'),
+                  ('due-wave', 'claude-code', '2026-08-23T00:00:00Z', '/tmp/due.jsonl', 'normal');
+                INSERT INTO session_index_jobs (
+                  id, session_id, job_kind, target_sync_version, status, not_before
+                ) VALUES
+                  ('deferred-wave:1:fts', 'deferred-wave', 'fts', 1, 'failed_retryable', datetime('now', '+30 seconds')),
+                  ('due-wave:1:fts', 'due-wave', 'fts', 1, 'pending', NULL);
+                """)
+        }
+        let runner = IndexJobRunner(
+            writer: writer,
+            adapters: [StubFTSAdapter(source: .claudeCode, messages: [])]
+        )
+
+        XCTAssertFalse(try runner.shouldStopFtsDrainWave())
+        try writer.write { db in
+            try db.execute(sql: "DELETE FROM session_index_jobs WHERE session_id = 'due-wave'")
+        }
+        XCTAssertTrue(try runner.shouldStopFtsDrainWave())
+        XCTAssertNotNil(try runner.recommendedFtsRetryDelayNanoseconds())
+    }
+
+    func testDeferredRetrySleepsThenCompletesWithinSameDrainWave_repro() async throws {
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, file_path, tier, summary
+                ) VALUES (
+                  'deferred-retry-drain', 'claude-code', '2026-08-23T00:00:00Z',
+                  '/tmp/deferred-retry.jsonl', 'normal', 'retry searchable content'
+                );
+                INSERT INTO session_index_jobs (
+                  id, session_id, job_kind, target_sync_version, status, retry_count, not_before
+                ) VALUES (
+                  'deferred-retry-drain:1:fts', 'deferred-retry-drain', 'fts', 1,
+                  'failed_retryable', 1, datetime('now', '+2 seconds')
+                );
+                """)
+        }
+        let runner = IndexJobRunner(
+            writer: writer,
+            adapters: [StubFTSAdapter(
+                source: .claudeCode,
+                messages: [NormalizedMessage(role: .user, content: "retry searchable content")]
+            )]
+        )
+        let startedAt = Date()
+
+        let result = try await runner.runRecoverableJobs()
+
+        XCTAssertEqual(result.completed, 1)
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(startedAt), 1.0)
+        try writer.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT content FROM sessions_fts WHERE session_id = 'deferred-retry-drain'"
+                ),
+                "retry searchable content"
+            )
+        }
+    }
+
+    func testDueBacklogHasImmediateRetryDelay_repro() throws {
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions (id, source, start_time, file_path, tier)
+                VALUES ('due-delay', 'claude-code', '2026-08-23T00:00:00Z', '/tmp/due-delay.jsonl', 'normal');
+                INSERT INTO session_index_jobs (
+                  id, session_id, job_kind, target_sync_version, status, not_before
+                ) VALUES ('due-delay:1:fts', 'due-delay', 'fts', 1, 'pending', NULL);
+                """)
+        }
+        let delay = try IndexJobRunner(
+            writer: writer,
+            adapters: [StubFTSAdapter(source: .claudeCode, messages: [])]
+        ).recommendedFtsRetryDelayNanoseconds()
+
+        XCTAssertEqual(delay, 0)
     }
 
     // runRecoverableJobsOnce processes a single batch and reports whether the
@@ -509,7 +886,7 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
         XCTAssertTrue(second.drained)
     }
 
-    func testMissingFtsSourceIsMarkedNotApplicableInsteadOfRetryingForever() async throws {
+    func testMissingFtsSourceRemainsRetryableInsteadOfBecomingTerminal() async throws {
         try writer.write { db in
             try db.execute(
                 sql: """
@@ -529,8 +906,9 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
             writer: writer,
             adapters: [ThrowingFTSAdapter(source: .claudeCode, error: ParserFailure.fileMissing)]
         )
-        let summary = try await runner.runRecoverableJobs()
-        XCTAssertEqual(summary.notApplicable, 1)
+        let run = try await runner.runRecoverableJobsOnce()
+        XCTAssertEqual(run.result.notApplicable, 0)
+        XCTAssertFalse(run.drained)
 
         let row = try writer.read { db in
             try Row.fetchOne(
@@ -542,9 +920,9 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
                 """
             )
         }
-        XCTAssertEqual(row?["status"] as String?, "not_applicable")
-        XCTAssertEqual(row?["retry_count"] as Int?, 0)
-        XCTAssertNil(row?["last_error"] as String?)
+        XCTAssertEqual(row?["status"] as String?, "failed_retryable")
+        XCTAssertEqual(row?["retry_count"] as Int?, 1)
+        XCTAssertNotNil(row?["last_error"] as String?)
 
         let retryable = try writer.read { db in
             try Int.fetchOne(
@@ -552,7 +930,7 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
                 sql: "SELECT COUNT(*) FROM session_index_jobs WHERE status IN ('pending','failed_retryable')"
             ) ?? -1
         }
-        XCTAssertEqual(retryable, 0)
+        XCTAssertEqual(retryable, 1)
     }
 
     func testRecentIndexDoesNotRunHistoricalParentBackfills() async throws {
@@ -820,6 +1198,41 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
         XCTAssertEqual(status.todayParents, 1, "only the genuine top-level normal session counts")
     }
 
+    func testIndexStatusTodayParentsIncludesOvernightSessionEndingToday_repro() throws {
+        let now = Date()
+        let oldStart = ISO8601DateFormatter().string(from: now.addingTimeInterval(-7 * 86_400))
+        let currentEnd = ISO8601DateFormatter().string(from: now)
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO sessions (id, source, start_time, end_time, file_path, tier)
+                    VALUES ('overnight-today-parent', 'codex', ?, ?, '/tmp/overnight-today.jsonl', 'normal')
+                    """,
+                arguments: [oldStart, currentEnd]
+            )
+        }
+
+        XCTAssertEqual(try writer.indexStatus().todayParents, 1)
+    }
+
+    func testStartupReadyTodayParentsIncludesOvernightSessionEndingToday_repro() throws {
+        let now = Date()
+        let oldStart = ISO8601DateFormatter().string(from: now.addingTimeInterval(-7 * 86_400))
+        let currentEnd = ISO8601DateFormatter().string(from: now)
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO sessions (id, source, start_time, end_time, file_path, tier)
+                    VALUES ('startup-overnight-parent', 'codex', ?, ?, '/tmp/startup-overnight.jsonl', 'normal')
+                    """,
+                arguments: [oldStart, currentEnd]
+            )
+        }
+
+        let database = WriterStartupBackfillDatabase(writer: writer)
+        XCTAssertEqual(try database.countTodayParentSessions(), 1)
+    }
+
     // MARK: - WP-M1: reconcileInsights does not wipe vector store when insights empty
 
     func testReconcileInsightsDoesNotWipeVectorStoreWhenInsightsEmpty() throws {
@@ -894,6 +1307,105 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
                 try Int.fetchOne(db, sql: "SELECT has_embedding FROM insights WHERE id = 'legacy-only'"),
                 0,
                 "a legacy memory_insights row must not preserve the shipped embedding flag"
+            )
+        }
+    }
+
+    func testReconcileInsightsClearsDanglingSupersededPointers_repro() throws {
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO insights (id, content, superseded_by) VALUES
+                  ('predecessor', 'recover me', 'missing-successor'),
+                  ('active', 'keep active', NULL)
+            """)
+        }
+
+        _ = try writer.write { db in
+            try StartupBackfills.reconcileInsights(db)
+        }
+
+        try writer.read { db in
+            XCTAssertNil(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT superseded_by FROM insights WHERE id = 'predecessor'"
+                )
+            )
+        }
+    }
+
+    func testReconcileInsightsSupersedesExtraActiveNormalizedDuplicates_repro() throws {
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO insights (id, content, wing, room, created_at, superseded_by) VALUES
+                  ('duplicate-old', 'Keep one active normalized insight', 'engram', 'memory', '2026-01-01T00:00:00Z', NULL),
+                  ('duplicate-new', '  KEEP   one active normalized insight  ', 'engram', 'memory', '2026-01-02T00:00:00Z', NULL)
+            """)
+        }
+
+        _ = try writer.write { db in
+            try StartupBackfills.reconcileInsights(db)
+        }
+
+        try writer.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT superseded_by FROM insights WHERE id = 'duplicate-old'"),
+                "duplicate-new"
+            )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT superseded_by FROM insights WHERE id = 'duplicate-new'")
+            )
+        }
+    }
+
+    func testReconcileInsightsDeterministicallyCollapsesSameFactDanglingRows_repro() throws {
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO insights (id, content, wing, room, created_at, superseded_by) VALUES
+                  ('dangling-old', 'Keep one repaired dangling fact', 'engram', 'memory',
+                   '2026-01-01T00:00:00Z', 'missing-old'),
+                  ('dangling-new', '  KEEP   one repaired dangling fact  ', 'engram', 'memory',
+                   '2026-01-02T00:00:00Z', 'missing-new')
+                """)
+        }
+
+        _ = try writer.write { db in
+            try StartupBackfills.reconcileInsights(db)
+        }
+
+        try writer.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT superseded_by FROM insights WHERE id = 'dangling-old'"),
+                "dangling-new"
+            )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT superseded_by FROM insights WHERE id = 'dangling-new'")
+            )
+        }
+    }
+
+    func testReconcileInsightsPromotesNewerDanglingCloneOverOlderActiveTip_repro() throws {
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO insights (id, content, wing, room, created_at, superseded_by) VALUES
+                  ('active-old', 'Promote the newest repaired fact', 'engram', 'memory',
+                   '2026-01-01T00:00:00Z', NULL),
+                  ('dangling-new', '  PROMOTE  the newest repaired fact  ', 'engram', 'memory',
+                   '2026-01-02T00:00:00Z', 'missing-successor')
+                """)
+        }
+
+        _ = try writer.write { db in
+            try StartupBackfills.reconcileInsights(db)
+        }
+
+        try writer.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT superseded_by FROM insights WHERE id = 'active-old'"),
+                "dangling-new"
+            )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT superseded_by FROM insights WHERE id = 'dangling-new'")
             )
         }
     }

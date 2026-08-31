@@ -23,13 +23,13 @@ public enum ImmutableArchiveCASError: Error, Equatable, Sendable {
 struct ImmutableArchiveCASTestHooks: Sendable {
     let afterExistingFileVerified: (@Sendable (URL) throws -> Void)?
     let afterDirectoryFsync: (@Sendable (URL) -> Void)?
-    let afterFinalLinkPublished: (@Sendable (URL) -> Void)?
+    let afterFinalLinkPublished: (@Sendable (URL) throws -> Void)?
     let beforeObjectUnlink: (@Sendable (URL) throws -> Void)?
 
     init(
         afterExistingFileVerified: (@Sendable (URL) throws -> Void)? = nil,
         afterDirectoryFsync: (@Sendable (URL) -> Void)? = nil,
-        afterFinalLinkPublished: (@Sendable (URL) -> Void)? = nil,
+        afterFinalLinkPublished: (@Sendable (URL) throws -> Void)? = nil,
         beforeObjectUnlink: (@Sendable (URL) throws -> Void)? = nil
     ) {
         self.afterExistingFileVerified = afterExistingFileVerified
@@ -61,6 +61,16 @@ public struct ImmutableArchiveCAS: Sendable {
             case .manifest: ".json"
             }
         }
+    }
+
+    struct StagedContent: Equatable, Sendable {
+        fileprivate let temporaryURL: URL
+        fileprivate let finalURL: URL
+        fileprivate let expectedSHA256: String
+        fileprivate let device: UInt64
+        fileprivate let inode: UInt64
+        fileprivate let owner: uid_t
+        fileprivate let mode: mode_t
     }
 
     private let root: URL
@@ -97,7 +107,13 @@ public struct ImmutableArchiveCAS: Sendable {
     }
 
     public func publishObject(raw: Data, expectedSHA256: String) throws -> ArchivePublishResult {
-        try publish(raw, expectedSHA256: expectedSHA256, kind: .object)
+        let staged = try stageObject(raw: raw, expectedSHA256: expectedSHA256)
+        defer { try? discardStaged(staged) }
+        return try publishStaged(staged)
+    }
+
+    func stageObject(raw: Data, expectedSHA256: String) throws -> StagedContent {
+        try stage(raw, expectedSHA256: expectedSHA256, kind: .object)
     }
 
     public func readObject(sha256: String) throws -> Data {
@@ -137,18 +153,24 @@ public struct ImmutableArchiveCAS: Sendable {
     }
 
     public func publishManifest(_ bytes: Data, expectedSHA256: String) throws -> ArchivePublishResult {
-        try publish(bytes, expectedSHA256: expectedSHA256, kind: .manifest)
+        let staged = try stageManifest(bytes, expectedSHA256: expectedSHA256)
+        defer { try? discardStaged(staged) }
+        return try publishStaged(staged)
+    }
+
+    func stageManifest(_ bytes: Data, expectedSHA256: String) throws -> StagedContent {
+        try stage(bytes, expectedSHA256: expectedSHA256, kind: .manifest)
     }
 
     public func readManifest(sha256: String) throws -> Data {
         try read(sha256: sha256, kind: .manifest)
     }
 
-    private func publish(
+    private func stage(
         _ bytes: Data,
         expectedSHA256: String,
         kind: Kind
-    ) throws -> ArchivePublishResult {
+    ) throws -> StagedContent {
         try Self.validate(expectedSHA256)
         let actual = ArchiveV2Hash.sha256(bytes)
         guard actual == expectedSHA256 else {
@@ -156,8 +178,8 @@ public struct ImmutableArchiveCAS: Sendable {
         }
 
         let finalURL = try url(for: expectedSHA256, kind: kind, createShard: true)
-        let parent = finalURL.deletingLastPathComponent()
-        let temporaryURL = parent.appendingPathComponent(
+        let temporaryParent = root.appendingPathComponent("tmp", isDirectory: true)
+        let temporaryURL = temporaryParent.appendingPathComponent(
             ".engram-archive-\(UUID().uuidString).tmp",
             isDirectory: false
         )
@@ -194,12 +216,41 @@ public struct ImmutableArchiveCAS: Sendable {
         }
         descriptor = -1
 
-        if Darwin.link(temporaryURL.path, finalURL.path) == 0 {
-            testHooks.afterFinalLinkPublished?(finalURL)
-            guard Darwin.unlink(temporaryURL.path) == 0 else {
-                throw Self.io("unlink-temp", code: errno)
+        var stagedInfo = stat()
+        guard Darwin.lstat(temporaryURL.path, &stagedInfo) == 0 else {
+            throw Self.io("lstat-staged", code: errno)
+        }
+        guard Self.isSafeFinalFile(stagedInfo) else {
+            throw ImmutableArchiveCASError.unsafeExistingPath(temporaryURL.path)
+        }
+        try Self.fsyncDirectory(
+            temporaryParent,
+            afterFsync: testHooks.afterDirectoryFsync
+        )
+        temporaryExists = false
+        return StagedContent(
+            temporaryURL: temporaryURL,
+            finalURL: finalURL,
+            expectedSHA256: expectedSHA256,
+            device: UInt64(stagedInfo.st_dev),
+            inode: UInt64(stagedInfo.st_ino),
+            owner: stagedInfo.st_uid,
+            mode: stagedInfo.st_mode
+        )
+    }
+
+    func publishStaged(_ staged: StagedContent) throws -> ArchivePublishResult {
+        try validateStaged(staged, expectedLinkCount: 1)
+        let parent = staged.finalURL.deletingLastPathComponent()
+
+        if Darwin.link(staged.temporaryURL.path, staged.finalURL.path) == 0 {
+            do {
+                try testHooks.afterFinalLinkPublished?(staged.finalURL)
+            } catch {
+                try discardStaged(staged, expectedLinkCount: 2)
+                throw error
             }
-            temporaryExists = false
+            try discardStaged(staged, expectedLinkCount: 2)
             try Self.fsyncDirectory(
                 parent,
                 afterFsync: testHooks.afterDirectoryFsync
@@ -208,22 +259,15 @@ public struct ImmutableArchiveCAS: Sendable {
         }
 
         let linkError = errno
-        guard Darwin.unlink(temporaryURL.path) == 0 else {
-            throw Self.io("unlink-temp", code: errno)
-        }
-        temporaryExists = false
-        try Self.fsyncDirectory(
-            parent,
-            afterFsync: testHooks.afterDirectoryFsync
-        )
+        try discardStaged(staged)
         guard linkError == EEXIST else {
             throw Self.io("link-final", code: linkError)
         }
 
         do {
             _ = try Self.readVerified(
-                finalURL,
-                expectedSHA256: expectedSHA256,
+                staged.finalURL,
+                expectedSHA256: staged.expectedSHA256,
                 fsyncBeforeAccept: true,
                 afterVerified: testHooks.afterExistingFileVerified
             )
@@ -234,9 +278,68 @@ public struct ImmutableArchiveCAS: Sendable {
             return .alreadyPresent
         } catch ImmutableArchiveCASError.digestMismatch(_, let existingActual) {
             throw ImmutableArchiveCASError.existingContentConflict(
-                expected: expectedSHA256,
+                expected: staged.expectedSHA256,
                 actual: existingActual
             )
+        }
+    }
+
+    func discardStaged(_ staged: StagedContent) throws {
+        try discardStaged(staged, expectedLinkCount: 1)
+    }
+
+    private func discardStaged(
+        _ staged: StagedContent,
+        expectedLinkCount: nlink_t
+    ) throws {
+        var info = stat()
+        guard Darwin.lstat(staged.temporaryURL.path, &info) == 0 else {
+            if errno == ENOENT { return }
+            throw Self.io("lstat-discard-staged", code: errno)
+        }
+        try validateStaged(staged, info: info, expectedLinkCount: expectedLinkCount)
+        if expectedLinkCount == 2 {
+            var finalInfo = stat()
+            guard Darwin.lstat(staged.finalURL.path, &finalInfo) == 0,
+                  UInt64(finalInfo.st_dev) == staged.device,
+                  UInt64(finalInfo.st_ino) == staged.inode,
+                  finalInfo.st_uid == staged.owner,
+                  finalInfo.st_mode == staged.mode,
+                  finalInfo.st_nlink == expectedLinkCount else {
+                throw ImmutableArchiveCASError.unsafeExistingPath(staged.finalURL.path)
+            }
+        }
+        guard Darwin.unlink(staged.temporaryURL.path) == 0 else {
+            if errno == ENOENT { return }
+            throw Self.io("unlink-staged", code: errno)
+        }
+        try Self.fsyncDirectory(
+            staged.temporaryURL.deletingLastPathComponent(),
+            afterFsync: testHooks.afterDirectoryFsync
+        )
+    }
+
+    private func validateStaged(_ staged: StagedContent, expectedLinkCount: nlink_t) throws {
+        var info = stat()
+        guard Darwin.lstat(staged.temporaryURL.path, &info) == 0 else {
+            throw Self.io("lstat-staged", code: errno)
+        }
+        try validateStaged(staged, info: info, expectedLinkCount: expectedLinkCount)
+    }
+
+    private func validateStaged(
+        _ staged: StagedContent,
+        info: stat,
+        expectedLinkCount: nlink_t
+    ) throws {
+        let temporaryParent = root.appendingPathComponent("tmp", isDirectory: true)
+        guard staged.temporaryURL.deletingLastPathComponent() == temporaryParent,
+              UInt64(info.st_dev) == staged.device,
+              UInt64(info.st_ino) == staged.inode,
+              info.st_uid == staged.owner,
+              info.st_mode == staged.mode,
+              info.st_nlink == expectedLinkCount else {
+            throw ImmutableArchiveCASError.unsafeExistingPath(staged.temporaryURL.path)
         }
     }
 

@@ -2,7 +2,10 @@
 
 ## Index
 
-<!-- AUTO-INDEX (recounted 2026-08-16): 114 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (recounted 2026-08-29): 115 dated entries; regenerate after adding sections -->
+- [2026-08-29 - HQ live ingest boot recovery via daily-Mac SSH watchdog (Cursor)](#2026-08-29---hq-live-ingest-boot-recovery-via-daily-mac-ssh-watchdog-cursor)
+- [2026-08-25 - HQ live ingest enabled on HQ + daily Mac, first publish pending (Cursor)](#2026-08-25---hq-live-ingest-enabled-on-hq--daily-mac-first-publish-pending-cursor)
+- [2026-08-24 - HQ live session ingest implemented locally, unreleased (Cursor)](#2026-08-24---hq-live-session-ingest-implemented-locally-unreleased-cursor)
 - [2026-08-16 - Final PR and dual-server deployment closeout (Codex)](#2026-08-16---final-pr-and-dual-server-deployment-closeout-codex)
 - [2026-08-15 - Stewardship closeout: L-items shipped, adapter slicing stopped (Grok)](#2026-08-15---stewardship-closeout-l-items-shipped-adapter-slicing-stopped-grok)
 - [2026-07-31 - MCP retrospective fix campaign: verified claims need pinned tests (Fable/Claude)](#2026-07-31---mcp-retrospective-fix-campaign-verified-claims-need-pinned-tests-fableclaude)
@@ -118,6 +121,46 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-08-29 - HQ live ingest boot recovery via daily-Mac SSH watchdog (Cursor)
+
+- HQ LaunchAgents stayed down from reboot 02:45 CST until console login
+  08:22. FileVault on, no auto-login, no passwordless sudo, cron not
+  running.
+- Daily-Mac LaunchAgent `com.engram.hq-live-ensure` SSHs to
+  `~/.engram/run/ensure-hq-live` every 120s. HQ remote wrapper exits 0
+  if port 8787 is already taken. Scripts: `scripts/hq-live/`.
+- Also installed HQ LaunchDaemons
+  `com.engram.remote-server.boot` and `com.engram.service.boot`
+  (`UserName=bing`). First load exited 0; pids 5669/5682 unchanged.
+  Next reboot without console login is not yet proven. FileVault
+  unlock is still required. Did not claim the SLA.
+
+## 2026-08-25 - HQ live ingest enabled on HQ + daily Mac, first publish pending (Cursor)
+
+- Dirty-tree Release helper/app deployed locally. HQ LaunchAgent
+  `com.engram.service` is running with `livePublishEnabled` and
+  `remoteOffloadEnabled=false`. Daily Mac settings have ingest on and
+  sources `["hq"]`.
+- Both sanitized logs show `live ingest armed`. HQ has not written
+  `live.hq.*` yet (still in Archive v2 initial scan). Mac imported HQ
+  rows: 0. SLA not exercised.
+- Daily Mac ad-hoc helper cannot read the Keychain offload token; start
+  via `~/.engram/run/start-engram-app` only. No commit / v1.0.6.
+
+## 2026-08-24 - HQ live session ingest implemented locally, unreleased (Cursor)
+
+- Dirty-tree implementation of unidirectional HQ → daily-Mac live ingest. Spec:
+  `docs/superpowers/specs/2026-08-24-hq-live-session-ingest-design.md`. Plan:
+  `docs/superpowers/plans/2026-08-24-hq-live-session-ingest.md`.
+- Live coordinator is independent of offload `runOnce`. Peer id is fail-closed.
+  Bundles are FTS+summary. `remote://` is a snapshot locator. Resume is an
+  honest error. App badge is `HQ` iff `origin == "hq"`.
+- Focused `_repro`s for Tasks 1–7 are green. Full suites, HQ launchd, and the
+  16-minute SLA were not run. Settings enable after a service started with
+  ingest off needs a service restart. Residuals in `docs/followups.md`.
+- Public baseline remains v1.0.5. No commit, tag, v1.0.6, or production
+  `~/.engram` mutation.
 
 ## 2026-08-16 - Final PR and dual-server deployment closeout (Codex)
 

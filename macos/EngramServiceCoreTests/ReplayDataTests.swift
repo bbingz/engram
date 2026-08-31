@@ -73,6 +73,26 @@ final class ReplayDataTests: XCTestCase {
         XCTAssertTrue(empty.isEmpty)
     }
 
+    func testInsightDetailExcludesSupersededRows_repro() async throws {
+        let path = try seedInsightsFixture(createInsightsTable: true) { db in
+            try db.execute(
+                sql: """
+                INSERT INTO insights (id, content, importance, superseded_by)
+                VALUES
+                  ('old', 'superseded body', 3, 'active'),
+                  ('active', 'active body', 5, NULL)
+                """
+            )
+        }
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: path)
+
+        let oldDetail = try await provider.insightDetail(.init(id: "old"))
+        let activeDetail = try await provider.insightDetail(.init(id: "active"))
+
+        XCTAssertNil(oldDetail)
+        XCTAssertEqual(activeDetail?.content, "active body")
+    }
+
     // MARK: - Helpers
 
     private func msg(
@@ -122,6 +142,7 @@ final class ReplayDataTests: XCTestCase {
                       source_session_id TEXT,
                       importance INTEGER DEFAULT 5,
                       has_embedding INTEGER DEFAULT 0,
+                      superseded_by TEXT,
                       created_at TEXT DEFAULT (datetime('now'))
                     );
                 """)

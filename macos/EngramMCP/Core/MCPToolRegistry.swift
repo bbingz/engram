@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 
 struct MCPToolDefinition {
     let name: String
@@ -68,15 +69,11 @@ enum MCPToolRegistry {
     /// project_* commands through to the Swift pipeline.
     private static let unavailableNativeProjectOperationTools: Set<String> = []
 
-    /// Default tools list (probes the process MCP DB path for search modes).
-    static var tools: [MCPToolDefinition] {
-        tools(dbPath: MCPConfig.load().dbPath)
-    }
-
     /// tools/list + argument validation surface. Search `mode` enum is gated by
     /// `SessionVectorSearchAvailability` on the given database path.
     static func tools(dbPath: String) -> [MCPToolDefinition] {
-        let semanticUsable = SessionVectorSearchAvailability.probe(databasePath: dbPath).isUsable
+        let semanticUsable = FileManager.default.fileExists(atPath: dbPath)
+            && ((try? MCPDatabase(path: dbPath).vectorAvailabilityForAdvertising().isUsable) ?? false)
         return allToolDefinitions.compactMap { definition in
             guard !unavailableNativeProjectOperationTools.contains(definition.name) else {
                 return nil
@@ -720,6 +717,10 @@ enum MCPToolRegistry {
                         "type": .string("string"),
                         "description": .string("Audit note stored in migration_log"),
                     ]),
+                    "operation_id": .object([
+                        "type": .string("string"),
+                        "description": .string("Stable idempotence/reconnect key; generated when omitted"),
+                    ]),
                 ]),
                 "additionalProperties": .bool(false),
             ])
@@ -761,6 +762,10 @@ enum MCPToolRegistry {
                         "type": .string("string"),
                         "description": .string("Audit note stored in migration_log"),
                     ]),
+                    "operation_id": .object([
+                        "type": .string("string"),
+                        "description": .string("Stable idempotence/reconnect key; generated when omitted"),
+                    ]),
                 ]),
                 "additionalProperties": .bool(false),
             ])
@@ -780,6 +785,10 @@ enum MCPToolRegistry {
                         "type": .string("boolean"),
                         "description": .string("Bypass git-dirty warning on the current destination"),
                         "default": .bool(false),
+                    ]),
+                    "operation_id": .object([
+                        "type": .string("string"),
+                        "description": .string("Stable idempotence/reconnect key; generated when omitted"),
                     ]),
                 ]),
                 "additionalProperties": .bool(false),
@@ -805,6 +814,10 @@ enum MCPToolRegistry {
                         "type": .string("boolean"),
                         "description": .string("Bypass git-dirty warning on every operation"),
                         "default": .bool(false),
+                    ]),
+                    "operation_id": .object([
+                        "type": .string("string"),
+                        "description": .string("Stable idempotence/reconnect key; generated when omitted"),
                     ]),
                 ]),
                 "additionalProperties": .bool(false),
@@ -971,6 +984,7 @@ enum MCPToolRegistry {
             return .toolSuccess(structured)
         case "search":
             let query = try requiredString("query", in: arguments)
+            let requestedMode = arguments["mode"]?.stringValue ?? "keyword"
             do {
                 let database = try MCPDatabase(path: config.dbPath)
                 let structured = try await database.searchSessions(
@@ -979,13 +993,19 @@ enum MCPToolRegistry {
                     project: arguments["project"]?.stringValue,
                     since: arguments["since"]?.stringValue,
                     limit: min(arguments["limit"]?.intValue ?? 10, 50),
-                    mode: arguments["mode"]?.stringValue ?? "keyword"
+                    mode: requestedMode
                 )
                 return .toolSuccess(structured)
             } catch let error as MCPDatabase.SearchError {
                 return .toolError(
                     message: error.localizedDescription,
                     code: error.structuredCode
+                )
+            } catch let error as DatabaseError
+                where error.resultCode == .SQLITE_BUSY || error.resultCode == .SQLITE_LOCKED {
+                return .toolError(
+                    message: "Search is temporarily unavailable while the Engram database is busy. Retry shortly.",
+                    code: "searchFailed"
                 )
             } catch {
                 return .toolError(
@@ -1174,6 +1194,7 @@ enum MCPToolRegistry {
         case "project_move":
             let serviceClient = makeServiceClient(config: config)
             defer { serviceClient.close() }
+            let operationId = stableProjectOperationId(arguments["operation_id"]?.stringValue)
             let originalSrc = try requiredString("src", in: arguments)
             let originalDst = try requiredString("dst", in: arguments)
             let src = expandHomePath(originalSrc)
@@ -1185,7 +1206,8 @@ enum MCPToolRegistry {
                     dryRun: try optionalBool("dry_run", in: arguments),
                     force: try optionalBool("force", in: arguments),
                     auditNote: arguments["note"]?.stringValue,
-                    actor: "mcp"
+                    actor: "mcp",
+                    operationId: operationId
                 )
             )
             let resolved: (src: String, dst: String)? = (src != originalSrc || dst != originalDst)
@@ -1196,6 +1218,7 @@ enum MCPToolRegistry {
         case "project_archive":
             let serviceClient = makeServiceClient(config: config)
             defer { serviceClient.close() }
+            let operationId = stableProjectOperationId(arguments["operation_id"]?.stringValue)
             let src = expandHomePath(try requiredString("src", in: arguments))
             let response = try await serviceClient.projectArchive(
                 EngramServiceProjectArchiveRequest(
@@ -1204,30 +1227,35 @@ enum MCPToolRegistry {
                     dryRun: try optionalBool("dry_run", in: arguments),
                     force: try optionalBool("force", in: arguments),
                     auditNote: arguments["note"]?.stringValue,
-                    actor: "mcp"
+                    actor: "mcp",
+                    operationId: operationId
                 )
             )
             return .toolSuccess(orderedProjectArchiveResult(from: response))
         case "project_undo":
             let serviceClient = makeServiceClient(config: config)
             defer { serviceClient.close() }
+            let operationId = stableProjectOperationId(arguments["operation_id"]?.stringValue)
             let response = try await serviceClient.projectUndo(
                 EngramServiceProjectUndoRequest(
                     migrationId: try requiredString("migration_id", in: arguments),
                     force: try optionalBool("force", in: arguments),
-                    actor: "mcp"
+                    actor: "mcp",
+                    operationId: operationId
                 )
             )
             return .toolSuccess(orderedPipelineResult(from: response))
         case "project_move_batch":
             let serviceClient = makeServiceClient(config: config)
             defer { serviceClient.close() }
+            let operationId = stableProjectOperationId(arguments["operation_id"]?.stringValue)
             let raw = try await serviceClient.projectMoveBatch(
                 EngramServiceProjectMoveBatchRequest(
                     yaml: try requiredString("yaml", in: arguments),
                     dryRun: try optionalBool("dry_run", in: arguments),
                     force: try optionalBool("force", in: arguments),
-                    actor: "mcp"
+                    actor: "mcp",
+                    operationId: operationId
                 )
             )
             return .toolSuccess(orderedProjectMoveBatchResult(from: jsonValue(raw)))
@@ -1241,6 +1269,11 @@ enum MCPToolRegistry {
         default:
             return .toolError(message: "Unknown tool: \(name)")
         }
+    }
+
+    private static func stableProjectOperationId(_ supplied: String?) -> String {
+        let trimmed = supplied?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? UUID().uuidString : trimmed
     }
 
     static func toolCategory(name: String, arguments: [String: JSONValue] = [:]) -> ToolCategory {
@@ -1357,7 +1390,7 @@ enum MCPToolRegistry {
 
     static func resourcesList(config: MCPConfig) async throws -> OrderedJSONValue {
         let database = try MCPDatabase(path: config.dbPath)
-        let catalog = (try? database.recentResourceCatalog(sessionLimit: 15, insightLimit: 15)) ?? []
+        let catalog = try database.recentResourceCatalog(sessionLimit: 15, insightLimit: 15)
         let items = catalog.map { entry -> OrderedJSONValue in
             .object([
                 ("uri", .string(entry.uri)),
@@ -1691,14 +1724,24 @@ private func orderedLinkSessionsResult(from response: EngramServiceLinkSessionsR
 }
 
 private func orderedExportSessionResult(from response: EngramServiceExportSessionResponse) -> OrderedJSONValue {
-    .object([
+    var entries: [(String, OrderedJSONValue)] = [
         ("outputPath", .string(response.outputPath)),
         ("format", .string(response.format)),
         ("messageCount", .int(response.messageCount)),
-    ])
+        ("totalKnownComplete", .bool(response.totalKnownComplete)),
+        ("truncated", .bool(response.truncated)),
+    ]
+    if let truncatedAt = response.truncatedAt {
+        entries.append(("truncatedAt", .int(truncatedAt)))
+    }
+    if let parseFailure = response.parseFailure {
+        entries.append(("parseFailure", .string(parseFailure)))
+    }
+    return .object(entries)
 }
 
 private func expandHomePath(_ path: String) -> String {
+    let path = path.trimmingCharacters(in: .whitespacesAndNewlines)
     let homePath = ProcessInfo.processInfo.environment["HOME"]
         .flatMap { $0.isEmpty ? nil : $0 }
         ?? FileManager.default.homeDirectoryForCurrentUser.path

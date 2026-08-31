@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 
 struct AboutSettingsSection: View {
     @Environment(DatabaseManager.self) var db
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
     @State private var isExportingDiagnostics = false
     @State private var exportMessage: String?
 
@@ -50,7 +50,7 @@ struct AboutSettingsSection: View {
                     if let exportMessage {
                         Text(verbatim: exportMessage)
                             .font(.caption)
-                            .foregroundStyle(exportMessage.hasPrefix("Export failed") ? Color.red : Color.secondary)
+                            .foregroundStyle(exportMessage.hasPrefix("Export failed") ? Theme.red : Color.secondary)
                         if !exportMessage.hasPrefix("Export failed") {
                             // Row 17: no upload — point at GitHub issue attach.
                             let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
@@ -116,7 +116,7 @@ struct AboutSettingsSection: View {
         return try DiagnosticBundleComposer.compose(input: input)
     }
 
-    private func diagnosticServiceStatus(from serviceClient: EngramServiceClient) async -> DiagnosticServiceStatus {
+    private func diagnosticServiceStatus(from serviceClient: any EngramServiceClientProtocol) async -> DiagnosticServiceStatus {
         do {
             return .status(try await serviceClient.status())
         } catch {
@@ -124,7 +124,7 @@ struct AboutSettingsSection: View {
         }
     }
 
-    private func diagnosticServiceLogs(from serviceClient: EngramServiceClient) async -> [DiagnosticLogLine] {
+    private func diagnosticServiceLogs(from serviceClient: any EngramServiceClientProtocol) async -> [DiagnosticLogLine] {
         do {
             return try await serviceClient.serviceLogs(level: nil, category: nil, limit: 200)
                 .lines
@@ -155,8 +155,7 @@ struct DatabaseInfoView: View {
     @Environment(DatabaseManager.self) var db
     @State private var dbSize: String = "..."
     @State private var sessionCount: String = "..."
-    private let dbPath = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".engram/index.sqlite").path
+    private var dbPath: String { db.path }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {

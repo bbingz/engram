@@ -1,0 +1,157 @@
+#!/bin/bash
+# Start HQ hub + EngramService without waiting for an Aqua login.
+# Safe to run from SSH (daily-Mac watchdog) or a local LaunchAgent.
+# Never SIGKILL. Exit 0 when already running or when a lock is held.
+set -euo pipefail
+umask 077
+
+export HOME="${HOME:-/Users/bing}"
+export USER="${USER:-bing}"
+export LOGNAME="${LOGNAME:-bing}"
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+
+uid="$(/usr/bin/id -u)"
+run_dir="$HOME/.engram/run"
+log_dir="$HOME/.engram/logs"
+log_file="$log_dir/hq-boot-ensure.log"
+degraded_sentinel="$run_dir/hq-boot-ensure.degraded"
+remote_wrapper="$HOME/.engram-remote/bin/run-engram-remote"
+service_wrapper="$HOME/.engram-service/current/bin/run-engram-service"
+remote_plist="$HOME/Library/LaunchAgents/com.engram.remote-server.plist"
+service_plist="$HOME/Library/LaunchAgents/com.engram.service.plist"
+
+mkdir -p "$run_dir" "$log_dir"
+chmod 700 "$run_dir" "$log_dir" 2>/dev/null || true
+
+# macOS has no /usr/bin/flock. Re-exec through the same-directory helper so
+# the kernel, not a reusable pid file, owns stale-lock recovery.
+if [[ "${ENGRAM_HQ_ENSURE_LOCKED:-0}" != "1" ]]; then
+  script_dir="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  exec "$script_dir/flock-exec" \
+    "$run_dir/hq-boot-ensure.lock" \
+    /usr/bin/env ENGRAM_HQ_ENSURE_LOCKED=1 \
+    "$script_dir/ensure-hq-live" "$@"
+fi
+
+stamp() {
+  /bin/date -u +"%Y-%m-%dT%H:%M:%SZ"
+}
+
+log() {
+  printf '%s %s\n' "$(stamp)" "$*" >>"$log_file"
+}
+
+record_healthy() {
+  /bin/rm -f "$degraded_sentinel"
+  printf '%s\n' 'ENGRAM_HQ_ENSURE_STATUS=ok'
+}
+
+record_degraded() {
+  local remote_state="$1"
+  local service_state="$2"
+  local temporary="${degraded_sentinel}.tmp.$$"
+  printf '%s remote=%s service=%s\n' \
+    "$(stamp)" "$remote_state" "$service_state" >"$temporary"
+  /bin/chmod 600 "$temporary"
+  /bin/mv -f "$temporary" "$degraded_sentinel"
+  printf 'ENGRAM_HQ_ENSURE_STATUS=degraded remote=%s service=%s\n' \
+    "$remote_state" "$service_state"
+}
+
+remote_listening() {
+  /usr/sbin/lsof -nP -iTCP:8787 -sTCP:LISTEN >/dev/null 2>&1
+}
+
+service_running() {
+  /usr/bin/pgrep -f '/Helpers/EngramService --service-socket' >/dev/null 2>&1
+}
+
+wait_tailscale() {
+  local host=""
+  local envf="$HOME/.engram-remote/env"
+  if [[ -f "$envf" ]]; then
+    host="$(/usr/bin/awk -F= '$1=="ENGRAM_REMOTE_HOST"{print $2; exit}' "$envf")"
+  fi
+  [[ -n "$host" ]] || host="100.125.101.60"
+  local i
+  for i in $(/usr/bin/seq 1 45); do
+    if /sbin/ifconfig 2>/dev/null | /usr/bin/grep -q "inet ${host} "; then
+      return 0
+    fi
+    sleep 2
+  done
+  log "tailscale addr not ready host=${host}"
+  return 1
+}
+
+start_via_launchctl() {
+  local label="$1"
+  local plist="$2"
+  if /bin/launchctl print "gui/${uid}/${label}" >/dev/null 2>&1; then
+    /bin/launchctl kickstart "gui/${uid}/${label}" >/dev/null 2>&1 || true
+    return 0
+  fi
+  if /bin/launchctl print "user/${uid}/${label}" >/dev/null 2>&1; then
+    /bin/launchctl kickstart "user/${uid}/${label}" >/dev/null 2>&1 || true
+    return 0
+  fi
+  if [[ -f "$plist" ]]; then
+    if /bin/launchctl bootstrap "user/${uid}" "$plist" >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+start_detached() {
+  local wrapper="$1"
+  local out="$2"
+  local err="$3"
+  if [[ ! -x "$wrapper" ]]; then
+    log "missing wrapper ${wrapper}"
+    return 1
+  fi
+  /usr/bin/nohup "$wrapper" >>"$out" 2>>"$err" </dev/null &
+}
+
+if ! remote_listening; then
+  if wait_tailscale; then
+    if start_via_launchctl "com.engram.remote-server" "$remote_plist"; then
+      log "remote start via launchctl"
+    else
+      start_detached "$remote_wrapper" "$log_dir/engram-remote.out.log" "$log_dir/engram-remote.err.log"
+      log "remote start via nohup"
+    fi
+  else
+    log "remote skipped; tailscale not ready"
+  fi
+fi
+
+if ! service_running; then
+  if start_via_launchctl "com.engram.service" "$service_plist"; then
+    log "service start via launchctl"
+  else
+    start_detached "$service_wrapper" "$log_dir/engram-service.out.log" "$log_dir/engram-service.err.log"
+    log "service start via nohup"
+  fi
+fi
+
+if remote_listening && service_running; then
+  log "ok remote=listen service=up"
+  record_healthy
+  exit 0
+fi
+
+# Give a just-spawned pair a moment before declaring degraded.
+sleep 2
+if remote_listening && service_running; then
+  log "ok remote=listen service=up (after wait)"
+  record_healthy
+  exit 0
+fi
+
+remote_state="$(remote_listening && echo listen || echo down)"
+service_state="$(service_running && echo up || echo down)"
+log "degraded remote=${remote_state} service=${service_state}"
+record_degraded "$remote_state" "$service_state"
+exit 0

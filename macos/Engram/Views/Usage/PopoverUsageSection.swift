@@ -22,13 +22,13 @@ struct PopoverUsageSection: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("USAGE")
-                    .font(.system(size: 10, weight: .semibold))
+                    .scaledFont(10, weight: .semibold)
                     .foregroundStyle(.tertiary)
                 Spacer()
                 Button(showAll ? "Collapse" : "Show All") {
                     showAll.toggle()
                 }
-                .font(.system(size: 10))
+                .scaledFont(10)
                 .buttonStyle(.plain)
                 .foregroundStyle(.tertiary)
             }
@@ -38,7 +38,7 @@ struct PopoverUsageSection: View {
                 ForEach(groupedBySource, id: \.source) { group in
                     VStack(alignment: .leading, spacing: 3) {
                         Text(SourceColors.label(for: group.source))
-                            .font(.system(size: 10, weight: .semibold))
+                            .scaledFont(10, weight: .semibold)
                             .foregroundStyle(SourceColors.color(for: group.source))
                         ForEach(group.items) { item in
                             UsageMetricRow(
@@ -284,12 +284,12 @@ struct UsageValueRow: View {
     var body: some View {
         HStack(spacing: 6) {
             Text(label)
-                .font(.system(size: 10))
+                .scaledFont(10)
                 .frame(width: 70, alignment: .leading)
                 .foregroundStyle(.secondary)
             Spacer(minLength: 6)
             Text(text)
-                .font(.system(size: 9))
+                .scaledFont(9)
                 .foregroundStyle(.secondary)
                 .frame(width: 64, alignment: .trailing)
                 .monospacedDigit()
@@ -316,7 +316,7 @@ struct UsageBar: View {
     var body: some View {
         HStack(spacing: 6) {
             Text(label)
-                .font(.system(size: 10))
+                .scaledFont(10)
                 .frame(width: 50, alignment: .leading)
                 .foregroundStyle(.secondary)
             GeometryReader { geo in
@@ -336,7 +336,7 @@ struct UsageBar: View {
                 suffix: suffix,
                 metric: metric
             ))
-                .font(.system(size: 9))
+                .scaledFont(9)
                 .foregroundStyle(normalizedUsageStatus(status) == "critical" ? .red : .secondary)
                 .frame(
                     width: Self.valueTextWidth(label: label, limit: limit, suffix: suffix, metric: metric),

@@ -9,6 +9,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
+import BetterSqlite3 from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const repoRoot = resolve(import.meta.dirname, '../..');
@@ -103,6 +104,26 @@ describe('stage2 Node parity fixture generators', () => {
       sessionFixtureRoot,
     ]);
     expect(snapshotFixtureFiles(sessionFixtureRoot)).toEqual(first);
+  });
+
+  it('persists the UI fixture in the native reader WAL mode (repro)', () => {
+    tmp = mkdtempSync(join(tmpdir(), 'engram-ui-fixture-wal-test-'));
+    const dbPath = join(tmp, 'test-index.sqlite');
+    const sessionFixtureRoot = join(tmp, 'sessions', 'generated');
+
+    runScript('scripts/generate-test-fixtures.ts', [
+      '--out-db',
+      dbPath,
+      '--session-fixture-root',
+      sessionFixtureRoot,
+    ]);
+
+    const database = new BetterSqlite3(dbPath, { readonly: true });
+    try {
+      expect(database.pragma('journal_mode', { simple: true })).toBe('wal');
+    } finally {
+      database.close();
+    }
   });
 
   it('generates deterministic adapter parity fixtures with required fields', () => {

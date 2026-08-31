@@ -28,6 +28,7 @@ targets:
       - path: EngramCoreRead
       - path: Shared/EngramCore
       - path: Shared/MCP
+      - path: Shared/Security/SecureRegularFile.swift
     dependencies:
       - package: GRDB
         product: GRDB-dynamic
@@ -86,6 +87,7 @@ targets:
       - path: EngramService/Core
       - path: EngramService/IPC
       - path: Shared/Service
+      - path: Shared/Security/SecureRegularFile.swift
     dependencies:
       - target: EngramCoreWrite
       - package: GRDB
@@ -144,6 +146,7 @@ targets:
     dependencies:
       - package: GRDB
         product: GRDB-dynamic
+      - target: EngramCoreRead
       - sdk: AppIntents.framework
       - target: EngramMCP
         link: false
@@ -208,6 +211,7 @@ targets:
     sources:
       - path: EngramCLI
       - path: Shared/Service
+      - path: Shared/Security/SecureRegularFile.swift
     dependencies:
       - package: ArgumentParser
         product: ArgumentParser
@@ -225,6 +229,8 @@ targets:
       - path: EngramMCP
       - path: Shared
     dependencies:
+      - target: EngramCoreRead
+      - target: EngramCoreWrite
       - package: GRDB
         product: GRDB-dynamic
     settings:
@@ -253,6 +259,7 @@ targets:
       - path: Shared/EngramCore/ArchiveV2/ArchiveCanonicalJSON.swift
       - path: Shared/EngramCore/ArchiveV2/ArchiveModels.swift
       - path: Shared/EngramCore/ArchiveV2/ArchiveRemoteTelemetry.swift
+      - path: Shared/EngramCore/TranscriptRedactionPolicy.swift
     dependencies:
       - package: Hummingbird
         product: Hummingbird
@@ -352,15 +359,17 @@ targets:
       - path: EngramUITests
         excludes:
           - "baselines/**"
-      # Bundle the macOS fixture DB (test-index.sqlite + sessions/) so
-      # TestLaunchConfig.fixtureDBPath resolves to a real bundled path and the
-      # launched app loads seeded sessions. Must be `test-fixtures` (the dir the
-      # lookup expects), not `../tests/fixtures` (repo-root TS fixtures, no DB).
-      - path: test-fixtures
+      # Bundle the generator outputs explicitly. The tracked `macos/test-fixtures`
+      # symlink is not copied reliably by Xcode in clean CI checkouts.
+      - path: ../test-fixtures/test-index.sqlite
+        buildPhase: resources
+      - path: ../test-fixtures/sessions
         type: folder
         buildPhase: resources
     dependencies:
       - target: Engram
+      - package: GRDB
+        product: GRDB-dynamic
     settings:
       TEST_TARGET_NAME: Engram
       GENERATE_INFOPLIST_FILE: YES

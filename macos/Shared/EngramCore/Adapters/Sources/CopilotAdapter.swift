@@ -1,19 +1,39 @@
+import Darwin
 import Foundation
+
+struct CopilotAdapterTestHooks: Sendable {
+    var beforeCompositeIdentityValidation: @Sendable () -> Void
+    var beforeCheckpointBodyIdentityValidation: @Sendable (Int) -> Void
+    var beforeEventsWorkspaceIdentityValidation: @Sendable () -> Void
+
+    init(
+        beforeCompositeIdentityValidation: @escaping @Sendable () -> Void = {},
+        beforeCheckpointBodyIdentityValidation: @escaping @Sendable (Int) -> Void = { _ in },
+        beforeEventsWorkspaceIdentityValidation: @escaping @Sendable () -> Void = {}
+    ) {
+        self.beforeCompositeIdentityValidation = beforeCompositeIdentityValidation
+        self.beforeCheckpointBodyIdentityValidation = beforeCheckpointBodyIdentityValidation
+        self.beforeEventsWorkspaceIdentityValidation = beforeEventsWorkspaceIdentityValidation
+    }
+}
 
 final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sendable {
     let source: SourceName = .copilot
     private static let maxCheckpointBodyLength = 4_000
     private let sessionRoot: URL
     private let limits: ParserLimits
+    private let testHooks: CopilotAdapterTestHooks
 
     init(
         sessionRoot: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".copilot/session-state")
             .path,
-        limits: ParserLimits = .default
+        limits: ParserLimits = .default,
+        testHooks: CopilotAdapterTestHooks = CopilotAdapterTestHooks()
     ) {
         self.sessionRoot = URL(fileURLWithPath: sessionRoot)
         self.limits = limits
+        self.testHooks = testHooks
     }
 
     func detect() async -> Bool {
@@ -56,6 +76,10 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
         }
     }
 
+    func indexingInputIdentity(locator: String) -> IndexingInputIdentity? {
+        Self.compositeInputIdentity(locator: locator)
+    }
+
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
         if Self.isCheckpointIndex(locator) {
             return parseCheckpointSessionInfo(locator: locator)
@@ -65,85 +89,22 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
             let (objects, failure) = try JSONLAdapterSupport.readObjects(
                 locator: locator,
                 limits: limits,
-                reportFailures: true
+                reportFailures: true,
+                countsTowardMessageLimit: { Self.message(from: $0) != nil }
             )
-            if let failure { return .failure(failure) }
-
-            let sessionDirectory = URL(fileURLWithPath: locator).deletingLastPathComponent()
-            let workspace = Self.readWorkspace(sessionDirectory.appendingPathComponent("workspace.yaml"), limits: limits)
-            let sessionId = workspace["id"] ?? sessionDirectory.lastPathComponent
-            var startTime = workspace["created_at"] ?? ""
-            var endTime = workspace["updated_at"] ?? ""
-            var cwd = workspace["cwd"] ?? ""
-            var userCount = 0
-            var assistantCount = 0
-            var firstUserText = ""
-
-            for object in objects {
-                guard let type = JSONLAdapterSupport.string(object["type"]) else { continue }
-                let data = JSONLAdapterSupport.object(object["data"])
-                let timestamp = JSONLAdapterSupport.string(object["timestamp"])
-
-                if type == "session.start" {
-                    let context = JSONLAdapterSupport.object(data?["context"])
-                    if startTime.isEmpty, let value = JSONLAdapterSupport.string(data?["startTime"]) {
-                        startTime = value
-                    }
-                    if cwd.isEmpty, let value = JSONLAdapterSupport.string(context?["cwd"]) {
-                        cwd = value
-                    }
-                } else if type == "user.message" {
-                    userCount += 1
-                    if firstUserText.isEmpty, let content = JSONLAdapterSupport.string(data?["content"]) {
-                        firstUserText = String(content.prefix(200))
-                    }
-                    if let timestamp {
-                        if startTime.isEmpty || timestamp < startTime { startTime = timestamp }
-                        if timestamp > endTime { endTime = timestamp }
-                    }
-                } else if type == "assistant.message" {
-                    assistantCount += 1
-                    if let timestamp, timestamp > endTime {
-                        endTime = timestamp
-                    }
+            let messages = Self.messages(from: objects)
+            if let failure {
+                guard failure == .fileModifiedDuringParse, !messages.isEmpty else {
+                    return .failure(failure)
                 }
             }
-
-            guard !sessionId.isEmpty else {
-                return .failure(.malformedJSON)
+            let workspace: [String: String]
+            do {
+                workspace = try readEventsWorkspace(locator: locator)
+            } catch ParserFailure.fileModifiedDuringParse where !messages.isEmpty {
+                workspace = [:]
             }
-            guard userCount + assistantCount > 0 else {
-                return .failure(.noVisibleMessages)
-            }
-
-            return .success(
-                NormalizedSessionInfo(
-                    id: sessionId,
-                    source: .copilot,
-                    startTime: startTime,
-                    endTime: endTime != startTime ? endTime : nil,
-                    cwd: cwd,
-                    project: nil,
-                    model: nil,
-                    messageCount: userCount + assistantCount,
-                    userMessageCount: userCount,
-                    assistantMessageCount: assistantCount,
-                    toolMessageCount: 0,
-                    systemMessageCount: 0,
-                    summary: workspace["summary"] ?? (firstUserText.isEmpty ? nil : firstUserText),
-                    filePath: locator,
-                    sizeBytes: Self.compositeSizeBytes(locator: locator, limits: limits),
-                    indexedAt: nil,
-                    agentRole: nil,
-                    originator: nil,
-                    origin: nil,
-                    summaryMessageCount: nil,
-                    tier: nil,
-                    qualityScore: nil,
-                    parentSessionId: nil,
-                    suggestedParentId: nil
-                )
-            )
+            return parseEventsSessionInfo(locator: locator, objects: objects, workspace: workspace)
         } catch let failure as ParserFailure {
             return .failure(failure)
         } catch {
@@ -151,28 +112,193 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
         }
     }
 
+    func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
+        let initialIdentity = indexingInputIdentity(locator: locator)
+        if Self.isCheckpointIndex(locator) {
+            do {
+                let snapshot = try Self.checkpointSnapshot(locator: locator,
+                    limits: limits,
+                    beforeBodyIdentityValidation: testHooks.beforeCheckpointBodyIdentityValidation
+                )
+                switch checkpointSessionInfo(locator: locator, snapshot: snapshot) {
+                case .failure(let failure):
+                    return .failure(failure)
+                case .success(let info):
+                    return validatedIndexingScan(
+                        IndexingScan(info: info, messages: snapshot.messages),
+                        locator: locator,
+                        initialIdentity: initialIdentity
+                    )
+                }
+            } catch let failure as ParserFailure {
+                return .failure(failure)
+            } catch {
+                return .failure(.malformedJSON)
+            }
+        }
+
+        do {
+            let (objects, failure) = try JSONLAdapterSupport.readObjects(
+                locator: locator,
+                limits: limits,
+                reportFailures: true,
+                countsTowardMessageLimit: { Self.message(from: $0) != nil }
+            )
+            let messages = Self.messages(from: objects)
+            if failure != nil, messages.isEmpty { return .failure(failure!) }
+            var parseFailure = failure
+            let workspace: [String: String]
+            do {
+                workspace = try readEventsWorkspace(locator: locator)
+            } catch let failure as ParserFailure where !messages.isEmpty {
+                workspace = [:]
+                parseFailure = failure
+            }
+            switch parseEventsSessionInfo(locator: locator, objects: objects, workspace: workspace) {
+            case .failure(let failure):
+                return .failure(failure)
+            case .success(let info):
+                return validatedIndexingScan(
+                    IndexingScan(info: info, messages: messages, parseFailure: parseFailure),
+                    locator: locator,
+                    initialIdentity: initialIdentity
+                )
+            }
+        } catch let failure as ParserFailure {
+            return .failure(failure)
+        } catch {
+            return .failure(.malformedJSON)
+        }
+    }
+
+    private func validatedIndexingScan(
+        _ scan: IndexingScan,
+        locator: String,
+        initialIdentity: IndexingInputIdentity?
+    ) -> AdapterParseResult<IndexingScan> {
+        testHooks.beforeCompositeIdentityValidation()
+        guard let initialIdentity,
+              initialIdentity == indexingInputIdentity(locator: locator)
+        else {
+            if !Self.isCheckpointIndex(locator), !scan.messages.isEmpty {
+                var prefix = scan
+                prefix.parseFailure = .fileModifiedDuringParse
+                return .success(prefix)
+            }
+            return .failure(.fileModifiedDuringParse)
+        }
+        return .success(scan)
+    }
+
+    private func parseEventsSessionInfo(
+        locator: String,
+        objects: [JSONLAdapterSupport.JSONObject],
+        workspace: [String: String]
+    ) -> AdapterParseResult<NormalizedSessionInfo> {
+        let sessionDirectory = URL(fileURLWithPath: locator).deletingLastPathComponent()
+        let sessionId = workspace["id"] ?? sessionDirectory.lastPathComponent
+        var startTime = workspace["created_at"] ?? ""
+        var endTime = workspace["updated_at"] ?? ""
+        var cwd = workspace["cwd"] ?? ""
+        var userCount = 0
+        var assistantCount = 0
+        var firstUserText = ""
+
+        for object in objects {
+            guard let type = JSONLAdapterSupport.string(object["type"]) else { continue }
+            let data = JSONLAdapterSupport.object(object["data"])
+            let timestamp = JSONLAdapterSupport.string(object["timestamp"])
+
+            if type == "session.start" {
+                let context = JSONLAdapterSupport.object(data?["context"])
+                if startTime.isEmpty, let value = JSONLAdapterSupport.string(data?["startTime"]) {
+                    startTime = value
+                }
+                if cwd.isEmpty, let value = JSONLAdapterSupport.string(context?["cwd"]) {
+                    cwd = value
+                }
+            } else if type == "user.message" {
+                userCount += 1
+                if firstUserText.isEmpty, let content = JSONLAdapterSupport.string(data?["content"]) {
+                    firstUserText = String(content.prefix(200))
+                }
+                if let timestamp {
+                    if startTime.isEmpty || timestamp < startTime { startTime = timestamp }
+                    if timestamp > endTime { endTime = timestamp }
+                }
+            } else if type == "assistant.message" {
+                assistantCount += 1
+                if let timestamp, timestamp > endTime {
+                    endTime = timestamp
+                }
+            }
+        }
+
+        guard !sessionId.isEmpty else { return .failure(.malformedJSON) }
+        guard userCount + assistantCount > 0 else { return .failure(.noVisibleMessages) }
+
+        return .success(
+            NormalizedSessionInfo(
+                id: sessionId,
+                source: .copilot,
+                startTime: startTime,
+                endTime: endTime != startTime ? endTime : nil,
+                cwd: cwd,
+                project: nil,
+                model: nil,
+                messageCount: userCount + assistantCount,
+                userMessageCount: userCount,
+                assistantMessageCount: assistantCount,
+                toolMessageCount: 0,
+                systemMessageCount: 0,
+                summary: workspace["summary"] ?? (firstUserText.isEmpty ? nil : firstUserText),
+                filePath: locator,
+                sizeBytes: Self.compositeSizeBytes(locator: locator),
+                indexedAt: nil,
+                agentRole: nil,
+                originator: nil,
+                origin: nil,
+                summaryMessageCount: nil,
+                tier: nil,
+                qualityScore: nil,
+                parentSessionId: nil,
+                suggestedParentId: nil
+            )
+        )
+    }
+
+    private func readEventsWorkspace(locator: String) throws -> [String: String] {
+        let sessionDirectory = URL(fileURLWithPath: locator).deletingLastPathComponent()
+        return try Self.readWorkspace(
+            sessionDirectory.appendingPathComponent("workspace.yaml"),
+            limits: limits,
+            beforeIdentityValidation: testHooks.beforeEventsWorkspaceIdentityValidation
+        )
+    }
+
     func streamMessages(
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
         if Self.isCheckpointIndex(locator) {
-            let messages = Self.checkpointMessages(
+            let result = try Self.checkpointMessagesWithMetadata(
                 locator: locator,
-                limits: limits
+                limits: limits,
+                options: options,
+                beforeBodyIdentityValidation: testHooks.beforeCheckpointBodyIdentityValidation
             )
-            return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
+            return JSONLAdapterSupport.stream(result.messages)
         }
 
         if options.limit == nil {
-            let (objects, failure) = try JSONLAdapterSupport.readObjects(
+            let result = try JSONLAdapterSupport.wholeDocumentMessagesWithMetadata(
                 locator: locator,
+                options: options,
                 limits: limits,
-                reportFailures: true
+                transform: Self.messages(from:),
+                countsTowardMessageLimit: { Self.message(from: $0) != nil }
             )
-            if let failure { throw failure }
-            return JSONLAdapterSupport.stream(
-                JSONLAdapterSupport.applyWindow(Self.messages(from: objects), options: options)
-            )
+            return JSONLAdapterSupport.stream(result.messages)
         }
 
         let messages = try JSONLAdapterSupport.windowedMessages(
@@ -189,32 +315,20 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
         options: StreamMessagesOptions
     ) async throws -> StreamMessagesResult {
         if Self.isCheckpointIndex(locator) {
-            let messages = Self.checkpointMessages(
+            let result = try Self.checkpointMessagesWithMetadata(
                 locator: locator,
-                limits: limits
+                limits: limits,
+                options: options,
+                beforeBodyIdentityValidation: testHooks.beforeCheckpointBodyIdentityValidation
             )
-            // Checkpoint indexes inherit the default wrapper unless this
-            // whole-transcript cap is marked.
-            let truncatedAt = options.limit == nil && messages.count > limits.maxMessages
-                ? limits.maxMessages
-                : nil
-            let bounded = truncatedAt == nil
-                ? JSONLAdapterSupport.applyWindow(messages, options: options)
-                : Array(messages.prefix(limits.maxMessages))
-            return StreamMessagesResult(
-                messages: JSONLAdapterSupport.stream(bounded),
-                totalKnownComplete: truncatedAt == nil,
-                truncatedAt: truncatedAt
-            )
-        }
-        if options.limit != nil {
-            return StreamMessagesResult(messages: try await streamMessages(locator: locator, options: options))
+            return JSONLAdapterSupport.stream(result)
         }
         let result = try JSONLAdapterSupport.wholeDocumentMessagesWithMetadata(
             locator: locator,
             options: options,
             limits: limits,
-            transform: Self.messages(from:)
+            transform: Self.messages(from:),
+            countsTowardMessageLimit: { Self.message(from: $0) != nil }
         )
         return JSONLAdapterSupport.stream(result)
     }
@@ -224,12 +338,30 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
     }
 
     private func parseCheckpointSessionInfo(locator: String) -> AdapterParseResult<NormalizedSessionInfo> {
+        do {
+            let snapshot = try Self.checkpointSnapshot(
+                locator: locator,
+                limits: limits,
+                beforeBodyIdentityValidation: testHooks.beforeCheckpointBodyIdentityValidation
+            )
+            return checkpointSessionInfo(locator: locator, snapshot: snapshot)
+        } catch let failure as ParserFailure {
+            return .failure(failure)
+        } catch {
+            return .failure(.malformedJSON)
+        }
+    }
+
+    private func checkpointSessionInfo(
+        locator: String,
+        snapshot: CheckpointSnapshot
+    ) -> AdapterParseResult<NormalizedSessionInfo> {
         let checkpointIndexURL = URL(fileURLWithPath: locator)
         let sessionDirectory = checkpointIndexURL
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let workspace = Self.readWorkspace(sessionDirectory.appendingPathComponent("workspace.yaml"), limits: limits)
-        let entries = Self.checkpointEntries(checkpointIndexURL, limits: limits)
+        let workspace = snapshot.workspace
+        let entries = snapshot.entries
         guard !entries.isEmpty else {
             return .failure(.malformedJSON)
         }
@@ -249,12 +381,12 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
                 model: nil,
                 messageCount: entries.count,
                 userMessageCount: 0,
-                assistantMessageCount: 0,
+                assistantMessageCount: entries.count,
                 toolMessageCount: 0,
-                systemMessageCount: entries.count,
+                systemMessageCount: 0,
                 summary: entries.first?.title,
                 filePath: locator,
-                sizeBytes: Self.compositeSizeBytes(locator: locator, limits: limits),
+                sizeBytes: Self.compositeSizeBytes(locator: locator),
                 indexedAt: nil,
                 agentRole: nil,
                 originator: nil,
@@ -272,19 +404,18 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
     /// discovery does not materialize entire histories (or fail solely because
     /// the active file grew mid-read).
     private static func eventsHaveConversation(_ locator: String, limits: ParserLimits) -> Bool {
-        let url = URL(fileURLWithPath: locator)
-        guard FileManager.default.fileExists(atPath: locator) else { return false }
         do {
+            let (url, _) = try JSONLAdapterSupport.prepareFile(locator: locator, limits: limits)
             let reader = try StreamingLineReader(fileURL: url, maxLineBytes: limits.maxLineBytes)
             for line in try reader.readLines() {
-                guard let data = line.data(using: .utf8),
-                      let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-                else { continue }
+                guard let object = JSONLAdapterSupport.parseObject(line) else { continue }
                 let type = JSONLAdapterSupport.string(object["type"])
                 if type == "user.message" || type == "assistant.message" {
                     return true
                 }
             }
+            return false
+        } catch ParserFailure.fileTooLarge {
             return false
         } catch {
             return false
@@ -299,7 +430,7 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
         return url.deletingLastPathComponent()
     }
 
-    private static func compositeInputPaths(locator: String, limits: ParserLimits) -> [String] {
+    private static func compositeInputPaths(locator: String) -> [String] {
         var paths = [locator]
         let sessionDir = sessionDirectory(for: locator)
         paths.append(sessionDir.appendingPathComponent("workspace.yaml").path)
@@ -310,51 +441,62 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
         let checkpointsDir = sessionDir.appendingPathComponent("checkpoints", isDirectory: true)
         // Directory mtime covers body create/delete when index.md itself is stale.
         paths.append(checkpointsDir.path)
-        if isCheckpointIndex(locator) {
-            let checkpointIndexURL = URL(fileURLWithPath: locator)
-            for entry in checkpointEntries(checkpointIndexURL, limits: limits) {
-                guard let fileName = entry.fileName,
-                      fileName == URL(fileURLWithPath: fileName).lastPathComponent,
-                      fileName.hasSuffix(".md")
-                else { continue }
-                paths.append(
-                    checkpointIndexURL
-                        .deletingLastPathComponent()
-                        .appendingPathComponent(fileName)
-                        .path
-                )
+        paths.append(contentsOf: JSONLAdapterSupport.directChildren(of: checkpointsDir, includingHidden: true)
+            .filter { url in
+                guard url.pathExtension.lowercased() == "md" else { return false }
+                var info = stat()
+                return lstat(url.path, &info) == 0 && (info.st_mode & S_IFMT) == S_IFREG
             }
-        }
+            .map(\.path))
         return paths
     }
 
     private static func compositeModificationDate(
         locator: String,
         fileManager: FileManager,
-        limits: ParserLimits
+        limits _: ParserLimits
     ) -> Date? {
-        compositeInputPaths(locator: locator, limits: limits).compactMap { path in
-            guard fileManager.fileExists(atPath: path) else { return nil }
-            return try? fileManager.attributesOfItem(atPath: path)[.modificationDate] as? Date
-        }
-        .max()
+        _ = fileManager
+        guard let identity = compositeInputIdentity(locator: locator) else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(identity.modifiedAtNanos) / 1_000_000_000)
     }
 
-    private static func compositeSizeBytes(locator: String, limits: ParserLimits) -> Int64 {
-        // Count every file the adapter actually consumes so aux-only rewrites
-        // change sizeBytes and force snapshot re-merge. Directories are mtime-only.
-        let fileManager = FileManager.default
-        return Set(compositeInputPaths(locator: locator, limits: limits))
-            .filter { path in
-                var isDirectory: ObjCBool = false
-                guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory) else {
-                    return false
-                }
-                return !isDirectory.boolValue
+    private static func compositeSizeBytes(locator: String) -> Int64 {
+        compositeInputIdentity(locator: locator)?.sizeBytes ?? 0
+    }
+
+    private static func compositeInputIdentity(locator: String) -> IndexingInputIdentity? {
+        var totalSize: Int64 = 0
+        var newestNanos: Int64 = 0
+        var locatorInode: Int64?
+        var locatorDevice: Int64?
+        var foundLocator = false
+
+        for path in Set(compositeInputPaths(locator: locator)) {
+            var info = stat()
+            guard lstat(path, &info) == 0 else { continue }
+            let kind = info.st_mode & S_IFMT
+            guard kind == S_IFREG || kind == S_IFDIR else { continue }
+            if kind == S_IFREG {
+                totalSize += Int64(info.st_size)
             }
-            .reduce(Int64(0)) { partial, path in
-                partial + Phase4AdapterSupport.fileSize(path)
+            let modifiedNanos = Int64(info.st_mtimespec.tv_sec) * 1_000_000_000
+                + Int64(info.st_mtimespec.tv_nsec)
+            newestNanos = max(newestNanos, modifiedNanos)
+            if path == locator {
+                foundLocator = true
+                locatorInode = Int64(info.st_ino)
+                locatorDevice = Int64(info.st_dev)
             }
+        }
+
+        guard foundLocator else { return nil }
+        return IndexingInputIdentity(
+            sizeBytes: totalSize,
+            modifiedAtNanos: newestNanos,
+            locatorInode: locatorInode,
+            locatorDevice: locatorDevice
+        )
     }
 
     private static func message(from object: JSONLAdapterSupport.JSONObject) -> NormalizedMessage? {
@@ -439,6 +581,82 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
         let fileName: String?
     }
 
+    private struct CheckpointSnapshot {
+        let workspace: [String: String]
+        let entries: [CheckpointEntry]
+        let messages: [NormalizedMessage]
+    }
+
+    private static func checkpointSnapshot(
+        locator: String,
+        limits: ParserLimits,
+        beforeBodyIdentityValidation: (Int) -> Void = { _ in }
+    ) throws -> CheckpointSnapshot {
+        let indexURL = URL(fileURLWithPath: locator)
+        let sessionDirectory = indexURL.deletingLastPathComponent().deletingLastPathComponent()
+        let workspaceURL = sessionDirectory.appendingPathComponent("workspace.yaml")
+        let workspaceContent = JSONLAdapterSupport.fileExists(workspaceURL.path)
+            ? try JSONLAdapterSupport.readString(locator: workspaceURL.path, limits: limits)
+            : ""
+        let indexContent = try JSONLAdapterSupport.readString(locator: locator, limits: limits)
+        let entries = checkpointEntries(content: indexContent)
+        return CheckpointSnapshot(
+            workspace: parseWorkspace(content: workspaceContent),
+            entries: entries,
+            messages: try entries.map { entry in
+                NormalizedMessage(
+                    role: .assistant,
+                    content: try checkpointMessageContent(
+                        entry,
+                        checkpointIndexURL: indexURL,
+                        limits: limits,
+                        beforeIdentityValidation: beforeBodyIdentityValidation
+                    ),
+                    timestamp: nil
+                )
+            }
+        )
+    }
+
+    private static func checkpointMessagesWithMetadata(
+        locator: String,
+        limits: ParserLimits,
+        options: StreamMessagesOptions,
+        beforeBodyIdentityValidation: (Int) -> Void
+    ) throws -> JSONLAdapterSupport.WindowedMessagesResult {
+        let indexURL = URL(fileURLWithPath: locator)
+        let indexContent = try JSONLAdapterSupport.readString(locator: locator, limits: limits)
+        let entries = checkpointEntries(content: indexContent)
+        var messages: [NormalizedMessage] = []
+        var parseFailure: ParserFailure?
+
+        for entry in entries.prefix(limits.maxMessages) {
+            do {
+                messages.append(NormalizedMessage(
+                    role: .assistant,
+                    content: try checkpointMessageContent(
+                        entry,
+                        checkpointIndexURL: indexURL,
+                        limits: limits,
+                        beforeIdentityValidation: beforeBodyIdentityValidation
+                    ),
+                    timestamp: nil
+                ))
+            } catch let failure as ParserFailure where failure == .fileModifiedDuringParse && !messages.isEmpty {
+                parseFailure = failure
+                break
+            }
+        }
+
+        return JSONLAdapterSupport.boundedWindowWithMetadata(
+            messages,
+            options: options,
+            maxMessages: limits.maxMessages,
+            hasMoreMessages: entries.count > messages.count && parseFailure == nil,
+            parseFailure: parseFailure
+        )
+    }
+
     private static func isCheckpointIndex(_ locator: String) -> Bool {
         let url = URL(fileURLWithPath: locator)
         return url.lastPathComponent == "index.md"
@@ -448,12 +666,12 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
     private static func checkpointMessages(
         locator: String,
         limits: ParserLimits
-    ) -> [NormalizedMessage] {
+    ) throws -> [NormalizedMessage] {
         let checkpointIndexURL = URL(fileURLWithPath: locator)
-        return checkpointEntries(checkpointIndexURL, limits: limits).map { entry in
+        return try checkpointEntries(checkpointIndexURL, limits: limits).map { entry in
             NormalizedMessage(
-                role: .system,
-                content: checkpointMessageContent(
+                role: .assistant,
+                content: try checkpointMessageContent(
                     entry,
                     checkpointIndexURL: checkpointIndexURL,
                     limits: limits
@@ -472,6 +690,10 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
             return []
         }
 
+        return checkpointEntries(content: content)
+    }
+
+    private static func checkpointEntries(content: String) -> [CheckpointEntry] {
         return content
             .split(separator: "\n", omittingEmptySubsequences: false)
             .compactMap { line -> CheckpointEntry? in
@@ -495,10 +717,16 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
     private static func checkpointMessageContent(
         _ entry: CheckpointEntry,
         checkpointIndexURL: URL,
-        limits: ParserLimits
-    ) -> String {
+        limits: ParserLimits,
+        beforeIdentityValidation: (Int) -> Void = { _ in }
+    ) throws -> String {
         let title = "Checkpoint \(entry.number): \(entry.title)"
-        guard let body = checkpointBody(entry, checkpointIndexURL: checkpointIndexURL, limits: limits) else {
+        guard let body = try checkpointBody(
+            entry,
+            checkpointIndexURL: checkpointIndexURL,
+            limits: limits,
+            beforeIdentityValidation: beforeIdentityValidation
+        ) else {
             return title
         }
         return "\(title)\n\n\(body)"
@@ -507,8 +735,9 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
     private static func checkpointBody(
         _ entry: CheckpointEntry,
         checkpointIndexURL: URL,
-        limits: ParserLimits
-    ) -> String? {
+        limits: ParserLimits,
+        beforeIdentityValidation: (Int) -> Void = { _ in }
+    ) throws -> String? {
         guard let fileName = entry.fileName,
               fileName == URL(fileURLWithPath: fileName).lastPathComponent,
               fileName.hasSuffix(".md")
@@ -518,7 +747,17 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
         let bodyURL = checkpointIndexURL
             .deletingLastPathComponent()
             .appendingPathComponent(fileName)
-        guard let content = try? JSONLAdapterSupport.readString(locator: bodyURL.path, limits: limits) else {
+        let content: String
+        do {
+            content = try JSONLAdapterSupport.readString(
+                locator: bodyURL.path,
+                limits: limits,
+                beforeIdentityValidation: { beforeIdentityValidation(entry.number) }
+            )
+        } catch let failure as ParserFailure {
+            if failure == .fileModifiedDuringParse { throw failure }
+            return nil
+        } catch {
             return nil
         }
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -528,11 +767,29 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
         return String(trimmed.prefix(maxCheckpointBodyLength))
     }
 
-    private static func readWorkspace(_ url: URL, limits: ParserLimits) -> [String: String] {
-        guard let content = try? JSONLAdapterSupport.readString(locator: url.path, limits: limits) else {
+    private static func readWorkspace(
+        _ url: URL,
+        limits: ParserLimits,
+        beforeIdentityValidation: () -> Void = {}
+    ) throws -> [String: String] {
+        let content: String
+        do {
+            content = try JSONLAdapterSupport.readString(
+                locator: url.path,
+                limits: limits,
+                beforeIdentityValidation: beforeIdentityValidation
+            )
+        } catch let failure as ParserFailure {
+            if failure == .fileModifiedDuringParse { throw failure }
+            return [:]
+        } catch {
             return [:]
         }
 
+        return parseWorkspace(content: content)
+    }
+
+    private static func parseWorkspace(content: String) -> [String: String] {
         var result: [String: String] = [:]
         for line in content.split(separator: "\n", omittingEmptySubsequences: false) {
             guard let separatorIndex = line.firstIndex(of: ":") else { continue }

@@ -3,14 +3,16 @@ import SwiftUI
 
 struct ProjectsView: View {
     @Environment(DatabaseManager.self) var db
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
     @Environment(EngramServiceStatusStore.self) var serviceStatusStore
+    @Environment(\.engramFixedDate) var fixedDate
     // Coalesce background index-tick reloads so indexing churn doesn't refetch
     // the project list on every count bump (#3).
     @State private var lastFilterKey: [AnyHashable]? = nil
     @State private var projectGroups: [DatabaseManager.ProjectGroup] = []
     @State private var selectedProject: DatabaseManager.ProjectGroup? = nil
     @State private var isLoading = true
+    @State private var loadGeneration = 0
     @State private var renameTarget: String?
     @State private var archiveTarget: String?
     @State private var aliasTarget: String?
@@ -29,7 +31,8 @@ struct ProjectsView: View {
     @State private var loadError: String? = nil
 
     private var activeCount: Int {
-        let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
+        let now = fixedDate ?? Date()
+        let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: now) ?? now
         return projectGroups.filter { group in
             guard let date = EngramTimestampParser.date(from: group.lastActive) else { return false }
             return date > weekAgo
@@ -45,7 +48,7 @@ struct ProjectsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 if let loadError {
-                    AlertBanner(message: "Failed to load projects: \(loadError)")
+                    AlertBanner(message: "Failed to load projects: \(loadError)", action: ("Retry", { Task { await loadData() } }))
                 }
                 HStack(spacing: 12) {
                     KPICard(value: "\(projectGroups.count)", label: "Total Projects")
@@ -351,16 +354,34 @@ struct ProjectsView: View {
     }
 
     private func loadData() async {
+        loadGeneration += 1
+        let generation = loadGeneration
         isLoading = true
-        defer { isLoading = false }
+        defer {
+            if generation == loadGeneration { isLoading = false }
+        }
         // UI-C1/C2: `listSessionsByProject()` fetches limit*10 rows + groups; run off-main.
         let db = self.db
         do {
-            projectGroups = try await Task.detached { try db.listSessionsByProject() }.value
+            let loaded = try await Task.detached {
+                // docs/invariants.md #3: Projects is a default browse surface.
+                try db.listSessionsByProject(humanDriven: true)
+            }.value
+            guard BrowseReloadCoalescer.shouldApplyLoad(
+                resultGeneration: generation,
+                currentGeneration: loadGeneration,
+                isCancelled: Task.isCancelled
+            ) else { return }
+            projectGroups = loaded
             loadError = nil
         } catch {
+            guard BrowseReloadCoalescer.shouldApplyLoad(
+                resultGeneration: generation,
+                currentGeneration: loadGeneration,
+                isCancelled: Task.isCancelled
+            ) else { return }
             EngramLogger.error("ProjectsView load failed", module: .ui, error: error)
-            loadError = error.localizedDescription
+            loadError = ServiceErrorPresenter.displayMessage(for: error)
         }
         guard nativeProjectMigrationCommandsEnabled else {
             hasRecentMigrations = false
@@ -374,8 +395,18 @@ struct ProjectsView: View {
             let response = try await serviceClient.projectMigrations(
                 EngramServiceProjectMigrationsRequest(state: "committed", limit: 1)
             )
+            guard BrowseReloadCoalescer.shouldApplyLoad(
+                resultGeneration: generation,
+                currentGeneration: loadGeneration,
+                isCancelled: Task.isCancelled
+            ) else { return }
             hasRecentMigrations = !response.migrations.isEmpty
         } catch {
+            guard BrowseReloadCoalescer.shouldApplyLoad(
+                resultGeneration: generation,
+                currentGeneration: loadGeneration,
+                isCancelled: Task.isCancelled
+            ) else { return }
             EngramLogger.error("ProjectsView migration list failed", module: .ui, error: error)
             hasRecentMigrations = nil
         }

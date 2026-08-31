@@ -128,7 +128,7 @@ func parseBatchMoveOutcome(_ value: EngramServiceJSONValue) -> BatchMoveOutcome 
 
 struct BatchMoveSheet: View {
     let projects: [String]
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
     @Environment(\.dismiss) var dismiss
 
     @State private var rows: [BatchMoveRow] = []
@@ -141,6 +141,20 @@ struct BatchMoveSheet: View {
     @State private var isReconnecting = false
     /// Dry-run mode that minted the current unresolved operationId (Preview vs Commit).
     @State private var unresolvedRequestIsDryRun: Bool?
+    /// Mode of the last failed run so the error banner can offer a one-tap Retry
+    /// without the user pressing Preview/Move again.
+    @State private var failedDryRun: Bool?
+
+    /// Mutation launch transition (merge-gate fix): flips idle → running
+    /// synchronously at the button entry, before any Task exists, so a
+    /// double-click's second closure reads the already-set flag and is
+    /// dropped. Released by the defer in `run` on success AND failure, so
+    /// the error banner's Retry can re-enter.
+    static func beginMutation(isExecuting: inout Bool) -> Bool {
+        guard !isExecuting else { return false }
+        isExecuting = true
+        return true
+    }
 
     /// Rows that actually have a destination to move (recorded cwd present).
     private var movableOperations: [(src: String, dst: String)] {
@@ -199,7 +213,20 @@ struct BatchMoveSheet: View {
                     outcomeBox(outcome)
                 }
                 if let errorMessage {
-                    AlertBanner(message: errorMessage)
+                    AlertBanner(
+                        message: errorMessage,
+                        action: failedDryRun.map { dryRun in
+                            ("Retry", {
+                                guard Self.beginMutation(isExecuting: &isExecuting) else { return }
+                                activeTask = Task { await self.run(dryRun: dryRun) }
+                            })
+                        }
+                    )
+                    // Merge-gate fix 3: visibly disable the banner's Retry while
+                    // a mutation runs — the beginMutation guard alone would
+                    // silently drop the click. Outside AlertBanner's API.
+                    .accessibilityIdentifier("batchMove_errorBanner")
+                    .disabled(isExecuting)
                 }
             }
 
@@ -222,12 +249,14 @@ struct BatchMoveSheet: View {
                 }
                 .keyboardShortcut(.cancelAction)
                 Button("Preview") {
+                    guard Self.beginMutation(isExecuting: &isExecuting) else { return }
                     activeTask = Task { await run(dryRun: true) }
                 }
                 .disabled(isExecuting || movableOperations.isEmpty || longOpSession.blocksDuplicateSubmit)
                 if longOpSession.blocksDuplicateSubmit && !isExecuting {
                     Button("Resume / Check Status") {
                         // Re-issue original dry-run identity (Preview stays Preview).
+                        guard Self.beginMutation(isExecuting: &isExecuting) else { return }
                         let resumeDryRun = unresolvedRequestIsDryRun ?? false
                         activeTask = Task { await run(dryRun: resumeDryRun) }
                     }
@@ -235,6 +264,7 @@ struct BatchMoveSheet: View {
                     .buttonStyle(.borderedProminent)
                 } else {
                     Button("Move") {
+                        guard Self.beginMutation(isExecuting: &isExecuting) else { return }
                         activeTask = Task { await run(dryRun: false) }
                     }
                     .keyboardShortcut(.defaultAction)
@@ -269,7 +299,7 @@ struct BatchMoveSheet: View {
             if row.wrappedValue.cwd == nil {
                 Label("no recorded path — skipped", systemImage: "questionmark.folder")
                     .font(.caption2)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Theme.orange)
             } else {
                 TextField("/absolute/path/to/new/location", text: row.newPath)
                     .textFieldStyle(.roundedBorder)
@@ -301,7 +331,7 @@ struct BatchMoveSheet: View {
             ForEach(Array(outcome.failures.enumerated()), id: \.offset) { _, failure in
                 Text("• \(failure.src): \(failure.error)")
                     .font(.caption2)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Theme.red)
                     .lineLimit(2)
             }
         }
@@ -329,6 +359,7 @@ struct BatchMoveSheet: View {
 
     private func run(dryRun: Bool) async {
         errorMessage = nil
+        failedDryRun = nil
         outcome = nil
         isReconnecting = false
         isExecuting = true
@@ -380,6 +411,7 @@ struct BatchMoveSheet: View {
         case .success(let result):
             // Terminal success: clear identity so Commit after Preview mints a new id.
             unresolvedRequestIsDryRun = nil
+            failedDryRun = nil
             let parsed = parseBatchMoveOutcome(result)
             outcome = parsed
             if parsed.cancelUnsafe {
@@ -397,6 +429,8 @@ struct BatchMoveSheet: View {
             } else {
                 unresolvedRequestIsDryRun = nil
             }
+            // Retry in the banner re-runs the resolved mode the failure came from.
+            failedDryRun = effectiveDryRun
             if projectMoveIsCancelCompensationFailure(error) {
                 errorMessage = projectMoveCancelCompensationFailedMessage(
                     projectMoveErrorMessage(error)

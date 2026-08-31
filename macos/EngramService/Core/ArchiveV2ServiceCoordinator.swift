@@ -569,6 +569,10 @@ actor ArchiveV2ServiceCoordinator {
         self.drainer = drainer
     }
 
+    var captureEnabled: Bool {
+        localCaptureReady
+    }
+
     func requestFullCaptureSweep() async {
         guard localCaptureReady else { return }
         fullCapturePending = true
@@ -1322,7 +1326,10 @@ actor ArchiveV2ServiceCoordinator {
         await acquirePipeline(indexPriority: true)
         defer { releasePipeline() }
 
-        var indexPlan = ArchiveV2ServiceIndexPlan.captured([:])
+        // A failed capture has no trustworthy allowlist. Index unrestricted so
+        // parser failures can be retried by the normal source adapters instead
+        // of silently indexing an empty set (docs/invariants.md #5).
+        var indexPlan = ArchiveV2ServiceIndexPlan.unrestricted
         do {
             let summary = try await operations.capture(adapters, batchSize, cursorScope)
             unsupportedLocatorCount = max(summary.unsupported, 0)

@@ -53,7 +53,7 @@ struct TodayHandledFollowUps {
     private let defaults: UserDefaults
     private(set) var handledIds: Set<String>
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults) {
         self.defaults = defaults
         if let data = defaults.data(forKey: Self.storageKey),
            let ids = try? JSONDecoder().decode([String].self, from: data) {
@@ -156,11 +156,14 @@ enum TodayProjectWarning {
     private static func repoMatches(_ repo: GitRepo, group: DatabaseManager.ProjectGroup) -> Bool {
         let project = group.project
         let name = project.split(separator: "/").last.map(String.init) ?? project
-        if repo.path == project || repo.name == name {
+        let repoPath = FileSystemPathIdentity.realpathPath(repo.path)
+        let projectPath = FileSystemPathIdentity.realpathPath(project)
+        if repoPath == projectPath || repo.name == name {
             return true
         }
         return group.sessions.contains { session in
-            session.cwd == repo.path || session.cwd.hasPrefix(repo.path + "/")
+            let cwd = FileSystemPathIdentity.realpathPath(session.cwd)
+            return cwd == repoPath || cwd.hasPrefix(repoPath + "/")
         }
     }
 }

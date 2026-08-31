@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,7 +25,7 @@ describe('CursorAdapter', () => {
     expect(files[0]).toContain('abc-123');
   });
 
-  it('parseSessionInfo returns session metadata', async () => {
+  it('parseSessionInfo keeps first user text as summary only (repro)', async () => {
     const files: string[] = [];
     for await (const f of adapter.listSessionFiles()) files.push(f);
     const info = await adapter.parseSessionInfo(files[0]);
@@ -33,6 +33,187 @@ describe('CursorAdapter', () => {
     expect(info?.id).toBe('abc-123');
     expect(info?.source).toBe('cursor');
     expect(info?.summary).toBe('Fix the login bug');
+    expect(info?.displayTitle).toBeUndefined();
+  });
+
+  it('unwraps nested Cursor conversation summaries (repro)', async () => {
+    const tmpDir = join(tmpdir(), `engram-cursor-summary-${Date.now()}`);
+    mkdirSync(tmpDir, { recursive: true });
+    const dbPath = join(tmpDir, 'state.vscdb');
+    const db = new BetterSqlite3(dbPath);
+    db.exec('CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)');
+    db.prepare('INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)').run(
+      'composerData:nested',
+      JSON.stringify({
+        composerId: 'nested',
+        createdAt: 1_700_000_000_000,
+        lastUpdatedAt: 1_700_000_000_000,
+        latestConversationSummary: {
+          summary: { summary: 'Nested Cursor title' },
+        },
+        conversation: [{ type: 1, text: 'question' }],
+      }),
+    );
+    db.close();
+    try {
+      const info = await new CursorAdapter(dbPath).parseSessionInfo(
+        `${dbPath}?composer=nested`,
+      );
+      expect(info?.summary).toBe('Nested Cursor title');
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses global migrated headers for unique cwd and official title (repro)', async () => {
+    const tmpDir = join(tmpdir(), `engram-cursor-migrated-${Date.now()}`);
+    const globalStorage = join(tmpDir, 'globalStorage');
+    const workspaceStorage = join(tmpDir, 'workspaceStorage');
+    const workspaceName = 'migrated-workspace';
+    const dbPath = join(globalStorage, 'state.vscdb');
+    mkdirSync(globalStorage, { recursive: true });
+    mkdirSync(workspaceStorage, { recursive: true });
+    const db = new BetterSqlite3(dbPath);
+    db.exec(
+      'CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT); CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)',
+    );
+    db.prepare('INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)').run(
+      'composerData:migrated',
+      JSON.stringify({
+        composerId: 'migrated',
+        name: '  Official migrated Cursor title  ',
+        createdAt: 1_700_000_000_000,
+        lastUpdatedAt: 1_700_000_000_000,
+        latestConversationSummary: {
+          summary: { summary: 'Nested migrated digest' },
+        },
+        conversation: [{ type: 1, text: 'question' }],
+      }),
+    );
+    db.prepare('INSERT INTO ItemTable (key, value) VALUES (?, ?)').run(
+      'composer.composerHeaders',
+      JSON.stringify({
+        allComposers: [
+          {
+            composerId: 'migrated',
+            workspaceIdentifier: { id: workspaceName },
+          },
+        ],
+      }),
+    );
+    db.close();
+    const workspace = join(workspaceStorage, workspaceName);
+    mkdirSync(workspace, { recursive: true });
+    const workspaceDb = new BetterSqlite3(join(workspace, 'state.vscdb'));
+    workspaceDb.exec(
+      'CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)',
+    );
+    workspaceDb.close();
+    await import('node:fs/promises').then(({ writeFile }) =>
+      writeFile(
+        join(workspace, 'workspace.json'),
+        JSON.stringify({ folder: 'file:///Users/test/migrated-project' }),
+      ),
+    );
+    try {
+      const info = await new CursorAdapter(dbPath).parseSessionInfo(
+        `${dbPath}?composer=migrated`,
+      );
+      expect(info?.cwd).toBe('/Users/test/migrated-project');
+      expect(info?.project).toBe('migrated-project');
+      expect(info?.displayTitle).toBe('Official migrated Cursor title');
+      expect(info?.summary).toBe('Nested migrated digest');
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('caps official titles by characters without splitting emoji (repro)', async () => {
+    const tmpDir = join(tmpdir(), `engram-cursor-title-cap-${Date.now()}`);
+    mkdirSync(tmpDir, { recursive: true });
+    const dbPath = join(tmpDir, 'state.vscdb');
+    const expectedTitle = `${'a'.repeat(119)}👩🏽‍💻`;
+    const db = new BetterSqlite3(dbPath);
+    db.exec('CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)');
+    db.prepare('INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)').run(
+      'composerData:emoji-title',
+      JSON.stringify({
+        composerId: 'emoji-title',
+        name: `${expectedTitle} tail`,
+        createdAt: 1_700_000_000_000,
+        lastUpdatedAt: 1_700_000_000_000,
+        conversation: [{ type: 1, text: 'question' }],
+      }),
+    );
+    db.close();
+    try {
+      const info = await new CursorAdapter(dbPath).parseSessionInfo(
+        `${dbPath}?composer=emoji-title`,
+      );
+      expect(info?.displayTitle).toBe(expectedTitle);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed for two global composerHeader workspace candidates (repro)', async () => {
+    const tmpDir = join(
+      tmpdir(),
+      `engram-cursor-header-conflict-${Date.now()}`,
+    );
+    const globalStorage = join(tmpDir, 'globalStorage');
+    const workspaceStorage = join(tmpDir, 'workspaceStorage');
+    const dbPath = join(globalStorage, 'state.vscdb');
+    mkdirSync(globalStorage, { recursive: true });
+    mkdirSync(workspaceStorage, { recursive: true });
+    const db = new BetterSqlite3(dbPath);
+    db.exec(
+      'CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT); CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)',
+    );
+    db.prepare('INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)').run(
+      'composerData:conflict',
+      JSON.stringify({
+        composerId: 'conflict',
+        createdAt: 1_700_000_000_000,
+        lastUpdatedAt: 1_700_000_000_000,
+        conversation: [{ type: 1, text: 'question' }],
+      }),
+    );
+    db.prepare('INSERT INTO ItemTable (key, value) VALUES (?, ?)').run(
+      'composer.composerHeaders',
+      JSON.stringify({
+        allComposers: [
+          { composerId: 'conflict', workspaceIdentifier: { id: 'first' } },
+          { composerId: 'conflict', workspaceIdentifier: { id: 'second' } },
+        ],
+      }),
+    );
+    db.close();
+    for (const [name, folder] of [
+      ['first', '/Users/test/first'],
+      ['second', '/Users/test/second'],
+    ]) {
+      const workspace = join(workspaceStorage, name);
+      mkdirSync(workspace, { recursive: true });
+      writeFileSync(
+        join(workspace, 'workspace.json'),
+        JSON.stringify({ folder: `file://${folder}` }),
+      );
+      const workspaceDb = new BetterSqlite3(join(workspace, 'state.vscdb'));
+      workspaceDb.exec(
+        'CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)',
+      );
+      workspaceDb.close();
+    }
+    try {
+      const info = await new CursorAdapter(dbPath).parseSessionInfo(
+        `${dbPath}?composer=conflict`,
+      );
+      expect(info?.cwd).toBe('');
+      expect(info?.project).toBeUndefined();
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it('streamMessages yields user then assistant', async () => {
@@ -51,7 +232,7 @@ describe('CursorAdapter', () => {
     });
   });
 
-  describe('cwd inference from composer context', () => {
+  describe('cwd ownership ignores composer context', () => {
     const tmpDir = join(tmpdir(), `engram-cursor-cwd-${Date.now()}`);
     const dbPath = join(tmpDir, 'state.vscdb');
 
@@ -96,16 +277,16 @@ describe('CursorAdapter', () => {
 
     afterAll(() => rmSync(tmpDir, { recursive: true, force: true }));
 
-    it('uses folderSelections[0] when present', async () => {
+    it('does not use folderSelections without a unique workspace owner', async () => {
       const a = new CursorAdapter(dbPath);
       const info = await a.parseSessionInfo(`${dbPath}?composer=with-folder`);
-      expect(info?.cwd).toBe('/Users/me/proj-root');
+      expect(info?.cwd).toBe('');
     });
 
-    it('falls back to dirname of fileSelections[0]', async () => {
+    it('does not use fileSelections without a unique workspace owner', async () => {
       const a = new CursorAdapter(dbPath);
       const info = await a.parseSessionInfo(`${dbPath}?composer=with-file`);
-      expect(info?.cwd).toBe('/Users/me/proj-root/src');
+      expect(info?.cwd).toBe('');
     });
 
     it('returns empty string when no context signal exists', async () => {
@@ -115,7 +296,7 @@ describe('CursorAdapter', () => {
     });
   });
 
-  describe('cwd inference edge cases', () => {
+  describe('cwd ownership context edge cases', () => {
     const tmpDir = join(tmpdir(), `engram-cursor-cwd-edges-${Date.now()}`);
     const dbPath = join(tmpDir, 'state.vscdb');
 
@@ -156,21 +337,20 @@ describe('CursorAdapter', () => {
 
     afterAll(() => rmSync(tmpDir, { recursive: true, force: true }));
 
-    it('falls through to fileSelections when first folderSelection has no fsPath', async () => {
+    it('does not infer cwd from a fallback fileSelection', async () => {
       const a = new CursorAdapter(dbPath);
       const info = await a.parseSessionInfo(`${dbPath}?composer=folder-empty`);
-      expect(info?.cwd).toBe('/Users/me/proj-root/src');
+      expect(info?.cwd).toBe('');
     });
 
-    it('passes relative fsPath through dirname() without resolving', async () => {
+    it('does not pass through a relative fileSelection', async () => {
       const a = new CursorAdapter(dbPath);
       const info = await a.parseSessionInfo(`${dbPath}?composer=rel-file`);
-      // dirname('src/index.ts') === 'src' — best-effort heuristic, not abs
-      expect(info?.cwd).toBe('src');
+      expect(info?.cwd).toBe('');
     });
   });
 
-  describe('cwd inference: more edge cases', () => {
+  describe('cwd ownership ignores remaining context edge cases', () => {
     const tmpDir = join(tmpdir(), `engram-cursor-cwd-edge2-${Date.now()}`);
     const dbPath = join(tmpDir, 'state.vscdb');
 
@@ -218,17 +398,16 @@ describe('CursorAdapter', () => {
 
     afterAll(() => rmSync(tmpDir, { recursive: true, force: true }));
 
-    it('does not scan past folderSelections[0] — falls through to fileSelections', async () => {
+    it('does not scan context selections for workspace ownership', async () => {
       const a = new CursorAdapter(dbPath);
       const info = await a.parseSessionInfo(`${dbPath}?composer=second-folder`);
-      // [1].fsPath = /Users/me/p2 is ignored; falls through to file dirname
-      expect(info?.cwd).toBe('/Users/me/file-fb');
+      expect(info?.cwd).toBe('');
     });
 
-    it('returns symlink path verbatim without realpath resolution', async () => {
+    it('does not accept a symlink-like context folder as ownership', async () => {
       const a = new CursorAdapter(dbPath);
       const info = await a.parseSessionInfo(`${dbPath}?composer=symlink`);
-      expect(info?.cwd).toBe('/Users/me/symlink-to-real-proj');
+      expect(info?.cwd).toBe('');
     });
   });
 });

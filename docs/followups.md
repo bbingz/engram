@@ -3,6 +3,60 @@
 Follow-ups are verification gaps, low-priority refactors, or items that need
 real data, UI exercise, or product confirmation before becoming TODOs.
 
+## HQ live ingest residuals (2026-08-24)
+
+The 2026-08-30 T0–T9 repair and the 2026-08-31 cadence/delta follow-ups are on
+disk with recorded RED→GREEN evidence. Local behavior now covers the initial
+complete walk, ready-time Mac pull, configured idle cadence, actual-delta
+trailing debounce, multi-page steady drains, post-publish re-probing, and
+complete-only soft-retract acknowledgement. The remaining rows are operational
+or explicitly parked residuals; they are **not** a public-release or v1.0.6
+declaration. Local gates do not substitute for the real cross-machine SLA or
+the owner-authorized hardening checks below.
+
+| ID | Severity | Current home | Why parked |
+|----|----------|--------------|------------|
+| `live-ingest-sla-1` | product | HQ `EngramService` launchd + daily-Mac pull | **Local scheduler/correctness blockers closed 2026-08-31; real SLA still open.** The single publish consumer uses the configured 300–900 second idle timer, gives each changed actual-delta token a trailing 60-second debounce, drains a >batch wave without waiting for the next idle interval, signals immediately after relevant FTS drains, and re-probes after `markPublished`. The exact ordered ready `(id, syncVersion, snapshotHash)` plus retract-ID token coalesces identical/no-op probes while preserving real mutations during debounce or network publish. Complete-head finalization acknowledges only the authoritative retained membership, and failures preserve delta. Local deterministic tests bound the designed phase to 960 seconds, but still verify a unique HQ `normal`/`premium` keyword through post-reboot publish and Mac App/MCP search on the two real machines before claiming the accepted 16-minute SLA. |
+| `live-ingest-arm-1` | medium | `macos/EngramService/Core/EngramServiceRunner.swift` (`makeLiveIfEnabled` at startup) | Settings can write `liveIngestEnabled=true` while the running service constructed no live coordinator. Operator must restart the service after first enable; the UI now says so explicitly. This does not delay ready-time Mac pull once a coordinator exists, and HQ initial publish remains initial-scan gated. |
+| `live-ingest-settings-repro-1` | closed locally | `macos/Engram/Views/SettingsView.swift` (`LiveIngestSettingsSection`); `macos/Shared/Service/MockEngramServiceClient.swift` | **Closed locally 2026-08-31 via the UI integration, not the T0–T9 pass.** Restart-required and cumulative-occupancy copy is present, a failed toggle write restores persisted state and surfaces the error, and `liveIngestResetShrinkGuardResult` is injectable. Covered by `testLiveIngestResetShrinkGuardInjectedFailure_repro`, `testLiveIngestToggleFailedWriteRestoresPersistedStateAndShowsError_repro`, and `testLiveIngestToggleSuccessfulWriteKeepsRequestedStateAndRestartHint_repro`; SettingsHonestyTests passed 14/14. |
+| `live-publish-hard-delete-retract-1` | low | `macos/EngramCoreWrite/RemoteSync/OffloadRepo.swift`; sessions foreign keys | A hard delete of a local session can erase its peer/out ledger row through `ON DELETE CASCADE`, leaving no tombstone from which to publish a retract. Current production hard deletes are limited to startup path deduplication (followed by an unconditional initial complete walk) and HQ-origin import cleanup, so no periodic local-origin path is known; add a tombstone/authority-safe design only if such a path is introduced. |
+| `live-manifest-gc-retry-1` | low | `macos/EngramService/Core/RemoteSyncCoordinator.swift` complete finalizer | The finalizer transaction forgets a stale manifest key before the backend `DELETE`. If that delete fails, there is no durable retry record. This can leak an orphaned manifest object but does not change the authoritative head/current-complete state; add durable GC retry only if storage hygiene warrants it. |
+| `live-ingest-hq-launchd-1` | ops | HQ host only | **Done 2026-08-25, revised 2026-08-29.** LaunchAgent `com.engram.service` is login-gated (FileVault on, no auto-login, no passwordless sudo for a LaunchDaemon). After the 2026-08-29 reboot, hub+service stayed down from 02:45–08:22 CST until console login. Do not treat this row as “survives reboot”. |
+| `live-ingest-mac-token-1` | ops | daily Mac ad-hoc `EngramService` | The dirty-tree ad-hoc helper cannot read the existing `com.engram.remote-offload` Keychain item. Live/offload backends stay nil unless `ENGRAM_REMOTE_OFFLOAD_TOKEN` is in the helper env (`~/.engram/run/remote-offload.env`). Spotlight/`open -a` is not enough. |
+| `live-ingest-mac-helper-1` | ops | daily Mac LaunchAgent `com.engram.service` | App-launched helper dies with the menu-bar App (`applicationWillTerminate` → `stopIfOwned`, plus TAL on the accessory app). HQ published gen 4 (3825 entries, 17:26 CST) while Mac imported 0 because the helper was down. Installed a helper-only LaunchAgent at 18:02 CST so pull no longer depends on the App staying open. Current runner behavior permits the first pull once the service is ready even while the initial scan remains in progress. |
+| `live-ingest-first-publish-1` | ops | HQ initial scan | First `publishLivePeer` is gated on `runAfterInitialScan`. On HQ that includes Archive v2 initial capture of a ~51k-session index. Do not treat “armed” as “head blob exists”. |
+| `live-ingest-hq-boot-1` | ops | HQ LaunchDaemons + daily-Mac SSH watchdog | **Installed 2026-08-29.** System jobs `com.engram.remote-server.boot` and `com.engram.service.boot` are in `/Library/LaunchDaemons` (`UserName=bing`, `RunAtLoad`). They exited 0 on first load because gui helpers already own the port/lock. Daily-Mac `com.engram.hq-live-ensure` remains as a second path. Next reboot without console login is not yet proven. FileVault unlock is still required. The repo-only T9 hardening below does not change this installed-state evidence. |
+| `live-ingest-hq-hardening-deploy-1` | ops/owner | `scripts/hq-live/`; remote-server package | T9 added an exec-lifetime advisory lock, `/v1/health` duplicate-listener preflight, fixed-fd/`O_NOFOLLOW` atomic plist install, and degraded sentinel/Mac marker with 43/43 focused checks. Nothing was deployed or restarted. In an owner-authorized window, deploy `ensure-hq-live` with `flock-exec` as a pair, deploy the verified remote wrapper through the package path, keep `install-hq-boot-daemons.sh` with `install-launchd-plist`, then validate duplicate-start exit 0, sentinel set/clear, watchdog detection, rollback, and the next no-console-login reboot. |
+
+## Live-session runtime residual (2026-08-31)
+
+| ID | Severity | Current home | Why parked |
+|----|----------|--------------|------------|
+| `live-session-scan-timeout-1` | high | `macos/EngramService/Core/EngramServiceReadProvider.swift` (`scanLiveSessions` / `enumerateClaudeLiveFiles`) | **Source gate closed locally 2026-08-31; deployed-runtime verification remains open.** The scanner now canonicalizes each configured root once, limits Claude to direct project/direct regular-file enumeration with symlink rejection, preserves recursive Codex discovery, and propagates cancellation across cache hits, traversal, around sort, capped metadata parsing, and cache publication. Deterministic RED proved that finalization cancellation previously returned and cached a result; new regressions passed 5/5, focused invariants 14/14, the full IPC class 259/259, and two independent final reviews returned PASS/APPROVED. The installed v1.0.5 runtime still lacks this change: do not close the operational residual until an authorized build/install/restart verifies bounded `liveSessions` and menu-bar recovery against the real 95,280-file corpus. |
+
+## Project-move lock residual (2026-08-30)
+
+| ID | Severity | Current home | Why parked |
+|----|----------|--------------|------------|
+| `project-move-lock-break-claim-recovery-1` | low | `src/core/project-move/lock.ts` | The inode-linked stale-break claim prevents stale acquisition or concurrent owner release from unlinking a replacement live lock. Ten 48-process stale-break rounds each had exactly one winner, and twelve 96-way release rounds retained the live replacement. If the claim owner itself is killed while the auxiliary claim exists, later acquisition/release deliberately fails closed rather than auto-removing a possibly replaced claim. Add crash recovery only with an ownership-safe conditional-delete protocol; manual inspection/removal remains the safe recovery. |
+
+## Round-12 parked residuals (2026-08-24)
+
+The final Round-12 fix pass stopped after the thirteen merge-blocking packages
+and a bounded set of adjacent high-severity fixes. The rows below remain open
+and are **not claimed fixed**. They are parked for a later owner-selected pass;
+this list is not a public-release readiness declaration.
+
+| IDs | Severity | Current home | Why parked |
+|-----|----------|--------------|------------|
+| `secrets-nofollow-1/-2/-3`, `secrets-nofollow-regress-1/-2/-3`, `apikey-empty-2`, `invariant-6-prod-2` | high/medium | `macos/Engram/Core/EngramServiceLauncher.swift:82-155`; `macos/Engram/Views/Settings/AISettingsSection.swift:768-940` | Runtime-secret directory ownership, failed mailbox publication, settings result propagation, and XCTest passwd-home isolation form one security-sensitive cluster. It was not changed after the must-fix stop condition and needs its own hermetic RED/GREEN pass. |
+| `session-detail-id-1`, `session-detail-id-regress-1`, `session-detail-id-3` | medium | `macos/Engram/Views/PopoverView.swift:239`; `macos/Engram/Views/Pages/SourcePulseView.swift:434`; `macos/Engram/Views/SessionDetailView.swift:26,880-952,1656-1705` | Live-navigation completion, favorite-read generation, and transcript-apply identity fencing remain a coupled UI concurrency follow-up. |
+| `mcp-hermetic-1` | medium | `macos/EngramUITests/Helpers/TestLaunchConfig.swift:64-95` | The test launcher still permits execution after an early setup failure; changing the suite-wide failure policy needs a dedicated foreground UI-test pass. |
+| `live-export-terminal-1`, `live-export-terminal-2` | low/medium | `macos/Engram/Views/Resume/TerminalLauncher.swift:225` | Never-launched Warp cleanup timing and cancellation propagation for Terminal/iTerm/Ghostty remain deferred terminal-integration behavior. |
+| `workitem-localtime-1` | medium | `macos/Shared/EngramCore/Indexing/ImplementationDigestExtractor.swift:351-357` | The cached local-day formatter still uses a process-lifetime timezone instead of `autoupdatingCurrent`; a timezone-change regression is still required. |
+| `xcodeproj-untracked-1`, `xcodeproj-untracked-2` | medium | `scripts/check-xcodeproj-drift.sh:18-56` | The drift gate still needs repository-wide untracked-file detection and an exact XcodeGen version check without mutating the shared dirty project. |
+| `r11-dropped-2` | medium | `macos/EngramRemoteServer/Core/EngramRemoteServerApp.swift:189,773` | Generic request-body failures are still grouped with classified oversize failures; the 413/503 split and bounded GET behavior need remote-server coverage. |
+
 ## OPS-ALIAS-001 — Prod path-shaped project_aliases cleanup (closed, 2026-07-21)
 
 Authorized post-#228 service touch rewrote production `project_aliases` from
@@ -633,12 +687,11 @@ deletion. The two residuals below were resolved on 2026-07-05 by Codex:
   `macos/Engram/Core/Database.swift` `keywordSearchSQL` (`:418`), `ctes.isEmpty`
   branch (`:445`). When `CJKText.ftsMatchTerms` yields `[]` (e.g. a 3-space
   query), the new CTE returns no rows; the old correlated-EXISTS query returned
-  the most recent non-hidden sessions. Fix: restore the empty-term browse-all
-  fallback (or short-circuit whitespace-only queries upstream).
-  **Resolution (2026-07-08, Codex):** the app read path now falls through to
-  the empty-term browse-all branch and preserves hidden/skip/lite exclusions;
-  coverage lives in
-  `DatabaseManagerTests.testWhitespaceOnlySearchBrowsesRecentVisibleSessions_repro`.
+  the most recent non-hidden sessions.
+  **Resolution corrected (2026-08-24, Codex):** the app now short-circuits
+  whitespace-only and fully omitted short-token queries to `[]`; it does not
+  turn them into browse-all. Coverage lives in
+  `DatabaseManagerTests.testWhitespaceOnlySearchReturnsEmptyInsteadOfBrowsing_repro`.
 - **`reconcileSkipTierIndexArtifacts` undercounts embeddings deletes.**
   `macos/EngramCoreWrite/Indexing/StartupBackfills.swift` (`:713`) discards the
   `session_embeddings` delete count, so the returned/logged `reconcile_skip_fts`

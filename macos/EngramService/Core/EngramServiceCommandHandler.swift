@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import GRDB
 import CryptoKit
@@ -756,6 +757,21 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 let payload = try decodePayload(EngramServiceRemoteProjectSyncRequest.self, from: request)
                 let result = try await Self.remotePullProject(payload, writerGate: writerGate)
                 return .success(requestId: request.requestId, result: try Self.encode(result))
+            case "liveIngestResetShrinkGuard":
+                let payload = try decodePayload(
+                    EngramServiceLiveIngestResetShrinkGuardRequest.self,
+                    from: request
+                )
+                try await RemoteSyncCoordinator.resetLiveIngestShrinkGuard(
+                    peer: payload.peer,
+                    gate: writerGate
+                )
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(
+                        EngramServiceLiveIngestResetShrinkGuardResponse(ok: true, peer: payload.peer)
+                    )
+                )
             default:
                 return .failure(
                     requestId: request.requestId,
@@ -786,6 +802,13 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     /// failures keep the conservative `"safe"` default so transient I/O can be
     /// retried.
     static func genericErrorEnvelope(_ error: Error) -> EngramServiceErrorEnvelope {
+        if error is CancellationError {
+            return EngramServiceErrorEnvelope(
+                name: "Cancelled",
+                message: "The command was cancelled",
+                retryPolicy: "never"
+            )
+        }
         if isSyntaxError(error) {
             return EngramServiceErrorEnvelope(
                 name: "QuerySyntaxError",
@@ -1154,8 +1177,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     private static func ensureSessionRelationsTable(_ db: GRDB.Database) throws {
         try db.execute(sql: """
             CREATE TABLE IF NOT EXISTS session_relations (
-                a_id TEXT NOT NULL,
-                b_id TEXT NOT NULL,
+                a_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                b_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 PRIMARY KEY (a_id, b_id)
             );
@@ -1518,15 +1541,33 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
 
     private static func hideEmptySessions(writer: EngramDatabaseWriter) throws -> EngramServiceHideEmptySessionsResponse {
         try writer.write { db in
-            let before = db.totalChangesCount
-            try db.execute(sql: """
+            try ensureSessionLocalStateTable(db)
+            let hiddenRows = try Row.fetchAll(db, sql: """
                 UPDATE sessions
                 SET hidden_at = datetime('now')
                 WHERE message_count = 0
                   AND size_bytes < 1024
                   AND hidden_at IS NULL
+                  -- docs/invariants.md #3: skip-tier rows are never hygiene candidates.
+                  AND \(SessionVisibilityFilter.nonSkipTierSQL)
+                RETURNING id, hidden_at
             """)
-            return EngramServiceHideEmptySessionsResponse(hiddenCount: db.totalChangesCount - before)
+            // Hygiene hides are local user state just like the explicit hide
+            // command. Mirror them so a later source disable/enable cannot
+            // silently make the empty rows visible again.
+            for row in hiddenRows {
+                let sessionId: String = row["id"]
+                let hiddenAt: String = row["hidden_at"]
+                try db.execute(
+                    sql: """
+                        INSERT INTO session_local_state (session_id, hidden_at)
+                        VALUES (?, ?)
+                        ON CONFLICT(session_id) DO UPDATE SET hidden_at = excluded.hidden_at
+                    """,
+                    arguments: [sessionId, hiddenAt]
+                )
+            }
+            return EngramServiceHideEmptySessionsResponse(hiddenCount: hiddenRows.count)
         }
     }
 
@@ -1679,17 +1720,23 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 let empty = try Int.fetchOne(db, sql: """
                     SELECT COUNT(*) FROM sessions
                     WHERE message_count = 0 AND size_bytes < 1024 AND hidden_at IS NULL
+                      -- docs/invariants.md #3: keep the hygiene count aligned with the action.
+                      AND \(SessionVisibilityFilter.nonSkipTierSQL)
                 """) ?? 0
                 let suggestions = try Int.fetchOne(db, sql: """
                     SELECT COUNT(*) FROM sessions
                     WHERE suggested_parent_id IS NOT NULL
                       AND parent_session_id IS NULL
                       AND hidden_at IS NULL
+                      -- docs/invariants.md #3: skip-tier rows are not actionable hygiene items.
+                      AND \(SessionVisibilityFilter.nonSkipTierSQL)
                 """) ?? 0
                 let orphans = try Int.fetchOne(db, sql: """
                     SELECT COUNT(*) FROM sessions
                     WHERE orphan_status IS NOT NULL AND orphan_status != ''
                       AND hidden_at IS NULL
+                      -- docs/invariants.md #3: skip-tier rows are not actionable hygiene items.
+                      AND \(SessionVisibilityFilter.nonSkipTierSQL)
                 """) ?? 0
                 return (empty, suggestions, orphans)
             }
@@ -1771,7 +1818,13 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 clauses = "id = ?"
                 arguments = [sessionId]
             } else {
-                clauses = "project = ? OR cwd = ?"
+                // docs/invariants.md #3: omitted-id handoff is a list surface;
+                // explicit by-id handoff above intentionally remains unfiltered.
+                clauses = """
+                    (project = ? OR cwd = ?)
+                    AND \(SessionVisibilityFilter.listVisibleSQL)
+                    AND \(SessionVisibilityFilter.topLevelSQL)
+                    """
                 arguments = [projectName, normalizedCwd]
             }
             return try Row.fetchAll(
@@ -1802,6 +1855,14 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         writerGate: ServiceWriterGate
     ) async throws -> ServiceWriterGateResult<EngramServiceGenerateSummaryResponse> {
         let context = try readAIContext(sessionId: request.sessionId, databasePath: writerGate.databasePath)
+        // docs/invariants.md #3: skip-tier artifacts are not user-visible work
+        // and must not gain durable summaries through an explicit command.
+        guard context.tier != "skip" else {
+            throw EngramServiceError.invalidRequest(message: "Cannot summarize a skip-tier session")
+        }
+        guard !context.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw EngramServiceError.invalidRequest(message: "Cannot summarize a session without transcript content")
+        }
         let settings = ServiceAISettings.read()
         let summary: String
         if let config = settings.summaryConfig {
@@ -1809,18 +1870,19 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         } else {
             summary = context.nativeSummary
         }
+        let persistedSummary = TranscriptRedactionPolicy.redactedSummary(summary)
         return try await writerGate.performWriteCommand(name: "generateSummary") { writer in
             try writer.write { db in
                 try db.execute(
                     sql: "UPDATE sessions SET summary = ?, summary_message_count = ? WHERE id = ?",
                     arguments: [
-                        summary,
+                        persistedSummary,
                         context.messageCount,
                         request.sessionId
                     ]
                 )
             }
-            return EngramServiceGenerateSummaryResponse(summary: summary)
+            return EngramServiceGenerateSummaryResponse(summary: persistedSummary)
         }
     }
 
@@ -1855,16 +1917,30 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             }
     ) async throws -> ServiceWriterGateResult<EngramServiceGenerateProjectWorkTitlesResponse> {
         let project = request.project
-        let items = try readProjectWorkItems(project: project, databasePath: writerGate.databasePath)
+        let displayedItems = try readProjectWorkItems(
+            project: project,
+            now: request.now ?? Date(),
+            databasePath: writerGate.databasePath
+        )
+        let hashItems = try readProjectWorkItems(
+            project: project,
+            now: request.now ?? Date(),
+            databasePath: writerGate.databasePath,
+            includeAllBeatsForDisplayedKeys: true
+        )
         let persisted = try readPersistedWorkItemTitles(project: project, databasePath: writerGate.databasePath)
 
         // Aggregate beats by work_key; a work_key can span multiple batch items,
         // but the title table is keyed by (project, work_key), so one title per key.
-        var beatsByWorkKey: [String: [SessionImplementationBeat]] = [:]
+        var displayedBeatsByWorkKey: [String: [SessionImplementationBeat]] = [:]
         var orderedWorkKeys: [String] = []
-        for item in items {
-            if beatsByWorkKey[item.workKey] == nil { orderedWorkKeys.append(item.workKey) }
-            beatsByWorkKey[item.workKey, default: []].append(contentsOf: item.beats)
+        for item in displayedItems {
+            if displayedBeatsByWorkKey[item.workKey] == nil { orderedWorkKeys.append(item.workKey) }
+            displayedBeatsByWorkKey[item.workKey, default: []].append(contentsOf: item.beats)
+        }
+        var hashBeatsByWorkKey: [String: [SessionImplementationBeat]] = [:]
+        for item in hashItems {
+            hashBeatsByWorkKey[item.workKey, default: []].append(contentsOf: item.beats)
         }
 
         struct WorkItemInput: Sendable {
@@ -1878,10 +1954,21 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         // one (missing or stale).
         var pending: [WorkItemInput] = []
         for workKey in orderedWorkKeys {
-            let beats = beatsByWorkKey[workKey] ?? []
-            let intent = beats.map(\.humanIntent).joined(separator: "\n")
-            let outcome = beats.map(\.assistantOutcome).joined(separator: "\n")
-            let hash = intentHash(intent: intent, outcome: outcome)
+            let promptBeats = (displayedBeatsByWorkKey[workKey] ?? []).sorted {
+                let lhsTimestamp = $0.actionTimestamp ?? $0.actionDate
+                let rhsTimestamp = $1.actionTimestamp ?? $1.actionDate
+                if lhsTimestamp != rhsTimestamp {
+                    return lhsTimestamp > rhsTimestamp
+                }
+                if $0.sessionId != $1.sessionId { return $0.sessionId > $1.sessionId }
+                return $0.beatIndex > $1.beatIndex
+            }
+            let intent = promptBeats.map(\.humanIntent).joined(separator: "\n")
+            let outcome = promptBeats.map(\.assistantOutcome).joined(separator: "\n")
+            let hashBeats = hashBeatsByWorkKey[workKey] ?? promptBeats
+            let hashIntent = hashBeats.map(\.humanIntent).joined(separator: "\n")
+            let hashOutcome = hashBeats.map(\.assistantOutcome).joined(separator: "\n")
+            let hash = intentHash(intent: hashIntent, outcome: hashOutcome)
             if persisted[workKey]?.intentHash == hash { continue }
             pending.append(WorkItemInput(workKey: workKey, intent: intent, outcome: outcome, intentHash: hash))
         }
@@ -2018,7 +2105,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             let room = normalizedOptionalText(request.room, maxLength: 200)
             let importance = try normalizedImportance(request.importance)
             let insightType = try normalizedInsightType(request.type)
-            let superseded = try findDuplicateInsight(content: content, wing: wing, room: room, db: db)
+            let superseded = try findDuplicateInsights(content: content, wing: wing, room: room, db: db)
 
             let id = UUID().uuidString
             let sourceSessionId = normalizedOptionalText(request.sourceSessionId, maxLength: 500)
@@ -2045,14 +2132,21 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 """,
                 arguments: StatementArguments(arguments)
             )
-            if let superseded {
+            for duplicate in superseded {
                 try db.execute(
                     sql: """
                     UPDATE insights
                     SET superseded_by = ?
-                    WHERE id = ? AND superseded_by IS NULL
+                    WHERE id = ?
+                      AND (
+                        superseded_by IS NULL
+                        OR NOT EXISTS (
+                          SELECT 1 FROM insights successor
+                          WHERE successor.id = insights.superseded_by
+                        )
+                      )
                     """,
-                    arguments: [id, superseded.id]
+                    arguments: [id, duplicate.id]
                 )
             }
             try db.execute(sql: "DELETE FROM insights_fts WHERE insight_id = ?", arguments: [id])
@@ -2068,8 +2162,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 room: room,
                 importance: importance,
                 type: insightType,
-                supersededId: superseded?.id,
-                warning: superseded == nil
+                supersededId: superseded.first?.id,
+                warning: superseded.isEmpty
                     ? "Saved without embedding; keyword search is available immediately"
                     : "Saved and superseded a matching active insight; keyword search is available immediately"
             )
@@ -2088,6 +2182,110 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             }
 
             try db.execute(sql: "DELETE FROM insights_fts WHERE insight_id = ?", arguments: [id])
+            let deleting = try Row.fetchOne(
+                db,
+                sql: "SELECT content, wing, room, superseded_by FROM insights WHERE id = ?",
+                arguments: [id]
+            )
+            let requestedSuccessor = deleting?["superseded_by"] as String?
+            let existingSuccessor: String? = if let requestedSuccessor {
+                try liveInsightTip(startingAt: requestedSuccessor, excluding: id, db: db)
+            } else {
+                nil
+            }
+            let inboundIDs = try String.fetchAll(
+                db,
+                sql: """
+                    SELECT id FROM insights
+                    WHERE superseded_by = ?
+                    ORDER BY created_at DESC, id DESC
+                """,
+                arguments: [id]
+            )
+            let liveDuplicate: String? = if existingSuccessor == nil, let deleting {
+                try findDuplicateInsights(
+                    content: deleting["content"] as String? ?? "",
+                    wing: deleting["wing"] as String?,
+                    room: deleting["room"] as String?,
+                    db: db
+                ).first(where: { $0.id != id && $0.isActive })?.id
+            } else {
+                nil
+            }
+            if let successor = existingSuccessor ?? liveDuplicate {
+                try db.execute(
+                    sql: "UPDATE insights SET superseded_by = ? WHERE superseded_by = ?",
+                    arguments: [successor, id]
+                )
+            } else if let replacement = inboundIDs.first {
+                try db.execute(
+                    sql: "UPDATE insights SET superseded_by = NULL WHERE id = ?",
+                    arguments: [replacement]
+                )
+                if inboundIDs.count > 1 {
+                    let others = Array(inboundIDs.dropFirst())
+                    let placeholders = Array(repeating: "?", count: others.count).joined(separator: ", ")
+                    try db.execute(
+                        sql: "UPDATE insights SET superseded_by = ? WHERE id IN (\(placeholders))",
+                        arguments: StatementArguments([replacement] + others)
+                    )
+                }
+            }
+            if let deleting {
+                let danglingIDs = try findDuplicateInsights(
+                    content: deleting["content"] as String? ?? "",
+                    wing: deleting["wing"] as String?,
+                    room: deleting["room"] as String?,
+                    db: db
+                ).compactMap { candidate -> String? in
+                    guard candidate.id != id, !candidate.isActive else { return nil }
+                    return try liveInsightTip(
+                        startingAt: candidate.id,
+                        excluding: id,
+                        db: db
+                    ) == nil ? candidate.id : nil
+                }
+                for danglingID in danglingIDs {
+                    let danglingSuccessor = try String.fetchOne(
+                        db,
+                        sql: "SELECT superseded_by FROM insights WHERE id = ?",
+                        arguments: [danglingID]
+                    ).flatMap {
+                        try liveInsightTip(startingAt: $0, excluding: id, db: db)
+                    }
+                    let danglingInbound = try String.fetchAll(
+                        db,
+                        sql: "SELECT id FROM insights WHERE superseded_by = ? ORDER BY created_at DESC, id DESC",
+                        arguments: [danglingID]
+                    )
+                    if let danglingSuccessor {
+                        try db.execute(
+                            sql: "UPDATE insights SET superseded_by = ? WHERE superseded_by = ?",
+                            arguments: [danglingSuccessor, danglingID]
+                        )
+                    } else if let replacement = danglingInbound.first {
+                        // Invariant 14: never leave an agent-hidden predecessor
+                        // pointing at a clone that this transaction removes.
+                        try db.execute(
+                            sql: "UPDATE insights SET superseded_by = NULL WHERE id = ?",
+                            arguments: [replacement]
+                        )
+                        if danglingInbound.count > 1 {
+                            let others = Array(danglingInbound.dropFirst())
+                            let placeholders = Array(repeating: "?", count: others.count).joined(separator: ", ")
+                            try db.execute(
+                                sql: "UPDATE insights SET superseded_by = ? WHERE id IN (\(placeholders))",
+                                arguments: StatementArguments([replacement] + others)
+                            )
+                        }
+                    }
+                    try db.execute(
+                        sql: "DELETE FROM insights_fts WHERE insight_id = ?",
+                        arguments: [danglingID]
+                    )
+                    try db.execute(sql: "DELETE FROM insights WHERE id = ?", arguments: [danglingID])
+                }
+            }
             let before = db.totalChangesCount
             try db.execute(sql: "DELETE FROM insights WHERE id = ?", arguments: [id])
             return .object([
@@ -2095,6 +2293,29 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 "deleted": .bool(db.totalChangesCount > before),
             ])
         }
+    }
+
+    private static func liveInsightTip(
+        startingAt start: String,
+        excluding excludedID: String,
+        db: GRDB.Database
+    ) throws -> String? {
+        var current = start
+        var visited = Set<String>()
+        while current != excludedID, visited.insert(current).inserted {
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT superseded_by FROM insights WHERE id = ?",
+                arguments: [current]
+            ) else {
+                return nil
+            }
+            guard let successor = row["superseded_by"] as String? else {
+                return current
+            }
+            current = successor
+        }
+        return nil
     }
 
     private static func manageProjectAlias(
@@ -2215,46 +2436,59 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         let wing: String?
         let room: String?
         let importance: Int
+        let isActive: Bool
     }
 
-    private static func findDuplicateInsight(
+    private static func findDuplicateInsights(
         content: String,
         wing: String?,
         room: String?,
         db: GRDB.Database
-    ) throws -> ExistingInsight? {
+    ) throws -> [ExistingInsight] {
         let rows = try Row.fetchAll(
             db,
             sql: """
-                SELECT id, content, wing, room, importance
+                SELECT id, content, wing, room, importance, superseded_by
                 FROM insights
                 WHERE ((? IS NULL AND wing IS NULL) OR wing = ?)
                   AND ((? IS NULL AND room IS NULL) OR room = ?)
-                  AND superseded_by IS NULL
-                ORDER BY created_at DESC
-                LIMIT 200
+                  AND (
+                    superseded_by IS NULL
+                    OR NOT EXISTS (
+                      SELECT 1 FROM insights successor
+                      WHERE successor.id = insights.superseded_by
+                    )
+                  )
+                ORDER BY created_at DESC, id DESC
             """,
             arguments: [wing, wing, room, room]
         )
 
         let normalized = normalizeForDedup(content)
-        for row in rows where normalizeForDedup(row["content"] as String? ?? "") == normalized {
+        return rows.compactMap { row in
+            guard normalizeForDedup(row["content"] as String? ?? "") == normalized else {
+                return nil
+            }
             return ExistingInsight(
                 id: row["id"] as String? ?? "",
                 content: row["content"] as String? ?? "",
                 wing: row["wing"] as String?,
                 room: row["room"] as String?,
-                importance: row["importance"] as Int? ?? 5
+                importance: row["importance"] as Int? ?? 5,
+                isActive: (row["superseded_by"] as String?) == nil
             )
         }
-        return nil
     }
 
     private static func regenerateAllTitles(
         writerGate: ServiceWriterGate
     ) async throws -> EngramServiceRegenerateTitlesResponse {
+        let titleConfig = ServiceAISettings.read().titleConfig
         let started = await titleRegenerationCoordinator.start {
-            await regenerateAllTitlesInBackground(writerGate: writerGate)
+            await regenerateAllTitlesInBackground(
+                writerGate: writerGate,
+                titleConfig: titleConfig
+            )
         }
         if started {
             return EngramServiceRegenerateTitlesResponse(
@@ -2270,11 +2504,12 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         )
     }
 
-    private static func regenerateAllTitlesInBackground(writerGate: ServiceWriterGate) async {
+    private static func regenerateAllTitlesInBackground(
+        writerGate: ServiceWriterGate,
+        titleConfig: ServiceAISettings.ChatConfig?
+    ) async {
         do {
             let contexts = try readTitleContexts(databasePath: writerGate.databasePath)
-            let settings = ServiceAISettings.read()
-            let titleConfig = settings.titleConfig
             ServiceLogger.notice(
                 "regenerateAllTitles started total=\(contexts.count) mode=\(titleConfig == nil ? "native" : "ai")",
                 category: .ai
@@ -2515,7 +2750,10 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             .resolvingSymlinksInPath()
             .standardizedFileURL
             .path
-        let expanded = ProjectPath.expandHome(rawPath)
+        let expanded = ProjectPath.expandHome(
+            rawPath,
+            homeDirectory: URL(fileURLWithPath: home, isDirectory: true)
+        )
         guard expanded.hasPrefix("/") else {
             throw EngramServiceError.invalidRequest(
                 message: "\(label) path must be absolute and under the home directory"
@@ -2707,6 +2945,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         let nativeTitle: String
         let nativeSummary: String
         let transcript: String
+        var tier: String? = nil
     }
 
     static func readAIContext(sessionId: String, databasePath: String) throws -> AIContext {
@@ -2715,7 +2954,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             guard let row = try Row.fetchOne(
                 db,
                 sql: """
-                    SELECT id, source, project, cwd, generated_title, custom_name, summary, message_count, start_time
+                    SELECT id, source, project, cwd, generated_title, custom_name, summary, message_count, start_time, tier
                     FROM sessions
                     WHERE id = ?
                 """,
@@ -2733,7 +2972,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             let rows = try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT id, source, project, cwd, generated_title, custom_name, summary, message_count, start_time
+                    SELECT id, source, project, cwd, generated_title, custom_name, summary, message_count, start_time, tier
                     FROM sessions
                     WHERE COALESCE(tier, 'normal') != 'skip'
                     ORDER BY start_time DESC
@@ -2754,8 +2993,10 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     /// `humanDriven: true`). Used to feed per-work-item semantic-title prompts.
     static func readProjectWorkItems(
         project: String,
-        days: Int = 90,
-        databasePath: String
+        days: Int = ProjectWorkWindow.defaultDays,
+        now: Date = Date(),
+        databasePath: String,
+        includeAllBeatsForDisplayedKeys: Bool = false
     ) throws -> [ImplementationTimelineItem] {
         let pool = try readOnlyPool(path: databasePath)
         return try pool.read { db in
@@ -2764,30 +3005,50 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 sql: "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_work_beats'"
             ) ?? false
             guard exists else { return [] }
-            var parts = ["""
+            let baseSQL = """
                 SELECT b.session_id, b.beat_index, b.action_date, b.action_timestamp,
                        b.work_key, b.work_title, b.human_intent, b.assistant_outcome,
                        b.kind, b.status, b.operation_events, b.confidence
                 FROM session_work_beats b
                 JOIN sessions s ON s.id = b.session_id
                 WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
-                  AND \(SessionVisibilityFilter.topLevelSQL(alias: "s"))
+                  AND \(SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL(alias: "s"))
                   AND s.project = ?
                   AND \(HumanDrivenFilter.sqlPredicate(alias: "s"))
-            """]
+                  AND b.action_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+            """
+            var displayedParts = ["SELECT DISTINCT work_key FROM (\(baseSQL)"]
+            var displayedArgs: [DatabaseValueConvertible] = [project]
+            if let modifier = ProjectWorkWindow.cutoffModifier(days: days) {
+                displayedParts.append("AND b.action_date >= date(?, 'localtime', ?)")
+                displayedArgs.append(ProjectWorkWindow.referenceTimestamp(now: now))
+                displayedArgs.append(modifier)
+            }
+            displayedParts.append(")")
+            let displayedKeys = try String.fetchAll(
+                db,
+                sql: displayedParts.joined(separator: " "),
+                arguments: StatementArguments(displayedArgs)
+            )
+            guard !displayedKeys.isEmpty else { return [] }
+
+            var parts = [baseSQL]
             var args: [DatabaseValueConvertible] = [project]
-            if days < 100_000,
-               let cutoff = Calendar(identifier: .gregorian).date(byAdding: .day, value: -days, to: Date()) {
-                let formatter = DateFormatter()
-                formatter.calendar = Calendar(identifier: .gregorian)
-                formatter.locale = Locale(identifier: "en_US_POSIX")
-                formatter.timeZone = TimeZone(secondsFromGMT: 0)
-                formatter.dateFormat = "yyyy-MM-dd"
-                parts.append("AND b.action_date >= ?")
-                args.append(formatter.string(from: cutoff))
+            if includeAllBeatsForDisplayedKeys {
+                let placeholders = Array(repeating: "?", count: displayedKeys.count).joined(separator: ", ")
+                parts.append("AND b.work_key IN (\(placeholders))")
+                args.append(contentsOf: displayedKeys)
+            } else if let modifier = ProjectWorkWindow.cutoffModifier(days: days) {
+                parts.append("AND b.action_date >= date(?, 'localtime', ?)")
+                args.append(ProjectWorkWindow.referenceTimestamp(now: now))
+                args.append(modifier)
             }
             parts.append("ORDER BY b.action_date ASC, b.action_timestamp ASC, b.session_id ASC, b.beat_index ASC")
-            let rows = try Row.fetchAll(db, sql: parts.joined(separator: " "), arguments: StatementArguments(args))
+            let rows = try Row.fetchAll(
+                db,
+                sql: parts.joined(separator: " "),
+                arguments: StatementArguments(args)
+            )
             let beats = rows.map(decodeWorkBeat(row:))
             return ImplementationTimelineBuilder.build(beats: beats)
         }
@@ -2868,7 +3129,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         )) ?? []).joined(separator: "\n")
         let cwd = row["cwd"] as String? ?? ""
         let project = row["project"] as String? ?? URL(fileURLWithPath: cwd).lastPathComponent
-        return AIContext(
+        var context = AIContext(
             id: id,
             source: row["source"] as String? ?? "unknown",
             project: project,
@@ -2879,6 +3140,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             nativeSummary: nativeSummary(row),
             transcript: transcript
         )
+        context.tier = row["tier"]
+        return context
     }
 
     private static func nativeSummary(_ row: Row) -> String {
@@ -3050,24 +3313,60 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         let titleConfig: ChatConfig?
 
         static func read(
-            settingsPath: URL = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".engram/settings.json"),
+            settingsPath: URL? = nil,
             environment: [String: String] = ProcessInfo.processInfo.environment,
             keychainReader: KeychainReader = { account in ServiceKeychainReader.get(account) }
         ) -> ServiceAISettings {
-            guard let data = try? Data(contentsOf: settingsPath),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else {
+            let settingsPath = settingsPath
+                ?? environment["ENGRAM_SETTINGS_PATH"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+                ?? defaultSettingsPath(environment: environment)
+            let object: [String: Any]
+            var info = stat()
+            if lstat(settingsPath.path, &info) == 0 {
+                guard let data = SecureRegularFile.read(
+                    atPath: settingsPath.path,
+                    maximumBytes: 1024 * 1024,
+                    repairPermissions: true
+                ),
+                    let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else {
+                    return ServiceAISettings(summaryConfig: nil, titleConfig: nil)
+                }
+                object = parsed
+            } else if errno == ENOENT {
+                object = [:]
+            } else {
                 return ServiceAISettings(summaryConfig: nil, titleConfig: nil)
             }
             let runtimeSecrets = RuntimeAISecretReader.read(environment: environment)
             let secretReader: KeychainReader = { account in
-                runtimeSecrets[account] ?? keychainReader(account)
+                if let key = keychainReader(account), !key.isEmpty { return key }
+                return runtimeSecrets[account]
             }
             return ServiceAISettings(
                 summaryConfig: summaryConfig(from: object, keychainReader: secretReader),
                 titleConfig: titleConfig(from: object, keychainReader: secretReader)
             )
+        }
+
+        static func defaultSettingsPath(environment: [String: String]) -> URL {
+            let processEnvironment = ProcessInfo.processInfo.environment
+            let isTestProcess = environment["XCTestConfigurationFilePath"] != nil
+                || processEnvironment["XCTestConfigurationFilePath"] != nil
+            if isTestProcess {
+                // docs/invariants.md #6: service tests without an explicit
+                // settings path stay under a process-scoped temporary home.
+                if let fixedHome = environment["CFFIXED_USER_HOME"], !fixedHome.isEmpty {
+                    return URL(fileURLWithPath: fixedHome).appendingPathComponent(".engram/settings.json")
+                }
+                return FileManager.default.temporaryDirectory
+                    .appendingPathComponent("engram-tests-\(ProcessInfo.processInfo.processIdentifier)")
+                    .appendingPathComponent(".engram/settings.json")
+            }
+            let home = environment["CFFIXED_USER_HOME"].flatMap { $0.isEmpty ? nil : $0 }
+                ?? environment["HOME"].flatMap { $0.isEmpty ? nil : $0 }
+                ?? FileManager.default.homeDirectoryForCurrentUser.path
+            return URL(fileURLWithPath: home).appendingPathComponent(".engram/settings.json")
         }
 
         private static func summaryConfig(
@@ -3125,8 +3424,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             account: String,
             keychainReader: KeychainReader
         ) -> String? {
-            if let key = string(value), !key.isEmpty, key != "@keychain" { return key }
             if let key = keychainReader(account), !key.isEmpty { return key }
+            if let key = string(value), !key.isEmpty, key != "@keychain" { return key }
             return nil
         }
 
@@ -3155,7 +3454,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             static func read(environment: [String: String]) -> [String: String] {
                 guard let path = environment[pathEnvironmentKey],
                       !path.isEmpty,
-                      let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+                      let data = SecureRegularFile.read(atPath: path),
                       let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
                 else {
                     return [:]
@@ -3286,23 +3585,21 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         /// Generate a concise semantic title for a single implementation work
         /// item from its aggregated human intent + assistant outcome. Reuses
         /// chat() + cleanTitle() exactly like title(context:). Inputs are
-        /// bounded before prompting because titleConfig caps output tokens but
-        /// not the request body size.
+        /// already bounded per beat by ImplementationDigestExtractor before
+        /// prompting; do not apply a second aggregate cap that drops later beats.
         static func workItemTitle(
             intent: String,
             outcome: String,
             config: ServiceAISettings.ChatConfig
         ) async throws -> String {
-            let boundedIntent = String(intent.prefix(600))
-            let boundedOutcome = String(outcome.prefix(1200))
             // Generate a concise title for what was built or fixed, matching input language.
             let prompt = """
             Generate a concise title (30 characters or fewer) describing what was
             built or fixed in this unit of engineering work. Match the input
             language, including Chinese for Chinese input. Return only the title, no quotes, no prefix.
 
-            Intent: \(boundedIntent)
-            Outcome: \(boundedOutcome)
+            Intent: \(intent)
+            Outcome: \(outcome)
             """
             let raw = try await chat(
                 purpose: "workItemTitle",
@@ -3449,7 +3746,9 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             config: ServiceAISettings.ChatConfig? = nil,
             limit: Int = 12_000
         ) -> String {
-            var text = context.transcript.isEmpty ? context.nativeSummary : context.transcript
+            var text = TranscriptRedactionPolicy.redact(
+                context.transcript.isEmpty ? context.nativeSummary : context.transcript
+            )
             if let config {
                 text = sampledTranscript(
                     text,

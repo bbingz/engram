@@ -68,7 +68,7 @@ jobs:
           restore-keys: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-
 
       - name: Generate Xcode project
-        run: cd macos && xcodegen generate
+        run: scripts/check-xcodeproj-drift.sh
 
       - name: Build fixtures and run TypeScript tests
         run: |
@@ -114,7 +114,7 @@ jobs:
         run: bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
 
       - name: Generate Xcode project
-        run: cd macos && xcodegen generate
+        run: scripts/check-xcodeproj-drift.sh
 
       - name: Run remote server unit tests
         run: |
@@ -143,12 +143,19 @@ jobs:
 
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
-          path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
-          key: spm-${{ runner.os }}-${{ runner.arch }}-selfhost-xcode-${{ hashFiles('macos/project.yml', 'macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
-          restore-keys: spm-${{ runner.os }}-${{ runner.arch }}-selfhost-xcode-
+          path: ${{ runner.temp }}/engram-release-derived/**/SourcePackages
+          key: spm-${{ runner.os }}-${{ runner.arch }}-release-${{ hashFiles('macos/project.yml', 'macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
+      - name: Select Xcode 26.6 when installed
+        run: |
+          if [ -d /Applications/Xcode_26.6.app ]; then
+            sudo xcode-select -s /Applications/Xcode_26.6.app
+          else
+            echo "Xcode 26.6 not installed; using runner default"
+          fi
 
       - name: Generate Xcode project
-        run: cd macos && xcodegen generate
+        run: scripts/check-xcodeproj-drift.sh
 
       - name: Build test fixtures (needed by the project's resource phases)
         run: |
@@ -163,6 +170,7 @@ jobs:
             -project Engram.xcodeproj \
             -scheme Engram \
             -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/engram-release-derived" \
             -archivePath build/Engram.xcarchive \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \

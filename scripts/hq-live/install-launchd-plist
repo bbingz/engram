@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""Validate and atomically install one launchd plist from fixed file descriptors."""
+from __future__ import annotations
+
+import os
+import plistlib
+import secrets
+import stat
+import sys
+
+MAXIMUM_PLIST_BYTES = 1024 * 1024
+
+
+def read_source(source_fd: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = os.read(source_fd, 64 * 1024)
+        if not chunk:
+            return b"".join(chunks)
+        total += len(chunk)
+        if total > MAXIMUM_PLIST_BYTES:
+            raise ValueError("source plist exceeds 1 MiB")
+        chunks.append(chunk)
+
+
+def write_all(destination_fd: int, payload: bytes) -> None:
+    offset = 0
+    while offset < len(payload):
+        written = os.write(destination_fd, payload[offset:])
+        if written <= 0:
+            raise OSError("short write while installing plist")
+        offset += written
+
+
+def validated_source(source_path: str, expected_label: str) -> bytes:
+    if not expected_label:
+        raise ValueError("expected Label must not be empty")
+    source_fd = os.open(source_path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        source_stat = os.fstat(source_fd)
+        if not stat.S_ISREG(source_stat.st_mode):
+            raise ValueError("source is not a regular file")
+        payload = read_source(source_fd)
+    finally:
+        os.close(source_fd)
+
+    plist = plistlib.loads(payload)
+    if not isinstance(plist, dict) or plist.get("Label") != expected_label:
+        raise ValueError(f"source Label does not match {expected_label}")
+    return payload
+
+
+def install(
+    source_path: str,
+    destination_path: str,
+    owner_uid: int,
+    owner_gid: int,
+    mode: int,
+    expected_label: str,
+) -> None:
+    payload = validated_source(source_path, expected_label)
+
+    destination_directory = os.path.dirname(destination_path)
+    destination_name = os.path.basename(destination_path)
+    if not destination_directory or destination_name in {"", ".", ".."}:
+        raise ValueError("destination must name a file in an explicit directory")
+
+    destination_directory_fd = os.open(
+        destination_directory,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+    temporary_name = f".{destination_name}.tmp.{os.getpid()}.{secrets.token_hex(8)}"
+    temporary_fd: int | None = None
+    temporary_exists = False
+    try:
+        temporary_fd = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=destination_directory_fd,
+        )
+        temporary_exists = True
+        write_all(temporary_fd, payload)
+        os.fsync(temporary_fd)
+        os.fchmod(temporary_fd, mode)
+        os.fchown(temporary_fd, owner_uid, owner_gid)
+        os.close(temporary_fd)
+        temporary_fd = None
+
+        os.replace(
+            temporary_name,
+            destination_name,
+            src_dir_fd=destination_directory_fd,
+            dst_dir_fd=destination_directory_fd,
+        )
+        temporary_exists = False
+        os.fsync(destination_directory_fd)
+    finally:
+        if temporary_fd is not None:
+            os.close(temporary_fd)
+        if temporary_exists:
+            try:
+                os.unlink(temporary_name, dir_fd=destination_directory_fd)
+            except FileNotFoundError:
+                pass
+        os.close(destination_directory_fd)
+
+
+def main() -> int:
+    if len(sys.argv) == 4 and sys.argv[1] == "--validate":
+        try:
+            validated_source(sys.argv[2], sys.argv[3])
+        except (OSError, ValueError, plistlib.InvalidFileException) as error:
+            print(f"install-launchd-plist: {error}", file=sys.stderr)
+            return 1
+        return 0
+    if len(sys.argv) != 7:
+        print(
+            "usage: install-launchd-plist SOURCE DESTINATION UID GID MODE EXPECTED_LABEL",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        owner_uid = int(sys.argv[3], 10)
+        owner_gid = int(sys.argv[4], 10)
+        mode = int(sys.argv[5], 8)
+        if owner_uid < 0 or owner_gid < 0 or not 0 <= mode <= 0o777:
+            raise ValueError("invalid ownership or mode")
+        install(sys.argv[1], sys.argv[2], owner_uid, owner_gid, mode, sys.argv[6])
+    except (OSError, ValueError, plistlib.InvalidFileException) as error:
+        print(f"install-launchd-plist: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

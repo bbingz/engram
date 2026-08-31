@@ -48,14 +48,16 @@ historical surfaces.
 | `ServiceWriterGate` | Swift class | `macos/EngramService/Core/ServiceWriterGate.swift` | 12 callers | Serializes service-owned write traffic. |
 | `EngramDatabaseWriter` | Swift class | `macos/EngramCoreWrite/Database/EngramDatabaseWriter.swift` | 4 callers | Product write pool, migrations, indexing write path. |
 | `SessionAdapterFactory.defaultAdapters` | Swift function | `macos/Shared/EngramCore/Adapters/SessionAdapterFactory.swift` | 5 callers | Registers the 17 shipped source adapters. |
-| `EngramServiceReadProvider.search` | Swift method | `macos/EngramService/Core/EngramServiceReadProvider.swift` | service/API | Product keyword search with unsupported semantic-mode downgrade. |
+| `EngramServiceReadProvider.search` | Swift method | `macos/EngramService/Core/EngramServiceReadProvider.swift` | service/API | Service keyword search plus availability-gated semantic/hybrid search with explicit fallback warnings. |
 | `ProjectMoveOrchestrator` | Swift/TS domain | `macos/EngramCoreWrite/ProjectMove/`, `src/core/project-move/` | central | Transactional project move/archive/undo/batch logic. |
 | `Session` | Swift model | `macos/Engram/Models/Session.swift` | 40 callers | App-facing session model used across UI and tests. |
 
 ## CONVENTIONS
 - Swift product behavior is authoritative. The old TypeScript MCP, daemon, and HTTP/Web entrypoints were deleted; do not recreate product startup paths through Node.
 - App and MCP write paths go through `EngramServiceClient` / `ServiceWriterGate`; do not add direct SQLite writers in app or MCP code.
-- Swift product search is keyword-only through FTS5/LIKE. Semantic/hybrid/vector search in TypeScript is reference design only.
+- App UI is intentionally keyword-only through FTS5/LIKE.
+- Service semantic/hybrid requests soft-fallback to keyword with a warning when unavailable.
+- MCP advertises semantic/hybrid modes only when usable and otherwise returns `searchModeUnavailable`; it does not silently degrade those explicit requests. TypeScript vector search remains reference tooling, not the shipped runtime.
 - Product adapters are Swift-first. Update TypeScript adapters only when retained fixture tooling or regression coverage requires it.
 - Parser output changes need fixture/parity coverage updates before or with adapter logic changes.
 - Subagent/dispatch/noise sessions stay `skip`; parent-link operations must not upgrade child sessions out of `skip`.

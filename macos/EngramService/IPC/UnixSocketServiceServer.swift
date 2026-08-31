@@ -199,7 +199,6 @@ final class UnixSocketServiceServer: Sendable {
             )
             state.descriptor = -1
             state.acceptTask = nil
-            state.clientTasks.removeAll()
             return snapshot
         }
 
@@ -214,7 +213,23 @@ final class UnixSocketServiceServer: Sendable {
         _ = unlink(socketPath)
         // SEC-H1: remove the per-launch capability token so a stale token from
         // a previous launch cannot be reused against a future one.
-        _ = unlink(ServiceCapabilityToken.path(forSocketPath: socketPath))
+        ServiceCapabilityToken.remove(
+            atPath: ServiceCapabilityToken.path(forSocketPath: socketPath)
+        )
+    }
+
+    /// Waits for cancelled client handlers to unwind without blocking forever.
+    /// `stop()` must be called first so no new handler can be registered while
+    /// this bounded drain is in progress.
+    func drainClientHandlers(timeoutNanoseconds: UInt64) async -> Bool {
+        let deadline = ContinuousClock.now + .nanoseconds(Int(timeoutNanoseconds))
+        while activeClientTaskCountForTesting() > 0 {
+            guard ContinuousClock.now < deadline else { return false }
+            await Task.detached {
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }.value
+        }
+        return true
     }
 
     deinit {

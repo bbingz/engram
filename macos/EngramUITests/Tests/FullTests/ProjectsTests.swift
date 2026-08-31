@@ -21,10 +21,12 @@ final class ProjectsTests: XCTestCase {
         let projects = ProjectsScreen(app: app)
         projects.waitForLoad()
 
-        let hasList = projects.projectList.waitForExistence(timeout: 5)
-        let hasEmpty = projects.emptyState.waitForExistence(timeout: 3)
-        XCTAssertTrue(hasList || hasEmpty,
-                      "Projects should show a list or empty state")
+        XCTAssertTrue(projects.projectList.waitForExistence(timeout: 5),
+                      "The seeded project fixture should render a project list")
+        XCTAssertTrue(projects.group(at: 0).waitForExistence(timeout: 5),
+                      "The seeded fixture should render at least one project row")
+        XCTAssertTrue(projects.result(containingText: "engram").waitForExistence(timeout: 5),
+                      "The seeded engram project should appear in the project list")
         ScreenshotCapture.capture(name: "projects_list", app: app, screen: "projects", test: #function)
     }
 

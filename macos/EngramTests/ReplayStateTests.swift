@@ -75,4 +75,27 @@ final class ReplayStateTests: XCTestCase {
         XCTAssertEqual(buckets[0], 2)
         XCTAssertEqual(buckets[99], 1)
     }
+
+    func testTruncatedReplayStateDoesNotPresentPrefixAsComplete_repro() {
+        let state = ReplayState()
+        let entries = (0..<2_000).map { entry($0, nil) }
+
+        state.replaceTimeline(entries, totalEntries: 2_001, hasMore: true)
+
+        XCTAssertEqual(state.progress, "1 / 2000+")
+        XCTAssertEqual(
+            state.truncationNotice,
+            "Showing first 2000 entries. At least 2001 exist."
+        )
+
+        state.seekTo(1_999)
+        XCTAssertEqual(state.progress, "2000 / 2000+")
+    }
+
+    /// W8-5: the play/pause transport button's VoiceOver label must mirror the
+    /// state the button will produce, not the icon's current glyph.
+    func testPlayPauseLabelMirrorsState() {
+        XCTAssertEqual(SessionReplayView.playPauseLabel(isPlaying: true), "Pause")
+        XCTAssertEqual(SessionReplayView.playPauseLabel(isPlaying: false), "Play")
+    }
 }

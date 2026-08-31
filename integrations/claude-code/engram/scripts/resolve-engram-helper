@@ -19,6 +19,42 @@ is_exec() {
   [[ -n "$path" && -f "$path" && -x "$path" ]]
 }
 
+resolve_override() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  if [[ "$value" == "~/"* ]]; then
+    [[ -n "${HOME:-}" && "$HOME" == /* ]] || return 1
+    value="${HOME}/${value#\~/}"
+  fi
+  if [[ "$value" == /* ]]; then
+    is_exec "$value" || return 1
+    printf '%s\n' "$value"
+    return 0
+  fi
+  [[ "$value" != */* ]] || return 1
+  local directory
+  IFS=':' read -r -a path_directories <<< "${PATH:-}"
+  for directory in "${path_directories[@]}"; do
+    [[ "$directory" == /* ]] || continue
+    if is_exec "${directory}/${value}"; then
+      printf '%s\n' "${directory}/${value}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+append_absolute_path_candidates() {
+  local binary="$1"
+  local directory
+  IFS=':' read -r -a path_directories <<< "${PATH:-}"
+  for directory in "${path_directories[@]}"; do
+    [[ "$directory" == /* ]] || continue
+    printf '%s\n' "${directory}/${binary}"
+  done
+}
+
 emit_first_exec() {
   local candidate
   for candidate in "$@"; do
@@ -34,21 +70,17 @@ resolve_cli() {
   # Explicit override is exclusive: a set-but-missing path fails closed so
   # callers can detect misconfiguration (SessionStart still fail-opens).
   if [[ -n "${ENGRAM_CLI_PATH:-}" ]]; then
-    if is_exec "${ENGRAM_CLI_PATH}"; then
-      printf '%s\n' "${ENGRAM_CLI_PATH}"
-      return 0
-    fi
-    return 1
+    resolve_override "${ENGRAM_CLI_PATH}"
+    return $?
   fi
 
   local candidates=(
     "/Applications/Engram.app/Contents/Helpers/EngramCLI"
     "/Applications/Engram.app/Contents/MacOS/EngramCLI"
   )
-  # PATH lookup last so product install paths win over stray names.
-  if command -v EngramCLI >/dev/null 2>&1; then
-    candidates+=("$(command -v EngramCLI)")
-  fi
+  while IFS= read -r candidate; do
+    candidates+=("$candidate")
+  done < <(append_absolute_path_candidates EngramCLI)
   emit_first_exec "${candidates[@]}"
 }
 
@@ -58,18 +90,12 @@ resolve_mcp() {
   local cli_dir=""
 
   if [[ -n "${ENGRAM_MCP_PATH:-}" ]]; then
-    if is_exec "${ENGRAM_MCP_PATH}"; then
-      printf '%s\n' "${ENGRAM_MCP_PATH}"
-      return 0
-    fi
-    return 1
+    resolve_override "${ENGRAM_MCP_PATH}"
+    return $?
   fi
   if [[ -n "${ENGRAM_CLI_MCP_HELPER:-}" ]]; then
-    if is_exec "${ENGRAM_CLI_MCP_HELPER}"; then
-      printf '%s\n' "${ENGRAM_CLI_MCP_HELPER}"
-      return 0
-    fi
-    return 1
+    resolve_override "${ENGRAM_CLI_MCP_HELPER}"
+    return $?
   fi
 
   if cli="$(resolve_cli 2>/dev/null)"; then
@@ -84,9 +110,9 @@ resolve_mcp() {
     "/Applications/Engram.app/Contents/Helpers/EngramMCP"
     "/Applications/Engram.app/Contents/MacOS/EngramMCP"
   )
-  if command -v EngramMCP >/dev/null 2>&1; then
-    candidates+=("$(command -v EngramMCP)")
-  fi
+  while IFS= read -r candidate; do
+    candidates+=("$candidate")
+  done < <(append_absolute_path_candidates EngramMCP)
   emit_first_exec "${candidates[@]}"
 }
 

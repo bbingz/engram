@@ -3,7 +3,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Database } from '../../src/core/db.js';
 import type {
   VectorSearchResult,
@@ -17,6 +17,12 @@ describe('get_context', () => {
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'get-context-test-'));
+    const home = join(tmpDir, 'home');
+    // docs/invariants.md #6: get_context includes environment collection by
+    // default, so its config reads must stay inside the per-test temp root.
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('CFFIXED_USER_HOME', home);
+    vi.stubEnv('ENGRAM_DIR', join(tmpDir, 'engram'));
     db = new Database(join(tmpDir, 'test.sqlite'));
     db.upsertSession({
       id: 's1',
@@ -67,7 +73,14 @@ describe('get_context', () => {
 
   afterEach(() => {
     db.close();
+    vi.unstubAllEnvs();
     rmSync(tmpDir, { recursive: true });
+  });
+
+  it('runs environment collection inside its temporary Engram home (repro)', () => {
+    expect(process.env.HOME).toBe(join(tmpDir, 'home'));
+    expect(process.env.CFFIXED_USER_HOME).toBe(join(tmpDir, 'home'));
+    expect(process.env.ENGRAM_DIR).toBe(join(tmpDir, 'engram'));
   });
 
   it('returns context for matching project', async () => {

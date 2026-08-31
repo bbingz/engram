@@ -84,4 +84,119 @@ final class BrowseReloadCoalescerTests: XCTestCase {
         XCTAssertFalse(TimelinePageView.shouldApplyLoad(resultGeneration: 1, currentGeneration: 2))
         XCTAssertFalse(TimelinePageView.shouldApplyLoad(resultGeneration: 2, currentGeneration: 2, isCancelled: true))
     }
+
+    func testTimelineRendersOnlyTheDatabaseScopedSnapshot_repro() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("macos/Engram/Views/Pages/TimelinePageView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertFalse(source.contains("filteredTimeline"))
+        XCTAssertTrue(source.contains("let timelineSnapshot = timeline"))
+        XCTAssertTrue(source.contains("ForEach(timelineSnapshot"))
+    }
+
+    func testTimelineReconcilesProjectBeforeFetchingAndAppliesOneSnapshot_repro() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("macos/Engram/Views/Pages/TimelinePageView.swift"),
+            encoding: .utf8
+        )
+        let loadStart = try XCTUnwrap(source.range(of: "private func loadData() async"))
+        let loadBody = source[loadStart.lowerBound...]
+        let projects = try XCTUnwrap(loadBody.range(of: "let projects ="))
+        let reconcile = try XCTUnwrap(loadBody.range(of: "reconciledProjectSelection("))
+        let filter = try XCTUnwrap(loadBody.range(of: "let selectedProjectFilter ="))
+        XCTAssertLessThan(projects.lowerBound, reconcile.lowerBound)
+        XCTAssertLessThan(reconcile.lowerBound, filter.lowerBound)
+        XCTAssertFalse(loadBody.contains("selectedProject = reconciledProject\n                return"))
+        XCTAssertTrue(loadBody.contains("selectedProject = data.selectedProject"))
+    }
+
+    func testTimelineLoadingAndFailureNeverExposePriorFilterSnapshot_repro() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("macos/Engram/Views/Pages/TimelinePageView.swift"),
+            encoding: .utf8
+        )
+        let bodyStart = try XCTUnwrap(source.range(of: "var body: some View"))
+        let loadStart = try XCTUnwrap(source.range(of: "private func loadData() async"))
+        let body = String(source[bodyStart.lowerBound..<loadStart.lowerBound])
+        XCTAssertTrue(body.contains("if !isLoading && selectedProject == appliedProject"))
+        XCTAssertTrue(body.contains("&& !visibleChartDataSnapshot.isEmpty"))
+        XCTAssertTrue(body.contains("if isLoading {"))
+        XCTAssertFalse(body.contains("isLoading && !hasVisibleContentSnapshot"))
+
+        let loadBody = String(source[loadStart.lowerBound...])
+        let catchStart = try XCTUnwrap(loadBody.range(of: "} catch {"))
+        let catchBody = String(loadBody[catchStart.lowerBound...])
+        XCTAssertTrue(catchBody.contains("clearVisibleSnapshot()"))
+    }
+
+    func testTimelineHeaderBadgeUsesOnlyAppliedSnapshot_repro() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("macos/Engram/Views/Pages/TimelinePageView.swift"),
+            encoding: .utf8
+        )
+        let bodyStart = try XCTUnwrap(source.range(of: "var body: some View"))
+        let loadStart = try XCTUnwrap(source.range(of: "private func loadData() async"))
+        let body = String(source[bodyStart.lowerBound..<loadStart.lowerBound])
+
+        XCTAssertTrue(source.contains("@State private var appliedRange"))
+        XCTAssertTrue(source.contains("@State private var appliedMode"))
+        XCTAssertTrue(body.contains("range: appliedRange.badge"))
+        XCTAssertFalse(body.contains("range: range.badge"))
+        XCTAssertTrue(body.contains("let headerSnapshotMatchesSelection"))
+        XCTAssertTrue(source.contains("appliedRange = data.range"))
+        XCTAssertTrue(source.contains("appliedMode = data.mode"))
+    }
+
+    func testTimelineRenderingUsesTheAppliedModeAndSortSnapshot_repro() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let value = try String(
+            contentsOf: root.appendingPathComponent("macos/Engram/Views/Pages/TimelinePageView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(value.contains("@State private var appliedSort"))
+        XCTAssertTrue(value.contains("let visibleModeSnapshot = appliedMode"))
+        XCTAssertTrue(value.contains("sortMode == appliedSort"))
+    }
+
+    func testBrowsePagesRejectStaleDetachedLoadsAndSpinnerClears_repro() {
+        XCTAssertTrue(
+            BrowseReloadCoalescer.shouldApplyLoad(
+                resultGeneration: 4,
+                currentGeneration: 4
+            )
+        )
+        XCTAssertFalse(
+            BrowseReloadCoalescer.shouldApplyLoad(
+                resultGeneration: 3,
+                currentGeneration: 4
+            )
+        )
+        XCTAssertFalse(
+            BrowseReloadCoalescer.shouldApplyLoad(
+                resultGeneration: 4,
+                currentGeneration: 4,
+                isCancelled: true
+            )
+        )
+    }
 }

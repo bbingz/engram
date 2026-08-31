@@ -49,6 +49,42 @@ final class EngramCLIContextCommandTests: XCTestCase {
         XCTAssertEqual(options.timeoutMs, EngramCLIContextOptions.defaultTimeoutMs)
     }
 
+    func testContextPathsExpandTildeAgainstDeclaredHome_repro() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-cli-context-home-\(UUID().uuidString)", isDirectory: true)
+        let bin = home.appendingPathComponent("bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let helper = bin.appendingPathComponent("EngramMCP")
+        try "#!/bin/sh\nexit 0\n".write(to: helper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+
+        let options = try XCTUnwrap(EngramCLIContextOptions.parse(
+            arguments: ["context", "--cwd", "~/project", "--mcp-helper", "~/bin/EngramMCP"],
+            environment: [:],
+            defaultCwd: "/fallback",
+            homeDirectory: home
+        ))
+        XCTAssertEqual(options.cwd, home.appendingPathComponent("project").path)
+        XCTAssertEqual(
+            EngramCLIContextCommand.mcpHelperCandidates(
+                explicit: options.mcpHelperPath,
+                executablePath: "/Applications/Engram.app/Contents/MacOS/EngramCLI",
+                environment: [:],
+                homeDirectory: home
+            ),
+            [helper.path]
+        )
+    }
+
+    func testContextRejectsRelativeCwdOverride_repro() {
+        XCTAssertThrowsError(try EngramCLIContextOptions.parse(
+            arguments: ["context", "--cwd", "relative/project"],
+            environment: [:],
+            defaultCwd: "/fallback"
+        ))
+    }
+
     func testParseCapsMaxBytesAt8KB() throws {
         let options = try XCTUnwrap(EngramCLIContextOptions.parse(
             arguments: ["context", "--max-bytes", "999999"],
@@ -362,6 +398,214 @@ final class EngramCLIContextCommandTests: XCTestCase {
         XCTAssertTrue(fallback.contains("/Applications/Engram.app/Contents/Helpers/EngramMCP"))
         // No user-home absolute paths in resolution list.
         XCTAssertFalse(fallback.contains { $0.hasPrefix("/Users/") })
+    }
+
+    func testHelperCandidatesIgnoreRelativeArgvZeroAndResolveTheRealCLIPath_repro() throws {
+        let cwd = FileManager.default.currentDirectoryPath
+        let candidates = EngramCLIContextCommand.mcpHelperCandidates(
+            explicit: nil,
+            executablePath: "EngramCLI",
+            environment: [:]
+        )
+
+        XCTAssertFalse(candidates.contains("\(cwd)/EngramMCP"))
+        XCTAssertEqual(candidates, ["/Applications/Engram.app/Contents/Helpers/EngramMCP"])
+        XCTAssertEqual(
+            EngramCLIContextCommand.resolvedExecutablePath(
+                argv0: "EngramCLI",
+                processExecutablePath: "/Apps/Engram.app/Contents/MacOS/EngramCLI"
+            ),
+            "/Apps/Engram.app/Contents/MacOS/EngramCLI"
+        )
+    }
+
+    func testHelperOverridesResolveToAbsoluteExecutablePaths_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-cli-helper-path-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let helper = root.appendingPathComponent("EngramMCP")
+        try "#!/bin/sh\nexit 0\n".write(to: helper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+
+        XCTAssertEqual(
+            EngramCLIContextCommand.mcpHelperCandidates(
+                explicit: "EngramMCP",
+                executablePath: "/Applications/Engram.app/Contents/MacOS/EngramCLI",
+                environment: ["PATH": root.path]
+            ),
+            [helper.path]
+        )
+    }
+
+    func testHelperOverridesTrimValuesAndIgnoreRelativePATHEntries_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-cli-helper-trim-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let helper = root.appendingPathComponent("EngramMCP")
+        try "#!/bin/sh\nexit 0\n".write(to: helper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+
+        XCTAssertEqual(
+            EngramCLIContextCommand.mcpHelperCandidates(
+                explicit: "  \(helper.path)  ",
+                executablePath: "/Applications/Engram.app/Contents/MacOS/EngramCLI",
+                environment: [:]
+            ),
+            [helper.path]
+        )
+        XCTAssertEqual(
+            EngramCLIContextCommand.mcpHelperCandidates(
+                explicit: "EngramMCP",
+                executablePath: "/Applications/Engram.app/Contents/MacOS/EngramCLI",
+                environment: ["PATH": ".:\(root.path)"]
+            ),
+            [helper.path]
+        )
+
+        let parsed = try XCTUnwrap(
+            EngramCLIContextOptions.parse(
+                arguments: ["context", "--mcp-helper", "  \(helper.path)  "],
+                environment: [:],
+                defaultCwd: root.path
+            )
+        )
+        XCTAssertEqual(parsed.mcpHelperPath, helper.path)
+    }
+
+    func testSlashFreeHelperOverrideUsesOnlyPATHAndSkipsDirectories_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-cli-helper-search-\(UUID().uuidString)", isDirectory: true)
+        let first = root.appendingPathComponent("first", isDirectory: true)
+        let second = root.appendingPathComponent("second", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: first.appendingPathComponent("EngramMCP", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let helper = second.appendingPathComponent("EngramMCP")
+        try "#!/bin/sh\nexit 0\n".write(to: helper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+
+        XCTAssertEqual(
+            EngramCLIContextCommand.mcpHelperCandidates(
+                explicit: "EngramMCP",
+                executablePath: "/Applications/Engram.app/Contents/MacOS/EngramCLI",
+                environment: ["PATH": "\(first.path):\(second.path)"]
+            ),
+            [helper.path]
+        )
+        XCTAssertEqual(
+            EngramCLIContextCommand.mcpHelperCandidates(
+                explicit: "EngramMCP",
+                executablePath: "/Applications/Engram.app/Contents/MacOS/EngramCLI",
+                environment: ["PATH": ""]
+            ),
+            []
+        )
+        XCTAssertEqual(
+            EngramCLIContextCommand.mcpHelperCandidates(
+                explicit: "relative/EngramMCP",
+                executablePath: "/Applications/Engram.app/Contents/MacOS/EngramCLI",
+                environment: ["PATH": second.path]
+            ),
+            []
+        )
+    }
+
+    func testContextRunResolvesBundleExecutableInsteadOfDefaultingToArgvZero_repro() throws {
+        let source = try source("macos/Shared/Service/EngramCLIContextCommand.swift")
+        let runStart = try XCTUnwrap(source.range(of: "static func run(\n        options:"))
+        let runBody = source[runStart.lowerBound...]
+        XCTAssertFalse(runBody.hasPrefix("static func run(\n        options: EngramCLIContextOptions,\n        executablePath: String = CommandLine.arguments.first"))
+        XCTAssertTrue(runBody.contains("resolvedExecutablePath(argv0: CommandLine.arguments.first ?? \"\")"))
+    }
+
+    func testDefaultMCPModeTreatsBadHelperOverrideAsExclusive_repro() throws {
+        let executable = Bundle(for: Self.self)
+            .bundleURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("EngramCLI")
+        let missing = "/tmp/missing-engram-mcp-\(UUID().uuidString)"
+        let process = Process()
+        process.executableURL = executable
+        let sandbox = try makeHermeticRPCEnvironment(overrides: [
+            "ENGRAM_CLI_MCP_HELPER": missing,
+        ])
+        defer { try? FileManager.default.removeItem(at: sandbox.root) }
+        process.environment = sandbox.environment
+        let input = Pipe()
+        let output = Pipe()
+        let error = Pipe()
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = error
+
+        try process.run()
+        try input.fileHandleForWriting.close()
+        process.waitUntilExit()
+        let stderr = String(
+            data: error.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        ) ?? ""
+
+        XCTAssertEqual(process.terminationStatus, 1, stderr)
+        XCTAssertTrue(stderr.contains(missing), stderr)
+    }
+
+    func testDefaultMCPModePinsDatabaseToFileManagerHomeBeforeExec_repro() throws {
+        let executable = Bundle(for: Self.self)
+            .bundleURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("EngramCLI")
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-cli-db-home-\(UUID().uuidString)", isDirectory: true)
+        let environmentHome = root.appendingPathComponent("environment-home", isDirectory: true)
+        let fileManagerHome = root.appendingPathComponent("file-manager-home", isDirectory: true)
+        let helper = root.appendingPathComponent("EngramMCP")
+        try FileManager.default.createDirectory(at: environmentHome, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: fileManagerHome, withIntermediateDirectories: true)
+        try "#!/bin/sh\nprintf '%s\\n' \"$ENGRAM_MCP_DB_PATH\"\n".write(to: helper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let process = Process()
+        process.executableURL = executable
+        process.environment = [
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "HOME": environmentHome.path,
+            "CFFIXED_USER_HOME": fileManagerHome.path,
+            "ENGRAM_CLI_MCP_HELPER": helper.path,
+            "ENGRAM_MCP_SERVICE_SOCKET": root.appendingPathComponent("missing.sock").path,
+            "ENGRAM_MCP_DB_PATH": "  \n ",
+        ]
+        let input = Pipe()
+        let output = Pipe()
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = Pipe()
+        try process.run()
+        try input.fileHandleForWriting.close()
+        process.waitUntilExit()
+
+        let dbPath = String(
+            data: output.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        )?.trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertEqual(
+            dbPath,
+            fileManagerHome.appendingPathComponent(".engram/index.sqlite").path,
+            "CLI must pin the same FileManager home database used by the GUI before execv"
+        )
+        XCTAssertFalse(dbPath?.hasPrefix(environmentHome.path) == true)
     }
 
     // MARK: - CLI wiring / no auto-write contracts

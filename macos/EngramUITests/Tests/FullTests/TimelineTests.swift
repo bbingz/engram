@@ -21,11 +21,14 @@ final class TimelineTests: XCTestCase {
         let timeline = TimelineScreen(app: app)
         timeline.waitForLoad()
 
-        // Either the timeline has content or shows empty state
-        let hasContent = timeline.container.exists
-        let hasEmpty = timeline.emptyState.waitForExistence(timeout: 3)
-        XCTAssertTrue(hasContent || hasEmpty,
-                      "Timeline should render content or empty state")
+        XCTAssertTrue(timeline.modePicker.waitForExistence(timeout: 5))
+        timeline.mode(named: "Sessions").click()
+        XCTAssertTrue(timeline.chart.waitForExistence(timeout: 5),
+                      "The seeded session timeline should render a chart")
+        XCTAssertTrue(
+            timeline.container.buttons["expandableCard_askCount"].firstMatch.waitForExistence(timeout: 5),
+            "The seeded session timeline should render at least one session row"
+        )
         ScreenshotCapture.capture(name: "timeline_page", app: app, screen: "timeline", test: #function)
     }
 

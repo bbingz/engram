@@ -156,10 +156,88 @@ final class AgentsViewTests: XCTestCase {
                       "pending-suggestion inbox rows must offer a Set-parent action")
     }
 
+    func testAgentsViewUsesQualifiedParentPagesAndSQLKpis_repro() throws {
+        let s = try source("macos/Engram/Views/Pages/AgentsView.swift")
+        XCTAssertTrue(s.contains("db.agentParentSessions("))
+        XCTAssertTrue(s.contains("db.agentSessionStats("))
+        XCTAssertFalse(
+            s.contains("db.listSessions(subAgent: false, topLevelOnly: true, limit: 200)"),
+            "filtering a capped top-level page can omit parents whose children are outside that page"
+        )
+        XCTAssertFalse(
+            s.contains("db.listSessions(subAgent: true, limit: 200)"),
+            "session KPIs must use SQL COUNT rather than a capped materialized page"
+        )
+    }
+
+    func testAgentParentQualificationAndKpisUseFullSQLPopulation() throws {
+        try insertTestSession(at: dbPath, id: "unrelated-new", startTime: "2026-08-22T10:00:00Z")
+        try insertTestSession(at: dbPath, id: "parent", startTime: "2026-08-20T10:00:00Z")
+        try insertTestSession(
+            at: dbPath,
+            id: "active-a",
+            startTime: "2026-08-21T10:00:00Z",
+            endTime: "2026-08-21T11:00:00Z",
+            tier: "skip",
+            agentRole: "worker"
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "active-b",
+            startTime: "2026-08-21T09:00:00Z",
+            endTime: "2026-08-21T12:00:00Z",
+            tier: "skip",
+            agentRole: "worker"
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "old",
+            startTime: "2026-07-01T09:00:00Z",
+            endTime: "2026-07-01T10:00:00Z",
+            tier: "skip",
+            agentRole: "worker"
+        )
+        try setLink(sessionId: "active-a", parentId: "parent", suggestedParentId: nil)
+
+        XCTAssertEqual(try db.agentParentSessions(limit: 1, offset: 0).map(\.id), ["parent"])
+        let stats = try db.agentSessionStats(activeSince: "2026-08-15T00:00:00Z")
+        XCTAssertEqual(stats.total, 3)
+        XCTAssertEqual(stats.active, 2, "Active (7d) counts sessions, not distinct role labels")
+    }
+
     func testLinkParentPickerCallsSetParentOffMain() throws {
         let s = try source("macos/Engram/Views/LinkParentPicker.swift")
         XCTAssertTrue(s.contains("serviceClient.setParentSession"))
         XCTAssertTrue(s.contains("Task.detached"), "candidate parents must load off the main thread")
+    }
+
+    func testLinkParentPickerRejectsStaleCandidateLoads_repro() throws {
+        let value = try source("macos/Engram/Views/LinkParentPicker.swift")
+        XCTAssertTrue(value.contains("loadGeneration"))
+        XCTAssertTrue(value.contains("generation == loadGeneration"))
+        XCTAssertTrue(value.contains("guard !Task.isCancelled"))
+    }
+
+    func testParentAndRelatedPickersSearchInSQLBeforeLimit_repro() throws {
+        for path in [
+            "macos/Engram/Views/LinkParentPicker.swift",
+            "macos/Engram/Views/RelatedSessionPicker.swift",
+        ] {
+            let value = try source(path)
+            XCTAssertTrue(value.contains(".task(id: query)"))
+            XCTAssertTrue(value.contains("db.sessionPickerCandidates("))
+            XCTAssertFalse(value.contains(".filter { $0.displayTitle"))
+        }
+    }
+
+    func testRelatedSessionPickerLoadsLiveExclusionsWithGenerationGuard_repro() throws {
+        let value = try source("macos/Engram/Views/RelatedSessionPicker.swift")
+
+        XCTAssertTrue(value.contains("serviceClient.relatedSessions(sessionId: sourceId)"))
+        XCTAssertTrue(value.contains("loadGeneration"))
+        XCTAssertTrue(value.contains("generation == loadGeneration"))
+        XCTAssertTrue(value.contains("guard !Task.isCancelled"))
+        XCTAssertFalse(value.contains("let existingRelatedIds"))
     }
 
     func testExpandableSessionCardHasNoSetParentHook() throws {

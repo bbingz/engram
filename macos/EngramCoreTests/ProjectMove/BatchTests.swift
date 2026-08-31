@@ -338,6 +338,26 @@ final class BatchTests: XCTestCase {
         )
     }
 
+    func testRunArchiveDryRunStillProbesReadmeOnlyCategory_repro() async throws {
+        let src = tempRoot.appendingPathComponent("readme-only", isDirectory: true)
+        try FileManager.default.createDirectory(at: src, withIntermediateDirectories: true)
+        try "# placeholder".write(
+            to: src.appendingPathComponent("README.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let doc = BatchDocument(
+            defaults: BatchDefaults(stopOnError: true, dryRun: true),
+            operations: [BatchOperation(src: src.path, archive: true)]
+        )
+
+        let result = await Batch.run(doc, writer: writer, overrides: makeOverrides())
+
+        let completed = try XCTUnwrap(result.completed.first, "failures: \(result.failed.map(\.error))")
+        XCTAssertTrue(completed.dst.contains("/_archive/空项目/"), completed.dst)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: src.path))
+    }
+
     func testTildeExpansionUsesOverrideHome() async throws {
         // When src is "~/proj" the override home should resolve it.
         // Set up <tempRoot>/proj as the project, src="~/proj"

@@ -162,6 +162,18 @@ final class MCPActivationOnboardingTests: XCTestCase {
         XCTAssertTrue(sources.contains("MCPVerificationLadder"))
     }
 
+    /// ui-search-settings-5: Gemini must retain confirmation for mutating MCP tools.
+    func testGeminiSnippetDoesNotTrustMCPServer_repro() throws {
+        let sources = try source("macos/Engram/Views/Settings/SourcesSettingsSection.swift")
+        let geminiStart = try XCTUnwrap(sources.range(of: #"name: "Gemini CLI""#))
+        let codexStart = try XCTUnwrap(
+            sources.range(of: #"name: "Codex CLI""#, range: geminiStart.upperBound..<sources.endIndex)
+        )
+        let gemini = sources[geminiStart.lowerBound..<codexStart.lowerBound]
+        XCTAssertTrue(gemini.contains(#""trust": false"#))
+        XCTAssertFalse(gemini.contains(#""trust": true"#))
+    }
+
     func testHomeActivationCardWiring() throws {
         let home = try source("macos/Engram/Views/Pages/HomeView.swift")
         XCTAssertTrue(home.contains("home_mcpActivationCard"))
@@ -175,5 +187,81 @@ final class MCPActivationOnboardingTests: XCTestCase {
         XCTAssertTrue(app.contains("windowWillClose"))
         XCTAssertTrue(app.contains("onboardingWindow?.delegate = nil"))
         XCTAssertTrue(app.contains("NSWindowDelegate"))
+    }
+
+    func testOnboardingWindowIsReusedAndKeepsRegularActivationWhileVisible_repro() throws {
+        let app = try source("macos/Engram/App.swift")
+        let menu = try source("macos/Engram/MenuBarController.swift")
+
+        XCTAssertTrue(app.contains("if let onboardingWindow"))
+        XCTAssertTrue(app.contains("hasOnboardingWindow:"))
+        XCTAssertTrue(menu.contains("hasOnboardingWindow"))
+        XCTAssertTrue(menu.contains("!self.hasOnboardingWindow()"))
+    }
+
+    func testUITestLaunchConsumesMockAndCanForceOnboarding_repro() throws {
+        let environment = try source("macos/Engram/Core/AppEnvironment.swift")
+        let app = try source("macos/Engram/App.swift")
+        let launch = try source("macos/EngramUITests/Helpers/TestLaunchConfig.swift")
+        let onboarding = try source("macos/Engram/Onboarding/OnboardingView.swift")
+        let searchTests = try source("macos/EngramUITests/Tests/FullTests/SearchTests.swift")
+
+        XCTAssertTrue(environment.contains("let showOnboarding: Bool"))
+        XCTAssertTrue(environment.contains("args.contains(\"--show-onboarding\")"))
+        XCTAssertTrue(app.contains("environment.mockDaemon"))
+        XCTAssertTrue(app.contains("MockEngramServiceClient"))
+        XCTAssertTrue(app.contains("environment.showOnboarding"))
+        XCTAssertTrue(launch.contains("--show-onboarding"))
+        for identifier in [
+            "onboarding_container",
+            "onboarding_getStarted",
+            "onboarding_sourcesContinue",
+            "onboarding_fdaContinue",
+            "onboarding_mcpContinue",
+            "onboarding_finish",
+        ] {
+            XCTAssertTrue(onboarding.contains(identifier), "missing \(identifier)")
+        }
+        XCTAssertFalse(searchTests.contains("XCTAssertTrue(true"))
+        XCTAssertFalse(searchTests.contains("if search.results.exists"))
+    }
+
+    /// Invariant 6: every UI-test process owns an isolated HOME and test-mode
+    /// startup never migrates or scrubs production settings/keychain state.
+    func testUITestLaunchesUseHermeticHomeAndSkipSettingsMutation_repro() throws {
+        let launch = try source("macos/EngramUITests/Helpers/TestLaunchConfig.swift")
+        let signing = try source("macos/EngramUITests/Tests/SmokeTests/SigningVerificationTest.swift")
+        let darkMode = try source("macos/EngramUITests/Tests/FullTests/DarkModeTests.swift")
+        let app = try source("macos/Engram/App.swift")
+
+        XCTAssertTrue(launch.contains("app.launchEnvironment = ["))
+        XCTAssertTrue(launch.contains(#""HOME": home.path"#))
+        XCTAssertTrue(launch.contains(#""CFFIXED_USER_HOME": home.path"#))
+        XCTAssertTrue(launch.contains(#""TMPDIR": home.path"#))
+        XCTAssertTrue(launch.contains("UUID().uuidString"))
+        XCTAssertTrue(launch.contains("ENGRAM_SETTINGS_PATH"))
+        XCTAssertTrue(launch.contains("ENGRAM_RUNTIME_AI_SECRETS_PATH"))
+        XCTAssertTrue(launch.contains("ENGRAM_EMBEDDING_API_KEY"))
+        XCTAssertTrue(launch.contains("ENGRAM_EMBEDDING_BASE_URL"))
+        XCTAssertTrue(launch.contains("ENGRAM_EMBEDDING_MODEL"))
+        XCTAssertTrue(launch.contains("ENGRAM_EMBEDDING_DIM"))
+        XCTAssertTrue(launch.contains("ENGRAM_DIR"))
+        XCTAssertTrue(launch.contains("TemporaryUITestHomeObserver"))
+        XCTAssertTrue(launch.contains("removeItem(at: root)"))
+        XCTAssertTrue(signing.contains("TestLaunchConfig.mainWindow.configure(app)"))
+        XCTAssertTrue(darkMode.contains("TestLaunchConfig.popover.configure(popoverApp)"))
+        XCTAssertTrue(app.contains("if !environment.isTestMode"))
+    }
+
+    func testUITestConfigureFailsClosedBeforeReportingSetupFailure_repro() throws {
+        let launch = try source("macos/EngramUITests/Helpers/TestLaunchConfig.swift")
+        let environment = try XCTUnwrap(launch.range(of: "app.launchEnvironment = ["))
+        let firstFailure = try XCTUnwrap(launch.range(of: "XCTFail("))
+        let testMode = try XCTUnwrap(
+            launch.range(of: "app.launchArguments += [\n            \"--test-mode\"")
+        )
+
+        XCTAssertLessThan(environment.lowerBound, firstFailure.lowerBound)
+        XCTAssertLessThan(testMode.lowerBound, firstFailure.lowerBound)
     }
 }

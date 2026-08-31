@@ -5,6 +5,39 @@ import SwiftUI
 
 final class CommandPaletteTests: XCTestCase {
 
+    /// ui-search-settings-2: FTS markup is rendering metadata, never literal subtitle copy.
+    func testSessionSnippetUsesSnippetHighlighter_repro() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("macos/Engram/Views/CommandPaletteView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("Text(SnippetHighlighter.attributed(subtitle))"))
+        XCTAssertFalse(source.contains("Text(subtitle)"))
+    }
+
+    func testSessionResultsCarryAndRenderHqOriginBadge_repro() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let view = try String(
+            contentsOf: root.appendingPathComponent("macos/Engram/Views/CommandPaletteView.swift"),
+            encoding: .utf8
+        )
+        let item = try String(
+            contentsOf: root.appendingPathComponent("macos/Engram/Models/PaletteItem.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(view.contains("origin: item.origin"), "service and local search results must carry origin")
+        XCTAssertTrue(view.contains("OriginBadge(origin: item.origin)"), "palette rows must render HQ origin")
+        XCTAssertTrue(item.contains("origin: String?"), "palette result model must retain origin")
+    }
+
     // MARK: - Navigation commands
 
     func testNavigationCommandsCoverAllScreens() {
@@ -78,6 +111,46 @@ final class CommandPaletteTests: XCTestCase {
         XCTAssertEqual(item.secondaryActions[1].label, "Export")
         item.secondaryActions[0].run()
         item.secondaryActions[1].run()
+        XCTAssertTrue(resumed)
+        XCTAssertTrue(exported)
+    }
+
+    /// Merge-gate residual 3a: HQ/remote session results offered local-only
+    /// Resume/Export — both can never succeed off the HQ machine (Resume stays
+    /// on HQ per the live-ingest design). Gate secondary actions on origin,
+    /// mirroring ExpandableSessionCard.canResumeLocally/canExport honesty.
+    func testSessionResultOmitsSecondaryActionsForHqOrigin_repro() {
+        let hq = PaletteItem.sessionResult(
+            id: "sess-hq",
+            title: "HQ session",
+            subtitle: nil,
+            origin: "hq",
+            onSelect: {},
+            onResume: { XCTFail("HQ rows must not offer Resume") },
+            onExport: { XCTFail("HQ rows must not offer Export") }
+        )
+        XCTAssertTrue(
+            hq.secondaryActions.isEmpty,
+            "HQ/remote results must not offer local-only Resume/Export"
+        )
+
+        var resumed = false
+        var exported = false
+        let local = PaletteItem.sessionResult(
+            id: "sess-local",
+            title: "Local session",
+            subtitle: nil,
+            onSelect: {},
+            onResume: { resumed = true },
+            onExport: { exported = true }
+        )
+        XCTAssertEqual(
+            local.secondaryActions.map(\.label),
+            ["Resume", "Export"],
+            "local sessions keep both secondary actions"
+        )
+        local.secondaryActions[0].run()
+        local.secondaryActions[1].run()
         XCTAssertTrue(resumed)
         XCTAssertTrue(exported)
     }

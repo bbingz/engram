@@ -28,7 +28,13 @@ do {
     exit(64)
 }
 
-let server = MCPStdioServer()
+let server: MCPStdioServer
+do {
+    server = MCPStdioServer(config: try MCPConfig.load())
+} catch {
+    writeLine(String(describing: error), to: .standardError)
+    exit(64)
+}
 Task {
     await server.run()
     exit(0)

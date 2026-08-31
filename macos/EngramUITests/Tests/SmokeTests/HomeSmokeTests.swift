@@ -30,7 +30,7 @@ final class HomeSmokeTests: XCTestCase {
 
         let home = HomeScreen(app: app)
         home.waitForLoad()
-        XCTAssertTrue(home.recentSessions.waitForExistence(timeout: 5),
-                      "Recent sessions section should be visible")
+        XCTAssertTrue(home.recentSession(at: 0).waitForExistence(timeout: 5),
+                      "Recent session data should be visible")
     }
 }

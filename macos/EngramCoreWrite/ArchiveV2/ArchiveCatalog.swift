@@ -1321,6 +1321,47 @@ public final class ArchiveCatalog: @unchecked Sendable {
         }
     }
 
+    public func reclamationCandidate(
+        manifestSHA256: String
+    ) throws -> ArchiveReclamationCatalogCandidate? {
+        guard ArchiveV2Hash.isValidSHA256(manifestSHA256) else {
+            throw ArchiveCatalogError.invalidSHA256(field: "manifestSHA256")
+        }
+        return try pool.read { db in
+            guard let row = try Row.fetchOne(db, sql: """
+                SELECT b.*, c.*,
+                  EXISTS(
+                    SELECT 1 FROM archive_captures newer
+                    WHERE newer.locator = c.locator AND newer.captured_at > c.captured_at
+                  ) AS has_newer,
+                  EXISTS(
+                    SELECT 1 FROM archive_replica_receipts r
+                    WHERE r.manifest_sha256 = b.manifest_sha256
+                      AND r.state IN ('pending', 'uploadingObjects', 'uploadingManifest',
+                                      'requestingReceipt', 'verifyingReceipt')
+                  ) AS has_active
+                FROM archive_session_bindings b
+                JOIN archive_captures c ON c.capture_id = b.capture_id
+                WHERE b.manifest_sha256 = ?
+                """, arguments: [manifestSHA256]) else { return nil }
+            let binding = try Self.binding(from: row)
+            guard binding.remoteEligibility == .eligible else { return nil }
+            let capture = try Self.capture(from: row)
+            let replicaIDs = try String.fetchAll(db, sql: """
+                SELECT replica_id FROM archive_replica_receipts
+                WHERE manifest_sha256 = ? AND state = 'verified'
+                  AND receipt_bytes IS NOT NULL AND receipt_sha256 IS NOT NULL
+                """, arguments: [binding.manifestSHA256])
+            return ArchiveReclamationCatalogCandidate(
+                binding: binding,
+                capture: capture,
+                verifiedReplicaIDs: Set(replicaIDs),
+                hasNewerCapture: (row["has_newer"] as Int) != 0,
+                hasActiveOperation: (row["has_active"] as Int) != 0
+            )
+        }
+    }
+
     public func reclamationIntents(
         phases: Set<ArchiveReclamationPhase>,
         limit: Int

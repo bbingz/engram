@@ -209,13 +209,15 @@ final class AdapterParityTests: XCTestCase {
         XCTAssertEqual(lobsterLocators, [standardizedPath(lobsterLocator.path)])
     }
 
-    func testClaudeDerivedAdaptersShareBaseAndSourceHintCache() throws {
+    func testClaudeDerivedAdaptersShareBaseAndSourceHintCache_repro() throws {
         let factory = try source("macos/Shared/EngramCore/Adapters/SessionAdapterFactory.swift")
         let messageParser = try source("macos/Engram/Core/MessageParser.swift")
         let adapter = try source("macos/Shared/EngramCore/Adapters/Sources/ClaudeCodeAdapter.swift")
 
         XCTAssertTrue(
-            factory.contains("let claudeCode = defaultClaudeCodeAdapter(sourceHintCacheDirectory: cacheDirectory)"),
+            factory.contains("let claudeCode = defaultClaudeCodeAdapter(") &&
+                factory.contains("homeDirectory: homeDirectory,") &&
+                factory.contains("sourceHintCacheDirectory: cacheDirectory"),
             "Default adapter construction should share one Claude base between Claude and derived sources"
         )
         XCTAssertTrue(
@@ -226,14 +228,12 @@ final class AdapterParityTests: XCTestCase {
             factory.contains("ClaudeCodeDerivedSourceAdapter(source: .lobsterai, base: claudeCode)"),
             "LobsterAI derived source should reuse the shared Claude base instead of re-enumerating its own base"
         )
-        XCTAssertTrue(
-            messageParser.contains("let claudeCode = ClaudeCodeAdapter(profileResolver: resolver)"),
-            "The UI registry should construct Claude from the profile resolver"
-        )
-        XCTAssertTrue(
-            messageParser.contains("ClaudeCodeDerivedSourceAdapter(source: .minimax, base: claudeCode)") &&
-                messageParser.contains("ClaudeCodeDerivedSourceAdapter(source: .lobsterai, base: claudeCode)"),
-            "The UI registry should share one resolver-backed Claude base with both derived sources"
+        XCTAssertTrue(messageParser.contains("SessionAdapterFactory.defaultAdapters("))
+        XCTAssertTrue(messageParser.contains("homeDirectory: homeDirectory,"))
+        XCTAssertTrue(messageParser.contains("claudeCodeProfileResolver: claudeCodeProfileResolver"))
+        XCTAssertFalse(
+            messageParser.contains("let claudeCode = ClaudeCodeAdapter("),
+            "The UI registry must use the hermetic factory shared by all adapters"
         )
         XCTAssertTrue(
             adapter.contains("sourceHintCache"),
@@ -326,27 +326,44 @@ final class AdapterParityTests: XCTestCase {
         XCTAssertEqual(info.parentSessionId, "qoder-parent-session")
     }
 
-    func testQoderDirectProjectSubagentFolderDoesNotInventParentSession() async throws {
-        let root = FileManager.default.temporaryDirectory
+    func testQoderDirectProjectSubagentFolderDoesNotInventSubagent_repro() async throws {
+        let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent("qoder-direct-subagents-\(UUID().uuidString)", isDirectory: true)
+        let root = scratch.appendingPathComponent("custom/subagents/projects", isDirectory: true)
         let project = root.appendingPathComponent("-Volumes-work-my-project", isDirectory: true)
-        let subagents = project.appendingPathComponent("subagents", isDirectory: true)
-        try FileManager.default.createDirectory(at: subagents, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
 
-        let locator = subagents.appendingPathComponent("qoder-subagent.jsonl")
-        try Data(contentsOf: fixtureRoot.deletingLastPathComponent().appendingPathComponent("qoder/sample.jsonl"))
-            .write(to: locator)
+        let locator = project.appendingPathComponent("qoder-session.jsonl")
+        let sample = try String(
+            contentsOf: fixtureRoot.deletingLastPathComponent().appendingPathComponent("qoder/sample.jsonl"),
+            encoding: .utf8
+        )
+        try Array(repeating: sample, count: 5).joined(separator: "\n")
+            .write(to: locator, atomically: true, encoding: .utf8)
 
         let adapter = QoderAdapter(projectsRoot: root.path)
         let locators = try await adapter.listSessionLocators().map(standardizedPath)
         XCTAssertEqual(locators, [standardizedPath(locator.path)])
-        guard case .success(let info) = try await adapter.parseSessionInfo(locator: locator.path) else {
-            return XCTFail("qoder direct subagent fixture did not parse")
+        guard case .success(let scan) = try await adapter.scanForIndexing(locator: locator.path) else {
+            return XCTFail("qoder top-level fixture did not scan")
         }
 
-        XCTAssertEqual(info.agentRole, "subagent")
+        let info = scan.info
+        XCTAssertNil(info.agentRole)
         XCTAssertNil(info.parentSessionId)
+        XCTAssertEqual(info.messageCount, 20)
+        XCTAssertEqual(
+            SessionTier.compute(
+                TierInput(
+                    messageCount: info.messageCount,
+                    agentRole: info.agentRole,
+                    filePath: info.filePath,
+                    project: info.project
+                )
+            ),
+            .premium
+        )
     }
 
     func testCommandCodeAdapterParsesRoleContentJsonl() async throws {
@@ -546,7 +563,7 @@ final class AdapterParityTests: XCTestCase {
         XCTAssertFalse(ParserLimits.default.isSameFileIdentity(before, modified))
     }
 
-    func testCodexStreamMessagesAppliesWindowBeforeMessageLimit() async throws {
+    func testCodexStreamMessagesCapsWindowAtMessageLimit_repro() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("codex-window-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -577,10 +594,10 @@ final class AdapterParityTests: XCTestCase {
             messages.append(message)
         }
 
-        XCTAssertEqual(messages.map(\.content), ["task-9", "task-10"])
+        XCTAssertEqual(messages.map(\.content), ["task-9"])
     }
 
-    func testCodexStreamWindowToleratesActiveSessionAppend() async throws {
+    func testCodexStreamWindowRefusesOffsetPastMessageLimitDuringAppend_repro() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("codex-active-window-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -620,7 +637,7 @@ final class AdapterParityTests: XCTestCase {
         }
         try await appendTask.value
 
-        XCTAssertEqual(messages.map(\.content), ["active-19000", "active-19001"])
+        XCTAssertEqual(messages.map(\.content), [])
     }
 
     func testStreamingLineReaderReportsLinesAndLineLimitFailures() throws {
@@ -678,8 +695,8 @@ final class AdapterParityTests: XCTestCase {
     }
 
     /// The windowed read must STOP at the window boundary, not scan the whole
-    /// file: an oversized line past the window trips `.lineTooLarge` on a full
-    /// read, but a windowed read that ends before it must succeed.
+    /// file. A whole-document metadata read preserves its valid prefix and
+    /// reports the later oversized line without throwing it away.
     func testWindowedMessagesStopsReadingAtWindowEnd() throws {
         var lines = (0..<6).map { "{\"i\":\($0)}" }
         lines.append("{\"i\":6,\"x\":\"\(String(repeating: "z", count: 200))\"}")
@@ -699,19 +716,20 @@ final class AdapterParityTests: XCTestCase {
         )
         XCTAssertEqual(window.map(\.content), ["m0", "m1", "m2"])
 
-        XCTAssertThrowsError(
-            try JSONLAdapterSupport.windowedMessages(
-                locator: path, options: StreamMessagesOptions(), limits: limits, transform: transform
-            )
-        ) { error in
-            XCTAssertEqual(error as? ParserFailure, .lineTooLarge)
-        }
+        let full = try JSONLAdapterSupport.windowedMessagesWithMetadata(
+            locator: path,
+            options: StreamMessagesOptions(),
+            limits: limits,
+            transform: transform
+        )
+        XCTAssertEqual(full.messages.map(\.content), (0..<6).map { "m\($0)" })
+        XCTAssertEqual(full.parseFailure, .lineTooLarge)
+        XCTAssertFalse(full.totalKnownComplete)
     }
 
-    /// End-to-end through a real (non-Codex) adapter: a windowed page returns its
-    /// slice even when a full read would trip the message cap — proving the
-    /// shared early-termination path is wired into the line-based adapters.
-    func testClaudeCodeStreamMessagesWindowsBeforeMessageCap() async throws {
+    /// End-to-end through a real (non-Codex) adapter: windowed paging stops at
+    /// the same safety cap as an unwindowed transcript read.
+    func testClaudeCodeStreamMessagesStopsAtMessageCap() async throws {
         let lines = (0..<12).map { index -> String in
             let role = index % 2 == 0 ? "user" : "assistant"
             return "{\"type\":\"\(role)\",\"message\":{\"content\":\"m\(index)\"}}"
@@ -729,7 +747,7 @@ final class AdapterParityTests: XCTestCase {
         ) {
             windowed.append(message.content)
         }
-        XCTAssertEqual(windowed, ["m9", "m10"])
+        XCTAssertEqual(windowed, ["m9"])
 
         // A full (unwindowed) read of the same file overflows the cap. Instead of
         // throwing — which would route MessageParser into its uncapped legacy

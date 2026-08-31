@@ -21,6 +21,13 @@ protocol EngramServiceReadProvider: Sendable {
 
 protocol ServiceDatabaseReading: Sendable {
     func read<T>(_ block: (GRDB.Database) throws -> T) throws -> T
+    func readImmediate<T>(_ block: (GRDB.Database) throws -> T) throws -> T
+}
+
+extension ServiceDatabaseReading {
+    func readImmediate<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
+        try read(block)
+    }
 }
 
 struct EmptyEngramServiceReadProvider: EngramServiceReadProvider {
@@ -95,15 +102,38 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
     private let homeDirectory: URL
     private let liveSessionCache: LiveSessionScanCache
     private let now: @Sendable () -> Date
+    private let liveSessionScanCheckpoint: (@Sendable (URL) throws -> Void)?
+    private let liveSessionFinalizationCheckpoint: @Sendable () throws -> Void
 
+    // docs/invariants.md #6: a no-argument test provider must not scan real transcripts.
     init(
-        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        homeDirectory: URL = EngramUserDataDirectory.resolvedHomeDirectory(),
         liveSessionCacheTTL: TimeInterval = FileSystemEngramServiceReadProvider.liveSessionCacheTTL,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        liveSessionScanCheckpoint: (@Sendable (URL) throws -> Void)? = nil,
+        liveSessionFinalizationCheckpoint: @escaping @Sendable () throws -> Void = {}
     ) {
         self.homeDirectory = homeDirectory
         self.now = now
+        self.liveSessionScanCheckpoint = liveSessionScanCheckpoint
+        self.liveSessionFinalizationCheckpoint = liveSessionFinalizationCheckpoint
         self.liveSessionCache = LiveSessionScanCache(ttl: liveSessionCacheTTL)
+    }
+
+    func claudeSubagentLayout(locator: String) -> SubagentTranscriptLayout? {
+        let profiles = ClaudeCodeProfileResolver(
+            homeDirectory: homeDirectory,
+            settingsURL: homeDirectory.appendingPathComponent(".engram/settings.json")
+        ).resolve().profiles
+        for profile in profiles where profile.available {
+            if let layout = SubagentTranscriptPath.layout(
+                locator: locator,
+                projectsRoot: profile.projectsRoot
+            ) {
+                return layout
+            }
+        }
+        return nil
     }
 
     func search(_ request: EngramServiceSearchRequest) async throws -> EngramServiceSearchResponse {
@@ -307,7 +337,10 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
     private struct LiveSessionCandidate {
         var source: String
         var file: URL
+        var locator: String
+        var explicitSessionID: String?
         var modifiedAt: Date
+        var metadata: LiveMetadata? = nil
     }
 
     private actor LiveSessionScanCache {
@@ -323,10 +356,12 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
             now: Date,
             load: @Sendable (Date) throws -> [EngramServiceLiveSessionInfo]
         ) throws -> [EngramServiceLiveSessionInfo] {
+            try Task.checkCancellation()
             if let cachedAt, let cachedSessions, now.timeIntervalSince(cachedAt) < ttl {
                 return cachedSessions
             }
             let sessions = try load(now)
+            try Task.checkCancellation()
             cachedAt = now
             cachedSessions = sessions
             return sessions
@@ -334,51 +369,101 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
     }
 
     private func scanLiveSessions(now: Date) throws -> [EngramServiceLiveSessionInfo] {
-        let roots: [LiveSessionRoot] = [
+        var roots: [LiveSessionRoot] = [
             LiveSessionRoot(source: "codex", url: homeDirectory.appendingPathComponent(".codex/sessions", isDirectory: true), extensions: ["jsonl"]),
-            LiveSessionRoot(source: "claude-code", url: homeDirectory.appendingPathComponent(".claude/projects", isDirectory: true), extensions: ["jsonl"]),
-            LiveSessionRoot(source: "gemini-cli", url: homeDirectory.appendingPathComponent(".gemini/tmp", isDirectory: true), extensions: ["json"]),
-            LiveSessionRoot(source: "antigravity", url: homeDirectory.appendingPathComponent(".gemini/antigravity-cli/brain", isDirectory: true), extensions: ["json", "jsonl"]),
-            LiveSessionRoot(source: "antigravity", url: homeDirectory.appendingPathComponent(".gemini/antigravity", isDirectory: true), extensions: ["json", "jsonl"]),
-            LiveSessionRoot(source: "opencode", url: homeDirectory.appendingPathComponent(".local/share/opencode", isDirectory: true), extensions: ["db"]),
         ]
+        let claudeProfiles = ClaudeCodeProfileResolver(
+            homeDirectory: homeDirectory,
+            settingsURL: homeDirectory.appendingPathComponent(".engram/settings.json")
+        ).resolve().profiles
+        roots += claudeProfiles.filter(\.available).map {
+            LiveSessionRoot(
+                source: "claude-code",
+                url: URL(fileURLWithPath: $0.projectsRoot, isDirectory: true),
+                extensions: ["jsonl"]
+            )
+        }
         let activeWindow: TimeInterval = 2 * 60
         let idleWindow: TimeInterval = 15 * 60
         let recentWindow: TimeInterval = 24 * 60 * 60
         var candidates: [LiveSessionCandidate] = []
         var seen = Set<String>()
 
-        for root in roots {
+        for configuredRoot in roots {
+            try Task.checkCancellation()
+            var root = configuredRoot
+            root.url = URL(
+                fileURLWithPath: FileSystemPathIdentity.realpathPath(configuredRoot.url.path),
+                isDirectory: true
+            )
             guard FileManager.default.fileExists(atPath: root.url.path) else { continue }
-            if (try? root.url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+            let rootValues = try? root.url.resourceValues(
+                forKeys: [.contentModificationDateKey, .isDirectoryKey, .isRegularFileKey]
+            )
+            if rootValues?.isRegularFile == true {
                 try considerLiveSessionCandidate(
                     root.url,
                     root: root,
                     now: now,
                     recentWindow: recentWindow,
+                    resourceValues: rootValues,
                     seen: &seen,
                     candidates: &candidates
                 )
+            } else if root.source == "claude-code" {
+                try enumerateClaudeLiveFiles(under: root.url) { file, values in
+                    try considerLiveSessionCandidate(
+                        file,
+                        root: root,
+                        now: now,
+                        recentWindow: recentWindow,
+                        resourceValues: values,
+                        seen: &seen,
+                        candidates: &candidates
+                    )
+                }
             } else {
-                let enumerator = FileManager.default.enumerator(
-                    at: root.url,
-                    includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey, .fileSizeKey],
-                    options: [.skipsHiddenFiles]
-                )
-                if let enumerator {
-                    while let file = enumerator.nextObject() as? URL {
-                        try considerLiveSessionCandidate(
-                            file,
-                            root: root,
-                            now: now,
-                            recentWindow: recentWindow,
-                            seen: &seen,
-                            candidates: &candidates
-                        )
-                    }
+                var visitedDirectories = Set<String>()
+                try enumerateLiveFiles(
+                    under: root.url,
+                    visitedDirectories: &visitedDirectories
+                ) { file, values in
+                    try considerLiveSessionCandidate(
+                        file,
+                        root: root,
+                        now: now,
+                        recentWindow: recentWindow,
+                        resourceValues: values,
+                        seen: &seen,
+                        candidates: &candidates
+                    )
                 }
             }
+            try Task.checkCancellation()
         }
+        try Task.checkCancellation()
+        try appendGeminiLiveCandidates(
+            now: now,
+            recentWindow: recentWindow,
+            seen: &seen,
+            candidates: &candidates
+        )
+        try Task.checkCancellation()
+        try appendAntigravityLiveCandidates(
+            now: now,
+            recentWindow: recentWindow,
+            seen: &seen,
+            candidates: &candidates
+        )
+        try Task.checkCancellation()
+        try appendOpenCodeLiveCandidates(
+            now: now,
+            recentWindow: recentWindow,
+            seen: &seen,
+            candidates: &candidates
+        )
+        try liveSessionFinalizationCheckpoint()
+        try Task.checkCancellation()
         // Sort + cap ONCE after the full scan. The per-insert sort+truncate this
         // replaces re-sorted the whole array on every accepted file (O(M·N log N));
         // a single sort is O(M log M) and produces the identical top-N result set.
@@ -388,8 +473,14 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
             }
             return $0.modifiedAt > $1.modifiedAt
         }
-        return candidates.prefix(Self.liveSessionResultLimit).map { candidate in
-            let metadata = parseLiveMetadata(from: candidate.file)
+        try Task.checkCancellation()
+        let sessions = try candidates.prefix(Self.liveSessionResultLimit).map { candidate in
+            try Task.checkCancellation()
+            let metadata = candidate.metadata ?? parseLiveMetadata(
+                from: candidate.file,
+                source: candidate.source,
+                explicitSessionID: candidate.explicitSessionID
+            )
             let age = now.timeIntervalSince(candidate.modifiedAt)
             let level = age <= activeWindow ? "active" : (age <= idleWindow ? "idle" : "recent")
             return EngramServiceLiveSessionInfo(
@@ -398,7 +489,7 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
                 project: metadata.project,
                 title: metadata.title,
                 cwd: metadata.cwd,
-                filePath: candidate.file.path,
+                filePath: candidate.locator,
                 startedAt: metadata.startedAt,
                 model: metadata.model,
                 currentActivity: metadata.activity,
@@ -406,6 +497,8 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
                 activityLevel: level
             )
         }
+        try Task.checkCancellation()
+        return sessions
     }
 
     private func considerLiveSessionCandidate(
@@ -413,20 +506,280 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
         root: LiveSessionRoot,
         now: Date,
         recentWindow: TimeInterval,
+        resourceValues: URLResourceValues? = nil,
         seen: inout Set<String>,
         candidates: inout [LiveSessionCandidate]
     ) throws {
+        try Task.checkCancellation()
         guard root.extensions.contains(file.pathExtension.lowercased()) else { return }
-        // Claude Code subagent transcripts live under a `/subagents/` directory
-        // and are churn accessed through their parent session, not independent
-        // live sessions — keep them out of the live scan.
-        guard !file.pathComponents.contains("subagents") else { return }
-        let values = try file.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey])
+        if root.source == "codex", !file.lastPathComponent.hasPrefix("rollout-") {
+            return
+        }
+        let values = resourceValues ?? (try? file.resourceValues(
+            forKeys: [.contentModificationDateKey, .isRegularFileKey]
+        ))
+        guard let values else { return }
         guard values.isRegularFile == true, let modifiedAt = values.contentModificationDate else { return }
         let age = now.timeIntervalSince(modifiedAt)
         guard age >= 0, age <= recentWindow else { return }
         guard seen.insert(file.path).inserted else { return }
-        candidates.append(LiveSessionCandidate(source: root.source, file: file, modifiedAt: modifiedAt))
+        candidates.append(
+            LiveSessionCandidate(
+                source: root.source,
+                file: file,
+                locator: file.path,
+                explicitSessionID: nil,
+                modifiedAt: modifiedAt
+            )
+        )
+    }
+
+    private func appendGeminiLiveCandidates(
+        now: Date,
+        recentWindow: TimeInterval,
+        seen: inout Set<String>,
+        candidates: inout [LiveSessionCandidate]
+    ) throws {
+        try Task.checkCancellation()
+        let projectsRoot = homeDirectory.appendingPathComponent(".gemini/tmp", isDirectory: true)
+        let projects = directChildren(of: projectsRoot)
+        try Task.checkCancellation()
+        for project in projects {
+            try Task.checkCancellation()
+            guard isDirectory(project) else { continue }
+            let chats = project.appendingPathComponent("chats", isDirectory: true)
+            let files = directChildren(of: chats)
+            try Task.checkCancellation()
+            for file in files {
+                try Task.checkCancellation()
+                let name = file.lastPathComponent
+                guard !name.hasSuffix(".engram.json"), name != "logs.json",
+                      file.pathExtension == "json" || file.pathExtension == "jsonl" else { continue }
+                try appendLiveCandidate(
+                    source: "gemini-cli",
+                    file: file,
+                    locator: file.path,
+                    explicitSessionID: nil,
+                    now: now,
+                    recentWindow: recentWindow,
+                    seen: &seen,
+                    candidates: &candidates
+                )
+            }
+        }
+    }
+
+    private func appendAntigravityLiveCandidates(
+        now: Date,
+        recentWindow: TimeInterval,
+        seen: inout Set<String>,
+        candidates: inout [LiveSessionCandidate]
+    ) throws {
+        try Task.checkCancellation()
+        let cache = homeDirectory.appendingPathComponent(".engram/cache/antigravity", isDirectory: true)
+        let cachedFiles = directChildren(of: cache)
+        try Task.checkCancellation()
+        for file in cachedFiles {
+            try Task.checkCancellation()
+            guard file.pathExtension == "jsonl" else { continue }
+            try appendLiveCandidate(
+                source: "antigravity",
+                file: file,
+                locator: file.path,
+                explicitSessionID: nil,
+                now: now,
+                recentWindow: recentWindow,
+                seen: &seen,
+                candidates: &candidates
+            )
+        }
+
+        let brainRoots = [
+            ".gemini/antigravity-cli/brain",
+            ".gemini/antigravity/brain",
+            ".gemini/antigravity-ide/brain",
+        ]
+        for relativeRoot in brainRoots {
+            try Task.checkCancellation()
+            let brain = homeDirectory.appendingPathComponent(relativeRoot, isDirectory: true)
+            let sessions = directChildren(of: brain)
+            try Task.checkCancellation()
+            for session in sessions {
+                try Task.checkCancellation()
+                guard isDirectory(session) else { continue }
+                let transcript = session.appendingPathComponent(".system_generated/logs/transcript.jsonl")
+                guard FileManager.default.fileExists(atPath: transcript.path) else { continue }
+                try appendLiveCandidate(
+                    source: "antigravity",
+                    file: transcript,
+                    locator: transcript.path,
+                    explicitSessionID: session.lastPathComponent,
+                    now: now,
+                    recentWindow: recentWindow,
+                    seen: &seen,
+                    candidates: &candidates
+                )
+            }
+        }
+    }
+
+    private func appendOpenCodeLiveCandidates(
+        now: Date,
+        recentWindow: TimeInterval,
+        seen: inout Set<String>,
+        candidates: inout [LiveSessionCandidate]
+    ) throws {
+        try Task.checkCancellation()
+        let databaseURL = homeDirectory.appendingPathComponent(".local/share/opencode/opencode.db")
+        guard let values = try? databaseURL.resolvingSymlinksInPath()
+            .resourceValues(forKeys: [.isRegularFileKey]),
+              values.isRegularFile == true else { return }
+
+        var configuration = Configuration()
+        configuration.readonly = true
+        configuration.busyMode = .timeout(0.1)
+        let cutoffMilliseconds = Int64(now.addingTimeInterval(-recentWindow).timeIntervalSince1970 * 1_000)
+        guard let database = try? DatabaseQueue(path: databaseURL.path, configuration: configuration),
+              let rows = try? database.read({ db in
+                  try Row.fetchAll(db, sql: """
+                      SELECT id, directory, title, time_updated
+                      FROM session
+                      WHERE time_archived IS NULL
+                        AND time_updated >= ?
+                      ORDER BY time_updated DESC
+                      """, arguments: [cutoffMilliseconds])
+              }) else { return }
+
+        for row in rows {
+            try Task.checkCancellation()
+            let id: String = row["id"]
+            let directory: String? = row["directory"]
+            let title: String? = row["title"]
+            let updatedMilliseconds: Int64 = row["time_updated"]
+            guard !id.isEmpty else { continue }
+            let locator = "\(databaseURL.path)::\(id)"
+            guard seen.insert(locator).inserted else { continue }
+            candidates.append(
+                LiveSessionCandidate(
+                    source: "opencode",
+                    file: databaseURL,
+                    locator: locator,
+                    explicitSessionID: id,
+                    modifiedAt: Date(timeIntervalSince1970: Double(updatedMilliseconds) / 1_000),
+                    metadata: LiveMetadata(
+                        sessionId: id,
+                        project: nil,
+                        title: title,
+                        cwd: directory,
+                        startedAt: nil,
+                        model: nil,
+                        activity: nil
+                    )
+                )
+            )
+        }
+    }
+
+    private func appendLiveCandidate(
+        source: String,
+        file: URL,
+        locator: String,
+        explicitSessionID: String?,
+        now: Date,
+        recentWindow: TimeInterval,
+        seen: inout Set<String>,
+        candidates: inout [LiveSessionCandidate]
+    ) throws {
+        try Task.checkCancellation()
+        guard let values = try? file.resolvingSymlinksInPath().resourceValues(
+            forKeys: [.contentModificationDateKey, .isRegularFileKey]
+        ) else { return }
+        guard values.isRegularFile == true, let modifiedAt = values.contentModificationDate else { return }
+        let age = now.timeIntervalSince(modifiedAt)
+        guard age >= 0, age <= recentWindow, seen.insert(locator).inserted else { return }
+        candidates.append(
+            LiveSessionCandidate(
+                source: source,
+                file: file,
+                locator: locator,
+                explicitSessionID: explicitSessionID,
+                modifiedAt: modifiedAt
+            )
+        )
+    }
+
+    private func directChildren(of directory: URL) -> [URL] {
+        (try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+    }
+
+    private func enumerateClaudeLiveFiles(
+        under projectsRoot: URL,
+        visit: (URL, URLResourceValues) throws -> Void
+    ) throws {
+        try Task.checkCancellation()
+        let projects = directChildren(of: projectsRoot)
+        try Task.checkCancellation()
+        for project in projects {
+            try Task.checkCancellation()
+            try liveSessionScanCheckpoint?(project)
+            guard let projectValues = try? project.resourceValues(
+                forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+            ), projectValues.isSymbolicLink != true, projectValues.isDirectory == true else {
+                continue
+            }
+
+            let files = directChildren(of: project)
+            try Task.checkCancellation()
+            for file in files {
+                try Task.checkCancellation()
+                try liveSessionScanCheckpoint?(file)
+                guard let values = try? file.resourceValues(
+                    forKeys: [.contentModificationDateKey, .isRegularFileKey, .isSymbolicLinkKey]
+                ), values.isSymbolicLink != true, values.isRegularFile == true else {
+                    continue
+                }
+                try visit(file, values)
+            }
+            try Task.checkCancellation()
+        }
+    }
+
+    private func enumerateLiveFiles(
+        under directory: URL,
+        visitedDirectories: inout Set<String>,
+        visit: (URL, URLResourceValues) throws -> Void
+    ) throws {
+        try Task.checkCancellation()
+        guard visitedDirectories.insert(directory.path).inserted else { return }
+        let children = directChildren(of: directory)
+        try Task.checkCancellation()
+        for child in children {
+            try Task.checkCancellation()
+            try liveSessionScanCheckpoint?(child)
+            guard let values = try? child.resourceValues(
+                forKeys: [.contentModificationDateKey, .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey]
+            ), values.isSymbolicLink != true else {
+                continue
+            }
+            if values.isDirectory == true {
+                try enumerateLiveFiles(
+                    under: child,
+                    visitedDirectories: &visitedDirectories,
+                    visit: visit
+                )
+            } else if values.isRegularFile == true {
+                try visit(child, values)
+            }
+        }
+        try Task.checkCancellation()
+    }
+
+    private func isDirectory(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
     }
 
     private struct LiveMetadata {
@@ -439,16 +792,35 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
         var activity: String?
     }
 
-    private func parseLiveMetadata(from url: URL) -> LiveMetadata {
+    private func parseLiveMetadata(
+        from url: URL,
+        source: String,
+        explicitSessionID sourceSessionID: String?
+    ) -> LiveMetadata {
         guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]) else {
-            return LiveMetadata(title: url.lastPathComponent)
+            return LiveMetadata(sessionId: sourceSessionID, title: url.lastPathComponent)
         }
         let prefix = Data(data.prefix(64 * 1024))
         guard let text = String(data: prefix, encoding: .utf8) else {
-            return LiveMetadata(title: url.lastPathComponent)
+            return LiveMetadata(sessionId: sourceSessionID, title: url.lastPathComponent)
         }
+        if source == "antigravity", let object = firstJSONObject(in: text) {
+            return LiveMetadata(
+                sessionId: sourceSessionID
+                    ?? firstStringValue(keys: ["sessionId", "session_id"], in: object)
+                    ?? genericID(from: object),
+                project: firstStringValue(keys: ["project"], in: object),
+                title: firstStringValue(keys: ["generated_title", "title", "summary"], in: object),
+                cwd: firstStringValue(keys: ["cwd", "workspace"], in: object),
+                startedAt: firstStringValue(keys: ["timestamp", "start_time", "startedAt"], in: object),
+                model: firstStringValue(keys: ["model"], in: object),
+                activity: firstStringValue(keys: ["activity", "currentActivity"], in: object)
+            )
+        }
+        let metadataSessionID = firstStringValue(keys: ["sessionId", "session_id"], in: text)
+        let sessionID = sourceSessionID ?? metadataSessionID ?? genericIDFromFirstJSONObject(in: text)
         return LiveMetadata(
-            sessionId: firstStringValue(keys: ["id", "session_id", "sessionId"], in: text),
+            sessionId: sessionID,
             project: firstStringValue(keys: ["project"], in: text),
             title: firstStringValue(keys: ["generated_title", "title", "summary"], in: text),
             cwd: firstStringValue(keys: ["cwd", "workspace"], in: text),
@@ -456,6 +828,34 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
             model: firstStringValue(keys: ["model"], in: text),
             activity: firstStringValue(keys: ["activity", "currentActivity"], in: text)
         )
+    }
+
+    private func genericIDFromFirstJSONObject(in text: String) -> String? {
+        guard let object = firstJSONObject(in: text) else { return nil }
+        return genericID(from: object)
+    }
+
+    private func firstJSONObject(in text: String) -> [String: Any]? {
+        guard let firstLine = text.split(whereSeparator: \.isNewline).first,
+              let data = String(firstLine).data(using: .utf8) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    private func genericID(from object: [String: Any]) -> String? {
+        if let id = object["id"] as? String, !id.isEmpty { return id }
+        if let payload = object["payload"] as? [String: Any],
+           let id = payload["id"] as? String,
+           !id.isEmpty {
+            return id
+        }
+        return nil
+    }
+
+    private func firstStringValue(keys: [String], in object: [String: Any]) -> String? {
+        for key in keys {
+            if let value = object[key] as? String, !value.isEmpty { return value }
+        }
+        return nil
     }
 
     private func firstStringValue(keys: [String], in text: String) -> String? {
@@ -497,6 +897,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
     private let embeddingEnvironment: [String: String]
     private let embeddingProviderFactory: @Sendable (EmbeddingConfig) -> any EmbeddingProvider
     private let sessionAdapterProvider: @Sendable () -> [any SessionAdapter]
+    private let transcriptPrimerReader: @Sendable (String, String, Int) async throws -> ServiceTranscriptReader.ReadResult
 
     init(
         databasePath: String,
@@ -513,6 +914,14 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         },
         sessionAdapterProvider: @escaping @Sendable () -> [any SessionAdapter] = {
             SessionAdapterFactory.defaultAdapters()
+        },
+        transcriptPrimerReader: @escaping @Sendable (String, String, Int) async throws -> ServiceTranscriptReader.ReadResult = {
+            filePath, source, limit in
+            try await ServiceTranscriptReader.readPrimerMessagesWithMetadata(
+                filePath: filePath,
+                source: source,
+                limit: limit
+            )
         }
     ) throws {
         self.databaseReader = try makeDatabaseReader(databasePath)
@@ -521,6 +930,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         self.embeddingEnvironment = embeddingEnvironment
         self.embeddingProviderFactory = embeddingProviderFactory
         self.sessionAdapterProvider = sessionAdapterProvider
+        self.transcriptPrimerReader = transcriptPrimerReader
     }
 
     func search(_ request: EngramServiceSearchRequest) async throws -> EngramServiceSearchResponse {
@@ -528,12 +938,20 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         let requestedMode = request.mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let semanticRequested = ["semantic", "hybrid", "both"].contains(requestedMode)
         guard query.count >= 2 else {
-            let reason = SessionVectorSearchAvailability.SemanticDegradeReason.providerUnavailable
+            let emptyModes: [String]
+            switch requestedMode {
+            case "semantic":
+                emptyModes = ["semantic"]
+            case "hybrid", "both":
+                emptyModes = ["keyword", "semantic"]
+            default:
+                emptyModes = query.isEmpty ? [] : ["keyword"]
+            }
             return EngramServiceSearchResponse(
                 items: [],
-                searchModes: ["keyword"],
-                warning: semanticRequested ? reason.serviceWarning : nil,
-                warningCode: semanticRequested ? reason.structuredCode : nil
+                searchModes: emptyModes,
+                warning: nil,
+                warningCode: nil
             )
         }
 
@@ -563,6 +981,20 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 }
             } catch is CancellationError {
                 throw CancellationError()
+            } catch let error as DatabaseError
+                where Self.isSQLiteBusyOrLocked(error) {
+                ServiceLogger.warn(
+                    "semantic search database was busy; failing closed without a second read",
+                    category: .reader
+                )
+                return EngramServiceSearchResponse(
+                    items: [],
+                    searchModes: requestedMode == "semantic"
+                        ? ["semantic"]
+                        : ["keyword", "semantic"],
+                    warning: "Search is temporarily unavailable while the Engram database is busy. Retry shortly.",
+                    warningCode: "searchFailed"
+                )
             } catch {
                 ServiceLogger.warn(
                     "semantic search failed; falling back to keyword: \(error.localizedDescription)",
@@ -593,90 +1025,110 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         request: EngramServiceSearchRequest,
         limit: Int,
         warning: String?,
-        warningCode: String?
+        warningCode: String?,
+        immediate: Bool = false
     ) async throws -> EngramServiceSearchResponse {
-        try await read { db in
-            if CJKText.containsCJK(query) || query.count < 3 {
-                // CJK uses LIKE because FTS5 trigram MATCH is unreliable for
-                // CJK. Two-character Latin abbreviations ("AI", "PR", "UI")
-                // also need LIKE because the trigram tokenizer can't MATCH
-                // terms shorter than three characters. Escape wildcards so a
-                // literal "%"/"_" in the query is matched verbatim.
-                let pattern = "%\(CJKText.escapeLikePattern(query))%"
-                var parts = ["""
-                    SELECT s.*, f.content AS snippet
-                    FROM sessions_fts f
-                    JOIN sessions s ON s.id = f.session_id
-                    WHERE f.content LIKE ? ESCAPE '\\' AND s.hidden_at IS NULL
-                      AND \(SessionSemanticSearchPolicy.searchableTierSQL)
-                """]
-                var args: [DatabaseValueConvertible] = [pattern]
-                appendSearchFilters(for: request, to: &parts, args: &args)
-                parts.append("""
-                    GROUP BY s.id
-                    ORDER BY s.start_time DESC
-                    LIMIT ?
-                """)
-                args.append(limit)
-                let rows = try Row.fetchAll(
-                    db,
-                    sql: parts.joined(separator: " "),
-                    arguments: StatementArguments(args)
-                )
-                return EngramServiceSearchResponse(
-                    items: rows.map { item(from: $0, query: query) },
-                    searchModes: ["keyword"],
-                    warning: warning,
-                    warningCode: warningCode
-                )
-            }
-
-            let termMatches = CJKText.ftsMatchTerms(query)
-            let snippetMatch = termMatches.first ?? CJKText.ftsMatchQuery(query)
+        let tokens = CJKText.searchableTerms(query)
+        guard !tokens.isEmpty else {
+            return EngramServiceSearchResponse(
+                items: [],
+                searchModes: ["keyword"],
+                warning: warning,
+                warningCode: warningCode
+            )
+        }
+        let search: @Sendable (GRDB.Database) throws -> EngramServiceSearchResponse = { db in
+            let termMatches = CJKText.ftsMatchTerms(tokens)
             // Search at session granularity: every query token must exist
             // somewhere in the session, not necessarily in the same FTS row.
-            // Drive from FTS MATCH results first, then join sessions. This
-            // avoids re-running a MATCH probe once per sessions row.
+            // Short Latin and CJK tokens use LIKE because FTS5 trigram MATCH
+            // cannot represent them; longer Latin tokens keep MATCH ranking.
             var ctes: [String] = []
             var joins: [String] = []
             var args: [DatabaseValueConvertible] = []
-            for (index, termMatch) in termMatches.enumerated() {
+            for (index, token) in tokens.enumerated() {
                 let alias = "m\(index)"
-                let snippetSQL = index == 0
-                    ? ", MIN(content) AS snippet"
-                    : ""
-                ctes.append("""
-                    \(alias) AS (
-                        SELECT session_id, MIN(rank) AS rank\(snippetSQL)
-                        FROM sessions_fts
-                        WHERE sessions_fts MATCH ?
-                        GROUP BY session_id
-                    )
-                """)
-                args.append(termMatch)
+                if CJKText.containsCJK(token) || token.count < 3 {
+                    ctes.append("""
+                        \(alias)_hits AS (
+                            SELECT rowid, session_id, content,
+                                   ROW_NUMBER() OVER (
+                                       PARTITION BY session_id
+                                       ORDER BY instr(lower(content), lower(?)), rowid
+                                   ) AS match_position
+                            FROM sessions_fts
+                            WHERE content LIKE ? ESCAPE '\\'
+                        ),
+                        \(alias) AS (
+                            SELECT session_id, rowid AS matched_rowid, 0.0 AS rank,
+                                   substr(content, MAX(1, instr(lower(content), lower(?)) - 200), ?) AS snippet
+                            FROM \(alias)_hits
+                            WHERE match_position = 1
+                        )
+                    """)
+                    args.append(token)
+                    args.append("%\(CJKText.escapeLikePattern(token))%")
+                    args.append(token)
+                    args.append(Self.maxSnippetLength)
+                } else {
+                    ctes.append("""
+                        \(alias)_hits AS (
+                            SELECT rowid, session_id, rank
+                            FROM sessions_fts
+                            WHERE sessions_fts MATCH ?
+                        ),
+                        \(alias) AS (
+                            SELECT hits.session_id, MIN(hits.rank) AS rank,
+                                   (
+                                       SELECT rowid
+                                       FROM sessions_fts
+                                       WHERE sessions_fts MATCH ?
+                                         AND sessions_fts.session_id = hits.session_id
+                                       ORDER BY rank, rowid
+                                       LIMIT 1
+                                   ) AS matched_rowid,
+                                   (
+                                       SELECT snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 64)
+                                       FROM sessions_fts
+                                       WHERE sessions_fts MATCH ?
+                                         AND sessions_fts.session_id = hits.session_id
+                                       ORDER BY rank, rowid
+                                       LIMIT 1
+                                   ) AS snippet
+                            FROM \(alias)_hits hits
+                            GROUP BY hits.session_id
+                        )
+                    """)
+                    args.append(termMatches[index])
+                    args.append(termMatches[index])
+                    args.append(termMatches[index])
+                }
                 if index > 0 {
                     joins.append("JOIN \(alias) ON \(alias).session_id = m0.session_id")
                 }
             }
-            if ctes.isEmpty {
-                ctes.append("""
-                    m0 AS (
-                        SELECT session_id, MIN(rank) AS rank,
-                               MIN(content) AS snippet
-                        FROM sessions_fts
-                        WHERE sessions_fts MATCH ?
-                        GROUP BY session_id
-                    )
-                """)
-                args.append(snippetMatch)
+            let snippetExpression = tokens.indices.dropFirst().reduce(
+                "COALESCE(m0.snippet, '')"
+            ) { expression, index in
+                let priorRowIDs = tokens.indices.prefix(index)
+                    .map { "m\($0).matched_rowid" }
+                    .joined(separator: ", ")
+                return """
+                    \(expression) || CASE
+                      WHEN NULLIF(m\(index).snippet, '') IS NULL THEN ''
+                      WHEN m\(index).matched_rowid IN (\(priorRowIDs)) THEN ''
+                      ELSE '\n…\n' || m\(index).snippet
+                    END
+                    """
             }
             var parts = ["""
                 WITH \(ctes.joined(separator: ", "))
-                SELECT s.*, m0.snippet AS snippet
+                SELECT s.*, \(snippetExpression) AS snippet
                 FROM m0
                 \(joins.joined(separator: " "))
                 JOIN sessions s ON s.id = m0.session_id
                 WHERE s.hidden_at IS NULL
+                  -- docs/invariants.md #3: keyword search excludes skip and lite tiers.
                   AND \(SessionSemanticSearchPolicy.searchableTierSQL)
             """]
             appendSearchFilters(for: request, to: &parts, args: &args)
@@ -691,12 +1143,15 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 arguments: StatementArguments(args)
             )
             return EngramServiceSearchResponse(
-                items: rows.map { item(from: $0, query: query) },
+                items: rows.map { Self.item(from: $0, query: query) },
                 searchModes: ["keyword"],
                 warning: warning,
                 warningCode: warningCode
             )
         }
+        return immediate
+            ? try await readImmediate(search)
+            : try await read(search)
     }
 
     private struct SemanticChunkCandidate: Sendable {
@@ -705,6 +1160,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         let sessionId: String
         let text: String
         let vector: [Float]
+        let session: EngramServiceSearchResponse.Item
     }
 
     /// Raw SQL page cursor is independent of successful vector decode.
@@ -712,6 +1168,11 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         let candidates: [SemanticChunkCandidate]
         /// Last `sc.rowid` in the raw SQL page; `nil` only when the page is empty.
         let lastRawRowID: Int64?
+    }
+
+    private struct SemanticTopKResult: Sendable {
+        let hits: [SessionSemanticSearchPolicy.ScoredChunk]
+        let fallbackByChunkId: [String: EngramServiceSearchResponse.Item]
     }
 
     private enum SemanticSearchOutcome {
@@ -729,8 +1190,36 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         requestedMode: String
     ) async throws -> SemanticSearchOutcome {
         // Corpus gate first — distinguish missing vectors from missing provider.
-        let snapshot = try await read { db in
-            try SessionVectorSearchAvailability.probe(db: db)
+        let snapshot = try await readImmediate { db in
+            let snapshot = try SessionVectorSearchAvailability.probe(db: db)
+            guard snapshot.isUsable,
+                  let model = snapshot.model,
+                  let dimension = snapshot.dimension else {
+                return snapshot
+            }
+            // docs/invariants.md #3: hidden sessions cannot advertise a semantic corpus.
+            let hasVisibleChunk = try Int.fetchOne(
+                db,
+                sql: """
+                    SELECT 1
+                    FROM semantic_chunks sc
+                    JOIN sessions s ON s.id = sc.session_id
+                    WHERE sc.embedding IS NOT NULL
+                      AND sc.model = ?
+                      AND sc.dim = ?
+                      AND s.hidden_at IS NULL
+                      AND \(SessionSemanticSearchPolicy.searchableTierSQL)
+                    LIMIT 1
+                    """,
+                arguments: [model, dimension]
+            ) != nil
+            return hasVisibleChunk
+                ? snapshot
+                : SessionVectorSearchAvailability.Snapshot(
+                    isUsable: false,
+                    model: model,
+                    dimension: dimension
+                )
         }
         guard snapshot.isUsable else {
             return .degraded(.corpusMissing, detail: nil)
@@ -744,6 +1233,10 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         switch SessionVectorSearchAvailability.queryCompatibility(
             configuredModel: config.model,
             configuredDimension: config.dimension,
+            dimensionsWereSent: EmbeddingRequestPolicy.dimensionsWereSentForCompatibility(
+                config,
+                storedDimension: snapshot.dimension ?? config.dimension
+            ),
             snapshot: snapshot
         ) {
         case .compatible(let model, let dimension):
@@ -770,29 +1263,59 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
 
             // M09: full eligible corpus in cancellable bounded batches + constant-memory top-K.
             let topK = SessionSemanticSearchPolicy.knnTopK(limit: limit)
-            let topChunks = try await semanticChunkTopK(
+            let topKResult = try await semanticChunkTopK(
                 for: request,
                 queryVector: queryVector,
                 model: model,
                 dim: dimension,
                 topK: topK
             )
-            guard !topChunks.isEmpty else {
-                return .degraded(.corpusMissing, detail: "no compatible semantic_chunks candidates")
+            guard !topKResult.hits.isEmpty else {
+                if requestedMode == "hybrid" || requestedMode == "both" {
+                    let keyword = try await keywordSearch(
+                        query: query,
+                        request: request,
+                        limit: limit,
+                        warning: nil,
+                        warningCode: nil,
+                        immediate: true
+                    )
+                    return .results(EngramServiceSearchResponse(
+                        items: keyword.items,
+                        searchModes: ["keyword", "semantic"],
+                        warning: nil,
+                        warningCode: nil
+                    ))
+                }
+                return .results(EngramServiceSearchResponse(
+                    items: [],
+                    searchModes: ["semantic"],
+                    warning: nil,
+                    warningCode: nil
+                ))
             }
 
             var sessionIds: [String] = []
             var snippetBySession: [String: String] = [:]
             var scoreBySession: [String: Double] = [:]
-            for hit in topChunks {
+            var fallbackSessionById: [String: EngramServiceSearchResponse.Item] = [:]
+            for hit in topKResult.hits {
                 guard !sessionIds.contains(hit.sessionId) else { continue }
                 sessionIds.append(hit.sessionId)
                 snippetBySession[hit.sessionId] = hit.text
                 scoreBySession[hit.sessionId] = Double(hit.score)
+                fallbackSessionById[hit.sessionId] = topKResult.fallbackByChunkId[hit.id]
                 if sessionIds.count >= limit { break }
             }
             guard !sessionIds.isEmpty else {
-                return .degraded(.corpusMissing, detail: "no sessions above KNN shortlist")
+                return .results(EngramServiceSearchResponse(
+                    items: [],
+                    searchModes: requestedMode == "semantic"
+                        ? ["semantic"]
+                        : ["keyword", "semantic"],
+                    warning: nil,
+                    warningCode: nil
+                ))
             }
 
             let semanticItems = try await searchItems(
@@ -800,17 +1323,33 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 query: nil,
                 snippetBySession: snippetBySession,
                 matchType: "semantic",
-                scoreBySession: scoreBySession
+                scoreBySession: scoreBySession,
+                fallbackSessionById: fallbackSessionById
             )
 
             if requestedMode == "hybrid" || requestedMode == "both" {
-                let keyword = try await keywordSearch(
-                    query: query,
-                    request: request,
-                    limit: limit,
-                    warning: nil,
-                    warningCode: nil
-                )
+                let keyword: EngramServiceSearchResponse
+                do {
+                    keyword = try await keywordSearch(
+                        query: query,
+                        request: request,
+                        limit: limit,
+                        warning: nil,
+                        warningCode: nil,
+                        immediate: true
+                    )
+                } catch let error as DatabaseError where Self.isSQLiteBusyOrLocked(error) {
+                    ServiceLogger.warn(
+                        "hybrid keyword fusion was skipped because the database is busy",
+                        category: .reader
+                    )
+                    return .results(EngramServiceSearchResponse(
+                        items: semanticItems,
+                        searchModes: ["semantic"],
+                        warning: "Keyword fusion was skipped because the database is busy.",
+                        warningCode: nil
+                    ))
+                }
                 let fusedIds = RankFusion.rrf(
                     [keyword.items.map(\.id), semanticItems.map(\.id)],
                     k: SessionSemanticSearchPolicy.rrfK
@@ -860,8 +1399,9 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         model: String,
         dim: Int,
         topK: Int
-    ) async throws -> [SessionSemanticSearchPolicy.ScoredChunk] {
+    ) async throws -> SemanticTopKResult {
         var top: [SessionSemanticSearchPolicy.ScoredChunk] = []
+        var fallbackByChunkId: [String: EngramServiceSearchResponse.Item] = [:]
         var afterRowID: Int64 = 0
         let batchSize = SessionSemanticSearchPolicy.candidateBatchSize(requestLimit: request.limit)
 
@@ -878,19 +1418,27 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             afterRowID = lastRaw
             for candidate in page.candidates {
                 let score = VectorMath.cosine(queryVector, candidate.vector)
+                let scored = SessionSemanticSearchPolicy.ScoredChunk(
+                    id: candidate.chunkId,
+                    score: score,
+                    sessionId: candidate.sessionId,
+                    text: candidate.text
+                )
                 SessionSemanticSearchPolicy.accumulateTopK(
                     &top,
-                    incoming: SessionSemanticSearchPolicy.ScoredChunk(
-                        id: candidate.chunkId,
-                        score: score,
-                        sessionId: candidate.sessionId,
-                        text: candidate.text
-                    ),
+                    incoming: scored,
                     topK: topK
                 )
+                fallbackByChunkId[candidate.chunkId] = Self.semanticItem(
+                    from: candidate.session,
+                    snippet: candidate.text,
+                    score: Double(score)
+                )
+                let retained = Set(top.map(\.id))
+                fallbackByChunkId = fallbackByChunkId.filter { retained.contains($0.key) }
             }
         }
-        return top
+        return SemanticTopKResult(hits: top, fallbackByChunkId: fallbackByChunkId)
     }
 
     private func fetchSemanticChunkPage(
@@ -900,7 +1448,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         afterRowID: Int64,
         batchSize: Int
     ) async throws -> SemanticChunkPage {
-        try await read { db in
+        try await readImmediate { db in
             guard try tableExists("semantic_chunks", db: db) else {
                 return SemanticChunkPage(candidates: [], lastRawRowID: nil)
             }
@@ -909,7 +1457,8 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                        sc.id AS chunk_id,
                        sc.session_id AS session_id,
                        sc.text AS text,
-                       sc.embedding AS embedding
+                       sc.embedding AS embedding,
+                       s.*
                 FROM semantic_chunks sc
                 JOIN sessions s ON s.id = sc.session_id
                 WHERE sc.embedding IS NOT NULL
@@ -962,7 +1511,8 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     chunkId: chunkId,
                     sessionId: sessionId,
                     text: text,
-                    vector: vector
+                    vector: vector,
+                    session: Self.item(from: row)
                 )
             }
             return SemanticChunkPage(candidates: candidates, lastRawRowID: lastRawRowID)
@@ -974,20 +1524,28 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         query: String?,
         snippetBySession: [String: String],
         matchType: String,
-        scoreBySession: [String: Double]
+        scoreBySession: [String: Double],
+        fallbackSessionById: [String: EngramServiceSearchResponse.Item]
     ) async throws -> [EngramServiceSearchResponse.Item] {
         guard !sessionIds.isEmpty else { return [] }
-        return try await read { db in
+        let hydrate: @Sendable (GRDB.Database) throws -> [EngramServiceSearchResponse.Item] = { db in
             let placeholders = Array(repeating: "?", count: sessionIds.count).joined(separator: ",")
             let rows = try Row.fetchAll(
                 db,
-                sql: "SELECT s.* FROM sessions s WHERE s.id IN (\(placeholders))",
+                sql: """
+                    SELECT s.*
+                    FROM sessions s
+                    WHERE s.id IN (\(placeholders))
+                      AND s.hidden_at IS NULL
+                      AND s.orphan_status IS NULL
+                      AND \(SessionSemanticSearchPolicy.searchableTierSQL)
+                    """,
                 arguments: StatementArguments(sessionIds)
             )
             let rowsById = Dictionary(uniqueKeysWithValues: rows.map { (($0["id"] as String), $0) })
             return sessionIds.compactMap { id in
                 guard let row = rowsById[id] else { return nil }
-                return item(
+                return Self.item(
                     from: row,
                     query: query,
                     snippetOverride: snippetBySession[id],
@@ -995,6 +1553,11 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     score: scoreBySession[id]
                 )
             }
+        }
+        do {
+            return try await readImmediate(hydrate)
+        } catch let error as DatabaseError where Self.isSQLiteBusyOrLocked(error) {
+            return sessionIds.compactMap { fallbackSessionById[$0] }
         }
     }
 
@@ -1091,6 +1654,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             let rows = try Row.fetchAll(db, sql: """
                 SELECT id, content, wing, room, importance, created_at
                 FROM insights
+                WHERE superseded_by IS NULL
                 ORDER BY created_at DESC
                 LIMIT 500
             """)
@@ -1119,7 +1683,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             guard let row = try Row.fetchOne(db, sql: """
                 SELECT id, content, wing, room, importance, created_at
                 FROM insights
-                WHERE id = ?
+                WHERE id = ? AND superseded_by IS NULL
             """, arguments: [request.id]) else {
                 return nil
             }
@@ -1146,6 +1710,8 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 )
             }
 
+            let activityTime = SearchFilterPredicates.activityTimeSQL(alias: "s")
+
             let perSourceRows = try Row.fetchAll(db, sql: """
                 SELECT s.source AS key,
                        SUM(c.cost_usd) AS cost_usd,
@@ -1168,13 +1734,13 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             // dedup + dashboards (which use local time). Using UTC date() here
             // produced wrong buckets near midnight in non-UTC zones.
             let perDayRows = try Row.fetchAll(db, sql: """
-                SELECT date(s.start_time, 'localtime') AS day,
+                SELECT date(\(activityTime), 'localtime') AS day,
                        SUM(c.cost_usd) AS cost_usd
                 FROM session_costs c
                 JOIN sessions s ON c.session_id = s.id
                 WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
-                  AND s.start_time >= date('now', '-30 days', 'localtime')
-                GROUP BY date(s.start_time, 'localtime')
+                  AND date(\(activityTime), 'localtime') >= date('now', 'localtime', '-30 days')
+                GROUP BY date(\(activityTime), 'localtime')
                 ORDER BY day ASC
             """)
             let perDay = perDayRows.compactMap { row -> EngramServiceCostsResponse.DayRow? in
@@ -1192,7 +1758,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 FROM session_costs c
                 JOIN sessions s ON c.session_id = s.id
                 WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
-                  AND date(s.start_time, 'localtime') >= date('now', 'start of month', 'localtime')
+                  AND date(\(activityTime), 'localtime') >= date('now', 'localtime', 'start of month')
             """) ?? 0
 
             let todayUsd = try Double.fetchOne(db, sql: """
@@ -1200,7 +1766,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 FROM session_costs c
                 JOIN sessions s ON c.session_id = s.id
                 WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
-                  AND date(s.start_time, 'localtime') = date('now', 'localtime')
+                  AND date(\(activityTime), 'localtime') = date('now', 'localtime')
             """) ?? 0
 
             // Row 4: unpriced disclosure split by cause (attribution vs table-gap).
@@ -1260,11 +1826,12 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         // stream, so streaming happens OUTSIDE this block (precedent:
         // resumeTranscriptContextLines).
         let scalar = try await read {
-            db -> (source: String?, locator: String) in
+            db -> (source: String?, locator: String, summary: String?) in
             let row = try Row.fetchOne(
                 db,
                 sql: """
                     SELECT s.source AS source,
+                           s.summary AS summary,
                            COALESCE(
                              NULLIF(ls.local_readable_path, ''),
                              NULLIF(s.file_path, ''),
@@ -1276,8 +1843,15 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 """,
                 arguments: [request.sessionId]
             )
-            return (row?["source"] as String?, (row?["locator"] as String?) ?? "")
+            return (
+                row?["source"] as String?,
+                (row?["locator"] as String?) ?? "",
+                row?["summary"] as String?
+            )
         }
+        let isRemoteSnapshot = scalar.locator
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .hasPrefix("remote://")
 
         // Step 2 (OUTSIDE read{}): source the timeline from the real per-message
         // adapter stream (role incl. .tool, timestamp, token usage, tool calls)
@@ -1290,24 +1864,33 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         // most `limit` entries while reporting `hasMore` truthfully (the old
         // code streamed exactly `limit` rows, so `entries.count > limit` was
         // never true and long transcripts were silently truncated).
-        if let source = scalar.source,
-           let streamed = try? await Self.streamReplayMessages(
-               source: source,
-               locator: scalar.locator,
-               limit: limit + 1,
-               adapters: sessionAdapterProvider()
-           ),
-           !streamed.isEmpty {
-            let entries = Self.replayEntries(from: streamed, limit: limit)
-            return EngramServiceReplayTimelineResponse(
-                sessionId: request.sessionId,
-                source: source,
-                entries: entries,
-                totalEntries: entries.count,
-                hasMore: streamed.count > limit,
-                offset: 0,
-                limit: limit
-            )
+        if let source = scalar.source, !isRemoteSnapshot {
+            do {
+                let streamed = try await Self.streamReplayMessages(
+                    source: source,
+                    locator: scalar.locator,
+                    limit: limit + 1,
+                    adapters: sessionAdapterProvider()
+                )
+                if !streamed.messages.isEmpty {
+                    let entries = Self.replayEntries(from: streamed.messages, limit: limit)
+                    return EngramServiceReplayTimelineResponse(
+                        sessionId: request.sessionId,
+                        source: source,
+                        entries: entries,
+                        // A stream sentinel or parser failure proves the returned
+                        // prefix is incomplete without discarding it for FTS.
+                        totalEntries: streamed.messages.count,
+                        hasMore: streamed.messages.count > limit || streamed.incomplete,
+                        offset: 0,
+                        limit: limit
+                    )
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // No usable prefix: preserve the existing FTS fallback below.
+            }
         }
 
         // Step 3 (only when streaming yields nothing): synced-only /
@@ -1343,13 +1926,33 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             return (rows, total)
         }
 
-        let entries = Self.replayEntries(from: fallback.rows, source: scalar.source, limit: limit)
+        var snapshotPrefix: [ReplayFTSRow] = []
+        if isRemoteSnapshot {
+            snapshotPrefix.append(
+                ReplayFTSRow(rowid: -2, content: "Assistant: HQ 索引快照，不是源文件")
+            )
+            if let summary = scalar.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !summary.isEmpty {
+                snapshotPrefix.append(
+                    ReplayFTSRow(
+                        rowid: -1,
+                        content: "Assistant: \(TranscriptRedactionPolicy.redact(summary))"
+                    )
+                )
+            }
+        }
+        let totalEntries = fallback.total + snapshotPrefix.count
+        let entries = Self.replayEntries(
+            from: snapshotPrefix + fallback.rows,
+            source: scalar.source,
+            limit: limit
+        )
         return EngramServiceReplayTimelineResponse(
             sessionId: request.sessionId,
             source: scalar.source,
             entries: entries,
-            totalEntries: fallback.total,
-            hasMore: fallback.total > entries.count,
+            totalEntries: totalEntries,
+            hasMore: totalEntries > entries.count,
             offset: 0,
             limit: limit
         )
@@ -1365,23 +1968,25 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         locator: String,
         limit: Int,
         adapters: [any SessionAdapter]
-    ) async throws -> [ReplayMessage] {
+    ) async throws -> ReplayStreamResult {
         let trimmed = locator.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !trimmed.hasPrefix("sync://") else { return [] }
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("sync://") else {
+            return ReplayStreamResult(messages: [], incomplete: false)
+        }
         let sourceName: SourceName? = source == "antigravity-legacy"
             ? .antigravity
             : SourceName(rawValue: source)
         guard let sourceName,
               let adapter = adapters.first(where: { $0.source == sourceName })
         else {
-            return []
+            return ReplayStreamResult(messages: [], incomplete: false)
         }
-        let stream = try await adapter.streamMessages(
+        let result = try await adapter.streamMessagesWithMetadata(
             locator: trimmed,
             options: StreamMessagesOptions(limit: limit)
         )
         var messages: [ReplayMessage] = []
-        for try await message in stream {
+        for try await message in result.messages {
             messages.append(
                 ReplayMessage(
                     role: message.role.rawValue,
@@ -1394,23 +1999,34 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             )
             if messages.count >= limit { break }
         }
-        return messages
+        return ReplayStreamResult(
+            messages: messages,
+            incomplete: result.parseFailure != nil || result.truncated
+        )
     }
 
     func resumeCommand(_ request: EngramServiceResumeCommandRequest) async throws -> EngramServiceResumeCommandResponse {
         // Extract Sendable scalars inside the read block — a GRDB Row is not
         // Sendable and cannot cross the blocking-read queue hop.
         let session = try await read {
-            db -> (id: String, source: String, cwd: String, filePath: String, excerptLines: [String], metadataLines: [String])? in
+            db -> (id: String, source: String, cwd: String, filePath: String, storedFilePath: String, parentSessionId: String?, agentRole: String?, excerptLines: [String], metadataLines: [String])? in
             guard let row = try Row.fetchOne(
                 db,
                 sql: """
                     SELECT
-                      id, source, cwd, file_path, project, model, message_count,
-                      user_message_count, assistant_message_count, tool_message_count,
-                      generated_title, summary
-                    FROM sessions
-                    WHERE id = ?
+                      s.id, s.source, s.cwd, s.file_path,
+                      COALESCE(
+                        NULLIF(ls.local_readable_path, ''),
+                        NULLIF(s.file_path, ''),
+                        s.source_locator,
+                        ''
+                      ) AS readable_path,
+                      s.project, s.model, s.message_count,
+                      s.user_message_count, s.assistant_message_count, s.tool_message_count,
+                      s.generated_title, s.summary, s.parent_session_id, s.agent_role
+                    FROM sessions s
+                    LEFT JOIN session_local_state ls ON ls.session_id = s.id
+                    WHERE s.id = ?
                 """,
                 arguments: [request.sessionId]
             ) else {
@@ -1422,7 +2038,10 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 id: sessionId,
                 source: row["source"],
                 cwd: (row["cwd"] as String?) ?? "",
-                filePath: (row["file_path"] as String?) ?? "",
+                filePath: (row["readable_path"] as String?) ?? "",
+                storedFilePath: (row["file_path"] as String?) ?? "",
+                parentSessionId: row["parent_session_id"] as String?,
+                agentRole: row["agent_role"] as String?,
                 excerptLines: excerpts,
                 metadataLines: Self.resumeMetadataContextLines(row: row)
             )
@@ -1435,15 +2054,30 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             )
         }
 
+        if session.id.hasPrefix("remote:")
+            || session.storedFilePath.hasPrefix("remote://")
+            || session.filePath.hasPrefix("remote://") {
+            return EngramServiceResumeCommandResponse(
+                error: "This session lives on HQ and cannot be resumed from this Mac.",
+                hint: "Open the HQ index snapshot in Engram instead."
+            )
+        }
+
         let sessionId: String = session.id
         let source: String = session.source
         let cwd: String = session.cwd
         var contextLines = session.excerptLines
         if contextLines.isEmpty {
-            contextLines = await Self.resumeTranscriptContextLines(
+            let transcriptContext = try await Self.resumeTranscriptContextLines(
                 filePath: session.filePath,
-                source: source
+                source: source,
+                reader: transcriptPrimerReader
             )
+            contextLines = transcriptContext.lines
+            if transcriptContext.readFailed {
+                contextLines = session.metadataLines
+                contextLines.append("Transcript could not be read; this resume context is incomplete.")
+            }
         }
         if contextLines.isEmpty {
             contextLines = session.metadataLines
@@ -1454,6 +2088,22 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             cwd: cwd,
             contextLines: contextLines
         )
+        let claudeSubagentLayout = source == "claude-code"
+            ? fileSystemProvider.claudeSubagentLayout(locator: session.filePath)
+            : nil
+        if source == "claude-code",
+           claudeSubagentLayout != nil
+            || !Self.claudeResumeFileMatchesID(filePath: session.filePath, id: sessionId) {
+            let hint = claudeSubagentLayout.map {
+                let parentID = $0.parentSessionId
+                return "It is a subagent of \(parentID). Resume that session instead."
+            } ?? "Its transcript is not stored where claude --resume looks."
+            return EngramServiceResumeCommandResponse(
+                contextPrimer: contextPrimer,
+                error: "This transcript cannot be resumed directly",
+                hint: hint
+            )
+        }
         switch source {
         case "claude-code":
             return resumeCLICommand(
@@ -1602,6 +2252,11 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         let outputTokens: Int?
     }
 
+    private struct ReplayStreamResult: Sendable {
+        let messages: [ReplayMessage]
+        let incomplete: Bool
+    }
+
     /// Build replay entries from the real per-message adapter stream. Roles are
     /// preserved (user/assistant/tool), toolName is carried through from
     /// whichever record the adapter attached toolCalls to, tokens map to
@@ -1718,6 +2373,25 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 }
             }
         }
+    }
+
+    private func readImmediate<T: Sendable>(
+        _ block: @escaping @Sendable (GRDB.Database) throws -> T
+    ) async throws -> T {
+        let databaseReader = self.databaseReader
+        return try await withCheckedThrowingContinuation { continuation in
+            Self.blockingReadQueue.async {
+                do {
+                    continuation.resume(returning: try databaseReader.readImmediate(block))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    private static func isSQLiteBusyOrLocked(_ error: DatabaseError) -> Bool {
+        error.resultCode == .SQLITE_BUSY || error.resultCode == .SQLITE_LOCKED
     }
 
     private func tableExists(_ table: String, db: GRDB.Database) throws -> Bool {
@@ -1955,6 +2629,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         let clauses = SearchFilterPredicates.clauses(
             sources: request.source.map { [$0] } ?? [],
             projects: request.project.map { [$0] } ?? [],
+            origin: request.origin,
             since: request.since
         )
         for clause in clauses {
@@ -1971,7 +2646,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
     /// waste bandwidth. Bound it server-side to a preview-sized window.
     static let maxSnippetLength = 600
 
-    private func item(
+    private static func item(
         from row: Row,
         query: String? = nil,
         snippetOverride: String? = nil,
@@ -1983,10 +2658,10 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         let rawSnippet = snippetOverride ?? (row["snippet"] as String?)
         let snippetText: String?
         if let query, let content = rawSnippet,
-           let windowed = Self.highlightedSnippet(content: content, query: query) {
+           let windowed = CJKText.highlightedSnippet(content: content, query: query) {
             snippetText = windowed
         } else {
-            snippetText = rawSnippet
+            snippetText = rawSnippet.map(CJKText.removingHighlightMarks(from:))
         }
         return EngramServiceSearchResponse.Item(
             id: row["id"],
@@ -2017,20 +2692,48 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             parentSessionId: row["parent_session_id"] as String?,
             suggestedParentId: row["suggested_parent_id"] as String?,
             linkSource: row["link_source"] as String?,
-            qualityScore: row["quality_score"] as Int?
+            qualityScore: row["quality_score"] as Int?,
+            origin: row["origin"] as String?
         )
     }
 
-    private static func highlightedSnippet(content: String, query: String) -> String? {
-        if let exact = CJKText.cjkHighlightedSnippet(content: content, query: query) {
-            return exact
-        }
-        for term in query.split(whereSeparator: { $0.isWhitespace }) {
-            if let match = CJKText.cjkHighlightedSnippet(content: content, query: String(term)) {
-                return match
-            }
-        }
-        return nil
+    private static func semanticItem(
+        from item: EngramServiceSearchResponse.Item,
+        snippet: String,
+        score: Double
+    ) -> EngramServiceSearchResponse.Item {
+        EngramServiceSearchResponse.Item(
+            id: item.id,
+            title: item.title,
+            snippet: truncateSnippet(snippet),
+            matchType: "semantic",
+            score: score,
+            source: item.source,
+            startTime: item.startTime,
+            endTime: item.endTime,
+            cwd: item.cwd,
+            project: item.project,
+            model: item.model,
+            messageCount: item.messageCount,
+            userMessageCount: item.userMessageCount,
+            assistantMessageCount: item.assistantMessageCount,
+            systemMessageCount: item.systemMessageCount,
+            summary: item.summary,
+            filePath: item.filePath,
+            sourceLocator: item.sourceLocator,
+            sizeBytes: item.sizeBytes,
+            indexedAt: item.indexedAt,
+            agentRole: item.agentRole,
+            customName: item.customName,
+            tier: item.tier,
+            toolMessageCount: item.toolMessageCount,
+            generatedTitle: item.generatedTitle,
+            parentSessionId: item.parentSessionId,
+            suggestedParentId: item.suggestedParentId,
+            linkSource: item.linkSource,
+            qualityScore: item.qualityScore,
+            origin: item.origin
+        )
     }
 
     static func truncateSnippet(_ snippet: String?) -> String? {
@@ -2073,6 +2776,12 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         default:
             return ["--resume", sessionId]
         }
+    }
+
+    static func claudeResumeFileMatchesID(filePath: String, id: String) -> Bool {
+        guard !id.isEmpty else { return false }
+        let components = URL(fileURLWithPath: filePath).pathComponents
+        return components.last == "\(id).jsonl"
     }
 
     private static func resumeContextExcerpts(db: GRDB.Database, sessionId: String) throws -> [String] {
@@ -2133,18 +2842,28 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         return String(lines.joined(separator: "\n").prefix(4_000))
     }
 
-    private static func resumeTranscriptContextLines(filePath: String, source: String) async -> [String] {
+    private struct ResumeTranscriptContext: Sendable {
+        let lines: [String]
+        let readFailed: Bool
+    }
+
+    private static func resumeTranscriptContextLines(
+        filePath: String,
+        source: String,
+        reader: @Sendable (String, String, Int) async throws -> ServiceTranscriptReader.ReadResult
+    ) async throws -> ResumeTranscriptContext {
         let trimmedPath = filePath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedPath.isEmpty else { return [] }
+        guard !trimmedPath.isEmpty else { return ResumeTranscriptContext(lines: [], readFailed: false) }
         // Windowed read: only the first + last-5 visible messages are needed for
         // the primer, so stream them through a bounded buffer instead of parsing
         // the entire transcript into a full message array.
-        guard let result = try? await ServiceTranscriptReader.readPrimerMessagesWithMetadata(
-            filePath: trimmedPath,
-            source: source,
-            limit: 6
-        ) else {
-            return []
+        let result: ServiceTranscriptReader.ReadResult
+        do {
+            result = try await reader(trimmedPath, source, 6)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return ResumeTranscriptContext(lines: [], readFailed: true)
         }
         var lines: [String] = result.messages.compactMap { (message: ServiceTranscriptMessage) -> String? in
             let redacted = TranscriptExportService.redactSensitiveContent(message.content)
@@ -2154,8 +2873,10 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         }
         if result.truncated, let truncatedAt = result.truncatedAt {
             lines.append("Transcript truncated at \(decimalString(truncatedAt)) messages; later content is not included.")
+        } else if !result.totalKnownComplete {
+            lines.append("Transcript parsing stopped after this prefix; later content may be missing.")
         }
-        return lines
+        return ResumeTranscriptContext(lines: lines, readFailed: false)
     }
 
     private static func decimalString(_ value: Int) -> String {
@@ -2243,13 +2964,22 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
 
 private final class ServiceDatabaseReader: ServiceDatabaseReading, @unchecked Sendable {
     private let reader: EngramDatabaseReader
+    private let immediateReader: DatabaseQueue
 
     init(path: String) throws {
         self.reader = try EngramDatabaseReader(path: path)
+        self.immediateReader = try DatabaseQueue(
+            path: path,
+            configuration: SQLiteConnectionPolicy.immediateReaderConfiguration()
+        )
     }
 
     func read<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
         try reader.read(block)
+    }
+
+    func readImmediate<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
+        try immediateReader.read(block)
     }
 }
 

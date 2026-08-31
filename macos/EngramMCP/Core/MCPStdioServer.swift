@@ -1,7 +1,7 @@
 import Foundation
 
 final class MCPStdioServer {
-    private let config = MCPConfig.load()
+    private let config: MCPConfig
     private let inFlight = MCPInFlightRequests()
     private let outputLock = NSLock()
     // Legacy (initialize-handshake) protocol revisions this build speaks.
@@ -71,6 +71,10 @@ final class MCPStdioServer {
     3. Verify facts from memory before acting on them — memories can be stale
     4. Cite session IDs when referencing past work
     """
+
+    init(config: MCPConfig) {
+        self.config = config
+    }
 
     func run() async {
         do {

@@ -1,6 +1,7 @@
 // macos/EngramService/Core/ServiceLogger.swift
 import Foundation
 import os
+import EngramCoreWrite
 
 public enum ServiceLogCategory: String, CaseIterable {
     case runner
@@ -33,6 +34,14 @@ public enum ServiceLogger {
     /// only caller is `EngramServiceRunner` in this same module.
     static func installRing(_ ring: ServiceLogRing) {
         self.ring = ring
+        CoreWriteLogBridge.installSink { level, category, message in
+            let ringLevel: String
+            switch level {
+            case .info, .notice: ringLevel = "info"
+            case .warning, .error: ringLevel = "error"
+            }
+            ServiceLogger.ring?.record(level: ringLevel, category: category, message: message)
+        }
     }
 
     /// Scoped test seam for the process-wide sink. Production installs once at
@@ -50,7 +59,7 @@ public enum ServiceLogger {
 
     private static func tee(level: String, category: ServiceLogCategory, message: String) {
         guard let ring else { return }
-        Task { await ring.record(level: level, category: category.rawValue, message: message) }
+        ring.record(level: level, category: category.rawValue, message: message)
     }
 
     // Messages can carry project-migration src/dst paths, session ids, error

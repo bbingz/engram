@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import GRDB
+import EngramCoreRead
 
 public enum FTSRebuildPolicy {
     public static let expectedVersion = "3"
@@ -62,6 +63,11 @@ public enum FTSRebuildPolicy {
                 SET status = 'pending', retry_count = 0, last_error = NULL,
                     updated_at = datetime('now')
                 WHERE job_kind = 'fts' AND status = 'completed'
+                  AND EXISTS (
+                    SELECT 1 FROM sessions s
+                    WHERE s.id = session_index_jobs.session_id
+                      AND COALESCE(s.tier, 'normal') != 'skip'
+                  )
             """)
         }
     }
@@ -85,6 +91,12 @@ public enum FTSRebuildPolicy {
         messages: [String],
         summary: String?
     ) throws {
+        // docs/invariants.md #3 and #5: skip rows stay absent from both the
+        // live corpus and a pending versioned rebuild shadow.
+        if try sessionIsSkip(db, sessionId: sessionId) {
+            try purgeFtsContent(db, sessionId: sessionId)
+            return
+        }
         try replaceActiveFtsContent(db, sessionId: sessionId, messages: messages, summary: summary)
         if try rebuildIsPending(db) {
             // The shadow rebuild table has no rowid map; keep the old full
@@ -99,15 +111,26 @@ public enum FTSRebuildPolicy {
     }
 
     @discardableResult
-    static func finalizeRebuildIfReady(_ db: GRDB.Database) throws -> Bool {
+    static func finalizeRebuildIfReady(
+        _ db: GRDB.Database,
+        enabledSources: Set<SourceName>? = nil
+    ) throws -> Bool {
         guard try rebuildIsPending(db) else { return false }
         guard try tableExists(db, rebuildTable) else { return false }
-        guard try recoverableFtsJobCount(db) == 0 else { return false }
+        guard try recoverableFtsJobCount(db, enabledSources: enabledSources) == 0 else { return false }
 
         // Wave 7A H01: before swap, copy live FTS rows for eligible sessions that
         // never made it into the shadow table (failed_permanent / not_applicable /
         // never-replayed). Permanent job failures must not delete searchable content.
         try copyMissingLiveFtsRowsIntoRebuild(db)
+        // Only skip is stripped here. Hidden/orphan rows intentionally retain
+        // shadow content so unhide/recovery does not require a full reindex.
+        try db.execute(sql: """
+            DELETE FROM \(rebuildTable)
+            WHERE session_id IN (
+              SELECT id FROM sessions WHERE COALESCE(tier, 'normal') = 'skip'
+            )
+            """)
         guard try eligibleSessionsMissingRebuildContent(db) == 0 else {
             // Still incomplete — keep live table serving search; leave rebuild pending.
             return false
@@ -129,13 +152,32 @@ public enum FTSRebuildPolicy {
         return true
     }
 
-    /// Eligible = non-skip, non-deleted/orphan sessions that currently have live
-    /// FTS content. Skip-tier and purged sessions are intentionally omitted.
+    static func purgeFtsContent(_ db: GRDB.Database, sessionId: String) throws {
+        if try tableExists(db, activeTable) {
+            try db.execute(sql: "DELETE FROM \(activeTable) WHERE session_id = ?", arguments: [sessionId])
+        }
+        if try tableExists(db, rebuildTable) {
+            try db.execute(sql: "DELETE FROM \(rebuildTable) WHERE session_id = ?", arguments: [sessionId])
+        }
+        if try tableExists(db, "fts_map") {
+            try db.execute(sql: "DELETE FROM fts_map WHERE session_id = ?", arguments: [sessionId])
+        }
+    }
+
+    private static func sessionIsSkip(_ db: GRDB.Database, sessionId: String) throws -> Bool {
+        try String.fetchOne(
+            db,
+            sql: "SELECT COALESCE(tier, 'normal') FROM sessions WHERE id = ?",
+            arguments: [sessionId]
+        ) == SessionTier.skip.rawValue
+    }
+
+    /// docs/invariants.md #3/#5: rebuild every non-skip live FTS row, including
+    /// hidden/orphan sessions that remain fetchable by id. Only skip-tier rows
+    /// are intentionally omitted from the swapped index.
     private static func eligibleSessionSQLPredicate(alias: String = "s") -> String {
         """
         COALESCE(\(alias).tier, 'normal') != 'skip'
-        AND \(alias).hidden_at IS NULL
-        AND \(alias).orphan_status IS NULL
         """
     }
 
@@ -429,16 +471,103 @@ public enum FTSRebuildPolicy {
         ) == expectedVersion
     }
 
-    private static func recoverableFtsJobCount(_ db: GRDB.Database) throws -> Int {
+    static func recoverableFtsJobCount(
+        _ db: GRDB.Database,
+        enabledSources: Set<SourceName>? = nil
+    ) throws -> Int {
         guard try tableExists(db, "session_index_jobs") else { return 0 }
+        let knownSources = SourceName.allCases.map(\.rawValue)
+        let enabledValues = enabledSources?.map(\.rawValue).sorted()
+        let enabledPredicate: String
+        if let enabledValues {
+            enabledPredicate = enabledValues.isEmpty
+                ? "0"
+                : "s.source IN (\(Array(repeating: "?", count: enabledValues.count).joined(separator: ", ")))"
+        } else {
+            enabledPredicate = "1"
+        }
+        var arguments: StatementArguments = []
+        for value in knownSources { arguments += [value] }
+        for value in enabledValues ?? [] { arguments += [value] }
         return try Int.fetchOne(
             db,
             sql: """
             SELECT COUNT(*)
-            FROM session_index_jobs
-            WHERE job_kind = 'fts' AND status IN ('pending', 'failed_retryable')
-            """
+            FROM session_index_jobs AS j
+            LEFT JOIN sessions AS s ON s.id = j.session_id
+            WHERE j.job_kind = 'fts'
+              AND j.status IN ('pending', 'failed_retryable')
+              AND (j.not_before IS NULL OR j.not_before <= datetime('now'))
+              AND (
+                s.id IS NULL
+                OR s.tier = 'skip'
+                OR s.source NOT IN (\(Array(repeating: "?", count: knownSources.count).joined(separator: ", ")))
+                OR \(enabledPredicate)
+              )
+            """,
+            arguments: arguments
         ) ?? 0
+    }
+
+    /// Includes deferred rows so the service does not mistake a debounce window
+    /// for an empty FTS backlog. The due-only count above remains authoritative
+    /// for rebuild finalization (docs/invariants.md #5).
+    static func recoverableFtsBacklog(
+        _ db: GRDB.Database,
+        enabledSources: Set<SourceName>? = nil
+    ) throws -> (count: Int, nextDelaySeconds: Int?, hasDeferredRetryable: Bool) {
+        guard try tableExists(db, "session_index_jobs") else { return (0, nil, false) }
+        let knownSources = SourceName.allCases.map(\.rawValue)
+        let enabledValues = enabledSources?.map(\.rawValue).sorted()
+        let enabledPredicate: String
+        if let enabledValues {
+            enabledPredicate = enabledValues.isEmpty
+                ? "0"
+                : "s.source IN (\(Array(repeating: "?", count: enabledValues.count).joined(separator: ", ")))"
+        } else {
+            enabledPredicate = "1"
+        }
+        var arguments: StatementArguments = []
+        for value in knownSources { arguments += [value] }
+        for value in enabledValues ?? [] { arguments += [value] }
+        guard let row = try Row.fetchOne(
+            db,
+            sql: """
+            SELECT
+              COUNT(*) AS backlog_count,
+              MIN(
+                CASE
+                  WHEN j.not_before IS NULL OR j.not_before <= datetime('now') THEN 0
+                  ELSE MIN(
+                    90,
+                    MAX(1, CAST(strftime('%s', j.not_before) - strftime('%s', 'now') AS INTEGER))
+                  )
+                END
+              ) AS next_delay_seconds,
+              MAX(
+                CASE
+                  WHEN j.status = 'failed_retryable'
+                    AND j.not_before > datetime('now') THEN 1
+                  ELSE 0
+                END
+              ) AS has_deferred_retryable
+            FROM session_index_jobs AS j
+            LEFT JOIN sessions AS s ON s.id = j.session_id
+            WHERE j.job_kind = 'fts'
+              AND j.status IN ('pending', 'failed_retryable')
+              AND (
+                s.id IS NULL
+                OR s.tier = 'skip'
+                OR s.source NOT IN (\(Array(repeating: "?", count: knownSources.count).joined(separator: ", ")))
+                OR \(enabledPredicate)
+              )
+            """,
+            arguments: arguments
+        ) else {
+            return (0, nil, false)
+        }
+        let deferredRetryable: Int = row["has_deferred_retryable"] ?? 0
+        return (row["backlog_count"] ?? 0, row["next_delay_seconds"], deferredRetryable != 0)
     }
 
     private static func sessionCount(_ db: GRDB.Database) throws -> Int {

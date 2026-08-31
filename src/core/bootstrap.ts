@@ -34,13 +34,12 @@ import { Tracer, TraceWriter } from './tracer.js';
 import type { VectorStore } from './vector-store.js';
 import { SqliteVecStore } from './vector-store.js';
 
-const ENGRAM_DIR = join(homedir(), '.engram');
-
 function ensureDataDirs(): string {
-  migrateDataDir();
-  mkdirSync(join(ENGRAM_DIR, 'cache', 'antigravity'), { recursive: true });
-  mkdirSync(join(ENGRAM_DIR, 'cache', 'windsurf'), { recursive: true });
-  return ENGRAM_DIR;
+  const engramDir = process.env.ENGRAM_DIR ?? join(homedir(), '.engram');
+  if (!process.env.ENGRAM_DIR) migrateDataDir();
+  mkdirSync(join(engramDir, 'cache', 'antigravity'), { recursive: true });
+  mkdirSync(join(engramDir, 'cache', 'windsurf'), { recursive: true });
+  return engramDir;
 }
 
 function createAdapters(): SessionAdapter[] {

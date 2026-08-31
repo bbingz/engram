@@ -33,22 +33,56 @@ struct MessageParser {
         source: String,
         offset: Int? = nil,
         limit: Int? = nil,
-        claudeCodeProfileResolver: ClaudeCodeProfileResolver? = nil
-    ) async -> [ChatMessage] {
-        if let adapterMessages = await parseWithAdapterRegistry(
+        claudeCodeProfileResolver: ClaudeCodeProfileResolver? = nil,
+        homeDirectory: URL? = nil
+    ) async throws -> [ChatMessage] {
+        if isRemoteSnapshotLocator(filePath) {
+            return remoteSnapshotWindow(summary: nil, lines: [], offset: offset ?? 0, limit: limit).messages
+        }
+        if let adapterMessages = try await parseWithAdapterRegistry(
             filePath: filePath,
             source: source,
             offset: offset,
             limit: limit,
-            claudeCodeProfileResolver: claudeCodeProfileResolver
-        ),
-           !adapterMessages.isEmpty {
+            claudeCodeProfileResolver: claudeCodeProfileResolver,
+            homeDirectory: homeDirectory
+        ) {
             return adapterMessages
         }
         return applyWindow(parseLegacy(filePath: filePath, source: source), offset: offset, limit: limit)
     }
 
-    private static func parseLegacy(filePath: String, source: String) -> [ChatMessage] {
+    static func isRemoteSnapshotLocator(_ path: String) -> Bool {
+        path.hasPrefix("remote://")
+    }
+
+    static let remoteSnapshotCaption = "HQ 索引快照，不是源文件"
+
+    /// Virtual locator: caption plus imported summary/FTS lines. Never opens a file.
+    static func remoteSnapshotWindow(
+        summary: String?,
+        lines: [String],
+        offset: Int,
+        limit: Int?
+    ) -> (messages: [ChatMessage], producedCount: Int, truncated: Bool, parseFailed: Bool) {
+        var messages: [ChatMessage] = [
+            ChatMessage(role: "assistant", content: remoteSnapshotCaption, systemCategory: .none)
+        ]
+        if let summary, !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            messages.append(ChatMessage(role: "assistant", content: summary, systemCategory: .none))
+        }
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            messages.append(ChatMessage(role: "assistant", content: trimmed, systemCategory: .none))
+        }
+        let windowed = applyWindow(messages, offset: offset, limit: limit)
+        return (windowed, windowed.count, false, false)
+    }
+
+    // Internal so the retained legacy-format regression tests can exercise this
+    // non-product fallback directly without weakening registered-adapter errors.
+    static func parseLegacy(filePath: String, source: String) -> [ChatMessage] {
         switch source {
         case "claude-code", "qwen", "iflow", "lobsterai", "minimax":
             return parseTypeMessageFormat(filePath: filePath, source: source)
@@ -79,22 +113,24 @@ struct MessageParser {
         source: String,
         offset: Int?,
         limit: Int?,
-        claudeCodeProfileResolver: ClaudeCodeProfileResolver?
-    ) async -> [ChatMessage]? {
+        claudeCodeProfileResolver: ClaudeCodeProfileResolver?,
+        homeDirectory: URL?
+    ) async throws -> [ChatMessage]? {
         guard let sourceName = SourceName(rawValue: source),
               let adapter = uiAdapterRegistry(
-                claudeCodeProfileResolver: claudeCodeProfileResolver
+                claudeCodeProfileResolver: claudeCodeProfileResolver,
+                homeDirectory: homeDirectory
               ).adapter(for: sourceName)
         else {
             return nil
         }
 
-        return await adapterMessages(
+        return try await adapterMessages(
             adapter: adapter,
             locator: filePath,
             source: source,
             options: StreamMessagesOptions(offset: offset, limit: limit)
-        )?.messages
+        ).messages
     }
 
     /// Window a transcript in PRODUCED-message space (the unit the adapters'
@@ -110,92 +146,103 @@ struct MessageParser {
         source: String,
         offset: Int,
         limit: Int?,
-        claudeCodeProfileResolver: ClaudeCodeProfileResolver? = nil
-    ) async -> (messages: [ChatMessage], producedCount: Int) {
+        claudeCodeProfileResolver: ClaudeCodeProfileResolver? = nil,
+        homeDirectory: URL? = nil
+    ) async throws -> (messages: [ChatMessage], producedCount: Int, truncated: Bool, parseFailed: Bool) {
+        if isRemoteSnapshotLocator(filePath) {
+            return remoteSnapshotWindow(summary: nil, lines: [], offset: offset, limit: limit)
+        }
         if let sourceName = SourceName(rawValue: source),
            let adapter = uiAdapterRegistry(
-               claudeCodeProfileResolver: claudeCodeProfileResolver
+               claudeCodeProfileResolver: claudeCodeProfileResolver,
+               homeDirectory: homeDirectory
            ).adapter(for: sourceName) {
             // Trust the adapter on success, INCLUDING a legitimately empty window
             // (paging past EOF, or a window that is entirely tool messages). Only a
             // nil result — adapter error / no stream — falls back to the legacy
             // parser, which has no offset/limit support and would re-read the whole
             // file just to discard it.
-            if let result = await adapterMessages(
+            return try await adapterMessages(
                 adapter: adapter,
                 locator: filePath,
                 source: source,
                 options: StreamMessagesOptions(offset: offset, limit: limit)
-            ) {
-                return result
-            }
+            )
         }
         // No adapter for the source, or the adapter errored: legacy parsers emit
         // displayable messages directly, so produced == displayable here.
         let windowed = applyWindow(parseLegacy(filePath: filePath, source: source), offset: offset, limit: limit)
-        return (windowed, windowed.count)
+        return (windowed, windowed.count, false, false)
     }
 
     private static func uiAdapterRegistry(
-        claudeCodeProfileResolver: ClaudeCodeProfileResolver?
+        claudeCodeProfileResolver: ClaudeCodeProfileResolver?,
+        homeDirectory: URL?
     ) -> AdapterRegistry {
-        let homeDirectory = FileManager.default.homeDirectoryForCurrentUser
-        let resolver = claudeCodeProfileResolver ?? ClaudeCodeProfileResolver(
-            homeDirectory: homeDirectory,
-            settingsURL: homeDirectory.appendingPathComponent(".engram/settings.json")
-        )
-        let claudeCode = ClaudeCodeAdapter(profileResolver: resolver)
+        let homeDirectory = homeDirectory ?? SessionAdapterFactory.resolvedHomeDirectory()
         return AdapterRegistry(
-            adapters: [
-                CodexAdapter(),
-                claudeCode,
-                ClaudeCodeDerivedSourceAdapter(source: .minimax, base: claudeCode),
-                ClaudeCodeDerivedSourceAdapter(source: .lobsterai, base: claudeCode),
-                GeminiCliAdapter(),
-                OpenCodeAdapter(),
-                IflowAdapter(),
-                QwenAdapter(),
-                QoderAdapter(),
-                KimiAdapter(),
-                ClineAdapter(),
-                CursorAdapter(),
-                VsCodeAdapter(),
-                WindsurfAdapter(),
-                AntigravityAdapter(),
-                CommandCodeAdapter(),
-                CopilotAdapter()
-            ]
+            adapters: SessionAdapterFactory.defaultAdapters(
+                homeDirectory: homeDirectory,
+                claudeCodeProfileResolver: claudeCodeProfileResolver
+            )
         )
     }
 
-    private static func adapterMessages(
+    static func adapterMessages(
         adapter: any SessionAdapter,
         locator: String,
         source: String,
         options: StreamMessagesOptions
-    ) async -> (messages: [ChatMessage], producedCount: Int)? {
+    ) async throws -> (messages: [ChatMessage], producedCount: Int, truncated: Bool, parseFailed: Bool) {
+        // Metadata path truncate-and-succeeds on the message cap. Using
+        // streamMessages would throw for Iflow/CommandCode/Qoder and fall
+        // through to uncapped parseLegacy (#39).
+        let result: StreamMessagesResult
+        let metadataConstructionFailed: Bool
         do {
-            // Metadata path truncate-and-succeeds on the message cap. Using
-            // streamMessages would throw for Iflow/CommandCode/Qoder and fall
-            // through to uncapped parseLegacy (#39).
-            let result = try await adapter.streamMessagesWithMetadata(
+            result = try await adapter.streamMessagesWithMetadata(
                 locator: locator,
                 options: options
             )
-            var messages: [ChatMessage] = []
-            var produced = 0
+            metadataConstructionFailed = false
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            do {
+                result = StreamMessagesResult(
+                    messages: try await adapter.streamMessages(
+                        locator: locator,
+                        options: options
+                    )
+                )
+                metadataConstructionFailed = true
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                return ([], 0, false, true)
+            }
+        }
+        var messages: [ChatMessage] = []
+        var produced = 0
+        do {
             for try await message in result.messages {
                 // Count PRE-filter (adapter-produced) messages so a caller paging
                 // in produced-message space can advance offset correctly even when
                 // role filtering drops tool messages from `messages`.
                 produced += 1
-                guard message.role == .user || message.role == .assistant,
+                guard message.role == .user || message.role == .assistant || message.role == .system,
                       !message.content.isEmpty
                 else {
                     continue
                 }
-                let role = message.role == .user ? "user" : "assistant"
-                let category = message.role == .user ? classifySystem(content: message.content, source: source) : .none
+                // ChatMessage intentionally keeps a two-role rendering model;
+                // adapter-owned system injections render on the user side but
+                // retain their category so the transcript visibility toggles
+                // can distinguish them from ordinary user turns.
+                let role = message.role == .assistant ? "assistant" : "user"
+                let category = message.role == .assistant
+                    ? .none
+                    : classifySystem(content: message.content, source: source)
                 messages.append(ChatMessage(
                     role: role,
                     content: message.content,
@@ -203,10 +250,17 @@ struct MessageParser {
                     timestamp: message.timestamp
                 ))
             }
-            return (messages, produced)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
-            return nil
+            return (messages, produced, result.truncatedAt != nil, true)
         }
+        return (
+            messages,
+            produced,
+            result.truncatedAt != nil,
+            metadataConstructionFailed || result.parseFailure != nil
+        )
     }
 
     private static func applyWindow(_ messages: [ChatMessage], offset: Int?, limit: Int?) -> [ChatMessage] {

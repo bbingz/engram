@@ -133,14 +133,15 @@ Hybrid search (TS reference): FTS5 (trigram) + sqlite-vec (vector embeddings) + 
 - Model tracking: dimension/model changes trigger automatic rebuild of vector tables
 
 ### Insight Degradation UX
-Two storage layers for insights: `insights` table (text+FTS, always available) and `memory_insights` (vector, requires sqlite-vec).
-- save_insight: input validation (min 10 chars, max 50KB, trim); text-only dedup via normalized comparison; default importance = 5
-- save_insight: no embedding → text-only save with warning; with embedding → dual-write (vector + text)
-- `source_session_id` wired through both stores; `deleteInsight()` helper deletes from both
-- get_memory/search/get_context: no embedding → FTS keyword fallback from `insights` table
-- Daemon backfills: promotes text-only insights to embedded when provider becomes available
-- Daemon maintenance: `reconcileInsights()` fixes has_embedding/memory_insights divergence on startup
-- CJK queries use LIKE fallback (same as session FTS)
+The shipped Swift insight path always stores text in the `insights` table and its FTS index.
+When an embedding provider is usable, `insight_embeddings` stores little-endian Float32 BLOBs
+for brute-force cosine search; sqlite-vec is retained TypeScript reference tooling only.
+- `save_insight`: input validation (min 10 chars, max 50KB, trim), normalized text dedup, and default importance 5
+- without embeddings, save remains text/FTS-backed and returns an explicit warning; with embeddings, the service schedules the product BLOB path
+- `source_session_id` remains on `insights`; delete removes the text row and cascades its product embedding
+- `get_memory`, search, and context use insight embeddings when compatible, otherwise FTS/recent fallback
+- Swift startup reconciliation aligns `insights.has_embedding` with `insight_embeddings`; it does not make `memory_insights` the product vector store
+- CJK queries use the same short-query LIKE fallback policy as session search
 
 ### Agent Session Grouping
 Parent-child session linking: agent sessions (dispatched by Claude Code to Gemini/Codex) are grouped under their parent.
@@ -270,7 +271,7 @@ Parent-child session linking: agent sessions (dispatched by Claude Code to Gemin
 - Don't use `hashValue` for cache keys — use the value itself (hash collisions are real)
 - Don't skip `npm run lint` — pre-commit hook enforces it; CI enforces it too
 - Don't mix vectors from different embedding models in the same vector space — use explicit provider selection
-- Don't add Viking/OpenViking code — it was removed (2026-04-13). Use local sqlite-vec + FTS5 instead
+- Don't add Viking/OpenViking code or reintroduce sqlite-vec into the Swift product path. Keep product search on FTS5 plus Float32 embedding BLOBs; sqlite-vec remains TS reference tooling.
 - Don't re-enable idle timeout for MCP server (`idleTimeoutMs` in index.ts) — causes premature disconnect
 - Don't add db methods directly to db.ts — add to the appropriate module in `src/core/db/`, facade in `database.ts` delegates
 - Don't upgrade subagent tier from `skip` — subagent content is accessed through parent sessions, not independently. `setParentSession()` must NOT modify tier

@@ -4,6 +4,16 @@ import EngramCoreWrite
 import Foundation
 import GRDB
 
+struct ArchiveReclamationCoordinatorTestHooks: Sendable {
+    let beforeSourceReclaim: (@Sendable (ArchiveReclamationCatalogCandidate) throws -> Void)?
+
+    init(
+        beforeSourceReclaim: (@Sendable (ArchiveReclamationCatalogCandidate) throws -> Void)? = nil
+    ) {
+        self.beforeSourceReclaim = beforeSourceReclaim
+    }
+}
+
 actor ArchiveReclamationCoordinator {
     static let maximumCandidatesPerCycle = 10
     static let defaultMaximumSourceBytesPerCycle: Int64 = 256 * 1_024 * 1_024
@@ -37,6 +47,7 @@ actor ArchiveReclamationCoordinator {
     private let casEvictor: ArchiveCASEvictor
     private let profileResolver: ClaudeCodeProfileResolver
     private let productPool: DatabasePool
+    private let testHooks: ArchiveReclamationCoordinatorTestHooks
     private var cycleTask: Task<EngramServiceArchiveReclamationRunResponse, Never>?
     private var lastError: String?
 
@@ -46,17 +57,20 @@ actor ArchiveReclamationCoordinator {
         databasePath: String,
         catalog: ArchiveCatalog,
         cas: ImmutableArchiveCAS,
-        profileResolver: ClaudeCodeProfileResolver? = nil
+        profileResolver: ClaudeCodeProfileResolver? = nil,
+        testHooks: ArchiveReclamationCoordinatorTestHooks = .init()
     ) throws {
         self.settingsURL = settingsURL
         self.environment = environment
         self.catalog = catalog
         sourceReclaimer = ArchiveSourceReclaimer(catalog: catalog)
         casEvictor = ArchiveCASEvictor(catalog: catalog, cas: cas)
+        // docs/invariants.md #6: implicit profile discovery stays inside the injected test home.
         self.profileResolver = profileResolver ?? ClaudeCodeProfileResolver(
-            homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            homeDirectory: EngramUserDataDirectory.resolvedHomeDirectory(environment: environment),
             settingsURL: settingsURL
         )
+        self.testHooks = testHooks
         var configuration = Configuration()
         configuration.readonly = true
         productPool = try DatabasePool(path: databasePath, configuration: configuration)
@@ -143,11 +157,16 @@ actor ArchiveReclamationCoordinator {
 
     private func executeCycle(now: Date) -> EngramServiceArchiveReclamationRunResponse {
         let settings = loadSettings()
-        guard settings.reclamation.enabled,
-              settings.reclamationConfigurationError == nil,
-              recoveryLeases(now: now) != nil else {
-            return response(error: "reclamation_paused")
-        }
+        let leases = recoveryLeases(now: now)
+        let reclamationEnabled = settings.reclamation.enabled
+            && settings.reclamationConfigurationError == nil
+            && leases != nil
+        let context = ArchiveReclamationContext(
+            enabled: reclamationEnabled,
+            hotWindowDays: settings.reclamation.hotWindowDays,
+            nowNs: Self.nanoseconds(now),
+            recoveryLeaseVerifiedAtNs: leases ?? [:]
+        )
         do {
             var sourceCount = 0
             var casCount = 0
@@ -156,27 +175,41 @@ actor ArchiveReclamationCoordinator {
             var hadItemFailure = false
             let claudeProfiles = resolvedClaudeProfilesForReclamation()
 
-            let casSnapshot = try catalog.reclamationIntents(
-                phases: [.sourceDeleted],
-                limit: Self.maximumCandidatesPerCycle
-            )
             let recovery = try catalog.reclamationIntents(
                 phases: [.quarantinePlanned, .sourceQuarantined, .sourceDeletePlanned],
                 limit: Self.maximumCandidatesPerCycle
             )
             for intent in recovery {
                 do {
-                    guard sourceCount < Self.maximumCandidatesPerCycle,
-                          let capture = try catalog.capture(captureID: intent.captureID),
-                          Self.sourceReclamationAllowed(
-                              locator: capture.locator,
-                              source: capture.source,
-                              claudeProfiles: claudeProfiles
-                          ),
-                          capture.rawByteCount <= sourceBudget else { continue }
-                    let result = try sourceReclaimer.recover(intent: intent, capture: capture)
-                    sourceCount += 1
-                    sourceBudget -= result.releasedBytes
+                    guard let capture = try catalog.capture(captureID: intent.captureID) else {
+                        hadItemFailure = true
+                        continue
+                    }
+                    let candidate = try catalog.reclamationCandidate(
+                        manifestSHA256: intent.manifestSHA256
+                    )
+                    let deletionAllowed: Bool
+                    if let candidate,
+                       candidate.capture.captureID == intent.captureID,
+                       candidate.binding.sessionID == intent.sessionID,
+                       case .eligible = try evaluateCandidate(
+                           candidate,
+                           context: context,
+                           claudeProfiles: claudeProfiles
+                       ) {
+                        deletionAllowed = true
+                    } else {
+                        deletionAllowed = false
+                    }
+                    let result = try sourceReclaimer.recover(
+                        intent: intent,
+                        capture: capture,
+                        deletionAllowed: deletionAllowed
+                    )
+                    if result.releasedBytes > 0 {
+                        sourceCount += 1
+                        sourceBudget -= min(sourceBudget, result.releasedBytes)
+                    }
                     released += result.releasedBytes
                 } catch is CancellationError {
                     throw CancellationError()
@@ -184,6 +217,15 @@ actor ArchiveReclamationCoordinator {
                     hadItemFailure = true
                 }
             }
+
+            guard reclamationEnabled else {
+                return response(error: "reclamation_paused")
+            }
+
+            let casSnapshot = try catalog.reclamationIntents(
+                phases: [.sourceDeleted],
+                limit: Self.maximumCandidatesPerCycle
+            )
 
             // M4/R5: walk candidates in order; stop once the per-cycle reclaim
             // count or source-byte budget binds. Advance the cursor only past
@@ -218,9 +260,25 @@ actor ArchiveReclamationCoordinator {
                         locator: candidate.capture.locator,
                         updatedAt: Self.timestamp(now)
                     )
+                    try testHooks.beforeSourceReclaim?(candidate)
+                    guard let refreshed = try catalog.reclamationCandidate(
+                        manifestSHA256: candidate.binding.manifestSHA256
+                    ),
+                    refreshed.capture.captureID == intent.captureID,
+                    refreshed.binding.sessionID == intent.sessionID,
+                    case .eligible = try evaluateCandidate(
+                        refreshed,
+                        context: context,
+                        claudeProfiles: claudeProfiles
+                    ) else {
+                        if !cursorBlockedByFailedEligible {
+                            lastProcessedBinding = candidate.binding
+                        }
+                        continue
+                    }
                     let result = try sourceReclaimer.planAndReclaim(
                         intent: intent,
-                        capture: candidate.capture
+                        capture: refreshed.capture
                     )
                     sourceCount += 1
                     sourceBudget -= result.releasedBytes
@@ -287,46 +345,58 @@ actor ArchiveReclamationCoordinator {
         }
         let resolvedClaudeProfiles = claudeProfiles ?? resolvedClaudeProfilesForReclamation()
         return try page.map { candidate in
-            if let decision = ArchiveReclamationPolicy.preflight(
-                source: candidate.capture.source,
-                context: context
-            ) {
-                return (candidate, decision)
-            }
-            let state: ProductState
-            switch try productState(sessionID: candidate.binding.sessionID) {
-            case .available(let value):
-                state = value
-            case .missingSession:
-                return (candidate, .blocked(.missingProductSession))
-            case .invalidActivity:
-                return (candidate, .blocked(.invalidProductActivity))
-            }
-            let policyCandidate = ArchiveReclamationCandidate(
-                source: candidate.capture.source,
-                lastActivityNs: state.lastActivityNs,
-                isLive: state.isLive,
-                isFavorite: state.isFavorite,
-                generationMatchesCapture: Self.generationMatches(candidate.capture),
-                verifiedReceiptReplicaIDs: candidate.verifiedReplicaIDs,
-                hasNewerCapture: candidate.hasNewerCapture,
-                hasActiveOperation: candidate.hasActiveOperation,
-                sourceByteCount: candidate.capture.rawByteCount
-            )
-            let decision = ArchiveReclamationPolicy.evaluate(
-                candidate: policyCandidate,
-                context: context
-            )
-            if case .eligible = decision,
-               !Self.sourceReclamationAllowed(
-                   locator: candidate.capture.locator,
-                   source: candidate.capture.source,
-                   claudeProfiles: resolvedClaudeProfiles
-               ) {
-                return (candidate, .blocked(.unsupportedSource))
-            }
-            return (candidate, decision)
+            (candidate, try evaluateCandidate(
+                candidate,
+                context: context,
+                claudeProfiles: resolvedClaudeProfiles
+            ))
         }
+    }
+
+    private func evaluateCandidate(
+        _ candidate: ArchiveReclamationCatalogCandidate,
+        context: ArchiveReclamationContext,
+        claudeProfiles: [ClaudeCodeProfile]
+    ) throws -> ArchiveReclamationDecision {
+        if let decision = ArchiveReclamationPolicy.preflight(
+            source: candidate.capture.source,
+            context: context
+        ) {
+            return decision
+        }
+        let state: ProductState
+        switch try productState(sessionID: candidate.binding.sessionID) {
+        case .available(let value):
+            state = value
+        case .missingSession:
+            return .blocked(.missingProductSession)
+        case .invalidActivity:
+            return .blocked(.invalidProductActivity)
+        }
+        let policyCandidate = ArchiveReclamationCandidate(
+            source: candidate.capture.source,
+            lastActivityNs: state.lastActivityNs,
+            isLive: state.isLive,
+            isFavorite: state.isFavorite,
+            generationMatchesCapture: Self.generationMatches(candidate.capture),
+            verifiedReceiptReplicaIDs: candidate.verifiedReplicaIDs,
+            hasNewerCapture: candidate.hasNewerCapture,
+            hasActiveOperation: candidate.hasActiveOperation,
+            sourceByteCount: candidate.capture.rawByteCount
+        )
+        let decision = ArchiveReclamationPolicy.evaluate(
+            candidate: policyCandidate,
+            context: context
+        )
+        if case .eligible = decision,
+           !Self.sourceReclamationAllowed(
+               locator: candidate.capture.locator,
+               source: candidate.capture.source,
+               claudeProfiles: claudeProfiles
+           ) {
+            return .blocked(.unsupportedSource)
+        }
+        return decision
     }
 
     private func storeReclamationCursor(binding: ArchiveBinding, now: Date) throws {

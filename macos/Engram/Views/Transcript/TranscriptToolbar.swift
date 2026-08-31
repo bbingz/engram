@@ -30,6 +30,9 @@ struct TranscriptToolbar: View {
     var onHandoff: (() -> Void)? = nil
     var onReplay: (() -> Void)? = nil
     var onResume: (() -> Void)? = nil
+    /// When set, the Resume entry stays visible but disabled with this hover
+    /// explanation (e.g. HQ snapshots: the source lives on HQ).
+    var resumeDisabledReason: String? = nil
 
     @Binding var viewMode: TranscriptViewMode
     @AppStorage("contentFontSize") var fontSize: Double = 14
@@ -44,8 +47,8 @@ struct TranscriptToolbar: View {
                             Image(systemName: "chevron.left")
                             Text("Back")
                         }
-                        .font(.system(size: 12))
-                        .foregroundStyle(.blue)
+                        .scaledFont(12)
+                        .foregroundStyle(Theme.accent)
                     }
                     .buttonStyle(.plain)
                     .help("Back to session list")
@@ -56,7 +59,7 @@ struct TranscriptToolbar: View {
                 Button(action: onToggleFavorite) {
                     Image(systemName: isFavorite ? "star.fill" : "star")
                         .foregroundStyle(isFavorite ? .yellow : .secondary)
-                        .font(.system(size: 13))
+                        .scaledFont(13)
                 }
                 .buttonStyle(.plain)
                 // UI-H3: icon-only button needs a VoiceOver label.
@@ -79,11 +82,15 @@ struct TranscriptToolbar: View {
                     NSPasteboard.general.setString(session.id, forType: .string)
                 } label: {
                     Text("ID \(String(session.id.suffix(4)))")
-                        .font(.system(size: 11))
+                        .scaledFont(11)
                         .foregroundStyle(.tertiary)
                 }
                 .buttonStyle(.plain)
                 .help("Copy session ID: \(session.id)")
+
+                // HQ-imported sessions also carry the snapshot caption in the
+                // body; the toolbar badge is the second, always-visible cue.
+                OriginBadge(origin: session.origin)
 
                 if let onHandoff {
                     Divider().frame(height: 14)
@@ -91,13 +98,13 @@ struct TranscriptToolbar: View {
                     Button(action: onHandoff) {
                         HStack(spacing: 3) {
                             Image(systemName: "arrow.right.doc.on.clipboard")
-                                .font(.system(size: 11))
+                                .scaledFont(11)
                             Text("Handoff")
-                                .font(.system(size: 11))
+                                .scaledFont(11)
                         }
                         .padding(.horizontal, 8)
                         .padding(.vertical, 2)
-                        .background(Color.blue.opacity(0.1))
+                        .background(Theme.accent.opacity(0.1))
                         .clipShape(RoundedRectangle(cornerRadius: 4))
                     }
                     .buttonStyle(.plain)
@@ -108,9 +115,9 @@ struct TranscriptToolbar: View {
                     Button(action: onReplay) {
                         HStack(spacing: 3) {
                             Image(systemName: "play.rectangle")
-                                .font(.system(size: 11))
+                                .scaledFont(11)
                             Text("Replay")
-                                .font(.system(size: 11))
+                                .scaledFont(11)
                         }
                         .padding(.horizontal, 8)
                         .padding(.vertical, 2)
@@ -125,30 +132,32 @@ struct TranscriptToolbar: View {
                     Button(action: onResume) {
                         HStack(spacing: 3) {
                             Image(systemName: "play.fill")
-                                .font(.system(size: 10))
+                                .scaledFont(10)
                             Text("Resume")
-                                .font(.system(size: 11))
+                                .scaledFont(11)
                         }
                         .padding(.horizontal, 8)
                         .padding(.vertical, 2)
-                        .background(Color.green.opacity(0.1))
+                        .background(Theme.green.opacity(0.1))
                         .clipShape(RoundedRectangle(cornerRadius: 4))
                     }
                     .buttonStyle(.plain)
-                    .help("Resume this session")
+                    .disabled(resumeDisabledReason != nil)
+                    .opacity(resumeDisabledReason != nil ? 0.5 : 1)
+                    .help(resumeDisabledReason ?? "Resume this session")
                 }
 
                 Spacer()
 
                 Button { fontSize = max(10, fontSize - 1) } label: {
-                    Text("A\u{2212}").font(.system(size: 12)).foregroundStyle(.secondary)
+                    Text("A\u{2212}").scaledFont(12).foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Decrease text size")
                 .help("Decrease transcript text size")
 
                 Button { fontSize = min(22, fontSize + 1) } label: {
-                    Text("A+").font(.system(size: 14)).foregroundStyle(.secondary)
+                    Text("A+").scaledFont(14).foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Increase text size")
@@ -158,7 +167,7 @@ struct TranscriptToolbar: View {
 
                 Button(action: onCopyAll) {
                     Text("Copy")
-                        .font(.system(size: 11))
+                        .scaledFont(11)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 2)
                         .background(Color.secondary.opacity(0.1))
@@ -171,7 +180,7 @@ struct TranscriptToolbar: View {
 
                 Button(action: onToggleFind) {
                     Text("Find \u{2318}F")
-                        .font(.system(size: 11))
+                        .scaledFont(11)
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
@@ -187,7 +196,7 @@ struct TranscriptToolbar: View {
                 HStack(spacing: 10) {
                     Button(action: onShowAll) {
                         Text("All")
-                            .font(.system(size: 11))
+                            .scaledFont(11)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 2)
                             .background(Color.secondary.opacity(0.08))

@@ -112,6 +112,85 @@ final class StartupUsageCollectorTests: XCTestCase {
         XCTAssertTrue(rows.allSatisfy { ($0["count"] as Int) == 1 })
     }
 
+    func testFiveHourUsageIgnoresOldSessionIndexedNow_repro() throws {
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions(id, source, start_time, end_time, cwd, file_path, indexed_at)
+                VALUES (
+                  'codex-old-indexed-now', 'codex', '2026-08-15T12:00:00.000Z', NULL,
+                  '/repo', '/tmp/codex-old-indexed-now.jsonl', '2026-08-22T12:00:00.000Z'
+                )
+                """)
+            try insertCost(
+                db,
+                sessionId: "codex-old-indexed-now",
+                model: "gpt-5",
+                input: 100,
+                output: 20,
+                cost: 0.25
+            )
+        }
+
+        let emitted = try WriterStartupUsageCollector(writer: writer, now: {
+            ISO8601DateFormatter().date(from: "2026-08-22T12:00:00Z")!
+        }).collect()
+
+        XCTAssertNil(
+            emitted.first { $0.source == "codex" && $0.metric == "5h token total" },
+            "indexing time is not session activity and must not enter the five-hour window"
+        )
+    }
+
+    func testRollingResetUsesLatestSessionActivityInsteadOfClampedStart_repro() throws {
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions(id, source, start_time, end_time, cwd, file_path, indexed_at)
+                VALUES (
+                  'overnight-active', 'codex', '2026-05-23T20:00:00.000Z',
+                  '2026-05-24T11:00:00.000Z', '/repo', '/tmp/overnight-active.jsonl',
+                  '2026-05-24T11:00:00.000Z'
+                )
+                """)
+            try insertCost(
+                db,
+                sessionId: "overnight-active",
+                model: "gpt-5",
+                input: 100,
+                output: 20,
+                cost: 0.25
+            )
+        }
+
+        let emitted = try WriterStartupUsageCollector(writer: writer, now: {
+            ISO8601DateFormatter().date(from: "2026-05-24T12:00:00Z")!
+        }).collect()
+
+        XCTAssertEqual(
+            emitted.first { $0.source == "codex" && $0.metric == "5h token total" }?.resetAt,
+            "2026-05-24T16:00:00.000Z"
+        )
+    }
+
+    // docs/invariants.md invariant 3: KPI aggregates use list-visible sessions.
+    func testCollectorExcludesSkipTierUsageFromPressureSnapshots_repro() throws {
+        try writer.write { db in
+            try insertSession(db, id: "visible", source: "codex", startTime: "2026-05-24T10:10:00.000Z")
+            try insertSession(db, id: "skip", source: "codex", startTime: "2026-05-24T10:20:00.000Z")
+            try db.execute(sql: "UPDATE sessions SET tier = 'skip' WHERE id = 'skip'")
+            try insertCost(db, sessionId: "visible", model: "gpt-5", input: 80, output: 20, cost: 0.10)
+            try insertCost(db, sessionId: "skip", model: "gpt-5", input: 800, output: 100, cost: 0.90)
+        }
+
+        let emitted = try WriterStartupUsageCollector(writer: writer, now: {
+            ISO8601DateFormatter().date(from: "2026-05-24T12:00:00Z")!
+        }).collect()
+
+        let total = emitted.first { $0.source == "codex" && $0.metric == "5h token total" }
+        XCTAssertEqual(total?.value, 100)
+        let costShare = emitted.first { $0.source == "codex" && $0.metric == "7d cost share" }
+        XCTAssertEqual(costShare?.value, 100)
+    }
+
     func testCollectorObservesTokenCapableQoderAndClineByDefault() throws {
         try writer.write { db in
             try insertSession(db, id: "qoder-1", source: "qoder", startTime: "2026-05-24T10:10:00.000Z")

@@ -4,15 +4,18 @@ final class QoderAdapter: SessionAdapter, Sendable {
     let source: SourceName = .qoder
     private let projectsRoot: URL
     private let limits: ParserLimits
+    private let testHooks: JSONLIdentityTestHooks
 
     init(
         projectsRoot: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".qoder/projects")
             .path,
-        limits: ParserLimits = .default
+        limits: ParserLimits = .default,
+        testHooks: JSONLIdentityTestHooks = JSONLIdentityTestHooks()
     ) {
         self.projectsRoot = URL(fileURLWithPath: projectsRoot)
         self.limits = limits
+        self.testHooks = testHooks
     }
 
     func detect() async -> Bool {
@@ -41,9 +44,17 @@ final class QoderAdapter: SessionAdapter, Sendable {
             let (objects, failure) = try JSONLAdapterSupport.readObjects(
                 locator: locator,
                 limits: limits,
-                reportFailures: true
+                reportFailures: true,
+                countsTowardMessageLimit: {
+                    guard let message = Self.message(from: $0) else { return false }
+                    return message.role != .system
+                },
+                beforeIdentityValidation: testHooks.beforeFinalIdentityValidation
             )
-            if let failure { return .failure(failure) }
+            if let failure,
+               failure != .fileModifiedDuringParse || objects.compactMap(Self.message(from:)).isEmpty {
+                return .failure(failure)
+            }
 
             var sessionId = ""
             var agentId = ""
@@ -104,16 +115,15 @@ final class QoderAdapter: SessionAdapter, Sendable {
             guard userCount + assistantCount + toolCount > 0 else {
                 return .failure(.noVisibleMessages)
             }
-            let isSubagent = locator.contains("/subagents/")
+            let subagent = subagentLayout(locator: locator, parentSessionId: sessionId)
             // R1.P1.identity-key-collision: match ClaudeCode — never reuse parent
             // sessionId when agentId is missing on a subagent transcript.
             let id: String
-            if isSubagent {
+            if let subagent {
                 if !agentId.isEmpty {
                     id = agentId
                 } else {
-                    let leaf = URL(fileURLWithPath: locator).lastPathComponent
-                    id = "sub:\(sessionId):\(leaf.isEmpty ? "unknown" : leaf)"
+                    id = "sub:\(sessionId):\(subagent.relativePath)"
                 }
             } else {
                 id = sessionId
@@ -137,16 +147,51 @@ final class QoderAdapter: SessionAdapter, Sendable {
                     filePath: locator,
                     sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
                     indexedAt: nil,
-                    agentRole: isSubagent ? "subagent" : nil,
+                    agentRole: subagent == nil ? nil : "subagent",
                     originator: nil,
                     origin: nil,
                     summaryMessageCount: nil,
                     tier: nil,
                     qualityScore: nil,
-                    parentSessionId: isSubagent ? parentSessionId(for: locator) : nil,
+                    parentSessionId: subagent?.parentSessionId,
                     suggestedParentId: nil
                 )
             )
+        } catch let failure as ParserFailure {
+            return .failure(failure)
+        } catch {
+            return .failure(.malformedJSON)
+        }
+    }
+
+    func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
+        do {
+            let url = URL(fileURLWithPath: locator)
+            let before = try limits.fileIdentity(for: url)
+            let info: NormalizedSessionInfo
+            switch try await parseSessionInfo(locator: locator) {
+            case .success(let value): info = value
+            case .failure(let failure): return .failure(failure)
+            }
+            let result = try await streamMessagesWithMetadata(
+                locator: locator,
+                options: StreamMessagesOptions()
+            )
+            if result.truncatedAt != nil { return .failure(.messageLimitExceeded) }
+            var messages: [NormalizedMessage] = []
+            for try await message in result.messages { messages.append(message) }
+            let after = try limits.fileIdentity(for: url)
+            let identityFailure: ParserFailure? = limits.isSameFileIdentity(before, after)
+                ? nil
+                : .fileModifiedDuringParse
+            if let failure = result.parseFailure ?? identityFailure {
+                guard failure == .fileModifiedDuringParse, !messages.isEmpty else {
+                    return .failure(failure)
+                }
+                return .success(IndexingScan(info: info, messages: messages, parseFailure: failure))
+            }
+            guard result.totalKnownComplete else { return .failure(.messageLimitExceeded) }
+            return .success(IndexingScan(info: info, messages: messages))
         } catch let failure as ParserFailure {
             return .failure(failure)
         } catch {
@@ -162,17 +207,21 @@ final class QoderAdapter: SessionAdapter, Sendable {
             let (objects, failure) = try JSONLAdapterSupport.readObjects(
                 locator: locator,
                 limits: limits,
-                reportFailures: true
+                reportFailures: true,
+                countsTowardMessageLimit: {
+                    guard let message = Self.message(from: $0) else { return false }
+                    return message.role != .system
+                }
             )
-            if let failure { throw failure }
-            return JSONLAdapterSupport.stream(
-                JSONLAdapterSupport.applyWindow(objects.compactMap(Self.message(from:)), options: options)
-            )
+            let messages = objects.compactMap(Self.message(from:))
+            if let failure, messages.isEmpty { throw failure }
+            return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
         }
         let messages = try JSONLAdapterSupport.windowedMessages(
             locator: locator,
             options: options,
             limits: limits,
+            countsTowardMessageLimit: { $0.role != .system },
             transform: Self.message(from:)
         )
         return JSONLAdapterSupport.stream(messages)
@@ -186,6 +235,7 @@ final class QoderAdapter: SessionAdapter, Sendable {
             locator: locator,
             options: options,
             limits: limits,
+            countsTowardMessageLimit: { $0.role != .system },
             transform: Self.message(from:)
         )
         return JSONLAdapterSupport.stream(result)
@@ -193,6 +243,17 @@ final class QoderAdapter: SessionAdapter, Sendable {
 
     func isAccessible(locator: String) async -> Bool {
         JSONLAdapterSupport.fileExists(locator)
+    }
+
+    private func subagentLayout(
+        locator: String,
+        parentSessionId: String
+    ) -> SubagentTranscriptLayout? {
+        SubagentTranscriptPath.layout(
+            locator: locator,
+            projectsRoot: projectsRoot.path,
+            projectLevelParentSessionId: parentSessionId
+        )
     }
 
     private static func message(from object: JSONLAdapterSupport.JSONObject) -> NormalizedMessage? {
@@ -222,7 +283,7 @@ final class QoderAdapter: SessionAdapter, Sendable {
     }
 
     private static func isSystemInjection(_ text: String) -> Bool {
-        text.hasPrefix("# AGENTS.md instructions for ") || text.contains("<INSTRUCTIONS>")
+        SystemMessageClassifier.classify(content: text, source: "qoder") != .none
     }
 
     private static func isToolResult(_ content: Any?) -> Bool {
@@ -278,17 +339,6 @@ final class QoderAdapter: SessionAdapter, Sendable {
     private static func nonEmptyToolCalls(from content: Any?) -> [NormalizedToolCall]? {
         let calls = toolCalls(from: content)
         return calls.isEmpty ? nil : calls
-    }
-
-    private func parentSessionId(for locator: String) -> String? {
-        let rootComponents = projectsRoot.standardizedFileURL.pathComponents
-        let locatorComponents = URL(fileURLWithPath: locator).standardizedFileURL.pathComponents
-        guard locatorComponents.starts(with: rootComponents) else { return nil }
-        let parts = Array(locatorComponents.dropFirst(rootComponents.count))
-        guard let subagentsIndex = parts.firstIndex(of: "subagents"),
-              subagentsIndex >= 2
-        else { return nil }
-        return parts[subagentsIndex - 1]
     }
 
     private func subagentLocators(in url: URL) -> [String] {

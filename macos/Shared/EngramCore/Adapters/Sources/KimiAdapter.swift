@@ -8,6 +8,7 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
     private let sessionsRoot: URL
     private let kimiJsonPath: URL
     private let limits: ParserLimits
+    private let testHooks: JSONLIdentityTestHooks
 
     init(
         sessionsRoot: String = FileManager.default.homeDirectoryForCurrentUser
@@ -16,11 +17,13 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
         kimiJsonPath: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".kimi/kimi.json")
             .path,
-        limits: ParserLimits = .default
+        limits: ParserLimits = .default,
+        testHooks: JSONLIdentityTestHooks = JSONLIdentityTestHooks()
     ) {
         self.sessionsRoot = URL(fileURLWithPath: sessionsRoot)
         self.kimiJsonPath = URL(fileURLWithPath: kimiJsonPath)
         self.limits = limits
+        self.testHooks = testHooks
     }
 
     func detect() async -> Bool {
@@ -58,16 +61,32 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
         do {
             let contextFiles = Self.contextFiles(for: locator)
             var allObjects: [Phase4AdapterSupport.JSONObject] = []
+            var combinedMessageCount = 0
             var totalSize = Int64(0)
+            var retainedFailure: ParserFailure?
             for file in contextFiles {
                 let (objects, failure) = try JSONLAdapterSupport.readObjects(
                     locator: file,
                     limits: limits,
-                    reportFailures: true
+                    reportFailures: true,
+                    countsTowardMessageLimit: Self.isConversation,
+                    beforeIdentityValidation: testHooks.beforeFinalIdentityValidation
                 )
-                if let failure { return .failure(failure) }
+                if let failure {
+                    guard failure == .fileModifiedDuringParse,
+                          objects.contains(where: Self.isConversation)
+                    else {
+                        return .failure(failure)
+                    }
+                    retainedFailure = failure
+                }
+                combinedMessageCount += objects.lazy.filter(Self.isConversation).count
+                guard combinedMessageCount <= limits.maxMessages else {
+                    return .failure(.messageLimitExceeded)
+                }
                 allObjects.append(contentsOf: objects)
                 totalSize += Phase4AdapterSupport.fileSize(file)
+                if retainedFailure != nil { break }
             }
 
             let messages = allObjects.filter(Self.isConversation)
@@ -123,6 +142,51 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
         }
     }
 
+    func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
+        do {
+            let url = URL(fileURLWithPath: locator)
+            let before = try limits.fileIdentity(for: url)
+            let info: NormalizedSessionInfo
+            switch try await parseSessionInfo(locator: locator) {
+            case .success(let value): info = value
+            case .failure(let failure): return .failure(failure)
+            }
+            let result = try await streamMessagesWithMetadata(
+                locator: locator,
+                options: StreamMessagesOptions()
+            )
+            if result.truncatedAt != nil { return .failure(.messageLimitExceeded) }
+            var messages: [NormalizedMessage] = []
+            for try await message in result.messages { messages.append(message) }
+            let after: FileIdentity
+            do {
+                after = try limits.fileIdentity(for: url)
+            } catch {
+                guard !messages.isEmpty else { return .failure(.fileModifiedDuringParse) }
+                return .success(IndexingScan(
+                    info: info,
+                    messages: messages,
+                    parseFailure: .fileModifiedDuringParse
+                ))
+            }
+            let identityFailure: ParserFailure? = limits.isSameFileIdentity(before, after)
+                ? nil
+                : .fileModifiedDuringParse
+            if let failure = result.parseFailure ?? identityFailure {
+                guard failure == .fileModifiedDuringParse, !messages.isEmpty else {
+                    return .failure(failure)
+                }
+                return .success(IndexingScan(info: info, messages: messages, parseFailure: failure))
+            }
+            guard result.totalKnownComplete else { return .failure(.messageLimitExceeded) }
+            return .success(IndexingScan(info: info, messages: messages))
+        } catch let failure as ParserFailure {
+            return .failure(failure)
+        } catch {
+            return .failure(.malformedJSON)
+        }
+    }
+
     func streamMessages(
         locator: String,
         options: StreamMessagesOptions
@@ -149,28 +213,33 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
         limits: ParserLimits
     ) throws -> JSONLAdapterSupport.WindowedMessagesResult {
         var messages: [NormalizedMessage] = []
-        let turns = try Self.readTurnMetadata(
+        let turnResult = try Self.readTurnMetadata(
             wirePath: URL(fileURLWithPath: locator)
                 .deletingLastPathComponent()
                 .appendingPathComponent("wire.jsonl")
                 .path,
             limits: limits
         )
+        let turns = turnResult.turns
         var records: [(object: Phase4AdapterSupport.JSONObject, role: String, turnIndex: Int)] = []
         var turnIndex = 0
         var hasMessageInTurn = false
-        var truncatedAt: Int?
-        let shouldApplyMessageCap = options.limit == nil
+        var hasMoreMessages = false
+        var parseFailure = turnResult.parseFailure
 
         for file in Self.contextFiles(for: locator) {
             let (objects, failure) = try JSONLAdapterSupport.readObjects(
                 locator: file,
                 limits: limits,
-                reportFailures: shouldApplyMessageCap
+                reportFailures: true,
+                countsTowardMessageLimit: Self.isConversation
             )
             if let failure {
-                guard failure == .messageLimitExceeded else { throw failure }
-                truncatedAt = limits.maxMessages
+                if failure == .messageLimitExceeded {
+                    hasMoreMessages = true
+                } else {
+                    parseFailure = failure
+                }
             }
             for object in objects {
                 guard let role = JSONLAdapterSupport.string(object["role"]),
@@ -184,6 +253,7 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
                 records.append((object: object, role: role, turnIndex: turnIndex))
                 hasMessageInTurn = true
             }
+            if failure != nil { break }
         }
 
         var lastAssistantByTurn: [Int: Int] = [:]
@@ -207,14 +277,15 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
                 messages.append(message)
             }
         }
-        if shouldApplyMessageCap, messages.count > limits.maxMessages {
-            truncatedAt = limits.maxMessages
+        if messages.count > limits.maxMessages {
+            hasMoreMessages = true
         }
-        let boundedMessages = truncatedAt == nil ? messages : Array(messages.prefix(limits.maxMessages))
-        return JSONLAdapterSupport.WindowedMessagesResult(
-            messages: JSONLAdapterSupport.applyWindow(boundedMessages, options: options),
-            totalKnownComplete: truncatedAt == nil,
-            truncatedAt: truncatedAt
+        return JSONLAdapterSupport.boundedWindowWithMetadata(
+            messages,
+            options: options,
+            maxMessages: limits.maxMessages,
+            hasMoreMessages: hasMoreMessages,
+            parseFailure: parseFailure
         )
     }
 
@@ -300,7 +371,7 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
         wirePath: String,
         limits: ParserLimits
     ) throws -> (startTime: String, endTime: String) {
-        let turns = try readTurnMetadata(wirePath: wirePath, limits: limits)
+        let turns = try readTurnMetadata(wirePath: wirePath, limits: limits).turns
         guard let first = turns.first else { return ("", "") }
         let last = turns.last
         return (first.startTime, last?.endTime ?? last?.startTime ?? first.startTime)
@@ -309,10 +380,15 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
     private static func readTurnMetadata(
         wirePath: String,
         limits: ParserLimits
-    ) throws -> [TurnMetadata] {
-        guard JSONLAdapterSupport.fileExists(wirePath) else { return [] }
-        let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: wirePath, limits: limits)
-        if let failure { throw failure }
+    ) throws -> (turns: [TurnMetadata], parseFailure: ParserFailure?) {
+        guard JSONLAdapterSupport.fileExists(wirePath) else { return ([], nil) }
+        let (objects, failure) = try JSONLAdapterSupport.readObjects(
+            locator: wirePath,
+            limits: limits,
+            reportFailures: true,
+            countsTowardMessageLimit: { _ in false }
+        )
+        if let failure, objects.isEmpty { throw failure }
         var turns: [TurnMetadata] = []
         for object in objects {
             guard let timestamp = Phase4AdapterSupport.double(object["timestamp"]) else { continue }
@@ -334,7 +410,7 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
                 )
             }
         }
-        return turns
+        return (turns, failure)
     }
 
     private static func isConversation(_ object: Phase4AdapterSupport.JSONObject) -> Bool {

@@ -12,11 +12,11 @@ struct TopBarView: View {
             Button { showSearch.toggle() } label: {
                 HStack(spacing: 6) {
                     Text("Search sessions...")
-                        .font(.system(size: 12))
+                        .scaledFont(12)
                         .foregroundStyle(.secondary)
                     Spacer()
                     Text("⌘K")
-                        .font(.system(size: 10))
+                        .scaledFont(10)
                         .foregroundStyle(.tertiary)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)

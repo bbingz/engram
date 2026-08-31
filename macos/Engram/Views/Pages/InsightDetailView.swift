@@ -18,7 +18,7 @@ struct InsightDetailView: View {
                         .font(.caption)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(.red)
+                .foregroundStyle(Theme.red)
                 .accessibilityIdentifier("insight_delete")
             }
 

@@ -67,11 +67,8 @@ final class DarkModeTests: XCTestCase {
         app.terminate()
 
         let popoverApp = XCUIApplication()
-        popoverApp.launchArguments = [
-            "--test-mode", "--fixture-db", TestLaunchConfig.fixtureDBPath,
-            "--mock-daemon", "--fixed-date", "2026-01-15T10:00:00Z",
-            "--popover-standalone", "--appearance", "dark"
-        ] + TestLaunchConfig.localizationArguments
+        TestLaunchConfig.popover.configure(popoverApp)
+        popoverApp.launchArguments += ["--appearance", "dark"]
         popoverApp.launch()
 
         let popover = PopoverScreen(app: popoverApp)

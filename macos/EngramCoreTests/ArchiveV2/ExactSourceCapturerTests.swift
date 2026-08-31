@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import GRDB
 import XCTest
 @testable import EngramCoreRead
 @testable import EngramCoreWrite
@@ -289,6 +290,83 @@ final class ExactSourceCapturerTests: XCTestCase {
         }
     }
 
+    func testCaptureCancellationLeavesNoUntrackedCASFiles_repro() async throws {
+        let storeRoot = root.appendingPathComponent("store-cancelled-capture", isDirectory: true)
+        let sourceURL = root.appendingPathComponent("cancelled-capture.jsonl")
+        try Data("cancel after staging\n".utf8).write(to: sourceURL)
+        let descriptor = try ArchiveSourceDescriptor.singleFile(
+            locator: sourceURL.path,
+            sourceURL: sourceURL,
+            replayRelativePath: "cancelled/session.jsonl"
+        )
+        let (cas, catalog) = try makeStore(storeRoot)
+        let capturer = ExactSourceCapturer(
+            cas: cas,
+            catalog: catalog,
+            descriptor: descriptor,
+            testHooks: ExactSourceCapturerTestHooks(
+                afterStreamingBeforeFinalStat: { _ in
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+            )
+        )
+
+        let result = await Task {
+            try capturer.capture(
+                source: .claudeCode,
+                locator: sourceURL.path,
+                machineID: machineID
+            )
+        }.result
+
+        guard case .failure(let error) = result else {
+            return XCTFail("expected capture cancellation")
+        }
+        XCTAssertTrue(error is CancellationError, "unexpected error: \(error)")
+        XCTAssertTrue(try catalog.unboundCaptures(limit: 10).isEmpty)
+        try assertNoCASContent(in: storeRoot)
+    }
+
+    func testCatalogRecordFailureLeavesNoUntrackedCASFiles_repro() throws {
+        let storeRoot = root.appendingPathComponent("store-catalog-failure", isDirectory: true)
+        let sourceURL = root.appendingPathComponent("catalog-failure.jsonl")
+        try Data("record failure after staging\n".utf8).write(to: sourceURL)
+        let descriptor = try ArchiveSourceDescriptor.singleFile(
+            locator: sourceURL.path,
+            sourceURL: sourceURL,
+            replayRelativePath: "catalog-failure/session.jsonl"
+        )
+        let (cas, catalog) = try makeStore(storeRoot)
+        let triggerDatabase = try DatabaseQueue(
+            path: storeRoot.appendingPathComponent("archive.sqlite").path
+        )
+        try triggerDatabase.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_archive_capture_insert
+                BEFORE INSERT ON archive_captures
+                BEGIN
+                    SELECT RAISE(ABORT, 'forced capture insert failure');
+                END
+                """)
+        }
+        let capturer = ExactSourceCapturer(cas: cas, catalog: catalog, descriptor: descriptor)
+
+        XCTAssertThrowsError(
+            try capturer.capture(
+                source: .claudeCode,
+                locator: sourceURL.path,
+                machineID: machineID
+            )
+        ) { error in
+            XCTAssertTrue(
+                String(describing: error).contains("forced capture insert failure"),
+                "unexpected error: \(error)"
+            )
+        }
+        XCTAssertTrue(try catalog.unboundCaptures(limit: 10).isEmpty)
+        try assertNoCASContent(in: storeRoot)
+    }
+
     func testFIFOReplacementCannotBlockCaptureOrVerification() throws {
         let storeRoot = root.appendingPathComponent("store-fifo-race", isDirectory: true)
         let fifo = root.appendingPathComponent("race-fifo.jsonl")
@@ -420,6 +498,36 @@ final class ExactSourceCapturerTests: XCTestCase {
         let all = FileManager.default.enumerator(atPath: manifestsRoot.path)
         while let path = all?.nextObject() as? String {
             if path.hasSuffix(".json") { count += 1 }
+        }
+        return count
+    }
+
+    private func assertNoCASContent(in storeRoot: URL) throws {
+        XCTAssertEqual(
+            try regularFileCount(
+                in: storeRoot.appendingPathComponent("objects/sha256", isDirectory: true)
+            ),
+            0
+        )
+        XCTAssertEqual(try manifestFileCount(storeRoot), 0)
+        XCTAssertEqual(
+            try regularFileCount(in: storeRoot.appendingPathComponent("tmp", isDirectory: true)),
+            0
+        )
+    }
+
+    private func regularFileCount(in directory: URL) throws -> Int {
+        guard FileManager.default.fileExists(atPath: directory.path) else { return 0 }
+        let keys: [URLResourceKey] = [.isRegularFileKey]
+        let contents = FileManager.default.enumerator(
+            at: directory,
+            includingPropertiesForKeys: keys
+        )
+        var count = 0
+        while let url = contents?.nextObject() as? URL {
+            if try url.resourceValues(forKeys: Set(keys)).isRegularFile == true {
+                count += 1
+            }
         }
         return count
     }

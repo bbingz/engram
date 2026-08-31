@@ -21,10 +21,12 @@ final class SourcePulseTests: XCTestCase {
         let sourcePulse = SourcePulseScreen(app: app)
         sourcePulse.waitForLoad()
 
-        let hasGrid = sourcePulse.statusGrid.waitForExistence(timeout: 5)
-        let hasEmpty = sourcePulse.emptyState.waitForExistence(timeout: 3)
-        XCTAssertTrue(hasGrid || hasEmpty,
-                      "SourcePulse should show status grid or empty state")
+        XCTAssertTrue(sourcePulse.statusGrid.waitForExistence(timeout: 5),
+                      "SourcePulse should retain its summary grid while reads fail")
+        XCTAssertTrue(sourcePulse.failedState.waitForExistence(timeout: 5),
+                      "The unavailable mock service should render the source failure state")
+        XCTAssertFalse(sourcePulse.emptyState.exists,
+                       "A failed source read must not masquerade as an empty source catalog")
         XCTAssertTrue(sourcePulse.liveUnavailable.waitForExistence(timeout: 5),
                       "SourcePulse should finish the mock-service live poll before capture")
         ScreenshotCapture.capture(name: "sourcePulse_statusGrid", app: app, screen: "sourcePulse", test: #function)
@@ -37,7 +39,7 @@ final class SourcePulseTests: XCTestCase {
         let sourcePulse = SourcePulseScreen(app: app)
         sourcePulse.waitForLoad()
 
-        // Verify the page loaded — either content or empty state is acceptable
+        // This test only verifies that the page shell remains reachable.
         XCTAssertTrue(sourcePulse.container.exists,
                       "SourcePulse container should be visible")
     }

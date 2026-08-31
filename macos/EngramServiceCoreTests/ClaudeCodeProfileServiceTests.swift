@@ -39,7 +39,7 @@ final class ClaudeCodeProfileServiceTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    func testStatusCountsBoundedClaudeLocatorsAndUsesCanonicalRootBoundary() async throws {
+    func testStatusCountsBoundedClaudeLocatorsAndWorkflowSubagents_repro() async throws {
         let projectsRoot = home
             .appendingPathComponent(".claude-api", isDirectory: true)
             .appendingPathComponent("projects", isDirectory: true)
@@ -49,9 +49,25 @@ final class ClaudeCodeProfileServiceTests: XCTestCase {
             .appendingPathComponent("session-id", isDirectory: true)
             .appendingPathComponent("subagents", isDirectory: true)
         let subagent = subagents.appendingPathComponent("agent.jsonl")
-        try FileManager.default.createDirectory(at: subagents, withIntermediateDirectories: true)
+        let workflowSubagent = subagents
+            .appendingPathComponent("workflows/wf_review", isDirectory: true)
+            .appendingPathComponent("agent-review.jsonl")
+        try FileManager.default.createDirectory(
+            at: workflowSubagent.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
         try Data("abc".utf8).write(to: session)
         try Data("hello".utf8).write(to: subagent)
+        try Data("workflow".utf8).write(to: workflowSubagent)
+        try Data("journal".utf8).write(
+            to: workflowSubagent.deletingLastPathComponent().appendingPathComponent("journal.jsonl")
+        )
+        let invalidRun = subagents.appendingPathComponent("workflows/review", isDirectory: true)
+        try FileManager.default.createDirectory(at: invalidRun, withIntermediateDirectories: true)
+        try Data("wrong-run".utf8).write(to: invalidRun.appendingPathComponent("agent-wrong.jsonl"))
+        try Data("wrong-name".utf8).write(
+            to: workflowSubagent.deletingLastPathComponent().appendingPathComponent("notes.jsonl")
+        )
         try Data("ignored".utf8).write(
             to: subagents.appendingPathComponent("not-jsonl.txt")
         )
@@ -117,8 +133,8 @@ final class ClaudeCodeProfileServiceTests: XCTestCase {
         let profile = try XCTUnwrap(response.profiles.first)
         XCTAssertEqual(profile.origin, "automatic")
         XCTAssertTrue(profile.available)
-        XCTAssertEqual(profile.discoveredFileCount, 2)
-        XCTAssertEqual(profile.discoveredSourceBytes, 8)
+        XCTAssertEqual(profile.discoveredFileCount, 3)
+        XCTAssertEqual(profile.discoveredSourceBytes, 16)
         XCTAssertEqual(profile.indexedLocatorCount, 1)
         XCTAssertEqual(profile.capturedCount, 0)
         XCTAssertEqual(profile.ignoredEmptyCaptureCount, 0)

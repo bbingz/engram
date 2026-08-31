@@ -3255,6 +3255,29 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         XCTAssertEqual(recorded, ["capture"])
     }
 
+    func testCaptureFailureFallsBackToUnrestrictedIndexPlan_repro() async throws {
+        let harness = try makeHarness(remoteReady: false)
+        let events = EventLog()
+        var operations = makeOperations(events: events)
+        operations.capture = { _, _, _ in
+            throw NSError(domain: "capture", code: 1)
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: false,
+            configurationError: nil,
+            operations: operations
+        )
+
+        let result = try await coordinator.runCycle(adapters: [], cursorScope: .full) { plan in
+            XCTAssertNil(plan.capturedExactLocators)
+            return try await self.emptyIndexResult(gate: harness.gate)
+        }
+
+        XCTAssertNil(result.indexPlan.capturedExactLocators)
+    }
+
     // MARK: - Helpers
 
     private func makeHarness(remoteReady: Bool, batchSize: Int = 4) throws -> Harness {

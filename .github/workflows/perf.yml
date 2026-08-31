@@ -43,7 +43,7 @@ jobs:
           restore-keys: spm-${{ runner.os }}-${{ runner.arch }}-selfhost-xcode-
 
       - name: Generate Xcode project
-        run: cd macos && xcodegen generate
+        run: scripts/check-xcodeproj-drift.sh
 
       - name: Generate test fixtures
         run: npm run generate:fixtures

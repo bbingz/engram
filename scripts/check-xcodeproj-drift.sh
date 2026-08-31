@@ -53,11 +53,13 @@ fi
 
 cd "$ROOT_DIR/macos"
 "$bin" generate >/dev/null
-if ! git diff --quiet -- Engram.xcodeproj; then
+unstaged="$(git diff --name-only -- Engram.xcodeproj)"
+untracked="$(git ls-files --others --exclude-standard -- Engram.xcodeproj)"
+if [ -n "$unstaged" ] || [ -n "$untracked" ]; then
   echo "check-xcodeproj-drift: Engram.xcodeproj was stale and has been regenerated." >&2
   echo "  New or renamed Swift files are not in the build until this is committed," >&2
   echo "  so their tests never compile and never run. Stage it:" >&2
-  echo "    git add macos/Engram.xcodeproj/project.pbxproj" >&2
+  echo "    git add macos/Engram.xcodeproj" >&2
   exit 1
 fi
 

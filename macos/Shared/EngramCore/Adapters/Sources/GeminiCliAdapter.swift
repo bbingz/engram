@@ -4,16 +4,32 @@ enum Phase4AdapterSupport {
     typealias JSONObject = [String: Any]
 
     static func readJSONObject(locator: String, limits: ParserLimits) throws -> JSONObject {
+        let (object, failure) = try readJSONObjectWithMetadata(locator: locator, limits: limits)
+        if let failure { throw failure }
+        return object
+    }
+
+    static func readJSONObjectWithMetadata(
+        locator: String,
+        limits: ParserLimits,
+        beforeIdentityValidation: () -> Void = {}
+    ) throws -> (object: JSONObject, parseFailure: ParserFailure?) {
         let (url, before) = try JSONLAdapterSupport.prepareFile(locator: locator, limits: limits)
         let data = try Data(contentsOf: url)
         guard let object = try JSONSerialization.jsonObject(with: data) as? JSONObject else {
             throw ParserFailure.malformedJSON
         }
-        let after = try limits.fileIdentity(for: url)
-        guard limits.isSameFileIdentity(before, after) else {
-            throw ParserFailure.fileModifiedDuringParse
+        beforeIdentityValidation()
+        let after: FileIdentity
+        do {
+            after = try limits.fileIdentity(for: url)
+        } catch {
+            return (object, .fileModifiedDuringParse)
         }
-        return object
+        let failure: ParserFailure? = limits.isSameFileIdentity(before, after)
+            ? nil
+            : .fileModifiedDuringParse
+        return (object, failure)
     }
 
     static func readJSONArray(locator: String, limits: ParserLimits) throws -> [JSONObject] {
@@ -27,6 +43,103 @@ enum Phase4AdapterSupport {
             throw ParserFailure.fileModifiedDuringParse
         }
         return array
+    }
+
+    static func readJSONArrayPrefix(
+        locator: String,
+        limits: ParserLimits,
+        countsTowardMessageLimit: (JSONObject) -> Bool
+    ) throws -> (objects: [JSONObject], exceededMessageLimit: Bool, parseFailure: ParserFailure?) {
+        let (url, before) = try JSONLAdapterSupport.prepareFile(locator: locator, limits: limits)
+        let bytes = [UInt8](try Data(contentsOf: url))
+        guard let arrayStart = bytes.firstIndex(where: { ![9, 10, 13, 32].contains($0) }),
+              bytes[arrayStart] == UInt8(ascii: "[")
+        else {
+            throw ParserFailure.malformedJSON
+        }
+
+        var objects: [JSONObject] = []
+        var messageCount = 0
+        var depth = 1
+        var objectStart: Int?
+        var inString = false
+        var escaped = false
+        var closedArray = false
+        var exceeded = false
+
+        for index in bytes.indices where index > arrayStart {
+            let byte = bytes[index]
+            if inString {
+                if escaped {
+                    escaped = false
+                } else if byte == UInt8(ascii: "\\") {
+                    escaped = true
+                } else if byte == UInt8(ascii: "\"") {
+                    inString = false
+                }
+                continue
+            }
+            if byte == UInt8(ascii: "\"") {
+                inString = true
+                continue
+            }
+            if byte == UInt8(ascii: "{") {
+                if depth == 1 { objectStart = index }
+                depth += 1
+                continue
+            }
+            if byte == UInt8(ascii: "[") {
+                depth += 1
+                continue
+            }
+            if byte == UInt8(ascii: "}") {
+                depth -= 1
+                if depth == 1, let start = objectStart {
+                    let data = Data(bytes[start...index])
+                    let object: JSONObject
+                    do {
+                        guard let parsed = try JSONSerialization.jsonObject(with: data) as? JSONObject else {
+                            throw ParserFailure.malformedJSON
+                        }
+                        object = parsed
+                    } catch {
+                        guard !objects.isEmpty else { throw ParserFailure.malformedJSON }
+                        return (objects, false, .malformedJSON)
+                    }
+                    if countsTowardMessageLimit(object) {
+                        guard messageCount < limits.maxMessages else {
+                            exceeded = true
+                            break
+                        }
+                        messageCount += 1
+                    }
+                    objects.append(object)
+                    objectStart = nil
+                }
+                continue
+            }
+            if byte == UInt8(ascii: "]") {
+                if depth == 1 {
+                    closedArray = true
+                    break
+                }
+                depth -= 1
+            }
+        }
+
+        let after: FileIdentity
+        do {
+            after = try limits.fileIdentity(for: url)
+        } catch {
+            guard !objects.isEmpty else { throw error }
+            return (objects, exceeded, .fileModifiedDuringParse)
+        }
+        if !limits.isSameFileIdentity(before, after) {
+            guard !objects.isEmpty else { throw ParserFailure.fileModifiedDuringParse }
+            return (objects, exceeded, .fileModifiedDuringParse)
+        }
+        guard exceeded || closedArray || !objects.isEmpty else { throw ParserFailure.malformedJSON }
+        return (objects, exceeded, exceeded || closedArray ? nil : .malformedJSON)
     }
 
     static func jsonObject(from string: String) -> JSONObject? {
@@ -62,12 +175,26 @@ enum Phase4AdapterSupport {
     }
 }
 
+struct GeminiCliAdapterTestHooks: Sendable {
+    var beforeFinalIdentityValidation: @Sendable () -> Void
+
+    init(beforeFinalIdentityValidation: @escaping @Sendable () -> Void = {}) {
+        self.beforeFinalIdentityValidation = beforeFinalIdentityValidation
+    }
+}
+
 final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sendable {
+    private struct MessageLoad: Sendable {
+        let messages: [NormalizedMessage]
+        let parseFailure: ParserFailure?
+    }
+
     let source: SourceName = .geminiCli
     private let tmpRoot: URL
     private let projectsFile: URL
     private let limits: ParserLimits
     private let messageCache = ParsedTranscriptCache()
+    private let testHooks: GeminiCliAdapterTestHooks
 
     init(
         tmpRoot: String = FileManager.default.homeDirectoryForCurrentUser
@@ -76,11 +203,13 @@ final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter
         projectsFile: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".gemini/projects.json")
             .path,
-        limits: ParserLimits = .default
+        limits: ParserLimits = .default,
+        testHooks: GeminiCliAdapterTestHooks = GeminiCliAdapterTestHooks()
     ) {
         self.tmpRoot = URL(fileURLWithPath: tmpRoot)
         self.projectsFile = URL(fileURLWithPath: projectsFile)
         self.limits = limits
+        self.testHooks = testHooks
     }
 
     func detect() async -> Bool {
@@ -118,7 +247,11 @@ final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
         do {
-            let object = try Self.readSession(locator: locator, limits: limits)
+            let (object, failure) = try Self.readSession(
+                locator: locator,
+                limits: limits,
+                beforeIdentityValidation: testHooks.beforeFinalIdentityValidation
+            )
             guard let sessionId = JSONLAdapterSupport.string(object["sessionId"]),
                   let startTime = JSONLAdapterSupport.string(object["startTime"]),
                   let messages = JSONLAdapterSupport.array(object["messages"])
@@ -129,13 +262,17 @@ final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter
             let normalizedMessages = messages
                 .compactMap { JSONLAdapterSupport.object($0) }
                 .flatMap(Self.messages(from:))
+            if let failure {
+                guard failure == .fileModifiedDuringParse, !normalizedMessages.isEmpty else {
+                    return .failure(failure)
+                }
+            }
             let userMessages = normalizedMessages.filter { $0.role == .user }
             let assistantMessages = normalizedMessages.filter { $0.role == .assistant }
             let toolMessages = normalizedMessages.filter { $0.role == .tool }
             let projectName = Self.projectName(from: locator)
             let cwd = resolveProjectRoot(projectName: projectName) ??
-                resolveProject(projectName: projectName) ??
-                projectName
+                resolveProject(projectName: projectName) ?? ""
             let firstUserText = userMessages.first?.content ?? ""
             let sidecar = Self.readSidecar(locator: locator, sessionId: sessionId, limits: limits)
             let originator = JSONLAdapterSupport.string(sidecar?["originator"])
@@ -162,7 +299,7 @@ final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter
                     assistantMessageCount: assistantMessages.count,
                     toolMessageCount: toolMessages.count,
                     systemMessageCount: 0,
-                    summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200)),
+                    summary: firstUserText.isEmpty ? nil : firstUserText,
                     filePath: locator,
                     sizeBytes: Phase4AdapterSupport.fileSize(locator),
                     indexedAt: nil,
@@ -190,40 +327,63 @@ final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
-        let messages = try await loadMessages(locator: locator)
-        return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
+        let load = try await loadMessages(locator: locator)
+        return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(load.messages, options: options))
     }
 
     func streamMessagesWithMetadata(
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> StreamMessagesResult {
-        let messages = try await loadMessages(locator: locator)
-        // Silent whole-transcript cap is the P1 this override exists to mark.
-        let truncatedAt = options.limit == nil && messages.count > limits.maxMessages
-            ? limits.maxMessages
-            : nil
-        let bounded = truncatedAt == nil
-            ? JSONLAdapterSupport.applyWindow(messages, options: options)
-            : Array(messages.prefix(limits.maxMessages))
-        return StreamMessagesResult(
-            messages: JSONLAdapterSupport.stream(bounded),
-            totalKnownComplete: truncatedAt == nil,
-            truncatedAt: truncatedAt
+        if URL(fileURLWithPath: locator).pathExtension == "jsonl" {
+            let (objects, failure) = try JSONLAdapterSupport.readObjects(
+                locator: locator,
+                limits: limits,
+                reportFailures: true,
+                countsTowardMessageLimit: { _ in false }
+            )
+            let session = Self.replayJSONLSession(objects)
+            let messages = JSONLAdapterSupport.array(session["messages"])?
+                .compactMap { JSONLAdapterSupport.object($0) }
+                .flatMap(Self.messages(from:)) ?? []
+            return JSONLAdapterSupport.stream(
+                JSONLAdapterSupport.boundedWindowWithMetadata(
+                    messages,
+                    options: options,
+                    maxMessages: limits.maxMessages,
+                    parseFailure: failure
+                )
+            )
+        }
+
+        let load = try await loadMessages(locator: locator)
+        return JSONLAdapterSupport.stream(
+            JSONLAdapterSupport.boundedWindowWithMetadata(
+                load.messages,
+                options: options,
+                maxMessages: limits.maxMessages,
+                parseFailure: load.parseFailure
+            )
         )
     }
 
-    private func loadMessages(locator: String) async throws -> [NormalizedMessage] {
+    private func loadMessages(locator: String) async throws -> MessageLoad {
         let signature = ParsedTranscriptCache.Signature.forFile(locator)
         if let cached = await messageCache.cached(locator: locator, signature: signature) {
-            return cached
+            return MessageLoad(messages: cached, parseFailure: nil)
         }
-        let object = try Self.readSession(locator: locator, limits: limits)
+        let (object, parseFailure) = try Self.readSession(
+            locator: locator,
+            limits: limits,
+            beforeIdentityValidation: testHooks.beforeFinalIdentityValidation
+        )
         let messages = JSONLAdapterSupport.array(object["messages"])?
             .compactMap { JSONLAdapterSupport.object($0) }
             .flatMap(Self.messages(from:)) ?? []
-        await messageCache.store(locator: locator, signature: signature, messages: messages)
-        return messages
+        if parseFailure == nil {
+            await messageCache.store(locator: locator, signature: signature, messages: messages)
+        }
+        return MessageLoad(messages: messages, parseFailure: parseFailure)
     }
 
     func isAccessible(locator: String) async -> Bool {
@@ -237,12 +397,10 @@ final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter
             return nil
         }
         let rawProjects = JSONLAdapterSupport.object(object["projects"]) ?? object
-        for (cwd, value) in rawProjects {
-            if JSONLAdapterSupport.string(value) == projectName {
-                return cwd
-            }
+        let matches = rawProjects.compactMap { cwd, value in
+            JSONLAdapterSupport.string(value) == projectName ? cwd : nil
         }
-        return nil
+        return matches.count == 1 ? matches[0] : nil
     }
 
     private func resolveProjectRoot(projectName: String) -> String? {
@@ -345,17 +503,37 @@ final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter
         return trimmed
     }
 
-    private static func readSession(locator: String, limits: ParserLimits) throws -> Phase4AdapterSupport.JSONObject {
+    private static func readSession(
+        locator: String,
+        limits: ParserLimits,
+        beforeIdentityValidation: () -> Void = {}
+    ) throws -> (Phase4AdapterSupport.JSONObject, ParserFailure?) {
         if URL(fileURLWithPath: locator).pathExtension == "jsonl" {
             return try readJSONLSession(locator: locator, limits: limits)
         }
-        return try Phase4AdapterSupport.readJSONObject(locator: locator, limits: limits)
+        return try Phase4AdapterSupport.readJSONObjectWithMetadata(
+            locator: locator,
+            limits: limits,
+            beforeIdentityValidation: beforeIdentityValidation
+        )
     }
 
-    private static func readJSONLSession(locator: String, limits: ParserLimits) throws -> Phase4AdapterSupport.JSONObject {
-        let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: locator, limits: limits, reportFailures: true)
-        if let failure { throw failure }
+    private static func readJSONLSession(
+        locator: String,
+        limits: ParserLimits
+    ) throws -> (Phase4AdapterSupport.JSONObject, ParserFailure?) {
+        let (objects, failure) = try JSONLAdapterSupport.readObjects(
+            locator: locator,
+            limits: limits,
+            reportFailures: true,
+            countsTowardMessageLimit: { !Self.messages(from: $0).isEmpty }
+        )
+        return (replayJSONLSession(objects), failure)
+    }
 
+    private static func replayJSONLSession(
+        _ objects: [JSONLAdapterSupport.JSONObject]
+    ) -> Phase4AdapterSupport.JSONObject {
         var metadata: Phase4AdapterSupport.JSONObject = [:]
         var messages: [Phase4AdapterSupport.JSONObject] = []
         for object in objects {

@@ -13,6 +13,13 @@ struct BarChart: View {
 
     private var maxValue: Int { items.map(\.value).max() ?? 1 }
 
+    /// VoiceOver value: every bar as "label: value" (Wave 8-3). The bars are
+    /// separate text runs, so the chart collapses to one summary element like
+    /// HeatmapGrid already does.
+    static func accessibilitySummary(for items: [BarChartItem]) -> String {
+        items.isEmpty ? "No data" : items.map { "\($0.label): \($0.value)" }.joined(separator: ", ")
+    }
+
     var body: some View {
         VStack(spacing: 8) {
             ForEach(items) { item in
@@ -37,5 +44,8 @@ struct BarChart: View {
                 }
             }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Bar chart")
+        .accessibilityValue(Self.accessibilitySummary(for: items))
     }
 }

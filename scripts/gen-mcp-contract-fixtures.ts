@@ -47,7 +47,10 @@ writeFileSync(resolve(exportHomeDir, '.gitkeep'), '');
 
 const db = new Database(fixtureDbPath);
 const raw = db.raw;
-raw.pragma('journal_mode = DELETE');
+// Native app/service/MCP readers share a strict WAL-only connection policy.
+// Persist that mode in the committed fixture so executable tests exercise the
+// same reader contract instead of failing before tool dispatch.
+raw.pragma('journal_mode = WAL');
 
 const insertSession = raw.prepare(`
   INSERT INTO sessions (

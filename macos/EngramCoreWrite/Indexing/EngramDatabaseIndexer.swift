@@ -1,7 +1,6 @@
 import Foundation
 import GRDB
 import EngramCoreRead
-import os
 
 public struct EngramDatabaseIndexStatus: Sendable, Equatable {
     public let total: Int
@@ -490,7 +489,7 @@ public extension EngramDatabaseWriter {
         }
         if deleted > 0 {
             Self.fileIndexLog.info(
-                "pruned orphan file_index_state rows: source=\(source.rawValue, privacy: .public) deleted=\(deleted, privacy: .public)"
+                "pruned orphan file_index_state rows: source=\(source.rawValue) deleted=\(deleted)"
             )
         }
         return deleted
@@ -512,7 +511,7 @@ public extension EngramDatabaseWriter {
         return result
     }
 
-    private static let fileIndexLog = Logger(subsystem: "com.engram.service", category: "indexer")
+    private static let fileIndexLog = CoreWriteLogger(category: "indexer")
 
     private static func fileIndexState(from row: Row) -> FileIndexState? {
         guard let sourceRaw = row["source"] as String?,
@@ -580,13 +579,16 @@ public extension EngramDatabaseWriter {
     func indexAllSessions(
         adapters: [any SessionAdapter] = SessionAdapterFactory.defaultAdapters(),
         excludedSnapshotSources: Set<SourceName> = [],
+        forceReparseKnownFiles: Bool = false,
         didFinishAdapter: @escaping @Sendable (SourceName) -> Void = { _ in }
     ) async throws -> EngramDatabaseIndexResult {
+        // docs/invariants.md #9: versioned parser backfills must bypass both
+        // unchanged-file and already-known-file short circuits.
         try await indexSessions(
             adapters: adapters,
             runParentBackfills: true,
-            skipUnchangedFileLocators: true,
-            skipKnownFileLocators: true,
+            skipUnchangedFileLocators: !forceReparseKnownFiles,
+            skipKnownFileLocators: !forceReparseKnownFiles,
             excludedSnapshotSources: excludedSnapshotSources,
             didFinishAdapter: didFinishAdapter
         )
@@ -1049,12 +1051,12 @@ public extension EngramDatabaseWriter {
                 db,
                 sql: """
                 SELECT COUNT(*)
-                FROM sessions
-                WHERE hidden_at IS NULL
-                  AND parent_session_id IS NULL
-                  AND suggested_parent_id IS NULL
-                  AND (tier IS NULL OR tier != 'skip')
-                  AND start_time >= ?
+                FROM sessions s
+                WHERE s.hidden_at IS NULL
+                  AND s.parent_session_id IS NULL
+                  AND s.suggested_parent_id IS NULL
+                  AND (s.tier IS NULL OR s.tier != 'skip')
+                  AND \(SearchFilterPredicates.activityTimeSQL(alias: "s")) >= ?
                 """,
                 arguments: [since]
             ) ?? 0

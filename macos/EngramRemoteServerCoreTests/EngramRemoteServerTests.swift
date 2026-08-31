@@ -164,6 +164,60 @@ final class EngramRemoteServerTests: XCTestCase {
         XCTAssertFalse(present)
     }
 
+    func testCatalogManifestPutRejectsBodyAboveCatalogCeiling_repro() async throws {
+        let token = "catalog-limit-token"
+        let config = EngramRemoteServerConfig(
+            host: "127.0.0.1",
+            port: 0,
+            storeRoot: tempDir.appendingPathComponent("catalog-limit"),
+            bearerToken: token,
+            atRestKey: SymmetricKey(size: .bits256),
+            maxBundleBytes: 64 * 1024 * 1024
+        )
+        let app = try EngramRemoteServerApp(config: config)
+        let waiter = PortWaiter()
+        let serverTask = Task { try? await app.run(onBound: { waiter.set($0) }) }
+        defer { serverTask.cancel() }
+        let port = await waiter.wait()
+
+        var request = URLRequest(
+            url: try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)/v1/bundles/catalog.peer.manifest"))
+        )
+        request.httpMethod = "PUT"
+        request.httpBody = Data(repeating: UInt8(ascii: "x"), count: 4 * 1024 * 1024 + 1)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let (_, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 413)
+    }
+
+    func testCatalogManifestPutReservesResponseEnvelopeBytes_repro() async throws {
+        let token = "catalog-envelope-token"
+        let config = EngramRemoteServerConfig(
+            host: "127.0.0.1",
+            port: 0,
+            storeRoot: tempDir.appendingPathComponent("catalog-envelope-limit"),
+            bearerToken: token,
+            atRestKey: SymmetricKey(size: .bits256),
+            maxBundleBytes: 64 * 1024 * 1024
+        )
+        let app = try EngramRemoteServerApp(config: config)
+        let waiter = PortWaiter()
+        let serverTask = Task { try? await app.run(onBound: { waiter.set($0) }) }
+        defer { serverTask.cancel() }
+        let port = await waiter.wait()
+
+        var request = URLRequest(
+            url: try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)/v1/bundles/catalog.peer.manifest"))
+        )
+        request.httpMethod = "PUT"
+        request.httpBody = Data(repeating: UInt8(ascii: "x"), count: 4 * 1024 * 1024 - 1)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let (_, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 413)
+    }
+
     // MCP retro F12: validates the legacy initialize handshake over a real bound socket.
     func testLegacyMCPInitializeAgainstLiveServer() async throws {
         let config = EngramRemoteServerConfig(
@@ -377,6 +431,32 @@ final class EngramRemoteServerTests: XCTestCase {
         XCTAssertEqual((resp as? HTTPURLResponse)?.statusCode, 401)
     }
 
+    func testCatalogReturnsEmptyWhenEveryStoredManifestIsSkippable_repro() async throws {
+        let config = EngramRemoteServerConfig(
+            host: "127.0.0.1", port: 0,
+            storeRoot: tempDir.appendingPathComponent("srv-all-skipped"),
+            bearerToken: "secret-token", atRestKey: SymmetricKey(size: .bits256)
+        )
+        let app = try EngramRemoteServerApp(config: config)
+        let waiter = PortWaiter()
+        let serverTask = Task { try? await app.run(onBound: { waiter.set($0) }) }
+        defer { serverTask.cancel() }
+        let port = await waiter.wait()
+        let backend = try EngramRemoteBackend(
+            baseURL: URL(string: "http://127.0.0.1:\(port)")!,
+            token: "secret-token"
+        )
+        try await backend.put(
+            key: "catalog.junk.manifest",
+            data: try JSONSerialization.data(withJSONObject: ["not", "a", "manifest"])
+        )
+
+        let catalog = try await backend.catalog()
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: catalog) as? [String: Any])
+        XCTAssertEqual(object["schemaVersion"] as? Int, 1)
+        XCTAssertEqual((object["manifests"] as? [Any])?.count, 0)
+    }
+
     // L29: individually valid manifests must not create an unbounded aggregate response.
     func testCatalogRejectsAggregateDecodedBytesOverBudget_repro() async throws {
         let config = EngramRemoteServerConfig(
@@ -416,6 +496,97 @@ final class EngramRemoteServerTests: XCTestCase {
             413,
             "catalog aggregation must fail closed before exceeding its response budget"
         )
+    }
+
+    func testCatalogSkipsArrayThatExhaustsDecodedBudgetWithoutReturning413_repro() async throws {
+        let storeRoot = tempDir.appendingPathComponent("catalog-skippable-budget")
+        let atRestKey = SymmetricKey(size: .bits256)
+        let config = EngramRemoteServerConfig(
+            host: "127.0.0.1", port: 0,
+            storeRoot: storeRoot,
+            bearerToken: "secret-token", atRestKey: atRestKey
+        )
+        let app = try EngramRemoteServerApp(config: config)
+        let waiter = PortWaiter()
+        let serverTask = Task { try? await app.run(onBound: { waiter.set($0) }) }
+        defer { serverTask.cancel() }
+        let port = await waiter.wait()
+        let store = try BlobStore(root: storeRoot, key: atRestKey)
+        let valid = try JSONSerialization.data(withJSONObject: [
+            "peer": "valid",
+            "padding": String(repeating: "v", count: 1_024),
+        ])
+        let skippable = try JSONSerialization.data(withJSONObject: [
+            String(repeating: "x", count: (4 * 1024 * 1024) + 64),
+        ])
+        XCTAssertGreaterThan(skippable.count, 4 * 1024 * 1024)
+        try store.put("catalog.aaa-array.manifest", plaintext: skippable)
+        try store.put("catalog.zzz-valid.manifest", plaintext: valid)
+
+        var request = URLRequest(
+            url: try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)/v1/catalog"))
+        )
+        request.setValue("Bearer secret-token", forHTTPHeaderField: "Authorization")
+        let (body, response) = try await URLSession.shared.data(for: request)
+
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let manifests = try XCTUnwrap(object["manifests"] as? [[String: Any]])
+        XCTAssertEqual(manifests.compactMap { $0["peer"] as? String }, ["valid"])
+    }
+
+    func testCatalogReturns500WhenStoreListingFails_repro() async throws {
+        let root = tempDir.appendingPathComponent("catalog-io-failure", isDirectory: true)
+        let config = EngramRemoteServerConfig(
+            host: "127.0.0.1", port: 0,
+            storeRoot: root,
+            bearerToken: "secret-token", atRestKey: SymmetricKey(size: .bits256)
+        )
+        let app = try EngramRemoteServerApp(config: config)
+        let waiter = PortWaiter()
+        let serverTask = Task { try? await app.run(onBound: { waiter.set($0) }) }
+        defer { serverTask.cancel() }
+        let port = await waiter.wait()
+
+        try FileManager.default.removeItem(at: root)
+        try Data("not a directory".utf8).write(to: root)
+
+        var request = URLRequest(
+            url: try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)/v1/catalog"))
+        )
+        request.setValue("Bearer secret-token", forHTTPHeaderField: "Authorization")
+        let (_, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual(
+            (response as? HTTPURLResponse)?.statusCode,
+            500,
+            "catalog store I/O failures must not masquerade as an empty catalog"
+        )
+    }
+
+    func testCatalogReturns200WhenEveryListedObjectIsSkippable_repro() async throws {
+        let root = tempDir.appendingPathComponent("catalog-all-skipped", isDirectory: true)
+        let config = EngramRemoteServerConfig(
+            host: "127.0.0.1", port: 0,
+            storeRoot: root,
+            bearerToken: "secret-token", atRestKey: SymmetricKey(size: .bits256)
+        )
+        let app = try EngramRemoteServerApp(config: config)
+        let waiter = PortWaiter()
+        let serverTask = Task { try? await app.run(onBound: { waiter.set($0) }) }
+        defer { serverTask.cancel() }
+        let port = await waiter.wait()
+        let backend = try EngramRemoteBackend(
+            baseURL: URL(string: "http://127.0.0.1:\(port)")!,
+            token: "secret-token"
+        )
+        try await backend.put(key: "catalog.legacy.manifest", data: Data(#"{"legacy":true}"#.utf8))
+        try await backend.put(key: "catalog.junk.manifest", data: Data(#"{"garbage":"leftover"}"#.utf8))
+
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/catalog")!)
+        request.setValue("Bearer secret-token", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertEqual(try ManifestCodec.decodeCatalog(data), [])
     }
 
     // L29: a large number of tiny manifests must also be bounded independently.

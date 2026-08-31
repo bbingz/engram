@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ToolResultView: View {
     let parsed: ParsedToolResult
+    let searchText: String
     @AppStorage("contentFontSize") var fontSize: Double = 14
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     /// Compose OS Dynamic Type with the A± knob (row 31).
@@ -24,13 +25,21 @@ struct ToolResultView: View {
         parsed.isError ? "exclamationmark.circle" : "arrow.right.circle"
     }
 
+    private var searchMatchesOutput: Bool {
+        let needle = ColorBarMessageView.normalizedFindNeedle(searchText)
+        return !needle.isEmpty
+            && parsed.output.range(of: needle, options: .caseInsensitive) != nil
+    }
+
     // Auto-collapse when >5 lines
-    init(parsed: ParsedToolResult) {
+    init(parsed: ParsedToolResult, searchText: String = "") {
         self.parsed = parsed
+        self.searchText = searchText
         _isExpanded = State(initialValue: parsed.output.components(separatedBy: "\n").count <= 5)
     }
 
     var body: some View {
+        let contentIsExpanded = isExpanded || searchMatchesOutput
         VStack(alignment: .leading, spacing: 0) {
             // Header
             Button {
@@ -44,7 +53,7 @@ struct ToolResultView: View {
                         .foregroundStyle(tintColor)
 
                     if let toolName = parsed.toolName {
-                        Text(verbatim: toolName)
+                        Text(highlighted(toolName))
                             .font(.system(size: effectiveFontSize - 1, weight: .semibold))
                             .foregroundStyle(tintColor)
                     } else {
@@ -59,7 +68,7 @@ struct ToolResultView: View {
 
                     Spacer()
 
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    Image(systemName: contentIsExpanded ? "chevron.up" : "chevron.down")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -70,11 +79,11 @@ struct ToolResultView: View {
             .buttonStyle(.plain)
 
             // Output content
-            if isExpanded {
+            if contentIsExpanded {
                 Divider().overlay(tintColor.opacity(0.15))
 
                 ScrollView(.horizontal, showsIndicators: false) {
-                    Text(verbatim: parsed.output)
+                    Text(highlighted(parsed.output))
                         .font(.system(size: max(effectiveFontSize - 2, 10), design: .monospaced))
                         .foregroundStyle(parsed.isError ? tintColor.opacity(0.85) : .primary)
                         .textSelection(.enabled)
@@ -103,5 +112,9 @@ struct ToolResultView: View {
             let mb = Double(bytes) / (1024.0 * 1024.0)
             return String(format: "%.1f MB", mb)
         }
+    }
+
+    private func highlighted(_ text: String) -> AttributedString {
+        ColorBarMessageView.highlightRendered(AttributedString(text), query: searchText)
     }
 }

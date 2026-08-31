@@ -123,7 +123,7 @@ final class TranscriptLabelAndCopyTests: XCTestCase {
             "search must not destroy segmented rendering via an isEmpty fork"
         )
         XCTAssertTrue(colorBar.contains("usesSegmentedView(for:"))
-        XCTAssertTrue(colorBar.contains("SegmentedMessageView(content: indexed.message.content, searchText: searchText)"))
+        XCTAssertTrue(colorBar.contains("SegmentedMessageView(content: indexed.message.content, searchText: needle)"))
     }
 
     // #5: "Copy Entire Conversation" has one testable source of truth.

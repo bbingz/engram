@@ -173,7 +173,7 @@ public enum RecoverMigrations {
             if newExists && !oldExists { return "OK — move completed as logged." }
             if oldExists && !newExists {
                 return "Anomaly — log says committed but src still exists. " +
-                    "Investigate manually; consider `engram project undo <id>`."
+                    "Investigate manually; consider the `project_undo` tool with this migration id."
             }
             return "Anomaly — both or neither paths present. Investigate."
 
@@ -188,8 +188,9 @@ public enum RecoverMigrations {
             }
             if !oldExists && newExists {
                 return "Move seems to have actually succeeded; DB log did not catch up. " +
-                    "Manual fix: UPDATE migration_log SET state='committed' WHERE id=<this>. " +
-                    "Then re-run `engram project move` to sync DB cwd/source_locator."
+                    "Use `project_recover` to inspect the recorded paths. If needed, move " +
+                    "the directory back manually, then retry with `project_move`; do not " +
+                    "edit migration_log directly."
             }
             return "Neither path exists — project directory contents are missing. " +
                 "Engram does not back up project directories; restore from your own " +
@@ -201,8 +202,8 @@ public enum RecoverMigrations {
             if !oldExists && newExists {
                 return "FS move succeeded; startup recovery can finish the idempotent " +
                     "DB path rewrite. Restart the Engram service once. If this migration " +
-                    "remains fs_done, inspect service logs and run `engram project review " +
-                    "<oldPath> <newPath>`. Do not mark only the migration state committed; " +
+                    "remains fs_done, inspect service logs and use `project_review` with " +
+                    "old_path/new_path. Do not mark only the migration state committed; " +
                     "that would skip the sessions and local-state path rewrite."
             }
             if oldExists && newExists {
@@ -218,14 +219,12 @@ public enum RecoverMigrations {
             }
             if !oldExists && newExists {
                 return "FS move completed but DB commit failed and compensation did not " +
-                    "reverse the FS. Either (a) manually mv new → old then retry " +
-                    "`engram project move`, or (b) mark committed directly: " +
-                    "`UPDATE migration_log SET state='committed' WHERE id='<this>'` " +
-                    "then `engram project review`."
+                    "reverse the FS. Manually move new → old, inspect with `project_review`, " +
+                    "then retry through `project_move`; do not edit migration_log directly."
             }
             if oldExists && newExists {
                 return "Both paths exist — compensation ran partially. Inspect, " +
-                    "then `engram project move` (or manual mv) to reach a consistent state."
+                    "then use `project_move` (or manual mv) to reach a consistent state."
             }
             return "Neither path exists — likely data loss. Engram does not back up " +
                 "project directories; restore from your own file backup (for example " +

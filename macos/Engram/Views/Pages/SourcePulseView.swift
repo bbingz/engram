@@ -4,7 +4,7 @@ import SwiftUI
 
 struct SourcePulseView: View {
     @Environment(DatabaseManager.self) var db
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var sources: [EngramServiceSourceInfo] = []
@@ -17,6 +17,7 @@ struct SourcePulseView: View {
     @State private var error: String? = nil
     @State private var liveTimer: Timer?
     @State private var liveRefreshTask: Task<Void, Never>? = nil
+    @State private var liveOpenRequestId: UUID? = nil
     @State private var expandedGroups: Set<String> = []
     @State private var disabledSources: Set<String> = []
     /// Suppress the "unavailable" row until the first poll finishes (never-polled is also `.expired`).
@@ -98,6 +99,7 @@ struct SourcePulseView: View {
                 }
                 if let error {
                     AlertBanner(message: "Failed to load source data: \(error)", action: ("Retry", { Task { await loadData() } }))
+                        .accessibilityIdentifier("sourcePulse_failedState")
                 }
                 SectionHeader(icon: "antenna.radiowaves.left.and.right", title: "Sources",
                              onRefresh: { Task { await loadData() } })
@@ -121,7 +123,11 @@ struct SourcePulseView: View {
                 }
 
                 if let costsError {
-                    AlertBanner(message: "Failed to load cost data: \(costsError)")
+                    AlertBanner(
+                        message: "Failed to load cost data: \(costsError)",
+                        action: ("Retry", { Task { await loadCosts() } })
+                    )
+                    .accessibilityIdentifier("sourcePulse_costsErrorBanner")
                 }
                 CostSummarySection(costs: costs, isLoading: isLoading && costs == nil)
             }
@@ -141,6 +147,7 @@ struct SourcePulseView: View {
         .onDisappear {
             liveTimer?.invalidate(); liveTimer = nil
             liveRefreshTask?.cancel(); liveRefreshTask = nil
+            liveOpenRequestId = nil
         }
     }
 
@@ -265,8 +272,8 @@ struct SourcePulseView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(Theme.surface)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: Theme.cornerRadius).stroke(Theme.border, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadius))
     }
 
     /// Per-source ingest control (feature #2 slice B). Disabling stops indexing
@@ -290,7 +297,7 @@ struct SourcePulseView: View {
             .accessibilityIdentifier("sourcePulse_ingestToggle_\(sourceID)")
             if isDisabled {
                 Text("DISABLED")
-                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .scaledFont(9, weight: .semibold, design: .monospaced)
                     .foregroundStyle(Theme.orange)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
@@ -318,7 +325,7 @@ struct SourcePulseView: View {
                     .foregroundStyle(isStale ? Theme.orange : Theme.tertiaryText)
                 if isStale {
                     Text("STALE")
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .scaledFont(9, weight: .semibold, design: .monospaced)
                         .foregroundStyle(Theme.orange)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
@@ -361,7 +368,7 @@ struct SourcePulseView: View {
         HStack(spacing: 12) {
             SourcePill(source: entry.id)
             Text("NOT DETECTED")
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .scaledFont(9, weight: .semibold, design: .monospaced)
                 .foregroundStyle(Theme.gray)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
@@ -396,15 +403,18 @@ struct SourcePulseView: View {
 
             HStack(spacing: 6) {
                 Label(label, systemImage: "circle.fill")
-                    .font(.system(size: 11, weight: .medium))
+                    .scaledFont(11, weight: .medium)
                     .foregroundStyle(color)
                 Text("(\(sessions.count))")
-                    .font(.system(size: 10))
+                    .scaledFont(10)
                     .foregroundStyle(.secondary)
             }
+            // Color-only status cue: give VoiceOver the words, not the hue.
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(sessions.count) \(label) sessions")
             VStack(spacing: 4) {
                 ForEach(shown) { session in
-                    LiveSessionCard(session: session)
+                    LiveSessionCard(session: session, onOpen: { openLive(session) })
                 }
                 if sessions.count > 10 {
                     Button {
@@ -417,14 +427,32 @@ struct SourcePulseView: View {
                         }
                     } label: {
                         Text(isExpanded ? "Show less" : "+ \(sessions.count - 10) more")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.blue)
+                            .scaledFont(11)
+                            .foregroundStyle(Theme.accent)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 4)
                     }
                     .buttonStyle(.plain)
                 }
             }
+        }
+    }
+
+    private func openLive(_ session: EngramServiceLiveSessionInfo) {
+        let db = self.db
+        let requestId = UUID()
+        liveOpenRequestId = requestId
+        let token = SessionNavigationGate.begin()
+        Task {
+            let resolved = await Task.detached { () -> Session? in
+                try? PopoverView.resolveLiveSession(session, database: db)
+            }.value
+            guard let resolved else { return }
+            guard liveOpenRequestId == requestId else { return }
+            NotificationCenter.default.post(
+                name: .openSession,
+                object: SessionBox(resolved, navigationId: token)
+            )
         }
     }
 
@@ -558,7 +586,7 @@ struct SourcePulseView: View {
         default: Theme.gray
         }
         Text(status.uppercased())
-            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+            .scaledFont(9, weight: .semibold, design: .monospaced)
             .foregroundStyle(color)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)

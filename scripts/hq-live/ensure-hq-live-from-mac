@@ -1,0 +1,37 @@
+#!/bin/bash
+# Daily-Mac side of HQ boot recovery. SSH stays available at HQ's login
+# window after FileVault unlock; LaunchAgents on HQ do not.
+set -euo pipefail
+umask 077
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+log_dir="${HOME}/.engram/logs"
+mkdir -p "$log_dir"
+chmod 700 "$log_dir" 2>/dev/null || true
+out_log="${log_dir}/hq-live-ensure.out.log"
+err_log="${log_dir}/hq-live-ensure.err.log"
+remote_output=""
+if remote_output="$(
+  /usr/bin/ssh \
+    -o BatchMode=yes \
+    -o ConnectTimeout=8 \
+    -o ServerAliveInterval=5 \
+    -o ServerAliveCountMax=2 \
+    macmini-hq \
+    /Users/bing/.engram/run/ensure-hq-live \
+    2>>"$err_log"
+)"; then
+  if [[ -n "$remote_output" ]]; then
+    printf '%s\n' "$remote_output" >>"$out_log"
+  fi
+else
+  ssh_status="$?"
+  if [[ -n "$remote_output" ]]; then
+    printf '%s\n' "$remote_output" >>"$out_log"
+  fi
+  exit "$ssh_status"
+fi
+
+if [[ "$remote_output" == *"ENGRAM_HQ_ENSURE_STATUS=degraded"* ]]; then
+  printf '%s HQ ensure reported degraded\n' \
+    "$(/bin/date -u +"%Y-%m-%dT%H:%M:%SZ")" >>"$err_log"
+fi

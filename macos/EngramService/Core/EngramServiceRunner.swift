@@ -4,12 +4,16 @@ import GRDB
 import EngramCoreRead
 import EngramCoreWrite
 
-private func argumentValue(after flag: String, in arguments: [String]) -> String? {
-    guard let index = arguments.firstIndex(of: flag),
-          arguments.indices.contains(arguments.index(after: index)) else {
+func engramServiceAbsoluteArgumentValue(after flag: String, in arguments: [String]) throws -> String? {
+    guard let index = arguments.firstIndex(of: flag) else {
         return nil
     }
-    return arguments[arguments.index(after: index)]
+    let valueIndex = arguments.index(after: index)
+    guard arguments.indices.contains(valueIndex),
+          let value = UnixSocketEngramServiceTransport.normalizedAbsolutePath(arguments[valueIndex]) else {
+        throw EngramServiceError.invalidRequest(message: "\(flag) requires a non-empty absolute path")
+    }
+    return value
 }
 
 final class EmbeddingMaintenanceBackoff: @unchecked Sendable {
@@ -95,17 +99,23 @@ final class RepoDiscoveryMaintenanceThrottle: @unchecked Sendable {
 
     /// F3: selection is not an attempt. Cooldown is recorded only after
     /// `recordOutcomes`, so a failed git probe cannot burn the success window.
-    func selectCandidates(_ candidates: [GitRepoCandidate]) -> [GitRepoCandidate] {
+    func selectCandidates(
+        _ candidates: [GitRepoCandidate],
+        forcedCwds: Set<String> = []
+    ) -> [GitRepoCandidate] {
         lock.withLock {
             let instant = now()
             if retryAfterByCwd.count > candidates.count * 2 {
                 let activeCwds = Set(candidates.map(\.cwd))
                 retryAfterByCwd = retryAfterByCwd.filter { activeCwds.contains($0.key) }
             }
-            return Array(candidates.lazy.filter { candidate in
+            let forced = candidates.filter { forcedCwds.contains($0.cwd) }
+            let cooled = candidates.lazy.filter { candidate in
+                guard !forcedCwds.contains(candidate.cwd) else { return false }
                 guard let retryAfter = self.retryAfterByCwd[candidate.cwd] else { return true }
                 return instant >= retryAfter
-            }.prefix(batchLimit))
+            }
+            return Array((forced + Array(cooled)).prefix(batchLimit))
         }
     }
 
@@ -126,35 +136,191 @@ final class RepoDiscoveryMaintenanceThrottle: @unchecked Sendable {
     }
 }
 
+actor LiveIngestPublishSignal {
+    enum Wake: Equatable, Sendable {
+        case timer(changeGeneration: Int)
+        case indexChanged(changeGeneration: Int)
+
+        var changeGeneration: Int {
+            switch self {
+            case .timer(let generation), .indexChanged(let generation):
+                generation
+            }
+        }
+    }
+
+    private var signaledGeneration = 0
+    private var publishedGeneration = 0
+    private var pendingDeltaToken: OffloadRepo.LivePublishDeltaToken?
+    private var pendingDeltaGeneration: Int?
+    private var sleeperTask: Task<Void, Error>?
+    private var wakeOnIndexChange = false
+
+    /// Identical actual-delta identities coalesce, while every distinct ready
+    /// snapshot/retraction set gets its own trailing-debounce generation.
+    func signalIndexChange(token: OffloadRepo.LivePublishDeltaToken) {
+        if pendingDeltaToken == token,
+           let pendingDeltaGeneration,
+           pendingDeltaGeneration > publishedGeneration {
+            return
+        }
+        signaledGeneration += 1
+        pendingDeltaToken = token
+        pendingDeltaGeneration = signaledGeneration
+        if wakeOnIndexChange {
+            sleeperTask?.cancel()
+        }
+    }
+
+    func wait(
+        intervalNanoseconds: UInt64,
+        debounceNanoseconds: UInt64,
+        respondsToIndexChanges: Bool,
+        sleep: @escaping @Sendable (UInt64) async throws -> Void
+    ) async throws -> Wake {
+        if respondsToIndexChanges, signaledGeneration > publishedGeneration {
+            return .indexChanged(
+                changeGeneration: try await waitForDebounce(
+                    nanoseconds: debounceNanoseconds,
+                    sleep: sleep
+                )
+            )
+        }
+
+        let timerGeneration = signaledGeneration
+        do {
+            try await sleepOnce(
+                nanoseconds: intervalNanoseconds,
+                wakeOnIndexChange: respondsToIndexChanges,
+                sleep: sleep
+            )
+            if respondsToIndexChanges, signaledGeneration > timerGeneration {
+                return .indexChanged(
+                    changeGeneration: try await waitForDebounce(
+                        nanoseconds: debounceNanoseconds,
+                        sleep: sleep
+                    )
+                )
+            }
+            return .timer(changeGeneration: timerGeneration)
+        } catch is CancellationError {
+            if Task.isCancelled { throw CancellationError() }
+            guard respondsToIndexChanges, signaledGeneration > publishedGeneration else {
+                throw CancellationError()
+            }
+            return .indexChanged(
+                changeGeneration: try await waitForDebounce(
+                    nanoseconds: debounceNanoseconds,
+                    sleep: sleep
+                )
+            )
+        }
+    }
+
+    func markPublished(through changeGeneration: Int) {
+        publishedGeneration = max(publishedGeneration, changeGeneration)
+        if let pendingDeltaGeneration,
+           pendingDeltaGeneration <= publishedGeneration {
+            pendingDeltaToken = nil
+            self.pendingDeltaGeneration = nil
+        }
+    }
+
+    private func waitForDebounce(
+        nanoseconds: UInt64,
+        sleep: @escaping @Sendable (UInt64) async throws -> Void
+    ) async throws -> Int {
+        while true {
+            let generation = signaledGeneration
+            do {
+                try await sleepOnce(
+                    nanoseconds: nanoseconds,
+                    wakeOnIndexChange: true,
+                    sleep: sleep
+                )
+                if generation == signaledGeneration {
+                    return generation
+                }
+            } catch is CancellationError {
+                if Task.isCancelled { throw CancellationError() }
+                guard signaledGeneration > generation else { throw CancellationError() }
+            }
+        }
+    }
+
+    private func sleepOnce(
+        nanoseconds: UInt64,
+        wakeOnIndexChange: Bool,
+        sleep: @escaping @Sendable (UInt64) async throws -> Void
+    ) async throws {
+        let task = Task { try await sleep(nanoseconds) }
+        sleeperTask = task
+        self.wakeOnIndexChange = wakeOnIndexChange
+        defer {
+            sleeperTask = nil
+            self.wakeOnIndexChange = false
+        }
+        try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+}
+
 public enum EngramServiceRunner {
     public static func run(
         arguments: [String] = Array(CommandLine.arguments.dropFirst()),
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) async throws {
-        let socketPath = argumentValue(after: "--service-socket", in: arguments)
-            ?? environment["ENGRAM_SERVICE_SOCKET"]
-            ?? UnixSocketEngramServiceTransport.defaultSocketPath()
-        let databasePath = argumentValue(after: "--database-path", in: arguments)
-            ?? FileManager.default
-                .homeDirectoryForCurrentUser
+        let runtimeHome = RemoteSyncConfig.homeDirectory(environment: environment)
+        let isTestProcess = environment["XCTestConfigurationFilePath"] != nil
+            || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        let serviceHome = isTestProcess
+            ? runtimeHome
+            : FileManager.default.homeDirectoryForCurrentUser
+        let implicitSocketPath = UnixSocketEngramServiceTransport.defaultSocketPath(
+            homeDirectory: serviceHome
+        )
+        var configuredSocketPath: String?
+        for key in ["ENGRAM_MCP_SERVICE_SOCKET", "ENGRAM_SERVICE_SOCKET"] {
+            guard let rawValue = environment[key] else { continue }
+            let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { continue }
+            guard let normalized = UnixSocketEngramServiceTransport.normalizedAbsolutePath(
+                value,
+                homeDirectory: serviceHome
+            ) else {
+                throw EngramServiceError.invalidRequest(message: "\(key) requires a non-empty absolute path")
+            }
+            configuredSocketPath = normalized
+            break
+        }
+        let socketPath = try engramServiceAbsoluteArgumentValue(after: "--service-socket", in: arguments)
+            ?? configuredSocketPath
+            ?? implicitSocketPath
+        // docs/invariants.md #6: the service database follows the same hermetic runtime home.
+        let databasePath = try engramServiceAbsoluteArgumentValue(after: "--database-path", in: arguments)
+            ?? serviceHome
                 .appendingPathComponent(".engram", isDirectory: true)
                 .appendingPathComponent("index.sqlite")
                 .path
         let settingsURL = engramSettingsURL(environment: environment)
 
-        let defaultSocketPath = UnixSocketEngramServiceTransport.defaultSocketPath()
         let runtimeDirectory: URL
-        if socketPath == defaultSocketPath {
-            runtimeDirectory = try UnixSocketEngramServiceTransport.secureRuntimeDirectory()
+        let usesDedicatedRuntime = socketPath == implicitSocketPath
+        if usesDedicatedRuntime {
+            // docs/invariants.md #6: XCTest uses its injected fixed home and
+            // never creates or repairs the process user's ~/.engram/run.
+            runtimeDirectory = try UnixSocketEngramServiceTransport.secureRuntimeDirectory(
+                homeDirectory: serviceHome
+            )
             // SEC-L3: repair cache/exports/probes (and peers) that may still be 0755.
-            EngramUserDataDirectory.secureExistingProductSubdirectories()
+            EngramUserDataDirectory.secureExistingProductSubdirectories(homeDirectory: serviceHome)
         } else {
             let socketURL = URL(fileURLWithPath: socketPath)
-            runtimeDirectory = socketURL.deletingLastPathComponent()
-            try FileManager.default.createDirectory(
-                at: runtimeDirectory,
-                withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o700]
+            runtimeDirectory = try UnixSocketEngramServiceTransport.secureRuntimeDirectory(
+                at: socketURL.deletingLastPathComponent()
             )
         }
         try FileManager.default.createDirectory(
@@ -162,7 +328,7 @@ public enum EngramServiceRunner {
             withIntermediateDirectories: true
         )
         do {
-            try removeLegacyWebUIToken(runtimeDirectory: runtimeDirectory)
+            try removeLegacyWebUIToken(runtimeDirectory: runtimeDirectory, homeDirectory: serviceHome)
         } catch {
             ServiceLogger.warn("failed to remove legacy web UI token: \(error.localizedDescription)", category: .runner)
         }
@@ -175,7 +341,14 @@ public enum EngramServiceRunner {
             category: .runner
         )
 
-        let gate = try ServiceWriterGate(databasePath: databasePath, runtimeDirectory: runtimeDirectory)
+        let gate = try ServiceWriterGate(
+            databasePath: databasePath,
+            runtimeDirectory: runtimeDirectory,
+            // Custom socket parents are caller-owned. The database-adjacent
+            // lock still enforces invariant 1 without writing a generic lock
+            // file into that directory.
+            acquireRuntimeLock: usesDedicatedRuntime
+        )
 
         // Composition root: run migrations ONCE before serving (idempotent), and
         // fail fast if the schema is still absent afterward. A missing `sessions`
@@ -185,6 +358,11 @@ public enum EngramServiceRunner {
             _ = try await gate.performWriteCommand(name: "migrate") { writer in
                 try writer.migrate()
                 try writer.verifySchemaPresent() // throws .missingSchema if schema absent
+                // Invariants 1 and 14: repair insight lifecycle chains through
+                // the service writer before any agent-facing listener starts.
+                _ = try writer.write { db in
+                    try StartupBackfills.reconcileInsights(db)
+                }
                 // R1/R2 P1 settings-db-split: finish any source visibility
                 // intent left durable by a process exit between the settings
                 // rename and SQLite commit before the service starts serving.
@@ -252,7 +430,7 @@ public enum EngramServiceRunner {
         }
         let claudeCodeProfileService = ClaudeCodeProfileService(
             profileResolver: ClaudeCodeProfileResolver(
-                homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
+                homeDirectory: serviceHome,
                 settingsURL: settingsURL
             ),
             writerGate: gate,
@@ -321,7 +499,7 @@ public enum EngramServiceRunner {
                     telemetry: telemetry,
                     environment: environment,
                     archiveV2Coordinator: archiveV2Coordinator,
-                    archiveV2CaptureEnabled: archiveV2Settings.exactArchiveEnabled,
+                    archiveV2CaptureEnabled: await archiveV2Coordinator.captureEnabled,
                     tokenLimitsProvider: { Self.readUsageTokenLimits(environment: environment) },
                     testHooks: InitialScanTestHooks()
                 )
@@ -334,10 +512,17 @@ public enum EngramServiceRunner {
 
         // Opt-in remote session offload (default OFF). When enabled, the indexing
         // loop drains the offload/rehydrate queues and reclaims disk via VACUUM.
-        let remoteSync = RemoteSyncCoordinator.makeIfEnabled(gate: gate, environment: environment)
+        let remoteSync = try RemoteSyncCoordinator.makeIfEnabled(gate: gate, environment: environment)
         if remoteSync != nil {
             ServiceLogger.info("remote offload enabled; wiring into indexing loop", category: .runner)
         }
+        // Live ingest builds the same backend even when offload is off. Never
+        // pass this coordinator to runOnce / drainOffload (invariant 16).
+        let liveSync = try RemoteSyncCoordinator.makeLiveIfEnabled(gate: gate, environment: environment)
+        if liveSync != nil {
+            ServiceLogger.info("live ingest armed; publish/pull loop only (no offload runOnce)", category: .runner)
+        }
+        let livePublishSignal = LiveIngestPublishSignal()
 
         let indexingTask = Task {
             await Self.runAfterInitialScan(initialScanTask: initialScanTask) {
@@ -348,9 +533,19 @@ public enum EngramServiceRunner {
                     environment: environment,
                     archiveV2Coordinator: archiveV2Coordinator,
                     tokenLimitsProvider: { Self.readUsageTokenLimits(environment: environment) },
-                    remoteSync: remoteSync
+                    remoteSync: remoteSync,
+                    livePublishSignal: livePublishSignal
                 )
             }
+        }
+        let liveIngestTask = Task {
+            await Self.runLiveIngestLoop(
+                coordinator: liveSync,
+                gate: gate,
+                environment: environment,
+                publisherReadyTask: initialScanTask,
+                publishSignal: livePublishSignal
+            )
         }
         let archiveDrainStartTask = Task {
             await initialScanTask.value
@@ -373,7 +568,7 @@ public enum EngramServiceRunner {
         // busy != 0 is a normal outcome.
         let truncateTask = Task {
             do {
-                let result = try await gate.checkpointTruncate()
+                let result = try await gate.checkpointTruncate(waitForReaders: false)
                 if result.busy == 0 {
                     ServiceLogger.notice(
                         "startup wal truncate succeeded: log=\(result.logFrames) checkpointed=\(result.checkpointed)",
@@ -414,6 +609,7 @@ public enum EngramServiceRunner {
         defer {
             initialScanTask.cancel()
             indexingTask.cancel()
+            liveIngestTask.cancel()
             archiveDrainStartTask.cancel()
             checkpointTask.cancel()
             server.stop()
@@ -426,6 +622,11 @@ public enum EngramServiceRunner {
         } catch is CancellationError {
             // Fall through to the same shutdown path as an orderly stop.
         }
+        // Stop accepting commands before cancelling any service-owned work.
+        // Existing client handlers are cancelled by stop() and remain tracked
+        // until their defers run, so the bounded drain below is observable.
+        server.stop()
+        await gate.beginShutdown()
 
         // Cancel and wait for in-flight gate write commands to unwind before the
         // gate is torn down, so the writer/process flocks are released for the
@@ -438,33 +639,49 @@ public enum EngramServiceRunner {
         // gate alive (and its locks held) past `run()` returning.
         initialScanTask.cancel()
         indexingTask.cancel()
+        liveIngestTask.cancel()
         archiveDrainStartTask.cancel()
+        checkpointTask.cancel()
+        truncateTask.cancel()
+        let archiveStopTask = Task {
+            await archiveV2Drainer?.stop()
+        }
+        let clientHandlersDrained = await server.drainClientHandlers(
+            timeoutNanoseconds: 2_000_000_000
+        )
         await initialScanTask.value
         await indexingTask.value
+        await liveIngestTask.value
         await archiveDrainStartTask.value
-        await archiveV2Drainer?.stop()
+        await archiveStopTask.value
 
         // PASSIVE checkpoint calls do not observe Swift task cancellation while
         // SQLite is executing. Await the task result so a periodic checkpoint
         // cannot overlap either remaining TRUNCATE operation below.
         await cancelAndAwaitCheckpointTask(checkpointTask)
 
-        // Wait for the startup truncate to finish before tearing down the gate.
-        // SQLite's PRAGMA call doesn't observe Task cancellation, so the value
-        // wait is what guarantees we don't drop the writer mid-checkpoint.
-        // Bound by busy_timeout (30s) in the worst case; in practice <1s.
+        // Startup TRUNCATE uses busy_timeout=0, so this wait cannot hold a
+        // SIGTERM shutdown behind a reader for the normal 30-second timeout.
         await truncateTask.value
 
-        // Final WAL TRUNCATE on graceful shutdown. The periodic checkpointTask
-        // only runs PASSIVE (never shrinks the file on disk), so without this
-        // accumulated WAL frames are left for the next startup's TRUNCATE,
-        // leaving the WAL file large between runs. The gate's writeSemaphore
-        // serializes this with any in-flight write; a reader-busy result
-        // (busy != 0) is a normal best-effort outcome. SQLite's PRAGMA does not
-        // observe Task cancellation; it is bounded by busy_timeout (30s).
+        if !clientHandlersDrained {
+            ServiceLogger.warn(
+                "shutdown client handlers exceeded the bounded drain; waiting for service writers",
+                category: .checkpoint
+            )
+        }
+
+        // Detached project migration/title regeneration producers outlive their
+        // cancelled client waiter. docs/invariants.md #1 requires the service process to
+        // retain the single-writer lock until every such writer has left the
+        // gate; otherwise main.swift can exit while SQLite is still mutating.
+        await waitForShutdownWriterIdle(gate: gate)
+
+        // Once every writer is gone, issue one nonblocking TRUNCATE. A live
+        // reader reports busy immediately instead of delaying SIGTERM shutdown.
         do {
             let result = try await runShutdownCheckpoint {
-                try await gate.checkpointTruncate()
+                try await gate.checkpointTruncate(waitForReaders: false)
             }
             ServiceLogger.notice(
                 "shutdown wal truncate: busy=\(result.busy) log=\(result.logFrames) checkpointed=\(result.checkpointed)",
@@ -485,16 +702,26 @@ public enum EngramServiceRunner {
         _ = await task.result
     }
 
-    static func runShutdownCheckpoint(
-        _ checkpoint: @escaping @Sendable () async throws -> (
-            busy: Int64,
-            logFrames: Int64,
-            checkpointed: Int64
-        )
-    ) async throws -> (busy: Int64, logFrames: Int64, checkpointed: Int64) {
+    static func runShutdownCheckpoint<Value: Sendable>(
+        _ checkpoint: @escaping @Sendable () async throws -> Value
+    ) async throws -> Value {
         try await Task {
             try await checkpoint()
         }.value
+    }
+
+    static func waitForShutdownWriterIdle(
+        gate: ServiceWriterGate,
+        pollNanoseconds: UInt64 = 20_000_000
+    ) async {
+        while !(await gate.isIdleForShutdown()) {
+            // The runner task is already cancelled on SIGTERM. Sleep in a fresh
+            // task so cancellation does not turn this cooperative wait into a
+            // hot loop while detached long writes finish.
+            await Task.detached {
+                try? await Task.sleep(nanoseconds: pollNanoseconds)
+            }.value
+        }
     }
 
     /// Builds the single Archive V2 composition-root actor. Internal so focused
@@ -715,7 +942,212 @@ public enum EngramServiceRunner {
         }
     }
 
-    private static func runIndexingLoop(
+    /// Maintenance runs after the incremental index has already succeeded.
+    /// Its failure is observable, but must not turn that successful scan into
+    /// an index error or leave service health stale.
+    @discardableResult
+    static func runPeriodicPostIndexMaintenance<Value>(
+        operation: () async throws -> Value,
+        onSuccess: (Value?) async -> Void
+    ) async -> Bool {
+        let value: Value?
+        do {
+            value = try await operation()
+        } catch is CancellationError {
+            return false
+        } catch {
+            ServiceLogger.warn(
+                "periodic post-index maintenance failed: \(error.localizedDescription)",
+                category: .runner
+            )
+            value = nil
+        }
+        guard !Task.isCancelled else { return false }
+        await onSuccess(value)
+        return true
+    }
+
+    private struct PeriodicPostIndexMaintenanceSummary {
+        let total: Int
+        let todayParents: Int
+        let ftsCompleted: Int
+        let ftsNotApplicable: Int
+        let repoCount: Int
+    }
+
+    static func signalLivePublishIfNeeded(
+        gate: ServiceWriterGate,
+        environment: [String: String],
+        publishSignal: LiveIngestPublishSignal?
+    ) async {
+        guard let publishSignal else { return }
+        let config = LiveIngestConfig.read(
+            environment: environment,
+            homeDirectory: RemoteSyncConfig.homeDirectory(environment: environment)
+        )
+        guard config.publishEnabled,
+              config.isLiveIdentityValid,
+              let peer = config.resolvedPeer else { return }
+        do {
+            let token = try await gate.performReadCommand(name: "livePublishDelta") { writer in
+                try writer.read { db in
+                    try OffloadRepo.livePublishDeltaToken(db, peer: peer)
+                }
+            }.value
+            if let token {
+                await publishSignal.signalIndexChange(token: token)
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            ServiceLogger.error("live publish delta probe failed", category: .runner, error: error)
+        }
+    }
+
+    static func runFtsDrainThenSignal(
+        gate: ServiceWriterGate,
+        environment: [String: String],
+        publishSignal: LiveIngestPublishSignal?,
+        drain: () async throws -> StartupIndexJobRecoveryResult
+    ) async rethrows -> StartupIndexJobRecoveryResult {
+        let value = try await drain()
+        // The exact actual-delta identity excludes unrelated/no-op job writes
+        // while still detecting readiness and eligibility/retraction changes.
+        await signalLivePublishIfNeeded(
+            gate: gate,
+            environment: environment,
+            publishSignal: publishSignal
+        )
+        return value
+    }
+
+    /// Dedicated HQ publish / Mac pull loop. Must never call `runOnce`.
+    static func runLiveIngestLoop(
+        coordinator: RemoteSyncCoordinator?,
+        gate: ServiceWriterGate,
+        environment: [String: String],
+        publisherReadyTask: Task<Void, Never>? = nil,
+        publishSignal: LiveIngestPublishSignal = LiveIngestPublishSignal(),
+        sleep: @escaping @Sendable (UInt64) async throws -> Void = {
+            try await Task.sleep(nanoseconds: $0)
+        }
+    ) async {
+        guard let coordinator else { return }
+        let startupConfig = LiveIngestConfig.read(
+            environment: environment,
+            homeDirectory: RemoteSyncConfig.homeDirectory(environment: environment)
+        )
+        if startupConfig.publishEnabled, let publisherReadyTask {
+            await publisherReadyTask.value
+            guard !Task.isCancelled else { return }
+        }
+        var completePublishWalk = true
+        if await runLiveIngestCycle(
+            coordinator: coordinator,
+            environment: environment,
+            debouncePublish: true,
+            completeWalk: completePublishWalk,
+            sleep: sleep
+        ) {
+            completePublishWalk = false
+        }
+        while !Task.isCancelled {
+            let config = LiveIngestConfig.read(
+                environment: environment,
+                homeDirectory: RemoteSyncConfig.homeDirectory(environment: environment)
+            )
+            let wake: LiveIngestPublishSignal.Wake
+            do {
+                wake = try await publishSignal.wait(
+                    intervalNanoseconds: UInt64(config.intervalSeconds) * 1_000_000_000,
+                    debounceNanoseconds: 60_000_000_000,
+                    respondsToIndexChanges: config.publishEnabled && config.isLiveIdentityValid,
+                    sleep: sleep
+                )
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            let publishSucceeded = await runLiveIngestCycle(
+                coordinator: coordinator,
+                environment: environment,
+                debouncePublish: false,
+                completeWalk: completePublishWalk,
+                sleep: sleep
+            )
+            if publishSucceeded {
+                completePublishWalk = false
+                await publishSignal.markPublished(through: wake.changeGeneration)
+                // A DB/FTS continuation can land after the coordinator's final
+                // remaining-row snapshot but before this old wake is acked.
+                // Ack first, then level-probe the actual predicates so that
+                // residual delta receives a fresh epoch and trailing debounce.
+                await signalLivePublishIfNeeded(
+                    gate: gate,
+                    environment: environment,
+                    publishSignal: publishSignal
+                )
+            }
+        }
+    }
+
+    static func runLiveIngestCycle(
+        coordinator: RemoteSyncCoordinator,
+        environment: [String: String],
+        debouncePublish: Bool,
+        completeWalk: Bool,
+        sleep: @escaping @Sendable (UInt64) async throws -> Void = {
+            try await Task.sleep(nanoseconds: $0)
+        }
+    ) async -> Bool {
+        let config = LiveIngestConfig.read(
+            environment: environment,
+            homeDirectory: RemoteSyncConfig.homeDirectory(environment: environment)
+        )
+        guard config.isArmed, config.isLiveIdentityValid else { return false }
+        var publishSucceeded = false
+        do {
+            if config.publishEnabled {
+                if debouncePublish {
+                    try await sleep(60_000_000_000)
+                    guard !Task.isCancelled else { return false }
+                }
+                var published = try await coordinator.publishLivePeer(
+                    batch: config.publishBatch,
+                    completeWalk: completeWalk
+                )
+                while !completeWalk, published.hasMorePublishableRows {
+                    try Task.checkCancellation()
+                    published = try await coordinator.publishLivePeer(
+                        batch: config.publishBatch,
+                        completeWalk: false
+                    )
+                }
+                publishSucceeded = true
+                ServiceLogger.info(
+                    "live publish cycle: entries=\(published.publishedEntries) complete=\(published.complete) gen=\(published.generation)",
+                    category: .runner
+                )
+            }
+            if config.ingestEnabled {
+                for source in config.sources {
+                    let pulled = try await coordinator.pullLivePeer(peer: source)
+                    ServiceLogger.info(
+                        "live pull cycle: peer=\(source) imported=\(pulled.imported) occupancy=\(pulled.occupancySkipped) retracted=\(pulled.retracted) latched=\(pulled.shrinkGuardLatched)",
+                        category: .runner
+                    )
+                }
+            }
+            return publishSucceeded
+        } catch is CancellationError {
+            return false
+        } catch {
+            ServiceLogger.error("live ingest cycle failed", category: .runner, error: error)
+            return publishSucceeded
+        }
+    }
+
+    static func runIndexingLoop(
         gate: ServiceWriterGate,
         statusMonitor: ServiceStatusMonitor,
         telemetry: ServiceTelemetryCollector? = nil,
@@ -723,6 +1155,7 @@ public enum EngramServiceRunner {
         archiveV2Coordinator: ArchiveV2ServiceCoordinator? = nil,
         tokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits],
         remoteSync: RemoteSyncCoordinator? = nil,
+        livePublishSignal: LiveIngestPublishSignal? = nil,
         activityScheduler: IndexingBackgroundActivityScheduling = NSIndexingBackgroundActivityScheduler()
     ) async {
         // Wave 7C S01: adaptive 15→30→60m + NSBackgroundActivityScheduler
@@ -733,10 +1166,31 @@ public enum EngramServiceRunner {
         // before the runner returns (matches gate cancel-and-wait contract).
 
         while !Task.isCancelled {
-            let sleepSeconds = scheduleBox.policy.nextInterval()
-            await statusMonitor.recordSchedule(nextScanIntervalSeconds: Int(sleepSeconds))
+            let adaptiveSleepSeconds = scheduleBox.policy.nextInterval()
+            let fileScanDueAt = Date().addingTimeInterval(adaptiveSleepSeconds)
+            let enabledAdapters = adaptersExcludingDisabled(
+                SessionAdapterFactory.defaultAdapters(),
+                disabledSources: readDisabledSources(environment: environment)
+            )
+            let ftsRetryDelaySeconds = await nextFtsRetryDelaySeconds(
+                gate: gate,
+                adapters: enabledAdapters
+            )
+            let sleepSeconds = if let ftsRetryDelaySeconds {
+                min(adaptiveSleepSeconds, max(ftsRetryDelaySeconds, 1))
+            } else {
+                adaptiveSleepSeconds
+            }
+            let ftsOnlyDue = ftsRetryDelaySeconds.map { $0 <= adaptiveSleepSeconds } ?? false
+            // docs/invariants.md #5: an immediately due recovery retry is not
+            // the next file-scan cadence. Publish the healthy minimum cadence
+            // so a long FTS drain does not make status stale after one second.
+            let publishedScheduleSeconds = Int(
+                ftsOnlyDue ? IndexingSchedulePolicy.minInterval : sleepSeconds
+            )
+            await statusMonitor.recordSchedule(nextScanIntervalSeconds: publishedScheduleSeconds)
             await telemetry?.recordSchedule(
-                nextScanIntervalSeconds: Int(sleepSeconds),
+                nextScanIntervalSeconds: publishedScheduleSeconds,
                 targetIntervalSeconds: Int(scheduleBox.policy.targetInterval),
                 consecutiveIdleScans: scheduleBox.policy.consecutiveIdleScans,
                 backend: activityScheduler.backendName
@@ -745,9 +1199,44 @@ public enum EngramServiceRunner {
                 at: Date().addingTimeInterval(sleepSeconds)
             )
 
-            let tolerance = min(5 * 60.0, sleepSeconds * 0.25)
+            var fileScanSleepSeconds = sleepSeconds
+            if ftsOnlyDue {
+                // docs/invariants.md #5: due FTS recovery is non-discretionary;
+                // NSBackgroundActivityScheduler remains the file-scan scheduler.
+                do {
+                    try await sleepBeforeFtsOnlyCycle(seconds: sleepSeconds)
+                } catch is CancellationError {
+                    break
+                } catch {
+                    ServiceLogger.error("scheduled FTS retry wait failed", category: .runner, error: error)
+                }
+                await Self.runFtsOnlyCycle(
+                    gate: gate,
+                    statusMonitor: statusMonitor,
+                    adapters: enabledAdapters,
+                    environment: environment,
+                    livePublishSignal: livePublishSignal
+                )
+                await collectUsageBestEffort(gate: gate, tokenLimitsProvider: tokenLimitsProvider)
+                do {
+                    _ = try await refreshRepoDiscovery(
+                        gate: gate,
+                        phaseName: "ftsOnlyRepoDiscovery"
+                    )
+                } catch is CancellationError {
+                    break
+                } catch {
+                    ServiceLogger.error("FTS-only repository discovery failed", category: .runner, error: error)
+                }
+                // The FTS retry borrowed an earlier wake-up from this file-scan
+                // interval. Wait only the remaining time instead of rearming a
+                // full adaptive interval and postponing an already-due scan.
+                fileScanSleepSeconds = max(fileScanDueAt.timeIntervalSinceNow, 0)
+            }
+
+            let tolerance = min(5 * 60.0, fileScanSleepSeconds * 0.25)
             let opportunity = await activityScheduler.performWhenDue(
-                interval: sleepSeconds,
+                interval: fileScanSleepSeconds,
                 tolerance: tolerance
             ) {
                 await Self.runPeriodicMaintenanceWithMemoryRelief {
@@ -760,6 +1249,7 @@ public enum EngramServiceRunner {
                             archiveV2Coordinator: archiveV2Coordinator,
                             tokenLimitsProvider: tokenLimitsProvider,
                             remoteSync: remoteSync,
+                            livePublishSignal: livePublishSignal,
                             scheduleBox: scheduleBox
                         )
                     }
@@ -771,9 +1261,91 @@ public enum EngramServiceRunner {
                 }
             }
             if opportunity == .cancelled { break }
+            if opportunity == .deferred {
+                let disabled = readDisabledSources(environment: environment)
+                let enabledAdapters = adaptersExcludingDisabled(
+                    SessionAdapterFactory.defaultAdapters(),
+                    disabledSources: disabled
+                )
+                do {
+                    // docs/invariants.md #5: OS discretionary scheduling may
+                    // defer scans, but must not indefinitely strand FTS recovery.
+                    _ = try await runFtsDrainThenSignal(
+                        gate: gate,
+                        environment: environment,
+                        publishSignal: livePublishSignal
+                    ) {
+                        try await drainRecoverableFtsJobs(
+                            gate: gate,
+                            adapters: enabledAdapters,
+                            commandName: "deferredActivityFtsDrain",
+                            onProgress: { await statusMonitor.recordScanDeferred() }
+                        )
+                    }
+                } catch is CancellationError {
+                    break
+                } catch {
+                    ServiceLogger.error("deferred-activity FTS drain failed", category: .runner, error: error)
+                }
+                await collectUsageBestEffort(gate: gate, tokenLimitsProvider: tokenLimitsProvider)
+                do {
+                    _ = try await refreshRepoDiscovery(
+                        gate: gate,
+                        phaseName: "deferredActivityRepoDiscovery"
+                    )
+                } catch is CancellationError {
+                    break
+                } catch {
+                    ServiceLogger.error("deferred-activity repository discovery failed", category: .runner, error: error)
+                }
+                await statusMonitor.recordScanDeferred()
+            }
             // .deferred / .run both continue the outer loop with updated schedule.
         }
         await activityScheduler.invalidate()
+    }
+
+    private static func nextFtsRetryDelaySeconds(
+        gate: ServiceWriterGate,
+        adapters: [any SessionAdapter]
+    ) async -> TimeInterval? {
+        do {
+            let nanoseconds = try await gate.performReadCommand(name: "ftsRetrySchedule") { writer in
+                try IndexJobRunner(writer: writer, adapters: adapters)
+                    .recommendedFtsRetryDelayNanoseconds()
+            }.value
+            return nanoseconds.map { TimeInterval($0) / 1_000_000_000 }
+        } catch {
+            return nil
+        }
+    }
+
+    private static func runFtsOnlyCycle(
+        gate: ServiceWriterGate,
+        statusMonitor: ServiceStatusMonitor,
+        adapters: [any SessionAdapter],
+        environment: [String: String],
+        livePublishSignal: LiveIngestPublishSignal?
+    ) async {
+        do {
+            _ = try await runFtsDrainThenSignal(
+                gate: gate,
+                environment: environment,
+                publishSignal: livePublishSignal
+            ) {
+                try await drainRecoverableFtsJobs(
+                    gate: gate,
+                    adapters: adapters,
+                    commandName: "scheduledFtsRetryDrain",
+                    onProgress: { await statusMonitor.recordScanDeferred() }
+                )
+            }
+            await statusMonitor.recordScanDeferred()
+        } catch is CancellationError {
+            return
+        } catch {
+            ServiceLogger.error("scheduled FTS retry drain failed", category: .runner, error: error)
+        }
     }
 
     /// One adaptive scan cycle. Invoked only while an NSBackground activity is open.
@@ -785,6 +1357,7 @@ public enum EngramServiceRunner {
         archiveV2Coordinator: ArchiveV2ServiceCoordinator?,
         tokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits],
         remoteSync: RemoteSyncCoordinator?,
+        livePublishSignal: LiveIngestPublishSignal?,
         scheduleBox: IndexingScheduleBox
     ) async {
         let processInfo = ProcessInfo.processInfo
@@ -801,6 +1374,41 @@ public enum EngramServiceRunner {
             }()
         )
         if IndexingSchedulePolicy.shouldDefer(conditions: conditions) {
+            let disabled = readDisabledSources(environment: environment)
+            let enabledAdapters = adaptersExcludingDisabled(
+                SessionAdapterFactory.defaultAdapters(),
+                disabledSources: disabled
+            )
+            do {
+                _ = try await runFtsDrainThenSignal(
+                    gate: gate,
+                    environment: environment,
+                    publishSignal: livePublishSignal
+                ) {
+                    try await drainRecoverableFtsJobs(
+                        gate: gate,
+                        adapters: enabledAdapters,
+                        commandName: "periodicFtsDrain",
+                        onProgress: { await statusMonitor.recordScanDeferred() }
+                    )
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                ServiceLogger.error("deferred-cycle FTS drain failed", category: .runner, error: error)
+            }
+            await collectUsageBestEffort(gate: gate, tokenLimitsProvider: tokenLimitsProvider)
+            do {
+                _ = try await refreshRepoDiscovery(
+                    gate: gate,
+                    phaseName: "deferredCycleRepoDiscovery"
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                ServiceLogger.error("deferred-cycle repository discovery failed", category: .runner, error: error)
+            }
+            await statusMonitor.recordScanDeferred()
             return
         }
 
@@ -839,34 +1447,27 @@ public enum EngramServiceRunner {
                 }.value
             }
             let scan = archiveCycle.indexResult
-            let periodicParserAdapters: [any SessionAdapter]
-            if let captured = archiveCycle.indexPlan.capturedExactLocators {
-                periodicParserAdapters = SessionAdapterFactory.indexingAdapters(
-                    from: recentAdapters,
-                    capturedExactLocators: captured
-                )
-            } else {
-                periodicParserAdapters = enabledAdapters
-            }
             scheduleBox.policy.recordScan(.init(indexed: scan.indexed, failed: false))
 
-            // Parent-link only after indexed changes (idle skip).
-            if scan.indexed > 0 {
-                _ = try await gate.performWriteCommand(name: "periodicParentBackfills") { writer in
-                    try writer.runPeriodicParentBackfills()
-                }
+            let maintenanceCompleted = await runPeriodicPostIndexMaintenance {
+
+            // Drain durable suggested-parent work even on an idle file scan.
+            _ = try await gate.performWriteCommand(name: "periodicParentBackfills") { writer in
+                try writer.runPeriodicParentBackfills()
             }
 
             // FTS drain has its own backlog gate — still OK after idle scans.
-            var jobs = StartupIndexJobRecoveryResult(completed: 0, notApplicable: 0)
-            while !Task.isCancelled {
-                let drain = try await gate.performWriteCommand(name: "periodicFtsDrain") { writer in
-                    try await IndexJobRunner(writer: writer, adapters: periodicParserAdapters)
-                        .runRecoverableJobsOnce()
-                }.value
-                jobs.completed += drain.result.completed
-                jobs.notApplicable += drain.result.notApplicable
-                if drain.drained { break }
+            let jobs = try await runFtsDrainThenSignal(
+                gate: gate,
+                environment: environment,
+                publishSignal: livePublishSignal
+            ) {
+                try await drainRecoverableFtsJobs(
+                    gate: gate,
+                    adapters: enabledAdapters,
+                    commandName: "periodicFtsDrain",
+                    onProgress: { await statusMonitor.recordScanDeferred() }
+                )
             }
 
             let shouldRunEmbeddingBackfill: Bool
@@ -898,7 +1499,7 @@ public enum EngramServiceRunner {
                         )
                     }
                 } catch is CancellationError {
-                    return
+                    throw CancellationError()
                 } catch {
                     ServiceLogger.error("remote offload cycle failed", category: .runner, error: error)
                 }
@@ -913,49 +1514,38 @@ public enum EngramServiceRunner {
                 try writer.indexStatus()
             }.value
 
-            var repoCount = 0
-            if scan.indexed > 0 {
-                let repoCandidates = try await gate.performWriteCommand(name: "periodicRepoCandidates") { writer in
-                    try writer.read { db in
-                        try RepoDiscovery.sessionCwdCounts(db)
-                    }
-                }.value
-                let dueRepoCandidates = RepoDiscoveryMaintenanceThrottle.shared
-                    .selectCandidates(repoCandidates)
-                if !dueRepoCandidates.isEmpty {
-                    let repoBatch = RepoDiscovery.probeRepositoriesDetailed(dueRepoCandidates)
-                    repoCount = try await gate.performWriteCommand(name: "repoDiscoveryUpsert") { writer in
-                        try writer.write { db in
-                            try RepoDiscovery.upsert(
-                                db,
-                                entries: repoBatch.entries,
-                                probedAt: ISO8601DateFormatter().string(from: Date())
-                            )
-                        }
-                    }.value
-                    let failed = Set(repoBatch.failedCwds)
-                    RepoDiscoveryMaintenanceThrottle.shared.recordOutcomes(
-                        succeeded: dueRepoCandidates.compactMap { failed.contains($0.cwd) ? nil : $0.cwd },
-                        failed: repoBatch.failedCwds
-                    )
-                }
-            }
+            let repoCount = try await refreshRepoDiscovery(
+                gate: gate,
+                phaseName: "periodicRepoDiscovery"
+            )
 
-            ServiceLogger.notice(
-                "index scan completed: indexed=\(scan.indexed) total=\(status.total) todayParents=\(status.todayParents) ftsCompleted=\(jobs.completed) ftsNotApplicable=\(jobs.notApplicable) repos=\(repoCount)",
-                category: .runner
-            )
-            emit(ServiceIndexEvent(
-                indexed: scan.indexed,
+            return PeriodicPostIndexMaintenanceSummary(
                 total: status.total,
-                todayParents: status.todayParents
-            ))
-            await statusMonitor.recordScanSuccess()
-            await telemetry?.recordScan(
-                durationMs: Self.elapsedMs(from: scanStarted, clock: scanClock),
-                indexed: scan.indexed,
-                total: status.total
+                todayParents: status.todayParents,
+                ftsCompleted: jobs.completed,
+                ftsNotApplicable: jobs.notApplicable,
+                repoCount: repoCount
             )
+            } onSuccess: { summary in
+                let total = summary?.total ?? scan.total
+                let todayParents = summary?.todayParents ?? scan.todayParents
+                ServiceLogger.notice(
+                    "index scan completed: indexed=\(scan.indexed) total=\(total) todayParents=\(todayParents) ftsCompleted=\(summary?.ftsCompleted ?? 0) ftsNotApplicable=\(summary?.ftsNotApplicable ?? 0) repos=\(summary?.repoCount ?? 0)",
+                    category: .runner
+                )
+                emit(ServiceIndexEvent(
+                    indexed: scan.indexed,
+                    total: total,
+                    todayParents: todayParents
+                ))
+                await statusMonitor.recordScanSuccess()
+                await telemetry?.recordScan(
+                    durationMs: Self.elapsedMs(from: scanStarted, clock: scanClock),
+                    indexed: scan.indexed,
+                    total: total
+                )
+            }
+            guard maintenanceCompleted else { return }
             await collectUsageBestEffort(gate: gate, tokenLimitsProvider: tokenLimitsProvider)
         } catch is CancellationError {
             return
@@ -965,6 +1555,109 @@ public enum EngramServiceRunner {
             await statusMonitor.recordScanFailure(error.localizedDescription)
             scheduleBox.policy.recordScan(.init(indexed: 0, failed: true))
         }
+    }
+
+    private static func drainRecoverableFtsJobs(
+        gate: ServiceWriterGate,
+        adapters: [any SessionAdapter],
+        commandName: String,
+        onProgress: @escaping @Sendable () async -> Void = {}
+    ) async throws -> StartupIndexJobRecoveryResult {
+        // docs/invariants.md #5: periodic recovery must heal live FTS holes,
+        // including rows whose prior terminal job no longer reflects the index.
+        _ = try await gate.performWriteCommand(name: commandName) { writer in
+            try WriterStartupBackfillDatabase(writer: writer).enqueueStaleFtsJobs()
+        }
+        // A single adapter stream can outlive the status stale threshold. Keep
+        // the service heartbeat fresh while the writer gate drains that batch,
+        // not only after the batch returns.
+        let ftsDrainHeartbeat = Task {
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 60 * 1_000_000_000)
+                } catch {
+                    return
+                }
+                await onProgress()
+            }
+        }
+        defer { ftsDrainHeartbeat.cancel() }
+        var total = StartupIndexJobRecoveryResult(completed: 0, notApplicable: 0)
+        while !Task.isCancelled {
+            let drain = try await gate.performWriteCommand(name: commandName) { writer in
+                let runner = IndexJobRunner(writer: writer, adapters: adapters)
+                let once = try await runner.runRecoverableJobsOnce()
+                return (
+                    once,
+                    try runner.recommendedFtsRetryDelayNanoseconds(),
+                    try runner.shouldStopFtsDrainWave()
+                )
+            }.value
+            total.completed += drain.0.result.completed
+            total.notApplicable += drain.0.result.notApplicable
+            await onProgress()
+            if drain.0.drained { return total }
+            if drain.2, let retryDelay = drain.1 {
+                // docs/invariants.md #5: do not strand deferred retryable work
+                // behind the next 15m periodic file-scan opportunity.
+                try await Task.sleep(nanoseconds: retryDelay)
+                continue
+            }
+            if drain.2 { return total }
+            if let retryDelay = drain.1 {
+                try await Task.sleep(nanoseconds: retryDelay)
+            }
+        }
+        throw CancellationError()
+    }
+
+    private static func sleepBeforeFtsOnlyCycle(seconds: TimeInterval) async throws {
+        guard seconds > 0 else { return }
+        try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+    }
+
+    /// Refresh repository counts on every indexing cycle while keeping expensive
+    /// git metadata probes behind the bounded cooldown. Counting must not inherit
+    /// the probe throttle because sessions can change while every cwd is cooling down.
+    @discardableResult
+    static func refreshRepoDiscovery(
+        gate: ServiceWriterGate,
+        throttle: RepoDiscoveryMaintenanceThrottle = .shared,
+        probe: @escaping @Sendable (String) -> GitRepoProbe? = { RepoDiscovery.probeGit($0) },
+        phaseName: String
+    ) async throws -> Int {
+        let snapshot = try await gate.performReadCommand(name: "\(phaseName)Candidates") { writer in
+            try writer.read { db in
+                let candidates = try RepoDiscovery.sessionCwdCounts(db, limit: Int.max)
+                let forcedCwds = try RepoDiscovery.candidateCwdsMissingStoredRepoIdentity(
+                    db,
+                    candidates: candidates
+                )
+                return (candidates, forcedCwds)
+            }
+        }.value
+        let dueCandidates = throttle.selectCandidates(
+            snapshot.0,
+            forcedCwds: snapshot.1
+        )
+        let batch = RepoDiscovery.probeRepositoriesDetailed(dueCandidates, probe: probe)
+        let repoCount = try await gate.performWriteCommand(name: "\(phaseName)Recount") { writer in
+            try writer.write { db in
+                try RepoDiscovery.upsert(
+                    db,
+                    entries: batch.entries,
+                    cwdToRepoPath: batch.cwdToRepoPath,
+                    probedAt: ISO8601DateFormatter().string(from: Date())
+                )
+            }
+        }.value
+
+        let failed = Set(batch.failedCwds)
+        throttle.recordOutcomes(
+            succeeded: dueCandidates.compactMap { failed.contains($0.cwd) ? nil : $0.cwd },
+            failed: batch.failedCwds
+        )
+        return repoCount
     }
 
 
@@ -1021,6 +1714,10 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         var errorDescription: String? { "injected failure for phase \(phase)" }
     }
 
+    static func shouldStopInitialFtsDrain(consecutiveFailures: Int) -> Bool {
+        consecutiveFailures >= 3
+    }
+
     /// Archive-enabled startup path: capture exact source bytes before the
     /// full parser/index operation, then let the coordinator reconcile the
     /// captured generation outside the writer gate. Keeping this as a distinct
@@ -1031,6 +1728,7 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         telemetry: ServiceTelemetryCollector?,
         archiveV2Coordinator: ArchiveV2ServiceCoordinator?,
         startupAdapters: [any SessionAdapter],
+        forceReparseKnownFiles: Bool,
         environment: [String: String],
         testHooks: InitialScanTestHooks
     ) async -> InitialScanPhaseOutcome<ArchiveV2ServiceCycleResult> {
@@ -1055,6 +1753,7 @@ private final class IndexingScheduleBox: @unchecked Sendable {
                     return try await writer.indexAllSessions(
                         adapters: parserAdapters,
                         excludedSnapshotSources: excludedSnapshotSources,
+                        forceReparseKnownFiles: forceReparseKnownFiles,
                         didFinishAdapter: { source in
                             let releasedBytes = Int(malloc_zone_pressure_relief(nil, 0))
                             ServiceLogger.notice(
@@ -1131,6 +1830,7 @@ private final class IndexingScheduleBox: @unchecked Sendable {
                 telemetry: telemetry,
                 archiveV2Coordinator: archiveV2Coordinator,
                 startupAdapters: startupAdapters,
+                forceReparseKnownFiles: usageParserBackfillNeeded,
                 environment: environment,
                 testHooks: testHooks
             )
@@ -1142,15 +1842,16 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             }
             if let archiveCycle = indexedPhase.value {
                 startupIndexed = archiveCycle.indexResult.indexed
-                parserAdapters = SessionAdapterFactory.indexingAdapters(
-                    from: startupAdapters,
-                    capturedExactLocators: archiveCycle.indexPlan.capturedExactLocators ?? [:]
-                )
+                if let capturedExactLocators = archiveCycle.indexPlan.capturedExactLocators {
+                    parserAdapters = SessionAdapterFactory.indexingAdapters(
+                        from: startupAdapters,
+                        capturedExactLocators: capturedExactLocators
+                    )
+                } else {
+                    parserAdapters = startupAdapters
+                }
             } else {
-                parserAdapters = SessionAdapterFactory.indexingAdapters(
-                    from: startupAdapters,
-                    capturedExactLocators: [:]
-                )
+                parserAdapters = startupAdapters
             }
         } else {
             parserAdapters = startupAdapters
@@ -1210,7 +1911,8 @@ private final class IndexingScheduleBox: @unchecked Sendable {
                         indexer: WriterStartupIndexing(
                             writer: writer,
                             adapters: parserAdapters,
-                            excludedSnapshotSources: excludedSnapshotSources
+                            excludedSnapshotSources: excludedSnapshotSources,
+                            forceReparseKnownFiles: usageParserBackfillNeeded
                         )
                     )
                 }.value
@@ -1277,6 +1979,7 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         // and user write commands can interleave instead of failing with
         // WriterBusy after the gate is held for the whole scan.
         var ftsDrainIterations = 0
+        var consecutiveFtsDrainFailures = 0
         while !Task.isCancelled {
             if let maxDrain = testHooks.maxFtsDrainIterations, ftsDrainIterations >= maxDrain {
                 // Test-only bound: production leaves maxFtsDrainIterations nil.
@@ -1290,17 +1993,49 @@ private final class IndexingScheduleBox: @unchecked Sendable {
                 testHooks: testHooks
             ) {
                 try await gate.performWriteCommand(name: "initialFtsDrain") { writer in
-                    try await IndexJobRunner(writer: writer, adapters: parserAdapters)
-                        .runRecoverableJobsOnce()
-                        .drained
+                    let runner = IndexJobRunner(writer: writer, adapters: startupAdapters)
+                    let once = try await runner.runRecoverableJobsOnce()
+                    return (
+                        drained: once.drained,
+                        retryDelayNanoseconds: try runner.recommendedFtsRetryDelayNanoseconds(),
+                        stopCurrentWave: try runner.shouldStopFtsDrainWave()
+                    )
                 }.value
             }
             if drainPhase.cancelled { return }
             if drainPhase.failed {
                 failedPhaseCount += 1
-                break
+                consecutiveFtsDrainFailures += 1
+                // docs/invariants.md #5: startup recovery must not strand the
+                // periodic 90-second retry loop behind an unbounded failing drain.
+                if shouldStopInitialFtsDrain(
+                    consecutiveFailures: consecutiveFtsDrainFailures
+                ) {
+                    break
+                }
+                do {
+                    try await Task.sleep(
+                        nanoseconds: UInt64(consecutiveFtsDrainFailures) * 250_000_000
+                    )
+                } catch is CancellationError {
+                    return
+                } catch {
+                    return
+                }
+                continue
             }
-            if drainPhase.value ?? true { break }
+            consecutiveFtsDrainFailures = 0
+            if drainPhase.value?.drained ?? true { break }
+            if drainPhase.value?.stopCurrentWave ?? false,
+               let retryDelay = drainPhase.value?.retryDelayNanoseconds {
+                // docs/invariants.md #5: startup recovery owns this bounded wait.
+                try? await Task.sleep(nanoseconds: retryDelay)
+                continue
+            }
+            if drainPhase.value?.stopCurrentWave ?? false { break }
+            if let retryDelay = drainPhase.value?.retryDelayNanoseconds {
+                try? await Task.sleep(nanoseconds: retryDelay)
+            }
         }
 
         await runSessionEmbeddingBackfillBestEffort(
@@ -1315,10 +2050,22 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             environment: environment
         )
 
+        do {
+            _ = try await refreshRepoDiscovery(
+                gate: gate,
+                phaseName: "initialRepoDiscovery"
+            )
+        } catch is CancellationError {
+            return
+        } catch {
+            ServiceLogger.error("initial repository discovery failed", category: .runner, error: error)
+            failedPhaseCount += 1
+        }
+
         // Phase 3 — usage collection is cheap, but still gets its own gated
         // command so startup maintenance does not hold the writer gate longer.
         await collectUsageBestEffort(gate: gate, tokenLimitsProvider: tokenLimitsProvider)
-        if usageParserBackfillNeeded {
+        if usageParserBackfillNeeded && coreIndexSucceeded {
             let markPhase = await runInitialScanPhase(
                 name: "usageParserBackfillMark",
                 statusMonitor: statusMonitor,
@@ -1497,13 +2244,7 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             return 0
         }
         let provider = providerFactory(config)
-        // M17: purge/re-enqueue when configured model/dimension diverges from meta.
         let pending = try await gate.performWriteCommand(name: "\(phaseName)Read") { writer in
-            try InsightEmbeddingBackfill.reconcileModelChangeIfNeeded(
-                writer: writer,
-                model: provider.model,
-                dimension: provider.dimension
-            )
             return try SessionEmbeddingBackfill.pendingSessions(writer: writer, limit: limit)
         }.value
         guard !pending.isEmpty else { return 0 }
@@ -1525,17 +2266,20 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             return 0
         } catch is CancellationError {
             throw CancellationError()
-        } catch {
+        } catch let error as EmbeddingError {
+            guard Self.isProviderScopedEmbeddingFailure(error) else { throw error }
             let delay = backoff.recordFailure(providerKey: providerKey)
             ServiceLogger.info(
                 "\(phaseName) backing off provider after failure delaySeconds=\(Int(delay.rounded()))",
                 category: .ai
             )
             throw error
+        } catch {
+            throw error
         }
         if outcome.embedded.isEmpty, !outcome.failures.isEmpty {
-            // All sessions failed — still advance retry counts / terminal state,
-            // but treat as a provider-ish failure for maintenance backoff.
+            // All failures here are item-local input rejections. Advance their
+            // retry/terminal state without delaying unrelated jobs next cycle.
             _ = try await gate.performWriteCommand(name: "\(phaseName)Write") { writer in
                 try SessionEmbeddingBackfill.writeEmbeddings(
                     writer: writer,
@@ -1545,11 +2289,6 @@ private final class IndexingScheduleBox: @unchecked Sendable {
                     failures: outcome.failures
                 )
             }.value
-            let delay = backoff.recordFailure(providerKey: providerKey)
-            ServiceLogger.info(
-                "\(phaseName) all sessions failed; backoff delaySeconds=\(Int(delay.rounded()))",
-                category: .ai
-            )
             return 0
         }
         if !outcome.embedded.isEmpty {
@@ -1565,6 +2304,15 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             )
         }.value
         return result.completed
+    }
+
+    private static func isProviderScopedEmbeddingFailure(_ error: EmbeddingError) -> Bool {
+        switch error {
+        case .http, .malformedResponse, .dimensionMismatch, .notConfigured, .circuitOpen:
+            return true
+        case .inputRejected:
+            return false
+        }
     }
 
     private static func runSessionEmbeddingBackfillBestEffort(
@@ -1611,13 +2359,7 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             return 0
         }
         let provider = providerFactory(config)
-        // M17: purge/re-enqueue when configured model/dimension diverges from meta.
         let pending = try await gate.performWriteCommand(name: "\(phaseName)Read") { writer in
-            try InsightEmbeddingBackfill.reconcileModelChangeIfNeeded(
-                writer: writer,
-                model: provider.model,
-                dimension: provider.dimension
-            )
             return try InsightEmbeddingBackfill.pendingInsights(writer: writer, limit: limit)
         }.value
         guard !pending.isEmpty else { return 0 }
@@ -1643,13 +2385,15 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             return 0
         } catch is CancellationError {
             throw CancellationError()
-        } catch {
-            // Unexpected total-phase failure (not per-item isolation path).
+        } catch let error as EmbeddingError {
+            guard Self.isProviderScopedEmbeddingFailure(error) else { throw error }
             let delay = backoff.recordFailure(providerKey: providerKey)
             ServiceLogger.info(
                 "\(phaseName) backing off provider after failure delaySeconds=\(Int(delay.rounded()))",
                 category: .ai
             )
+            throw error
+        } catch {
             throw error
         }
 
@@ -1658,10 +2402,6 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         }
         if !outcome.successes.isEmpty {
             backoff.recordSuccess(providerKey: providerKey)
-        } else if !outcome.failures.isEmpty {
-            // All items failed in isolation — still advance provider backoff so
-            // a broken provider does not spin every cycle.
-            _ = backoff.recordFailure(providerKey: providerKey)
         }
 
         let result = try await gate.performWriteCommand(name: "\(phaseName)Write") { writer in
@@ -1811,7 +2551,11 @@ private final class IndexingScheduleBox: @unchecked Sendable {
                     .filter { !$0.isEmpty }
             )
         }
-        guard let data = try? Data(contentsOf: settingsURL),
+        guard let data = SecureRegularFile.read(
+            atPath: settingsURL.path,
+            maximumBytes: 1024 * 1024,
+            repairPermissions: true
+        ),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
             return ArchivedDefaultOffSources.ids
@@ -1831,26 +2575,24 @@ private final class IndexingScheduleBox: @unchecked Sendable {
     /// contain `usageTokenLimits`.
     static func readUsageTokenLimits(
         environment: [String: String],
-        settingsURL: URL = defaultEngramSettingsURL()
+        settingsURL: URL? = nil
     ) -> [String: StartupUsageTokenLimits] {
         if let envValue = environment["ENGRAM_USAGE_TOKEN_LIMITS"],
            let limits = parseUsageTokenLimitsJSON(envValue) {
             return limits
         }
-        guard let data = try? Data(contentsOf: settingsURL),
+        let resolvedSettingsURL = settingsURL ?? engramSettingsURL(environment: environment)
+        guard let data = SecureRegularFile.read(
+            atPath: resolvedSettingsURL.path,
+            maximumBytes: 1024 * 1024,
+            repairPermissions: true
+        ),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let limitsObject = object["usageTokenLimits"] as? [String: Any]
         else {
             return [:]
         }
         return parseUsageTokenLimitsObject(limitsObject)
-    }
-
-    private static func defaultEngramSettingsURL() -> URL {
-        FileManager.default
-            .homeDirectoryForCurrentUser
-            .appendingPathComponent(".engram", isDirectory: true)
-            .appendingPathComponent("settings.json")
     }
 
     /// Resolve the settings file, honoring the `ENGRAM_SETTINGS_PATH` env
@@ -1860,13 +2602,27 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         if let override = environment["ENGRAM_SETTINGS_PATH"], !override.isEmpty {
             return URL(fileURLWithPath: override)
         }
-        return defaultEngramSettingsURL()
+        return EngramServiceCommandHandler.ServiceAISettings.defaultSettingsPath(
+            environment: environment
+        )
     }
 
-    static func removeLegacyWebUIToken(runtimeDirectory: URL) throws {
-        let tokenURL = runtimeDirectory.appendingPathComponent("webui.token")
-        guard FileManager.default.fileExists(atPath: tokenURL.path) else { return }
-        try FileManager.default.removeItem(at: tokenURL)
+    static func removeLegacyWebUIToken(
+        runtimeDirectory: URL,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) throws {
+        let dedicatedRuntimeDirectory = homeDirectory
+            .appendingPathComponent(".engram", isDirectory: true)
+            .appendingPathComponent("run", isDirectory: true)
+            .standardizedFileURL
+        guard runtimeDirectory.standardizedFileURL.path == dedicatedRuntimeDirectory.path else {
+            return
+        }
+
+        let tokenPath = dedicatedRuntimeDirectory.appendingPathComponent("webui.token").path
+        guard SecureRegularFile.removeOwnerNonDirectory(atPath: tokenPath) else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
     }
 
     private static func parseUsageTokenLimitsJSON(_ value: String) -> [String: StartupUsageTokenLimits]? {

@@ -8,7 +8,7 @@ import SwiftUI
 
 struct ArchiveSheet: View {
     let projectName: String
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
     @Environment(\.dismiss) var dismiss
 
     @State private var availableCwds: [String] = []
@@ -59,7 +59,7 @@ struct ArchiveSheet: View {
                     systemImage: "questionmark.folder"
                 )
                 .font(.caption)
-                .foregroundStyle(.orange)
+                .foregroundStyle(Theme.orange)
             } else {
                 if availableCwds.count > 1 {
                     Text("Source path (multiple cwds for this project):")
@@ -128,15 +128,15 @@ struct ArchiveSheet: View {
                     systemImage: "exclamationmark.bubble"
                 )
                 .font(.caption2)
-                .foregroundStyle(.orange)
+                .foregroundStyle(Theme.orange)
                 .padding(8)
-                .background(Color.orange.opacity(0.08))
+                .background(Theme.orange.opacity(0.08))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
 
                 if let error = errorMessage {
                     VStack(alignment: .leading, spacing: 6) {
                         Label(error, systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.red)
+                            .foregroundStyle(Theme.red)
                             .font(.caption)
                         if let details = errorDetails {
                             if let src = details.sourceId {
@@ -170,7 +170,7 @@ struct ArchiveSheet: View {
                         }
                     }
                     .padding(8)
-                    .background(Color.red.opacity(0.08))
+                    .background(Theme.red.opacity(0.08))
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
                 if let residual = residualRefCount, residual > 0 {
@@ -179,14 +179,14 @@ struct ArchiveSheet: View {
                             "Archive committed, but \(residual) file(s) in the project's own scope still reference the old path.",
                             systemImage: "exclamationmark.triangle"
                         )
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Theme.orange)
                         .font(.caption)
                         Text("Re-run the move to retry the auto-fix, or open Migration History to review what changed.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     .padding(8)
-                    .background(Color.orange.opacity(0.08))
+                    .background(Theme.orange.opacity(0.08))
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
             }

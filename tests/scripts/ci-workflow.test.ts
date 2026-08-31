@@ -28,6 +28,10 @@ const xcodegenInstallerPath = resolve(
 const xcodegenInstaller = existsSync(xcodegenInstallerPath)
   ? readFileSync(xcodegenInstallerPath, 'utf8')
   : '';
+const xcodeprojDriftGate = readFileSync(
+  resolve(repoRoot, 'scripts/check-xcodeproj-drift.sh'),
+  'utf8',
+);
 const dependencyReviewPath = resolve(
   repoRoot,
   '.github/workflows/dependency-review.yml',
@@ -232,7 +236,17 @@ describe('CI workflow hardening', () => {
   });
 
   it('fails CI when generated Xcode project is stale', () => {
-    expect(testWorkflow).toContain('git diff --exit-code Engram.xcodeproj');
+    expect(testWorkflow).toContain('scripts/check-xcodeproj-drift.sh');
+    expect(xcodeprojDriftGate).toContain(
+      'git diff --name-only -- Engram.xcodeproj',
+    );
+  });
+
+  it('fails CI when xcodegen creates untracked project files (repro)', () => {
+    expect(testWorkflow).toContain('scripts/check-xcodeproj-drift.sh');
+    expect(xcodeprojDriftGate).toContain(
+      'git ls-files --others --exclude-standard -- Engram.xcodeproj',
+    );
   });
 
   it('keeps pull-request code off persistent self-hosted runners', () => {

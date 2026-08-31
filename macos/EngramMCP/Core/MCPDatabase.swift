@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import EngramCoreRead
 
 struct MCPSessionRecord {
     let id: String
@@ -56,42 +57,152 @@ struct MCPSessionRecord {
 }
 
 final class MCPDatabase {
-    private let queue: DatabaseQueue
+    private final class SharedReader: @unchecked Sendable {
+        let queue: DatabaseQueue
+        let immediateQueue: DatabaseQueue
+        let availabilityLock = NSLock()
+        var lastAvailability: SessionVectorSearchAvailability.Snapshot?
+
+        init(path: String) throws {
+            // Open fail-fast so a process launched during an exclusive lock does
+            // not spend 30 seconds constructing its process-long reader. Once
+            // open, ordinary MCP reads regain the standard reader timeout; only
+            // vector probes temporarily switch back to zero below.
+            var configuration = SQLiteConnectionPolicy.readerConfiguration(
+                busyTimeoutMilliseconds: 0
+            )
+            configuration.prepareDatabase { db in
+                db.add(function: DatabaseFunction(
+                    "engram_redacted_keyword_snippet",
+                    argumentCount: 2,
+                    pure: true
+                ) { values in
+                    guard let content = String.fromDatabaseValue(values[0]),
+                          let query = String.fromDatabaseValue(values[1])
+                    else {
+                        return ""
+                    }
+                    return redactedKeywordSnippet(content: content, query: query)
+                })
+            }
+            queue = try DatabaseQueue(path: path, configuration: configuration)
+            try queue.read { db in
+                try db.execute(
+                    sql: "PRAGMA busy_timeout = \(SQLiteConnectionPolicy.busyTimeoutMilliseconds)"
+                )
+            }
+            immediateQueue = try DatabaseQueue(
+                path: path,
+                configuration: SQLiteConnectionPolicy.immediateReaderConfiguration()
+            )
+        }
+    }
+
+    private static let sharedReadersLock = NSLock()
+    private static var sharedReaders: [String: SharedReader] = [:]
+
+    private let reader: SharedReader
+    private var queue: DatabaseQueue { reader.queue }
     private let databasePath: String
 
     init(path: String) throws {
         databasePath = path
-        var configuration = Configuration()
-        configuration.readonly = true
-        queue = try DatabaseQueue(path: path, configuration: configuration)
+        Self.sharedReadersLock.lock()
+        defer { Self.sharedReadersLock.unlock() }
+        if let existing = Self.sharedReaders[path] {
+            reader = existing
+        } else {
+            let opened = try SharedReader(path: path)
+            Self.sharedReaders[path] = opened
+            reader = opened
+        }
     }
 
+    /// Schema advertising is nonblocking and retains the last real visibility-
+    /// filtered snapshot during transient BUSY/LOCKED windows. It never turns an
+    /// unknown lock state into a fabricated usable corpus.
+    func vectorAvailabilityForAdvertising() -> SessionVectorSearchAvailability.Snapshot {
+        do {
+            let snapshot = try reader.immediateQueue.read { db in
+                try SessionVectorSearchAvailability.probe(
+                    db: db,
+                    requireUnorphanedSessions: true
+                )
+            }
+            reader.availabilityLock.lock()
+            reader.lastAvailability = snapshot
+            reader.availabilityLock.unlock()
+            return snapshot
+        } catch let error as DatabaseError
+            where error.resultCode == .SQLITE_BUSY || error.resultCode == .SQLITE_LOCKED {
+            reader.availabilityLock.lock()
+            defer { reader.availabilityLock.unlock() }
+            return reader.lastAvailability ?? .unavailable
+        } catch {
+            return .unavailable
+        }
+    }
+
+    /// A tools/call gate must reflect the database state for this request.
+    /// Unlike advertising, a transient lock cannot reuse stale usable state.
+    func vectorAvailabilityForQuery() throws -> SessionVectorSearchAvailability.Snapshot {
+        try reader.immediateQueue.read { db in
+            try SessionVectorSearchAvailability.probe(
+                db: db,
+                requireUnorphanedSessions: true
+            )
+        }
+    }
+
+    private func readImmediate<T>(_ body: (Database) throws -> T) throws -> T {
+        try reader.immediateQueue.read(body)
+    }
+
+    #if DEBUG
+    private static func waitForHybridKeywordFusionTestBarrierIfConfigured() {
+        guard let directory = ProcessInfo.processInfo.environment[
+            "ENGRAM_MCP_TEST_HYBRID_KEYWORD_BARRIER_DIR"
+        ], !directory.isEmpty else {
+            return
+        }
+        let root = URL(fileURLWithPath: directory, isDirectory: true)
+        let ready = root.appendingPathComponent("ready")
+        let release = root.appendingPathComponent("release")
+        try? Data().write(to: ready, options: .atomic)
+        let deadline = Date().addingTimeInterval(5)
+        while !FileManager.default.fileExists(atPath: release.path), Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+    }
+    #endif
+
     func stats(groupBy: String, since: String?, until: String?) throws -> OrderedJSONValue {
+        let activityTime = SearchFilterPredicates.activityTimeSQL(alias: "s")
         let groupExpr: String
         switch groupBy {
         case "project":
-            groupExpr = "COALESCE(project, '(unknown)')"
+            groupExpr = "COALESCE(s.project, '(unknown)')"
         case "day":
-            groupExpr = "COALESCE(date(start_time, 'localtime'), '(unknown)')"
+            groupExpr = "COALESCE(date(\(activityTime), 'localtime'), '(unknown)')"
         case "week":
-            groupExpr = "COALESCE(date(start_time, 'localtime', 'weekday 0', '-6 days'), '(unknown)')"
+            groupExpr = "COALESCE(date(\(activityTime), 'localtime', 'weekday 0', '-6 days'), '(unknown)')"
         default:
-            groupExpr = "source"
+            groupExpr = "s.source"
         }
 
         // R3/M5: sessionCount / totals exclude skip-tier (match app KPI aggregates).
         // orphan_status remains MCP-specific (app surfaces do not filter it).
         var conditions = [
-            SessionVisibilityFilter.listVisibleSQL,
-            "orphan_status IS NULL",
+            SessionVisibilityFilter.listVisibleSQL(alias: "s"),
+            "s.orphan_status IS NULL",
         ]
         var arguments: [String: DatabaseValueConvertible?] = [:]
         if let since {
-            conditions.append("start_time >= :since")
+            conditions.append("\(activityTime) >= :since")
             arguments["since"] = since
         }
         if let until {
-            conditions.append("start_time <= :until")
+            conditions.append("\(activityTime) <= :until")
             arguments["until"] = until
         }
 
@@ -102,7 +213,7 @@ final class MCPDatabase {
                SUM(CASE WHEN tier IS NOT NULL AND tier IN ('skip', 'lite') THEN 0 ELSE user_message_count END) AS userMessageCount,
                SUM(assistant_message_count) AS assistantMessageCount,
                SUM(tool_message_count) AS toolMessageCount
-        FROM sessions
+        FROM sessions s
         WHERE \(conditions.joined(separator: " AND "))
         GROUP BY \(groupExpr)
         ORDER BY sessionCount DESC
@@ -154,9 +265,22 @@ final class MCPDatabase {
         offset: Int,
         includeAll: Bool = false
     ) throws -> OrderedJSONValue {
-        var conditions = [SessionVisibilityFilter.notHiddenSQL, "orphan_status IS NULL"]
-        if !includeAll {
-            conditions = defaultSessionVisibilityConditions() + ["orphan_status IS NULL"]
+        // docs/invariants.md #3: include_all may relax human-driven scoring,
+        // but never tier visibility or top-level grouping.
+        let hasHumanDrivenColumns = (try? sessionsHaveHumanDrivenColumns()) == true
+        let hasOrphanStatusColumn = (try? sessionsHaveOrphanStatusColumn()) == true
+        var conditions = [
+            SessionVisibilityFilter.listVisibleSQL(alias: "s"),
+            SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL(
+                alias: "s",
+                hasHumanDrivenColumns: hasHumanDrivenColumns,
+                hasOrphanStatusColumn: hasOrphanStatusColumn,
+                applyHumanDrivenOnHost: !includeAll,
+                applyHumanDrivenOnChild: !includeAll
+            ),
+        ]
+        if hasOrphanStatusColumn {
+            conditions.append("s.orphan_status IS NULL")
         }
         var values: [DatabaseValueConvertible?] = []
         if let source {
@@ -187,7 +311,7 @@ final class MCPDatabase {
         SELECT base.*, ls.local_readable_path
         FROM (
           SELECT *
-          FROM sessions
+          FROM sessions s
           WHERE \(conditions.joined(separator: " AND "))
           ORDER BY start_time DESC
           LIMIT ? OFFSET ?
@@ -198,7 +322,7 @@ final class MCPDatabase {
 
         let totalSQL = """
         SELECT COUNT(*)
-        FROM sessions
+        FROM sessions s
         WHERE \(conditions.joined(separator: " AND "))
         """
 
@@ -215,6 +339,7 @@ final class MCPDatabase {
     }
 
     func getCosts(groupBy: String, since: String?, until: String?) throws -> OrderedJSONValue {
+        let activityTime = SearchFilterPredicates.activityTimeSQL(alias: "s")
         let groupExpr: String
         switch groupBy {
         case "source":
@@ -223,7 +348,7 @@ final class MCPDatabase {
             groupExpr = "s.project"
         case "day":
             // M24: local day — parity with service costs / heatmaps.
-            groupExpr = "date(s.start_time, 'localtime')"
+            groupExpr = "date(\(activityTime), 'localtime')"
         default:
             groupExpr = "c.model"
         }
@@ -242,11 +367,11 @@ final class MCPDatabase {
         """
         var arguments: [String: DatabaseValueConvertible?] = [:]
         if let since {
-            sql += " AND s.start_time >= :since"
+            sql += " AND \(activityTime) >= :since"
             arguments["since"] = since
         }
         if let until {
-            sql += " AND s.start_time < :until"
+            sql += " AND \(activityTime) < :until"
             arguments["until"] = until
         }
         sql += " GROUP BY \(groupExpr) ORDER BY costUsd DESC"
@@ -279,10 +404,10 @@ final class MCPDatabase {
         WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
         """
         if since != nil {
-            unpricedSQL += " AND s.start_time >= :since"
+            unpricedSQL += " AND \(activityTime) >= :since"
         }
         if until != nil {
-            unpricedSQL += " AND s.start_time < :until"
+            unpricedSQL += " AND \(activityTime) < :until"
         }
 
         let (rows, unpriced): ([Row], Row?) = try queue.read { db in
@@ -317,6 +442,7 @@ final class MCPDatabase {
     }
 
     func getToolAnalytics(project: String?, since: String?, groupBy: String) throws -> OrderedJSONValue {
+        let activityTime = SearchFilterPredicates.activityTimeSQL(alias: "s")
         let selectColumns: String
         let groupExpr: String
         switch groupBy {
@@ -358,7 +484,7 @@ final class MCPDatabase {
             arguments["project"] = "%\(escapeLike(project))%"
         }
         if let since {
-            sql += " AND s.start_time >= :since"
+            sql += " AND \(activityTime) >= :since"
             arguments["since"] = since
         }
         sql += " GROUP BY \(groupExpr) ORDER BY callCount DESC"
@@ -381,11 +507,15 @@ final class MCPDatabase {
         var conditions = defaultSessionVisibilityConditions(alias: "s")
         var arguments: [String: DatabaseValueConvertible?] = [:]
         if let project {
-            conditions.append("s.project = :project")
-            arguments["project"] = project
+            let projects = try resolveProjectAliases([project])
+            let parameters = projects.indices.map { ":project\($0)" }
+            conditions.append("s.project IN (\(parameters.joined(separator: ", ")))")
+            for (index, value) in projects.enumerated() {
+                arguments["project\(index)"] = value
+            }
         }
         if let since {
-            conditions.append("s.start_time >= :since")
+            conditions.append("COALESCE(NULLIF(s.end_time, ''), s.start_time) >= :since")
             arguments["since"] = since
         }
         arguments["limit"] = limit
@@ -419,8 +549,9 @@ final class MCPDatabase {
     }
 
     func projectTimeline(project: String, since: String?, until: String?) throws -> OrderedJSONValue {
-        var conditions = defaultSessionVisibilityConditions() + ["orphan_status IS NULL"]
+        var conditions = defaultSessionVisibilityConditions(alias: "s") + ["s.orphan_status IS NULL"]
         var values: [DatabaseValueConvertible?] = []
+        let activityTime = SearchFilterPredicates.activityTimeSQL()
         let projects = try resolveProjectAliases([project])
         if projects.count == 1, let only = projects.first {
             conditions.append("project = ?")
@@ -431,20 +562,27 @@ final class MCPDatabase {
             values.append(contentsOf: projects)
         }
         if let since {
-            conditions.append("start_time >= ?")
+            conditions.append("\(activityTime) >= ?")
             values.append(since)
         }
         if let until {
-            conditions.append("start_time <= ?")
+            conditions.append("\(activityTime) <= ?")
             values.append(until)
+        }
+        let total = try queue.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM sessions s WHERE \(conditions.joined(separator: " AND "))",
+                arguments: StatementArguments(values)
+            ) ?? 0
         }
         values.append(200)
 
         let sql = """
-        SELECT id, source, start_time, summary, message_count
-        FROM sessions
+        SELECT id, source, start_time, \(activityTime) AS activity_time, summary, message_count
+        FROM sessions s
         WHERE \(conditions.joined(separator: " AND "))
-        ORDER BY start_time DESC
+        ORDER BY activity_time DESC
         LIMIT ?
         """
         let rows = try queue.read { db in
@@ -453,7 +591,7 @@ final class MCPDatabase {
         let timeline = rows
             .map { row in
                 OrderedJSONValue.object([
-                    ("time", .string(toLocalDateTime(stringValue(row["start_time"])))),
+                    ("time", .string(toLocalDateTime(stringValue(row["activity_time"])))),
                     ("source", .string(stringValue(row["source"]) ?? "unknown")),
                     ("summary", .string(stringValue(row["summary"]) ?? "（无摘要）")),
                     ("sessionId", .string(stringValue(row["id"]) ?? "")),
@@ -473,7 +611,8 @@ final class MCPDatabase {
         return .object([
             ("project", .string(project)),
             ("timeline", .array(timeline)),
-            ("total", .int(timeline.count)),
+            ("total", .int(total)),
+            ("hasMore", .bool(total > timeline.count)),
         ])
     }
 
@@ -506,6 +645,14 @@ final class MCPDatabase {
     func getMemory(query: String, type: String? = nil) async throws -> OrderedJSONValue {
         let insightType = try Self.normalizeMemoryTypeFilter(type)
         let lifecycleAware = (try? insightsHasLifecycleColumns()) == true
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasKeywordQuery = !trimmedQuery.isEmpty
+        if hasKeywordQuery, trimmedQuery.count < 2 {
+            return Self.emptyMemoryResult(
+                type: insightType,
+                warning: "Queries must contain at least two characters."
+            )
+        }
 
         // Hybrid keyword + semantic when an embedding provider is configured and
         // embeddings exist. Any failure degrades to keyword with a warning that
@@ -514,7 +661,20 @@ final class MCPDatabase {
         var degradeReason: SessionVectorSearchAvailability.SemanticDegradeReason?
         var degradeDetail: String?
         if let config = EmbeddingSettings.load() {
-            if let insightMeta = try? probeInsightEmbeddingMeta() {
+            let insightMeta: (model: String, dimension: Int)?
+            do {
+                insightMeta = try probeInsightEmbeddingMeta()
+            } catch let error as DatabaseError
+                where error.resultCode == .SQLITE_BUSY || error.resultCode == .SQLITE_LOCKED {
+                insightMeta = nil
+                degradeReason = .embedFailed
+                degradeDetail = "database is busy"
+            } catch {
+                insightMeta = nil
+                degradeReason = .embedFailed
+                degradeDetail = error.localizedDescription
+            }
+            if let insightMeta {
                 let snapshot = SessionVectorSearchAvailability.Snapshot(
                     isUsable: true,
                     model: insightMeta.model,
@@ -523,6 +683,10 @@ final class MCPDatabase {
                 switch SessionVectorSearchAvailability.queryCompatibility(
                     configuredModel: config.model,
                     configuredDimension: config.dimension,
+                    dimensionsWereSent: EmbeddingRequestPolicy.dimensionsWereSentForCompatibility(
+                        config,
+                        storedDimension: insightMeta.dimension
+                    ),
                     snapshot: snapshot
                 ) {
                 case .compatible:
@@ -548,6 +712,9 @@ final class MCPDatabase {
                         degradeReason = .breakerOpen
                     } catch EmbeddingError.notConfigured {
                         degradeReason = .providerUnavailable
+                    } catch let EmbeddingError.dimensionMismatch(expected, actual) {
+                        degradeReason = .modelMismatch
+                        degradeDetail = "query embedding dim \(actual) vs stored \(expected)"
                     } catch {
                         degradeReason = .embedFailed
                         degradeDetail = error.localizedDescription
@@ -559,7 +726,7 @@ final class MCPDatabase {
                     degradeReason = .modelMismatch
                     degradeDetail = "configured \(cfgModel)@\(cfgDim) vs stored \(storedModel)@\(storedDim)"
                 }
-            } else {
+            } else if degradeReason == nil {
                 degradeReason = .corpusMissing
             }
         } else {
@@ -583,7 +750,8 @@ final class MCPDatabase {
                     extra: [("warning", .string(warning))]
                 )
             }
-            if let ranked = try? rankedActiveInsights(query: query, fromRecent: true, type: insightType),
+            if !hasKeywordQuery,
+               let ranked = try? rankedActiveInsights(query: query, fromRecent: true, type: insightType),
                !ranked.isEmpty {
                 return memoryResult(
                     memories: ranked.map { memoryObject(from: $0, distance: 0) },
@@ -606,6 +774,10 @@ final class MCPDatabase {
                     extra: [("warning", .string(warning))]
                 )
             }
+        }
+
+        if hasKeywordQuery {
+            return Self.emptyMemoryResult(type: insightType, warning: warning)
         }
 
         let recent = try listInsightsByWing(wing: nil, limit: 10)
@@ -677,26 +849,28 @@ final class MCPDatabase {
     /// Default browse visibility shared by `list_sessions` and secondary MCP
     /// reads. A read-only MCP over an un-migrated DB skips only the human-driven
     /// predicate, matching the existing `list_sessions` compatibility behavior.
-    private func defaultSessionVisibilityConditions(alias: String? = nil) -> [String] {
-        var conditions: [String]
-        if let alias {
-            conditions = [
-                SessionVisibilityFilter.listVisibleSQL(alias: alias),
-                SessionVisibilityFilter.topLevelSQL(alias: alias),
-            ]
-        } else {
-            conditions = [
-                SessionVisibilityFilter.listVisibleSQL,
-                SessionVisibilityFilter.topLevelSQL,
-            ]
-        }
+    private func defaultSessionVisibilityConditions(alias: String) -> [String] {
+        let hasHumanDrivenColumns = (try? sessionsHaveHumanDrivenColumns()) == true
+        let hasOrphanStatusColumn = (try? sessionsHaveOrphanStatusColumn()) == true
+        var conditions = [
+            SessionVisibilityFilter.listVisibleSQL(alias: alias),
+            SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL(
+                alias: alias,
+                hasHumanDrivenColumns: hasHumanDrivenColumns,
+                hasOrphanStatusColumn: hasOrphanStatusColumn
+            ),
+        ]
 
-        if (try? sessionsHaveHumanDrivenColumns()) == true {
-            let predicate = alias.map { HumanDrivenFilter.sqlPredicate(alias: $0) }
-                ?? HumanDrivenFilter.sqlPredicate
-            conditions.append(predicate)
+        if hasOrphanStatusColumn {
+            conditions.append("\(alias).orphan_status IS NULL")
         }
         return conditions
+    }
+
+    private func sessionsHaveOrphanStatusColumn() throws -> Bool {
+        try queue.read { db in
+            try db.columns(in: "sessions").contains { $0.name == "orphan_status" }
+        }
     }
 
     /// True when the `sessions` table carries the human-driven signal columns.
@@ -795,7 +969,7 @@ final class MCPDatabase {
     /// (corpusMissing) when meta is missing/unusable or no matching insight
     /// row exists — never an unordered LIMIT 1 sample of insight_embeddings.
     private func probeInsightEmbeddingMeta() throws -> (model: String, dimension: Int)? {
-        try queue.read { db in
+        try readImmediate { db in
             let hasMeta = try Int.fetchOne(
                 db,
                 sql: "SELECT 1 FROM sqlite_master WHERE type='table' AND name='embedding_meta'"
@@ -839,16 +1013,23 @@ final class MCPDatabase {
         }
     }
 
-    private func insightEmbeddingCandidates(model: String, dim: Int) throws -> [VectorSearch.Candidate] {
-        let rows = try queue.read { db in
-            try Row.fetchAll(
+    private func insightEmbeddingCandidates(
+        model: String,
+        dim: Int,
+        lifecycleAware: Bool
+    ) throws -> [VectorSearch.Candidate] {
+        let lifecyclePredicate = lifecycleAware ? "AND i.superseded_by IS NULL" : ""
+        let rows = try readImmediate { db in
+            return try Row.fetchAll(
                 db,
                 sql: """
-                SELECT insight_id, embedding
-                FROM insight_embeddings
-                WHERE embedding IS NOT NULL
-                  AND model = ?
-                  AND dim = ?
+                SELECT e.insight_id, e.embedding
+                FROM insight_embeddings e
+                JOIN insights i ON i.id = e.insight_id
+                WHERE e.embedding IS NOT NULL
+                  AND e.model = ?
+                  AND e.dim = ?
+                  \(lifecyclePredicate)
                 """,
                 arguments: [model, dim]
             )
@@ -890,7 +1071,11 @@ final class MCPDatabase {
         guard let queryVector = vectors.first, !queryVector.isEmpty else { return [] }
         guard queryVector.count == storedDim else { return [] }
 
-        let candidates = try insightEmbeddingCandidates(model: storedModel, dim: storedDim)
+        let candidates = try insightEmbeddingCandidates(
+            model: storedModel,
+            dim: storedDim,
+            lifecycleAware: lifecycleAware
+        )
         guard !candidates.isEmpty else { return [] }
 
         let knn = VectorSearch.knn(query: queryVector, candidates: candidates, topK: 40)
@@ -1026,15 +1211,10 @@ final class MCPDatabase {
         let effectiveMode = normalizedMode.isEmpty ? "keyword" : normalizedMode
         let semanticRequested = ["semantic", "hybrid", "both"].contains(effectiveMode)
 
-        // Availability gate (SessionVectorSearchAvailability): never silent
-        // keyword fallback for semantic/hybrid when vectors are not usable.
-        let availability = SessionVectorSearchAvailability.probe(databasePath: databasePath)
-        if semanticRequested, !availability.isUsable {
-            throw SearchError.modeUnavailable(effectiveMode)
-        }
-
         if isUUID(normalizedQuery) {
-            if let row = try fetchSessionRow(id: normalizedQuery) {
+            // docs/invariants.md #3: UUID search is still a search surface;
+            // unlike get_session, it must not expose hidden or non-searchable tiers.
+            if let row = try fetchSearchableSessionRow(id: normalizedQuery) {
                 return .object([
                     ("results", .array([
                         .object([
@@ -1055,6 +1235,15 @@ final class MCPDatabase {
                 ("searchModes", .array([.string("id")])),
                 ("warning", .string("No session found with this ID")),
             ])
+        }
+
+        // Availability gate (SessionVectorSearchAvailability): never silent
+        // keyword fallback for semantic/hybrid when vectors are not usable.
+        let availability = semanticRequested
+            ? try vectorAvailabilityForQuery()
+            : .unavailable
+        if semanticRequested, !availability.isUsable {
+            throw SearchError.modeUnavailable(effectiveMode)
         }
 
         // H2: CJK and short Latin queries use LIKE (same as app/service), so
@@ -1108,9 +1297,12 @@ final class MCPDatabase {
         )
 
         let resultRows = ranked.map { match -> OrderedJSONValue in
-            .object([
+            let snippet = match.snippet.isEmpty
+                ? (stringValue(match.row["summary"]) ?? "")
+                : match.snippet
+            return .object([
                 ("session", fullSessionObject(from: match.row)),
-                ("snippet", .string(match.snippet.isEmpty ? (stringValue(match.row["summary"]) ?? "") : match.snippet)),
+                ("snippet", .string(keywordSnippet(snippet, query: query))),
                 ("matchType", .string("keyword")),
                 ("score", .double(match.score)),
             ])
@@ -1122,11 +1314,11 @@ final class MCPDatabase {
             ("searchModes", .array([.string("keyword")])),
         ]
 
-        if query.count >= 3 {
-            let insightRows = try searchInsightsFTS(query: query, limit: 5)
+        if query.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 {
+            let insightRows = (try? searchInsightsFTS(query: query, limit: 5)) ?? []
             let insightResults = insightRows.compactMap { row -> OrderedJSONValue? in
                 guard let content = stringValue(row["content"]), !content.isEmpty else { return nil }
-                return .string(content)
+                return .string(TranscriptRedactionPolicy.redact(content))
             }
             if !insightResults.isEmpty {
                 entries.append(("insightResults", .array(insightResults)))
@@ -1141,14 +1333,16 @@ final class MCPDatabase {
         source: String?,
         project: String?,
         since: String?,
-        limit: Int
+        limit: Int,
+        immediate: Bool = false
     ) throws -> [(id: String, row: Row, snippet: String, score: Double)] {
         let matches = try keywordSearch(
             query: query,
             source: source,
             project: project,
             since: since,
-            limit: limit * 3
+            limit: limit * 3,
+            immediate: immediate
         )
 
         var seen = Set<String>()
@@ -1201,6 +1395,10 @@ final class MCPDatabase {
         switch SessionVectorSearchAvailability.queryCompatibility(
             configuredModel: config.model,
             configuredDimension: config.dimension,
+            dimensionsWereSent: EmbeddingRequestPolicy.dimensionsWereSentForCompatibility(
+                config,
+                storedDimension: metaDim
+            ),
             snapshot: availability
         ) {
         case .compatible:
@@ -1243,7 +1441,7 @@ final class MCPDatabase {
 
         // M09: full corpus in cancellable bounded batches + constant-memory top-K.
         let topK = SessionSemanticSearchPolicy.knnTopK(limit: limit)
-        let topChunks = try await semanticChunkTopK(
+        let topKResult = try await semanticChunkTopK(
             source: source,
             project: project,
             since: since,
@@ -1253,45 +1451,58 @@ final class MCPDatabase {
             requestLimit: limit,
             topK: topK
         )
-        guard !topChunks.isEmpty else {
-            throw SearchError.semanticFailed("no compatible semantic_chunks candidates")
-        }
-
         var semanticSessionIds: [String] = []
         var snippetBySession: [String: String] = [:]
         var scoreBySession: [String: Double] = [:]
-        for hit in topChunks {
+        var fallbackSessionById: [String: OrderedJSONValue] = [:]
+        for hit in topKResult.hits {
             guard !semanticSessionIds.contains(hit.sessionId) else { continue }
             semanticSessionIds.append(hit.sessionId)
             snippetBySession[hit.sessionId] = hit.text
             scoreBySession[hit.sessionId] = Double(hit.score)
+            fallbackSessionById[hit.sessionId] = topKResult.fallbackByChunkId[hit.id]
             if semanticSessionIds.count >= limit { break }
         }
-        guard !semanticSessionIds.isEmpty else {
-            throw SearchError.semanticFailed("no sessions above KNN shortlist")
-        }
-
         let semanticItems = try searchResultItems(
             sessionIds: semanticSessionIds,
             snippetBySession: snippetBySession,
             scoreBySession: scoreBySession,
-            matchType: "semantic"
+            matchType: "semantic",
+            fallbackSessionById: fallbackSessionById
         )
+        let insightResults = ((try? searchInsightsFTS(query: query, limit: 5, immediate: true)) ?? []).compactMap { row -> OrderedJSONValue? in
+            guard let content = stringValue(row["content"]), !content.isEmpty else { return nil }
+            return .string(TranscriptRedactionPolicy.redact(content))
+        }
 
         if mode == "hybrid" || mode == "both" {
-            guard query.count >= 3 else {
-                // Hybrid needs a keyword list; short queries cannot FTS-match.
-                throw SearchError.semanticFailed(
-                    "hybrid search requires at least 3 characters so keyword ranks can fuse"
+            #if DEBUG
+            Self.waitForHybridKeywordFusionTestBarrierIfConfigured()
+            #endif
+            let keywordRanked: [(id: String, row: Row, snippet: String, score: Double)]
+            do {
+                keywordRanked = try rankedKeywordMatches(
+                    query: query,
+                    source: source,
+                    project: project,
+                    since: since,
+                    limit: limit,
+                    immediate: true
                 )
+            } catch let error as DatabaseError
+                where error.resultCode == .SQLITE_BUSY || error.resultCode == .SQLITE_LOCKED {
+                guard !semanticItems.isEmpty else { throw error }
+                var entries: [(String, OrderedJSONValue)] = [
+                    ("results", .array(semanticItems)),
+                    ("query", .string(originalQuery)),
+                    ("searchModes", .array([.string("semantic")])),
+                    ("warning", .string("Keyword fusion was skipped because the database is busy.")),
+                ]
+                if !insightResults.isEmpty {
+                    entries.append(("insightResults", .array(insightResults)))
+                }
+                return .object(entries)
             }
-            let keywordRanked = try rankedKeywordMatches(
-                query: query,
-                source: source,
-                project: project,
-                since: since,
-                limit: limit
-            )
             let keywordIds = keywordRanked.map(\.id)
             let fusedIds = RankFusion.rrf(
                 [keywordIds, semanticSessionIds],
@@ -1309,7 +1520,8 @@ final class MCPDatabase {
                     row: $0.row,
                     snippet: $0.snippet,
                     matchType: "keyword",
-                    score: $0.score
+                    score: $0.score,
+                    query: query
                 ))
             })
 
@@ -1317,18 +1529,26 @@ final class MCPDatabase {
                 semanticById[id] ?? keywordById[id]
             }
 
-            return .object([
+            var entries: [(String, OrderedJSONValue)] = [
                 ("results", .array(fusedItems)),
                 ("query", .string(originalQuery)),
                 ("searchModes", .array([.string("keyword"), .string("semantic")])),
-            ])
+            ]
+            if !insightResults.isEmpty {
+                entries.append(("insightResults", .array(insightResults)))
+            }
+            return .object(entries)
         }
 
-        return .object([
+        var entries: [(String, OrderedJSONValue)] = [
             ("results", .array(semanticItems)),
             ("query", .string(originalQuery)),
             ("searchModes", .array([.string("semantic")])),
-        ])
+        ]
+        if !insightResults.isEmpty {
+            entries.append(("insightResults", .array(insightResults)))
+        }
+        return .object(entries)
     }
 
     private struct SemanticChunkCandidate {
@@ -1337,6 +1557,7 @@ final class MCPDatabase {
         let sessionId: String
         let text: String
         let vector: [Float]
+        let session: OrderedJSONValue
     }
 
     /// Raw SQL page cursor is independent of successful vector decode.
@@ -1344,6 +1565,11 @@ final class MCPDatabase {
         let candidates: [SemanticChunkCandidate]
         /// Last `sc.rowid` in the raw SQL page; `nil` only when the page is empty.
         let lastRawRowID: Int64?
+    }
+
+    private struct SemanticTopKResult {
+        let hits: [SessionSemanticSearchPolicy.ScoredChunk]
+        let fallbackByChunkId: [String: OrderedJSONValue]
     }
 
     /// Full-corpus stream: page by raw rowid, accumulate constant-memory top-K.
@@ -1358,8 +1584,9 @@ final class MCPDatabase {
         queryVector: [Float],
         requestLimit: Int,
         topK: Int
-    ) async throws -> [SessionSemanticSearchPolicy.ScoredChunk] {
+    ) async throws -> SemanticTopKResult {
         var top: [SessionSemanticSearchPolicy.ScoredChunk] = []
+        var fallbackByChunkId: [String: OrderedJSONValue] = [:]
         var afterRowID: Int64 = 0
         let batchSize = SessionSemanticSearchPolicy.candidateBatchSize(requestLimit: requestLimit)
 
@@ -1388,9 +1615,12 @@ final class MCPDatabase {
                     ),
                     topK: topK
                 )
+                fallbackByChunkId[candidate.chunkId] = candidate.session
+                let retained = Set(top.map(\.id))
+                fallbackByChunkId = fallbackByChunkId.filter { retained.contains($0.key) }
             }
         }
-        return top
+        return SemanticTopKResult(hits: top, fallbackByChunkId: fallbackByChunkId)
     }
 
     private func fetchSemanticChunkPage(
@@ -1402,8 +1632,10 @@ final class MCPDatabase {
         afterRowID: Int64,
         batchSize: Int
     ) throws -> SemanticChunkPage {
-        let expandedProjects = try project.map { try resolveProjectAliases([$0]) } ?? []
-        return try queue.read { db in
+        let expandedProjects = try project.map {
+            try resolveProjectAliases([$0], immediate: true)
+        } ?? []
+        return try readImmediate { db in
             var conditions = [
                 "sc.embedding IS NOT NULL",
                 "sc.model = ?",
@@ -1429,7 +1661,8 @@ final class MCPDatabase {
                    sc.id AS chunk_id,
                    sc.session_id AS session_id,
                    sc.text AS text,
-                   sc.embedding AS embedding
+                   sc.embedding AS embedding,
+                   s.*
             FROM semantic_chunks sc
             JOIN sessions s ON s.id = sc.session_id
             WHERE \(conditions.joined(separator: " AND "))
@@ -1469,7 +1702,8 @@ final class MCPDatabase {
                     chunkId: chunkId,
                     sessionId: sessionId,
                     text: text,
-                    vector: vector
+                    vector: vector,
+                    session: fullSessionObject(from: row)
                 )
             }
             return SemanticChunkPage(candidates: candidates, lastRawRowID: lastRawRowID)
@@ -1480,10 +1714,11 @@ final class MCPDatabase {
         sessionIds: [String],
         snippetBySession: [String: String],
         scoreBySession: [String: Double],
-        matchType: String
+        matchType: String,
+        fallbackSessionById: [String: OrderedJSONValue]
     ) throws -> [OrderedJSONValue] {
         guard !sessionIds.isEmpty else { return [] }
-        let rowsById: [String: Row] = try queue.read { db in
+        let hydrate: (Database) throws -> [String: Row] = { db in
             let placeholders = Array(repeating: "?", count: sessionIds.count).joined(separator: ",")
             let rows = try Row.fetchAll(
                 db,
@@ -1492,6 +1727,9 @@ final class MCPDatabase {
                 FROM sessions s
                 LEFT JOIN session_local_state ls ON ls.session_id = s.id
                 WHERE s.id IN (\(placeholders))
+                  AND s.hidden_at IS NULL
+                  AND s.orphan_status IS NULL
+                  AND \(SessionSemanticSearchPolicy.searchableTierSQL)
                 """,
                 arguments: StatementArguments(sessionIds)
             )
@@ -1502,6 +1740,21 @@ final class MCPDatabase {
                 }
             }
             return map
+        }
+        let rowsById: [String: Row]
+        do {
+            rowsById = try readImmediate(hydrate)
+        } catch let error as DatabaseError
+            where error.resultCode == .SQLITE_BUSY || error.resultCode == .SQLITE_LOCKED {
+            return sessionIds.compactMap { id in
+                guard let session = fallbackSessionById[id] else { return nil }
+                return searchResultObject(
+                    session: session,
+                    snippet: snippetBySession[id] ?? "",
+                    matchType: matchType,
+                    score: scoreBySession[id] ?? 0
+                )
+            }
         }
         return sessionIds.compactMap { id in
             guard let row = rowsById[id] else { return nil }
@@ -1518,14 +1771,37 @@ final class MCPDatabase {
         row: Row,
         snippet: String,
         matchType: String,
-        score: Double
+        score: Double,
+        query: String? = nil
     ) -> OrderedJSONValue {
-        .object([
+        let renderedSnippet = query.map { keywordSnippet(snippet, query: $0) }
+            ?? (redactedSessionMetadata(snippet) ?? "")
+        return .object([
             ("session", fullSessionObject(from: row)),
-            ("snippet", .string(snippet)),
+            ("snippet", .string(renderedSnippet)),
             ("matchType", .string(matchType)),
             ("score", .double(score)),
         ])
+    }
+
+    private func searchResultObject(
+        session: OrderedJSONValue,
+        snippet: String,
+        matchType: String,
+        score: Double
+    ) -> OrderedJSONValue {
+        .object([
+            ("session", session),
+            ("snippet", .string(redactedSessionMetadata(snippet) ?? "")),
+            ("matchType", .string(matchType)),
+            ("score", .double(score)),
+        ])
+    }
+
+    private func keywordSnippet(_ snippet: String, query: String) -> String {
+        let redacted = redactedSessionMetadata(snippet) ?? ""
+        let clean = CJKText.removingHighlightMarks(from: redacted)
+        return CJKText.highlightedSnippet(content: clean, query: query) ?? clean
     }
 
     func getContext(
@@ -1558,11 +1834,12 @@ final class MCPDatabase {
             totalChars += line.count
         }
 
-        if let task, task.count >= 3 {
-            let insightRows = try searchInsightsFTS(query: task, limit: 5)
+        if let task,
+           task.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 {
+            let insightRows = (try? searchInsightsFTS(query: task, limit: 5)) ?? []
             for row in insightRows {
                 guard let content = stringValue(row["content"]), !content.isEmpty else { continue }
-                let line = "[memory] \(content)\n"
+                let line = "[memory] \(TranscriptRedactionPolicy.redact(content))\n"
                 if totalChars + line.count > maxChars { break }
                 parts.append(line)
                 totalChars += line.count
@@ -1571,10 +1848,12 @@ final class MCPDatabase {
         }
 
         for row in sessions {
-            guard let summary = stringValue(row["summary"]), !summary.isEmpty else { continue }
+            guard let summary = redactedSessionMetadata(row["summary"]), !summary.isEmpty else { continue }
             let source = stringValue(row["source"]) ?? "unknown"
+            let origin = stringValue(row["origin"])
+            let sourceLabel = origin == nil || origin == "local" ? source : "\(origin!)/\(source)"
             let date = toLocalDate(stringValue(row["start_time"]))
-            let line = "[\(source)] \(date) — \(summary)\n"
+            let line = "[\(sourceLabel)] \(date) — \(summary)\n"
             if totalChars + line.count > maxChars { break }
             parts.append(line)
             totalChars += line.count
@@ -1615,7 +1894,8 @@ final class MCPDatabase {
     }
 
     func totalCostSince(_ since: String) throws -> Double {
-        try queue.read { db in
+        let activityTime = SearchFilterPredicates.activityTimeSQL(alias: "s")
+        return try queue.read { db in
             // ARCH-001C: cost KPIs use the shared list-visible population.
             let row = try Row.fetchOne(
                 db,
@@ -1624,7 +1904,7 @@ final class MCPDatabase {
                 FROM session_costs c
                 JOIN sessions s ON c.session_id = s.id
                 WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
-                  AND s.start_time >= ?
+                  AND \(activityTime) >= ?
                 """,
                 arguments: [since]
             )
@@ -1633,6 +1913,7 @@ final class MCPDatabase {
     }
 
     func topCostGroupsSince(_ since: String, groupBy: String, limit: Int) throws -> [(key: String, cost: Double, sessions: Int)] {
+        let activityTime = SearchFilterPredicates.activityTimeSQL(alias: "s")
         let groupExpr: String
         switch groupBy {
         case "source":
@@ -1652,7 +1933,7 @@ final class MCPDatabase {
                 FROM session_costs c
                 JOIN sessions s ON c.session_id = s.id
                 WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
-                  AND s.start_time >= ?
+                  AND \(activityTime) >= ?
                 GROUP BY \(groupExpr)
                 HAVING SUM(c.cost_usd) > 0
                 ORDER BY cost DESC
@@ -1773,6 +2054,21 @@ final class MCPDatabase {
         return makeSessionRecord(from: row)
     }
 
+    func remoteSnapshot(sessionId: String) throws -> (summary: String?, lines: [String])? {
+        guard let record = try sessionRecord(id: sessionId) else { return nil }
+        guard record.filePath.hasPrefix("remote://") || sessionId.hasPrefix("remote:") else {
+            return nil
+        }
+        let lines = try queue.read { db in
+            (try? String.fetchAll(
+                db,
+                sql: "SELECT content FROM sessions_fts WHERE session_id = ? ORDER BY rowid",
+                arguments: [sessionId]
+            )) ?? []
+        }
+        return (record.summary, lines)
+    }
+
     func sessionCost(id: String) throws -> Double? {
         try queue.read { db in
             let row = try Row.fetchOne(
@@ -1797,10 +2093,10 @@ final class MCPDatabase {
     }
 
     private func totalCostBetween(start: String, end: String) throws -> Double {
-        try queue.read { db in
-            // Filter the cost window by session activity (start_time), not by
-            // index time (computed_at), so "Cost today" reflects sessions that
-            // ran today — consistent with getCosts/totalCostSince.
+        let activityTime = SearchFilterPredicates.activityTimeSQL(alias: "s")
+        return try queue.read { db in
+            // Filter by the shared end/start activity time, not cost index time,
+            // so "Cost today" matches getCosts and totalCostSince.
             let row = try Row.fetchOne(
                 db,
                 sql: """
@@ -1808,7 +2104,7 @@ final class MCPDatabase {
                 FROM session_costs c
                 JOIN sessions s ON c.session_id = s.id
                 WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
-                  AND s.start_time >= ? AND s.start_time < ?
+                  AND \(activityTime) >= ? AND \(activityTime) < ?
                 """,
                 arguments: [start, end]
             )
@@ -1842,6 +2138,7 @@ final class MCPDatabase {
     }
 
     private func topToolsSince(_ since: String, limit: Int) throws -> [(name: String, callCount: Int)] {
+        let activityTime = SearchFilterPredicates.activityTimeSQL(alias: "s")
         let visibilityConditions = defaultSessionVisibilityConditions(alias: "s")
         return try queue.read { db in
             let rows = try Row.fetchAll(
@@ -1850,7 +2147,7 @@ final class MCPDatabase {
                 SELECT t.tool_name AS name, SUM(t.call_count) AS call_count
                 FROM session_tools t
                 JOIN sessions s ON s.id = t.session_id
-                WHERE s.start_time >= ?
+                WHERE \(activityTime) >= ?
                   AND \(visibilityConditions.joined(separator: " AND "))
                 GROUP BY t.tool_name
                 ORDER BY call_count DESC, name ASC
@@ -1896,7 +2193,9 @@ final class MCPDatabase {
     }
 
     private func lowCacheRateSuggestionSince(_ since: String) throws -> (severity: String, title: String)? {
-        try queue.read { db in
+        let activityTime = SearchFilterPredicates.activityTimeSQL(alias: "s")
+        return try queue.read { db in
+            // docs/invariants.md #3: aggregates never include skip-tier sessions.
             let row = try Row.fetchOne(
                 db,
                 sql: """
@@ -1904,7 +2203,8 @@ final class MCPDatabase {
                        SUM(c.input_tokens) AS input_tokens
                 FROM session_costs c
                 JOIN sessions s ON c.session_id = s.id
-                WHERE c.model LIKE 'claude-%' AND s.start_time >= ?
+                WHERE c.model LIKE 'claude-%' AND \(activityTime) >= ?
+                  AND \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
                 """,
                 arguments: [since]
             )
@@ -1965,7 +2265,7 @@ final class MCPDatabase {
                   AND sf.session_id IN (
                     SELECT s.id
                     FROM sessions s
-                    WHERE s.start_time >= ?
+                    WHERE COALESCE(NULLIF(s.end_time, ''), s.start_time) >= ?
                       AND \(visibilityConditions.joined(separator: " AND "))
                   )
                 GROUP BY sf.file_path
@@ -2016,46 +2316,64 @@ final class MCPDatabase {
         ((try? insightsHasLifecycleColumns()) == true) ? " AND \(alias)superseded_by IS NULL" : ""
     }
 
-    private func searchInsightsFTS(query: String, limit: Int) throws -> [Row] {
-        // Probe once before any queue.read — nested GRDB access traps.
-        let filter = supersededFilterSQL(alias: "")
-        let aliasedFilter = supersededFilterSQL(alias: "i.")
-
-        // R1: use shared CJKText (includes Hangul); do not keep a private subset detector.
-        if CJKText.containsCJK(query) {
-            // Escape LIKE wildcards so literal "%"/"_" match verbatim.
-            let pattern = "%\(CJKText.escapeLikePattern(query))%"
-            return try queue.read { db in
-                try Row.fetchAll(
-                    db,
-                    sql: "SELECT * FROM insights WHERE content LIKE :pattern ESCAPE '\\'\(filter) ORDER BY created_at DESC LIMIT :limit",
-                    arguments: ["pattern": pattern, "limit": limit]
-                )
+    private func searchInsightsFTS(
+        query: String,
+        limit: Int,
+        immediate: Bool = false
+    ) throws -> [Row] {
+        let tokens = CJKText.searchableTerms(query)
+        guard !tokens.isEmpty else { return [] }
+        let termMatches = CJKText.ftsMatchTerms(tokens)
+        var ctes: [String] = []
+        var joins: [String] = []
+        var values: [DatabaseValueConvertible?] = []
+        for (index, token) in tokens.enumerated() {
+            let alias = "m\(index)"
+            if CJKText.containsCJK(token) || token.count < 3 {
+                ctes.append("""
+                    \(alias) AS (
+                        SELECT insight_id, 0.0 AS rank
+                        FROM insights_fts
+                        WHERE content LIKE ? ESCAPE '\\'
+                        GROUP BY insight_id
+                    )
+                """)
+                values.append("%\(CJKText.escapeLikePattern(token))%")
+            } else {
+                ctes.append("""
+                    \(alias) AS (
+                        SELECT insight_id, MIN(rank) AS rank
+                        FROM insights_fts
+                        WHERE insights_fts MATCH ?
+                        GROUP BY insight_id
+                    )
+                """)
+                values.append(termMatches[index])
+            }
+            if index > 0 {
+                joins.append("JOIN \(alias) ON \(alias).insight_id = m0.insight_id")
             }
         }
-
-        func runQuery(_ candidate: String) throws -> [Row] {
-            try readRetryingTransientMissingFTS { db in
-                try Row.fetchAll(
-                    db,
-                    sql: """
-                    SELECT i.*
-                    FROM insights_fts f
-                    JOIN insights i ON i.id = f.insight_id
-                    WHERE insights_fts MATCH :query\(aliasedFilter)
-                    ORDER BY f.rank
-                    LIMIT :limit
-                    """,
-                    arguments: ["query": candidate, "limit": limit]
-                )
-            }
-        }
-
-        do {
-            return try runQuery(query)
-        } catch {
-            let escaped = "\"\(query.replacingOccurrences(of: "\"", with: "\"\""))\""
-            return try runQuery(escaped)
+        values.append(limit)
+        return try readRetryingTransientMissingFTS(immediate: immediate) { db in
+            let columns = try db.columns(in: "insights")
+            let aliasedFilter = columns.contains { $0.name == "superseded_by" }
+                ? " AND i.superseded_by IS NULL"
+                : ""
+            return try Row.fetchAll(
+                db,
+                sql: """
+                WITH \(ctes.joined(separator: ", "))
+                SELECT i.*
+                FROM m0
+                \(joins.joined(separator: " "))
+                JOIN insights i ON i.id = m0.insight_id
+                WHERE 1 = 1\(aliasedFilter)
+                ORDER BY m0.rank, i.created_at DESC
+                LIMIT ?
+                """,
+                arguments: StatementArguments(values)
+            )
         }
     }
 
@@ -2094,6 +2412,25 @@ final class MCPDatabase {
         }
     }
 
+    private func fetchSearchableSessionRow(id: String) throws -> Row? {
+        try queue.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT s.*, ls.local_readable_path
+                FROM sessions s
+                LEFT JOIN session_local_state ls ON ls.session_id = s.id
+                WHERE s.id = ? COLLATE NOCASE
+                  AND s.hidden_at IS NULL
+                  AND s.orphan_status IS NULL
+                  AND \(SessionSemanticSearchPolicy.searchableTierSQL)
+                LIMIT 1
+                """,
+                arguments: [id]
+            )
+        }
+    }
+
     // MARK: - MCP resources (`@`-mention surface)
 
     struct ResourceEntry {
@@ -2107,14 +2444,31 @@ final class MCPDatabase {
     /// (e.g. Claude Code) can surface them in `@`-mention autocomplete.
     func recentResourceCatalog(sessionLimit: Int, insightLimit: Int) throws -> [ResourceEntry] {
         var entries: [ResourceEntry] = []
+        // docs/invariants.md #3: resource browse uses the shared default
+        // tier, top-level, and human-driven visibility contract.
+        let visibilityConditions = defaultSessionVisibilityConditions(alias: "s")
+        let sessionActivity = SearchFilterPredicates.activityTimeSQL(alias: "s")
+        let childActivity = SearchFilterPredicates.activityTimeSQL(alias: "resource_child")
+        let catalogRecency = """
+        MAX(
+          \(sessionActivity),
+          COALESCE((
+            SELECT MAX(\(childActivity))
+            FROM sessions resource_child
+            WHERE (resource_child.parent_session_id = s.id OR resource_child.suggested_parent_id = s.id)
+              AND \(SessionVisibilityFilter.listVisibleSQL(alias: "resource_child"))
+              AND resource_child.orphan_status IS NULL
+          ), \(sessionActivity))
+        )
+        """
         let sessions = try queue.read { db in
             try Row.fetchAll(
                 db,
                 sql: """
                 SELECT s.*
                 FROM sessions s
-                WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
-                ORDER BY s.start_time DESC
+                WHERE \(visibilityConditions.joined(separator: " AND "))
+                ORDER BY \(catalogRecency) DESC
                 LIMIT :limit
                 """,
                 arguments: ["limit": sessionLimit]
@@ -2122,8 +2476,8 @@ final class MCPDatabase {
         }
         for row in sessions {
             guard let id = stringValue(row["id"]), !id.isEmpty else { continue }
-            let title = stringValue(row["generated_title"])
-                ?? stringValue(row["summary"])
+            let title = redactedSessionMetadata(row["generated_title"])
+                ?? redactedSessionMetadata(row["summary"])
                 ?? id
             let descriptionParts = [stringValue(row["source"]), stringValue(row["project"])]
                 .compactMap { $0 }
@@ -2138,7 +2492,7 @@ final class MCPDatabase {
         let insights = try listInsightsByWing(wing: nil, limit: insightLimit)
         for row in insights {
             guard let id = stringValue(row["id"]), !id.isEmpty else { continue }
-            let content = stringValue(row["content"]) ?? ""
+            let content = TranscriptRedactionPolicy.redact(stringValue(row["content"]) ?? "")
             entries.append(ResourceEntry(
                 uri: "engram://insight/\(id)",
                 name: String(content.prefix(80)),
@@ -2156,7 +2510,7 @@ final class MCPDatabase {
                 db,
                 sql: "SELECT content FROM insights WHERE id = ? LIMIT 1",
                 arguments: [id]
-            )
+            ).map(TranscriptRedactionPolicy.redact)
         }
     }
 
@@ -2203,42 +2557,82 @@ final class MCPDatabase {
         source: String?,
         project: String?,
         since: String?,
-        limit: Int
+        limit: Int,
+        immediate: Bool = false
     ) throws -> [(row: Row, snippet: String)] {
-        let expandedProjects = try project.map { try resolveProjectAliases([$0]) } ?? []
-        // H2: mirror app/service — CJK/Hangul and short Latin use LIKE, not FTS MATCH.
-        if CJKText.containsCJK(query) || query.count < 3 {
-            return try keywordSearchLike(
-                query: query,
-                source: source,
-                expandedProjects: expandedProjects,
-                since: since,
-                limit: limit
-            )
-        }
-        return try readRetryingTransientMissingFTS { db in
-            let termMatches = CJKText.ftsMatchTerms(query)
-            let snippetMatch = termMatches.first ?? CJKText.ftsMatchQuery(query)
+        let rawTokens = CJKText.searchableTerms(query)
+        guard !rawTokens.isEmpty else { return [] }
+        let expandedProjects = try project.map {
+            try resolveProjectAliases([$0], immediate: immediate)
+        } ?? []
+        return try readRetryingTransientMissingFTS(immediate: immediate) { db in
+            let termMatches = CJKText.ftsMatchTerms(rawTokens)
             var ctes: [String] = []
             var joins: [String] = []
             var values: [DatabaseValueConvertible?] = []
-            for (index, termMatch) in termMatches.enumerated() {
+            for (index, rawTerm) in rawTokens.enumerated() {
+                let termMatch = termMatches[index]
                 let alias = "m\(index)"
-                ctes.append("""
-                    \(alias) AS (
-                        SELECT session_id, MIN(rank) AS rank
-                        FROM sessions_fts
-                        WHERE sessions_fts MATCH ?
-                        GROUP BY session_id
-                    )
-                """)
-                values.append(termMatch)
+                // mixed-token-1: preserve the service's raw-token
+                // classification so quoted short tokens never become broad LIKEs.
+                if CJKText.containsCJK(rawTerm) || rawTerm.count < 3 {
+                    ctes.append("""
+                        \(alias)_hits AS (
+                            SELECT rowid, session_id, content,
+                                   ROW_NUMBER() OVER (
+                                       PARTITION BY session_id
+                                       ORDER BY instr(lower(content), lower(?)), rowid
+                                   ) AS match_position
+                            FROM sessions_fts
+                            WHERE content LIKE ? ESCAPE '\\'
+                        ),
+                        \(alias) AS (
+                            SELECT session_id, rowid AS matched_rowid, 0.0 AS rank,
+                                   substr(content, MAX(1, instr(lower(content), lower(?)) - 200), 600) AS matched_content
+                            FROM \(alias)_hits
+                            WHERE match_position = 1
+                        )
+                    """)
+                    values.append(rawTerm)
+                    values.append("%\(CJKText.escapeLikePattern(rawTerm))%")
+                    values.append(rawTerm)
+                } else {
+                    ctes.append("""
+                        \(alias)_hits AS (
+                            SELECT rowid, session_id, rank
+                            FROM sessions_fts
+                            WHERE sessions_fts MATCH ?
+                        ),
+                        \(alias) AS (
+                            SELECT hits.session_id, MIN(hits.rank) AS rank,
+                                   (
+                                       SELECT rowid
+                                       FROM sessions_fts
+                                       WHERE sessions_fts MATCH ?
+                                         AND sessions_fts.session_id = hits.session_id
+                                       ORDER BY rank, rowid
+                                       LIMIT 1
+                                   ) AS matched_rowid,
+                                   (
+                                       SELECT snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 64)
+                                       FROM sessions_fts
+                                       WHERE sessions_fts MATCH ?
+                                         AND sessions_fts.session_id = hits.session_id
+                                       ORDER BY rank, rowid
+                                       LIMIT 1
+                                   ) AS matched_content
+                            FROM \(alias)_hits hits
+                            GROUP BY hits.session_id
+                        )
+                    """)
+                    values.append(termMatch)
+                    values.append(termMatch)
+                    values.append(termMatch)
+                }
                 if index > 0 {
                     joins.append("JOIN \(alias) ON \(alias).session_id = m0.session_id")
                 }
             }
-            values.append(snippetMatch)
-
             var conditions = [
                 "s.hidden_at IS NULL",
                 "s.orphan_status IS NULL",
@@ -2253,18 +2647,26 @@ final class MCPDatabase {
             )
             values.append(limit)
 
+            let matchedContentExpression = rawTokens.indices.dropFirst().reduce(
+                "COALESCE(m0.matched_content, '')"
+            ) { expression, index in
+                let priorRowIDs = rawTokens.indices.prefix(index)
+                    .map { "m\($0).matched_rowid" }
+                    .joined(separator: ", ")
+                return """
+                    \(expression) || CASE
+                      WHEN NULLIF(m\(index).matched_content, '') IS NULL THEN ''
+                      WHEN m\(index).matched_rowid IN (\(priorRowIDs)) THEN ''
+                      ELSE '\n…\n' || m\(index).matched_content
+                    END
+                    """
+            }
             let sql = """
             WITH \(ctes.joined(separator: ", "))
             SELECT
               s.*,
               ls.local_readable_path,
-              (
-                  SELECT snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 32)
-                  FROM sessions_fts
-                  WHERE sessions_fts MATCH ? AND session_id = s.id
-                  ORDER BY rank
-                  LIMIT 1
-              ) AS snippet,
+              \(matchedContentExpression) AS matched_content,
               m0.rank
             FROM m0
             \(joins.joined(separator: " "))
@@ -2276,7 +2678,9 @@ final class MCPDatabase {
             """
 
             let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
-            return rows.map { ($0, stringValue($0["snippet"]) ?? "") }
+            return rows.map { row in
+                (row, stringValue(row["matched_content"]) ?? "")
+            }
         }
     }
 
@@ -2286,9 +2690,10 @@ final class MCPDatabase {
         source: String?,
         expandedProjects: [String],
         since: String?,
-        limit: Int
+        limit: Int,
+        immediate: Bool = false
     ) throws -> [(row: Row, snippet: String)] {
-        try readRetryingTransientMissingFTS { db in
+        try readRetryingTransientMissingFTS(immediate: immediate) { db in
             var conditions = [
                 "f.content LIKE ? ESCAPE '\\'",
                 "s.hidden_at IS NULL",
@@ -2296,7 +2701,7 @@ final class MCPDatabase {
                 SessionSemanticSearchPolicy.searchableTierSQL,
             ]
             let pattern = "%\(CJKText.escapeLikePattern(query))%"
-            var values: [DatabaseValueConvertible?] = [pattern]
+            var values: [DatabaseValueConvertible?] = [query, pattern]
 
             Self.appendSearchFilterPredicates(
                 source: source,
@@ -2311,7 +2716,7 @@ final class MCPDatabase {
             SELECT
               s.*,
               ls.local_readable_path,
-              f.content AS fts_content
+              engram_redacted_keyword_snippet(f.content, ?) AS snippet
             FROM sessions_fts f
             JOIN sessions s ON s.id = f.session_id
             LEFT JOIN session_local_state ls ON ls.session_id = s.id
@@ -2321,9 +2726,7 @@ final class MCPDatabase {
             """
             let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
             return rows.map { row in
-                let content = stringValue(row["fts_content"]) ?? ""
-                let snippet = CJKText.cjkHighlightedSnippet(content: content, query: query) ?? content
-                return (row, snippet)
+                (row, stringValue(row["snippet"]) ?? "")
             }
         }
     }
@@ -2349,6 +2752,7 @@ final class MCPDatabase {
     }
 
     private func readRetryingTransientMissingFTS<T>(
+        immediate: Bool = false,
         _ block: (Database) throws -> T
     ) throws -> T {
         let maxAttempts = 10
@@ -2356,6 +2760,9 @@ final class MCPDatabase {
         while true {
             attempt += 1
             do {
+                if immediate {
+                    return try readImmediate(block)
+                }
                 return try queue.read(block)
             } catch {
                 guard isTransientMissingFTSTable(error), attempt < maxAttempts else { throw error }
@@ -2370,9 +2777,12 @@ final class MCPDatabase {
             || message.contains("no such table: insights_fts")
     }
 
-    private func resolveProjectAliases(_ projects: [String]) throws -> [String] {
+    private func resolveProjectAliases(
+        _ projects: [String],
+        immediate: Bool = false
+    ) throws -> [String] {
         guard !projects.isEmpty else { return projects }
-        return try queue.read { db in
+        let read: ((Database) throws -> [String]) = { db in
             let placeholders = Array(repeating: "?", count: projects.count).joined(separator: ",")
 
             let sql = """
@@ -2392,6 +2802,10 @@ final class MCPDatabase {
             }
             return all.filter { !$0.isEmpty }.sorted()
         }
+        if immediate {
+            return try readImmediate(read)
+        }
+        return try queue.read(read)
     }
 }
 
@@ -2401,6 +2815,7 @@ private func listSessionObject(from row: Row) -> OrderedJSONValue {
     let entries: [(String, OrderedJSONValue)] = [
         ("id", .string(stringValue(row["id"]) ?? "")),
         ("source", .string(stringValue(row["source"]) ?? "unknown")),
+        ("origin", valueOrNull(stringValue(row["origin"]))),
         ("startTime", .string(startTime)),
         ("endTime", .string(endTime)),
         ("cwd", .string(stringValue(row["cwd"]) ?? "")),
@@ -2408,7 +2823,9 @@ private func listSessionObject(from row: Row) -> OrderedJSONValue {
         ("model", valueOrNull(stringValue(row["model"]))),
         ("messageCount", .int(intValue(row["message_count"]))),
         ("userMessageCount", .int(intValue(row["user_message_count"]))),
-        ("summary", valueOrNull(stringValue(row["summary"]))),
+        ("summary", valueOrNull(redactedSessionMetadata(row["summary"]))),
+        ("tier", valueOrNull(stringValue(row["tier"]))),
+        ("parentSessionId", valueOrNull(stringValue(row["parent_session_id"]))),
     ]
     return .object(entries)
 }
@@ -2478,7 +2895,7 @@ private func memoryObject(from row: Row, distance: Double) -> OrderedJSONValue {
     let type = stringValue(row["insight_type"]) ?? "semantic"
     return .object([
         ("id", .string(stringValue(row["id"]) ?? "")),
-        ("content", .string(stringValue(row["content"]) ?? "")),
+        ("content", .string(TranscriptRedactionPolicy.redact(stringValue(row["content"]) ?? ""))),
         ("wing", valueOrNull(stringValue(row["wing"]))),
         ("room", valueOrNull(stringValue(row["room"]))),
         ("importance", .int(intValue(row["importance"]))),
@@ -2509,7 +2926,7 @@ private func makeSessionRecord(from row: Row) -> MCPSessionRecord {
         assistantMessageCount: intValue(row["assistant_message_count"]),
         toolMessageCount: intValue(row["tool_message_count"]),
         systemMessageCount: intValue(row["system_message_count"]),
-        summary: stringValue(row["summary"]),
+        summary: redactedSessionMetadata(row["summary"]),
         filePath: stringValue(row["local_readable_path"]) ?? stringValue(row["file_path"]) ?? "",
         sizeBytes: intValue(row["size_bytes"]),
         indexedAt: stringValue(row["indexed_at"]),
@@ -2521,6 +2938,23 @@ private func makeSessionRecord(from row: Row) -> MCPSessionRecord {
         parentSessionId: stringValue(row["parent_session_id"]),
         suggestedParentId: stringValue(row["suggested_parent_id"])
     )
+}
+
+private func redactedSessionMetadata(_ raw: DatabaseValueConvertible?) -> String? {
+    guard let value = stringValue(raw) else { return nil }
+    return TranscriptRedactionPolicy.redact(value)
+}
+
+private func redactedKeywordSnippet(content: String, query: String) -> String {
+    let redacted = TranscriptRedactionPolicy.redact(content)
+    let highlighted = CJKText.cjkHighlightedSnippet(content: redacted, query: query, window: 200)
+        ?? CJKText.cjkHighlightedSnippet(
+            content: redacted,
+            query: TranscriptRedactionPolicy.redactionToken,
+            window: 200
+        )
+        ?? redacted
+    return String(highlighted.prefix(600))
 }
 
 private func escapeLike(_ value: String) -> String {
@@ -2693,7 +3127,7 @@ func toLocalDate(_ value: String?) -> String {
 private func isUUID(_ value: String) -> Bool {
     value.range(
         of: #"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"#,
-        options: .regularExpression
+        options: [.regularExpression, .caseInsensitive]
     ) != nil
 }
 
@@ -2757,7 +3191,7 @@ private func buildRecoverRecommendation(
     if state == "committed" {
         if newExists && !oldExists { return "OK — move completed as logged." }
         if oldExists && !newExists {
-            return "Anomaly — log says committed but src still exists. Investigate manually; consider `engram project undo <id>`."
+            return "Anomaly — log says committed but src still exists. Investigate manually; consider `project_undo` with this migration id."
         }
         return "Anomaly — both or neither paths present. Investigate."
     }
@@ -2769,13 +3203,13 @@ private func buildRecoverRecommendation(
             return "Both paths exist — partial fs.cp may have occurred. Inspect new path; remove it manually if bogus."
         }
         if !oldExists && newExists {
-            return "Move seems to have actually succeeded; DB log did not catch up. Manual fix: UPDATE migration_log SET state='committed' WHERE id=<this>. Then re-run `engram project move` to sync DB cwd/source_locator."
+            return "Move seems to have actually succeeded; DB log did not catch up. Use `project_recover` to inspect the recorded paths. If needed, move the directory back manually, then retry with `project_move`; do not edit migration_log directly."
         }
         return "Neither path exists — project directory contents are missing. Engram does not back up project directories; restore from your own file backup (for example Time Machine), then use `project_list_migrations`/`project_recover` to inspect migration_log old_path/new_path."
     }
     if state == "fs_done" {
         if !oldExists && newExists {
-            return "FS move succeeded; DB commit failed mid-way. To finish: either (a) mv the new path back to the old path and retry `engram project move`, or (b) mark the migration committed directly — connect to ~/.engram/index.sqlite and run `UPDATE migration_log SET state='committed' WHERE id='<this>'`, then run `engram project review <oldPath> <newPath>` to check residual refs. Re-running `engram project move <oldPath> <newPath>` as-is WILL NOT work (src gone, dst exists)."
+            return "FS move succeeded; DB commit failed mid-way. Restart the Engram service once so startup recovery can finish the idempotent rewrite. If it remains fs_done, inspect service logs and use `project_review` with old_path/new_path; do not edit migration_log directly."
         }
         if oldExists && newExists {
             return "Both paths exist — FS work may have been partially undone. Inspect both; prefer manual mv back over retry."
@@ -2787,10 +3221,10 @@ private func buildRecoverRecommendation(
             return "Compensation succeeded — src is back where it started. Safe to ignore and retry later."
         }
         if !oldExists && newExists {
-            return "FS move completed but DB commit failed and compensation did not reverse the FS. Either (a) manually mv new → old then retry `engram project move`, or (b) mark committed directly: `UPDATE migration_log SET state='committed' WHERE id='<this>'` then `engram project review`."
+            return "FS move completed but DB commit failed and compensation did not reverse the FS. Manually move new → old, inspect with `project_review`, then retry through `project_move`; do not edit migration_log directly."
         }
         if oldExists && newExists {
-            return "Both paths exist — compensation ran partially. Inspect, then `engram project move` (or manual mv) to reach a consistent state."
+            return "Both paths exist — compensation ran partially. Inspect, then use `project_move` (or manual mv) to reach a consistent state."
         }
         return "Neither path exists — likely data loss. Engram does not back up project directories; restore from your own file backup (for example Time Machine), then use `project_list_migrations`/`project_recover` to inspect migration_log old_path/new_path."
     }

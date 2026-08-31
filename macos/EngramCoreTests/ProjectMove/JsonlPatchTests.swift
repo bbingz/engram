@@ -158,6 +158,20 @@ final class JsonlPatchTests: XCTestCase {
         XCTAssertEqual(r.text, "\"/Users/john_doe-new/proj\"")
     }
 
+    func testPatchRequiresLeadingPathBoundary_repro() throws {
+        let input = Data(#"{"alias":"/private/tmp/X/file","exact":"/tmp/X/file"}"#.utf8)
+        let result = try JsonlPatch.patchBuffer(
+            input,
+            oldPath: "/tmp/X",
+            newPath: "/tmp/Y"
+        )
+        XCTAssertEqual(result.count, 1)
+        XCTAssertEqual(
+            String(decoding: result.data, as: UTF8.self),
+            #"{"alias":"/private/tmp/X/file","exact":"/tmp/Y/file"}"#
+        )
+    }
+
     // MARK: - regex metachar escape
 
     func testEscapesDotInOldPath() throws {

@@ -5,6 +5,12 @@ import EngramCoreWrite
 @testable import EngramServiceCore
 
 final class ServiceTelemetryTests: XCTestCase {
+    func testInitialFtsDrainStopsAfterBoundedConsecutiveFailures_repro() {
+        XCTAssertFalse(EngramServiceRunner.shouldStopInitialFtsDrain(consecutiveFailures: 1))
+        XCTAssertFalse(EngramServiceRunner.shouldStopInitialFtsDrain(consecutiveFailures: 2))
+        XCTAssertTrue(EngramServiceRunner.shouldStopInitialFtsDrain(consecutiveFailures: 3))
+    }
+
     // MARK: - Collector unit tests
 
     func testRingBufferEvictsOldestAt200() async {

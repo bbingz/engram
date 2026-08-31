@@ -24,7 +24,7 @@ final class ServiceEventRoutingTests: XCTestCase {
 
     func testAppRoutesServiceEventsThroughLauncherWithoutDuplicateEventPump() throws {
         let source = try appSource
-        XCTAssertTrue(source.contains("serviceLauncher.start("))
+        XCTAssertTrue(source.contains("serviceLauncher.startOrAdopt("))
         XCTAssertTrue(source.contains("onEvent: { [serviceStatusStore] event in"))
         XCTAssertTrue(source.contains("Self.applyServiceEvent(event, to: serviceStatusStore)"))
         XCTAssertFalse(

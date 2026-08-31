@@ -7,6 +7,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -190,6 +191,93 @@ describe('Claude Code plugin MVP contracts', () => {
       expect(failOpen.error).toBeUndefined();
       expect(failOpen.status).toBe(0);
       expect(failOpen.stdout.trim()).toBe('');
+    } finally {
+      rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('resolve-engram-helper never treats a bare override as a cwd executable (repro)', () => {
+    const resolveHelper = join(pluginRoot, 'scripts/resolve-engram-helper');
+    const temporaryRoot = mkdtempSync(
+      join(tmpdir(), 'engram-plugin-cwd-helper-'),
+    );
+    const planted = join(temporaryRoot, 'EngramMCP');
+    writeFileSync(planted, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    try {
+      const result = spawnSync('bash', [resolveHelper, 'mcp'], {
+        cwd: temporaryRoot,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          ENGRAM_MCP_PATH: 'EngramMCP',
+          PATH: '/usr/bin:/bin',
+        },
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stdout.trim()).toBe('');
+    } finally {
+      rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('resolve-engram-helper trims overrides and skips relative PATH entries (repro)', () => {
+    const resolveHelper = join(pluginRoot, 'scripts/resolve-engram-helper');
+    const temporaryRoot = mkdtempSync(
+      join(tmpdir(), 'engram-plugin-path-helper-'),
+    );
+    const planted = join(temporaryRoot, 'EngramMCP');
+    const cli = join(temporaryRoot, 'EngramCLI');
+    writeFileSync(planted, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    writeFileSync(cli, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    try {
+      const defaultLookup = spawnSync('bash', [resolveHelper, 'mcp'], {
+        cwd: temporaryRoot,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          ENGRAM_MCP_PATH: 'EngramMCP',
+          PATH: '.:/usr/bin:/bin',
+        },
+      });
+      expect(defaultLookup.status).not.toBe(0);
+      expect(defaultLookup.stdout.trim()).toBe('');
+
+      const override = spawnSync('bash', [resolveHelper, 'cli'], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          ENGRAM_CLI_PATH: `  ${cli}  `,
+          PATH: '/usr/bin:/bin',
+        },
+      });
+      expect(override.status).toBe(0);
+      expect(override.stdout.trim()).toBe(cli);
+    } finally {
+      rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('resolve-engram-helper expands a leading tilde override (repro)', () => {
+    const resolveHelper = join(pluginRoot, 'scripts/resolve-engram-helper');
+    const temporaryRoot = mkdtempSync(
+      join(tmpdir(), 'engram-plugin-tilde-helper-'),
+    );
+    const bin = join(temporaryRoot, 'bin');
+    mkdirSync(bin, { recursive: true });
+    const helper = join(bin, 'EngramMCP');
+    writeFileSync(helper, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    try {
+      const result = spawnSync('bash', [resolveHelper, 'mcp'], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          HOME: temporaryRoot,
+          ENGRAM_MCP_PATH: '~/bin/EngramMCP',
+          PATH: '/usr/bin:/bin',
+        },
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim()).toBe(helper);
     } finally {
       rmSync(temporaryRoot, { recursive: true, force: true });
     }

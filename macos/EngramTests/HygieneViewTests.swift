@@ -22,6 +22,17 @@ final class HygieneViewTests: XCTestCase {
         )
     }
 
+    private func source(_ relativePath: String) throws -> String {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try String(
+            contentsOf: repoRoot.appendingPathComponent(relativePath),
+            encoding: .utf8
+        )
+    }
+
     // MARK: - Score / issue rendering
 
     func testCleanResponseHasFullScoreAndNoIssues() {
@@ -77,5 +88,12 @@ final class HygieneViewTests: XCTestCase {
         let toast = HygieneView.hideResultToast(hiddenCount: 0)
         XCTAssertTrue(toast.contains("0 session"))
         XCTAssertTrue(toast.contains("Show hidden sessions"))
+    }
+
+    func testConcurrentHygieneLoadsUseLatestGeneration_repro() throws {
+        let value = try source("macos/Engram/Views/Pages/HygieneView.swift")
+        XCTAssertTrue(value.contains("loadGeneration"))
+        XCTAssertTrue(value.contains("generation == loadGeneration"))
+        XCTAssertTrue(value.contains("guard !Task.isCancelled"))
     }
 }

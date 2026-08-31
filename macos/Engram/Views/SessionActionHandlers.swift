@@ -69,7 +69,7 @@ struct SessionExportStatusBanner: View {
                 Text(status)
                     .font(.caption)
                     .foregroundStyle({
-                        if case .failed = state { return Color.red }
+                        if case .failed = state { return Theme.red }
                         return Color.secondary
                     }() as Color)
                 Spacer(minLength: 4)
@@ -99,7 +99,7 @@ struct SessionExportStatusBanner: View {
 /// stays as page @State.
 @MainActor
 struct SessionActionHandlers {
-    let serviceClient: EngramServiceClient
+    let serviceClient: any EngramServiceClientProtocol
     /// Reload the host page's list after a mutating command.
     let reload: () async -> Void
     /// Surface transient status/error text (rendered via AlertBanner).
@@ -184,7 +184,7 @@ struct SessionActionHandlers {
                 )
                 completion(.succeeded(path: response.outputPath))
             } catch {
-                completion(.failed(message: "Export failed: \(error.localizedDescription)"))
+                completion(.failed(message: "Export failed: \(ServiceErrorPresenter.displayMessage(for: error))"))
             }
         }
     }

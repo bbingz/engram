@@ -74,20 +74,18 @@ final class SessionsTests: XCTestCase {
         let sessions = SessionsScreen(app: app)
         sessions.waitForLoad()
 
-        let filterPills = sessions.filterPills
-        if filterPills.waitForExistence(timeout: 5) {
-            // Click all filter pills to maximally restrict results
-            let buttons = filterPills.buttons.allElementsBoundByIndex
-            for button in buttons {
-                if button.exists && button.isHittable {
-                    button.click()
-                }
-            }
-        }
+        XCTAssertTrue(sessions.showAllToggle.waitForExistence(timeout: 5))
+        sessions.showAllToggle.click()
+        XCTAssertTrue(sessions.sourcePicker.waitForExistence(timeout: 5))
+        sessions.sourcePicker.click()
+        app.menuItems["Codex"].click()
+        let todayButton = sessions.filterPill(named: "Today")
+        XCTAssertTrue(todayButton.waitForExistence(timeout: 5), sessions.filterPills.debugDescription)
+        todayButton.click()
 
-        let hasContent = sessions.sessionList.waitForExistence(timeout: 3)
-        let hasEmpty = sessions.emptyState.waitForExistence(timeout: 3)
-        XCTAssertTrue(hasContent || hasEmpty,
-                      "Either session list or empty state should be visible after applying filters")
+        XCTAssertTrue(sessions.emptyState.waitForExistence(timeout: 5),
+                      "The fixture has no Codex sessions on the fixed test date")
+        XCTAssertTrue(app.text("No sessions").exists,
+                      "The filtered miss should assert its dedicated empty-state title")
     }
 }

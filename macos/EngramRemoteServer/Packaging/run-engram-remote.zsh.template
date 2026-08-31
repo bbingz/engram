@@ -9,6 +9,22 @@ source "$remote_root/secrets/legacy-v1.env"
 source "$remote_root/secrets/archive-v2.env"
 set +a
 
+# A launchd retry can overlap a healthy instance after a wrapper replacement.
+# Treat the unauthenticated health endpoint as authoritative and preserve the
+# same exit-0 KeepAlive semantics as an already-owned service writer.
+health_host="${ENGRAM_REMOTE_HOST:-127.0.0.1}"
+health_port="${ENGRAM_REMOTE_PORT:-8787}"
+if /usr/bin/curl \
+  --fail \
+  --silent \
+  --show-error \
+  --connect-timeout 1 \
+  --max-time 2 \
+  "http://${health_host}:${health_port}/v1/health" \
+  | /usr/bin/grep -Fqx 'ok'; then
+  exit 0
+fi
+
 export ENGRAM_REMOTE_SOURCE_REVISION='__ENGRAM_REMOTE_SOURCE_REVISION__'
 
 exec "$remote_root/current/bin/EngramRemoteServer"

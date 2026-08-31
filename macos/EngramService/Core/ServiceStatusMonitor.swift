@@ -34,6 +34,12 @@ actor ServiceStatusMonitor {
         lastSuccessAt = date ?? now()
     }
 
+    /// A discretionary scheduling skip means the service is healthy even
+    /// though there was intentionally no index work to run.
+    func recordScanDeferred(at date: Date? = nil) {
+        lastSuccessAt = date ?? now()
+    }
+
     func recordScanFailure(_ message: String, at date: Date? = nil) {
         lastFailure = (message: message, at: date ?? now())
     }

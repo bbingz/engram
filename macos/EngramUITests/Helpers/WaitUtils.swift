@@ -9,6 +9,14 @@ extension XCUIApplication {
         descendants(matching: .any)[identifier].firstMatch
     }
 
+    /// SwiftUI static text is exposed through `label` on older macOS releases
+    /// and through `value` on macOS 27. Match either representation.
+    func text(_ text: String) -> XCUIElement {
+        staticTexts
+            .matching(NSPredicate(format: "label == %@ OR value == %@", text, text))
+            .firstMatch
+    }
+
     /// Find a button by accessibility identifier without forcing an all-descendants snapshot.
     func button(id identifier: String) -> XCUIElement {
         buttons[identifier].firstMatch
@@ -26,6 +34,15 @@ extension XCUIApplication {
 }
 
 extension XCUIElement {
+    /// Find visible text inside a known data container. Keeping this scoped to
+    /// the row/list owner prevents sidebar and page chrome from satisfying a
+    /// data assertion with the same label.
+    func element(containingText text: String) -> XCUIElement {
+        descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS[c] %@ OR value CONTAINS[c] %@", text, text))
+            .firstMatch
+    }
+
     /// Wait for element to exist and be hittable
     @discardableResult
     func waitForReady(timeout: TimeInterval = 5) -> Bool {

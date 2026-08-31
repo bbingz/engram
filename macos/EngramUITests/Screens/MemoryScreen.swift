@@ -8,6 +8,8 @@ struct MemoryScreen {
     var container: XCUIElement { app.element(id: "memory_container") }
     var searchField: XCUIElement { app.element(id: "memory_search") }
     var emptyState: XCUIElement { app.element(id: "memory_emptyState") }
+    var insightsEmptyState: XCUIElement { app.element(id: "memory_insights_emptyState") }
+    var failedState: XCUIElement { app.element(id: "memory_failedState") }
 
     // MARK: - Actions
 

@@ -34,7 +34,14 @@ final class ServiceWriterGateTests: XCTestCase {
         XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("indexArchiveBacklog"))
         XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("initialScanIndex"))
         XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("periodicFtsDrain"))
-        XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("embeddingBackfill"))
+        XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("scheduledFtsRetryDrain"))
+        XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("deferredActivityFtsDrain"))
+        XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("periodicFtsOptimize"))
+        XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("periodicParentBackfills"))
+        XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("sessionEmbeddingBackfillRead"))
+        XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("sessionEmbeddingBackfillWrite"))
+        XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("insightEmbeddingBackfillRead"))
+        XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("insightEmbeddingBackfillWrite"))
         XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("projectMove"))
         XCTAssertFalse(ServiceWriterGate.isLongRunningWriteCommand("saveInsight"))
     }
@@ -208,6 +215,19 @@ final class ServiceWriterGateTests: XCTestCase {
         XCTAssertEqual(walSizeAfterTruncate, 0, "TRUNCATE must shrink WAL file to 0 bytes")
     }
 
+    func testCheckpointMethodsUseClassifiedLongRunningWriteCommands_repro() throws {
+        XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("checkpointWal"))
+        XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("checkpointTruncate"))
+
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("EngramService/Core/ServiceWriterGate.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        XCTAssertTrue(source.contains("performWriteCommand(name: \"checkpointWal\")"))
+        XCTAssertTrue(source.contains("performWriteCommand(name: \"checkpointTruncate\")"))
+    }
+
     func testIndexStatusUsesCacheWithinSameGenerationAndExpiresAfterTTL() async throws {
         let paths = try makeGatePaths()
         let clock = ManualDateProvider(Date(timeIntervalSince1970: 1_700_000_000))
@@ -228,7 +248,8 @@ final class ServiceWriterGateTests: XCTestCase {
                         parent_session_id TEXT,
                         suggested_parent_id TEXT,
                         tier TEXT,
-                        start_time TEXT NOT NULL
+                        start_time TEXT NOT NULL,
+                        end_time TEXT
                     )
                     """)
                 try db.execute(
@@ -283,7 +304,8 @@ final class ServiceWriterGateTests: XCTestCase {
                         parent_session_id TEXT,
                         suggested_parent_id TEXT,
                         tier TEXT,
-                        start_time TEXT NOT NULL
+                        start_time TEXT NOT NULL,
+                        end_time TEXT
                     )
                     """)
                 try db.execute(
@@ -329,7 +351,8 @@ final class ServiceWriterGateTests: XCTestCase {
                         parent_session_id TEXT,
                         suggested_parent_id TEXT,
                         tier TEXT,
-                        start_time TEXT NOT NULL
+                        start_time TEXT NOT NULL,
+                        end_time TEXT
                     )
                     """)
                 try db.execute(
@@ -383,7 +406,8 @@ final class ServiceWriterGateTests: XCTestCase {
                         parent_session_id TEXT,
                         suggested_parent_id TEXT,
                         tier TEXT,
-                        start_time TEXT NOT NULL
+                        start_time TEXT NOT NULL,
+                        end_time TEXT
                     )
                     """)
                 try db.execute(

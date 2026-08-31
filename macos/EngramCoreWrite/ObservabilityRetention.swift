@@ -1,5 +1,53 @@
 import Foundation
 import GRDB
+import os
+
+public enum CoreWriteLogLevel: Sendable {
+    case info
+    case notice
+    case warning
+    case error
+}
+
+public enum CoreWriteLogBridge {
+    public typealias Sink = @Sendable (CoreWriteLogLevel, String, String) -> Void
+    nonisolated(unsafe) private static var sink: Sink?
+
+    public static func installSink(_ sink: @escaping Sink) {
+        self.sink = sink
+    }
+
+    fileprivate static func emit(level: CoreWriteLogLevel, category: String, message: String) -> Bool {
+        guard let sink else { return false }
+        sink(level, category, message)
+        return true
+    }
+}
+
+public struct CoreWriteLogger: Sendable {
+    private let category: String
+    private let logger: os.Logger
+
+    public init(category: String) {
+        self.category = category
+        logger = os.Logger(subsystem: "com.engram.service", category: category)
+    }
+
+    public func info(_ message: String) { emit(.info, message) }
+    public func notice(_ message: String) { emit(.notice, message) }
+    public func warning(_ message: String) { emit(.warning, message) }
+    public func error(_ message: String) { emit(.error, message) }
+
+    private func emit(_ level: CoreWriteLogLevel, _ message: String) {
+        switch level {
+        case .info: logger.info("\(message, privacy: .private)")
+        case .notice: logger.notice("\(message, privacy: .private)")
+        case .warning: logger.warning("\(message, privacy: .private)")
+        case .error: logger.error("\(message, privacy: .private)")
+        }
+        _ = CoreWriteLogBridge.emit(level: level, category: category, message: message)
+    }
+}
 
 /// Retention windows for product tables that still receive append-only rows.
 public struct ObservabilityRetentionConfig: Sendable {

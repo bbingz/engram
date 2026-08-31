@@ -9,7 +9,7 @@ struct TraceExplorerView: View {
     // per-IPC-command spans (not distributed traces), reset on service restart.
     // Before any command is recorded the buffer is collected-but-empty, so we
     // show an honest "no spans yet" EmptyState rather than a false-empty view.
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
     @State private var spans: [ServiceSpan] = []
     @State private var loadFailed = false
 
@@ -63,18 +63,18 @@ struct TraceExplorerView: View {
         HStack(spacing: 8) {
             StatusBadge(status: span.ok ? "ok" : "error")
             Text(span.command)
-                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .scaledFont(12, weight: .medium, design: .monospaced)
                 .foregroundStyle(Theme.primaryText)
                 .lineLimit(1)
             if let err = span.errorName, !span.ok {
                 Text(err)
-                    .font(.system(size: 10, design: .monospaced))
+                    .scaledFont(10, design: .monospaced)
                     .foregroundStyle(Theme.red)
                     .lineLimit(1)
             }
             Spacer()
             Text(String(format: "%.0f ms", span.durationMs))
-                .font(.system(size: 11, design: .monospaced))
+                .scaledFont(11, design: .monospaced)
                 .foregroundStyle(Theme.secondaryText)
             Text(relativeTime(span.startedAt))
                 .font(.caption)
@@ -117,7 +117,7 @@ struct StatusBadge: View {
 
     var body: some View {
         Text(status.uppercased())
-            .font(.system(size: 8, weight: .bold, design: .monospaced))
+            .scaledFont(8, weight: .bold, design: .monospaced)
             .foregroundStyle(.white)
             .padding(.horizontal, 4)
             .padding(.vertical, 1)

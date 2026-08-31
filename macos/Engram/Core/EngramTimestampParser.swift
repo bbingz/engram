@@ -41,7 +41,9 @@ enum EngramTimestampParser {
         guard let date = date(from: value) else {
             return String(value.prefix(10))
         }
-        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        var gregorian = Calendar(identifier: .gregorian)
+        gregorian.timeZone = calendar.timeZone
+        let components = gregorian.dateComponents([.year, .month, .day], from: date)
         guard let year = components.year, let month = components.month, let day = components.day else {
             return String(value.prefix(10))
         }

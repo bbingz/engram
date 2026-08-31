@@ -68,6 +68,7 @@ function makeSafeFixture(): string {
       '  throw TestError()',
       '}',
       '_ = Darwin.unlink(temporaryURL.path)',
+      '_ = Darwin.unlink(staged.temporaryURL.path)',
     ].join('\n'),
   );
   write(

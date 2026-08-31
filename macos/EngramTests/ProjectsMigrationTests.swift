@@ -9,6 +9,11 @@ import XCTest
 @testable import Engram
 
 final class ProjectsMigrationTests: XCTestCase {
+    func testProjectsPageRequestsHumanDrivenProjectGroups_repro() throws {
+        let projectsView = try Self.source("macos/Engram/Views/Pages/ProjectsView.swift")
+        XCTAssertTrue(projectsView.contains("db.listSessionsByProject(humanDriven: true)"))
+    }
+
     // MARK: - (a) history request + full-entry decode
 
     func testHistoryRequestEncodesNoStateFilterAndDecodesFullEntry() async throws {
@@ -677,7 +682,7 @@ final class ProjectsMigrationTests: XCTestCase {
 
     // MARK: - (e) source grep: no `engram project` CLI references
 
-    func testProjectSheetsContainNoEngramProjectCli() throws {
+    func testProductProjectRecoveryCopyContainsNoUnshippedCliOrDirectDatabaseRepair_repro() throws {
         let files = [
             "macos/Engram/Views/Projects/RenameSheet.swift",
             "macos/Engram/Views/Projects/ArchiveSheet.swift",
@@ -685,12 +690,19 @@ final class ProjectsMigrationTests: XCTestCase {
             "macos/Engram/Views/Projects/AliasSheet.swift",
             "macos/Engram/Views/Projects/BatchMoveSheet.swift",
             "macos/Engram/Views/Projects/MigrationHistoryView.swift",
+            "macos/EngramCoreWrite/ProjectMove/RecoverMigrations.swift",
+            "macos/EngramCoreWrite/ProjectMove/UndoMigration.swift",
+            "macos/EngramMCP/Core/MCPDatabase.swift",
         ]
         for relativePath in files {
             let source = try Self.source(relativePath)
             XCTAssertFalse(
                 source.contains("engram project"),
                 "\(relativePath) must not reference the non-shipping `engram project` CLI"
+            )
+            XCTAssertFalse(
+                source.contains("UPDATE migration_log") || source.contains("~/.engram/index.sqlite"),
+                "\(relativePath) must not tell product users to bypass the service writer"
             )
         }
     }

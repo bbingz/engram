@@ -7,6 +7,8 @@ struct LiveSessionCard: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isPulsing = false
+    /// Keyboard focus for the open-button branch (Wave 8-7): .plain draws no ring.
+    @FocusState private var isFocused: Bool
 
     private var levelColor: Color {
         switch session.activityLevel {
@@ -30,10 +32,26 @@ struct LiveSessionCard: View {
     }
 
     var body: some View {
-        if session.sessionId != nil, let onOpen {
+        if !session.filePath.isEmpty, let onOpen {
             Button(action: onOpen) { cardBody }
                 .buttonStyle(.plain)
                 .help("Open session")
+                // Complex card content: one VoiceOver stop instead of many fragments.
+                .accessibilityElement(children: .combine)
+                // Keyboard navigation (Wave 8-7): visible ring + Enter/Space.
+                .focusable()
+                .focused($isFocused)
+                .onKeyPress(keys: [.return, .space]) { _ in
+                    guard isFocused else { return .ignored }
+                    onOpen()
+                    return .handled
+                }
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.cornerRadius)
+                        .stroke(Theme.accent, lineWidth: 2)
+                        .opacity(isFocused ? 1 : 0)
+                        .allowsHitTesting(false)
+                )
         } else {
             cardBody
         }
@@ -58,12 +76,12 @@ struct LiveSessionCard: View {
             VStack(alignment: .leading, spacing: 1) {
                 if let project = session.project {
                     Text(project)
-                        .font(.system(size: 12, weight: .medium))
+                        .scaledFont(12, weight: .medium)
                         .lineLimit(1)
                 }
                 if let title = session.title {
                     Text(title)
-                        .font(.system(size: 11))
+                        .scaledFont(11)
                         .foregroundStyle(Theme.secondaryText)
                         .lineLimit(1)
                 }
@@ -73,7 +91,7 @@ struct LiveSessionCard: View {
 
             if let model = session.model {
                 Text(model.replacingOccurrences(of: "claude-", with: ""))
-                    .font(.system(size: 10))
+                    .scaledFont(10)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(Theme.surface)
@@ -83,24 +101,24 @@ struct LiveSessionCard: View {
 
             if let activity = session.currentActivity, session.activityLevel == "active" {
                 Text(activity)
-                    .font(.system(size: 10))
+                    .scaledFont(10)
                     .foregroundStyle(Theme.tertiaryText)
                     .lineLimit(1)
                     .frame(maxWidth: 80)
             }
 
             Text(elapsedText)
-                .font(.system(size: 11, design: .monospaced))
+                .scaledFont(11, design: .monospaced)
                 .foregroundStyle(Theme.secondaryText)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.vertical, Theme.listRowVerticalPadding)
         .background(Theme.surface)
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: Theme.cornerRadius)
                 .stroke(levelColor.opacity(0.3), lineWidth: 1)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadius))
         .onAppear { if !reduceMotion { isPulsing = true } }
     }
 }

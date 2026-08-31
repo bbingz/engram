@@ -355,6 +355,10 @@ public actor ArchiveReplicationCoordinator {
         for (index, claim) in claims.enumerated() {
             guard !Task.isCancelled else {
                 cycle.cancelled = true
+                _ = try catalog.releaseUnstartedReplicaClaims(
+                    Array(claims[index...]),
+                    updatedAt: timestamp(clock())
+                )
                 break
             }
             guard shouldStartUnit() else {
@@ -385,6 +389,10 @@ public actor ArchiveReplicationCoordinator {
             let outcome = try await replicate(claim, to: backend)
             guard !Task.isCancelled else {
                 cycle.cancelled = true
+                _ = try catalog.releaseUnstartedReplicaClaims(
+                    Array(claims[index...]),
+                    updatedAt: timestamp(clock())
+                )
                 return cycle
             }
             switch outcome {
@@ -396,6 +404,10 @@ public actor ArchiveReplicationCoordinator {
                 cycle.lostClaims += 1
             case .cancelled:
                 cycle.cancelled = true
+                _ = try catalog.releaseUnstartedReplicaClaims(
+                    Array(claims[index...]),
+                    updatedAt: timestamp(clock())
+                )
                 return cycle
             case let .failed(action, symbol, state):
                 let changed: Bool

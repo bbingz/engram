@@ -25,6 +25,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
     let deleteInsightResult: Result<EngramServiceJSONValue, Error>
     let manageProjectAliasResult: Result<EngramServiceJSONValue, Error>
     let resumeCommandResult: Result<EngramServiceResumeCommandResponse, Error>
+    let liveIngestResetShrinkGuardResult: Result<EngramServiceLiveIngestResetShrinkGuardResponse, Error>
     let setParentSessionResult: Result<EngramServiceLinkResponse, Error>
     let clearParentSessionResult: Result<EngramServiceLinkResponse, Error>
     let confirmSuggestionResult: Result<EngramServiceLinkResponse, Error>
@@ -50,6 +51,8 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
     let projectMoveResult: Result<EngramServiceProjectMoveResult, Error>
     let projectArchiveResult: Result<EngramServiceProjectMoveResult, Error>
     let projectUndoResult: Result<EngramServiceProjectMoveResult, Error>
+    let projectMoveBatchResult: Result<EngramServiceJSONValue, Error>
+    let cancelProjectMoveBatchResult: Result<EngramServiceCancelProjectMoveBatchResponse, Error>
     let setFavoriteResult: Result<Void, Error>
     let setSessionHiddenResult: Result<Void, Error>
     let setSourceEnabledResult: Result<Void, Error>
@@ -65,12 +68,17 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         status: EngramServiceStatus = .stopped,
         statusResult: Result<EngramServiceStatus, Error>? = nil,
         search: EngramServiceSearchResponse = EngramServiceSearchResponse(items: []),
+        searchResult: Result<EngramServiceSearchResponse, Error>? = nil,
         health: EngramServiceHealthResponse = EngramServiceHealthResponse(ok: true, status: "healthy", message: "mock"),
         liveSessions: EngramServiceLiveSessionsResponse = EngramServiceLiveSessionsResponse(sessions: [], count: 0),
+        liveSessionsResult: Result<EngramServiceLiveSessionsResponse, Error>? = nil,
         sources: [EngramServiceSourceInfo] = [],
+        sourcesResult: Result<[EngramServiceSourceInfo], Error>? = nil,
         memoryFiles: [EngramServiceMemoryFile] = [],
+        memoryFilesResult: Result<[EngramServiceMemoryFile], Error>? = nil,
         memoryFileContent: EngramServiceMemoryFileContentResponse = EngramServiceMemoryFileContentResponse(path: "", content: "", truncated: false),
         insights: [EngramServiceInsightInfo] = [],
+        insightsResult: Result<[EngramServiceInsightInfo], Error>? = nil,
         insightDetail: EngramServiceInsightInfo? = nil,
         costs: EngramServiceCostsResponse = EngramServiceCostsResponse(totalUsd: 0, perSource: [], perDay: [], monthToDateUsd: 0, todayUsd: 0),
         telemetry: ServiceTelemetrySnapshot = ServiceTelemetrySnapshot(lastScanDurationMs: nil, lastScanIndexed: 0, lastScanTotal: 0, scanCount: 0, lastScanAt: nil, commands: [], spans: []),
@@ -90,6 +98,8 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
             cwd: "/tmp/mock-session"
         ),
         setParentSession: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
+        liveIngestResetShrinkGuard: EngramServiceLiveIngestResetShrinkGuardResponse = EngramServiceLiveIngestResetShrinkGuardResponse(ok: true, peer: "hq"),
+        liveIngestResetShrinkGuardResult: Result<EngramServiceLiveIngestResetShrinkGuardResponse, Error>? = nil,
         clearParentSession: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
         confirmSuggestion: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
         dismissAmbiguousSuggestion: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
@@ -122,6 +132,8 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         projectMove: EngramServiceProjectMoveResult = MockEngramServiceClient.defaultProjectMoveResult,
         projectArchive: EngramServiceProjectMoveResult = MockEngramServiceClient.defaultProjectMoveResult,
         projectUndo: EngramServiceProjectMoveResult = MockEngramServiceClient.defaultProjectMoveResult,
+        projectMoveBatch: EngramServiceJSONValue = .object(["status": .string("mock")]),
+        cancelProjectMoveBatch: EngramServiceCancelProjectMoveBatchResponse = .init(accepted: true),
         hideEmptySessions: EngramServiceHideEmptySessionsResponse = EngramServiceHideEmptySessionsResponse(hiddenCount: 0),
         exportSession: EngramServiceExportSessionResponse = EngramServiceExportSessionResponse(
             outputPath: "/tmp/mock-export.md",
@@ -132,13 +144,13 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         events: AsyncThrowingStream<EngramServiceEvent, Error> = AsyncThrowingStream { $0.finish() }
     ) {
         self.statusResult = statusResult ?? .success(status)
-        self.searchResult = .success(search)
+        self.searchResult = searchResult ?? .success(search)
         self.healthResult = .success(health)
-        self.liveSessionsResult = .success(liveSessions)
-        self.sourcesResult = .success(sources)
-        self.memoryFilesResult = .success(memoryFiles)
+        self.liveSessionsResult = liveSessionsResult ?? .success(liveSessions)
+        self.sourcesResult = sourcesResult ?? .success(sources)
+        self.memoryFilesResult = memoryFilesResult ?? .success(memoryFiles)
         self.memoryFileContentResult = .success(memoryFileContent)
-        self.insightsResult = .success(insights)
+        self.insightsResult = insightsResult ?? .success(insights)
         self.insightDetailResult = .success(insightDetail)
         self.costsResult = .success(costs)
         self.telemetryResult = .success(telemetry)
@@ -152,6 +164,8 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         self.deleteInsightResult = .success(deleteInsight)
         self.manageProjectAliasResult = .success(manageProjectAlias)
         self.resumeCommandResult = .success(resumeCommand)
+        self.liveIngestResetShrinkGuardResult = liveIngestResetShrinkGuardResult
+            ?? .success(liveIngestResetShrinkGuard)
         self.setParentSessionResult = .success(setParentSession)
         self.clearParentSessionResult = .success(clearParentSession)
         self.confirmSuggestionResult = .success(confirmSuggestion)
@@ -177,6 +191,8 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         self.projectMoveResult = .success(projectMove)
         self.projectArchiveResult = .success(projectArchive)
         self.projectUndoResult = .success(projectUndo)
+        self.projectMoveBatchResult = .success(projectMoveBatch)
+        self.cancelProjectMoveBatchResult = .success(cancelProjectMoveBatch)
         self.setFavoriteResult = .success(())
         self.setSessionHiddenResult = .success(())
         self.setSourceEnabledResult = .success(())
@@ -251,6 +267,11 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
 
     func resumeCommand(sessionId: String) async throws -> EngramServiceResumeCommandResponse {
         try resumeCommandResult.get()
+    }
+
+    func liveIngestResetShrinkGuard(peer: String) async throws -> EngramServiceLiveIngestResetShrinkGuardResponse {
+        _ = peer
+        return try liveIngestResetShrinkGuardResult.get()
     }
 
     func setParentSession(sessionId: String, parentId: String) async throws -> EngramServiceLinkResponse {
@@ -371,6 +392,14 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
 
     func projectUndo(_ request: EngramServiceProjectUndoRequest) async throws -> EngramServiceProjectMoveResult {
         try projectUndoResult.get()
+    }
+
+    func projectMoveBatch(_ request: EngramServiceProjectMoveBatchRequest) async throws -> EngramServiceJSONValue {
+        try projectMoveBatchResult.get()
+    }
+
+    func cancelProjectMoveBatch(operationId: String) async throws -> EngramServiceCancelProjectMoveBatchResponse {
+        try cancelProjectMoveBatchResult.get()
     }
 
     func setFavorite(sessionId: String, favorite: Bool) async throws {

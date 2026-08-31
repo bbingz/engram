@@ -9,11 +9,12 @@ public enum SessionAdapterFactory {
     public static let maximumTransientRetryLocatorsPerSource = 100
 
     private static func defaultClaudeCodeAdapter(
+        homeDirectory: URL,
+        profileResolver: ClaudeCodeProfileResolver? = nil,
         sourceHintCacheDirectory: URL? = nil
     ) -> ClaudeCodeAdapter {
-        let homeDirectory = FileManager.default.homeDirectoryForCurrentUser
         return ClaudeCodeAdapter(
-            profileResolver: ClaudeCodeProfileResolver(
+            profileResolver: profileResolver ?? ClaudeCodeProfileResolver(
                 homeDirectory: homeDirectory,
                 settingsURL: homeDirectory.appendingPathComponent(".engram/settings.json")
             ),
@@ -21,34 +22,76 @@ public enum SessionAdapterFactory {
         )
     }
 
+    public static func resolvedHomeDirectory(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        EngramUserDataDirectory.resolvedHomeDirectory(environment: environment)
+    }
+
     public static func defaultAdapters() -> [any SessionAdapter] {
+        defaultAdapters(homeDirectory: resolvedHomeDirectory())
+    }
+
+    public static func defaultAdapters(
+        homeDirectory: URL,
+        claudeCodeProfileResolver: ClaudeCodeProfileResolver? = nil
+    ) -> [any SessionAdapter] {
         // Persist the derived-source (minimax/lobsterai) signature cache so a
         // cold scan skips head-sniffing every Claude file it has already seen.
-        let cacheDirectory = FileManager.default.homeDirectoryForCurrentUser
+        let cacheDirectory = homeDirectory
             .appendingPathComponent(".engram/cache", isDirectory: true)
-        let claudeCode = defaultClaudeCodeAdapter(sourceHintCacheDirectory: cacheDirectory)
+        let claudeCode = defaultClaudeCodeAdapter(
+            homeDirectory: homeDirectory,
+            profileResolver: claudeCodeProfileResolver,
+            sourceHintCacheDirectory: cacheDirectory
+        )
         return [
-            CodexAdapter(),
+            CodexAdapter(sessionsRoot: homeDirectory.appendingPathComponent(".codex/sessions").path),
             claudeCode,
             ClaudeCodeDerivedSourceAdapter(source: .minimax, base: claudeCode),
             ClaudeCodeDerivedSourceAdapter(source: .lobsterai, base: claudeCode),
-            GeminiCliAdapter(),
-            OpenCodeAdapter(),
-            IflowAdapter(),
-            QwenAdapter(),
-            QoderAdapter(),
-            KimiAdapter(),
-            CommandCodeAdapter(),
-            ClineAdapter(),
-            CursorAdapter(),
-            VsCodeAdapter(),
-            WindsurfAdapter(),
-            AntigravityAdapter(),
-            CopilotAdapter()
+            GeminiCliAdapter(
+                tmpRoot: homeDirectory.appendingPathComponent(".gemini/tmp").path,
+                projectsFile: homeDirectory.appendingPathComponent(".gemini/projects.json").path
+            ),
+            OpenCodeAdapter(dbPath: homeDirectory.appendingPathComponent(".local/share/opencode/opencode.db").path),
+            IflowAdapter(projectsRoot: homeDirectory.appendingPathComponent(".iflow/projects").path),
+            QwenAdapter(projectsRoot: homeDirectory.appendingPathComponent(".qwen/projects").path),
+            QoderAdapter(projectsRoot: qoderProjectsRoot(homeDirectory: homeDirectory)),
+            KimiAdapter(
+                sessionsRoot: homeDirectory.appendingPathComponent(".kimi/sessions").path,
+                kimiJsonPath: homeDirectory.appendingPathComponent(".kimi/kimi.json").path
+            ),
+            CommandCodeAdapter(projectsRoot: homeDirectory.appendingPathComponent(".commandcode/projects").path),
+            ClineAdapter(tasksRoot: homeDirectory.appendingPathComponent(".cline/data/tasks").path),
+            CursorAdapter(
+                dbPath: homeDirectory.appendingPathComponent("Library/Application Support/Cursor/User/globalStorage/state.vscdb").path,
+                cursorDataRoot: homeDirectory.appendingPathComponent(".cursor")
+            ),
+            VsCodeAdapter(workspaceStorageDir: homeDirectory.appendingPathComponent("Library/Application Support/Code/User/workspaceStorage").path),
+            WindsurfAdapter(cacheDir: cacheDirectory.appendingPathComponent("windsurf").path),
+            AntigravityAdapter(
+                cacheDir: cacheDirectory.appendingPathComponent("antigravity").path,
+                conversationsDir: homeDirectory.appendingPathComponent(".gemini/antigravity/conversations").path,
+                cliBrainDir: homeDirectory.appendingPathComponent(".gemini/antigravity-cli/brain").path
+            ),
+            CopilotAdapter(sessionRoot: homeDirectory.appendingPathComponent(".copilot/session-state").path)
         ]
     }
 
-    public static func recentCodexAdapters(now: Date = Date(), days: Int = 2) -> [any SessionAdapter] {
+    public static func qoderProjectsRoot(homeDirectory: URL) -> String {
+        homeDirectory
+            .appendingPathComponent(".qoder/projects", isDirectory: true)
+            .standardizedFileURL
+            .path
+    }
+
+    public static func recentCodexAdapters(
+        now: Date = Date(),
+        days: Int = 2,
+        homeDirectory: URL? = nil
+    ) -> [any SessionAdapter] {
+        let homeDirectory = homeDirectory ?? resolvedHomeDirectory()
         let calendar = Calendar.current
         let formatter = DateFormatter()
         formatter.calendar = calendar
@@ -62,7 +105,7 @@ public enum SessionAdapterFactory {
             guard let date = calendar.date(byAdding: .day, value: -offset, to: now) else { continue }
             let relativePath = formatter.string(from: date)
             guard seen.insert(relativePath).inserted else { continue }
-            let root = FileManager.default.homeDirectoryForCurrentUser
+            let root = homeDirectory
                 .appendingPathComponent(".codex/sessions")
                 .appendingPathComponent(relativePath)
                 .path
@@ -75,30 +118,23 @@ public enum SessionAdapterFactory {
         now: Date = Date(),
         days: Int = 2,
         priorTransientRetryLocators: [SourceName: [String]] = [:],
-        maximumRetryLocatorsPerSource: Int = 20
+        maximumRetryLocatorsPerSource: Int = 20,
+        homeDirectory: URL? = nil
     ) -> [any SessionAdapter] {
+        let homeDirectory = homeDirectory ?? resolvedHomeDirectory()
         let boundedDays = min(max(days, 1), maximumRecentDays)
         let cutoff = now.addingTimeInterval(-Double(boundedDays) * 24 * 60 * 60)
-        let claudeCode = defaultClaudeCodeAdapter()
-        let fileBackedAdapters: [any SessionAdapter] = [
+        let claudeCode = defaultClaudeCodeAdapter(
+            homeDirectory: homeDirectory
+        )
+        let fileBackedAdapters = defaultAdapters(homeDirectory: homeDirectory)
+            .filter { $0.source != .codex && $0.source != .claudeCode && $0.source != .minimax && $0.source != .lobsterai }
+        let claudeAdapters: [any SessionAdapter] = [
             claudeCode,
             ClaudeCodeDerivedSourceAdapter(source: .minimax, base: claudeCode),
             ClaudeCodeDerivedSourceAdapter(source: .lobsterai, base: claudeCode),
-            GeminiCliAdapter(),
-            OpenCodeAdapter(),
-            IflowAdapter(),
-            QwenAdapter(),
-            QoderAdapter(),
-            KimiAdapter(),
-            CommandCodeAdapter(),
-            ClineAdapter(),
-            CursorAdapter(),
-            VsCodeAdapter(),
-            WindsurfAdapter(),
-            AntigravityAdapter(),
-            CopilotAdapter()
         ]
-        let recentFileBacked: [any SessionAdapter] = fileBackedAdapters.map { adapter in
+        let recentFileBacked: [any SessionAdapter] = (claudeAdapters + fileBackedAdapters).map { adapter in
             if let exact = adapter as? any ExactArchiveSourceAdapter {
                 return RecentlyModifiedExactArchiveSourceAdapter(
                     base: exact,
@@ -110,7 +146,11 @@ public enum SessionAdapterFactory {
             return RecentlyModifiedSessionAdapter(base: adapter, modifiedSince: cutoff)
         }
 
-        var adapters = recentCodexAdapters(now: now, days: boundedDays) + recentFileBacked
+        var adapters = recentCodexAdapters(
+            now: now,
+            days: boundedDays,
+            homeDirectory: homeDirectory
+        ) + recentFileBacked
         let codexRetries = RecentAdapterPolicy.boundedRetryLocators(
             priorTransientRetryLocators[.codex] ?? [],
             requestedLimit: maximumRetryLocatorsPerSource
@@ -118,7 +158,9 @@ public enum SessionAdapterFactory {
         if !codexRetries.isEmpty {
             adapters.append(
                 ExactLocatorSubsetSessionAdapter(
-                    base: CodexAdapter(),
+                    base: CodexAdapter(
+                        sessionsRoot: homeDirectory.appendingPathComponent(".codex/sessions").path
+                    ),
                     locators: codexRetries
                 )
             )
@@ -132,8 +174,10 @@ public enum SessionAdapterFactory {
     /// locators captured successfully in this same maintenance cycle.
     public static func indexingAdapters(
         from adapters: [any SessionAdapter],
-        capturedExactLocators: [SourceName: [String]]?
+        capturedExactLocators: [SourceName: [String]]?,
+        homeDirectory: URL? = nil
     ) -> [any SessionAdapter] {
+        let homeDirectory = homeDirectory ?? resolvedHomeDirectory()
         guard let capturedExactLocators else { return adapters }
 
         var emittedExactSources = Set<SourceName>()
@@ -153,9 +197,13 @@ public enum SessionAdapterFactory {
             switch adapter.source {
             case .claudeCode where adapter is ClaudeCodeAdapter
                 || adapter is RecentlyModifiedExactArchiveSourceAdapter:
-                parserBase = defaultClaudeCodeAdapter()
+                parserBase = defaultClaudeCodeAdapter(
+                    homeDirectory: homeDirectory
+                )
             case .codex where adapter is CodexAdapter:
-                parserBase = CodexAdapter()
+                parserBase = CodexAdapter(
+                    sessionsRoot: homeDirectory.appendingPathComponent(".codex/sessions").path
+                )
             default:
                 parserBase = exact
             }
@@ -204,6 +252,10 @@ public final class RecentlyModifiedSessionAdapter: SessionAdapter {
 
     public func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
         try await base.parseSessionInfo(locator: locator)
+    }
+
+    public func indexingInputIdentity(locator: String) -> IndexingInputIdentity? {
+        base.indexingInputIdentity(locator: locator)
     }
 
     public func streamMessages(

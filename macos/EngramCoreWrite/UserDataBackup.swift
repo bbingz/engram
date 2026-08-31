@@ -1,6 +1,6 @@
 import Foundation
 import GRDB
-import os
+import EngramCoreRead
 
 public enum UserDataBackupRunStatus: Sendable, Equatable {
     case created
@@ -57,7 +57,7 @@ public enum UserDataBackup {
     public static let defaultMinimumIntervalSeconds: TimeInterval = 24 * 60 * 60
     public static let retainedBackupCount = 7
 
-    private static let log = os.Logger(subsystem: "com.engram.service", category: "user-data-backup")
+    private static let log = CoreWriteLogger(category: "user-data-backup")
     private static let metadataKeys: [(key: String, table: String)] = [
         ("row_count_insights", "insights"),
         ("row_count_sessions", "sessions"),
@@ -78,8 +78,11 @@ public enum UserDataBackup {
             return overrideURL
         }
 
+        // docs/invariants.md #6: default backup discovery never falls through to real HOME in XCTest.
         let homeURL = URL(
-            fileURLWithPath: lexicallyNormalizedPath(FileManager.default.homeDirectoryForCurrentUser.path),
+            fileURLWithPath: lexicallyNormalizedPath(
+                EngramUserDataDirectory.resolvedHomeDirectory(environment: environment).path
+            ),
             isDirectory: true
         )
         let backupURL = homeURL
@@ -290,7 +293,7 @@ public enum UserDataBackup {
 
     static func logValidationFailure(_ error: Error, backupURL: URL) {
         log.error(
-            "user data backup validation failed for \(backupURL.path, privacy: .private): \(String(describing: error), privacy: .private)"
+            "user data backup validation failed for \(backupURL.path): \(String(describing: error))"
         )
     }
 }

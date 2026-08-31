@@ -59,6 +59,10 @@ public enum RemoteStorageKey {
 /// File-backed store. Bundles live as `<root>/<key>`. Works against a local
 /// directory or a network/NAS mount; the self-hosted server uses the same layout.
 public struct LocalDirectoryBackend: RemoteStorageBackend {
+    static let maximumCatalogBytes = 4 * 1024 * 1024
+    static let maximumCatalogPeers = 1_024
+    private static let catalogEnvelopeBytes = Data(#"{"schemaVersion":1,"manifests":[]}"#.utf8).count
+    static let maximumCatalogManifestBytes = maximumCatalogBytes - catalogEnvelopeBytes
     private let root: URL
 
     public init(root: URL) throws {
@@ -102,15 +106,42 @@ public struct LocalDirectoryBackend: RemoteStorageBackend {
     /// shape the HTTP server's `GET /v1/catalog` returns, so a directory/NAS-mount
     /// backend supports Layer 2 catalog discovery. Unparseable manifests are skipped.
     public func catalog() async throws -> Data {
-        let entries = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
-        var manifests: [Any] = []
-        for name in entries where ManifestCodec.isManifestKey(name) && ((try? RemoteStorageKey.validate(name)) != nil) {
-            guard let target = try? url(for: name),
+        let entries = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        let manifestKeys = entries
+            .filter { ManifestCodec.isManifestKey($0) && ((try? RemoteStorageKey.validate($0)) != nil) }
+            .sorted()
+        var manifests: [[String: Any]] = []
+        var remainingBytes = Self.maximumCatalogManifestBytes
+        for name in manifestKeys {
+            let target = try url(for: name)
+            guard let fileSize = try? target.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+                  fileSize <= EngramRemoteBackend.maxBundleBytes,
                   let data = try? Data(contentsOf: target),
-                  let obj = try? JSONSerialization.jsonObject(with: data) else { continue }
+                  data.count <= EngramRemoteBackend.maxBundleBytes
+            else {
+                continue
+            }
+            guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                continue
+            }
+            // An object that cannot fit an otherwise-empty catalog is unusable,
+            // regardless of whether a valid prefix was already accumulated.
+            guard data.count <= Self.maximumCatalogManifestBytes else { continue }
+            let requiredBytes = data.count + (manifests.isEmpty ? 0 : 1)
+            if requiredBytes > remainingBytes {
+                throw RemoteSyncError.catalogTooLarge
+            }
+            guard manifests.count < Self.maximumCatalogPeers else {
+                throw RemoteSyncError.catalogTooLarge
+            }
+            remainingBytes -= requiredBytes
             manifests.append(obj)
         }
         let payload: [String: Any] = ["schemaVersion": 1, "manifests": manifests]
-        return try JSONSerialization.data(withJSONObject: payload)
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        guard data.count <= Self.maximumCatalogBytes else {
+            throw RemoteSyncError.catalogTooLarge
+        }
+        return data
     }
 }

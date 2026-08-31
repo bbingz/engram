@@ -83,15 +83,26 @@ final class SemanticSearchIntegrityTests: XCTestCase {
             sessions: [("s2", "2026-06-01T00:00:00Z", [1, 0, 0], "semantic recall chunk")]
         )
 
-        // No usable API key and no settings file → provider unavailable.
-        // Isolate from process env / ~/.engram/settings.json (may have keys).
+        // Exercise the provider-unavailable path without consulting process
+        // settings or Keychain state.
+        let isolatedHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-no-settings-\(UUID().uuidString)").path
+        let embedCalls = EmbedCallCounter()
         let provider = try SQLiteEngramServiceReadProvider(
             databasePath: paths.database.path,
             embeddingEnvironment: [
-                "HOME": FileManager.default.temporaryDirectory
-                    .appendingPathComponent("engram-no-settings-\(UUID().uuidString)").path,
+                "HOME": isolatedHome,
+                "CFFIXED_USER_HOME": isolatedHome,
                 "ENGRAM_SETTINGS_PATH": "/tmp/engram-missing-settings-\(UUID().uuidString).json",
-            ]
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_MODEL": "probe",
+                "ENGRAM_EMBEDDING_DIM": "3",
+            ],
+            embeddingProviderFactory: { _ in
+                CountingEmbeddingProvider(counter: embedCalls) { _ in
+                    throw EmbeddingError.notConfigured
+                }
+            }
         )
         let response = try await provider.search(
             EngramServiceSearchRequest(query: "semantic recall", mode: "semantic", limit: 10)
@@ -137,6 +148,42 @@ final class SemanticSearchIntegrityTests: XCTestCase {
                 && warning.localizedCaseInsensitiveContains("missing"),
             "expected corpus-missing wording, got: \(warning)"
         )
+    }
+
+    func testSemanticAvailabilityIgnoresChunksOwnedOnlyByHiddenSessions_repro() async throws {
+        let paths = try makePaths()
+        try seedBaseSessions(at: paths.database.path)
+        try seedSemanticCorpus(
+            at: paths.database.path,
+            model: "probe",
+            sessions: [("s2", "2026-06-01T00:00:00Z", [1, 0, 0], "semantic recall chunk")]
+        )
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: "UPDATE sessions SET hidden_at = datetime('now') WHERE id = 's2'")
+        }
+
+        let embedCalls = EmbedCallCounter()
+        let provider = try SQLiteEngramServiceReadProvider(
+            databasePath: paths.database.path,
+            embeddingEnvironment: [
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_MODEL": "probe",
+                "ENGRAM_EMBEDDING_DIM": "3",
+            ],
+            embeddingProviderFactory: { _ in
+                CountingEmbeddingProvider(counter: embedCalls) { _ in [1, 0, 0] }
+            }
+        )
+
+        let response = try await provider.search(
+            EngramServiceSearchRequest(query: "semantic recall", mode: "semantic", limit: 10)
+        )
+
+        XCTAssertEqual(response.searchModes, ["keyword"])
+        XCTAssertEqual(response.warningCode, "embeddingCorpusMissing")
+        let callCount = await embedCalls.count()
+        XCTAssertEqual(callCount, 0, "an invisible corpus must not trigger query embedding")
     }
 
     func testSemanticDegradeWarningNamesBreakerOpenWithoutCallingInnerProvider() async throws {

@@ -103,7 +103,10 @@ public enum FileIndexDecision: Equatable, Sendable {
 }
 
 public struct FileIndexState: Equatable, Sendable {
-    public static let currentSchemaVersion = 1
+    // v3 forces one authoritative reparse for Qoder's project-level subagent
+    // identity introduced after v2. docs/invariants.md #2: genuine subagent
+    // layouts remain skip and must receive their collision-free child id.
+    public static let currentSchemaVersion = 3
     private static let retryBaseSeconds: Int64 = 300
     private static let retryMaxSeconds: Int64 = 3_600
     public let source: SourceName

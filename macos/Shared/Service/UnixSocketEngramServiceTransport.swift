@@ -170,6 +170,43 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, Sendable {
             .path
     }
 
+    static func resolvedSocketPath(
+        environment: [String: String],
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) throws -> String {
+        for key in ["ENGRAM_MCP_SERVICE_SOCKET", "ENGRAM_SERVICE_SOCKET"] {
+            guard let rawValue = environment[key] else { continue }
+            let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { continue }
+            guard let normalized = normalizedAbsolutePath(value, homeDirectory: homeDirectory) else {
+                throw EngramServiceError.invalidRequest(message: "\(key) requires a non-empty absolute path")
+            }
+            return normalized
+        }
+        return defaultSocketPath(homeDirectory: homeDirectory)
+    }
+
+    static func normalizedAbsolutePath(
+        _ value: String?,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty,
+              !value.utf8.contains(0) else {
+            return nil
+        }
+        let expanded: String
+        if value.hasPrefix("~/") {
+            expanded = homeDirectory
+                .appendingPathComponent(String(value.dropFirst(2)))
+                .path
+        } else {
+            expanded = value
+        }
+        guard expanded.hasPrefix("/") else { return nil }
+        return URL(fileURLWithPath: expanded).standardizedFileURL.path
+    }
+
     @discardableResult
     static func secureRuntimeDirectory(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) throws -> URL {
         let rootDirectory = homeDirectory.appendingPathComponent(".engram", isDirectory: true)
@@ -182,28 +219,63 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, Sendable {
         return runDirectory
     }
 
+    @discardableResult
+    static func secureRuntimeDirectory(at directory: URL) throws -> URL {
+        // Custom socket parents are caller-owned directories. Validate them,
+        // but never enumerate, chmod, or unlink their contents as if they were
+        // Engram's dedicated ~/.engram/run directory.
+        try validateRuntimeDirectory(directory, label: "custom socket parent directory")
+        return directory
+    }
+
     private static func ensureSecureRuntimeDirectory(_ directory: URL, label: String) throws {
-        let fileManager = FileManager.default
-
-        if !fileManager.fileExists(atPath: directory.path) {
-            try fileManager.createDirectory(
-                at: directory,
-                withIntermediateDirectories: false,
-                attributes: [.posixPermissions: 0o700]
-            )
-            try validateRuntimeDirectory(directory, label: label)
-            return
+        // docs/invariants.md #8: socket-adjacent state stays owner-only and
+        // rejects unsafe leftovers on every launch, not only after chmod repair.
+        let parent = directory.deletingLastPathComponent()
+        let name = directory.lastPathComponent
+        let parentFD = open(parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard parentFD >= 0 else {
+            throw EngramServiceError.serviceUnavailable(message: "Cannot open parent of \(label)")
         }
-
-        try validateRuntimeDirectoryShapeAndOwner(directory, label: label)
+        defer { Darwin.close(parentFD) }
+        var parentInfo = stat()
+        guard fstat(parentFD, &parentInfo) == 0,
+              (parentInfo.st_mode & S_IFMT) == S_IFDIR,
+              parentInfo.st_uid == geteuid()
+        else {
+            throw EngramServiceError.serviceUnavailable(message: "Cannot stat parent of \(label)")
+        }
+        let createResult = name.withCString { mkdirat(parentFD, $0, mode_t(0o700)) }
+        guard createResult == 0 || errno == EEXIST else {
+            throw EngramServiceError.serviceUnavailable(message: "Cannot create \(label)")
+        }
+        let directoryFD = name.withCString {
+            openat(parentFD, $0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        }
+        guard directoryFD >= 0 else {
+            throw EngramServiceError.serviceUnavailable(message: "Cannot open \(label)")
+        }
+        defer { Darwin.close(directoryFD) }
         var info = stat()
-        guard lstat(directory.path, &info) == 0 else {
+        guard fstat(directoryFD, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFDIR,
+              info.st_uid == geteuid()
+        else {
             throw EngramServiceError.serviceUnavailable(message: "Cannot stat \(label)")
         }
-        if (info.st_mode & 0o077) != 0 {
-            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        guard fchmod(directoryFD, 0o700) == 0 else {
+            throw EngramServiceError.serviceUnavailable(message: "Cannot secure \(label)")
         }
-        try validateRuntimeDirectory(directory, label: label)
+        // docs/invariants.md #8: only the dedicated runtime directory owns
+        // socket-adjacent leftovers. Product subdirectories under ~/.engram and
+        // caller-owned custom socket parents are not runtime cleanup domains.
+        if label == "service runtime directory" {
+            try validateRuntimeDirectoryLeftovers(
+                directoryFD: directoryFD,
+                label: label,
+                cleanupKnownRuntimeLeftovers: true
+            )
+        }
     }
 
     private static func validateRuntimeDirectory(_ directory: URL, label: String) throws {
@@ -230,6 +302,73 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, Sendable {
         }
         guard info.st_uid == geteuid() else {
             throw EngramServiceError.serviceUnavailable(message: "\(label.capitalized) is owned by another user")
+        }
+    }
+
+    private static let knownRuntimeLeftoverNames: Set<String> = [
+        "cmd.token",
+        "ai-secrets.json",
+        "webui.token",
+        "engram-service.lock",
+    ]
+
+    private static func isKnownRuntimeLeftoverName(_ name: String) -> Bool {
+        knownRuntimeLeftoverNames.contains(name)
+            || name.hasSuffix(".cmd.token")
+            || name.hasSuffix(".ai-secrets.json")
+    }
+
+    private static func validateRuntimeDirectoryLeftovers(
+        directoryFD: Int32,
+        label: String,
+        cleanupKnownRuntimeLeftovers: Bool
+    ) throws {
+        let scanFD = dup(directoryFD)
+        guard scanFD >= 0, let directoryStream = fdopendir(scanFD) else {
+            if scanFD >= 0 { Darwin.close(scanFD) }
+            throw EngramServiceError.serviceUnavailable(message: "Cannot scan \(label)")
+        }
+        defer { closedir(directoryStream) }
+        while let entry = readdir(directoryStream) {
+            let name = directoryEntryName(entry)
+            if name == "." || name == ".." { continue }
+            var info = stat()
+            let statResult = name.withCString {
+                fstatat(directoryFD, $0, &info, AT_SYMLINK_NOFOLLOW)
+            }
+            guard statResult == 0 else {
+                throw EngramServiceError.serviceUnavailable(
+                    message: "\(label.capitalized) contains an unsafe leftover"
+                )
+            }
+            let kind = info.st_mode & S_IFMT
+            if cleanupKnownRuntimeLeftovers,
+               isKnownRuntimeLeftoverName(name),
+               info.st_uid == geteuid(),
+               kind == S_IFLNK || kind == S_IFIFO || kind == S_IFREG && info.st_nlink != 1 {
+                let unlinkResult = name.withCString { unlinkat(directoryFD, $0, 0) }
+                guard unlinkResult == 0 else {
+                    throw EngramServiceError.serviceUnavailable(
+                        message: "\(label.capitalized) contains an unsafe leftover"
+                    )
+                }
+                continue
+            }
+            guard kind != S_IFLNK,
+                  kind != S_IFIFO,
+                  info.st_uid == geteuid() else {
+                throw EngramServiceError.serviceUnavailable(
+                    message: "\(label.capitalized) contains an unsafe leftover"
+                )
+            }
+        }
+    }
+
+    private static func directoryEntryName(_ entry: UnsafeMutablePointer<dirent>) -> String {
+        withUnsafePointer(to: &entry.pointee.d_name) { namePointer in
+            namePointer.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) {
+                String(cString: $0)
+            }
         }
     }
 
@@ -270,7 +409,11 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, Sendable {
     }
 
     static func connectSocket(path: String) throws -> Int32 {
-        guard FileManager.default.fileExists(atPath: path) else {
+        var socketInfo = stat()
+        guard lstat(path, &socketInfo) == 0,
+              (socketInfo.st_mode & S_IFMT) == S_IFSOCK,
+              socketInfo.st_uid == geteuid(),
+              (socketInfo.st_mode & 0o077) == 0 else {
             throw EngramServiceError.serviceUnavailable(message: "EngramService socket is unavailable")
         }
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -283,6 +426,12 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, Sendable {
                 guard Darwin.connect(fd, pointer, length) == 0 else {
                     throw EngramServiceError.serviceUnavailable(message: "Cannot connect to EngramService")
                 }
+            }
+            var peerEuid: uid_t = 0
+            var peerEgid: gid_t = 0
+            guard getpeereid(fd, &peerEuid, &peerEgid) == 0,
+                  peerEuid == geteuid() else {
+                throw EngramServiceError.serviceUnavailable(message: "EngramService peer identity mismatch")
             }
             return fd
         } catch {

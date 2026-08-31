@@ -41,7 +41,11 @@ struct WorkGraphView: View {
                 }
 
                 if let error {
-                    AlertBanner(message: "Failed to load repos: \(error)")
+                    AlertBanner(
+                        message: "Failed to load repos: \(error)",
+                        action: ("Retry", { Task { await loadData() } })
+                    )
+                    .accessibilityIdentifier("workGraph_errorBanner")
                 }
 
                 if !repos.isEmpty {
@@ -93,7 +97,7 @@ struct WorkGraphView: View {
         do {
             repos = try await Task.detached { try db.listGitRepos() }.value
         } catch {
-            self.error = error.localizedDescription
+            self.error = ServiceErrorPresenter.displayMessage(for: error)
         }
     }
 }

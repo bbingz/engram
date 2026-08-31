@@ -10,8 +10,12 @@ struct KPICard: View {
     var body: some View {
         VStack(spacing: 4) {
             Text(value)
-                .font(.system(size: 28, weight: .bold, design: .rounded))
+                // Text style (not a fixed size) so the hero number scales with
+                // Dynamic Type like the rest of the page.
+                .font(.system(.title, design: .rounded, weight: .bold))
                 .foregroundStyle(Theme.primaryText)
+                .minimumScaleFactor(0.6)
+                .lineLimit(1)
             Text(LocalizedStringKey(label))
                 .font(.caption)
                 .foregroundStyle(Theme.secondaryText)
@@ -21,6 +25,7 @@ struct KPICard: View {
                     .foregroundStyle(deltaPositive ? Theme.green : Theme.red)
             }
         }
+        .accessibilityElement(children: .combine)
         .frame(maxWidth: .infinity)
         .padding(.vertical, 12)
         .background(Theme.surface)

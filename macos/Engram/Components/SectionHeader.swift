@@ -31,6 +31,8 @@ struct SectionHeader: View {
                         .foregroundStyle(Theme.tertiaryText)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Refresh \(title)")
+                .help("Refresh \(title)")
             }
             Spacer()
             if let trailing = trailingAction {
