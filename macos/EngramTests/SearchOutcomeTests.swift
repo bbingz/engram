@@ -192,6 +192,6 @@ final class SearchOutcomeTests: XCTestCase {
         XCTAssertTrue(smoke.contains("search.result(containingText:"))
         XCTAssertTrue(sessions.contains("sessions.result(containingText:"))
         XCTAssertTrue(projects.contains("projects.result(containingText:"))
-        XCTAssertTrue(homeSmoke.contains("home.recentSession(at: 0)"))
+        XCTAssertTrue(homeSmoke.contains("home.recentSession(containingText:"))
     }
 }
