@@ -186,6 +186,7 @@ final class SearchOutcomeTests: XCTestCase {
         let smoke = try source("macos/EngramUITests/Tests/SmokeTests/SearchSmokeTests.swift")
         let sessions = try source("macos/EngramUITests/Tests/SmokeTests/SessionsSmokeTests.swift")
         let projects = try source("macos/EngramUITests/Tests/FullTests/ProjectsTests.swift")
+        let homeScreen = try source("macos/EngramUITests/Screens/HomeScreen.swift")
         let homeSmoke = try source("macos/EngramUITests/Tests/SmokeTests/HomeSmokeTests.swift")
 
         XCTAssertFalse(searchScreen.contains("for character in query"))
@@ -193,5 +194,9 @@ final class SearchOutcomeTests: XCTestCase {
         XCTAssertTrue(sessions.contains("sessions.result(containingText:"))
         XCTAssertTrue(projects.contains("projects.result(containingText:"))
         XCTAssertTrue(homeSmoke.contains("home.recentSession(containingText:"))
+        XCTAssertTrue(homeScreen.contains("app.staticTexts"))
+        XCTAssertTrue(homeScreen.contains("identifier BEGINSWITH %@"))
+        XCTAssertTrue(homeScreen.contains("home_recentSession_"))
+        XCTAssertFalse(homeScreen.contains("app.element(containingText: text)"))
     }
 }
