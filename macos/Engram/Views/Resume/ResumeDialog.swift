@@ -182,6 +182,7 @@ struct ResumeDialog: View {
     func fetchResumeInfo() async {
         do {
             let response = try await serviceClient.resumeCommand(sessionId: session.id)
+            try Task.checkCancellation()
             fallbackContextPrimer = response.contextPrimer
             if let error = response.error {
                 errorMessage = error
@@ -199,6 +200,8 @@ struct ResumeDialog: View {
             } else {
                 errorMessage = "Resume command unavailable"
             }
+        } catch is CancellationError {
+            return
         } catch {
             errorMessage = "Failed to build resume command"
         }

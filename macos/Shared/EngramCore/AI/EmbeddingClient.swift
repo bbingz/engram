@@ -38,7 +38,7 @@ public enum EmbeddingRequestPolicy {
         _ config: EmbeddingConfig,
         storedDimension: Int
     ) -> Bool {
-        sendsDimensions(for: config) && config.dimension == storedDimension
+        sendsDimensions(for: config)
     }
 }
 

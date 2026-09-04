@@ -154,7 +154,7 @@ struct TimelinePageView: View {
     private var handlers: SessionActionHandlers {
         SessionActionHandlers(
             serviceClient: serviceClient,
-            reload: { await loadData() },
+            reload: { await loadData(preservePagination: true) },
             onStatus: { message in
                 actionStatus = message
                 // Auto-clear so a success banner doesn't linger as a permanent
@@ -417,14 +417,17 @@ struct TimelinePageView: View {
                 if Task.isCancelled { return }
             }
             lastFilterKey = filterKey
-            await loadData()
+            await loadData(preservePagination: plan.preservePagination)
         }
     }
 
-    private func loadData() async {
+    private func loadData(preservePagination: Bool = false) async {
         loadGeneration += 1
         let requestGeneration = loadGeneration
-        isLoading = true
+        if !preservePagination {
+            isLoading = true
+            clearVisibleSnapshot()
+        }
         defer {
             if Self.shouldApplyLoad(
                 resultGeneration: requestGeneration,
@@ -530,11 +533,13 @@ struct TimelinePageView: View {
                 isCancelled: Task.isCancelled
             ) else { return }
             EngramLogger.error("TimelinePage load failed", module: .ui, error: error)
-            clearVisibleSnapshot()
-            appliedProject = selectedProject
-            appliedRange = range
-            appliedMode = timelineMode
-            appliedSort = sortMode
+            if !preservePagination {
+                clearVisibleSnapshot()
+                appliedProject = selectedProject
+                appliedRange = range
+                appliedMode = timelineMode
+                appliedSort = sortMode
+            }
             loadError = ServiceErrorPresenter.displayMessage(for: error)
         }
     }
@@ -558,7 +563,7 @@ struct TimelinePageView: View {
                     actionStatus = response.error ?? "Failed to confirm suggestion"
                     return
                 }
-                await loadData()
+                await loadData(preservePagination: true)
             } catch {
                 EngramLogger.error("TimelinePage confirm suggestion failed", module: .ui, error: error)
                 loadError = ServiceErrorPresenter.displayMessage(for: error)
@@ -575,7 +580,7 @@ struct TimelinePageView: View {
                         suggestedParentId: suggestedParentId
                     )
                 }
-                await loadData()
+                await loadData(preservePagination: true)
             } catch {
                 EngramLogger.error("TimelinePage dismiss suggestion failed", module: .ui, error: error)
                 loadError = ServiceErrorPresenter.displayMessage(for: error)

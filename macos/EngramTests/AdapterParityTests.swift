@@ -466,7 +466,7 @@ final class AdapterParityTests: XCTestCase {
         XCTAssertEqual(messages.flatMap { $0.toolCalls ?? [] }.first?.name, "Read")
     }
 
-    func testAntigravityCliIgnoresUnknownContentEvents() async throws {
+    func testAntigravityCliPreservesUnknownNonEmptyContentAsTool_repro() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("antigravity-cli-unknown-\(UUID().uuidString)", isDirectory: true)
         let transcriptDir = root.appendingPathComponent("brain/ag-cli-session/.system_generated/logs", isDirectory: true)
@@ -491,8 +491,8 @@ final class AdapterParityTests: XCTestCase {
             messages.append(message)
         }
 
-        XCTAssertEqual(messages.map(\.role), [.user, .assistant])
-        XCTAssertFalse(messages.contains { $0.content == "internal memory" })
+        XCTAssertEqual(messages.map(\.role), [.user, .tool, .assistant])
+        XCTAssertEqual(messages[1].content, "internal memory")
     }
 
     func testAntigravityCliSessionIdUsesTranscriptContainerOutsideConfiguredRoot() async throws {

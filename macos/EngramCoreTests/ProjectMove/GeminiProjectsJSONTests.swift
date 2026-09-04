@@ -2,6 +2,7 @@
 // Mirrors tests/core/project-move/gemini-projects-json.test.ts (Node parity baseline).
 import Foundation
 import XCTest
+import Darwin
 @testable import EngramCoreWrite
 
 final class GeminiProjectsJSONTests: XCTestCase {
@@ -252,6 +253,53 @@ final class GeminiProjectsJSONTests: XCTestCase {
             filePath: file.path, targetProjectName: "proj", srcCwd: "/a/proj"
         )
         XCTAssertTrue(conflicts.isEmpty)
+    }
+
+    func testKimiPlanApplyReverseUsesCanonicalAliasAndRestoresBytes_repro() throws {
+        let token = UUID().uuidString
+        let lexicalOld = "/tmp/engram-kimi-old-\(token)"
+        let lexicalNew = "/tmp/engram-kimi-new-\(token)"
+        try FileManager.default.createDirectory(
+            atPath: lexicalOld,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(atPath: lexicalOld) }
+        let resolved = try XCTUnwrap(Darwin.realpath(lexicalOld, nil))
+        defer { free(resolved) }
+        let canonicalOld = String(cString: resolved)
+        XCTAssertNotEqual(lexicalOld, canonicalOld)
+
+        let kimiFile = tmpRoot.appendingPathComponent("kimi.json")
+        let original = #"{"theme":"dark","work_dirs":[{"path":"\#(canonicalOld)","kaos":"remote","last_session_id":"s"}]}"#
+        try original.write(to: kimiFile, atomically: true, encoding: .utf8)
+
+        let plan = try KimiProjectsJSON.plan(
+            filePath: kimiFile.path,
+            oldPaths: projectMovePatchSourcePaths(lexicalOld),
+            newPath: lexicalNew
+        )
+        XCTAssertEqual(plan.updates.count, 1)
+        XCTAssertEqual(plan.updates.first?.oldPath, canonicalOld)
+        XCTAssertEqual(plan.updates.first?.newPath, lexicalNew)
+        XCTAssertEqual(
+            plan.updates.first?.oldWorkspaceName,
+            SessionSources.encodeKimi(canonicalOld, kaos: "remote")
+        )
+        XCTAssertEqual(
+            plan.updates.first?.newWorkspaceName,
+            SessionSources.encodeKimi(lexicalNew, kaos: "remote")
+        )
+
+        try KimiProjectsJSON.apply(plan: plan)
+        let updated = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: kimiFile)) as? [String: Any]
+        )
+        let workDirs = try XCTUnwrap(updated["work_dirs"] as? [[String: Any]])
+        XCTAssertEqual(workDirs.first?["path"] as? String, lexicalNew)
+        XCTAssertEqual(workDirs.first?["last_session_id"] as? String, "s")
+
+        try KimiProjectsJSON.reverse(plan: plan)
+        XCTAssertEqual(try String(contentsOf: kimiFile, encoding: .utf8), original)
     }
 
     // MARK: - helpers

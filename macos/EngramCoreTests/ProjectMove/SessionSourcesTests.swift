@@ -29,7 +29,7 @@ final class SessionSourcesTests: XCTestCase {
         let roots = SessionSources.roots(homeDirectory: URL(fileURLWithPath: "/home/test"))
         let ids = roots.map(\.id.rawValue)
         XCTAssertEqual(ids, [
-            "claude-code", "codex", "codex-archived", "codex-rollout-summaries", "gemini-cli", "iflow",
+            "claude-code", "codex", "codex-archived", "codex-rollout-summaries", "gemini-cli", "kimi", "iflow",
             "qwen", "qoder", "opencode", "antigravity", "antigravity-legacy", "commandcode", "copilot",
         ])
         XCTAssertEqual(
@@ -70,10 +70,21 @@ final class SessionSourcesTests: XCTestCase {
         )
     }
 
+    func testRootsIncludeKimiWorkspaceCatalogAndMd5Encoder_repro() throws {
+        let roots = SessionSources.roots(homeDirectory: URL(fileURLWithPath: "/home/test"))
+        let kimi = try XCTUnwrap(roots.first { $0.id.rawValue == "kimi" })
+
+        XCTAssertEqual(kimi.path, "/home/test/.kimi/sessions")
+        XCTAssertEqual(
+            kimi.encodeProjectDir?("/workspace"),
+            "eab0d61a99b6696edb3d2aff87b585e8"
+        )
+    }
+
     func testCommandCodeProjectDirectoryUsesLiveSlugEncoding_repro() {
         let roots = SessionSources.roots(homeDirectory: URL(fileURLWithPath: "/h"))
         let withEncoder = roots.filter { $0.encodeProjectDir != nil }.map(\.id)
-        XCTAssertEqual(withEncoder, [.claudeCode, .geminiCli, .iflow, .qwen, .qoder, .commandcode])
+        XCTAssertEqual(withEncoder, [.claudeCode, .geminiCli, .kimi, .iflow, .qwen, .qoder, .commandcode])
 
         let cc = roots.first { $0.id == .claudeCode }?.encodeProjectDir
         XCTAssertEqual(cc?("/Users/a/b/proj"), "-Users-a-b-proj")

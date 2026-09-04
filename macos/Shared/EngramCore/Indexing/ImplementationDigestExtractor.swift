@@ -333,7 +333,7 @@ public enum ImplementationDigestExtractor {
     }
 
     /// Local calendar day for the action (matches Activity heatmap / costs).
-    /// ISO timestamps are parsed then reformatted in `TimeZone.current` so
+    /// ISO timestamps are parsed then reformatted in `TimeZone.autoupdatingCurrent` so
     /// UTC+8 morning work is not labeled as yesterday (M25).
     private static func dateKey(from timestamp: String?) -> String? {
         guard let timestamp, !timestamp.isEmpty else { return nil }
@@ -352,7 +352,7 @@ public enum ImplementationDigestExtractor {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone.current
+        formatter.timeZone = TimeZone.autoupdatingCurrent
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter
     }()

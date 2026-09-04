@@ -17,6 +17,7 @@ log_file="$log_dir/hq-boot-ensure.log"
 degraded_sentinel="$run_dir/hq-boot-ensure.degraded"
 remote_wrapper="$HOME/.engram-remote/bin/run-engram-remote"
 service_wrapper="$HOME/.engram-service/current/bin/run-engram-service"
+service_socket="$run_dir/engram-service.sock"
 remote_plist="$HOME/Library/LaunchAgents/com.engram.remote-server.plist"
 service_plist="$HOME/Library/LaunchAgents/com.engram.service.plist"
 
@@ -58,21 +59,57 @@ record_degraded() {
     "$remote_state" "$service_state"
 }
 
-remote_listening() {
-  /usr/sbin/lsof -nP -iTCP:8787 -sTCP:LISTEN >/dev/null 2>&1
+remote_config_value() {
+  local key="$1"
+  local envf="$HOME/.engram-remote/env"
+  [[ -f "$envf" ]] || return 0
+  /usr/bin/awk -F= -v key="$key" '$1==key {print substr($0, index($0, "=") + 1); exit}' "$envf"
+}
+
+remote_host() {
+  local host
+  host="$(remote_config_value ENGRAM_REMOTE_HOST)"
+  [[ -n "$host" ]] || host="100.125.101.60"
+  printf '%s\n' "$host"
+}
+
+remote_healthy() {
+  local host port response
+  host="$(remote_host)"
+  port="$(remote_config_value ENGRAM_REMOTE_PORT)"
+  [[ "$port" =~ ^[0-9]+$ ]] || port="8787"
+  response="$(
+    /usr/bin/curl \
+      --fail \
+      --silent \
+      --show-error \
+      --connect-timeout 1 \
+      --max-time 2 \
+      "http://${host}:${port}/v1/health"
+  )" || return 1
+  [[ "$response" == "ok" ]]
 }
 
 service_running() {
-  /usr/bin/pgrep -f '/Helpers/EngramService --service-socket' >/dev/null 2>&1
+  [[ -S "$service_socket" ]] || return 1
+  local pid command
+  while IFS= read -r pid; do
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    command="$(/bin/ps -p "$pid" -o command= 2>/dev/null)" || continue
+    case "$command" in
+      "$HOME/.engram-service/"*"/Helpers/EngramService --service-socket $service_socket"*)
+        if /usr/sbin/lsof -nP -a -p "$pid" "$service_socket" >/dev/null 2>&1; then
+          return 0
+        fi
+        ;;
+    esac
+  done < <(/usr/bin/pgrep -f '/Helpers/EngramService --service-socket' 2>/dev/null || true)
+  return 1
 }
 
 wait_tailscale() {
-  local host=""
-  local envf="$HOME/.engram-remote/env"
-  if [[ -f "$envf" ]]; then
-    host="$(/usr/bin/awk -F= '$1=="ENGRAM_REMOTE_HOST"{print $2; exit}' "$envf")"
-  fi
-  [[ -n "$host" ]] || host="100.125.101.60"
+  local host
+  host="$(remote_host)"
   local i
   for i in $(/usr/bin/seq 1 45); do
     if /sbin/ifconfig 2>/dev/null | /usr/bin/grep -q "inet ${host} "; then
@@ -114,7 +151,7 @@ start_detached() {
   /usr/bin/nohup "$wrapper" >>"$out" 2>>"$err" </dev/null &
 }
 
-if ! remote_listening; then
+if ! remote_healthy; then
   if wait_tailscale; then
     if start_via_launchctl "com.engram.remote-server" "$remote_plist"; then
       log "remote start via launchctl"
@@ -136,22 +173,22 @@ if ! service_running; then
   fi
 fi
 
-if remote_listening && service_running; then
-  log "ok remote=listen service=up"
+if remote_healthy && service_running; then
+  log "ok remote=healthy service=managed"
   record_healthy
   exit 0
 fi
 
 # Give a just-spawned pair a moment before declaring degraded.
 sleep 2
-if remote_listening && service_running; then
-  log "ok remote=listen service=up (after wait)"
+if remote_healthy && service_running; then
+  log "ok remote=healthy service=managed (after wait)"
   record_healthy
   exit 0
 fi
 
-remote_state="$(remote_listening && echo listen || echo down)"
-service_state="$(service_running && echo up || echo down)"
+remote_state="$(remote_healthy && echo healthy || echo down)"
+service_state="$(service_running && echo managed || echo down)"
 log "degraded remote=${remote_state} service=${service_state}"
 record_degraded "$remote_state" "$service_state"
 exit 0

@@ -47,6 +47,8 @@ actor ArchiveReclamationCoordinator {
     private let casEvictor: ArchiveCASEvictor
     private let profileResolver: ClaudeCodeProfileResolver
     private let productPool: DatabasePool
+    private let remoteReplicationEnabled: Bool
+    private let remoteAvailability: @Sendable () async throws -> Bool
     private let testHooks: ArchiveReclamationCoordinatorTestHooks
     private var cycleTask: Task<EngramServiceArchiveReclamationRunResponse, Never>?
     private var lastError: String?
@@ -58,6 +60,8 @@ actor ArchiveReclamationCoordinator {
         catalog: ArchiveCatalog,
         cas: ImmutableArchiveCAS,
         profileResolver: ClaudeCodeProfileResolver? = nil,
+        remoteReplicationEnabled: Bool = true,
+        remoteAvailability: @escaping @Sendable () async throws -> Bool = { true },
         testHooks: ArchiveReclamationCoordinatorTestHooks = .init()
     ) throws {
         self.settingsURL = settingsURL
@@ -70,6 +74,8 @@ actor ArchiveReclamationCoordinator {
             homeDirectory: EngramUserDataDirectory.resolvedHomeDirectory(environment: environment),
             settingsURL: settingsURL
         )
+        self.remoteReplicationEnabled = remoteReplicationEnabled
+        self.remoteAvailability = remoteAvailability
         self.testHooks = testHooks
         var configuration = Configuration()
         configuration.readonly = true
@@ -143,7 +149,7 @@ actor ArchiveReclamationCoordinator {
                 error: result.error
             )
         }
-        let task = Task { [self] in executeCycle(now: now) }
+        let task = Task { [self] in await executeCycle(now: now) }
         cycleTask = task
         let result = await task.value
         cycleTask = nil
@@ -155,12 +161,28 @@ actor ArchiveReclamationCoordinator {
         _ = await runNow(now: now)
     }
 
-    private func executeCycle(now: Date) -> EngramServiceArchiveReclamationRunResponse {
+    private func executeCycle(now: Date) async -> EngramServiceArchiveReclamationRunResponse {
         let settings = loadSettings()
         let leases = recoveryLeases(now: now)
+        var remotesReady = false
+        do {
+            try Task.checkCancellation()
+            if remoteReplicationEnabled {
+                remotesReady = try await remoteAvailability()
+            } else {
+                remotesReady = false
+            }
+            try Task.checkCancellation()
+        } catch is CancellationError {
+            lastError = "cancelled"
+            return response(error: "cancelled")
+        } catch {
+            // A remote probe failure is a fail-closed reclamation pause.
+        }
         let reclamationEnabled = settings.reclamation.enabled
             && settings.reclamationConfigurationError == nil
             && leases != nil
+            && remotesReady
         let context = ArchiveReclamationContext(
             enabled: reclamationEnabled,
             hotWindowDays: settings.reclamation.hotWindowDays,

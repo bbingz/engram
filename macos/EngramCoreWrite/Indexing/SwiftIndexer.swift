@@ -89,13 +89,13 @@ public final class SwiftIndexer {
     /// Logs each per-snapshot failure so a silent fake-success cannot happen.
     private func writeBatchCountingSuccesses(_ batch: [ScannedSnapshot]) throws -> Int {
         let snapshots = batch.map(\.snapshot)
-        let result = try sink.upsertBatch(snapshots, reason: .initialScan)
+        let result = try sink.upsertBatch(
+            snapshots,
+            fileIndexStates: batch.map(\.fileState),
+            reason: .initialScan
+        )
         var merged = 0
-        // Pair file_index_state by batch index, not session id. Some adapters
-        // (notably gemini-cli) can emit the same sessionId for distinct
-        // locators in one batch; uniqueKeysWithValues would fatal on that.
-        // upsertBatch preserves input order, so index pairing is stable.
-        for (index, item) in result.results.enumerated() {
+        for item in result.results {
             if item.action == .failure {
                 Self.log.error(
                     "session upsert failed: session=\(item.sessionId) error=\(item.error ?? "unknown")"
@@ -105,8 +105,6 @@ public final class SwiftIndexer {
             if item.action == .merge {
                 merged += 1
             }
-            guard index < batch.count, let state = batch[index].fileState else { continue }
-            try upsertFileIndexStateIsolated(state, source: state.source, locator: state.locator)
         }
         return merged
     }
@@ -198,11 +196,13 @@ public final class SwiftIndexer {
                     knownIndexedState?.needsInstructionBackfill == true
                     && Self.reliableInstructionSources.contains(adapter.source)
                     && (knownParseState?.parseStatus ?? .ok) == .ok
-                // Gemini/Kimi can change without touching the main locator and
-                // intentionally reparse here. Copilot exposes a complete composite
-                // identity, so unchanged terminal inputs can safely skip.
+                // Gemini can change without touching the main locator and still
+                // reparses here. Copilot and Kimi expose complete composite
+                // identities, so unchanged terminal inputs can safely skip.
                 if skipUnchangedFileLocators,
-                   (!Self.usesCompositeInputs(adapter.source) || adapter.source == .copilot),
+                   (!Self.usesCompositeInputs(adapter.source)
+                       || adapter.source == .copilot
+                       || adapter.source == .kimi),
                    let currentStat,
                    !needsInstructionBackfill,
                    FileIndexDecision.decide(
@@ -335,16 +335,32 @@ public final class SwiftIndexer {
                         // costs and other read paths stay identical.
                         let provableSkip = Self.isProvableSkip(info: info, locator: locator)
                         let stats = computeStats(messages: scan.messages, provableSkip: provableSkip)
-                        let fileState = scan.parseFailure == nil ? currentStat.map {
-                            FileIndexState.success(
-                                source: adapter.source,
-                                locator: locator,
-                                stat: $0,
-                                now: Date(),
-                                parsedOffset: scan.checkpointParsedOffset,
-                                boundaryHash: scan.checkpointBoundaryHash
-                            )
-                        } : nil
+                        let fileState: FileIndexState?
+                        if scan.parseFailure == nil {
+                            fileState = currentStat.map { stat in
+                                FileIndexState.success(
+                                    source: adapter.source,
+                                    locator: locator,
+                                    stat: stat,
+                                    now: Date(),
+                                    parsedOffset: scan.checkpointParsedOffset,
+                                    boundaryHash: scan.checkpointBoundaryHash
+                                )
+                            }
+                        } else if let parseFailure = scan.parseFailure {
+                            fileState = currentStat.map { stat in
+                                FileIndexState.failure(
+                                    source: adapter.source,
+                                    locator: locator,
+                                    stat: stat,
+                                    failure: parseFailure,
+                                    previous: fileIndexStates?[locator],
+                                    now: Date()
+                                )
+                            }
+                        } else {
+                            fileState = nil
+                        }
                         let snapshot = buildSnapshot(info: info, locator: locator, stats: stats)
                         if excludedSnapshotSources.contains(snapshot.source) {
                             try suppressExcludedSnapshot(snapshot)
@@ -363,15 +379,6 @@ public final class SwiftIndexer {
                             } catch {
                                 throw SnapshotConsumerError(underlying: error)
                             }
-                        }
-                        if let parseFailure = scan.parseFailure {
-                            try recordFileIndexFailure(
-                                source: adapter.source,
-                                locator: locator,
-                                stat: currentStat,
-                                failure: parseFailure,
-                                previous: fileIndexStates?[locator]
-                            )
                         }
                     }
                 } catch is CancellationError {
@@ -1016,7 +1023,7 @@ public final class SwiftIndexer {
     // reflected in the main locator. Main-file FileIndexDecision short-circuits
     // would permanently retain stale parent/cwd/content after aux-only rewrites.
     private static func usesCompositeInputs(_ source: SourceName) -> Bool {
-        source == .kimi || source == .geminiCli || source == .copilot
+        source == .kimi || source == .geminiCli || source == .copilot || source == .cursor
     }
 
     private static func fileIndexStat(

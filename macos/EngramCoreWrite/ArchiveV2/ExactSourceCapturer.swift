@@ -162,11 +162,11 @@ public struct ExactSourceCapturer: Sendable {
             expectedSHA256: manifestSHA256
         )
         defer { try? cas.discardStaged(stagedManifest) }
-        let capture = try catalog.recordCapture(canonicalManifestBytes: canonicalBytes)
-        for staged in streamed.stagedChunks {
+        let stagedContent = streamed.stagedChunks + [stagedManifest]
+        for staged in stagedContent {
             _ = try cas.publishStaged(staged)
         }
-        _ = try cas.publishStaged(stagedManifest)
+        let capture = try catalog.recordCapture(canonicalManifestBytes: canonicalBytes)
         return ArchiveCaptureResult(capture: capture, manifest: manifest)
     }
 

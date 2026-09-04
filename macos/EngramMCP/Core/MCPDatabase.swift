@@ -210,7 +210,7 @@ final class MCPDatabase {
         SELECT \(groupExpr) AS key,
                COUNT(*) AS sessionCount,
                SUM(message_count) AS messageCount,
-               SUM(CASE WHEN tier IS NOT NULL AND tier IN ('skip', 'lite') THEN 0 ELSE user_message_count END) AS userMessageCount,
+               SUM(user_message_count) AS userMessageCount,
                SUM(assistant_message_count) AS assistantMessageCount,
                SUM(tool_message_count) AS toolMessageCount
         FROM sessions s
@@ -593,7 +593,7 @@ final class MCPDatabase {
                 OrderedJSONValue.object([
                     ("time", .string(toLocalDateTime(stringValue(row["activity_time"])))),
                     ("source", .string(stringValue(row["source"]) ?? "unknown")),
-                    ("summary", .string(stringValue(row["summary"]) ?? "（无摘要）")),
+                    ("summary", .string(redactedSessionMetadata(row["summary"]) ?? "（无摘要）")),
                     ("sessionId", .string(stringValue(row["id"]) ?? "")),
                     ("messageCount", .int(intValue(row["message_count"]))),
                 ])
@@ -1069,7 +1069,12 @@ final class MCPDatabase {
         )
         let vectors = try await client.embed([query])
         guard let queryVector = vectors.first, !queryVector.isEmpty else { return [] }
-        guard queryVector.count == storedDim else { return [] }
+        guard queryVector.count == storedDim else {
+            throw EmbeddingError.dimensionMismatch(
+                expected: storedDim,
+                actual: queryVector.count
+            )
+        }
 
         let candidates = try insightEmbeddingCandidates(
             model: storedModel,
@@ -1237,6 +1242,26 @@ final class MCPDatabase {
             ])
         }
 
+        // H2: CJK and short Latin queries use LIKE (same as app/service), so
+        // do not reject them at the 3-char FTS gate. L-a: still honor the
+        // app/service 2-character floor so 1-char LIKE cannot over-recall.
+        if normalizedQuery.count < 2 {
+            let searchModes: [OrderedJSONValue]
+            switch effectiveMode {
+            case "semantic":
+                searchModes = [.string("semantic")]
+            case "hybrid", "both":
+                searchModes = [.string("keyword"), .string("semantic")]
+            default:
+                searchModes = normalizedQuery.isEmpty ? [] : [.string("keyword")]
+            }
+            return .object([
+                ("results", .array([])),
+                ("query", .string(query)),
+                ("searchModes", .array(searchModes)),
+            ])
+        }
+
         // Availability gate (SessionVectorSearchAvailability): never silent
         // keyword fallback for semantic/hybrid when vectors are not usable.
         let availability = semanticRequested
@@ -1244,17 +1269,6 @@ final class MCPDatabase {
             : .unavailable
         if semanticRequested, !availability.isUsable {
             throw SearchError.modeUnavailable(effectiveMode)
-        }
-
-        // H2: CJK and short Latin queries use LIKE (same as app/service), so
-        // do not reject them at the 3-char FTS gate. L-a: still honor the
-        // app/service 2-character floor so 1-char LIKE cannot over-recall.
-        if normalizedQuery.count < 2 {
-            return .object([
-                ("results", .array([])),
-                ("query", .string(query)),
-                ("searchModes", .array(normalizedQuery.isEmpty ? [] : [.string("keyword")])),
-            ])
         }
 
         if semanticRequested {
@@ -1820,7 +1834,7 @@ final class MCPDatabase {
         if sortBy == "score" {
             sessions.sort { intValue($0["quality_score"]) > intValue($1["quality_score"]) }
         } else {
-            sessions.sort { (stringValue($0["start_time"]) ?? "") > (stringValue($1["start_time"]) ?? "") }
+            sessions.sort { (stringValue($0["activity_time"]) ?? "") > (stringValue($1["activity_time"]) ?? "") }
         }
 
         var parts: [String] = []
@@ -1852,7 +1866,7 @@ final class MCPDatabase {
             let source = stringValue(row["source"]) ?? "unknown"
             let origin = stringValue(row["origin"])
             let sourceLabel = origin == nil || origin == "local" ? source : "\(origin!)/\(source)"
-            let date = toLocalDate(stringValue(row["start_time"]))
+            let date = toLocalDate(stringValue(row["activity_time"]))
             let line = "[\(sourceLabel)] \(date) — \(summary)\n"
             if totalChars + line.count > maxChars { break }
             parts.append(line)
@@ -2060,11 +2074,11 @@ final class MCPDatabase {
             return nil
         }
         let lines = try queue.read { db in
-            (try? String.fetchAll(
+            try String.fetchAll(
                 db,
                 sql: "SELECT content FROM sessions_fts WHERE session_id = ? ORDER BY rowid",
                 arguments: [sessionId]
-            )) ?? []
+            )
         }
         return (record.summary, lines)
     }
@@ -2517,18 +2531,19 @@ final class MCPDatabase {
     private func listContextSessions(projectName: String, cwd: String) throws -> [Row] {
         let projects = try resolveProjectAliases([projectName])
         let visibilityConditions = defaultSessionVisibilityConditions(alias: "s")
+        let activityTime = SearchFilterPredicates.activityTimeSQL(alias: "s")
         return try queue.read { db in
             if !projects.isEmpty {
                 let placeholders = Array(repeating: "?", count: projects.count).joined(separator: ",")
                 let rows = try Row.fetchAll(
                     db,
                     sql: """
-                    SELECT s.*
+                    SELECT s.*, \(activityTime) AS activity_time
                     FROM sessions s
                     WHERE \(visibilityConditions.joined(separator: " AND "))
                       AND s.orphan_status IS NULL
                       AND s.project IN (\(placeholders))
-                    ORDER BY s.start_time DESC
+                    ORDER BY activity_time DESC
                     LIMIT 50
                     """,
                     arguments: StatementArguments(projects)
@@ -2539,12 +2554,12 @@ final class MCPDatabase {
             return try Row.fetchAll(
                 db,
                 sql: """
-                SELECT s.*
+                SELECT s.*, \(activityTime) AS activity_time
                 FROM sessions s
                 WHERE \(visibilityConditions.joined(separator: " AND "))
                   AND s.orphan_status IS NULL
                   AND s.project = ?
-                ORDER BY s.start_time DESC
+                ORDER BY activity_time DESC
                 LIMIT 50
                 """,
                 arguments: [cwd]
@@ -2853,7 +2868,7 @@ private func toolAnalyticsObject(from row: Row, groupBy: String) -> OrderedJSONV
         ("callCount", .int(intValue(row["callCount"]))),
     ]
     if groupBy == "session" {
-        entries.append(("label", valueOrNull(stringValue(row["label"]))))
+        entries.append(("label", valueOrNull(redactedSessionMetadata(row["label"]))))
         entries.append(("toolCount", .int(intValue(row["toolCount"]))))
     } else if groupBy == "project" {
         entries.append(("toolCount", .int(intValue(row["toolCount"]))))

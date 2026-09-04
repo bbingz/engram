@@ -214,6 +214,21 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
+    func testCursorVirtualLocatorsSkipSizeGuardInPageAndFullReaders_repro() throws {
+        let source = try source("macos/EngramMCP/Core/MCPTranscriptReader.swift")
+        let pageStart = try XCTUnwrap(source.range(of: "static func readMessagePage("))
+        let fullStart = try XCTUnwrap(source.range(of: "static func readMessages("))
+        let guardStart = try XCTUnwrap(source.range(of: "private static func requiresFullJSONTranscriptGuard("))
+        let pageBody = source[pageStart.lowerBound..<fullStart.lowerBound]
+        let fullBody = source[fullStart.lowerBound..<guardStart.lowerBound]
+        let virtualGuard = "!isVirtualCursorLocator(filePath: filePath, source: source)"
+
+        XCTAssertTrue(pageBody.contains(virtualGuard))
+        XCTAssertTrue(fullBody.contains(virtualGuard))
+        XCTAssertTrue(source.contains("filePath.contains(\"?composer=\")"))
+        XCTAssertTrue(source.contains("filePath.hasPrefix(\"cursor-modern:\")"))
+    }
+
     func testRemoteLocatorRendersSnapshotNotFilesystem_repro() throws {
         let responses = try rpcSession(
             [
@@ -259,6 +274,36 @@ final class EngramMCPExecutableTests: XCTestCase {
             ]
         )
         XCTAssertTrue(messages.allSatisfy { $0["role"]?.stringValue == "assistant" })
+    }
+
+    func testRemoteSnapshotFTSFailureDoesNotClaimCompleteTranscript_repro() throws {
+        let responses = try rpcSession(
+            [
+                #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-fixture-01","page":1}}}"#,
+            ],
+            prepare: { sandbox in
+                let writer = try XCTUnwrap(sandbox.databaseKeeper)
+                try writer.write { db in
+                    try db.execute(
+                        sql: """
+                            UPDATE sessions
+                            SET file_path = 'remote://hq/mcp-fixture-01',
+                                source_locator = 'remote://hq/mcp-fixture-01',
+                                origin = 'hq'
+                            WHERE id = 'mcp-fixture-01'
+                            """
+                    )
+                    try db.execute(sql: "DROP TABLE sessions_fts")
+                }
+            }
+        )
+
+        let result = try XCTUnwrap(responses.first?["result"])
+        XCTAssertEqual(result["isError"]?.boolValue, true, "\(result)")
+        XCTAssertNil(
+            result["structuredContent"]?["messages"],
+            "an unreadable FTS snapshot must not be presented as a complete transcript"
+        )
     }
 
     func testVisiblePageWindowUsesMetadataForLaterPageFailures_repro() throws {
@@ -446,6 +491,20 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertNil(result["structuredContent"]?["results"], "must not return keyword results")
     }
 
+    func testShortSemanticQueriesDoNotClaimProviderUnavailable_repro() throws {
+        let capture = try rpc(
+            #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"A","mode":"semantic","limit":5}}}"#
+        )
+
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertNotEqual(result["isError"]?.boolValue, true, "\(result)")
+        XCTAssertEqual(result["structuredContent"]?["results"]?.arrayValue?.count, 0)
+        XCTAssertEqual(
+            result["structuredContent"]?["searchModes"]?.arrayValue?.compactMap(\.stringValue),
+            ["semantic"]
+        )
+    }
+
     func testContextAndSessionSchemasBoundNumericInputs() throws {
         let capture = try rpc(
             """
@@ -498,6 +557,31 @@ final class EngramMCPExecutableTests: XCTestCase {
             false,
             "generate_summary must not be auto-approved as read-only"
         )
+    }
+
+    func testProjectUndoAdvertisesDestructiveHint_repro() throws {
+        let capture = try rpc(
+            #"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#
+        )
+        let tools = try XCTUnwrap(capture.ordered["result"]?["tools"]?.arrayValue)
+        let projectUndo = try XCTUnwrap(tools.first { $0["name"]?.stringValue == "project_undo" })
+
+        XCTAssertEqual(projectUndo["annotations"]?["readOnlyHint"]?.boolValue, false)
+        XCTAssertEqual(projectUndo["annotations"]?["destructiveHint"]?.boolValue, true)
+    }
+
+    func testToolAndPromptArgumentsMustBeObjects_repro() throws {
+        let tool = try rpc(
+            #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"stats","arguments":[]}}"#
+        )
+        XCTAssertEqual(tool.response.error?.code, -32602)
+        XCTAssertEqual(tool.response.error?.message, "arguments must be an object")
+
+        let prompt = try rpc(
+            #"{"jsonrpc":"2.0","id":2,"method":"prompts/get","params":{"name":"engram:catch-up","arguments":[]}}"#
+        )
+        XCTAssertEqual(prompt.response.error?.code, -32602)
+        XCTAssertEqual(prompt.response.error?.message, "arguments must be an object")
     }
 
     /// Wave 7D H06 (repro): tools/list must advertise generate_summary as mutating.
@@ -783,6 +867,47 @@ final class EngramMCPExecutableTests: XCTestCase {
         let text = contents.first?["text"]?.stringValue ?? ""
         XCTAssertTrue(text.contains("\"session\""), text)
         XCTAssertTrue(text.contains("\"messages\""), text)
+    }
+
+    func testResourceReadSessionKeepsLargeStructuredTranscript_repro() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let transcript = temp.appendingPathComponent("large-resource.jsonl")
+        let payload = String(repeating: "resource transcript payload ", count: 12)
+        let lines = (1...50).map { index in
+            let role = index.isMultiple(of: 2) ? "assistant" : "user"
+            return #"{"timestamp":"2026-01-01T00:00:00.000Z","type":"response_item","payload":{"type":"message","role":"\#(role)","content":[{"type":"input_text","text":"\#(payload)message \#(index)"}]}}"#
+        }
+        try (lines.joined(separator: "\n") + "\n")
+            .write(to: transcript, atomically: true, encoding: .utf8)
+
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-large-resource"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "codex",
+            filePath: transcript.path,
+            messageCount: 50,
+            userMessageCount: 25,
+            assistantMessageCount: 25,
+            toolMessageCount: 0
+        )
+
+        let capture = try rpc(
+            #"{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"engram://session/mcp-transcript-01"}}"#,
+            environment: ["ENGRAM_MCP_DB_PATH": dbPath]
+        )
+        XCTAssertNil(capture.response.error, capture.rawLine)
+        let text = try XCTUnwrap(
+            capture.ordered["result"]?["contents"]?.arrayValue?.first?["text"]?.stringValue,
+            capture.rawLine
+        )
+        XCTAssertGreaterThan(text.count, 4_096)
+        XCTAssertTrue(text.contains("message 50"), text)
+        XCTAssertFalse(text.contains("Read structuredContent"), text)
     }
 
     func testRemovedGetRulesToolAndRuleResourcesAreUnavailable() throws {
@@ -1486,13 +1611,16 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(includeRaw?["default"]?.boolValue, false)
     }
 
-    /// L06: project_review description root count must match the scanner list
-    /// (the canonical catalog currently has 13 entries; never hardcode a stale count).
+    /// L06: project_review description root count must match the scanner list;
+    /// derive the canonical catalog count at runtime instead of hardcoding it.
     func testProjectReviewDescriptionUsesScannerRootCount_repro() throws {
+        let home = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
         let capture = try rpc(
             """
             {"jsonrpc":"2.0","id":1,"method":"tools/list"}
-            """
+            """,
+            environment: ["HOME": home.path]
         )
         guard case .array(let tools)? = capture.ordered["result"]?["tools"],
               let review = tools.first(where: { $0["name"]?.stringValue == "project_review" })
@@ -1506,7 +1634,8 @@ final class EngramMCPExecutableTests: XCTestCase {
             description.range(of: #"all \d+ AI session roots"#, options: .regularExpression) != nil,
             description
         )
-        XCTAssertTrue(description.contains("all 13 AI session roots"), description)
+        let expectedRootCount = ProjectReviewPathSupport.sourceRoots(homeDirectory: home).count
+        XCTAssertTrue(description.contains("all \(expectedRootCount) AI session roots"), description)
     }
 
     func testMCPDatabaseRetriesTransientMissingFTSTables() throws {
@@ -5010,6 +5139,119 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(server.requestCount, 0)
     }
 
+    func testGetSessionReadsLegacyCursorVirtualLocatorWithoutPhysicalFileStat_repro() throws {
+        let responses = try rpcSession(
+            [
+                #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01","page":1}}}"#,
+            ],
+            prepare: { sandbox in
+                let cursorDB = sandbox.root
+                    .appendingPathComponent(
+                        "Library/Application Support/Cursor/User/globalStorage/state.vscdb"
+                    )
+                try FileManager.default.createDirectory(
+                    at: cursorDB.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                let queue = try DatabaseQueue(path: cursorDB.path)
+                try queue.write { db in
+                    try db.execute(sql: "CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)")
+                    try db.execute(
+                        sql: "INSERT INTO cursorDiskKV (key, value) VALUES (?, ?), (?, ?), (?, ?)",
+                        arguments: [
+                            "composerData:mcp-legacy", #"{"composerId":"mcp-legacy"}"#,
+                            "bubbleId:mcp-legacy:u1", #"{"type":1,"text":"legacy cursor user"}"#,
+                            "bubbleId:mcp-legacy:a1", #"{"type":2,"text":"legacy cursor assistant"}"#,
+                        ]
+                    )
+                }
+                let writer = try XCTUnwrap(sandbox.databaseKeeper)
+                try writer.write { db in
+                    try db.execute(
+                        sql: "UPDATE sessions SET source = 'cursor', file_path = ? WHERE id = 'mcp-transcript-01'",
+                        arguments: ["\(cursorDB.path)?composer=mcp-legacy"]
+                    )
+                }
+            }
+        )
+
+        let structured = try XCTUnwrap(responses.first?["result"]?["structuredContent"])
+        XCTAssertNotEqual(responses.first?["result"]?["isError"]?.boolValue, true)
+        XCTAssertEqual(
+            structured["messages"]?.arrayValue?.compactMap { $0["content"]?.stringValue },
+            ["legacy cursor user", "legacy cursor assistant"]
+        )
+    }
+
+    func testGetSessionReadsModernCursorVirtualLocatorWithoutPhysicalFileStat_repro() throws {
+        let responses = try rpcSession(
+            [
+                #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01","page":1}}}"#,
+            ],
+            prepare: { sandbox in
+                let sessionID = "mcp-modern"
+                let store = sandbox.root
+                    .appendingPathComponent(".cursor/chats/workspace/\(sessionID)/store.db")
+                try FileManager.default.createDirectory(
+                    at: store.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                let queue = try DatabaseQueue(path: store.path)
+                try queue.write { db in
+                    try db.execute(sql: "CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB)")
+                    try db.execute(sql: "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+                    try db.execute(
+                        sql: "INSERT INTO blobs (id, data) VALUES (?, ?), (?, ?)",
+                        arguments: [
+                            "u1", #"{"role":"user","content":"modern cursor user"}"#,
+                            "a1", #"{"role":"assistant","content":"modern cursor assistant"}"#,
+                        ]
+                    )
+                }
+                let payload = try JSONSerialization.data(withJSONObject: [
+                    "sessionId": sessionID,
+                    "storeDBPath": store.path,
+                ])
+                let locator = "cursor-modern:\(payload.base64EncodedString())"
+                let writer = try XCTUnwrap(sandbox.databaseKeeper)
+                try writer.write { db in
+                    try db.execute(
+                        sql: "UPDATE sessions SET source = 'cursor', file_path = ? WHERE id = 'mcp-transcript-01'",
+                        arguments: [locator]
+                    )
+                }
+            }
+        )
+
+        let structured = try XCTUnwrap(responses.first?["result"]?["structuredContent"])
+        XCTAssertNotEqual(responses.first?["result"]?["isError"]?.boolValue, true)
+        XCTAssertEqual(
+            structured["messages"]?.arrayValue?.compactMap { $0["content"]?.stringValue },
+            ["modern cursor user", "modern cursor assistant"]
+        )
+    }
+
+    func testGetSessionCursorPhysicalMissingLocatorFailsClosed_repro() throws {
+        let responses = try rpcSession(
+            [
+                #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01","page":1}}}"#,
+            ],
+            prepare: { sandbox in
+                let missing = sandbox.root.appendingPathComponent("missing-cursor-transcript.json")
+                let writer = try XCTUnwrap(sandbox.databaseKeeper)
+                try writer.write { db in
+                    try db.execute(
+                        sql: "UPDATE sessions SET source = 'cursor', file_path = ? WHERE id = 'mcp-transcript-01'",
+                        arguments: [missing.path]
+                    )
+                }
+            }
+        )
+
+        XCTAssertEqual(responses.first?["result"]?["isError"]?.boolValue, true)
+        XCTAssertNil(responses.first?["result"]?["structuredContent"]?["messages"])
+    }
+
     func testGetSessionMissingNonExactPhysicalLocatorMakesZeroArchiveRequests() throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -5789,6 +6031,43 @@ final class EngramMCPExecutableTests: XCTestCase {
         let actual = try normalizeUUIDs(in: prettyJSONString(from: XCTUnwrap(capture.ordered["result"])))
         let expected = try String(contentsOfFile: goldenPath, encoding: .utf8)
         XCTAssertEqual(actual, expected)
+    }
+
+    func testSaveInsightForwardsTypeAndSupersededID_repro() throws {
+        let server = try MockServiceSocketServer { request in
+            switch request.command {
+            case "status":
+                return try request.success(
+                    .object([
+                        "state": .string("running"),
+                        "total": .int(0),
+                        "todayParents": .int(0),
+                    ])
+                )
+            case "saveInsight":
+                return try request.success(
+                    .object([
+                        "id": .string("insight-new"),
+                        "content": .string("replacement fact"),
+                        "type": .string("semantic"),
+                        "superseded_id": .string("insight-old"),
+                    ]),
+                    databaseGeneration: 1
+                )
+            default:
+                throw NSError(domain: "MockServiceSocketServer", code: 117)
+            }
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let capture = try rpc(
+            #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"save_insight","arguments":{"content":"replacement fact","type":"semantic"}}}"#,
+            environment: ["ENGRAM_MCP_SERVICE_SOCKET": server.socketPath]
+        )
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        XCTAssertEqual(structured["type"]?.stringValue, "semantic")
+        XCTAssertEqual(structured["superseded_id"]?.stringValue, "insight-old")
     }
 
     func testDeleteInsightRoutesThroughServiceSocket() throws {
@@ -7871,12 +8150,14 @@ final class EngramMCPExecutableTests: XCTestCase {
             """)
             try db.execute(sql: "DELETE FROM insight_embeddings")
             try db.execute(sql: "DELETE FROM embedding_meta")
+            var storedVector = [Float](repeating: 0, count: 1_024)
+            storedVector[0] = 1
             try db.execute(
-                sql: "INSERT INTO insight_embeddings (insight_id, embedding, model, dim) VALUES ('insight-01', ?, 'test', 4)",
-                arguments: [encodeVector([1, 0, 0, 0])]
+                sql: "INSERT INTO insight_embeddings (insight_id, embedding, model, dim) VALUES ('insight-01', ?, 'BAAI/bge-m3', 1024)",
+                arguments: [encodeVector(storedVector)]
             )
             try db.execute(
-                sql: "INSERT INTO embedding_meta (id, provider, model, dimension) VALUES (1, 'test', 'test', 4)"
+                sql: "INSERT INTO embedding_meta (id, provider, model, dimension) VALUES (1, 'test', 'BAAI/bge-m3', 1024)"
             )
         }
 
@@ -7894,8 +8175,7 @@ final class EngramMCPExecutableTests: XCTestCase {
                 "ENGRAM_MCP_DB_PATH": dbPath,
                 "ENGRAM_EMBEDDING_BASE_URL": "http://127.0.0.1:\(server.port)/v1",
                 "ENGRAM_EMBEDDING_API_KEY": "test",
-                "ENGRAM_EMBEDDING_MODEL": "test",
-                "ENGRAM_EMBEDDING_DIM": "4",
+                "ENGRAM_EMBEDDING_MODEL": "BAAI/bge-m3",
             ]
         )
 

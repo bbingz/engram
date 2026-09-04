@@ -115,6 +115,11 @@ final class QwenAdapter: SessionAdapter, Sendable {
 
             guard !sessionId.isEmpty else { return .failure(.malformedJSON) }
             guard userCount + assistantCount + toolCount > 0 else { return .failure(.noVisibleMessages) }
+            if startTime.isEmpty,
+               let modificationDate = try? FileManager.default.attributesOfItem(atPath: locator)[.modificationDate] as? Date
+            {
+                startTime = Phase4AdapterSupport.isoFromSeconds(modificationDate.timeIntervalSince1970)
+            }
 
             return .success(
                 NormalizedSessionInfo(

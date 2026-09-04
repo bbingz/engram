@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Acquire a non-blocking exclusive lock, then exec. Exit 0 if busy."""
+"""Acquire a non-blocking exclusive lock, then run a command. Exit 0 if busy."""
 from __future__ import annotations
 
 import fcntl
 import os
+import signal
+import subprocess
 import sys
 
 
@@ -21,12 +23,27 @@ def main() -> int:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         return 0
-    # Python file descriptors are non-inheritable by default. Keep this one
-    # open across exec so the command, rather than this short wrapper, owns the
-    # advisory lock for its full lifetime.
-    os.set_inheritable(fd, True)
-    os.execvp(command[0], command)
-    return 127
+    # Keep the non-inheritable descriptor in this parent while the guarded
+    # command runs. Detached descendants therefore cannot outlive the command
+    # while still owning the watchdog lock.
+    child = subprocess.Popen(command)
+
+    def forward_signal(signum: int, _frame: object) -> None:
+        try:
+            child.send_signal(signum)
+        except ProcessLookupError:
+            pass
+
+    forwarded_signals = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+    previous_handlers = {
+        signum: signal.signal(signum, forward_signal) for signum in forwarded_signals
+    }
+    try:
+        returncode = child.wait()
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
+    return returncode if returncode >= 0 else 128 - returncode
 
 
 if __name__ == "__main__":

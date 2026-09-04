@@ -7,6 +7,83 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Complete confirmed-review remediation (2026-09-02; revalidated 2026-09-04)
+
+Reconciled the current review inventories against the base revision
+`33b6f8c95faaa7b2df25afe3037dd613e2085bde` and completed all 115 confirmed
+tracking IDs (109 implementation clusters): 44 IDs from the 2026-08-31
+verified review, 55 from the 2026-09-01 residual verification, 14 still-valid
+Round-12 residuals, and two watchdog additions. Rejected, duplicate-only, and
+stale rows remain excluded. The implementation used focused RED-to-GREEN
+regressions and independent final-source gates across app/service transport,
+MCP/search, adapters and stream caps, indexing/backfills, project move, Archive
+V2, remote sync/RemoteServer, sessions/timeline/transcript/settings UI logic,
+runtime-secret handling, CLI/release boundaries, and watchdog scripts. The
+frozen negative contracts for Copilot prefix retention, read-command writer
+classification, skip-child preservation, live-ingest inventory semantics, and
+OpenCode continued forks remain intact. The complete catalog and package gates
+are recorded in `.grok/all-confirmed-remediation-ledger-2026-09-02.md`.
+
+Fresh final gates passed: Node build, test typecheck, knip, and coverage (130
+files / 1,561 tests); lint exited zero with one warning and one schema-version
+info. The Engram scheme passed 2,588 tests (2,587 passed, one skipped), split
+into EngramCoreTests 1,449 (one skipped) and EngramTests 1,139. The 2026-09-02
+final-source results also passed EngramCoreTests 1,449 (one skipped),
+EngramMCPTests 265, EngramServiceCore 833 (one skipped), and
+EngramRemoteServerCore 161. A fresh Debug link of the EngramRemoteServer
+executable succeeded. Adapter parity,
+fixture schema, a temporary-output fixture regeneration with byte-for-byte DB
+comparison, MCP stats-golden consistency, and `git diff --check` also passed.
+No Xcode project, `project.yml`, Info.plist, build-cache, or generated product
+surface was added to the tracked diff.
+
+Fresh pre-commit revalidation on 2026-09-04 exposed one integration-only race
+in `EngramServiceLauncher`: a helper that wrote the expected writer-lock busy
+message to stderr and immediately exited zero could reach its termination
+handler before the asynchronous stderr reader recorded the message. The
+existing repro failed in the full Engram gate. The launcher now serializes the
+two read paths, closes its retained pipe writer after child termination, drains
+stderr to EOF, and only then classifies the exit. No arbitrary delay or new
+abstraction was added. The focused test, 20 consecutive executions, all 54
+launcher tests, and the complete Engram gate then passed; the final full count
+remained 2,588 (2,587 passed, one skipped).
+
+The first commit attempt then correctly stopped at the Xcode project drift
+hook. XcodeGen derived the parent group for two `../test-fixtures` UI resources
+from the checkout directory name, so generation in a worktree rewrote otherwise
+equivalent project identifiers and paths. `project.yml` now pins both resources
+to the explicit `UITestFixtures` group. The regression failed on the absent
+groups before the change; afterward, pinned XcodeGen 2.45.4 produced the same
+pbxproj bytes from two differently named checkouts, the focused gate passed 7
+tests with two skipped, test typecheck and Biome passed, and the real project
+drift gate returned `xcodeproj drift ok`. A real commit hook also exports an
+absolute linked-worktree `GIT_DIR`; after the script changed into `macos`, its
+unanchored Git queries therefore treated generated files as untracked. Those
+queries now use root-relative paths with `git -C "$ROOT_DIR"`. The linked-
+worktree hook regression failed before that change and passed afterward; the
+focused suite now passes 8 tests with two skipped, and both ordinary and
+explicit-`GIT_DIR` pre-commit runs pass.
+
+Focused final-source UI automation was attempted for Session Detail Find,
+SourcePulse status, and localized Archive Settings. XCUITest failed before any
+test body or screenshot ran. The 2026-09-04 fresh retry reported that the test
+runner hung before establishing its connection; its spindump remained in
+`AppleSystemPolicy` evaluation before normal test startup, and the unsigned
+App, Runner, and test bundle failed strict signature verification. The
+xcresult contains only the runner initialization failure.
+A comparison against a stale 2026-08-22 screenshot manifest is not current
+product evidence and is intentionally not treated as either a remediation
+failure or a visual pass. The deployed-server integration test remains the one
+Service skip, and no current signed release-package, remote CI, deployment, or
+machine-runtime verification was performed. Xcode 27 beta also reports existing
+Swift 6 migration warnings and one Service-test QoS runtime warning; none was
+introduced as a new tracked review item or promoted into a completion claim.
+
+This entry records source remediation and pre-deployment validation. Integration
+and production deployment require their own dated closeout. No tag, public
+release, notarization, Docker operation, or production-data mutation is part of
+this remediation pass.
+
 ### Commit and three-host deployment closeout (production, 2026-08-31)
 
 Committed the integrated source tree as

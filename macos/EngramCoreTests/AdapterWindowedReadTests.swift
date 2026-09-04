@@ -252,7 +252,7 @@ final class AdapterWindowedReadTests: XCTestCase {
         }
 
         XCTAssertEqual(contents, ["m0", "m1"])
-        XCTAssertFalse(result.truncated)
+        XCTAssertTrue(result.truncated, "a filled page is incomplete even though it has not reached the hard cap")
         XCTAssertNil(result.truncatedAt)
     }
 
@@ -488,6 +488,40 @@ final class AdapterWindowedReadTests: XCTestCase {
         XCTAssertNil(first.truncatedAt, "a filled produced page before the billable boundary is not terminal")
         XCTAssertEqual(second.messages.map(\.content), ["m2"])
         XCTAssertEqual(second.truncatedAt, 3)
+    }
+
+    func testLimitedJSONLStopsTransformingWhenProducedWindowFills_repro() throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("filled-window.jsonl")
+        try (0..<50)
+            .map { #"{"text":"m\#($0)"}"# }
+            .joined(separator: "\n")
+            .appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        var transformed: [String] = []
+        let result = try JSONLAdapterSupport.windowedMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions(offset: 2, limit: 3),
+            limits: ParserLimits(maxMessages: 100),
+            transform: { object in
+                guard let text = JSONLAdapterSupport.string(object["text"]) else { return nil }
+                transformed.append(text)
+                return NormalizedMessage(role: .user, content: text, timestamp: nil, toolCalls: nil, usage: nil)
+            }
+        )
+
+        XCTAssertEqual(result.messages.map(\.content), ["m2", "m3", "m4"])
+        XCTAssertEqual(
+            transformed,
+            ["m0", "m1", "m2", "m3", "m4"],
+            "a filled produced window must not keep transforming the remainder of the file"
+        )
+        XCTAssertFalse(
+            result.totalKnownComplete,
+            "stopping at a filled window cannot claim the unread remainder is complete"
+        )
     }
 
     func testWholeDocumentReportsRawCoordinateAtBillableCap_repro() throws {

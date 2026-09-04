@@ -2,6 +2,7 @@ import XCTest
 
 final class OnboardingTests: XCTestCase {
     func testForcedOnboardingLaunchesWithMockService() {
+        continueAfterFailure = false
         let app = XCUIApplication()
         TestLaunchConfig.onboarding.configure(app)
         app.launch()

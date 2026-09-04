@@ -286,21 +286,26 @@ public enum MigrationLogStore {
         var aliasCreated = false
 
         try db.inSavepoint {
-            let oldVariants = ProjectPathVariants.variants(oldPath)
-            let sourceLocatorMatch = pathMatch("source_locator")
-            let filePathMatch = pathMatch("file_path")
-            let cwdMatch = pathMatch("cwd")
-            let localReadablePathMatch = pathMatch("local_readable_path")
-            let sourceLocatorRewrite = rewrite("source_locator")
-            let filePathRewrite = rewrite("file_path")
-            let cwdRewrite = rewrite("cwd")
-            let localReadablePathRewrite = rewrite("local_readable_path")
-            let pathArgs: StatementArguments = [
-                "old0": oldVariants[0],
-                "old1": oldVariants[1],
-                "old2": oldVariants[2],
-                "new": newPath,
-            ]
+            let oldVariants = projectMovePatchSourcePaths(oldPath)
+            let sourceLocatorMatch = pathMatch("source_locator", variantCount: oldVariants.count)
+            let filePathMatch = pathMatch("file_path", variantCount: oldVariants.count)
+            let cwdMatch = pathMatch("cwd", variantCount: oldVariants.count)
+            let localReadablePathMatch = pathMatch(
+                "local_readable_path",
+                variantCount: oldVariants.count
+            )
+            let sourceLocatorRewrite = rewrite("source_locator", variantCount: oldVariants.count)
+            let filePathRewrite = rewrite("file_path", variantCount: oldVariants.count)
+            let cwdRewrite = rewrite("cwd", variantCount: oldVariants.count)
+            let localReadablePathRewrite = rewrite(
+                "local_readable_path",
+                variantCount: oldVariants.count
+            )
+            var pathBindings: [String: (any DatabaseValueConvertible)?] = ["new": newPath]
+            for (index, variant) in oldVariants.enumerated() {
+                pathBindings["old\(index)"] = variant
+            }
+            let pathArgs = StatementArguments(pathBindings)
             // 1a. Collect affected session ids BEFORE the UPDATE — Phase 3 undo
             // needs the authoritative list, not a prefix-reverse guess. Stored
             // in migration_log.detail.
@@ -528,10 +533,10 @@ public enum MigrationLogStore {
         )
     }
 
-    /// Path-match SQL fragment using substr boundary check. Caller binds
-    /// `:old0...:old2`; LIKE wildcards (`_`/`%`) are not interpreted.
-    private static func pathMatch(_ col: String) -> String {
-        (0..<3)
+    /// Path-match SQL fragment using substr boundary check. LIKE wildcards
+    /// (`_`/`%`) are not interpreted.
+    private static func pathMatch(_ col: String, variantCount: Int) -> String {
+        (0..<variantCount)
             .map { idx in
                 let old = ":old\(idx)"
                 let branch: String = """
@@ -542,10 +547,9 @@ public enum MigrationLogStore {
             .joined(separator: " OR ")
     }
 
-    /// Path-rewrite CASE expression using the same boundary check. Caller binds
-    /// `:old0...:old2` and `:new`.
-    private static func rewrite(_ col: String) -> String {
-        let branches = (0..<3)
+    /// Path-rewrite CASE expression using the same boundary check.
+    private static func rewrite(_ col: String, variantCount: Int) -> String {
+        let branches = (0..<variantCount)
             .map { idx in
                 let old = ":old\(idx)"
                 let branch: String = """

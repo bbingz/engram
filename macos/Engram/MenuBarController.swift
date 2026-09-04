@@ -20,6 +20,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     private let db: DatabaseManager
     private let serviceStatusStore: EngramServiceStatusStore
     private let serviceClient: any EngramServiceClientProtocol
+    private let serviceSocketPath: String
     private let fixedDate: Date?
     private let appStorage: UserDefaults
     private let isTestMode: Bool
@@ -53,6 +54,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         db: DatabaseManager,
         serviceStatusStore: EngramServiceStatusStore,
         serviceClient: any EngramServiceClientProtocol,
+        serviceSocketPath: String,
         fixedDate: Date? = nil,
         windowSize: NSSize? = nil,
         appStorage: UserDefaults = .standard,
@@ -63,6 +65,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         self.db = db
         self.serviceStatusStore = serviceStatusStore
         self.serviceClient = serviceClient
+        self.serviceSocketPath = serviceSocketPath
         self.fixedDate = fixedDate
         self.appStorage = appStorage
         self.isTestMode = isTestMode
@@ -279,7 +282,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
         let hostingController = NSHostingController(
             rootView: LocalizedRoot {
-                SettingsView()
+                SettingsView(serviceSocketPath: serviceSocketPath)
                     .environment(db)
                     .environment(serviceStatusStore)
                     .environment(\.engramServiceClient, serviceClient)
@@ -345,7 +348,11 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
         let hostingController = NSHostingController(
             rootView: LocalizedRoot {
-                MainWindowView(initialSession: initialSession, appStorage: appStorage)
+                MainWindowView(
+                    initialSession: initialSession,
+                    appStorage: appStorage,
+                    serviceSocketPath: serviceSocketPath
+                )
                     .environment(db)
                     .environment(serviceStatusStore)
                     .environment(\.engramServiceClient, serviceClient)

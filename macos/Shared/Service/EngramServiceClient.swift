@@ -98,7 +98,7 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
     }
 
     func generateSummary(_ request: EngramServiceGenerateSummaryRequest) async throws -> EngramServiceGenerateSummaryResponse {
-        try await command("generateSummary", payload: request, timeout: Self.frameBoundCommandTimeout)
+        try await command("generateSummary", payload: request, timeout: Self.mutatingCommandTimeout)
     }
 
     func generateProjectWorkTitles(_ request: EngramServiceGenerateProjectWorkTitlesRequest) async throws -> EngramServiceGenerateProjectWorkTitlesResponse {

@@ -362,8 +362,10 @@ targets:
       # Bundle the generator outputs explicitly. The tracked `macos/test-fixtures`
       # symlink is not copied reliably by Xcode in clean CI checkouts.
       - path: ../test-fixtures/test-index.sqlite
+        group: UITestFixtures
         buildPhase: resources
       - path: ../test-fixtures/sessions
+        group: UITestFixtures
         type: folder
         buildPhase: resources
     dependencies:

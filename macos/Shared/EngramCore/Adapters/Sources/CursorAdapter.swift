@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 struct CursorAdapterTestHooks: Sendable {
@@ -8,7 +9,7 @@ struct CursorAdapterTestHooks: Sendable {
     }
 }
 
-final class CursorAdapter: SessionAdapter, Sendable {
+final class CursorAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sendable {
     private static let modernLocatorPrefix = "cursor-modern:"
 
     private struct ModernLocator: Codable {
@@ -78,7 +79,9 @@ final class CursorAdapter: SessionAdapter, Sendable {
                 return (composerId, "\(dbPath)?composer=\(composerId)")
             }
         }
-        let modern = Self.modernLocators(under: cursorDataRoot)
+        let modern = Self.modernLocators(under: cursorDataRoot).filter {
+            confinedModernLocator($0) != nil
+        }
         let modernIDs = Set(modern.map(\.sessionId))
         // Refresh once per discovery pass so all composers in the pass share
         // one deterministic ownership snapshot without reopening every
@@ -88,8 +91,32 @@ final class CursorAdapter: SessionAdapter, Sendable {
             + modern.compactMap(Self.encodeModernLocator)
     }
 
+    func listSessionLocators(
+        modifiedSince: Date,
+        fileManager: FileManager
+    ) async throws -> [String] {
+        try await listSessionLocators().filter { locator in
+            guard let modern = decodeModernLocator(locator) else {
+                guard let legacy = Self.parseVirtualLocator(locator),
+                      let modifiedAt = try? fileManager.attributesOfItem(
+                          atPath: legacy.dbPath
+                      )[.modificationDate] as? Date else {
+                    return false
+                }
+                return modifiedAt >= modifiedSince
+            }
+            return Self.compositeModificationDate(modern, fileManager: fileManager)
+                .map { $0 >= modifiedSince } ?? false
+        }
+    }
+
+    func indexingInputIdentity(locator: String) -> IndexingInputIdentity? {
+        guard let modern = decodeModernLocator(locator) else { return nil }
+        return Self.compositeInputIdentity(modern)
+    }
+
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
-        if let modern = Self.decodeModernLocator(locator) {
+        if let modern = decodeModernLocator(locator) {
             return await parseModernSessionInfo(locator: locator, modern: modern)
         }
         guard let locatorParts = Self.parseVirtualLocator(locator) else {
@@ -111,8 +138,10 @@ final class CursorAdapter: SessionAdapter, Sendable {
             let bubbleResult = try Self.bubbles(
                 database: database,
                 composerData: composerData,
-                composerId: locatorParts.composerId
+                composerId: locatorParts.composerId,
+                maxMessages: limits.maxMessages
             )
+            if bubbleResult.hasMoreMessages { return .failure(.messageLimitExceeded) }
             let visibleBubbles = bubbleResult.bubbles.compactMap(Self.visibleBubble)
             let firstUserText = visibleBubbles.first { $0.role == .user }?.content
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -210,22 +239,18 @@ final class CursorAdapter: SessionAdapter, Sendable {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
-        if let modern = Self.decodeModernLocator(locator) {
-            return JSONLAdapterSupport.stream(try modernMessages(modern).messages)
+        let result = try await streamMessagesWithMetadata(locator: locator, options: options)
+        if options.limit == nil, result.truncatedAt != nil {
+            throw ParserFailure.messageLimitExceeded
         }
-        guard let locatorParts = Self.parseVirtualLocator(locator) else {
-            throw ParserFailure.unsupportedVirtualLocator
-        }
-
-        let messages = try await loadMessages(locator: locator, locatorParts: locatorParts)
-        return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
+        return result.messages
     }
 
     func streamMessagesWithMetadata(
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> StreamMessagesResult {
-        if let modern = Self.decodeModernLocator(locator) {
+        if let modern = decodeModernLocator(locator) {
             let result = try modernMessages(modern)
             return JSONLAdapterSupport.stream(
                 JSONLAdapterSupport.boundedWindowWithMetadata(
@@ -240,18 +265,19 @@ final class CursorAdapter: SessionAdapter, Sendable {
         guard let locatorParts = Self.parseVirtualLocator(locator) else {
             throw ParserFailure.unsupportedVirtualLocator
         }
-        let messages = try await loadMessages(locator: locator, locatorParts: locatorParts)
+        let load = try await loadMessages(locator: locator, locatorParts: locatorParts)
         return JSONLAdapterSupport.stream(
             JSONLAdapterSupport.boundedWindowWithMetadata(
-                messages,
+                load.messages,
                 options: options,
-                maxMessages: limits.maxMessages
+                maxMessages: limits.maxMessages,
+                hasMoreMessages: load.hasMoreMessages
             )
         )
     }
 
     func isAccessible(locator: String) async -> Bool {
-        if let modern = Self.decodeModernLocator(locator) {
+        if let modern = decodeModernLocator(locator) {
             return [modern.transcriptPath, modern.storeDBPath]
                 .compactMap { $0 }
                 .contains(where: JSONLAdapterSupport.fileExists)
@@ -267,13 +293,18 @@ final class CursorAdapter: SessionAdapter, Sendable {
         )
     }
 
+    private struct LegacyMessageReadResult {
+        let messages: [NormalizedMessage]
+        let hasMoreMessages: Bool
+    }
+
     private func loadMessages(
         locator: String,
         locatorParts: (dbPath: String, composerId: String)
-    ) async throws -> [NormalizedMessage] {
+    ) async throws -> LegacyMessageReadResult {
         let signature = ParsedTranscriptCache.Signature.forFile(locatorParts.dbPath)
         if let cached = await messageCache.cached(locator: locator, signature: signature) {
-            return cached
+            return LegacyMessageReadResult(messages: cached, hasMoreMessages: false)
         }
         do {
             let database = try Phase4SQLiteDatabase(path: locatorParts.dbPath)
@@ -290,7 +321,8 @@ final class CursorAdapter: SessionAdapter, Sendable {
             let bubbleResult = try Self.bubbles(
                 database: database,
                 composerData: composerData,
-                composerId: locatorParts.composerId
+                composerId: locatorParts.composerId,
+                maxMessages: limits.maxMessages
             )
             let messages = bubbleResult.bubbles.compactMap { bubble -> NormalizedMessage? in
                 guard let visible = Self.visibleBubble(bubble) else { return nil }
@@ -308,8 +340,13 @@ final class CursorAdapter: SessionAdapter, Sendable {
                         : nil
                 )
             }
-            await messageCache.store(locator: locator, signature: signature, messages: messages)
-            return messages
+            if !bubbleResult.hasMoreMessages {
+                await messageCache.store(locator: locator, signature: signature, messages: messages)
+            }
+            return LegacyMessageReadResult(
+                messages: messages,
+                hasMoreMessages: bubbleResult.hasMoreMessages
+            )
         } catch let failure as ParserFailure {
             throw failure
         } catch {
@@ -415,7 +452,10 @@ final class CursorAdapter: SessionAdapter, Sendable {
             )
         }
         guard let storeDBPath = modern.storeDBPath else { throw ParserFailure.fileMissing }
-        _ = try JSONLAdapterSupport.prepareFile(locator: storeDBPath, limits: limits)
+        let (storeURL, before) = try JSONLAdapterSupport.prepareFile(
+            locator: storeDBPath,
+            limits: limits
+        )
         let database = try Phase4SQLiteDatabase(path: storeDBPath)
         let rows = try database.query("""
             SELECT CAST(data AS TEXT) AS data
@@ -430,9 +470,19 @@ final class CursorAdapter: SessionAdapter, Sendable {
                 .flatMap(Phase4AdapterSupport.jsonObject(from:))
                 .flatMap(Self.modernMessage)
         }
+        testHooks.beforeModernIdentityValidation()
+        let parseFailure: ParserFailure?
+        do {
+            let after = try limits.fileIdentity(for: storeURL)
+            parseFailure = limits.isSameFileIdentity(before, after)
+                ? nil
+                : .fileModifiedDuringParse
+        } catch {
+            parseFailure = .fileModifiedDuringParse
+        }
         return ModernMessageReadResult(
             messages: Array(messages.prefix(limits.maxMessages)),
-            parseFailure: nil,
+            parseFailure: parseFailure,
             hasMoreMessages: messages.count > limits.maxMessages
         )
     }
@@ -541,11 +591,115 @@ final class CursorAdapter: SessionAdapter, Sendable {
         return modernLocatorPrefix + data.base64EncodedString()
     }
 
-    private static func decodeModernLocator(_ locator: String) -> ModernLocator? {
+    private static func decodeEncodedModernLocator(_ locator: String) -> ModernLocator? {
         guard locator.hasPrefix(modernLocatorPrefix),
               let data = Data(base64Encoded: String(locator.dropFirst(modernLocatorPrefix.count)))
         else { return nil }
         return try? JSONDecoder().decode(ModernLocator.self, from: data)
+    }
+
+    private func decodeModernLocator(_ locator: String) -> ModernLocator? {
+        guard let decoded = Self.decodeEncodedModernLocator(locator) else { return nil }
+        return confinedModernLocator(decoded)
+    }
+
+    private func confinedModernLocator(_ locator: ModernLocator) -> ModernLocator? {
+        guard Self.isSafeModernSessionID(locator.sessionId) else { return nil }
+        var confined = locator
+        if let storeDBPath = locator.storeDBPath {
+            guard let path = confinedModernPath(
+                storeDBPath,
+                expectedSubdirectory: "chats",
+                expectedRelativeComponents: [nil, locator.sessionId, "store.db"]
+            ) else { return nil }
+            confined.storeDBPath = path
+        }
+        if let transcriptPath = locator.transcriptPath {
+            guard let path = confinedModernPath(
+                transcriptPath,
+                expectedSubdirectory: "projects",
+                expectedRelativeComponents: [nil, "agent-transcripts", locator.sessionId, "\(locator.sessionId).jsonl"]
+            ) else { return nil }
+            confined.transcriptPath = path
+        }
+        guard confined.storeDBPath != nil || confined.transcriptPath != nil else { return nil }
+        return confined
+    }
+
+    private func confinedModernPath(
+        _ rawPath: String,
+        expectedSubdirectory: String,
+        expectedRelativeComponents: [String?]
+    ) -> String? {
+        let rawComponents = rawPath.split(separator: "/", omittingEmptySubsequences: false)
+        guard rawPath.hasPrefix("/"),
+              !rawPath.utf8.contains(0),
+              !rawComponents.contains("."),
+              !rawComponents.contains("..")
+        else { return nil }
+
+        let lexicalURL = URL(fileURLWithPath: rawPath).standardizedFileURL
+        let declaredRoot = cursorDataRoot
+            .appendingPathComponent(expectedSubdirectory, isDirectory: true)
+            .standardizedFileURL
+        guard let physicalRoot = Self.physicalURLResolvingExistingAncestors(declaredRoot),
+              let physicalURL = Self.physicalURLResolvingExistingAncestors(lexicalURL),
+              let relative = Self.relativeComponents(of: physicalURL, under: physicalRoot),
+              relative.count == expectedRelativeComponents.count
+        else { return nil }
+        for (actual, expected) in zip(relative, expectedRelativeComponents) {
+            if let expected, actual != expected { return nil }
+        }
+        return physicalURL.path
+    }
+
+    private static func isSafeModernSessionID(_ sessionID: String) -> Bool {
+        !sessionID.isEmpty
+            && sessionID != "."
+            && sessionID != ".."
+            && !sessionID.contains("/")
+            && !sessionID.utf8.contains(0)
+    }
+
+    private static func relativeComponents(of path: URL, under root: URL) -> [String]? {
+        let pathComponents = path.standardizedFileURL.pathComponents
+        let rootComponents = root.standardizedFileURL.pathComponents
+        guard pathComponents.count > rootComponents.count,
+              Array(pathComponents.prefix(rootComponents.count)) == rootComponents
+        else { return nil }
+        return Array(pathComponents.dropFirst(rootComponents.count))
+    }
+
+    private static func physicalURLResolvingExistingAncestors(_ url: URL) -> URL? {
+        var ancestor = url.standardizedFileURL
+        var missingComponents: [String] = []
+        if let resolved = realPath(ancestor.path) {
+            return missingComponents.reduce(URL(fileURLWithPath: resolved)) { partial, component in
+                partial.appendingPathComponent(component)
+            }
+            .standardizedFileURL
+        }
+        repeat {
+            let parent = ancestor.deletingLastPathComponent()
+            guard parent.path != ancestor.path else { return nil }
+            missingComponents.insert(ancestor.lastPathComponent, at: 0)
+            ancestor = parent
+            if let resolved = realPath(ancestor.path) {
+                return missingComponents.reduce(URL(fileURLWithPath: resolved)) { partial, component in
+                    partial.appendingPathComponent(component)
+                }
+                .standardizedFileURL
+            }
+        } while ancestor.path != "/"
+        return nil
+    }
+
+    private static func realPath(_ path: String) -> String? {
+        path.withCString { rawPath in
+            guard let resolved = Darwin.realpath(rawPath, nil) else { return nil }
+            defer { free(resolved) }
+            return String(cString: resolved)
+        }
     }
 
     private static func dataFromHex(_ string: String) -> Data? {
@@ -570,6 +724,60 @@ final class CursorAdapter: SessionAdapter, Sendable {
         return date.timeIntervalSince1970 * 1_000
     }
 
+    private static func modernInputPaths(_ modern: ModernLocator) -> [String] {
+        var paths = [modern.storeDBPath, modern.transcriptPath].compactMap { $0 }
+        if let storeDBPath = modern.storeDBPath {
+            paths.append(
+                URL(fileURLWithPath: storeDBPath)
+                    .deletingLastPathComponent()
+                    .appendingPathComponent("meta.json")
+                    .path
+            )
+        }
+        return Array(Set(paths))
+    }
+
+    private static func compositeModificationDate(
+        _ modern: ModernLocator,
+        fileManager: FileManager
+    ) -> Date? {
+        modernInputPaths(modern).compactMap { path in
+            try? fileManager.attributesOfItem(atPath: path)[.modificationDate] as? Date
+        }
+        .max()
+    }
+
+    private static func compositeInputIdentity(_ modern: ModernLocator) -> IndexingInputIdentity? {
+        let primaryPath = modern.transcriptPath ?? modern.storeDBPath
+        var totalSize: Int64 = 0
+        var newestNanos: Int64 = 0
+        var primaryInode: Int64?
+        var primaryDevice: Int64?
+        var foundPrimary = false
+
+        for path in modernInputPaths(modern) {
+            var info = stat()
+            guard lstat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { continue }
+            totalSize += Int64(info.st_size)
+            let modifiedNanos = Int64(info.st_mtimespec.tv_sec) * 1_000_000_000
+                + Int64(info.st_mtimespec.tv_nsec)
+            newestNanos = max(newestNanos, modifiedNanos)
+            if path == primaryPath {
+                foundPrimary = true
+                primaryInode = Int64(info.st_ino)
+                primaryDevice = Int64(info.st_dev)
+            }
+        }
+
+        guard foundPrimary else { return nil }
+        return IndexingInputIdentity(
+            sizeBytes: totalSize,
+            modifiedAtNanos: newestNanos,
+            locatorInode: primaryInode,
+            locatorDevice: primaryDevice
+        )
+    }
+
     private static func parseVirtualLocator(_ locator: String) -> (dbPath: String, composerId: String)? {
         guard let range = locator.range(of: "?composer=") else { return nil }
         return (
@@ -584,36 +792,69 @@ final class CursorAdapter: SessionAdapter, Sendable {
         /// (0 when the conversation is embedded in composerData). Mirrors the
         /// TS cursor adapter so per-session sizeBytes stays in parity.
         let rawBubbleBytes: Int64
+        let hasMoreMessages: Bool
     }
 
     private static func bubbles(
         database: Phase4SQLiteDatabase,
         composerData: Phase4AdapterSupport.JSONObject,
-        composerId: String
+        composerId: String,
+        maxMessages: Int
     ) throws -> BubbleLoadResult {
+        let boundedMaxMessages = max(maxMessages, 0)
+        let pageLimit = boundedMaxMessages == Int.max ? Int.max : boundedMaxMessages + 1
         if let conversation = JSONLAdapterSupport.array(composerData["conversation"]),
            !conversation.isEmpty
         {
+            var visibleBubbles: [Phase4AdapterSupport.JSONObject] = []
+            for value in conversation {
+                guard let bubble = JSONLAdapterSupport.object(value),
+                      visibleBubble(bubble) != nil
+                else { continue }
+                visibleBubbles.append(bubble)
+                if visibleBubbles.count > boundedMaxMessages { break }
+            }
             return BubbleLoadResult(
-                bubbles: conversation.compactMap { JSONLAdapterSupport.object($0) },
-                rawBubbleBytes: 0
+                bubbles: Array(visibleBubbles.prefix(boundedMaxMessages)),
+                rawBubbleBytes: 0,
+                hasMoreMessages: visibleBubbles.count > boundedMaxMessages
             )
         }
 
-        let rows = try database.query(
-            "SELECT value FROM cursorDiskKV WHERE key LIKE ? ORDER BY rowid ASC",
-            bindings: ["bubbleId:\(composerId):%"]
-        )
-        var bubbles: [Phase4AdapterSupport.JSONObject] = []
+        var visibleBubbles: [Phase4AdapterSupport.JSONObject] = []
         var rawBytes: Int64 = 0
-        for row in rows {
-            guard let value = row["value"] ?? nil else { continue }
-            rawBytes += Int64(value.utf8.count)
-            if let object = Phase4AdapterSupport.jsonObject(from: value) {
-                bubbles.append(object)
+        var offset = 0
+        while true {
+            let rows = try database.query(
+                "SELECT value FROM cursorDiskKV WHERE key LIKE ? ORDER BY rowid ASC LIMIT \(pageLimit) OFFSET \(offset)",
+                bindings: ["bubbleId:\(composerId):%"]
+            )
+            guard !rows.isEmpty else { break }
+            for row in rows {
+                guard let value = row["value"] ?? nil else { continue }
+                rawBytes += Int64(value.utf8.count)
+                guard let object = Phase4AdapterSupport.jsonObject(from: value),
+                      visibleBubble(object) != nil
+                else { continue }
+                visibleBubbles.append(object)
+                if visibleBubbles.count > boundedMaxMessages {
+                    return BubbleLoadResult(
+                        bubbles: Array(visibleBubbles.prefix(boundedMaxMessages)),
+                        rawBubbleBytes: rawBytes,
+                        hasMoreMessages: true
+                    )
+                }
             }
+            if rows.count < pageLimit { break }
+            let (nextOffset, overflow) = offset.addingReportingOverflow(rows.count)
+            guard !overflow else { throw ParserFailure.messageLimitExceeded }
+            offset = nextOffset
         }
-        return BubbleLoadResult(bubbles: bubbles, rawBubbleBytes: rawBytes)
+        return BubbleLoadResult(
+            bubbles: visibleBubbles,
+            rawBubbleBytes: rawBytes,
+            hasMoreMessages: false
+        )
     }
 
     private static func visibleBubble(

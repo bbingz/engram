@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public enum EngramRemoteBackendError: Error, Equatable {
@@ -5,9 +6,8 @@ public enum EngramRemoteBackendError: Error, Equatable {
     /// that is neither loopback nor a trusted private/VPN network. Use an HTTPS URL,
     /// or point at a private/Tailscale host (with `requireTLS` off).
     case insecureURL(String)
-    /// Hostname looked private (`.ts.net` / `.local`) but DNS resolved to a public
-    /// address — refuse cleartext so a misconfigured MagicDNS/mDNS path cannot
-    /// leak the bearer token onto the open internet.
+    /// Retained for source compatibility with older callers. Named hosts are no
+    /// longer eligible for cleartext transport, so new validation does not emit it.
     case resolvedHostNotPrivate(String)
     case notHTTPResponse
     case unexpectedStatus(Int)
@@ -31,8 +31,8 @@ struct RemoteOffloadTransportPolicySnapshot: Equatable {
 /// over HTTP(S). The bundle bytes travel in the clear over the connection, so the
 /// channel must provide confidentiality. Two acceptable channels:
 /// - HTTPS (TLS terminated at the server or a reverse proxy), or
-/// - plain HTTP over a trusted private network / VPN (LAN, Tailscale `100.64/10`,
-///   `.ts.net`, `.local`) — the common self-hosting case, where WireGuard / the
+/// - plain HTTP to a private/loopback IP literal over a trusted network / VPN
+///   (LAN, Tailscale `100.64/10`) — the common self-hosting case, where WireGuard / the
 ///   LAN already encrypts + authenticates the transport and a separate TLS cert is
 ///   redundant.
 ///
@@ -40,8 +40,8 @@ struct RemoteOffloadTransportPolicySnapshot: Equatable {
 /// `remoteOffloadRequireTLS` setting, which also defaults **true** / fail-closed)
 /// forces HTTPS for every non-loopback host. Plaintext to a PUBLIC host is refused
 /// in BOTH modes, so a misconfiguration can't leak the token onto the open internet.
-/// Named private hosts (`.ts.net` / `.local`) additionally require post-DNS
-/// resolution to private addresses before cleartext is allowed.
+/// Named hosts always require HTTPS: a one-time DNS check cannot constrain the
+/// address selected later by URLSession and would leave a DNS-rebinding window.
 ///
 /// Transport matches Archive V2 depth: ephemeral `URLSession` (no cookies/cache/
 /// credential storage/proxy), redirect rejection, final-URL match, and response
@@ -127,113 +127,71 @@ public final class EngramRemoteBackend: RemoteStorageBackend, @unchecked Sendabl
     // MARK: - URL policy
 
     static func validateURL(_ baseURL: URL, requireTLS: Bool) throws {
-        if baseURL.scheme?.lowercased() == "https" {
+        let scheme = baseURL.scheme?.lowercased()
+        if scheme == "https" {
             return
         }
-        let host = baseURL.host ?? ""
-        let allowed = isLoopbackHost(host) || (!requireTLS && isPrivateHost(host))
-        guard allowed else { throw EngramRemoteBackendError.insecureURL(baseURL.absoluteString) }
-
-        // Post-DNS private check: name-based private hosts (`.ts.net` / `.local`)
-        // must actually resolve to private/loopback addresses before cleartext.
-        // IP literals are already validated by `isPrivateHost`.
-        if !requireTLS, isNamedPrivateHost(host), !isLoopbackHost(host) {
-            let addresses = resolveHostAddresses(host)
-            guard !addresses.isEmpty else {
-                throw EngramRemoteBackendError.resolvedHostNotPrivate(host)
-            }
-            guard addresses.allSatisfy({ isPrivateHost($0) || isLoopbackHost($0) }) else {
-                throw EngramRemoteBackendError.resolvedHostNotPrivate(host)
-            }
+        guard scheme == "http", let host = baseURL.host, !host.isEmpty else {
+            throw EngramRemoteBackendError.insecureURL(baseURL.absoluteString)
         }
+        let allowed = requireTLS
+            ? isLoopbackHost(host)
+            : isPrivateHost(host)
+        guard allowed else { throw EngramRemoteBackendError.insecureURL(baseURL.absoluteString) }
     }
 
     static func isLoopbackHost(_ host: String) -> Bool {
-        ["127.0.0.1", "localhost", "::1"].contains(host.lowercased())
+        if let bytes = parseIPv4(host) {
+            return bytes[0] == 127
+        }
+        if let bytes = parseIPv6(host) {
+            return bytes.dropLast().allSatisfy { $0 == 0 } && bytes.last == 1
+        }
+        return false
     }
 
-    /// Hosts on a trusted private network where plaintext HTTP is acceptable when
-    /// `requireTLS` is off: RFC1918 / CGNAT(Tailscale `100.64/10`) / link-local
-    /// IPv4 literals, plus `.ts.net` (MagicDNS) and `.local` (mDNS) suffixes.
-    ///
-    /// SEC-H1: bare single-label names are **not** treated as private — DNS may
-    /// resolve them to a public address and cleartext would leak the bearer token.
+    /// Private/loopback IP literals where plaintext HTTP is acceptable when
+    /// `requireTLS` is off. `inet_pton` rejects every named or malformed host.
     static func isPrivateHost(_ host: String) -> Bool {
-        let h = host.lowercased()
-        guard !h.isEmpty else { return false }
-        if isNamedPrivateHost(h) { return true }
-        // IPv6 Tailscale ULA prefix fd7a:115c:a1e0::/48 (literal forms only).
-        if h.contains(":"),
-           h.hasPrefix("fd7a:115c:a1e0") || h.hasPrefix("[fd7a:115c:a1e0") {
+        if let octets = parseIPv4(host) {
+            switch (octets[0], octets[1]) {
+            case (10, _): return true                 // 10.0.0.0/8
+            case (127, _): return true                // 127.0.0.0/8 loopback
+            case (169, 254): return true              // 169.254.0.0/16 link-local
+            case (172, 16...31): return true          // 172.16.0.0/12
+            case (192, 168): return true              // 192.168.0.0/16
+            case (100, 64...127): return true         // 100.64.0.0/10 CGNAT / Tailscale
+            default: return false
+            }
+        }
+        guard let bytes = parseIPv6(host) else { return false }
+        if bytes.dropLast().allSatisfy({ $0 == 0 }) && bytes.last == 1 {
             return true
         }
-        let labels = h.split(separator: ".", omittingEmptySubsequences: false)
-        guard labels.count == 4 else { return false }
-        let octets = labels.compactMap { UInt8($0) }
-        guard octets.count == 4 else { return false }
-        switch (octets[0], octets[1]) {
-        case (10, _): return true                 // 10.0.0.0/8
-        case (127, _): return true                // 127.0.0.0/8 loopback
-        case (169, 254): return true              // 169.254.0.0/16 link-local
-        case (172, 16...31): return true          // 172.16.0.0/12
-        case (192, 168): return true              // 192.168.0.0/16
-        case (100, 64...127): return true         // 100.64.0.0/10 CGNAT / Tailscale
-        default: return false
+        switch (bytes[0], bytes[1]) {
+        case let (first, _) where first & 0xFE == 0xFC:
+            return true                               // fc00::/7 unique-local
+        case (0xFE, let second) where second & 0xC0 == 0x80:
+            return true                               // fe80::/10 link-local
+        default:
+            return false
         }
     }
 
-    static func isNamedPrivateHost(_ host: String) -> Bool {
-        let h = host.lowercased()
-        return h.hasSuffix(".ts.net") || h.hasSuffix(".local")
+    private static func parseIPv4(_ value: String) -> [UInt8]? {
+        var address = in_addr()
+        guard value.withCString({ inet_pton(AF_INET, $0, &address) }) == 1 else {
+            return nil
+        }
+        return withUnsafeBytes(of: address) { Array($0) }
     }
 
-    /// Test hook: when set, replaces getaddrinfo for post-DNS private checks.
-    public static var resolveAddressesForTesting: ((String) -> [String])?
-
-    /// Resolve A/AAAA for post-DNS private validation. Empty on failure.
-    static func resolveHostAddresses(_ host: String) -> [String] {
-        if let override = resolveAddressesForTesting {
-            return override(host)
+    private static func parseIPv6(_ value: String) -> [UInt8]? {
+        var address = in6_addr()
+        guard value.withCString({ inet_pton(AF_INET6, $0, &address) }) == 1 else {
+            return nil
         }
-        var hints = addrinfo(
-            ai_flags: AI_ADDRCONFIG,
-            ai_family: AF_UNSPEC,
-            ai_socktype: SOCK_STREAM,
-            ai_protocol: 0,
-            ai_addrlen: 0,
-            ai_canonname: nil,
-            ai_addr: nil,
-            ai_next: nil
-        )
-        var result: UnsafeMutablePointer<addrinfo>?
-        guard getaddrinfo(host, nil, &hints, &result) == 0, let first = result else {
-            return []
-        }
-        defer { freeaddrinfo(first) }
-
-        var addresses: [String] = []
-        var ptr: UnsafeMutablePointer<addrinfo>? = first
-        while let info = ptr {
-            if let sockaddr = info.pointee.ai_addr {
-                var hostBuffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                if getnameinfo(
-                    sockaddr,
-                    socklen_t(info.pointee.ai_addrlen),
-                    &hostBuffer,
-                    socklen_t(hostBuffer.count),
-                    nil,
-                    0,
-                    NI_NUMERICHOST
-                ) == 0 {
-                    let address = String(cString: hostBuffer)
-                    if !address.isEmpty {
-                        addresses.append(address)
-                    }
-                }
-            }
-            ptr = info.pointee.ai_next
-        }
-        return addresses
+        return withUnsafeBytes(of: address) { Array($0) }
     }
 
     // MARK: - Requests
@@ -481,9 +439,9 @@ private final class RemoteOffloadSessionDelegate: NSObject, URLSessionDataDelega
             return
         }
         if let error {
-            if (error as? URLError)?.code == .cancelled,
-               state.failure != nil {
-                // already handled
+            if (error as? URLError)?.code == .cancelled || Task.isCancelled {
+                state.continuation.resume(throwing: CancellationError())
+                return
             }
             state.continuation.resume(
                 throwing: EngramRemoteBackendError.transport(String(describing: error))

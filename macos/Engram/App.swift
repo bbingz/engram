@@ -71,7 +71,7 @@ struct EngramApp: App {
     var body: some Scene {
         Settings {
             LocalizedRoot {
-                SettingsView()
+                SettingsView(serviceSocketPath: appDelegate.environment.serviceSocketPath)
                     .environment(appDelegate.db)
                     .environment(appDelegate.serviceStatusStore)
                     .environment(\.engramServiceClient, appDelegate.serviceClient)
@@ -146,11 +146,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
 
-        // Open SQLite
-        do {
-            try db.open()
-        } catch {
-            EngramLogger.error("Database open failed", module: .database, error: error)
+        // Pool creation can wait for SQLite's busy timeout during an exclusive
+        // maintenance window, so do not block menu-bar setup on the main actor.
+        Task.detached(priority: .userInitiated) { [db] in
+            do {
+                try db.open()
+            } catch {
+                EngramLogger.error("Database open failed", module: .database, error: error)
+            }
         }
 
         if environment.autoStartService {
@@ -206,6 +209,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 db: db,
                 serviceStatusStore: serviceStatusStore,
                 serviceClient: serviceClient,
+                serviceSocketPath: environment.serviceSocketPath,
                 fixedDate: environment.fixedDate,
                 windowSize: environment.windowSize,
                 appStorage: appStorage,

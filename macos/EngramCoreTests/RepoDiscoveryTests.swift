@@ -32,7 +32,7 @@ final class RepoDiscoveryTests: XCTestCase {
                 for _ in 0..<count {
                     n += 1
                     try db.execute(
-                        sql: "INSERT INTO sessions(id, source, start_time, cwd, file_path) VALUES (?, 'codex', '2026-05-08T09:00:00.000Z', ?, ?)",
+                        sql: "INSERT INTO sessions(id, source, start_time, cwd, file_path, instruction_count, human_turn_count) VALUES (?, 'codex', '2026-05-08T09:00:00.000Z', ?, ?, 2, 2)",
                         arguments: ["s\(n)", cwd, "/tmp/s\(n).jsonl"]
                     )
                 }
@@ -42,6 +42,25 @@ final class RepoDiscoveryTests: XCTestCase {
         let top2 = try writer.read { db in try RepoDiscovery.sessionCwdCounts(db, limit: 2) }
         XCTAssertEqual(top2.count, 2, "limit caps the candidate count")
         XCTAssertEqual(Set(top2.map(\.cwd)), ["/a", "/b"], "keeps the busiest cwds, drops the long tail")
+    }
+
+    func testSessionCwdCountsMatchesRepoBrowsePopulation_repro() throws {
+        try writer.write { db in
+            try insertSession(db, id: "human-root", cwd: "/work/r")
+            try insertSession(db, id: "confirmed-child", cwd: "/work/r")
+            try insertSession(db, id: "single-shot-root", cwd: "/work/r")
+            try db.execute(
+                sql: "UPDATE sessions SET parent_session_id = 'human-root' WHERE id = 'confirmed-child'"
+            )
+            try db.execute(
+                sql: "UPDATE sessions SET instruction_count = 0, human_turn_count = 1, user_message_count = 1 WHERE id = 'single-shot-root'"
+            )
+
+            XCTAssertEqual(
+                try RepoDiscovery.sessionCwdCounts(db),
+                [GitRepoCandidate(cwd: "/work/r", sessionCount: 1)]
+            )
+        }
     }
 
     // Injected-probe path: deterministic field assertions + session_count
@@ -435,8 +454,11 @@ final class RepoDiscoveryTests: XCTestCase {
     private func insertSession(_ db: Database, id: String, cwd: String) throws {
         try db.execute(
             sql: """
-            INSERT INTO sessions(id, source, start_time, end_time, cwd, file_path)
-            VALUES (?, 'codex', '2026-05-23T10:00:00.000Z', '2026-05-23T11:00:00.000Z', ?, ?)
+            INSERT INTO sessions(
+                id, source, start_time, end_time, cwd, file_path,
+                instruction_count, human_turn_count
+            )
+            VALUES (?, 'codex', '2026-05-23T10:00:00.000Z', '2026-05-23T11:00:00.000Z', ?, ?, 2, 2)
             """,
             arguments: [id, cwd, "/tmp/\(id).jsonl"]
         )

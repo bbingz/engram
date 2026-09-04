@@ -170,6 +170,16 @@ final class AgentsViewTests: XCTestCase {
         )
     }
 
+    func testAgentsIndexTicksUseBrowseReloadCoalescer_repro() throws {
+        let s = try source("macos/Engram/Views/Pages/AgentsView.swift")
+        XCTAssertTrue(s.contains("@State private var lastFilterKey: [AnyHashable]?"))
+        XCTAssertTrue(s.contains("BrowseReloadCoalescer.plan("))
+        XCTAssertTrue(s.contains("if plan.debounce"))
+        XCTAssertTrue(s.contains("Task.sleep(for: BrowseReloadCoalescer.debounceInterval)"))
+        XCTAssertTrue(s.contains("lastFilterKey = filterKey"))
+        XCTAssertTrue(s.contains("BrowseReloadCoalescer.shouldApplyLoad("))
+    }
+
     func testAgentParentQualificationAndKpisUseFullSQLPopulation() throws {
         try insertTestSession(at: dbPath, id: "unrelated-new", startTime: "2026-08-22T10:00:00Z")
         try insertTestSession(at: dbPath, id: "parent", startTime: "2026-08-20T10:00:00Z")

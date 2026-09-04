@@ -122,6 +122,42 @@ final class SettingsHonestyTests: XCTestCase {
         XCTAssertTrue(ioBody.contains("mutateEngramSettings"))
     }
 
+    /// core-read-2 / ui-search-settings-4: the archive Settings section must
+    /// keep settings.json and SQLite reads/writes off MainActor.
+    @MainActor
+    func testLiveIngestBlockingIOIsOffMain_repro() async throws {
+        let text = try source("macos/Engram/Views/SettingsView.swift")
+
+        let sectionStart = try XCTUnwrap(text.range(of: "private struct LiveIngestSettingsSection"))
+        let sectionEnd = try XCTUnwrap(
+            text.range(of: "private struct SettingsSidebarRow", range: sectionStart.upperBound..<text.endIndex)
+        )
+        let section = String(text[sectionStart.lowerBound..<sectionEnd.lowerBound])
+        XCTAssertTrue(section.contains(".task { await load() }"), section)
+        XCTAssertFalse(section.contains(".onAppear {\n            load()"), section)
+
+        for function in ["private func load() async", "private func persistEnabled(_ value: Bool) async"] {
+            XCTAssertTrue(section.contains(function), "missing async \(function):\n\(section)")
+        }
+        XCTAssertGreaterThanOrEqual(
+            section.components(separatedBy: "await LiveIngestSettingsIO.runOffMain").count - 1,
+            3,
+            "load, persist, and post-reset status reads must all cross the detached I/O seam"
+        )
+
+        let ioStart = try XCTUnwrap(text.range(of: "enum LiveIngestSettingsIO"))
+        let ioEnd = try XCTUnwrap(
+            text.range(of: "private struct SettingsSidebarRow", range: ioStart.upperBound..<text.endIndex)
+        )
+        let io = String(text[ioStart.lowerBound..<ioEnd.lowerBound])
+        XCTAssertTrue(io.contains("Task.detached"), io)
+
+        let ranOnMainThread = await LiveIngestSettingsIO.runOffMain {
+            Thread.isMainThread
+        }
+        XCTAssertFalse(ranOnMainThread)
+    }
+
     @MainActor
     func testAdvancedSettingsNewestSubmissionWinsWhenDetachedArrivalInverts_repro() async {
         let history = LockedAdvancedPersistenceHistory()

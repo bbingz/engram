@@ -416,6 +416,23 @@ final class SessionModelTests: XCTestCase {
         )
     }
 
+    func testSessionsBrowseStampsFavoritesFromRawIds_repro() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("macos/Engram/Views/Pages/SessionsPageView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertEqual(source.components(separatedBy: "db.favoriteIds()").count - 1, 2)
+        XCTAssertFalse(
+            source.contains("db.listFavorites()"),
+            "Browse and pagination need raw favorite membership; listFavorites remains the Starred browse query"
+        )
+    }
+
     func testTimelineAnnotatesFavoritesBeforeRendering_repro() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

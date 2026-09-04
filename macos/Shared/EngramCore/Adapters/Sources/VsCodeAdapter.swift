@@ -105,15 +105,11 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
-        let signature = ParsedTranscriptCache.Signature.forFile(locator)
-        let messages: [NormalizedMessage]
-        if let cached = await messageCache.cached(locator: locator, signature: signature) {
-            messages = cached
-        } else {
-            messages = try Self.buildMessages(locator: locator, limits: limits)
-            await messageCache.store(locator: locator, signature: signature, messages: messages)
+        let result = try await streamMessagesWithMetadata(locator: locator, options: options)
+        if options.limit == nil, result.truncatedAt != nil {
+            throw ParserFailure.messageLimitExceeded
         }
-        return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
+        return result.messages
     }
 
     func streamMessagesWithMetadata(
@@ -132,7 +128,7 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
             )
             messages = prefix.messages
             parseFailure = prefix.parseFailure
-            if parseFailure == nil {
+            if parseFailure == nil, messages.count <= limits.maxMessages {
                 await messageCache.store(locator: locator, signature: signature, messages: messages)
             }
         }

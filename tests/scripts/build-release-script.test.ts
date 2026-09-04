@@ -8,6 +8,7 @@
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -107,6 +108,7 @@ function buildBareApp(opts?: { forbidden?: string }): string {
 function runVerify(
   app: string,
   extraArgs: string[],
+  env: Record<string, string> = {},
 ): { code: number; out: string } {
   try {
     const out = execFileSync(
@@ -114,6 +116,7 @@ function runVerify(
       [verifyScript, app, '--adhoc', ...extraArgs],
       {
         encoding: 'utf8',
+        env: { ...process.env, ...env },
         stdio: ['ignore', 'pipe', 'pipe'],
       },
     );
@@ -214,6 +217,21 @@ describe('macOS release-verify bundle hygiene', () => {
       const { code, out } = runVerify(app, ['--hygiene-only']);
       expect(code).not.toBe(0);
       expect(out).toContain('forbidden');
+    });
+
+    it('fails closed when the hygiene find walk errors_repro', () => {
+      const app = buildStubApp();
+      const bin = join(workdir, 'bin');
+      const find = join(bin, 'find');
+      mkdirSync(bin);
+      writeFileSync(find, '#!/bin/sh\nexit 73\n');
+      chmodSync(find, 0o755);
+
+      const { code } = runVerify(app, ['--hygiene-only'], {
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+      });
+
+      expect(code).not.toBe(0);
     });
   });
 
@@ -513,6 +531,15 @@ describe('macOS release build script: no silent non-notarizable fallback', () =>
 
 describe('macOS release notarization verification', () => {
   const script = readFileSync(verifyScript, 'utf8');
+
+  it('requires Hardened Runtime before accepting an ad-hoc archive_repro', () => {
+    const runtimeCheck = script.indexOf("grep -Eq 'flags=.*runtime'");
+    const adhocSuccess = script.lastIndexOf('if [ "$ADHOC" -eq 1 ]; then');
+
+    expect(runtimeCheck).toBeGreaterThan(-1);
+    expect(adhocSuccess).toBeGreaterThan(-1);
+    expect(runtimeCheck).toBeLessThan(adhocSuccess);
+  });
 
   it('checks both the stapled ticket and Gatekeeper assessment', () => {
     expect(script).toContain('--require-notarization');

@@ -255,6 +255,8 @@ final class MCPActivationOnboardingTests: XCTestCase {
 
     func testUITestConfigureFailsClosedBeforeReportingSetupFailure_repro() throws {
         let launch = try source("macos/EngramUITests/Helpers/TestLaunchConfig.swift")
+        let onboardingTests = try source("macos/EngramUITests/Tests/FullTests/OnboardingTests.swift")
+        let signingTest = try source("macos/EngramUITests/Tests/SmokeTests/SigningVerificationTest.swift")
         let environment = try XCTUnwrap(launch.range(of: "app.launchEnvironment = ["))
         let firstFailure = try XCTUnwrap(launch.range(of: "XCTFail("))
         let testMode = try XCTUnwrap(
@@ -263,5 +265,12 @@ final class MCPActivationOnboardingTests: XCTestCase {
 
         XCTAssertLessThan(environment.lowerBound, firstFailure.lowerBound)
         XCTAssertLessThan(testMode.lowerBound, firstFailure.lowerBound)
+        for caller in [onboardingTests, signingTest] {
+            let failFast = try XCTUnwrap(caller.range(of: "continueAfterFailure = false"))
+            let configure = try XCTUnwrap(caller.range(of: ".configure(app)"))
+            let launch = try XCTUnwrap(caller.range(of: "app.launch()"))
+            XCTAssertLessThan(failFast.lowerBound, configure.lowerBound)
+            XCTAssertLessThan(configure.lowerBound, launch.lowerBound)
+        }
     }
 }

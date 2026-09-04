@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Pluggable blob store for offloaded session bundles, keyed by content hash.
@@ -28,9 +29,9 @@ public extension RemoteStorageBackend {
         _ = try BundleCodec.decode(encodedBundle, expectedSessionId: bundle.sessionId)
 
         let key = BundleCodec.contentKey(bundle)
-        guard try await head(key: key) else {
+        let exists = try await head(key: key)
+        if !exists {
             try await put(key: key, data: encodedBundle)
-            return
         }
 
         let storedData = try await get(key: key)
@@ -84,7 +85,7 @@ public struct LocalDirectoryBackend: RemoteStorageBackend {
     }
 
     public func put(key: String, data: Data) async throws {
-        try data.write(to: try url(for: key), options: .atomic)
+        try Self.durableReplace(data, at: try url(for: key))
     }
 
     public func get(key: String) async throws -> Data {
@@ -114,13 +115,7 @@ public struct LocalDirectoryBackend: RemoteStorageBackend {
         var remainingBytes = Self.maximumCatalogManifestBytes
         for name in manifestKeys {
             let target = try url(for: name)
-            guard let fileSize = try? target.resourceValues(forKeys: [.fileSizeKey]).fileSize,
-                  fileSize <= EngramRemoteBackend.maxBundleBytes,
-                  let data = try? Data(contentsOf: target),
-                  data.count <= EngramRemoteBackend.maxBundleBytes
-            else {
-                continue
-            }
+            guard let data = Self.readCatalogManifest(at: target) else { continue }
             guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 continue
             }
@@ -143,5 +138,82 @@ public struct LocalDirectoryBackend: RemoteStorageBackend {
             throw RemoteSyncError.catalogTooLarge
         }
         return data
+    }
+
+    private static func readCatalogManifest(at target: URL) -> Data? {
+        guard let fileSize = try? target.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+              fileSize >= 0,
+              fileSize <= Self.maximumCatalogManifestBytes,
+              let handle = try? FileHandle(forReadingFrom: target) else {
+            return nil
+        }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: Self.maximumCatalogManifestBytes + 1),
+              data.count <= Self.maximumCatalogManifestBytes else {
+            return nil
+        }
+        return data
+    }
+
+    private static func durableReplace(_ data: Data, at target: URL) throws {
+        let parent = target.deletingLastPathComponent()
+        let temporary = parent.appendingPathComponent(
+            ".engram-remote-\(UUID().uuidString).tmp",
+            isDirectory: false
+        )
+        let opened = Darwin.open(
+            temporary.path,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            S_IRUSR | S_IWUSR
+        )
+        guard opened >= 0 else { throw posixError() }
+        var descriptor = opened
+        var temporaryExists = true
+        defer {
+            if descriptor >= 0 { _ = Darwin.close(descriptor) }
+            if temporaryExists { _ = Darwin.unlink(temporary.path) }
+        }
+
+        try writeAll(data, to: descriptor)
+        guard Darwin.fsync(descriptor) == 0 else { throw posixError() }
+        guard Darwin.close(descriptor) == 0 else {
+            descriptor = -1
+            throw posixError()
+        }
+        descriptor = -1
+        guard Darwin.rename(temporary.path, target.path) == 0 else { throw posixError() }
+        temporaryExists = false
+        try fsyncDirectory(parent)
+    }
+
+    private static func writeAll(_ data: Data, to descriptor: Int32) throws {
+        try data.withUnsafeBytes { bytes in
+            guard let baseAddress = bytes.baseAddress else { return }
+            var offset = 0
+            while offset < bytes.count {
+                let count = Darwin.write(
+                    descriptor,
+                    baseAddress.advanced(by: offset),
+                    bytes.count - offset
+                )
+                if count < 0, errno == EINTR { continue }
+                guard count > 0 else { throw posixError() }
+                offset += count
+            }
+        }
+    }
+
+    private static func fsyncDirectory(_ directory: URL) throws {
+        let descriptor = Darwin.open(
+            directory.path,
+            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+        )
+        guard descriptor >= 0 else { throw posixError() }
+        defer { _ = Darwin.close(descriptor) }
+        guard Darwin.fsync(descriptor) == 0 else { throw posixError() }
+    }
+
+    private static func posixError() -> POSIXError {
+        POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
 }

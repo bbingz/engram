@@ -38,14 +38,20 @@ public final class SessionSnapshotWriter {
             : suppliedPathParent
         let merge = try mergeSessionSnapshot(current: current, incoming: snapshot)
         guard merge.action == .merge else {
-            try upsertCostRowIfNeededForNoop(snapshot)
-            if !snapshot.toolCallCounts.isEmpty {
-                try replaceSessionToolsIfDifferent(snapshot)
+            // Noop sidecars are still one snapshot write. Keep the DELETE+INSERT
+            // replacements in a savepoint so a later sidecar failure cannot
+            // commit an empty or partially replaced tool/work-beat set.
+            try db.inSavepoint {
+                try upsertCostRowIfNeededForNoop(snapshot)
+                if !snapshot.toolCallCounts.isEmpty {
+                    try replaceSessionToolsIfDifferent(snapshot)
+                }
+                if shouldReplaceSessionWorkBeats(snapshot) {
+                    try replaceSessionWorkBeatsIfDifferent(snapshot)
+                }
+                try clearRecoveredOrphanStatus(sessionId: snapshot.id)
+                return .commit
             }
-            if shouldReplaceSessionWorkBeats(snapshot) {
-                try replaceSessionWorkBeatsIfDifferent(snapshot)
-            }
-            try clearRecoveredOrphanStatus(sessionId: snapshot.id)
             return SessionWriteResult(action: .noop, changeSet: merge.changeSet)
         }
 

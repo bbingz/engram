@@ -30,27 +30,33 @@ public enum ReviewScan {
         newPath: String,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> ReviewResult {
-        let canonicalOldPath = ProjectPathVariants.canonicalEncodingPath(
-            ProjectReviewPathSupport.expandHome(oldPath, homeDirectory: homeDirectory)
+        let expandedOldPath = ProjectReviewPathSupport.expandHome(
+            oldPath,
+            homeDirectory: homeDirectory
         )
-        let canonicalNewPath = ProjectPathVariants.canonicalEncodingPath(
-            ProjectReviewPathSupport.expandHome(newPath, homeDirectory: homeDirectory)
+        let expandedNewPath = ProjectReviewPathSupport.expandHome(
+            newPath,
+            homeDirectory: homeDirectory
         )
+        let oldPaths = projectMovePatchSourcePaths(expandedOldPath)
         let roots = SessionSources.roots(homeDirectory: homeDirectory)
-        let ownCcDir = ClaudeCodeProjectDir.encode(canonicalNewPath)
+        let ownCcDirs = Set(projectDirEncodingNames(
+            for: expandedNewPath,
+            encode: ClaudeCodeProjectDir.encode
+        ))
 
         var ownSet = Set<String>()
         var otherSet = Set<String>()
 
         for root in roots {
-            let hits = SessionSources.findReferencingFiles(
-                root: root.path, needle: canonicalOldPath
-            )
+            let hits = Set(oldPaths.flatMap {
+                SessionSources.findReferencingFiles(root: root.path, needle: $0)
+            })
             for hit in hits {
                 let isOther: Bool
                 if root.id == .claudeCode, isUnder(path: hit, parent: root.path) {
                     let firstSeg = firstSegment(of: hit, after: root.path)
-                    isOther = firstSeg != ownCcDir
+                    isOther = !ownCcDirs.contains(firstSeg)
                 } else {
                     isOther = false
                 }
@@ -63,7 +69,7 @@ public enum ReviewScan {
             if root.id == .opencode {
                 for hit in OpenCodeSQLiteProjectMove.residualReferenceLocators(
                     root: root.path,
-                    oldPath: canonicalOldPath
+                    oldPaths: oldPaths
                 ) {
                     ownSet.insert(hit)
                 }

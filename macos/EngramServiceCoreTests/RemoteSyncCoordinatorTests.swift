@@ -176,6 +176,196 @@ final class RemoteSyncCoordinatorTests: XCTestCase {
         }
     }
 
+    func testPreCancelledServiceOffloadDoesNotTouchBackendOrChargeFailure_repro() async throws {
+        let paths = try makePaths()
+        defer { try? FileManager.default.removeItem(at: paths.runtime.deletingLastPathComponent()) }
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        _ = try await gate.performWriteCommand(name: "migrate") { try $0.migrate() }
+        _ = try await gate.performWriteCommand(name: "seedCancelledOffload") { writer in
+            try writer.write { db in
+                for index in 1...2 {
+                    let sessionId = "cancel-offload-\(index)"
+                    try db.execute(
+                        sql: """
+                        INSERT INTO sessions(
+                            id, source, start_time, end_time, file_path, size_bytes,
+                            hidden_at, offload_state
+                        ) VALUES (?, 'codex', '2024-01-01T00:00:00Z',
+                                  '2024-01-01T01:00:00Z', ?, 8192,
+                                  '2024-02-01T00:00:00Z', 'local')
+                        """,
+                        arguments: [sessionId, "/tmp/\(sessionId).jsonl"]
+                    )
+                    try db.execute(
+                        sql: "INSERT INTO sessions_fts(session_id, content) VALUES (?, ?)",
+                        arguments: [sessionId, "cancelled offload \(index)"]
+                    )
+                }
+                try OffloadRepo.enqueueOffload(
+                    db,
+                    sessionIds: ["cancel-offload-1", "cancel-offload-2"],
+                    generation: nil
+                )
+            }
+        }
+
+        let backend = ServiceDrainCancellationBackend(mode: .recordOnly)
+        let coordinator = RemoteSyncCoordinator(
+            gate: gate,
+            backend: backend,
+            config: RemoteSyncConfig(
+                enabled: true,
+                storeRoot: paths.store,
+                policy: OffloadPolicy(coldAgeDays: 90),
+                offloadBatch: 20,
+                rehydrateBatch: 20,
+                vacuumFreelistThreshold: 1_000_000
+            ),
+            peer: "test-peer"
+        )
+
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await coordinator.runOnce(now: Date())
+        }
+        guard case let .failure(error) = await task.result else {
+            return XCTFail("a pre-cancelled service drain must throw CancellationError")
+        }
+        XCTAssertTrue(error is CancellationError)
+        let observations = await backend.observations()
+        XCTAssertEqual(observations, .init(headKeys: [], getKeys: []))
+
+        let queueState = try await gate.performReadCommand(name: "verifyCancelledOffload") { writer in
+            try writer.read { db in
+                (
+                    try String.fetchAll(
+                        db,
+                        sql: "SELECT status FROM offload_queue ORDER BY session_id"
+                    ),
+                    try Int.fetchOne(db, sql: "SELECT SUM(attempts) FROM offload_queue") ?? -1,
+                    try Int.fetchOne(
+                        db,
+                        sql: "SELECT COUNT(*) FROM offload_queue WHERE last_error IS NOT NULL"
+                    ) ?? -1
+                )
+            }
+        }.value
+        XCTAssertEqual(queueState.0, ["pending", "pending"])
+        XCTAssertEqual(queueState.1, 0)
+        XCTAssertEqual(queueState.2, 0)
+    }
+
+    func testCancelledServiceRehydrateStopsBeforeLaterJobsAndDoesNotChargeFailure_repro() async throws {
+        let paths = try makePaths()
+        defer { try? FileManager.default.removeItem(at: paths.runtime.deletingLastPathComponent()) }
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        _ = try await gate.performWriteCommand(name: "migrate") { try $0.migrate() }
+        let seededBundles = (1...2).map { index in
+            BundleCodec.makeBundle(
+                sessionId: "cancel-rehydrate-\(index)",
+                ftsContents: ["rehydrate \(index)"],
+                summary: nil,
+                summaryMessageCount: nil,
+                messageCount: 1,
+                userMessageCount: 1,
+                assistantMessageCount: 0,
+                toolMessageCount: 0,
+                systemMessageCount: 0
+            )
+        }
+        let expectedKeys = Set(seededBundles.map(BundleCodec.contentKey))
+        _ = try await gate.performWriteCommand(name: "seedCancelledRehydrate") { writer in
+            try writer.write { db in
+                for bundle in seededBundles {
+                    let sessionId = bundle.sessionId
+                    let key = BundleCodec.contentKey(bundle)
+                    try db.execute(
+                        sql: """
+                        INSERT INTO sessions(
+                            id, source, start_time, file_path, size_bytes, offload_state
+                        ) VALUES (?, 'codex', '2024-01-01T00:00:00Z', ?, 8192, 'offloaded')
+                        """,
+                        arguments: [sessionId, "/tmp/\(sessionId).jsonl"]
+                    )
+                    try db.execute(
+                        sql: """
+                        INSERT INTO sync_ledger(
+                            session_id, remote_peer, remote_key, direction, content_hash
+                        ) VALUES (?, 'test-peer', ?, 'out', ?)
+                        """,
+                        arguments: [sessionId, key, bundle.contentHash]
+                    )
+                    try OffloadRepo.enqueueRehydrate(db, sessionId: sessionId)
+                }
+            }
+        }
+
+        let backend = ServiceDrainCancellationBackend(mode: .cancelFirstGet)
+        let coordinator = RemoteSyncCoordinator(
+            gate: gate,
+            backend: backend,
+            config: RemoteSyncConfig(
+                enabled: true,
+                storeRoot: paths.store,
+                policy: OffloadPolicy(coldAgeDays: 90),
+                offloadBatch: 20,
+                rehydrateBatch: 20,
+                vacuumFreelistThreshold: 1_000_000
+            ),
+            peer: "test-peer"
+        )
+
+        let task = Task { try await coordinator.runOnce(now: Date()) }
+        guard case let .failure(error) = await task.result else {
+            return XCTFail("the cancelled rehydrate drain must throw CancellationError")
+        }
+        XCTAssertTrue(error is CancellationError)
+        let observations = await backend.observations()
+        XCTAssertEqual(observations.headKeys, [])
+        XCTAssertEqual(observations.getKeys.count, 1)
+        XCTAssertTrue(expectedKeys.isSuperset(of: observations.getKeys))
+
+        let queueState = try await gate.performReadCommand(name: "verifyCancelledRehydrate") { writer in
+            try writer.read { db in
+                (
+                    try String.fetchAll(
+                        db,
+                        sql: "SELECT status FROM rehydrate_queue ORDER BY session_id"
+                    ),
+                    try Int.fetchOne(db, sql: "SELECT SUM(attempts) FROM rehydrate_queue") ?? -1,
+                    try Int.fetchOne(
+                        db,
+                        sql: "SELECT COUNT(*) FROM rehydrate_queue WHERE last_error IS NOT NULL"
+                    ) ?? -1
+                )
+            }
+        }.value
+        XCTAssertEqual(queueState.0, ["inflight", "inflight"])
+        XCTAssertEqual(queueState.1, 0)
+        XCTAssertEqual(queueState.2, 0)
+    }
+
+    func testServiceDrainLoopsCheckCancellationBeforeClaimedJobWork_repro() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macosRoot.appendingPathComponent("EngramService/Core/RemoteSyncCoordinator.swift"),
+            encoding: .utf8
+        )
+        let guardedLoop = """
+        for job in claimed {
+                    try Task.checkCancellation()
+                    do {
+        """
+
+        XCTAssertEqual(
+            source.components(separatedBy: guardedLoop).count - 1,
+            2,
+            "offload and rehydrate must check cancellation before each claimed job does any work"
+        )
+    }
+
     func testCoordinatorPreservesLocalFtsWhenExistingRemoteBundleHasWrongContent_repro() async throws {
         let paths = try makePaths()
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
@@ -715,7 +905,7 @@ final class RemoteSyncCoordinatorTests: XCTestCase {
 
     /// Preview is read-only: push preview reports the actionable count + sample
     /// titles without uploading; pull preview reflects what would import.
-    func testPreviewProjectSyncIsReadOnly() async throws {
+    func testPreviewProjectSyncIsReadOnly_repro() async throws {
         let store = URL(fileURLWithPath: "/tmp", isDirectory: true)
             .appendingPathComponent("engram-syncprev-\(UUID().uuidString.prefix(8))", isDirectory: true)
             .appendingPathComponent("store", isDirectory: true)
@@ -726,9 +916,12 @@ final class RemoteSyncCoordinatorTests: XCTestCase {
         _ = try await gateB.performWriteCommand(name: "migrate") { try $0.migrate() }
         try await seedLocal(gateA, id: "a1", fts: ["alpha"])
 
+        let pushGeneration = await gateA.currentDatabaseGeneration()
         let pushPreview = try await coordA.previewProjectSync(
             project: "demo", cwd: "/Users/bing/-Code-/demo", direction: "push"
         )
+        let pushGenerationAfterPreview = await gateA.currentDatabaseGeneration()
+        XCTAssertEqual(pushGenerationAfterPreview, pushGeneration)
         XCTAssertEqual(pushPreview.direction, "push")
         XCTAssertEqual(pushPreview.actionable, 1)
         XCTAssertEqual(pushPreview.skipped, 0)
@@ -740,9 +933,12 @@ final class RemoteSyncCoordinatorTests: XCTestCase {
 
         // After a real push, B's pull preview shows 1 actionable.
         _ = try await coordA.pushProject(project: "demo", cwd: "/Users/bing/-Code-/demo")
+        let pullGeneration = await gateB.currentDatabaseGeneration()
         let pullPreview = try await coordB.previewProjectSync(
             project: "demo", cwd: "/Users/bing/-Code-/demo", direction: "pull"
         )
+        let pullGenerationAfterPreview = await gateB.currentDatabaseGeneration()
+        XCTAssertEqual(pullGenerationAfterPreview, pullGeneration)
         XCTAssertEqual(pullPreview.direction, "pull")
         XCTAssertEqual(pullPreview.actionable, 1)
         XCTAssertEqual(pullPreview.samples.map(\.id), ["a1"],
@@ -753,6 +949,34 @@ final class RemoteSyncCoordinatorTests: XCTestCase {
                              "pull preview must not import")
             }
         }
+    }
+
+    func testProjectSyncPureReadsUseReadGateAndPagedCandidates_repro() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let coordinator = try String(
+            contentsOf: macosRoot.appendingPathComponent("EngramService/Core/RemoteSyncCoordinator.swift"),
+            encoding: .utf8
+        )
+        let offloadRepo = try String(
+            contentsOf: macosRoot.appendingPathComponent("EngramCoreWrite/RemoteSync/OffloadRepo.swift"),
+            encoding: .utf8
+        )
+
+        for command in [
+            "remoteOffloadRead",
+            "remoteRehydrateRead",
+            "syncPushRead",
+            "syncPreviewPushRead",
+            "syncPreviewImportCheck",
+        ] {
+            XCTAssertTrue(coordinator.contains(#"performReadCommand(name: "\#(command)")"#))
+            XCTAssertFalse(coordinator.contains(#"performWriteCommand(name: "\#(command)")"#))
+        }
+        XCTAssertTrue(coordinator.contains("projectSyncPageSize"))
+        XCTAssertTrue(coordinator.contains("afterStart:"))
+        XCTAssertTrue(offloadRepo.contains("LIMIT ?"))
     }
 
     func testLiveCoordinatorExistsWhenOffloadDisabled_repro() throws {
@@ -3190,6 +3414,49 @@ private struct ExistingWrongBundleBackend: RemoteStorageBackend {
     func head(key: String) async throws -> Bool { true }
     func put(key: String, data: Data) async throws {}
     func get(key: String) async throws -> Data { data }
+    func delete(key: String) async throws {}
+    func catalog() async throws -> Data { Data() }
+}
+
+private actor ServiceDrainCancellationBackend: RemoteStorageBackend {
+    enum Mode: Sendable, Equatable {
+        case recordOnly
+        case cancelFirstGet
+    }
+
+    struct Observations: Sendable, Equatable {
+        let headKeys: [String]
+        let getKeys: Set<String>
+    }
+
+    private let mode: Mode
+    private var headKeys: [String] = []
+    private var getKeys: Set<String> = []
+
+    init(mode: Mode) {
+        self.mode = mode
+    }
+
+    func observations() -> Observations {
+        Observations(headKeys: headKeys, getKeys: getKeys)
+    }
+
+    func head(key: String) async throws -> Bool {
+        headKeys.append(key)
+        return false
+    }
+
+    func put(key: String, data: Data) async throws {}
+
+    func get(key: String) async throws -> Data {
+        getKeys.insert(key)
+        if mode == .cancelFirstGet, getKeys.count == 1 {
+            withUnsafeCurrentTask { $0?.cancel() }
+            throw CancellationError()
+        }
+        throw RemoteSyncError.bundleNotFound(key: key)
+    }
+
     func delete(key: String) async throws {}
     func catalog() async throws -> Data { Data() }
 }

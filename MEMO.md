@@ -2,6 +2,16 @@
 
 ## Changelog Memo
 
+### 2026-09-02（2026-09-04 复验）
+
+- [修复] 已按当前源码裁决完成四份清单中全部 115 个确认 ID（109 个实现簇），覆盖 High/Medium/Low 等全部确认问题；rejected、duplicate-only、stale 行保持排除，完整目录与分包证据见 `CHANGELOG.md` 和 `.grok/all-confirmed-remediation-ledger-2026-09-02.md`。
+- [验证] 2026-09-04 Node build/typecheck/knip/coverage 全绿（130 files / 1,561 tests），lint exit 0，Engram 2,588（1 skip）；2026-09-02 final-source 独立门为 Core 1,449（1 skip）、MCP 265、Service 833（1 skip）、Remote 161，RemoteServer executable Debug link、adapter parity、fixture 等价重生成字节比较及 diff check 通过。
+- [修复] 2026-09-04 提交前复验捕获到启动器 stderr drain 与退出分类竞态；原有 repro 在全量门中 RED。现以同一锁串行读取、子进程退出后关闭父端 writer 并 drain 到 EOF，再做 writer-busy 判定；无任意 sleep。focused、连续 20 次、launcher 54 项及 Engram 全量 2,588 项随后均通过。
+- [修复] 首次 commit 被 Xcode drift hook 拦下：两个仓库外 UI fixture 会把 worktree 目录名写进 pbxproj，且 commit hook 的绝对 `GIT_DIR` 会让脚本在 `cd macos` 后误判全部生成文件。`project.yml` 现固定 `UITestFixtures` group，Git 查询显式锚定 repo root；两项回归均先 RED，两个不同目录随后生成相同 pbxproj 字节，focused 8 项、typecheck、Biome、普通及显式 `GIT_DIR` hook 均通过。
+- [排查] 最终源码的 3 个 focused UI test 在任何测试体/截图执行前失败；fresh Runner 卡在连接 XCTest 前的 `AppleSystemPolicy` 签名策略评估，属于未签名测试基础设施阻断，不是产品断言。2026-08-22 旧截图不能代表本轮 UI。
+- [未验证] 当前前台 UI/截图、真实 deployed-server 联调、远端 CI、签名发布包及各机器运行状态仍未验证；Service xcresult 的既有 QoS warning 和 Xcode 27 beta 的 Swift 6 migration warnings 未隐去，详见 `CHANGELOG.md`。
+- [边界] 本条只记录源码修复与预部署验证；集成、CI 和三机部署状态以其后单独收口条目为准。未执行 Docker、tag、公开 release、公证或生产数据修改。
+
 ### 2026-08-31
 
 - [提交] 主仓完整门通过后已提交 `40218c0b`（`feat: integrate HQ live ingest and product hardening`）；未 push/tag/release。完整测试计数和产物哈希见 `CHANGELOG.md`。

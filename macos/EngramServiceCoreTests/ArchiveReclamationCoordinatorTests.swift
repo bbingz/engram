@@ -298,9 +298,9 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
         XCTAssertNil(status.lastError)
     }
 
-    // A later successful candidate must not move the durable cursor beyond an
-    // eligible row whose planAndReclaim operation failed.
-    func testFailedEligiblePlanDoesNotAdvanceCursorPastLaterSuccess_repro() async throws {
+    // A prior-cycle paused intent is resumed before planning and therefore does
+    // not pin the cursor or block later dual-receipt candidates.
+    func testPausedIntentResumesWithoutBlockingLaterCandidate_repro() async throws {
         try writeSettings(customProjectsRoots: [])
         let projectsRoot = try makeProjectsRoot(
             parent: homeDirectory.appendingPathComponent(".claude", isDirectory: true)
@@ -341,15 +341,17 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
 
         XCTAssertTrue(run.accepted)
         XCTAssertNil(run.error)
-        XCTAssertEqual(run.sourceFilesReclaimed, 1)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: failed.sourceURL.path))
+        XCTAssertEqual(run.sourceFilesReclaimed, 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: failed.sourceURL.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: later.sourceURL.path))
-        XCTAssertNil(
-            try catalog.archiveCursorCheckpoint(for: .reclamationCycle),
-            "later success must not advance the cursor past the failed eligible row"
+        XCTAssertEqual(
+            try catalog.reclamationIntent(
+                manifestSHA256: failed.binding.manifestSHA256
+            )?.phase,
+            .sourceDeleted
         )
         let status = await coordinator.status(now: now)
-        XCTAssertEqual(status.lastError, "reclamation_item_failure")
+        XCTAssertNil(status.lastError)
     }
 
     // A corrupt CAS object for one source-deleted intent must not prevent a
@@ -822,6 +824,50 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
         )
     }
 
+    func testRemoteReplicationAndBothLiveBackendsGateDeletionAndCASEviction_repro() async throws {
+        let projectsRoot = try makeProjectsRoot(
+            parent: homeDirectory.appendingPathComponent(".claude", isDirectory: true)
+        )
+        try writeSettings(customProjectsRoots: [])
+        let sourceFixture = try addEligibleBinding(
+            seed: "remote-gate-source",
+            source: "claude-code",
+            projectsRoot: projectsRoot
+        )
+        let casFixture = try addEligibleBinding(
+            seed: "remote-gate-cas",
+            source: "claude-code",
+            projectsRoot: projectsRoot,
+            boundAt: "2026-05-01T00:02:00.000Z"
+        )
+        try await replicate([sourceFixture, casFixture])
+        try recordCurrentRecoveryLeases(
+            manifestSHA256: sourceFixture.binding.manifestSHA256
+        )
+        try markSourceDeleted(casFixture)
+
+        let unavailableCoordinators = [
+            try makeCoordinator(
+                remoteReplicationEnabled: false,
+                remoteBackendsLive: true
+            ),
+            try makeCoordinator(
+                remoteReplicationEnabled: true,
+                remoteBackendsLive: false
+            ),
+        ]
+        for coordinator in unavailableCoordinators {
+            let run = await coordinator.runNow(now: now)
+            XCTAssertFalse(run.accepted)
+            XCTAssertEqual(run.error, "reclamation_paused")
+            XCTAssertEqual(try Data(contentsOf: sourceFixture.sourceURL), sourceFixture.bytes)
+            XCTAssertEqual(
+                try catalog.localObject(objectSHA256: casFixture.objectSHA256)?.residency,
+                .resident
+            )
+        }
+    }
+
     func testInvalidClaudeProfileConfigurationFailsClosedForSourceOnly() async throws {
         let defaultRoot = try makeProjectsRoot(
             parent: homeDirectory.appendingPathComponent(".claude", isDirectory: true)
@@ -974,6 +1020,8 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
     }
 
     private func makeCoordinator(
+        remoteReplicationEnabled: Bool = true,
+        remoteBackendsLive: Bool = true,
         testHooks: ArchiveReclamationCoordinatorTestHooks = .init()
     ) throws -> ArchiveReclamationCoordinator {
         try ArchiveReclamationCoordinator(
@@ -986,6 +1034,8 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
                 homeDirectory: homeDirectory,
                 settingsURL: settingsURL
             ),
+            remoteReplicationEnabled: remoteReplicationEnabled,
+            remoteAvailability: { remoteBackendsLive },
             testHooks: testHooks
         )
     }

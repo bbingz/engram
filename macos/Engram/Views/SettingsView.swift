@@ -35,7 +35,12 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
 }
 
 struct SettingsView: View {
+    let serviceSocketPath: String
     @State private var selectedCategory: SettingsCategory = .general
+
+    init(serviceSocketPath: String) {
+        self.serviceSocketPath = serviceSocketPath
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -98,7 +103,7 @@ struct SettingsView: View {
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("settings_section_general")
         case .ai:
-            AISettingsSection()
+            AISettingsSection(serviceSocketPath: serviceSocketPath)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("settings_section_ai")
         case .sources:
@@ -179,7 +184,7 @@ private struct LiveIngestSettingsSection: View {
                         isOn: Binding(
                             get: { enabled },
                             set: { newValue in
-                                persistEnabled(newValue)
+                                Task { await persistEnabled(newValue) }
                             }
                         )
                     )
@@ -255,9 +260,7 @@ private struct LiveIngestSettingsSection: View {
                 .padding(.vertical, 4)
             }
         }
-        .onAppear {
-            load()
-        }
+        .task { await load() }
         .onChange(of: serviceStatusStore.status) { _, newStatus in
             // A service restart cleared the armed-state mismatch.
             switch newStatus {
@@ -267,23 +270,41 @@ private struct LiveIngestSettingsSection: View {
         }
     }
 
-    private func load() {
-        let settings = readEngramSettings() ?? [:]
-        enabled = settings["liveIngestEnabled"] as? Bool ?? false
-        status = try? db.liveIngestStatus(peer: "hq")
+    private func load() async {
+        let db = self.db
+        let loaded = await LiveIngestSettingsIO.runOffMain {
+            let settings = readEngramSettings() ?? [:]
+            return LiveIngestSettingsLoadResult(
+                enabled: settings["liveIngestEnabled"] as? Bool ?? false,
+                status: try? db.liveIngestStatus(peer: "hq")
+            )
+        }
+        enabled = loaded.enabled
+        status = loaded.status
     }
 
-    private func persistEnabled(_ value: Bool) {
-        let result = persistLiveIngestEnabled(
-            requestedValue: value,
-            currentPersistedValue: enabled,
-            serviceIsRunning: serviceIsRunning,
-            mutateSettings: mutateEngramSettings
-        )
-        enabled = result.enabled
-        restartNeeded = result.restartNeeded
-        message = result.message
-        status = try? db.liveIngestStatus(peer: "hq")
+    private func persistEnabled(_ value: Bool) async {
+        let db = self.db
+        let currentPersistedValue = enabled
+        let serviceIsRunning = serviceIsRunning
+        let persisted = await LiveIngestSettingsIO.runOffMain {
+            let result = persistLiveIngestEnabled(
+                requestedValue: value,
+                currentPersistedValue: currentPersistedValue,
+                serviceIsRunning: serviceIsRunning,
+                mutateSettings: mutateEngramSettings
+            )
+            return LiveIngestSettingsPersistResult(
+                enabled: result.enabled,
+                restartNeeded: result.restartNeeded,
+                message: result.message,
+                status: try? db.liveIngestStatus(peer: "hq")
+            )
+        }
+        enabled = persisted.enabled
+        restartNeeded = persisted.restartNeeded
+        message = persisted.message
+        status = persisted.status
     }
 
     private func resetShrinkGuard() async {
@@ -292,10 +313,33 @@ private struct LiveIngestSettingsSection: View {
         do {
             _ = try await serviceClient.liveIngestResetShrinkGuard(peer: "hq")
             message = "Shrink guard reset."
-            status = try? db.liveIngestStatus(peer: "hq")
+            let db = self.db
+            status = await LiveIngestSettingsIO.runOffMain {
+                try? db.liveIngestStatus(peer: "hq")
+            }
         } catch {
             message = "Shrink guard reset failed: \(error.localizedDescription)"
         }
+    }
+}
+
+private struct LiveIngestSettingsLoadResult: Sendable {
+    let enabled: Bool
+    let status: LiveIngestStatus?
+}
+
+private struct LiveIngestSettingsPersistResult: Sendable {
+    let enabled: Bool
+    let restartNeeded: Bool
+    let message: String?
+    let status: LiveIngestStatus?
+}
+
+enum LiveIngestSettingsIO {
+    static func runOffMain<Value: Sendable>(
+        _ operation: @escaping @Sendable () -> Value
+    ) async -> Value {
+        await Task.detached(priority: .userInitiated, operation: operation).value
     }
 }
 

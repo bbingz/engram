@@ -104,4 +104,46 @@ final class SourceCatalogTests: XCTestCase {
         XCTAssertFalse(activeIDs.contains("cline"))
         XCTAssertEqual(Set(archivedIDs), ["cline", "iflow", "lobsterai"])
     }
+
+    func testSourcePulseKpisUseListVisibleCountsAndActiveGroupRows_repro() {
+        let live = [
+            EngramServiceSourceInfo(
+                name: "codex",
+                sessionCount: 9,
+                latestIndexed: nil,
+                listVisibleSessionCount: 4
+            ),
+            EngramServiceSourceInfo(
+                name: "cline",
+                sessionCount: 8,
+                latestIndexed: nil,
+                listVisibleSessionCount: 0
+            ),
+            EngramServiceSourceInfo(
+                name: "custom-live",
+                sessionCount: 5,
+                latestIndexed: nil,
+                listVisibleSessionCount: 2
+            ),
+        ]
+
+        XCTAssertEqual(SourcePulseView.listVisibleSessionTotal(live), 6)
+        let activeRows = SourcePulseView.groupedSourceRows(
+            catalog: SourceCatalog.all,
+            live: live
+        ).first { $0.id == "active" }?.rows.count
+        XCTAssertEqual(
+            SourcePulseView.activeSourceCount(catalog: SourceCatalog.all, live: live),
+            activeRows
+        )
+        XCTAssertNotEqual(SourcePulseView.activeSourceCount(catalog: SourceCatalog.all, live: live), live.count)
+    }
+
+    func testSourcePulseDatabaseFallbackPreservesVisibleCountAndCacheOnlyFlag_repro() {
+        let fallback = SourcePulseView.fallbackSourceInfo(source: "windsurf", count: 7)
+
+        XCTAssertEqual(fallback.sessionCount, 7)
+        XCTAssertEqual(fallback.listVisibleSessionCount, 7)
+        XCTAssertTrue(fallback.liveSyncDisabled)
+    }
 }

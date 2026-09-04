@@ -1356,7 +1356,7 @@ enum MCPToolRegistry {
     /// can gate them behind confirmation.
     private static let destructiveTools: Set<String> = [
         "delete_insight", "hide_session", "project_move",
-        "project_archive", "project_move_batch",
+        "project_archive", "project_move_batch", "project_undo",
     ]
 
     /// Tools that are safe to retry with the same arguments.
@@ -1415,7 +1415,12 @@ enum MCPToolRegistry {
                 arguments: ["id": .string(parsed.id)],
                 config: config
             )
-            text = result.firstToolText ?? ""
+            if case .object(let entries) = result,
+               let structured = entries.first(where: { $0.0 == "structuredContent" })?.1 {
+                text = structured.prettyJSONString()
+            } else {
+                text = result.firstToolText ?? ""
+            }
             mimeType = "text/markdown"
         case "insight":
             let database = try MCPDatabase(path: config.dbPath)
@@ -1695,8 +1700,9 @@ private func orderedSaveInsight(from raw: JSONValue) -> OrderedJSONValue {
     if let wing = raw["wing"] { entries.append(("wing", OrderedJSONValue(wing))) }
     if let room = raw["room"] { entries.append(("room", OrderedJSONValue(room))) }
     if let importance = raw["importance"] { entries.append(("importance", OrderedJSONValue(importance))) }
-    if let duplicateWarning = raw["duplicateWarning"] {
-        entries.append(("duplicateWarning", OrderedJSONValue(duplicateWarning)))
+    if let type = raw["type"] { entries.append(("type", OrderedJSONValue(type))) }
+    if let supersededID = raw["superseded_id"] {
+        entries.append(("superseded_id", OrderedJSONValue(supersededID)))
     }
     if let warning = raw["warning"] { entries.append(("warning", OrderedJSONValue(warning))) }
     return .object(entries)

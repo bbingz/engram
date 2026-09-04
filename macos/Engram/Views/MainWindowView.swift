@@ -4,6 +4,7 @@ import SwiftUI
 struct MainWindowView: View {
     let initialSession: SessionBox?
     let appStorage: UserDefaults
+    let serviceSocketPath: String
     @State private var selectedScreen: Screen = .home
     @State private var selectedSession: Session? = nil
     @State private var showPalette: Bool = false
@@ -12,9 +13,14 @@ struct MainWindowView: View {
     @Environment(DatabaseManager.self) var db
     @Environment(\.engramServiceClient) var serviceClient
 
-    init(initialSession: SessionBox? = nil, appStorage: UserDefaults) {
+    init(
+        initialSession: SessionBox? = nil,
+        appStorage: UserDefaults,
+        serviceSocketPath: String
+    ) {
         self.initialSession = initialSession
         self.appStorage = appStorage
+        self.serviceSocketPath = serviceSocketPath
     }
 
     var body: some View {
@@ -136,7 +142,7 @@ struct MainWindowView: View {
         case .memory:
             MemoryView()
         case .settings:
-            SettingsView()
+            SettingsView(serviceSocketPath: serviceSocketPath)
         }
     }
 
@@ -178,9 +184,11 @@ struct MainWindowView: View {
                 return
             }
             await MainActor.run {
-                guard pendingNavigationId == token,
-                      SessionNavigationGate.isCurrent(token)
-                else { return }
+                guard pendingNavigationId == token else { return }
+                guard SessionNavigationGate.isCurrent(token) else {
+                    pendingNavigationId = nil
+                    return
+                }
                 // Clear a prior search query only after the replacement session
                 // exists; a failed palette lookup must leave current detail intact.
                 pendingSearchTerm = nil

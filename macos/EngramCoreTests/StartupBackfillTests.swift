@@ -612,6 +612,49 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testBackfillParentLinksRetriesGeminiSidecarAfterHostArrives_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gemini-parent-backfill-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transcript = root.appendingPathComponent("transcript.json")
+        let sidecar = root.appendingPathComponent("gemini-child.engram.json")
+        try "{}".write(to: transcript, atomically: true, encoding: .utf8)
+        try #"{"parentSessionId":"gemini-host"}"#.write(to: sidecar, atomically: true, encoding: .utf8)
+
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "gemini-child",
+                source: "gemini-cli",
+                filePath: transcript.path,
+                agentRole: "dispatched",
+                tier: "skip"
+            )
+
+            XCTAssertEqual(try StartupBackfills.backfillParentLinks(db).linked, 0)
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'gemini-child'")
+            )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'gemini-child'"),
+                "a sidecar whose host is not indexed yet must remain retryable"
+            )
+
+            try insertSession(db, id: "gemini-host", source: "claude-code", tier: "normal")
+
+            XCTAssertEqual(try StartupBackfills.backfillParentLinks(db).linked, 1)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'gemini-child'"),
+                "gemini-host"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT link_source FROM sessions WHERE id = 'gemini-child'"),
+                "path"
+            )
+        }
+    }
+
     func testResetStaleDetectionsStoresVersionAndSkipsManualLinks() throws {
         try writer.write { db in
             try db.execute(sql: "INSERT INTO metadata(key, value) VALUES ('detection_version', '3')")
@@ -1376,6 +1419,69 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testBackfillPolycliRejectsClaudeProbesGrownSessionsAndRowsWithChildren_repro() throws {
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "claude-ping",
+                source: "claude-code",
+                summary: "ping",
+                userMessageCount: 1,
+                assistantMessageCount: 1
+            )
+            try insertSession(
+                db,
+                id: "qwen-grown-ping",
+                source: "qwen",
+                summary: "ping",
+                userMessageCount: 2,
+                assistantMessageCount: 2
+            )
+            try insertSession(
+                db,
+                id: "qwen-parent-ping",
+                source: "qwen",
+                summary: "ping",
+                userMessageCount: 1,
+                assistantMessageCount: 1
+            )
+            try insertSession(
+                db,
+                id: "existing-child",
+                source: "codex",
+                parentSessionId: "qwen-parent-ping"
+            )
+            try insertSession(
+                db,
+                id: "claude-polycli",
+                source: "claude-code",
+                summary: "You are acting as reviewer_1 inside polycli. Report findings.",
+                userMessageCount: 10,
+                assistantMessageCount: 10
+            )
+
+            let result = try StartupBackfills.backfillPolycliProviderParents(db)
+
+            XCTAssertEqual(result.classified, 1)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = 'claude-polycli'"),
+                "dispatched"
+            )
+            for id in ["claude-ping", "qwen-grown-ping", "qwen-parent-ping"] {
+                XCTAssertNil(
+                    try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = ?", arguments: [id]),
+                    "\(id) must remain a human/root session"
+                )
+                XCTAssertNil(
+                    try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = ?", arguments: [id])
+                )
+                XCTAssertNil(
+                    try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = ?", arguments: [id])
+                )
+            }
+        }
+    }
+
     func testBackfillPolycliProviderParentsSkipsAlreadyCheckedCandidates() throws {
         try writer.write { db in
             try insertSession(
@@ -1580,6 +1686,53 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testBackfillSuggestedParentsRescoresAfterDeadSuggestedHostCleanup_repro() throws {
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "dead-host",
+                source: "claude-code",
+                startTime: "2026-04-23T09:00:00.000Z",
+                cwd: "/repo",
+                project: "engram"
+            )
+            try insertSession(
+                db,
+                id: "live-host",
+                source: "claude-code",
+                startTime: "2026-04-23T10:00:00.000Z",
+                cwd: "/repo",
+                project: "engram"
+            )
+            try insertSession(
+                db,
+                id: "stale-child",
+                source: "gemini-cli",
+                startTime: "2026-04-23T10:10:00.000Z",
+                cwd: "/repo",
+                project: "engram",
+                summary: "Your task is to review the implementation",
+                tier: "normal",
+                linkCheckedAt: "2026-04-23T10:11:00.000Z",
+                suggestedParentId: "dead-host"
+            )
+            try db.execute(
+                sql: "UPDATE sessions SET hidden_at = '2026-04-23T10:12:00.000Z' WHERE id = 'dead-host'"
+            )
+
+            let result = try StartupBackfills.backfillSuggestedParents(db)
+
+            XCTAssertEqual(result.suggested, 1)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT suggested_parent_id FROM sessions WHERE id = 'stale-child'"),
+                "live-host"
+            )
+            XCTAssertNotNil(
+                try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'stale-child'")
+            )
+        }
+    }
+
     func testBackfillSuggestedParentsWritesAmbiguousCandidatesWithoutSkipping() throws {
         try writer.write { db in
             try insertSession(
@@ -1633,6 +1786,78 @@ final class StartupBackfillTests: XCTestCase {
             let candidates = try JSONDecoder().decode([StoredAmbiguousCandidate].self, from: Data(encoded.utf8))
             XCTAssertEqual(candidates.map(\.id), ["parent-b", "parent-a"])
             XCTAssertEqual(candidates.count, 2)
+        }
+    }
+
+    func testBackfillSuggestedParentsPrunesDeadAmbiguousCandidates_repro() throws {
+        try writer.write { db in
+            for id in ["live-a", "live-b"] {
+                try insertSession(db, id: id, source: "claude-code", tier: "normal")
+            }
+            try insertSession(db, id: "hidden-host", source: "claude-code", tier: "normal")
+            try db.execute(
+                sql: "UPDATE sessions SET hidden_at = '2026-04-23T10:00:00.000Z' WHERE id = 'hidden-host'"
+            )
+
+            try insertSession(
+                db,
+                id: "ambiguous-zero",
+                source: "codex",
+                tier: "normal",
+                linkCheckedAt: "2026-04-23T10:01:00.000Z",
+                suggestionStatus: "ambiguous",
+                suggestionCandidates: "[{\"id\":\"missing-host\",\"score\":9},{\"id\":\"hidden-host\",\"score\":8}]"
+            )
+            try insertSession(
+                db,
+                id: "ambiguous-one",
+                source: "codex",
+                tier: "normal",
+                linkCheckedAt: "2026-04-23T10:01:00.000Z",
+                suggestionStatus: "ambiguous",
+                suggestionCandidates: "[{\"id\":\"live-a\",\"score\":9},{\"id\":\"hidden-host\",\"score\":8}]"
+            )
+            try insertSession(
+                db,
+                id: "ambiguous-two",
+                source: "codex",
+                tier: "normal",
+                linkCheckedAt: "2026-04-23T10:01:00.000Z",
+                suggestionStatus: "ambiguous",
+                suggestionCandidates: "[{\"id\":\"live-a\",\"score\":9},{\"id\":\"hidden-host\",\"score\":8},{\"id\":\"live-b\",\"score\":7}]"
+            )
+
+            _ = try StartupBackfills.backfillSuggestedParents(db)
+
+            let zero = try XCTUnwrap(Row.fetchOne(
+                db,
+                sql: "SELECT suggested_parent_id, suggestion_status, suggestion_candidates, link_checked_at FROM sessions WHERE id = 'ambiguous-zero'"
+            ))
+            XCTAssertNil(zero["suggested_parent_id"] as String?)
+            XCTAssertNil(zero["suggestion_status"] as String?)
+            XCTAssertNil(zero["suggestion_candidates"] as String?)
+            XCTAssertNotNil(zero["link_checked_at"] as String?)
+
+            let one = try XCTUnwrap(Row.fetchOne(
+                db,
+                sql: "SELECT suggested_parent_id, suggestion_status, suggestion_candidates FROM sessions WHERE id = 'ambiguous-one'"
+            ))
+            XCTAssertEqual(one["suggested_parent_id"] as String?, "live-a")
+            XCTAssertNil(one["suggestion_status"] as String?)
+            XCTAssertNil(one["suggestion_candidates"] as String?)
+
+            let two = try XCTUnwrap(Row.fetchOne(
+                db,
+                sql: "SELECT suggested_parent_id, suggestion_status, suggestion_candidates FROM sessions WHERE id = 'ambiguous-two'"
+            ))
+            XCTAssertNil(two["suggested_parent_id"] as String?)
+            XCTAssertEqual(two["suggestion_status"] as String?, "ambiguous")
+            let encoded = try XCTUnwrap(two["suggestion_candidates"] as String?)
+            let candidates = try JSONDecoder().decode(
+                [StoredAmbiguousCandidate].self,
+                from: Data(encoded.utf8)
+            )
+            XCTAssertEqual(candidates.map(\.id), ["live-a", "live-b"])
         }
     }
 
@@ -2371,6 +2596,37 @@ final class StartupBackfillTests: XCTestCase {
             try db.execute(sql: "DELETE FROM sessions WHERE id = 'parent'")
 
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'child'"))
+        }
+    }
+
+    func testSessionDeleteTriggerPreservesExistingChildTiers_repro() throws {
+        try writer.write { db in
+            try insertSession(db, id: "parent", source: "codex", filePath: "/tmp/parent.jsonl")
+            try insertSession(db, id: "confirmed-lite", source: "codex", filePath: "/tmp/confirmed-lite.jsonl", tier: "lite")
+            try insertSession(db, id: "suggested-skip", source: "codex", filePath: "/tmp/suggested-skip.jsonl", tier: "skip")
+            try db.execute(
+                sql: "UPDATE sessions SET parent_session_id = 'parent', link_source = 'manual' WHERE id = 'confirmed-lite'"
+            )
+            try db.execute(
+                sql: "UPDATE sessions SET suggested_parent_id = 'parent' WHERE id = 'suggested-skip'"
+            )
+
+            try db.execute(sql: "DELETE FROM sessions WHERE id = 'parent'")
+
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'confirmed-lite'")
+            )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT suggested_parent_id FROM sessions WHERE id = 'suggested-skip'")
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'confirmed-lite'"),
+                "lite"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'suggested-skip'"),
+                "skip"
+            )
         }
     }
 
@@ -3593,6 +3849,98 @@ final class StartupBackfillTests: XCTestCase {
             )
             XCTAssertNil(
                 try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: ["drain-reject-000"])
+            )
+        }
+    }
+
+    func testBackfillCodexNativeParentsUsesSourceLocator_repro() throws {
+        let parentId = "locator-parent"
+        let childId = "locator-child"
+        let rollout = try writeCodexSpawnRollout(id: childId, parentThreadId: parentId)
+        defer {
+            try? FileManager.default.removeItem(
+                at: rollout.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            )
+        }
+
+        try writer.write { db in
+            try insertSession(db, id: parentId, source: "codex", filePath: "/tmp/.codex/parent.jsonl", tier: "premium")
+            try insertSession(
+                db,
+                id: childId,
+                source: "codex",
+                filePath: "/tmp/codex-fallback.jsonl",
+                sourceLocator: rollout.path,
+                tier: "premium"
+            )
+
+            XCTAssertEqual(try StartupBackfills.backfillCodexNativeParents(db), 1)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [childId]),
+                parentId
+            )
+        }
+    }
+
+    func testBackfillCodexNativeParentsRetriesTransientlyUnresolvedRows_repro() throws {
+        let missingParentId = "late-parent"
+        let unreadableParentId = "unreadable-parent"
+        let missingParentChildId = "missing-parent-child"
+        let unreadableChildId = "unreadable-child"
+        let missingParentRollout = try writeCodexSpawnRollout(
+            id: missingParentChildId,
+            parentThreadId: missingParentId
+        )
+        let unreadableRollout = try writeCodexSpawnRollout(
+            id: unreadableChildId,
+            parentThreadId: unreadableParentId
+        )
+        let unreadableData = try Data(contentsOf: unreadableRollout)
+        try FileManager.default.removeItem(at: unreadableRollout)
+        defer {
+            for rollout in [missingParentRollout, unreadableRollout] {
+                try? FileManager.default.removeItem(
+                    at: rollout.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                )
+            }
+        }
+
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: missingParentChildId,
+                source: "codex",
+                filePath: missingParentRollout.path,
+                tier: "premium"
+            )
+            try insertSession(
+                db,
+                id: unreadableChildId,
+                source: "codex",
+                filePath: unreadableRollout.path,
+                tier: "premium"
+            )
+
+            XCTAssertEqual(try StartupBackfills.backfillCodexNativeParents(db), 0)
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [missingParentChildId])
+            )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [unreadableChildId])
+            )
+
+            try insertSession(db, id: missingParentId, source: "codex", filePath: "/tmp/.codex/late-parent.jsonl", tier: "premium")
+            try insertSession(db, id: unreadableParentId, source: "codex", filePath: "/tmp/.codex/unreadable-parent.jsonl", tier: "premium")
+            try unreadableData.write(to: unreadableRollout)
+
+            XCTAssertEqual(try StartupBackfills.backfillCodexNativeParents(db), 2)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [missingParentChildId]),
+                missingParentId
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [unreadableChildId]),
+                unreadableParentId
             )
         }
     }

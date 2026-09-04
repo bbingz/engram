@@ -468,7 +468,10 @@ public enum EngramServiceRunner {
             telemetry: telemetry,
             logRing: logRing
         )
-        let server = UnixSocketServiceServer(socketPath: socketPath) { request in
+        let server = UnixSocketServiceServer(
+            socketPath: socketPath,
+            onShutdown: { _ = kill(getpid(), SIGTERM) }
+        ) { request in
             await handler.handle(request)
         }
         try server.start()
@@ -1702,10 +1705,17 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         /// Cap on `initialFtsDrain` while-loop iterations. `nil` = unbounded (production).
         /// Tests use a small bound so residual FTS work cannot hang when adapters are disabled.
         var maxFtsDrainIterations: Int? = nil
+        /// Deterministic concurrency seam after startup snapshots disabled-source settings.
+        var afterDisabledSourceConfigurationRead: (@Sendable () async -> Void)? = nil
 
-        init(failPhaseNamed: String? = nil, maxFtsDrainIterations: Int? = nil) {
+        init(
+            failPhaseNamed: String? = nil,
+            maxFtsDrainIterations: Int? = nil,
+            afterDisabledSourceConfigurationRead: (@Sendable () async -> Void)? = nil
+        ) {
             self.failPhaseNamed = failPhaseNamed
             self.maxFtsDrainIterations = maxFtsDrainIterations
+            self.afterDisabledSourceConfigurationRead = afterDisabledSourceConfigurationRead
         }
     }
 
@@ -1788,12 +1798,21 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         // Read once to choose physical adapters for this scan. Each write phase
         // separately rereads the set after acquiring ServiceWriterGate so a
         // post-parse reclassification cannot race a source toggle.
-        let disabled = readDisabledSources(environment: environment)
+        let disabledConfiguration = readDisabledSourceConfiguration(environment: environment)
+        await testHooks.afterDisabledSourceConfigurationRead?()
+        let disabled = disabledConfiguration.disabled
+        let allAdapters = SessionAdapterFactory.defaultAdapters(
+            homeDirectory: SessionAdapterFactory.resolvedHomeDirectory(environment: environment)
+        )
         let enabledAdapters = adaptersExcludingDisabled(
-            SessionAdapterFactory.defaultAdapters(),
+            allAdapters,
             disabledSources: disabled
         )
+        // Orphan detection is accessibility-only. It must retain every shipped
+        // adapter even when that source is disabled for parsing/indexing.
+        let orphanAdapters = allAdapters
         let emitBackfill: (StartupBackfillEvent) -> Void = { event in
+            guard event.event != "ready" else { return }
             Self.emit(StartupBackfillEventEnvelope(event: event))
         }
         var failedPhaseCount = 0
@@ -1802,13 +1821,43 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         /// pin the degraded banner until the first periodic cycle.
         var coreIndexSucceeded = false
 
+        if !disabledConfiguration.implicitArchived.isEmpty {
+            let visibilityPhase = await runInitialScanPhase(
+                name: "initialArchivedDefaultOffVisibility",
+                statusMonitor: statusMonitor,
+                telemetry: telemetry,
+                testHooks: testHooks
+            ) {
+                try await gate.performWriteCommand(name: "initialArchivedDefaultOffVisibility") { writer in
+                    let currentDisabledConfiguration = readDisabledSourceConfiguration(
+                        environment: environment
+                    )
+                    try writer.write { db in
+                        for source in ArchivedDefaultOffSources.orderedIDs
+                        where currentDisabledConfiguration.implicitArchived.contains(source) {
+                            try db.execute(
+                                sql: """
+                                    UPDATE sessions
+                                    SET hidden_at = datetime('now')
+                                    WHERE source = ? AND hidden_at IS NULL
+                                    """,
+                                arguments: [source]
+                            )
+                        }
+                    }
+                }
+            }
+            if visibilityPhase.cancelled { return }
+            if visibilityPhase.failed { failedPhaseCount += 1 }
+        }
+
         let usageParserBackfillCheck = await runInitialScanPhase(
             name: "usageParserBackfillCheck",
             statusMonitor: statusMonitor,
             telemetry: telemetry,
             testHooks: testHooks
         ) {
-            try await gate.performWriteCommand(name: "usageParserBackfillCheck") { writer in
+            try await gate.performReadCommand(name: "usageParserBackfillCheck") { writer in
                 try writer.read { db in
                     try UsageParserBackfillPolicy.needsBackfill(db)
                 }
@@ -1967,7 +2016,7 @@ private final class IndexingScheduleBox: @unchecked Sendable {
                     log: OSLogStartupBackfillLogging(),
                     orphanScanner: WriterStartupOrphanScanning(writer: writer),
                     database: WriterStartupBackfillDatabase(writer: writer),
-                    adapters: parserAdapters
+                    adapters: orphanAdapters
                 )
             }
         }
@@ -2087,16 +2136,25 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         // telemetry. M2 status: when the core index phase succeeded, still
         // clear the degraded banner via recordScanSuccess so a single non-fatal
         // later phase does not pin degraded for ≥15 min.
+        // Best-effort completion status; a read failure must not affect scan
+        // success accounting. Only a successful core scan publishes indexed,
+        // matching the status monitor's partial-success rule below.
+        let completionStatus = try? await gate.performReadCommand(name: "initialScanCompletionStatus") { writer in
+            try writer.indexStatus()
+        }.value
+        if failedPhaseCount == 0 || coreIndexSucceeded {
+            emit(ServiceIndexEvent(
+                indexed: indexed,
+                total: completionStatus?.total ?? 0,
+                todayParents: completionStatus?.todayParents ?? 0
+            ))
+        }
+
         if failedPhaseCount == 0 {
-            // Best-effort total via a gated indexStatus read; a failure here
-            // must not affect scan success accounting.
-            let initialTotal = (try? await gate.performReadCommand(name: "initialScanTelemetryStatus") { writer in
-                try writer.indexStatus()
-            }.value.total) ?? 0
             await telemetry?.recordScan(
                 durationMs: Self.elapsedMs(from: scanStarted, clock: scanClock),
                 indexed: indexed,
-                total: initialTotal
+                total: completionStatus?.total ?? 0
             )
             ServiceLogger.notice("initial startup scan complete", category: .runner)
             await statusMonitor.recordScanSuccess()
@@ -2244,7 +2302,7 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             return 0
         }
         let provider = providerFactory(config)
-        let pending = try await gate.performWriteCommand(name: "\(phaseName)Read") { writer in
+        let pending = try await gate.performReadCommand(name: "\(phaseName)Read") { writer in
             return try SessionEmbeddingBackfill.pendingSessions(writer: writer, limit: limit)
         }.value
         guard !pending.isEmpty else { return 0 }
@@ -2359,7 +2417,7 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             return 0
         }
         let provider = providerFactory(config)
-        let pending = try await gate.performWriteCommand(name: "\(phaseName)Read") { writer in
+        let pending = try await gate.performReadCommand(name: "\(phaseName)Read") { writer in
             return try InsightEmbeddingBackfill.pendingInsights(writer: writer, limit: limit)
         }.value
         guard !pending.isEmpty else { return 0 }
@@ -2542,13 +2600,31 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         environment: [String: String],
         settingsURL: URL? = nil
     ) -> Set<String> {
+        readDisabledSourceConfiguration(
+            environment: environment,
+            settingsURL: settingsURL
+        ).disabled
+    }
+
+    private struct DisabledSourceConfiguration {
+        let disabled: Set<String>
+        let implicitArchived: Set<String>
+    }
+
+    private static func readDisabledSourceConfiguration(
+        environment: [String: String],
+        settingsURL: URL? = nil
+    ) -> DisabledSourceConfiguration {
         let settingsURL = settingsURL ?? engramSettingsURL(environment: environment)
         if let envValue = environment["ENGRAM_DISABLED_SOURCES"] {
-            return Set(
-                envValue
-                    .split(separator: ",")
-                    .map { $0.trimmingCharacters(in: .whitespaces) }
-                    .filter { !$0.isEmpty }
+            return DisabledSourceConfiguration(
+                disabled: Set(
+                    envValue
+                        .split(separator: ",")
+                        .map { $0.trimmingCharacters(in: .whitespaces) }
+                        .filter { !$0.isEmpty }
+                ),
+                implicitArchived: []
             )
         }
         guard let data = SecureRegularFile.read(
@@ -2558,16 +2634,25 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         ),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
-            return ArchivedDefaultOffSources.ids
+            return DisabledSourceConfiguration(
+                disabled: ArchivedDefaultOffSources.ids,
+                implicitArchived: ArchivedDefaultOffSources.ids
+            )
         }
         guard let sources = object["disabledSources"] as? [Any] else {
-            return ArchivedDefaultOffSources.ids
+            return DisabledSourceConfiguration(
+                disabled: ArchivedDefaultOffSources.ids,
+                implicitArchived: ArchivedDefaultOffSources.ids
+            )
         }
         let explicitSources = Set(sources.compactMap { $0 as? String }.filter { !$0.isEmpty })
         guard object[ArchivedDefaultOffSources.settingsMigrationKey] as? Bool == true else {
-            return explicitSources.union(ArchivedDefaultOffSources.ids)
+            return DisabledSourceConfiguration(
+                disabled: explicitSources.union(ArchivedDefaultOffSources.ids),
+                implicitArchived: ArchivedDefaultOffSources.ids
+            )
         }
-        return explicitSources
+        return DisabledSourceConfiguration(disabled: explicitSources, implicitArchived: [])
     }
 
     /// Reads explicit per-source token limits for local pressure snapshots.
@@ -2704,7 +2789,7 @@ private struct ServiceFatalEvent: Encodable {
 }
 
 private struct ServiceReadyEvent: Encodable {
-    let event = "ready"
+    let event = "listening"
     let socket: String
 }
 

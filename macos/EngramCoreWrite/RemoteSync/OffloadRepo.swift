@@ -477,27 +477,55 @@ public enum OffloadRepo {
     /// `agent_role` (not just `tier != 'skip'`) for defense-in-depth symmetry with
     /// `OffloadPolicy.isEligible`. Top-level matches browse roots: both
     /// `parent_session_id` and `suggested_parent_id` must be NULL.
-    public static func pushCandidates(_ db: Database, project: String, cwd: String) throws -> [PushCandidate] {
-        let rows = try Row.fetchAll(
-            db,
-            sql: """
-            SELECT id, source, start_time, end_time, generated_title, custom_name, project,
-                   message_count, user_message_count, assistant_message_count,
-                   system_message_count, tool_message_count, summary, summary_message_count,
-                   size_bytes, tier, agent_role, parent_session_id, suggested_parent_id,
-                   sync_version, COALESCE(snapshot_hash, '') AS snapshot_hash
-            FROM sessions
-            WHERE \(projectScopeSQL)
-              AND (origin IS NULL OR origin = 'local')
-              AND \(SessionVisibilityFilter.nonSkipTierSQL)
-              AND agent_role IS NULL
-              AND COALESCE(offload_state, 'local') = 'local'
-              AND parent_session_id IS NULL
-              AND suggested_parent_id IS NULL
-            ORDER BY start_time
-            """,
-            arguments: [project, cwd, cwd]
-        )
+    public static func pushCandidates(
+        _ db: Database,
+        project: String,
+        cwd: String,
+        limit: Int = .max,
+        afterStart: String? = nil,
+        afterId: String? = nil
+    ) throws -> [PushCandidate] {
+        let page = max(1, limit)
+        let select = """
+        SELECT s.id, s.source, s.start_time, s.end_time, s.generated_title, s.custom_name, s.project,
+               s.message_count, s.user_message_count, s.assistant_message_count,
+               s.system_message_count, s.tool_message_count, s.summary, s.summary_message_count,
+               s.size_bytes, s.tier, s.agent_role, s.parent_session_id, s.suggested_parent_id,
+               s.sync_version, COALESCE(s.snapshot_hash, '') AS snapshot_hash
+        FROM sessions s
+        WHERE (lower(COALESCE(s.project, '')) = lower(?) OR (? <> '' AND s.cwd = ?))
+          AND (s.origin IS NULL OR s.origin = 'local')
+          AND \(SessionVisibilityFilter.nonSkipTierSQL(alias: "s"))
+          AND s.agent_role IS NULL
+          AND COALESCE(s.offload_state, 'local') = 'local'
+          AND s.parent_session_id IS NULL
+          AND s.suggested_parent_id IS NULL
+        """
+        let order = """
+        ORDER BY s.start_time, s.id
+        LIMIT ?
+        """
+        let rows: [Row]
+        if let afterStart, let afterId {
+            rows = try Row.fetchAll(
+                db,
+                sql: """
+                \(select)
+                  AND (
+                    s.start_time > ?
+                    OR (s.start_time = ? AND s.id > ?)
+                  )
+                \(order)
+                """,
+                arguments: [project, cwd, cwd, afterStart, afterStart, afterId, page]
+            )
+        } else {
+            rows = try Row.fetchAll(
+                db,
+                sql: "\(select)\n\(order)",
+                arguments: [project, cwd, cwd, page]
+            )
+        }
         return try rows.map { try pushCandidate(from: $0, db: db) }
     }
 

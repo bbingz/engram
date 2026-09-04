@@ -297,6 +297,8 @@ actor ArchiveV2ServiceCoordinator {
     private static let backlogIndexLocatorLimit = 32
     private static let backlogIndexSourceByteLimit: Int64 = 128 * 1_024 * 1_024
     private static let backlogIndexRetryDelay: TimeInterval = 300
+    private static let backlogCaptureRetryDelay: TimeInterval = 300
+    private static let replicaInflightStaleInterval: TimeInterval = 600
 
     private let settings: ArchiveV2Settings
     private let writerGate: ServiceWriterGate
@@ -326,6 +328,7 @@ actor ArchiveV2ServiceCoordinator {
     private var pendingIndexAwaitingCapture: Set<PendingIndexKey> = []
     private var pendingIndexParkedOutputSource: [PendingIndexKey: SourceName] = [:]
     private var fullCapturePending = true
+    private var fullCaptureRetryAfter: Date?
     private var fullCaptureRefreshRequestID: UUID?
     private var lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary?
     private var nextBacklogPassPriority: ArchiveV2BacklogPassPriority = .remote
@@ -507,12 +510,30 @@ actor ArchiveV2ServiceCoordinator {
             transcriptResolver: transcriptResolver,
             replicaBackends: replicaBackends
         )
+        let hqReclamationBackend = replicaBackends["hq"]
+        let m1ReclamationBackend = replicaBackends["m1"]
         let reclamationCoordinator = try? ArchiveReclamationCoordinator(
             settingsURL: settingsURL,
             environment: environment,
             databasePath: databasePath,
             catalog: catalog,
-            cas: cas
+            cas: cas,
+            remoteReplicationEnabled: settings.remoteReplicationEnabled,
+            remoteAvailability: {
+                guard let hqReclamationBackend, let m1ReclamationBackend else {
+                    return false
+                }
+                do {
+                    async let hq = hqReclamationBackend.remoteTelemetryStatus()
+                    async let m1 = m1ReclamationBackend.remoteTelemetryStatus()
+                    let (hqStatus, m1Status) = try await (hq, m1)
+                    return hqStatus.serverID == "hq" && m1Status.serverID == "m1"
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    return false
+                }
+            }
         )
         return ArchiveV2ServiceCoordinator(
             settings: settings,
@@ -576,6 +597,7 @@ actor ArchiveV2ServiceCoordinator {
     func requestFullCaptureSweep() async {
         guard localCaptureReady else { return }
         fullCapturePending = true
+        fullCaptureRetryAfter = nil
         fullCaptureRefreshRequestID = UUID()
         await drainer?.signal()
     }
@@ -644,7 +666,6 @@ actor ArchiveV2ServiceCoordinator {
                 && drainConditions().allowsNewWork
         }
         var capture = ArchiveV2ServiceCaptureSummary(unsupported: 0, unsafe: 0)
-        var captureFailedThisPass = false
         var reconcile = ReconcileSummary(boundRows: 0, policyRows: 0, hasMore: false)
         var replication = ArchiveReplicationCycleResult()
 
@@ -655,7 +676,8 @@ actor ArchiveV2ServiceCoordinator {
             )
         }
 
-        if fullCapturePending, shouldStartUnit() {
+        let captureRetryDue = fullCaptureRetryAfter.map { $0 <= now() } ?? true
+        if fullCapturePending, captureRetryDue, shouldStartUnit() {
             await drainer?.setActiveStages([.capture])
             do {
                 capture = try await operations.backlogCapture(
@@ -674,12 +696,19 @@ actor ArchiveV2ServiceCoordinator {
                     // Keep the newer refresh request armed for the next pass.
                     fullCapturePending = true
                 }
+                fullCaptureRetryAfter = nil
                 lastCaptureError = nil
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
                 fullCapturePending = true
-                captureFailedThisPass = true
+                if fullCaptureRefreshRequestID == consumedRefreshRequestID {
+                    fullCaptureRetryAfter = now().addingTimeInterval(
+                        Self.backlogCaptureRetryDelay
+                    )
+                } else {
+                    fullCaptureRetryAfter = nil
+                }
                 lastCaptureError = "capture_failure"
             }
         }
@@ -854,26 +883,31 @@ actor ArchiveV2ServiceCoordinator {
 
         await drainer?.setActiveStages([])
         let aggregate = try await operations.status()
+        let scheduleNow = now()
         let remoteRetryAt = Self.earliestRetryDate(
             aggregate,
             retryPausedUntilByReplica: replication.retryPausedUntilByReplica,
             attentionPausedReplicaIDs: Set(replication.pausedReplicaIDs)
         )
-        let pendingIndex = pendingIndexSchedule(at: now())
-        let nextRetryAt = [remoteRetryAt, pendingIndex.nextRetryAt]
+        let pendingIndex = pendingIndexSchedule(at: scheduleNow)
+        let captureRetryAt = fullCapturePending ? fullCaptureRetryAfter : nil
+        let nextRetryAt = [remoteRetryAt, pendingIndex.nextRetryAt, captureRetryAt]
             .compactMap { $0 }
             .min()
         let pausedReplicas = Set(
             replication.pausedReplicaIDs + replication.retryPausedReplicaIDs
         )
+        let captureRunnable = fullCapturePending
+            && (fullCaptureRetryAfter.map { $0 <= scheduleNow } ?? true)
         let hasRunnableWork = capture.hasMore
-            || (!captureFailedThisPass
-                && fullCapturePending
-                && !pendingIndexAwaitingCapture.isEmpty)
+            || captureRunnable
             || reconcile.hasMore
             || pendingIndex.hasDueWork
-            || (!pausedReplicas.contains("hq") && aggregate.hq.pending > 0)
-            || (!pausedReplicas.contains("m1") && aggregate.m1.pending > 0)
+            || replication.retryScheduled > 0
+            || (!pausedReplicas.contains("hq")
+                && Self.replicaHasRunnableWork(aggregate.hq, at: scheduleNow))
+            || (!pausedReplicas.contains("m1")
+                && Self.replicaHasRunnableWork(aggregate.m1, at: scheduleNow))
         return ArchiveV2DrainPassSummary(
             startedAt: startedAt,
             finishedAt: now(),
@@ -912,7 +946,7 @@ actor ArchiveV2ServiceCoordinator {
         )
         lastReplicationError = replication.cycleError
         let effectiveReplication = updateReplicaPauseState(with: replication)
-        if replication.cancelled { throw CancellationError() }
+        if Task.isCancelled { throw CancellationError() }
         return effectiveReplication
     }
 
@@ -1326,10 +1360,9 @@ actor ArchiveV2ServiceCoordinator {
         await acquirePipeline(indexPriority: true)
         defer { releasePipeline() }
 
-        // A failed capture has no trustworthy allowlist. Index unrestricted so
-        // parser failures can be retried by the normal source adapters instead
-        // of silently indexing an empty set (docs/invariants.md #5).
-        var indexPlan = ArchiveV2ServiceIndexPlan.unrestricted
+        // A failed capture has no trustworthy allowlist. Fail closed instead of
+        // passing an unrestricted plan that could index uncaptured source bytes.
+        var indexPlan = ArchiveV2ServiceIndexPlan.captured([:])
         do {
             let summary = try await operations.capture(adapters, batchSize, cursorScope)
             unsupportedLocatorCount = max(summary.unsupported, 0)
@@ -1339,6 +1372,7 @@ actor ArchiveV2ServiceCoordinator {
             if cursorScope == .full {
                 fullCapturePending = summary.hasMore
                     || fullCaptureRefreshRequestID != nil
+                fullCaptureRetryAfter = nil
             }
             lastCaptureError = nil
         } catch is CancellationError {
@@ -2410,30 +2444,52 @@ actor ArchiveV2ServiceCoordinator {
         retryPausedUntilByReplica: [String: Date] = [:],
         attentionPausedReplicaIDs: Set<String> = []
     ) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        let retryDates = [
-            "hq": aggregate.hq.nextRetryAt.flatMap(formatter.date(from:)),
-            "m1": aggregate.m1.nextRetryAt.flatMap(formatter.date(from:)),
-        ]
-        let pendingCounts = [
-            "hq": aggregate.hq.pending,
-            "m1": aggregate.m1.pending,
-        ]
+        let countsByReplica = ["hq": aggregate.hq, "m1": aggregate.m1]
         return ArchiveCatalog.currentReplicaIDs.compactMap { replicaID in
             guard !attentionPausedReplicaIDs.contains(replicaID) else {
                 return nil
             }
-            let catalogDate = retryDates[replicaID] ?? nil
+            guard let counts = countsByReplica[replicaID] else { return nil }
+            var catalogDates: [Date] = []
+            if counts.retry > 0,
+               let retryAt = counts.nextRetryAt.flatMap(archiveScheduleDate) {
+                catalogDates.append(retryAt)
+            }
+            if counts.inflight > 0,
+               let oldest = counts.oldestOutstandingAt.flatMap(archiveScheduleDate) {
+                catalogDates.append(
+                    oldest.addingTimeInterval(Self.replicaInflightStaleInterval)
+                )
+            }
+            let catalogDate = catalogDates.min()
             guard let pauseDeadline = retryPausedUntilByReplica[replicaID] else {
                 return catalogDate
             }
-            if pendingCounts[replicaID, default: 0] > 0 {
+            if counts.pending > 0 {
                 return pauseDeadline
             }
             return max(catalogDate ?? .distantPast, pauseDeadline)
         }.min()
+    }
+
+    private static func replicaHasRunnableWork(
+        _ counts: ArchiveReplicaStatusCounts,
+        at date: Date
+    ) -> Bool {
+        if counts.pending > 0 || counts.inflight > 0 {
+            return true
+        }
+        guard counts.retry > 0 else { return false }
+        guard let value = counts.nextRetryAt else { return true }
+        guard let retryAt = archiveScheduleDate(value) else { return true }
+        return retryAt <= date
+    }
+
+    private static func archiveScheduleDate(_ value: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return formatter.date(from: value)
     }
 
     private static let maximumCaptureRetryLocatorsPerSource = 100

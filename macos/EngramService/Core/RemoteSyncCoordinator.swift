@@ -364,8 +364,9 @@ public struct RemoteSyncCoordinator: Sendable {
 
         var done = 0
         for job in claimed {
+            try Task.checkCancellation()
             do {
-                let inputs = try await gate.performWriteCommand(name: "remoteOffloadRead") { writer in
+                let inputs = try await gate.performReadCommand(name: "remoteOffloadRead") { writer in
                     try writer.read { db in try OffloadRepo.bundleInputs(db, sessionId: job.sessionId) }
                 }.value
                 guard let inputs else {
@@ -439,8 +440,9 @@ public struct RemoteSyncCoordinator: Sendable {
 
         var done = 0
         for job in claimed {
+            try Task.checkCancellation()
             do {
-                let key = try await gate.performWriteCommand(name: "remoteRehydrateRead") { writer in
+                let key = try await gate.performReadCommand(name: "remoteRehydrateRead") { writer in
                     try writer.read { db in try OffloadRepo.latestRemoteKey(db, sessionId: job.sessionId) }
                 }.value
                 guard let key else {
@@ -529,56 +531,82 @@ public struct ProjectSyncPreview: Codable, Sendable, Equatable {
 
 extension RemoteSyncCoordinator {
     private static let previewSampleLimit = 10
+    private static let projectSyncPageSize = 100
+
+    private struct PreviewPullCandidate: Sendable {
+        let peer: String
+        let entry: SyncManifestEntry
+    }
 
     /// Push every local-origin session of `project` to the hub, then republish this
     /// peer's manifest. Network I/O (head/put) runs OUTSIDE the gate; only the
     /// `publishOnlyCommit` ledger write is gated. Re-running is a no-op for unchanged
     /// content (head skips the blob; publishOnlyCommit dedups per content hash).
     public func pushProject(project: String, cwd: String) async throws -> (uploaded: Int, skipped: Int) {
-        let candidates = try await gate.performWriteCommand(name: "syncPushRead") { writer in
-            try writer.read { db in try OffloadRepo.pushCandidates(db, project: project, cwd: cwd) }
-        }.value
-
         var uploaded = 0
         var skipped = 0
-        for candidate in candidates {
-            let bundle = BundleCodec.makeBundle(
-                sessionId: candidate.id,
-                ftsContents: candidate.ftsContents,
-                summary: candidate.summary,
-                summaryMessageCount: candidate.summaryMessageCount,
-                messageCount: candidate.messageCount,
-                userMessageCount: candidate.userMessageCount,
-                assistantMessageCount: candidate.assistantMessageCount,
-                toolMessageCount: candidate.toolMessageCount,
-                systemMessageCount: candidate.systemMessageCount,
-                tier: candidate.tier,
-                agentRole: candidate.agentRole,
-                parentSessionId: candidate.parentSessionId,
-                suggestedParentId: candidate.suggestedParentId
-            )
-            let key = BundleCodec.contentKey(bundle)
-            let data = try BundleCodec.encode(bundle)
-            // Network — OUTSIDE the write gate.
-            let exists = try await backend.head(key: key)
-            if exists {
-                skipped += 1
-            } else {
-                try await backend.put(key: key, data: data)
-                uploaded += 1
-            }
-            _ = try await gate.performWriteCommand(name: "syncPublishCommit") { writer in
-                try writer.write { db in
-                    try OffloadRepo.publishOnlyCommit(
+        var afterStart: String?
+        var afterId: String?
+        while true {
+            let pageAfterStart = afterStart
+            let pageAfterId = afterId
+            let candidates = try await gate.performReadCommand(name: "syncPushRead") { writer in
+                try writer.read { db in
+                    try OffloadRepo.pushCandidates(
                         db,
-                        sessionId: candidate.id,
-                        remoteKey: key,
-                        remoteSessionId: candidate.id,
-                        contentHash: bundle.contentHash,
-                        peer: peer
+                        project: project,
+                        cwd: cwd,
+                        limit: Self.projectSyncPageSize,
+                        afterStart: pageAfterStart,
+                        afterId: pageAfterId
                     )
                 }
+            }.value
+            guard !candidates.isEmpty else { break }
+
+            for candidate in candidates {
+                let bundle = BundleCodec.makeBundle(
+                    sessionId: candidate.id,
+                    ftsContents: candidate.ftsContents,
+                    summary: candidate.summary,
+                    summaryMessageCount: candidate.summaryMessageCount,
+                    messageCount: candidate.messageCount,
+                    userMessageCount: candidate.userMessageCount,
+                    assistantMessageCount: candidate.assistantMessageCount,
+                    toolMessageCount: candidate.toolMessageCount,
+                    systemMessageCount: candidate.systemMessageCount,
+                    tier: candidate.tier,
+                    agentRole: candidate.agentRole,
+                    parentSessionId: candidate.parentSessionId,
+                    suggestedParentId: candidate.suggestedParentId
+                )
+                let key = BundleCodec.contentKey(bundle)
+                let data = try BundleCodec.encode(bundle)
+                // Network — OUTSIDE the write gate.
+                let exists = try await backend.head(key: key)
+                if exists {
+                    skipped += 1
+                } else {
+                    try await backend.put(key: key, data: data)
+                    uploaded += 1
+                }
+                _ = try await gate.performWriteCommand(name: "syncPublishCommit") { writer in
+                    try writer.write { db in
+                        try OffloadRepo.publishOnlyCommit(
+                            db,
+                            sessionId: candidate.id,
+                            remoteKey: key,
+                            remoteSessionId: candidate.id,
+                            contentHash: bundle.contentHash,
+                            peer: peer
+                        )
+                    }
+                }
             }
+
+            guard candidates.count == Self.projectSyncPageSize, let last = candidates.last else { break }
+            afterStart = last.startTime
+            afterId = last.id
         }
 
         // Republish this peer's manifest. The blob is per-peer (one
@@ -683,63 +711,102 @@ extension RemoteSyncCoordinator {
         project: String, cwd: String, direction: String
     ) async throws -> ProjectSyncPreview {
         if direction == "push" {
-            let candidates = try await gate.performWriteCommand(name: "syncPreviewPushRead") { writer in
-                try writer.read { db in try OffloadRepo.pushCandidates(db, project: project, cwd: cwd) }
-            }.value
-            var actionable: [ProjectSyncPreview.Sample] = []
+            var actionable = 0
             var skipped = 0
-            for candidate in candidates {
-                let bundle = BundleCodec.makeBundle(
-                    sessionId: candidate.id,
-                    ftsContents: candidate.ftsContents,
-                    summary: candidate.summary,
-                    summaryMessageCount: candidate.summaryMessageCount,
-                    messageCount: candidate.messageCount,
-                    userMessageCount: candidate.userMessageCount,
-                    assistantMessageCount: candidate.assistantMessageCount,
-                    toolMessageCount: candidate.toolMessageCount,
-                    systemMessageCount: candidate.systemMessageCount,
-                    tier: candidate.tier,
-                    agentRole: candidate.agentRole,
-                    parentSessionId: candidate.parentSessionId,
-                    suggestedParentId: candidate.suggestedParentId
-                )
-                let exists = try await backend.head(key: BundleCodec.contentKey(bundle))
-                if exists {
-                    skipped += 1
-                } else {
-                    actionable.append(.init(id: candidate.id, title: candidate.title ?? candidate.id))
+            var samples: [ProjectSyncPreview.Sample] = []
+            var afterStart: String?
+            var afterId: String?
+            while true {
+                let pageAfterStart = afterStart
+                let pageAfterId = afterId
+                let candidates = try await gate.performReadCommand(name: "syncPreviewPushRead") { writer in
+                    try writer.read { db in
+                        try OffloadRepo.pushCandidates(
+                            db,
+                            project: project,
+                            cwd: cwd,
+                            limit: Self.projectSyncPageSize,
+                            afterStart: pageAfterStart,
+                            afterId: pageAfterId
+                        )
+                    }
+                }.value
+                guard !candidates.isEmpty else { break }
+
+                for candidate in candidates {
+                    let bundle = BundleCodec.makeBundle(
+                        sessionId: candidate.id,
+                        ftsContents: candidate.ftsContents,
+                        summary: candidate.summary,
+                        summaryMessageCount: candidate.summaryMessageCount,
+                        messageCount: candidate.messageCount,
+                        userMessageCount: candidate.userMessageCount,
+                        assistantMessageCount: candidate.assistantMessageCount,
+                        toolMessageCount: candidate.toolMessageCount,
+                        systemMessageCount: candidate.systemMessageCount,
+                        tier: candidate.tier,
+                        agentRole: candidate.agentRole,
+                        parentSessionId: candidate.parentSessionId,
+                        suggestedParentId: candidate.suggestedParentId
+                    )
+                    let exists = try await backend.head(key: BundleCodec.contentKey(bundle))
+                    if exists {
+                        skipped += 1
+                    } else {
+                        actionable += 1
+                        if samples.count < Self.previewSampleLimit {
+                            samples.append(.init(id: candidate.id, title: candidate.title ?? candidate.id))
+                        }
+                    }
                 }
+
+                guard candidates.count == Self.projectSyncPageSize, let last = candidates.last else { break }
+                afterStart = last.startTime
+                afterId = last.id
             }
             return ProjectSyncPreview(
-                direction: "push", project: project, actionable: actionable.count,
-                skipped: skipped, samples: Array(actionable.prefix(Self.previewSampleLimit))
+                direction: "push", project: project, actionable: actionable,
+                skipped: skipped, samples: samples
             )
         }
 
         // pull preview
         let catalogData = try await backend.catalog()
         let manifests = try ManifestCodec.decodeCatalog(catalogData)
-        var actionable: [ProjectSyncPreview.Sample] = []
+        var candidates: [PreviewPullCandidate] = []
         var skipped = 0
         for manifest in manifests where manifest.peer != peer {
             for entry in manifest.entries where Self.matchesProject(entry, project: project) {
                 guard Self.isPublishable(entry) else { skipped += 1; continue }
-                let needs = try await gate.performWriteCommand(name: "syncPreviewImportCheck") { writer in
-                    try writer.read { db in
-                        try ImportRepo.needsImport(db, peer: manifest.peer, entry: entry)
-                    }
-                }.value
-                if needs {
-                    actionable.append(.init(id: entry.sessionId, title: entry.title ?? entry.sessionId))
-                } else {
-                    skipped += 1
+                candidates.append(.init(peer: manifest.peer, entry: entry))
+            }
+        }
+        let importCandidates = candidates
+        let importDecisions = try await gate.performReadCommand(name: "syncPreviewImportCheck") { writer in
+            try writer.read { db in
+                try importCandidates.map { candidate in
+                    try ImportRepo.needsImport(db, peer: candidate.peer, entry: candidate.entry)
                 }
+            }
+        }.value
+        var actionable = 0
+        var samples: [ProjectSyncPreview.Sample] = []
+        for (candidate, needsImport) in zip(importCandidates, importDecisions) {
+            if needsImport {
+                actionable += 1
+                if samples.count < Self.previewSampleLimit {
+                    samples.append(.init(
+                        id: candidate.entry.sessionId,
+                        title: candidate.entry.title ?? candidate.entry.sessionId
+                    ))
+                }
+            } else {
+                skipped += 1
             }
         }
         return ProjectSyncPreview(
-            direction: "pull", project: project, actionable: actionable.count,
-            skipped: skipped, samples: Array(actionable.prefix(Self.previewSampleLimit))
+            direction: "pull", project: project, actionable: actionable,
+            skipped: skipped, samples: samples
         )
     }
 

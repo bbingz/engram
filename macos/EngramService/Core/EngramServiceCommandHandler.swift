@@ -275,6 +275,14 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     requestId: request.requestId,
                     result: try Self.encode(await statusMonitor.status(indexStatus: status))
                 )
+            case "shutdown":
+                guard request.payload == nil else {
+                    throw EngramServiceError.invalidRequest(message: "shutdown does not accept a payload")
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(EmptyEncodableResult())
+                )
             case "search":
                 let payload = try decodePayload(EngramServiceSearchRequest.self, from: request)
                 return .success(
@@ -1036,7 +1044,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                         link_checked_at = datetime('now'),
                         tier = CASE
                             WHEN agent_role IN ('subagent', 'dispatched') THEN 'skip'
-                            ELSE NULL
+                            ELSE tier
                         END
                     WHERE id = ?
                 """,
@@ -1664,14 +1672,23 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
 
         let parent = try Row.fetchOne(
             db,
-            sql: "SELECT id, parent_session_id, tier FROM sessions WHERE id = ?",
+            sql: "SELECT id, parent_session_id, suggested_parent_id, tier, hidden_at, orphan_status FROM sessions WHERE id = ?",
             arguments: [parentId]
         )
         guard let parent else { return "parent-not-found" }
+        if parent["hidden_at"] as String? != nil {
+            return "parent-hidden"
+        }
+        if let orphanStatus = parent["orphan_status"] as String?, !orphanStatus.isEmpty {
+            return "parent-orphan"
+        }
         // R2.P2.skip-parent-link-allowed: skip-tier sessions are noise/subagent
         // rows and must not become parent roots over IPC.
         if let tier = parent["tier"] as String?, tier == "skip" {
             return "parent-skip"
+        }
+        if let suggestedParent = parent["suggested_parent_id"] as String?, !suggestedParent.isEmpty {
+            return "depth-exceeded"
         }
         if let existingParent = parent["parent_session_id"] as String?, !existingParent.isEmpty {
             return "depth-exceeded"
@@ -2825,6 +2842,23 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             return false
         }
 
+        var fileInfo = stat()
+        guard lstat(standardizedPath, &fileInfo) == 0,
+              (fileInfo.st_mode & S_IFMT) == S_IFREG else {
+            return false
+        }
+
+        let resolvedHome = URL(fileURLWithPath: home, isDirectory: true)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL.path
+        let resolvedPath = URL(fileURLWithPath: standardizedPath)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL.path
+        guard resolvedPath == resolvedHome || resolvedPath.hasPrefix(resolvedHome + "/"),
+              !containsSensitivePathComponent(resolvedPath, home: resolvedHome) else {
+            return false
+        }
+
         let suffixesBySource: [String: [String]] = [
             "codex": [".codex/sessions", ".codex/logs"],
             "claude-code": [".claude/projects"],
@@ -2863,13 +2897,17 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         ]
 
         let suffixes = suffixesBySource[source] ?? []
-        return suffixes.contains { suffix in
-            let allowedRoot = URL(fileURLWithPath: home, isDirectory: true)
-                .appendingPathComponent(suffix)
-                .standardizedFileURL
-                .path
-            return standardizedPath == allowedRoot || standardizedPath.hasPrefix(allowedRoot + "/")
+        let matchesAllowedRoot: (String, String) -> Bool = { candidate, candidateHome in
+            suffixes.contains { suffix in
+                let allowedRoot = URL(fileURLWithPath: candidateHome, isDirectory: true)
+                    .appendingPathComponent(suffix)
+                    .standardizedFileURL
+                    .path
+                return candidate == allowedRoot || candidate.hasPrefix(allowedRoot + "/")
+            }
         }
+        return matchesAllowedRoot(standardizedPath, home)
+            && matchesAllowedRoot(resolvedPath, resolvedHome)
     }
 
     private static func containsSensitivePathComponent(_ path: String, home: String) -> Bool {

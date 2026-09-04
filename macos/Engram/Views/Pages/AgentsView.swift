@@ -17,6 +17,7 @@ struct AgentsView: View {
     @State private var linkTarget: Session? = nil
     @State private var isLoading = true
     @State private var loadGeneration = 0
+    @State private var lastFilterKey: [AnyHashable]? = nil
     @State private var loadError: String? = nil
     /// Keyboard focus for session rows (Wave 8-2, mirrors SessionsPageView 7-1).
     @FocusState private var focusedSessionId: String?
@@ -115,7 +116,19 @@ struct AgentsView: View {
         .sheet(item: $linkTarget) { child in
             LinkParentPicker(child: child, onLinked: { Task { await loadData() } })
         }
-        .task(id: serviceStatusStore.browseReloadToken) { await loadData() }
+        .task(id: serviceStatusStore.browseReloadToken) {
+            let filterKey: [AnyHashable] = []
+            let plan = BrowseReloadCoalescer.plan(
+                filterKey: filterKey,
+                lastFilterKey: lastFilterKey
+            )
+            if plan.debounce {
+                try? await Task.sleep(for: BrowseReloadCoalescer.debounceInterval)
+                if Task.isCancelled { return }
+            }
+            lastFilterKey = filterKey
+            await loadData()
+        }
     }
 
     /// The navigation notification shared by tap and keyboard. Static and pure

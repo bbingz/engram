@@ -183,7 +183,8 @@ final class DatabaseManager: @unchecked Sendable {
             let visibility = SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL(
                 alias: "sessions",
                 applyHumanDrivenOnHost: humanDriven,
-                applyHumanDrivenOnChild: humanDriven
+                applyHumanDrivenOnChild: humanDriven,
+                includeHiddenHosts: includeHidden
             )
             parts.append("AND \(visibility)")
         }
@@ -286,10 +287,13 @@ final class DatabaseManager: @unchecked Sendable {
                 since: nil,
                 includeHidden: false,
                 subAgent: false,
-                topLevelOnly: topLevelOnly,
+                topLevelOnly: false,
                 humanDriven: false,
                 favoritesOnly: false
             )
+            if topLevelOnly {
+                parts.append("AND \(SessionVisibilityFilter.topLevelSQL)")
+            }
             if !sessionIDs.isEmpty {
                 let ids = sessionIDs.sorted()
                 parts.append("AND id NOT IN (\(Array(repeating: "?", count: ids.count).joined(separator: ", ")))")
@@ -834,7 +838,8 @@ final class DatabaseManager: @unchecked Sendable {
         queries: [String],
         startedSince: String,
         excluding sessionIDs: Set<String>,
-        limit: Int
+        limit: Int,
+        humanDriven: Bool = true
     ) throws -> [Session] {
         guard !queries.isEmpty, limit > 0 else { return [] }
         return try readInBackground { db in
@@ -860,7 +865,11 @@ final class DatabaseManager: @unchecked Sendable {
                 FROM matching_sessions m
                 JOIN sessions s ON s.id = m.session_id
                 WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
-                  AND \(SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL(alias: "s"))
+                  AND \(SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL(
+                      alias: "s",
+                      applyHumanDrivenOnHost: humanDriven,
+                      applyHumanDrivenOnChild: humanDriven
+                  ))
                   AND \(SearchFilterPredicates.activityTimeSQL(alias: "s")) >= ?
             """]
             args.append(startedSince)
@@ -1677,6 +1686,7 @@ final class DatabaseManager: @unchecked Sendable {
                 SELECT date(\(activityTime), 'localtime') as day, COUNT(*) as n
                 FROM sessions s
                 WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
+                  AND \(SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL(alias: "s"))
                   AND (
                     SELECT candidate.repo_path
                     FROM (

@@ -84,23 +84,22 @@ enum EngramMigrations {
             CREATE TRIGGER trg_sessions_parent_cascade
             AFTER DELETE ON sessions
             BEGIN
-              -- Confirmed children: orphan the link and reset tier for re-evaluation,
-              -- but preserve 'skip' for subagent and dispatched agents (Wave 7B H05).
+              -- Confirmed children: orphan the link while preserving their existing
+              -- classification; subagent/dispatched roles remain pinned to skip.
               UPDATE sessions
                 SET parent_session_id = NULL,
                     link_source = NULL,
                     tier = CASE
                       WHEN agent_role IN ('subagent', 'dispatched') THEN 'skip'
-                      ELSE NULL
+                      ELSE tier
                     END
                 WHERE parent_session_id = OLD.id;
-              -- Suggested (advisory) children: clear the suggestion and likewise reset
-              -- tier for re-evaluation, preserving 'skip' for subagent/dispatched.
+              -- Suggested (advisory) children follow the same tier-preservation rule.
               UPDATE sessions
                 SET suggested_parent_id = NULL,
                     tier = CASE
                       WHEN agent_role IN ('subagent', 'dispatched') THEN 'skip'
-                      ELSE NULL
+                      ELSE tier
                     END
                 WHERE suggested_parent_id = OLD.id;
             END;

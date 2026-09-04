@@ -103,60 +103,73 @@ final class EngramRemoteBackendTransportTests: XCTestCase {
         XCTAssertFalse(coordinator.contains("requireTLS: Bool = false"))
     }
 
-    func testPostDNSPrivateCheckRejectsPublicResolution_repro() throws {
-        // IP literal path already private-checked; public A-record host must fail
-        // even when requireTLS=false (misconfig must not cleartext-leak token).
-        XCTAssertThrowsError(
-            try EngramRemoteBackend(
-                baseURL: URL(string: "http://example.com:8787")!,
-                token: "t",
-                requireTLS: false
+    func testPlainHTTPRequiresPrivateOrLoopbackIPLiteral_repro() throws {
+        for allowed in [
+            "http://127.0.0.1:8787",
+            "http://10.0.0.1:8787",
+            "http://172.16.0.1:8787",
+            "http://192.168.1.1:8787",
+            "http://100.64.1.2:8787",
+            "http://169.254.1.2:8787",
+            "http://[::1]:8787",
+            "http://[fd7a:115c:a1e0::1]:8787",
+            "http://[fe80::1]:8787",
+        ] {
+            XCTAssertNoThrow(
+                try EngramRemoteBackend(
+                    baseURL: URL(string: allowed)!,
+                    token: "t",
+                    requireTLS: false
+                ),
+                "expected private/loopback literal to be allowed: \(allowed)"
             )
-        ) { error in
-            guard case EngramRemoteBackendError.insecureURL = error else {
-                return XCTFail("expected insecureURL, got \(error)")
-            }
         }
-        // Loopback HTTP remains allowed without DNS dance.
-        XCTAssertNoThrow(
-            try EngramRemoteBackend(
-                baseURL: URL(string: "http://127.0.0.1:8787")!,
-                token: "t",
-                requireTLS: false
-            )
-        )
-        // Private IP literal remains allowed when requireTLS=false.
-        XCTAssertNoThrow(
-            try EngramRemoteBackend(
-                baseURL: URL(string: "http://100.64.1.2:8787")!,
-                token: "t",
-                requireTLS: false
-            )
-        )
 
-        // Named private host that resolves public → refuse cleartext.
-        EngramRemoteBackend.resolveAddressesForTesting = { _ in ["93.184.216.34"] }
-        defer { EngramRemoteBackend.resolveAddressesForTesting = nil }
-        XCTAssertThrowsError(
-            try EngramRemoteBackend(
-                baseURL: URL(string: "http://macmini.local:8787")!,
-                token: "t",
-                requireTLS: false
-            )
-        ) { error in
-            guard case EngramRemoteBackendError.resolvedHostNotPrivate = error else {
-                return XCTFail("expected resolvedHostNotPrivate, got \(error)")
+        for rejected in [
+            "http://localhost:8787",
+            "http://macmini.local:8787",
+            "http://macmini.tail1cb16.ts.net:8787",
+            "http://example.com:8787",
+            "http://93.184.216.34:8787",
+            "http://10.0.0.1.attacker.com:8787",
+        ] {
+            XCTAssertThrowsError(
+                try EngramRemoteBackend(
+                    baseURL: URL(string: rejected)!,
+                    token: "t",
+                    requireTLS: false
+                ),
+                "named/public HTTP must be rejected: \(rejected)"
+            ) { error in
+                guard case EngramRemoteBackendError.insecureURL = error else {
+                    return XCTFail("expected insecureURL, got \(error)")
+                }
             }
         }
-        // Named private host that resolves private → allowed when requireTLS=false.
-        EngramRemoteBackend.resolveAddressesForTesting = { _ in ["100.64.1.9"] }
+
         XCTAssertNoThrow(
             try EngramRemoteBackend(
-                baseURL: URL(string: "http://macmini.local:8787")!,
+                baseURL: URL(string: "https://macmini.tail1cb16.ts.net:8787")!,
                 token: "t",
                 requireTLS: false
             )
         )
+    }
+
+    func testRemoteBackendMapsURLCancellationToCancellationError_repro() async throws {
+        let backend = try makeBackend()
+        RemoteOffloadURLProtocolStub.handler = { protocolInstance, _ in
+            protocolInstance.fail(URLError(.cancelled))
+        }
+
+        do {
+            _ = try await backend.get(key: "cancel.bundle")
+            XCTFail("expected CancellationError")
+        } catch is CancellationError {
+            // expected
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
     }
 
     func testPrivateIPv4ClassificationRejectsHostWithExtraLabels_repro() {
@@ -260,6 +273,11 @@ private final class RemoteOffloadURLProtocolStub: URLProtocol, @unchecked Sendab
         redirected.url = target
         client?.urlProtocol(self, wasRedirectedTo: redirected, redirectResponse: response)
         client?.urlProtocolDidFinishLoading(self)
+    }
+
+    func fail(_ error: Error) {
+        guard isActive else { return }
+        client?.urlProtocol(self, didFailWithError: error)
     }
 
     private var isActive: Bool {

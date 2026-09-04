@@ -185,6 +185,66 @@ private final class FileStateFailingSink: IndexingWriteSink {
     }
 }
 
+/// Produces a usable prefix with a terminal parse marker so the indexer has
+/// both a session snapshot and a failure file identity to commit together.
+private final class TerminalPrefixIndexingAdapter: SessionAdapter {
+    let source: SourceName = .copilot
+    let locator: String
+
+    init(locator: String) {
+        self.locator = locator
+    }
+
+    func detect() async -> Bool { true }
+    func listSessionLocators() async throws -> [String] { [locator] }
+    func isAccessible(locator: String) async -> Bool { true }
+
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        .success(info(locator: locator))
+    }
+
+    func streamMessages(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.yield(NormalizedMessage(role: .user, content: "question"))
+            continuation.yield(NormalizedMessage(role: .assistant, content: "answer"))
+            continuation.finish()
+        }
+    }
+
+    func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
+        .success(
+            IndexingScan(
+                info: info(locator: locator),
+                messages: [
+                    NormalizedMessage(role: .user, content: "question"),
+                    NormalizedMessage(role: .assistant, content: "answer"),
+                ],
+                parseFailure: .messageLimitExceeded
+            )
+        )
+    }
+
+    private func info(locator: String) -> NormalizedSessionInfo {
+        NormalizedSessionInfo(
+            id: URL(fileURLWithPath: locator).deletingPathExtension().lastPathComponent,
+            source: source,
+            startTime: "2026-09-02T01:00:00Z",
+            cwd: "/repo",
+            messageCount: 2,
+            userMessageCount: 1,
+            assistantMessageCount: 1,
+            toolMessageCount: 0,
+            systemMessageCount: 0,
+            summary: "terminal prefix",
+            filePath: locator,
+            sizeBytes: 1
+        )
+    }
+}
+
 final class IndexJobAndMaintenanceTests: XCTestCase {
     private var tempDB: URL!
     private var writer: EngramDatabaseWriter!
@@ -373,6 +433,68 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'fts-trunc-1'") ?? -1
         }
         XCTAssertEqual(ftsCount, 0)
+    }
+
+    func testFtsJobAcceptsIntentionalCopilotTerminalPrefix_repro() async throws {
+        let locator = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fts-copilot-prefix-\(UUID().uuidString).jsonl")
+        try Data("{}".utf8).write(to: locator)
+        defer { try? FileManager.default.removeItem(at: locator) }
+
+        let snapshot = AuthoritativeSessionSnapshot(
+            id: "fts-copilot-prefix",
+            source: .copilot,
+            authoritativeNode: "node-a",
+            syncVersion: 1,
+            snapshotHash: "h-copilot-prefix",
+            indexedAt: "2026-08-31T12:00:00Z",
+            sourceLocator: locator.path,
+            sizeBytes: 128,
+            startTime: "2026-08-31T11:00:00Z",
+            endTime: nil,
+            cwd: "/repo",
+            project: "demo",
+            model: nil,
+            messageCount: 2,
+            userMessageCount: 1,
+            assistantMessageCount: 1,
+            toolMessageCount: 0,
+            systemMessageCount: 0,
+            summary: "copilot prefix summary",
+            summaryMessageCount: nil,
+            origin: nil,
+            tier: .normal,
+            agentRole: nil,
+            toolCallCounts: [:]
+        )
+        try writer.write { db in
+            _ = try SessionBatchUpsert(db: db).upsertBatch([snapshot], reason: .initialScan)
+        }
+
+        let adapter = TruncatingFTSAdapter(
+            source: .copilot,
+            messages: [
+                NormalizedMessage(role: .user, content: "copilot prefix question"),
+                NormalizedMessage(role: .assistant, content: "copilot prefix answer"),
+            ],
+            truncatedAt: 2
+        )
+        let runner = IndexJobRunner(writer: writer, adapters: [adapter])
+        let (summary, _) = try await runner.runRecoverableJobsOnce()
+        XCTAssertEqual(summary.completed, 1)
+
+        let rows = try writer.read { db in
+            try String.fetchAll(
+                db,
+                sql: "SELECT content FROM sessions_fts WHERE session_id = ? ORDER BY rowid",
+                arguments: ["fts-copilot-prefix"]
+            )
+        }
+        XCTAssertEqual(rows, [
+            "copilot prefix question",
+            "copilot prefix answer",
+            "copilot prefix summary",
+        ])
     }
 
     func testFtsVersionRebuildSwapsOnlyAfterShadowTableIsComplete() async throws {
@@ -1104,6 +1226,159 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
         XCTAssertEqual(Set(sink.receivedFileStateLocators), Set(locators))
     }
 
+    func testSwiftIndexerCommitsTerminalFileStateOnlyWithMatchingSnapshot_repro() async throws {
+        let locator = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atomic-prefix.jsonl")
+        try Data("a".utf8).write(to: locator)
+        defer { try? FileManager.default.removeItem(at: locator) }
+        let adapter = TerminalPrefixIndexingAdapter(locator: locator.path)
+
+        try writer.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_atomic_prefix_session_repro
+                BEFORE INSERT ON sessions
+                WHEN NEW.id = 'atomic-prefix'
+                BEGIN
+                  SELECT RAISE(ABORT, 'forced session upsert failure');
+                END
+                """)
+        }
+
+        let failed = try await writer.indexRecentSessions(adapters: [adapter])
+        XCTAssertEqual(failed.indexed, 0)
+        try writer.read { db in
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions WHERE id = 'atomic-prefix'"),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM file_index_state WHERE source = 'copilot' AND locator = ?",
+                    arguments: [locator.path]
+                ),
+                0,
+                "a failed session item must not leave a terminal same-identity skip stamp"
+            )
+        }
+
+        // Remove the poisoned state only to let the same RED fixture continue
+        // proving the successful merge and subsequent noop paths.
+        try writer.write { db in
+            try db.execute(sql: "DROP TRIGGER fail_atomic_prefix_session_repro")
+            try db.execute(
+                sql: "DELETE FROM file_index_state WHERE source = 'copilot' AND locator = ?",
+                arguments: [locator.path]
+            )
+        }
+
+        let merged = try await writer.indexRecentSessions(adapters: [adapter])
+        XCTAssertEqual(merged.indexed, 1)
+        let mergedMtime = try writer.read { db in
+            try Int64.fetchOne(
+                db,
+                sql: "SELECT mtime_ns FROM file_index_state WHERE source = 'copilot' AND locator = ?",
+                arguments: [locator.path]
+            )
+        }
+        XCTAssertNotNil(mergedMtime, "a successful merge must commit its paired file state")
+
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(60)],
+            ofItemAtPath: locator.path
+        )
+        let nooped = try await writer.indexRecentSessions(adapters: [adapter])
+        XCTAssertEqual(nooped.indexed, 0)
+        let noopMtime = try writer.read { db in
+            try Int64.fetchOne(
+                db,
+                sql: "SELECT mtime_ns FROM file_index_state WHERE source = 'copilot' AND locator = ?",
+                arguments: [locator.path]
+            )
+        }
+        XCTAssertNotEqual(noopMtime, mergedMtime, "a successful noop must commit its paired current identity")
+    }
+
+    func testNoopSidecarFailureRollsBackWholeSnapshotAndContinuesBatch_repro() throws {
+        func beat(sessionId: String, title: String) -> SessionImplementationBeat {
+            SessionImplementationBeat(
+                sessionId: sessionId,
+                beatIndex: 0,
+                actionDate: "2026-09-02",
+                workKey: "work",
+                workTitle: title,
+                humanIntent: "intent",
+                assistantOutcome: "outcome",
+                kind: .implementation,
+                status: .completed,
+                operationEvents: [],
+                confidence: 0.9
+            )
+        }
+
+        var badInitial = makeMinimalSnapshot(id: "noop-bad")
+        badInitial.toolCallCounts = ["OldTool": 1]
+        badInitial.implementationBeats = [beat(sessionId: badInitial.id, title: "old beat")]
+        var goodInitial = makeMinimalSnapshot(id: "noop-good")
+        goodInitial.toolCallCounts = ["OldTool": 1]
+
+        try writer.write { db in
+            let result = try SessionBatchUpsert(db: db).upsertBatch(
+                [badInitial, goodInitial],
+                reason: .initialScan
+            )
+            XCTAssertEqual(result.results.map(\.action), [.merge, .merge])
+            try db.execute(sql: """
+                CREATE TRIGGER fail_noop_work_beat_repro
+                BEFORE INSERT ON session_work_beats
+                WHEN NEW.session_id = 'noop-bad' AND NEW.work_title = 'new beat'
+                BEGIN
+                  SELECT RAISE(ABORT, 'forced noop work beat failure');
+                END
+                """)
+        }
+
+        var badIncoming = badInitial
+        badIncoming.toolCallCounts = ["NewTool": 2]
+        badIncoming.implementationBeats = [beat(sessionId: badIncoming.id, title: "new beat")]
+        var goodIncoming = goodInitial
+        goodIncoming.toolCallCounts = ["NewTool": 2]
+
+        let result = try writer.write { db in
+            try SessionBatchUpsert(db: db).upsertBatch(
+                [badIncoming, goodIncoming],
+                reason: .rescan
+            )
+        }
+        XCTAssertEqual(result.results.map(\.action), [.failure, .noop])
+
+        try writer.read { db in
+            XCTAssertEqual(
+                try String.fetchAll(
+                    db,
+                    sql: "SELECT tool_name FROM session_tools WHERE session_id = 'noop-bad' ORDER BY tool_name"
+                ),
+                ["OldTool"],
+                "the earlier noop tool replacement must roll back with the later beat failure"
+            )
+            XCTAssertEqual(
+                try String.fetchAll(
+                    db,
+                    sql: "SELECT work_title FROM session_work_beats WHERE session_id = 'noop-bad' ORDER BY beat_index"
+                ),
+                ["old beat"]
+            )
+            XCTAssertEqual(
+                try String.fetchAll(
+                    db,
+                    sql: "SELECT tool_name FROM session_tools WHERE session_id = 'noop-good' ORDER BY tool_name"
+                ),
+                ["NewTool"],
+                "a failed noop item must not stop the next batch item"
+            )
+        }
+    }
+
     func testIndexStatusThrowsOnMissingSchema() throws {
         // Fresh DB without migration → no sessions table.
         let bareDB = FileManager.default.temporaryDirectory
@@ -1153,14 +1428,14 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
         XCTAssertEqual(suggested, "parent-1")
     }
 
-    // MARK: - WP-H3: cascade trigger resets tier for suggested children, preserves skip for subagents
+    // MARK: - WP-H3: cascade trigger preserves searchable tiers and skip for subagents
 
     func testCascadeTriggerResetsSuggestedChildTierPreservingSubagents() throws {
         try writer.write { db in
             try db.execute(
                 sql: "INSERT INTO sessions (id, source, start_time, file_path, tier) VALUES ('p', 'claude-code', '2026-03-18T11:00:00Z', '/tmp/p.jsonl', 'normal')"
             )
-            // Suggested child (non-subagent): tier should reset to NULL on parent delete.
+            // Suggested child (non-subagent): its existing searchable tier must survive parent delete.
             try db.execute(
                 sql: "INSERT INTO sessions (id, source, start_time, file_path, suggested_parent_id, tier, agent_role) VALUES ('sug', 'codex', '2026-03-18T11:00:00Z', '/tmp/s.jsonl', 'p', 'normal', NULL)"
             )
@@ -1177,7 +1452,7 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
             return (sug?["tier"], sug?["suggested_parent_id"], sub?["tier"], sub?["parent_session_id"])
         }
         XCTAssertNil(sugSuggested, "suggested link must be cleared")
-        XCTAssertNil(sugTier, "non-subagent suggested child tier must reset to NULL")
+        XCTAssertEqual(sugTier, "normal", "non-subagent suggested child tier must be preserved")
         XCTAssertNil(subParent, "subagent parent link must be cleared")
         XCTAssertEqual(subTier, "skip", "true subagent tier must stay 'skip'")
     }

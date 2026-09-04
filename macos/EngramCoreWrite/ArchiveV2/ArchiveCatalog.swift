@@ -1229,6 +1229,22 @@ public final class ArchiveCatalog: @unchecked Sendable {
                 """,
                 arguments: [manifestSHA256, captureID, sessionID, locator, updatedAt]
             )
+            try db.execute(
+                sql: """
+                UPDATE archive_reclamation_intents
+                SET phase = 'eligible',
+                    quarantine_path = NULL,
+                    last_error = NULL,
+                    claim_generation = claim_generation + 1,
+                    updated_at = ?
+                WHERE manifest_sha256 = ?
+                  AND capture_id = ?
+                  AND session_id = ?
+                  AND locator = ?
+                  AND phase = 'paused'
+                """,
+                arguments: [updatedAt, manifestSHA256, captureID, sessionID, locator]
+            )
         }
         guard let intent = try reclamationIntent(manifestSHA256: manifestSHA256),
               intent.captureID == captureID,

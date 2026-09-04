@@ -22,7 +22,7 @@ final class SessionSemanticSearchIntegrityTests: XCTestCase {
         XCTAssertEqual(result, .compatible(model: "native-model", dimension: 1_024))
     }
 
-    func testAdoptedNativeDimensionUsesOmittedCompatibility_repro() {
+    func testExplicitDimensionMismatchFailsCompatibilityBeforeEmbed_repro() {
         let config = EmbeddingConfig(
             baseURL: "https://api.example.com/v1",
             apiKey: "k",
@@ -35,16 +35,18 @@ final class SessionSemanticSearchIntegrityTests: XCTestCase {
             storedDimension: 2_560
         )
 
-        XCTAssertFalse(dimensionsWereSent)
-        XCTAssertEqual(
-            SessionVectorSearchAvailability.queryCompatibility(
-                configuredModel: config.model,
-                configuredDimension: config.dimension,
-                dimensionsWereSent: dimensionsWereSent,
-                snapshot: .init(isUsable: true, model: config.model, dimension: 2_560)
-            ),
-            .compatible(model: config.model, dimension: 2_560)
+        XCTAssertTrue(dimensionsWereSent)
+        let result = SessionVectorSearchAvailability.queryCompatibility(
+            configuredModel: config.model,
+            configuredDimension: config.dimension,
+            dimensionsWereSent: dimensionsWereSent,
+            snapshot: .init(isUsable: true, model: config.model, dimension: 2_560)
         )
+        guard case let .modelMismatch(_, configuredDimension, _, storedDimension) = result else {
+            return XCTFail("expected modelMismatch, got \(result)")
+        }
+        XCTAssertEqual(configuredDimension, 1_024)
+        XCTAssertEqual(storedDimension, 2_560)
     }
 
     func testExplicitBGEConfigUsesStoredNativeDimensionWhenRequestOmitsDimensions_repro() {

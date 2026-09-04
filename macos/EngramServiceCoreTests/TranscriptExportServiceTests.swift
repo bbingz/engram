@@ -517,6 +517,51 @@ final class TranscriptExportServiceTests: XCTestCase {
         }
     }
 
+    func testTranscriptSizeGuardFailsClosedForMissingRealFile_repro() {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-missing-transcript-\(UUID().uuidString).json")
+
+        XCTAssertThrowsError(
+            try TranscriptSizeGuard.validateFullJSONTranscript(
+                filePath: missing.path,
+                source: "gemini-cli"
+            )
+        )
+    }
+
+    func testCursorVirtualLocatorSkipsFullJSONFileGuard_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-cursor-virtual-\(UUID().uuidString)", isDirectory: true)
+        let globalStorage = root
+            .appendingPathComponent("Library/Application Support/Cursor/User/globalStorage", isDirectory: true)
+        try FileManager.default.createDirectory(at: globalStorage, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let homeScope = ServiceCoreTestHomeScope(home: root)
+        defer { homeScope.restore() }
+        let dbPath = globalStorage.appendingPathComponent("state.vscdb").path
+        let queue = try DatabaseQueue(path: dbPath)
+        try await queue.write { db in
+            try db.execute(sql: "CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)")
+            try db.execute(
+                sql: "INSERT INTO cursorDiskKV (key, value) VALUES (?, ?), (?, ?), (?, ?)",
+                arguments: [
+                    "composerData:virtual", #"{"composerId":"virtual"}"#,
+                    "bubbleId:virtual:u1", #"{"type":1,"text":"virtual user"}"#,
+                    "bubbleId:virtual:a1", #"{"type":2,"text":"virtual assistant"}"#,
+                ]
+            )
+        }
+
+        let result = try await ServiceTranscriptReader.readMessagesWithMetadata(
+            filePath: "\(dbPath)?composer=virtual",
+            source: "cursor"
+        )
+        var messages: [ServiceTranscriptMessage] = []
+        for message in result.messages { messages.append(message) }
+
+        XCTAssertEqual(messages.map(\.content), ["virtual user", "virtual assistant"])
+    }
+
     func testLiveTranscriptCocoaReadFailureIsTerminal_repro() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("engram-live-cocoa-terminal-\(UUID().uuidString)", isDirectory: true)

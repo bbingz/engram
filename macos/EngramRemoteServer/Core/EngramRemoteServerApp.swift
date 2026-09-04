@@ -165,12 +165,14 @@ public final class EngramRemoteServerApp: Sendable {
             guard Self.authorized(request, token: token) else { return Self.unauthorized() }
             guard let key = context.parameters.get("key") else { return Self.badRequest("missing key") }
             do {
-                let data = try store.get(key)
+                let data = try store.get(key, maximumPlaintextBytes: maxBytes)
                 return Self.octetStream(data)
             } catch BlobStoreError.notFound {
                 return Response(status: .notFound)
             } catch BlobStoreError.invalidKey {
                 return Self.badRequest("invalid key")
+            } catch BlobStoreError.limitExceeded {
+                return Self.payloadTooLarge()
             } catch {
                 // Decrypt/auth-tag failure or I/O error.
                 return Response(status: .internalServerError)
@@ -187,8 +189,10 @@ public final class EngramRemoteServerApp: Sendable {
                 : maxBytes
             do {
                 buffer = try await request.collectBody(upTo: uploadLimit)
+            } catch is NIOTooManyBytesError {
+                return Self.payloadTooLarge()
             } catch {
-                return Response(status: .init(code: 413, reasonPhrase: "Payload Too Large"))
+                return Response(status: .serviceUnavailable)
             }
             let data = Data(buffer.readableBytesView)
             guard !Self.isCatalogManifestKey(key) || data.count <= Self.maximumCatalogManifestBytes else {
@@ -772,12 +776,19 @@ enum MCPRemoteEndpoint {
         do {
             let buffer = try await request.collectBody(upTo: maxRequestBytes)
             body = Data(buffer.readableBytesView)
-        } catch {
+        } catch is NIOTooManyBytesError {
             return errorResponse(
                 status: .init(code: 413, reasonPhrase: "Payload Too Large"),
                 id: nil,
                 code: -32600,
                 message: "Request body too large"
+            )
+        } catch {
+            return errorResponse(
+                status: .serviceUnavailable,
+                id: nil,
+                code: -32603,
+                message: "Request body unavailable"
             )
         }
         guard let parsed = try? JSONSerialization.jsonObject(with: body),

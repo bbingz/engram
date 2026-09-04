@@ -187,6 +187,7 @@ final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter
     private struct MessageLoad: Sendable {
         let messages: [NormalizedMessage]
         let parseFailure: ParserFailure?
+        let hasMoreMessages: Bool
     }
 
     let source: SourceName = .geminiCli
@@ -328,6 +329,9 @@ final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
         let load = try await loadMessages(locator: locator)
+        if options.limit == nil, load.hasMoreMessages || load.messages.count > limits.maxMessages {
+            throw ParserFailure.messageLimitExceeded
+        }
         return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(load.messages, options: options))
     }
 
@@ -343,14 +347,16 @@ final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter
                 countsTowardMessageLimit: { _ in false }
             )
             let session = Self.replayJSONLSession(objects)
-            let messages = JSONLAdapterSupport.array(session["messages"])?
-                .compactMap { JSONLAdapterSupport.object($0) }
-                .flatMap(Self.messages(from:)) ?? []
+            let bounded = Self.boundedMessages(
+                from: JSONLAdapterSupport.array(session["messages"]) ?? [],
+                maxMessages: limits.maxMessages
+            )
             return JSONLAdapterSupport.stream(
                 JSONLAdapterSupport.boundedWindowWithMetadata(
-                    messages,
+                    bounded.messages,
                     options: options,
                     maxMessages: limits.maxMessages,
+                    hasMoreMessages: bounded.exceededMessageLimit,
                     parseFailure: failure
                 )
             )
@@ -362,7 +368,8 @@ final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter
                 load.messages,
                 options: options,
                 maxMessages: limits.maxMessages,
-                parseFailure: load.parseFailure
+                hasMoreMessages: load.hasMoreMessages,
+                parseFailure: load.parseFailure == .messageLimitExceeded ? nil : load.parseFailure
             )
         )
     }
@@ -370,20 +377,43 @@ final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter
     private func loadMessages(locator: String) async throws -> MessageLoad {
         let signature = ParsedTranscriptCache.Signature.forFile(locator)
         if let cached = await messageCache.cached(locator: locator, signature: signature) {
-            return MessageLoad(messages: cached, parseFailure: nil)
+            return MessageLoad(messages: cached, parseFailure: nil, hasMoreMessages: false)
         }
         let (object, parseFailure) = try Self.readSession(
             locator: locator,
             limits: limits,
             beforeIdentityValidation: testHooks.beforeFinalIdentityValidation
         )
-        let messages = JSONLAdapterSupport.array(object["messages"])?
-            .compactMap { JSONLAdapterSupport.object($0) }
-            .flatMap(Self.messages(from:)) ?? []
-        if parseFailure == nil {
-            await messageCache.store(locator: locator, signature: signature, messages: messages)
+        let bounded = Self.boundedMessages(
+            from: JSONLAdapterSupport.array(object["messages"]) ?? [],
+            maxMessages: limits.maxMessages
+        )
+        let hasMoreMessages = bounded.exceededMessageLimit || parseFailure == .messageLimitExceeded
+        if parseFailure == nil, !hasMoreMessages {
+            await messageCache.store(locator: locator, signature: signature, messages: bounded.messages)
         }
-        return MessageLoad(messages: messages, parseFailure: parseFailure)
+        return MessageLoad(
+            messages: bounded.messages,
+            parseFailure: parseFailure,
+            hasMoreMessages: hasMoreMessages
+        )
+    }
+
+    private static func boundedMessages(
+        from objects: [Any],
+        maxMessages: Int
+    ) -> (messages: [NormalizedMessage], exceededMessageLimit: Bool) {
+        let cap = max(maxMessages, 0)
+        var messages: [NormalizedMessage] = []
+        for object in objects.compactMap({ JSONLAdapterSupport.object($0) }) {
+            for message in Self.messages(from: object) {
+                guard messages.count < cap else {
+                    return (messages, true)
+                }
+                messages.append(message)
+            }
+        }
+        return (messages, false)
     }
 
     func isAccessible(locator: String) async -> Bool {

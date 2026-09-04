@@ -251,6 +251,24 @@ final class TodayWorkbenchScopeTests: XCTestCase {
         )
     }
 
+    func testFollowUpLoaderThreadsShowAllHumanDrivenScope_repro() throws {
+        let home = try source("macos/Engram/Views/Pages/HomeView.swift")
+        let loaderStart = try XCTUnwrap(home.range(of: "private func loadTodayFollowUps"))
+        let loaderEnd = try XCTUnwrap(home.range(of: "/// Scoping rules for the Today \"Follow-ups\" panel."))
+        let loader = home[loaderStart.lowerBound..<loaderEnd.lowerBound]
+        let database = try source("macos/Engram/Core/Database.swift")
+        let queryStart = try XCTUnwrap(database.range(of: "nonisolated func todayFollowUpSessions("))
+        let queryTail = database[queryStart.lowerBound...]
+        let queryEnd = try XCTUnwrap(queryTail.range(of: "// MARK: - project_timeline"))
+        let query = queryTail[..<queryEnd.lowerBound]
+
+        XCTAssertTrue(loader.contains("humanDriven: Bool"))
+        XCTAssertTrue(loader.contains("humanDriven: humanDriven"))
+        XCTAssertTrue(query.contains("humanDriven: Bool"))
+        XCTAssertTrue(query.contains("applyHumanDrivenOnHost: humanDriven"))
+        XCTAssertTrue(query.contains("applyHumanDrivenOnChild: humanDriven"))
+    }
+
     func testFollowUpSQLScopePreventsChildStarvation() throws {
         let path = FileManager.default.temporaryDirectory
             .appendingPathComponent("followups-\(UUID().uuidString).sqlite").path
@@ -326,6 +344,55 @@ final class TodayWorkbenchScopeTests: XCTestCase {
             limit: 5
         )
         XCTAssertEqual(sessions?.map(\.id), ["overnight-follow-up"])
+    }
+
+    func testFollowUpSQLScopeHonorsHumanDrivenToggle_repro() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("followups-human-\(UUID().uuidString).sqlite").path
+        try createSessionsTable(at: path)
+        var manager: DatabaseManager? = DatabaseManager(path: path)
+        defer {
+            manager = nil
+            cleanupTempDatabase(at: path)
+        }
+        try manager?.open()
+        try insertTestSession(
+            at: path,
+            id: "human-follow-up",
+            startTime: "2026-08-23T09:00:00Z",
+            endTime: "2026-08-23T09:30:00Z"
+        )
+        try insertTestSession(
+            at: path,
+            id: "single-shot-follow-up",
+            startTime: "2026-08-23T10:00:00Z",
+            endTime: "2026-08-23T10:30:00Z"
+        )
+        try insertFTSContent(at: path, sessionId: "human-follow-up", content: "follow-up")
+        try insertFTSContent(at: path, sessionId: "single-shot-follow-up", content: "follow-up")
+        try DatabaseQueue(path: path).write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET instruction_count = 0, human_turn_count = 1, user_message_count = 1 WHERE id = 'single-shot-follow-up'"
+            )
+        }
+
+        let scoped = try manager?.todayFollowUpSessions(
+            queries: ["follow-up"],
+            startedSince: "2026-08-23T00:00:00Z",
+            excluding: [],
+            limit: 5,
+            humanDriven: true
+        )
+        XCTAssertEqual(scoped?.map(\.id), ["human-follow-up"])
+
+        let showAll = try manager?.todayFollowUpSessions(
+            queries: ["follow-up"],
+            startedSince: "2026-08-23T00:00:00Z",
+            excluding: [],
+            limit: 5,
+            humanDriven: false
+        )
+        XCTAssertEqual(showAll?.map(\.id), ["single-shot-follow-up", "human-follow-up"])
     }
 
     // MARK: - Relative time dual parsing (finding #3)

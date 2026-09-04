@@ -360,4 +360,26 @@ final class DashboardDrillInTests: XCTestCase {
             ["ended-newer", "started-newer"]
         )
     }
+
+    @MainActor
+    func testRepoSparklineMatchesRepoDetailRootPopulation_repro() throws {
+        try insertGitRepo(path: "/Users/a/app")
+        let now = ISO8601DateFormatter().string(from: Date())
+        try insertSessionWithCwd(id: "human-root", cwd: "/Users/a/app", startTime: now)
+        try insertSessionWithCwd(id: "confirmed-child", cwd: "/Users/a/app/sub", startTime: now)
+        try insertSessionWithCwd(id: "single-shot-root", cwd: "/Users/a/app", startTime: now)
+        try DatabaseQueue(path: dbPath).write { database in
+            try database.execute(
+                sql: "UPDATE sessions SET parent_session_id = 'human-root' WHERE id = 'confirmed-child'"
+            )
+            try database.execute(
+                sql: "UPDATE sessions SET instruction_count = 0, human_turn_count = 1, user_message_count = 1 WHERE id = 'single-shot-root'"
+            )
+        }
+
+        let detailCount = try db.sessionsForRepo(path: "/Users/a/app").count
+        let sparklineCount = try db.sparklineData(for: "/Users/a/app").reduce(0, +)
+        XCTAssertEqual(detailCount, 1)
+        XCTAssertEqual(sparklineCount, detailCount)
+    }
 }

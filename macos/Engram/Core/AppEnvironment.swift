@@ -122,11 +122,43 @@ struct AppEnvironment {
         if environment["XCTestConfigurationFilePath"] != nil {
             return .test(fixturePath: "")
         }
-        if let dataDir = args.firstIndex(of: "--data-dir")
-            .flatMap({ idx in args.indices.contains(idx + 1) ? args[idx + 1] : nil }) {
+        if let dataDirIndex = args.firstIndex(of: "--data-dir") {
+            let dataDir = args.indices.contains(dataDirIndex + 1)
+                ? args[dataDirIndex + 1]
+                : ""
+            let homeDirectory = URL(
+                fileURLWithPath: environment["CFFIXED_USER_HOME"]
+                    ?? environment["HOME"]
+                    ?? FileManager.default.homeDirectoryForCurrentUser.path,
+                isDirectory: true
+            )
+            guard let normalizedDataDir = UnixSocketEngramServiceTransport.normalizedAbsolutePath(
+                dataDir,
+                homeDirectory: homeDirectory
+            ) else {
+                // An invalid override must not silently adopt or launch the
+                // production writer. Leave both local data and IPC unavailable.
+                return AppEnvironment(
+                    dbPath: "",
+                    serviceSocketPath: "",
+                    autoStartDaemon: false,
+                    autoStartService: false,
+                    networkEnabled: false,
+                    fixedDate: nil,
+                    popoverStandalone: false,
+                    windowSize: nil,
+                    mockDaemon: false,
+                    showOnboarding: false,
+                    isTestMode: false
+                )
+            }
+            let dataDirectory = URL(fileURLWithPath: normalizedDataDir, isDirectory: true)
             return AppEnvironment(
-                dbPath: "\(dataDir)/index.sqlite",
-                serviceSocketPath: AppEnvironment.production.serviceSocketPath,
+                dbPath: dataDirectory.appendingPathComponent("index.sqlite").path,
+                serviceSocketPath: dataDirectory
+                    .appendingPathComponent("run", isDirectory: true)
+                    .appendingPathComponent("engram-service.sock")
+                    .path,
                 autoStartDaemon: AppEnvironment.production.autoStartDaemon,
                 autoStartService: AppEnvironment.production.autoStartService,
                 networkEnabled: AppEnvironment.production.networkEnabled,

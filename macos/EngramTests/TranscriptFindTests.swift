@@ -166,6 +166,49 @@ final class TranscriptFindTests: XCTestCase {
         )
     }
 
+    func testVisibleFindUsesHighlightCaseInsensitiveRangeForUnicode_repro() throws {
+        XCTAssertNotNil("Straße".range(of: "STRASSE", options: .caseInsensitive))
+        XCTAssertNil("İstanbul".range(of: "istanbul", options: .caseInsensitive))
+
+        let detail = try normalized("macos/Engram/Views/SessionDetailView.swift")
+        let start = try XCTUnwrap(detail.range(of: "privatefuncupdateMatchIndicesDebounced()async{"))
+        let end = try XCTUnwrap(detail.range(of: "//MARK:-Body", range: start.upperBound..<detail.endIndex))
+        let scan = String(detail[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(scan.contains("range(of:rawQuery,options:.caseInsensitive)!=nil"))
+        XCTAssertFalse(
+            scan.contains("lowercased().contains(query)"),
+            "visible find must use the exact same Unicode matching semantics as hidden matches and highlights"
+        )
+    }
+
+    func testReplacementFindScanKeepsOldResultsUntilCurrentIdentityCommits_repro() throws {
+        let detail = try normalized("macos/Engram/Views/SessionDetailView.swift")
+        let start = try XCTUnwrap(detail.range(of: "privatefuncupdateMatchIndicesDebounced()async{"))
+        let end = try XCTUnwrap(detail.range(of: "//MARK:-Body", range: start.upperBound..<detail.endIndex))
+        let scan = String(detail[start.lowerBound..<end.lowerBound])
+        let priorMatch = try XCTUnwrap(scan.range(of: "letpreviousMatchedMessageID"))
+        let sleep = try XCTUnwrap(scan.range(of: "Task.sleep", range: priorMatch.upperBound..<scan.endIndex))
+        let debounce = String(scan[priorMatch.lowerBound..<sleep.lowerBound])
+
+        XCTAssertFalse(debounce.contains("matchIndices=[]"))
+        XCTAssertFalse(debounce.contains("hiddenMatchBuckets=[]"))
+        XCTAssertFalse(debounce.contains("currentMatchIndex=-1"))
+        XCTAssertTrue(scan.contains("letscanToken=matchScanToken"))
+        XCTAssertTrue(scan.contains("guard!Task.isCancelled,scanToken==matchScanTokenelse{return}"))
+        XCTAssertTrue(scan.contains("letqueryChanged=rawQuery!=committedFindQuery"))
+        XCTAssertTrue(scan.contains("committedFindQuery=rawQuery"))
+        XCTAssertTrue(detail.contains(#"\(session.id)\u{1}\(displayVersion)"#))
+
+        let changeStart = try XCTUnwrap(detail.range(of: ".onChange(of:searchText)"))
+        let changeEnd = try XCTUnwrap(
+            detail.range(of: ".task(id:matchScanToken)", range: changeStart.upperBound..<detail.endIndex)
+        )
+        let change = String(detail[changeStart.lowerBound..<changeEnd.lowerBound])
+        XCTAssertFalse(change.contains("currentMatchIndex=-1"))
+        XCTAssertFalse(change.contains("committedFindMatchMessageID=nil"))
+    }
+
     func testTranscriptFindRebindsCurrentMatchByMessageIdentity_repro() throws {
         let detail = try source("macos/Engram/Views/SessionDetailView.swift")
         XCTAssertTrue(detail.contains("currentFindMatchMessageID"))

@@ -40,6 +40,7 @@ public enum SessionStorageRootCatalog {
         Entry(id: "codex-archived", relativePath: ".codex/archived_sessions"),
         Entry(id: "codex-rollout-summaries", relativePath: ".codex/memories/rollout_summaries"),
         Entry(id: "gemini-cli", relativePath: ".gemini/tmp"),
+        Entry(id: "kimi", relativePath: ".kimi/sessions"),
         Entry(id: "iflow", relativePath: ".iflow/projects"),
         Entry(id: "qwen", relativePath: ".qwen/projects"),
         Entry(id: "qoder", relativePath: ".qoder/projects"),

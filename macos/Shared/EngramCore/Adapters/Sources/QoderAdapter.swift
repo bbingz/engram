@@ -180,7 +180,17 @@ final class QoderAdapter: SessionAdapter, Sendable {
             if result.truncatedAt != nil { return .failure(.messageLimitExceeded) }
             var messages: [NormalizedMessage] = []
             for try await message in result.messages { messages.append(message) }
-            let after = try limits.fileIdentity(for: url)
+            let after: FileIdentity
+            do {
+                after = try limits.fileIdentity(for: url)
+            } catch {
+                guard !messages.isEmpty else { return .failure(.fileModifiedDuringParse) }
+                return .success(IndexingScan(
+                    info: info,
+                    messages: messages,
+                    parseFailure: .fileModifiedDuringParse
+                ))
+            }
             let identityFailure: ParserFailure? = limits.isSameFileIdentity(before, after)
                 ? nil
                 : .fileModifiedDuringParse

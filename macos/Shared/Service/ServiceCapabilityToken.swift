@@ -20,6 +20,7 @@ enum ServiceCapabilityToken {
         "generateSummary",
         "saveInsight",
         "refreshUsage",
+        "shutdown",
         "test.write_intent",
         "projectMove",
         "projectArchive",

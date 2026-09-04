@@ -2,7 +2,12 @@
 import SwiftUI
 
 struct AISettingsSection: View {
+    let serviceSocketPath: String
     @Environment(\.engramServiceClient) var serviceClient
+
+    init(serviceSocketPath: String) {
+        self.serviceSocketPath = serviceSocketPath
+    }
 
     // Provider
     @State private var aiProtocol: String = "openai"
@@ -461,6 +466,7 @@ struct AISettingsSection: View {
                 summarySampleLast: summarySampleLast,
                 summaryTruncateChars: summaryTruncateChars
             ),
+            serviceSocketPath: serviceSocketPath,
             onAPIKeyResult: { result in
                 guard applyAPIKey, result.isRealKeyApply else { return }
                 aiAPIKeyPersistenceResult = result
@@ -494,6 +500,7 @@ struct AISettingsSection: View {
                 baseURL: titleBaseURL,
                 model: titleModel
             ),
+            serviceSocketPath: serviceSocketPath,
             onAPIKeyResult: { result in
                 guard applyAPIKey, result.isRealKeyApply else { return }
                 titleAPIKeyPersistenceResult = result
@@ -594,7 +601,7 @@ struct AISettingsSection: View {
         if preservingUnavailableKey { return .orange }
         switch result {
         case .plaintext: return .orange
-        case .savedMarkerFailed, .failed: return .red
+        case .savedMarkerFailed, .runtimeBridgeRefreshFailed, .failed: return .red
         case .saved, .cleared, .unchanged, .none: return .secondary
         }
     }
@@ -728,6 +735,7 @@ enum AISettingsPersister {
     @MainActor
     static func persistAIOffMain(
         _ snapshot: AISettingsPersistSnapshot,
+        serviceSocketPath: String,
         testHooks: AISettingsPersistenceHooks? = nil,
         onAPIKeyResult: @escaping @MainActor @Sendable (APIKeyPersistenceResult) -> Void
     ) {
@@ -737,7 +745,11 @@ enum AISettingsPersister {
             if let testHooks {
                 await testHooks.beforeMailbox(snapshot)
             }
-            let result = await mailbox.persistAI(snapshot, override: testHooks?.persist)
+            let result = await mailbox.persistAI(
+                snapshot,
+                serviceSocketPath: serviceSocketPath,
+                override: testHooks?.persist
+            )
             await onAPIKeyResult(result)
         }
         aiPersistenceTail = task
@@ -746,6 +758,7 @@ enum AISettingsPersister {
     @MainActor
     static func persistTitleOffMain(
         _ snapshot: TitleSettingsPersistSnapshot,
+        serviceSocketPath: String,
         testHooks: TitleSettingsPersistenceHooks? = nil,
         onAPIKeyResult: @escaping @MainActor @Sendable (APIKeyPersistenceResult) -> Void
     ) {
@@ -755,7 +768,11 @@ enum AISettingsPersister {
             if let testHooks {
                 await testHooks.beforeMailbox(snapshot)
             }
-            let result = await mailbox.persistTitle(snapshot, override: testHooks?.persist)
+            let result = await mailbox.persistTitle(
+                snapshot,
+                serviceSocketPath: serviceSocketPath,
+                override: testHooks?.persist
+            )
             await onAPIKeyResult(result)
         }
         titlePersistenceTail = task
@@ -767,6 +784,7 @@ enum AISettingsPersister {
 
         func persistAI(
             _ snapshot: AISettingsPersistSnapshot,
+            serviceSocketPath: String,
             override: (@Sendable (AISettingsPersistSnapshot) -> APIKeyPersistenceResult)? = nil
         ) -> APIKeyPersistenceResult {
             if let override { return override(snapshot) }
@@ -794,8 +812,8 @@ enum AISettingsPersister {
             case .preserveExisting:
                 result = .unchanged
             }
-            if result.changedKeychain {
-                _ = refreshRuntimeAISecrets()
+            result = result.reconcilingRuntimeBridgeRefresh {
+                refreshRuntimeAISecrets(serviceSocketPath: serviceSocketPath)
             }
             let wasBlocked = aiSnapshotBlockedByFailedApply
             aiSnapshotBlockedByFailedApply = APIKeySnapshotPersistenceGate.nextBlockedState(
@@ -845,6 +863,7 @@ enum AISettingsPersister {
 
         func persistTitle(
             _ snapshot: TitleSettingsPersistSnapshot,
+            serviceSocketPath: String,
             override: (@Sendable (TitleSettingsPersistSnapshot) -> APIKeyPersistenceResult)? = nil
         ) -> APIKeyPersistenceResult {
             if let override { return override(snapshot) }
@@ -877,8 +896,8 @@ enum AISettingsPersister {
                 action = .preserveExisting
                 result = .unchanged
             }
-            if result.changedKeychain {
-                _ = refreshRuntimeAISecrets()
+            result = result.reconcilingRuntimeBridgeRefresh {
+                refreshRuntimeAISecrets(serviceSocketPath: serviceSocketPath)
             }
             let wasBlocked = titleSnapshotBlockedByFailedApply
             titleSnapshotBlockedByFailedApply = APIKeySnapshotPersistenceGate.nextBlockedState(
@@ -930,10 +949,10 @@ enum AISettingsPersister {
             )
         }
 
-        private func refreshRuntimeAISecrets() -> Bool {
-            EngramServiceLauncher.writeRuntimeAISecrets(
+        private func refreshRuntimeAISecrets(serviceSocketPath: String) -> Bool {
+            EngramServiceLauncher.refreshRuntimeAISecrets(
                 toPath: EngramServiceLauncher.runtimeAISecretsPath(
-                    forSocketPath: UnixSocketEngramServiceTransport.defaultSocketPath()
+                    forSocketPath: serviceSocketPath
                 ),
                 keychainReader: KeychainHelper.get
             )
@@ -945,12 +964,16 @@ enum APIKeyPersistenceResult: Sendable, Equatable {
     case saved
     case savedMarkerFailed
     case cleared
+    case runtimeBridgeRefreshFailed
     case plaintext
     case unchanged
     case failed
 
     var changedKeychain: Bool {
-        self == .saved || self == .savedMarkerFailed || self == .cleared
+        self == .saved
+            || self == .savedMarkerFailed
+            || self == .cleared
+            || self == .runtimeBridgeRefreshFailed
     }
 
     var isRealKeyApply: Bool {
@@ -966,10 +989,21 @@ enum APIKeyPersistenceResult: Sendable, Equatable {
         case .saved: return "API key is stored in macOS Keychain"
         case .savedMarkerFailed: return "API key is stored in Keychain, but settings.json could not be updated"
         case .cleared: return "API key was removed from macOS Keychain"
+        case .runtimeBridgeRefreshFailed:
+            return "API key changed in Keychain, but the service credential bridge could not be refreshed"
         case .plaintext: return "DEBUG only: API key is stored in plaintext in ~/.engram/settings.json"
         case .unchanged: return "Existing API key was preserved"
         case .failed: return "Could not store API key in macOS Keychain"
         }
+    }
+
+    func reconcilingRuntimeBridgeRefresh(
+        _ refresh: () -> Bool
+    ) -> APIKeyPersistenceResult {
+        guard changedKeychain else { return self }
+        let refreshed = refresh()
+        guard self != .savedMarkerFailed else { return self }
+        return refreshed ? self : .runtimeBridgeRefreshFailed
     }
 }
 
@@ -1022,7 +1056,10 @@ enum APIKeySnapshotPersistenceGate {
         guard wasBlockedByFailedApply else { return true }
         switch action {
         case .write, .deleteExisting:
-            return result == .saved || result == .cleared || result == .plaintext
+            return result == .saved
+                || result == .cleared
+                || result == .runtimeBridgeRefreshFailed
+                || result == .plaintext
         case .preserveExisting:
             return false
         }
@@ -1036,7 +1073,10 @@ enum APIKeySnapshotPersistenceGate {
         if result == .failed || result == .savedMarkerFailed { return true }
         switch action {
         case .write, .deleteExisting:
-            return !(result == .saved || result == .cleared || result == .plaintext)
+            return !(result == .saved
+                || result == .cleared
+                || result == .runtimeBridgeRefreshFailed
+                || result == .plaintext)
         case .preserveExisting:
             return wasBlockedByFailedApply
         }
@@ -1053,7 +1093,7 @@ enum APIKeyEditCompletion {
         switch result {
         case .saved, .cleared, .plaintext:
             return true
-        case .savedMarkerFailed, .unchanged, .failed:
+        case .savedMarkerFailed, .runtimeBridgeRefreshFailed, .unchanged, .failed:
             return false
         }
     }

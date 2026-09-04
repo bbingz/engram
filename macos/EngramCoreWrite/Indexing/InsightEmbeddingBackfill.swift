@@ -428,25 +428,27 @@ public enum SessionEmbeddingBackfill {
                 SELECT
                   j.id AS job_id,
                   j.session_id AS session_id,
-                  COALESCE(
-                    NULLIF((
-                      SELECT GROUP_CONCAT(content, char(10))
-                      FROM (
-                        SELECT content
-                        FROM sessions_fts
-                        WHERE session_id = j.session_id
-                        ORDER BY rowid
-                      )
-                    ), ''),
-                    s.summary,
-                    ''
-                  ) AS content
+                  NULLIF((
+                    SELECT GROUP_CONCAT(content, char(10))
+                    FROM (
+                      SELECT content
+                      FROM sessions_fts
+                      WHERE session_id = j.session_id
+                      ORDER BY rowid
+                    )
+                  ), '') AS content
                 FROM session_index_jobs j
                 JOIN sessions s ON s.id = j.session_id
                 WHERE j.job_kind = ?
                   AND j.status IN ('pending', 'failed_retryable')
                   AND s.hidden_at IS NULL
                   AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
+                  AND EXISTS (
+                    SELECT 1
+                    FROM sessions_fts ready
+                    WHERE ready.session_id = j.session_id
+                      AND LENGTH(TRIM(ready.content)) > 0
+                  )
                 ORDER BY
                   CASE j.status WHEN 'pending' THEN 0 ELSE 1 END,
                   j.retry_count,
@@ -458,13 +460,15 @@ public enum SessionEmbeddingBackfill {
             )
             return rows.compactMap { row in
                 guard let jobId = row["job_id"] as String?,
-                      let sessionId = row["session_id"] as String? else {
+                      let sessionId = row["session_id"] as String?,
+                      let content = row["content"] as String?,
+                      !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     return nil
                 }
                 return PendingSession(
                     jobId: jobId,
                     sessionId: sessionId,
-                    content: (row["content"] as String?) ?? ""
+                    content: content
                 )
             }
         }

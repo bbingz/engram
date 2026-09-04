@@ -124,6 +124,35 @@ final class AuditMediumMCPReproTests: XCTestCase {
         XCTAssertEqual(groups.first?["sessionCount"] as? Int, 1)
     }
 
+    func testStatsIncludesLiteUserMessageCounts_repro() throws {
+        let dbPath = try temporaryFixtureCopy("mcp-contract.sqlite", prefix: "engram-mcp-lite-user-count")
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try wipeSessionsAndCosts(at: dbPath)
+        try DatabaseQueue(path: dbPath).write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, file_path, message_count,
+                  user_message_count, assistant_message_count, tool_message_count,
+                  tier, hidden_at, orphan_status
+                ) VALUES
+                  ('normal-user-count', 'codex', '2026-08-23T10:00:00Z',
+                   '/work/engram', 'engram', '/tmp/normal.jsonl', 6, 3, 2, 1,
+                   'normal', NULL, NULL),
+                  ('lite-user-count', 'codex', '2026-08-23T11:00:00Z',
+                   '/work/engram', 'engram', '/tmp/lite.jsonl', 12, 7, 3, 2,
+                   'lite', NULL, NULL)
+                """)
+        }
+
+        let structured = try rpc(
+            #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"stats","arguments":{"group_by":"source"}}}"#,
+            dbPath: dbPath
+        )
+        let groups = try XCTUnwrap(structured["groups"] as? [[String: Any]])
+        let codex = try XCTUnwrap(groups.first { $0["key"] as? String == "codex" })
+        XCTAssertEqual(codex["userMessageCount"] as? Int, 10)
+    }
+
     func testUsageToolsFilterOvernightSessionsByActivityTime_repro() throws {
         let dbPath = try temporaryFixtureCopy("mcp-contract.sqlite", prefix: "engram-mcp-activity-time")
         defer { try? FileManager.default.removeItem(atPath: dbPath) }
@@ -133,11 +162,11 @@ final class AuditMediumMCPReproTests: XCTestCase {
                 INSERT INTO sessions (
                   id, source, start_time, end_time, cwd, project, file_path,
                   message_count, user_message_count, assistant_message_count,
-                  instruction_count, human_turn_count, tier
+                  instruction_count, human_turn_count, tier, summary
                 ) VALUES (
                   'overnight-activity', 'codex', '2026-08-20T20:00:00Z',
                   '2026-08-23T10:00:00Z', '/work/engram', 'engram', '/tmp/overnight.jsonl',
-                  2, 1, 1, 2, 1, 'normal'
+                  2, 1, 1, 2, 1, 'normal', 'overnight activity summary'
                 );
                 INSERT INTO session_costs (
                   session_id, model, input_tokens, output_tokens, cache_read_tokens,
@@ -169,12 +198,20 @@ final class AuditMediumMCPReproTests: XCTestCase {
             #"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"project_timeline","arguments":{"project":"engram","since":"\#(since)","until":"\#(until)"}}}"#,
             dbPath: dbPath
         )
+        let contextResult = try rpcResult(
+            #"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"get_context","arguments":{"cwd":"/work/engram","include_environment":false}}}"#,
+            dbPath: dbPath
+        )
+        let context = try XCTUnwrap(
+            (contextResult["content"] as? [[String: Any]])?.first?["text"] as? String
+        )
 
         XCTAssertEqual(stats["totalSessions"] as? Int, 1)
         XCTAssertEqual(costs["totalCostUsd"] as? Double, 1.25)
         XCTAssertEqual(tools["totalCalls"] as? Int, 3)
         XCTAssertEqual(timeline["total"] as? Int, 1)
         XCTAssertEqual((timeline["timeline"] as? [[String: Any]])?.first?["sessionId"] as? String, "overnight-activity")
+        XCTAssertTrue(context.contains("[codex] 2026-08-23 — overnight activity summary"), context)
     }
 
     // MARK: - M18
@@ -691,6 +728,24 @@ final class AuditMediumMCPReproTests: XCTestCase {
         let resources = try XCTUnwrap(resourcesResult["resources"] as? [[String: Any]])
         let resource = try XCTUnwrap(resources.first { $0["uri"] as? String == "engram://session/mcp-fixture-01" })
         XCTAssertEqual(resource["name"] as? String, TranscriptRedactionPolicy.redactionToken)
+
+        let timeline = try rpc(
+            #"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"project_timeline","arguments":{"project":"engram"}}}"#,
+            dbPath: dbPath
+        )
+        let timelineRow = try XCTUnwrap((timeline["timeline"] as? [[String: Any]])?.first {
+            $0["sessionId"] as? String == "mcp-fixture-01"
+        })
+        XCTAssertEqual(timelineRow["summary"] as? String, TranscriptRedactionPolicy.redactionToken)
+
+        let analytics = try rpc(
+            #"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"tool_analytics","arguments":{"project":"engram","group_by":"session"}}}"#,
+            dbPath: dbPath
+        )
+        let analyticsRow = try XCTUnwrap((analytics["tools"] as? [[String: Any]])?.first {
+            $0["key"] as? String == "mcp-fixture-01"
+        })
+        XCTAssertEqual(analyticsRow["label"] as? String, TranscriptRedactionPolicy.redactionToken)
     }
 
     func testInsightContentIsRedactedAcrossMCPReadSurfaces_repro() throws {

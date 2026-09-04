@@ -248,7 +248,10 @@ struct PopoverView: View {
             let resolved = await Task.detached { () -> Session? in
                 try? Self.resolveLiveSession(session, database: db)
             }.value
-            guard let resolved else { return }
+            guard let resolved else {
+                SessionNavigationGate.complete(token)
+                return
+            }
             guard liveOpenRequestId == requestId else { return }
             NotificationCenter.default.post(
                 name: .openWindow,
@@ -319,29 +322,14 @@ struct PopoverView: View {
             // human-driven filter (per HumanDrivenFilter's contract) regardless
             // of the app's browse noise setting, so freshly-indexed untiered
             // agent/probe sessions can't flood the list with "Untitled" rows.
-            // R1.P1.parent_filter_surface_drift / RETRO-P1-POPOVER: also require
-            // top-level roots so confirmed/suggested children cannot appear as
-            // top rows (matches Home/Sessions/Timeline via SessionVisibilityFilter).
-            let whereClause = """
-                \(SessionVisibilityFilter.listVisibleSQL) \
-                AND \(SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL(alias: "sessions"))
-                """
-            let activityTime = SearchFilterPredicates.activityTimeSQL()
-
             let sessions: [Session]
             do {
-                sessions = try db.readInBackground { d in
-                    try Session.fetchAll(d, sql: """
-                        SELECT * FROM sessions
-                        WHERE \(whereClause)
-                        ORDER BY \(activityTime) DESC, id ASC LIMIT 30
-                    """)
-                }
+                sessions = try db.recentSessions(limit: 12, humanDriven: true)
             } catch {
                 EngramLogger.error("PopoverView recent sessions load failed", module: .ui, error: error)
                 sessions = []
             }
-            return PopoverDataSnapshot(recentSessions: Array(sessions.prefix(12)))
+            return PopoverDataSnapshot(recentSessions: sessions)
         }.value
         data = result
 

@@ -108,7 +108,7 @@ final class BrowseReloadCoalescerTests: XCTestCase {
             contentsOf: root.appendingPathComponent("macos/Engram/Views/Pages/TimelinePageView.swift"),
             encoding: .utf8
         )
-        let loadStart = try XCTUnwrap(source.range(of: "private func loadData() async"))
+        let loadStart = try XCTUnwrap(source.range(of: "private func loadData(preservePagination: Bool = false) async"))
         let loadBody = source[loadStart.lowerBound...]
         let projects = try XCTUnwrap(loadBody.range(of: "let projects ="))
         let reconcile = try XCTUnwrap(loadBody.range(of: "reconciledProjectSelection("))
@@ -119,7 +119,7 @@ final class BrowseReloadCoalescerTests: XCTestCase {
         XCTAssertTrue(loadBody.contains("selectedProject = data.selectedProject"))
     }
 
-    func testTimelineLoadingAndFailureNeverExposePriorFilterSnapshot_repro() throws {
+    func testTimelineFilterLoadingAndFailureDoNotExposePriorFilterSnapshot_repro() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -129,16 +129,23 @@ final class BrowseReloadCoalescerTests: XCTestCase {
             encoding: .utf8
         )
         let bodyStart = try XCTUnwrap(source.range(of: "var body: some View"))
-        let loadStart = try XCTUnwrap(source.range(of: "private func loadData() async"))
+        let loadStart = try XCTUnwrap(source.range(of: "private func loadData(preservePagination: Bool = false) async"))
         let body = String(source[bodyStart.lowerBound..<loadStart.lowerBound])
         XCTAssertTrue(body.contains("if !isLoading && selectedProject == appliedProject"))
         XCTAssertTrue(body.contains("&& !visibleChartDataSnapshot.isEmpty"))
         XCTAssertTrue(body.contains("if isLoading {"))
-        XCTAssertFalse(body.contains("isLoading && !hasVisibleContentSnapshot"))
+        XCTAssertFalse(body.contains("if isLoading && !hasVisibleContentSnapshot {"))
 
         let loadBody = String(source[loadStart.lowerBound...])
+        let detachedStart = try XCTUnwrap(loadBody.range(of: "let data = try await Task.detached"))
+        let beforeRead = String(loadBody[..<detachedStart.lowerBound])
+        XCTAssertTrue(
+            beforeRead.contains("if !preservePagination {\n            isLoading = true\n            clearVisibleSnapshot()"),
+            "filter identity changes must clear the old snapshot before the detached read starts"
+        )
         let catchStart = try XCTUnwrap(loadBody.range(of: "} catch {"))
         let catchBody = String(loadBody[catchStart.lowerBound...])
+        XCTAssertTrue(catchBody.contains("if !preservePagination"))
         XCTAssertTrue(catchBody.contains("clearVisibleSnapshot()"))
     }
 
@@ -152,7 +159,7 @@ final class BrowseReloadCoalescerTests: XCTestCase {
             encoding: .utf8
         )
         let bodyStart = try XCTUnwrap(source.range(of: "var body: some View"))
-        let loadStart = try XCTUnwrap(source.range(of: "private func loadData() async"))
+        let loadStart = try XCTUnwrap(source.range(of: "private func loadData(preservePagination: Bool = false) async"))
         let body = String(source[bodyStart.lowerBound..<loadStart.lowerBound])
 
         XCTAssertTrue(source.contains("@State private var appliedRange"))
@@ -176,6 +183,48 @@ final class BrowseReloadCoalescerTests: XCTestCase {
         XCTAssertTrue(value.contains("@State private var appliedSort"))
         XCTAssertTrue(value.contains("let visibleModeSnapshot = appliedMode"))
         XCTAssertTrue(value.contains("sortMode == appliedSort"))
+    }
+
+    func testTimelineIndexTickPreservesVisibleSnapshotWithoutFullSpinner_repro() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("macos/Engram/Views/Pages/TimelinePageView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("await loadData(preservePagination: plan.preservePagination)"))
+        XCTAssertTrue(source.contains("private func loadData(preservePagination: Bool = false) async"))
+        let loadStart = try XCTUnwrap(source.range(of: "private func loadData(preservePagination: Bool = false) async"))
+        let detachedStart = try XCTUnwrap(
+            source.range(of: "let data = try await Task.detached", range: loadStart.upperBound..<source.endIndex)
+        )
+        let beforeRead = String(source[loadStart.lowerBound..<detachedStart.lowerBound])
+        XCTAssertTrue(beforeRead.contains("if !preservePagination {\n            isLoading = true"))
+        XCTAssertTrue(beforeRead.contains("clearVisibleSnapshot()"))
+
+        let handlersStart = try XCTUnwrap(source.range(of: "private var handlers:"))
+        let exportStart = try XCTUnwrap(
+            source.range(of: "private func export", range: handlersStart.upperBound..<source.endIndex)
+        )
+        let handlers = String(source[handlersStart.lowerBound..<exportStart.lowerBound])
+        XCTAssertTrue(
+            handlers.contains("reload: { await loadData(preservePagination: true) }"),
+            "favorite/hide/rename mutations must keep the current snapshot until replacement lands"
+        )
+
+        let confirmStart = try XCTUnwrap(source.range(of: "private func confirmSuggestion"))
+        let beginRenameStart = try XCTUnwrap(
+            source.range(of: "private func beginRename", range: confirmStart.upperBound..<source.endIndex)
+        )
+        let suggestionMutations = String(source[confirmStart.lowerBound..<beginRenameStart.lowerBound])
+        XCTAssertEqual(
+            suggestionMutations.components(separatedBy: "await loadData(preservePagination: true)").count - 1,
+            2,
+            "confirm and dismiss are mutations and must preserve the visible snapshot"
+        )
+        XCTAssertFalse(suggestionMutations.contains("await loadData()"))
     }
 
     func testBrowsePagesRejectStaleDetachedLoadsAndSpinnerClears_repro() {

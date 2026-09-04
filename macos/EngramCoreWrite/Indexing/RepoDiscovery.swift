@@ -116,6 +116,7 @@ public enum RepoDiscovery {
             WHERE cwd IS NOT NULL AND TRIM(cwd) != ''
               -- docs/invariants.md invariant 3: repo KPIs use list-visible sessions.
               AND \(SessionVisibilityFilter.listVisibleSQL)
+              AND \(SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL(alias: "sessions"))
             GROUP BY cwd
             ORDER BY n DESC
             LIMIT ?

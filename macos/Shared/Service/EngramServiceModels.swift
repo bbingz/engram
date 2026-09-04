@@ -484,6 +484,8 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
     var id: String { name }
     let name: String
     let sessionCount: Int
+    /// Sessions eligible for list/search UI counts (excludes hidden and skip noise).
+    let listVisibleSessionCount: Int
     let latestIndexed: String?
     let searchableSessionCount: Int
     let searchCoveragePercent: Int
@@ -510,6 +512,7 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
         name: String,
         sessionCount: Int,
         latestIndexed: String?,
+        listVisibleSessionCount: Int? = nil,
         searchableSessionCount: Int = 0,
         searchCoveragePercent: Int = 0,
         failedIndexJobCount: Int = 0,
@@ -528,6 +531,7 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
     ) {
         self.name = name
         self.sessionCount = sessionCount
+        self.listVisibleSessionCount = listVisibleSessionCount ?? sessionCount
         self.latestIndexed = latestIndexed
         self.searchableSessionCount = searchableSessionCount
         self.searchCoveragePercent = searchCoveragePercent
@@ -549,6 +553,7 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case name
         case sessionCount
+        case listVisibleSessionCount
         case latestIndexed
         case searchableSessionCount
         case searchCoveragePercent
@@ -571,6 +576,10 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         name = try container.decode(String.self, forKey: .name)
         sessionCount = try container.decode(Int.self, forKey: .sessionCount)
+        listVisibleSessionCount = try container.decodeIfPresent(
+            Int.self,
+            forKey: .listVisibleSessionCount
+        ) ?? sessionCount
         latestIndexed = try container.decodeIfPresent(String.self, forKey: .latestIndexed)
         searchableSessionCount = try container.decodeIfPresent(Int.self, forKey: .searchableSessionCount) ?? 0
         searchCoveragePercent = try container.decodeIfPresent(Int.self, forKey: .searchCoveragePercent) ?? 0

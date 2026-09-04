@@ -93,6 +93,68 @@ final class RemoteOffloadTests: XCTestCase {
         XCTAssertEqual(calls.put, 0, "a forged bundle must never be uploaded")
     }
 
+    func testEnsureDurableVerifiesPutWithIndependentGetAndHash_repro() async throws {
+        let expected = BundleCodec.makeBundle(
+            sessionId: "s1", ftsContents: ["expected"], summary: nil, summaryMessageCount: nil,
+            messageCount: 1, userMessageCount: 1, assistantMessageCount: 0,
+            toolMessageCount: 0, systemMessageCount: 0
+        )
+        let wrong = BundleCodec.makeBundle(
+            sessionId: "s1", ftsContents: ["wrong remote bytes"], summary: nil, summaryMessageCount: nil,
+            messageCount: 1, userMessageCount: 1, assistantMessageCount: 0,
+            toolMessageCount: 0, systemMessageCount: 0
+        )
+        let backend = PutThenReadRemoteStorageBackend(
+            returnedData: try BundleCodec.encode(wrong)
+        )
+
+        do {
+            try await backend.ensureDurable(bundle: expected)
+            XCTFail("PUT success alone must not prove remote durability")
+        } catch let error as RemoteSyncError {
+            guard case let .contentHashMismatch(expectedHash, actualHash) = error else {
+                return XCTFail("expected contentHashMismatch, got \(error)")
+            }
+            XCTAssertEqual(expectedHash, expected.contentHash)
+            XCTAssertEqual(actualHash, wrong.contentHash)
+        }
+
+        let calls = await backend.callCounts()
+        XCTAssertEqual(calls.put, 1)
+        XCTAssertEqual(calls.get, 1, "a HEAD miss must still be followed by an independent GET proof")
+    }
+
+    func testLocalDirectoryPutUsesFileAndParentDirectoryFsync_repro() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macosRoot.appendingPathComponent("EngramCoreWrite/RemoteSync/RemoteStorageBackend.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("Darwin.fsync"), "file-backed PUT must fsync before success")
+        XCTAssertTrue(source.contains("Darwin.rename"), "file-backed PUT must publish by atomic rename")
+        XCTAssertTrue(source.contains("fsyncDirectory"), "file-backed PUT must fsync its parent directory")
+    }
+
+    func testOffloadRunnerChecksCancellationAtTopOfEachJobIteration_repro() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macosRoot.appendingPathComponent("EngramCoreWrite/RemoteSync/OffloadRunner.swift"),
+            encoding: .utf8
+        )
+        XCTAssertEqual(
+            source.components(separatedBy: "for job in claimed {\n            try Task.checkCancellation()").count - 1,
+            2,
+            "offload and rehydrate must observe cancellation before touching each claimed job"
+        )
+    }
+
     func testLocalDirectoryBackendRejectsTraversalKeys() async throws {
         let store = tempDir.appendingPathComponent("store", isDirectory: true)
         let secret = tempDir.appendingPathComponent("secret.bundle")
@@ -520,6 +582,34 @@ private actor AbsentRecordingRemoteStorageBackend: RemoteStorageBackend {
 
     func callCounts() -> (head: Int, put: Int) {
         (headCallCount, putCallCount)
+    }
+}
+
+private actor PutThenReadRemoteStorageBackend: RemoteStorageBackend {
+    let returnedData: Data
+    private var putCallCount = 0
+    private var getCallCount = 0
+
+    init(returnedData: Data) {
+        self.returnedData = returnedData
+    }
+
+    func head(key: String) async throws -> Bool { false }
+
+    func put(key: String, data: Data) async throws {
+        putCallCount += 1
+    }
+
+    func get(key: String) async throws -> Data {
+        getCallCount += 1
+        return returnedData
+    }
+
+    func delete(key: String) async throws {}
+    func catalog() async throws -> Data { Data() }
+
+    func callCounts() -> (put: Int, get: Int) {
+        (putCallCount, getCallCount)
     }
 }
 

@@ -237,6 +237,178 @@ final class ClaudeCodeMultiRootAdapterTests: XCTestCase {
         XCTAssertEqual(lobster, [defaultLobster.resolvingSymlinksInPath().standardizedFileURL.path])
     }
 
+    func testBaseClaudeListingExcludesDerivedOwnedLocators_repro() async throws {
+        let defaultRoot = try makeProjectsRoot(parent: homeDirectory.appendingPathComponent(".claude"))
+        let automaticRoot = try makeProjectsRoot(parent: homeDirectory.appendingPathComponent(".claude-api"))
+        let customRoot = try makeProjectsRoot(parent: fixtureRoot.appendingPathComponent("custom"))
+        try writeSettings(autoDiscover: true, customProjectsRoots: [customRoot.path])
+
+        let defaultClaude = try makeTranscript(
+            root: defaultRoot,
+            project: "-Users-default",
+            name: "claude"
+        )
+        let defaultMiniMax = try makeTranscript(
+            root: defaultRoot,
+            project: "-Users-default",
+            name: "minimax",
+            model: "MiniMax-M2.1"
+        )
+        let defaultLobster = try makeTranscript(
+            root: defaultRoot,
+            project: "lobsterai-default",
+            name: "lobster"
+        )
+        let automaticMiniMax = try makeTranscript(
+            root: automaticRoot,
+            project: "-Users-automatic",
+            name: "minimax",
+            model: "MiniMax-M2.1"
+        )
+        let customLobster = try makeTranscript(
+            root: customRoot,
+            project: "lobsterai-custom",
+            name: "lobster"
+        )
+
+        let base = ClaudeCodeAdapter(profileResolver: makeResolver())
+        let baseLocators = try await base.listSessionLocators()
+        let minimaxLocators = try await ClaudeCodeDerivedSourceAdapter(source: .minimax, base: base)
+            .listSessionLocators()
+        let lobsterLocators = try await ClaudeCodeDerivedSourceAdapter(source: .lobsterai, base: base)
+            .listSessionLocators()
+
+        XCTAssertEqual(
+            baseLocators,
+            [defaultClaude, automaticMiniMax, customLobster]
+                .map { $0.resolvingSymlinksInPath().standardizedFileURL.path }
+                .sorted(),
+            "non-default profiles remain forced Claude, while derived adapters own default-profile variants"
+        )
+        XCTAssertEqual(
+            minimaxLocators,
+            [defaultMiniMax.resolvingSymlinksInPath().standardizedFileURL.path]
+        )
+        XCTAssertEqual(
+            lobsterLocators,
+            [defaultLobster.resolvingSymlinksInPath().standardizedFileURL.path]
+        )
+    }
+
+    func testDerivedSourceScanForIndexingUsesBaseFiltering_repro() async throws {
+        let root = try makeProjectsRoot(parent: homeDirectory.appendingPathComponent(".claude"))
+        let minimax = try makeTranscript(
+            root: root,
+            project: "-Users-derived-scan",
+            name: "minimax-scan",
+            model: "MiniMax-M2.1"
+        )
+        let injection: [String: Any] = [
+            "type": "user",
+            "sessionId": "session-minimax-scan",
+            "cwd": "/Users/test/minimax-scan",
+            "timestamp": "2026-07-12T23:59:59Z",
+            "message": ["role": "user", "content": "<system-reminder>generated reminder</system-reminder>"],
+        ]
+        let injectionData = try JSONSerialization.data(
+            withJSONObject: injection,
+            options: [.withoutEscapingSlashes]
+        )
+        let existing = try String(contentsOf: minimax, encoding: .utf8)
+        try (String(decoding: injectionData, as: UTF8.self) + "\n" + existing)
+            .write(to: minimax, atomically: true, encoding: .utf8)
+
+        let base = ClaudeCodeAdapter(projectsRoot: root.path)
+        let derived = ClaudeCodeDerivedSourceAdapter(source: .minimax, base: base)
+        let scan = try success(await derived.scanForIndexing(locator: minimax.path))
+
+        XCTAssertEqual(scan.info.source, .minimax)
+        XCTAssertEqual(scan.messages.map(\.role), [.user, .assistant])
+        XCTAssertEqual(scan.messages.map(\.content), ["request minimax-scan 0", "response minimax-scan 0"])
+        XCTAssertNotNil(scan.checkpointParsedOffset, "derived scans must preserve the base checkpoint")
+        XCTAssertNotNil(scan.checkpointBoundaryHash, "derived scans must preserve the base checkpoint")
+
+        let claude = try makeTranscript(
+            root: root,
+            project: "-Users-derived-scan",
+            name: "claude-scan"
+        )
+        let mismatchedSource = try failure(await derived.scanForIndexing(locator: claude.path))
+        XCTAssertEqual(mismatchedSource, .unsupportedVirtualLocator)
+    }
+
+    func testDerivedSourceTailIndexingPreservesOwnership_repro() async throws {
+        let root = try makeProjectsRoot(parent: homeDirectory.appendingPathComponent(".claude"))
+        let base = ClaudeCodeAdapter(projectsRoot: root.path)
+        let adapter: any SessionAdapter = ClaudeCodeDerivedSourceAdapter(source: .minimax, base: base)
+        guard let tailAdapter = adapter as? any TailIndexingSessionAdapter else {
+            return XCTFail("derived Claude sources must support incremental tail indexing")
+        }
+
+        let matching = try makeTranscript(
+            root: root,
+            project: "-Users-derived-tail",
+            name: "matching",
+            model: "MiniMax-M2.1"
+        )
+        let matchingScan = try success(await base.scanForIndexing(locator: matching.path))
+        try appendTranscriptRecord(
+            [
+                "type": "assistant",
+                "sessionId": "session-matching",
+                "timestamp": "2026-07-13T00:00:02Z",
+                "message": [
+                    "role": "assistant",
+                    "model": "MiniMax-M2.1",
+                    "content": "matching tail",
+                ],
+            ],
+            to: matching
+        )
+        switch try await tailAdapter.scanTailForIndexing(
+            locator: matching.path,
+            from: try XCTUnwrap(matchingScan.checkpointParsedOffset),
+            expectedBoundaryHash: try XCTUnwrap(matchingScan.checkpointBoundaryHash)
+        ) {
+        case .success(let tail):
+            XCTAssertEqual(tail.infoDelta.source, .minimax)
+            XCTAssertEqual(tail.messages.map(\.content), ["matching tail"])
+        case .fallback:
+            XCTFail("a source-confirming MiniMax tail must stay incremental")
+        case .failure(let failure):
+            XCTFail("unexpected derived tail failure: \(failure)")
+        }
+
+        let ambiguous = try makeTranscript(
+            root: root,
+            project: "-Users-derived-tail",
+            name: "ambiguous",
+            model: "MiniMax-M2.1"
+        )
+        let ambiguousScan = try success(await base.scanForIndexing(locator: ambiguous.path))
+        try appendTranscriptRecord(
+            [
+                "type": "user",
+                "sessionId": "session-ambiguous",
+                "timestamp": "2026-07-13T00:00:02Z",
+                "message": ["role": "user", "content": "source-ambiguous tail"],
+            ],
+            to: ambiguous
+        )
+        switch try await tailAdapter.scanTailForIndexing(
+            locator: ambiguous.path,
+            from: try XCTUnwrap(ambiguousScan.checkpointParsedOffset),
+            expectedBoundaryHash: try XCTUnwrap(ambiguousScan.checkpointBoundaryHash)
+        ) {
+        case .fallback:
+            break
+        case .success:
+            XCTFail("a source-ambiguous tail must fall back to a full derived-source scan")
+        case .failure(let failure):
+            XCTFail("a source mismatch is recoverable fallback, not a terminal failure: \(failure)")
+        }
+    }
+
     func testArchiveDescriptorAndProfileUseLongestContainingRoot() async throws {
         let outerRoot = try makeProjectsRoot(parent: fixtureRoot.appendingPathComponent("outer"))
         let nestedRoot = try makeProjectsRoot(parent: outerRoot.appendingPathComponent("nested"))
@@ -414,10 +586,16 @@ final class ClaudeCodeMultiRootAdapterTests: XCTestCase {
         let adapter = ClaudeCodeAdapter(projectsRoot: root.path)
 
         let locators = try await adapter.listSessionLocators()
+        let minimaxLocators = try await ClaudeCodeDerivedSourceAdapter(source: .minimax, base: adapter)
+            .listSessionLocators()
+        let lobsterLocators = try await ClaudeCodeDerivedSourceAdapter(source: .lobsterai, base: adapter)
+            .listSessionLocators()
         let minimaxInfo = try success(await adapter.parseSessionInfo(locator: minimaxFile.path))
         let lobsterInfo = try success(await adapter.parseSessionInfo(locator: lobsterFile.path))
 
-        XCTAssertEqual(locators, [lobsterFile.path, minimaxFile.path].sorted())
+        XCTAssertTrue(locators.isEmpty)
+        XCTAssertEqual(minimaxLocators, [minimaxFile.path])
+        XCTAssertEqual(lobsterLocators, [lobsterFile.path])
         XCTAssertEqual(minimaxInfo.source, .minimax)
         XCTAssertEqual(lobsterInfo.source, .lobsterai)
     }

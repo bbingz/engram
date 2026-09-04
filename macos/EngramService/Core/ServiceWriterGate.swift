@@ -10,6 +10,11 @@ public struct ServiceWriterGateResult<Value: Sendable>: Sendable {
 public actor ServiceWriterGate {
     public typealias WriterFactory = @Sendable (_ path: String) throws -> EngramDatabaseWriter
 
+    /// Set only around an accepted Unix-socket handler. Once that handler has
+    /// entered the writer gate, its producer must remain queued/running even if
+    /// the peer disconnects; the request waiter itself remains cancellable.
+    @TaskLocal static var preserveAcceptedWriteProducer = false
+
     private struct CachedIndexStatus {
         let databaseGeneration: Int
         let cachedAt: Date
@@ -103,7 +108,28 @@ public actor ServiceWriterGate {
 
     public func performWriteCommand<Value: Sendable>(
         name: String,
-        operation: @Sendable (EngramDatabaseWriter) async throws -> Value
+        operation: @escaping @Sendable (EngramDatabaseWriter) async throws -> Value
+    ) async throws -> ServiceWriterGateResult<Value> {
+        guard Self.preserveAcceptedWriteProducer else {
+            return try await runWriteCommand(name: name, operation: operation)
+        }
+
+        let completion = AcceptedWriteCommandCompletion<Value>()
+        Task.detached(priority: .userInitiated) { [self] in
+            do {
+                await completion.finish(
+                    .success(try await runWriteCommand(name: name, operation: operation))
+                )
+            } catch {
+                await completion.finish(.failure(error))
+            }
+        }
+        return try await completion.wait()
+    }
+
+    private func runWriteCommand<Value: Sendable>(
+        name: String,
+        operation: @escaping @Sendable (EngramDatabaseWriter) async throws -> Value
     ) async throws -> ServiceWriterGateResult<Value> {
         guard acceptingWrites || Self.isShutdownCheckpointCommand(name) else {
             throw EngramServiceError.serviceUnavailable(message: "EngramService is shutting down")
@@ -346,6 +372,44 @@ public actor ServiceWriterGate {
 
     private static func isShutdownCheckpointCommand(_ name: String) -> Bool {
         name == "checkpointWal" || name == "checkpointTruncate"
+    }
+}
+
+private actor AcceptedWriteCommandCompletion<Value: Sendable> {
+    typealias Output = ServiceWriterGateResult<Value>
+
+    private var result: Result<Output, Error>?
+    private var waiters: [UUID: CheckedContinuation<Output, Error>] = [:]
+
+    func wait() async throws -> Output {
+        let id = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                if let result {
+                    continuation.resume(with: result)
+                } else if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    waiters[id] = continuation
+                }
+            }
+        } onCancel: {
+            Task { await self.cancel(id: id) }
+        }
+    }
+
+    func finish(_ result: Result<Output, Error>) {
+        guard self.result == nil else { return }
+        self.result = result
+        let pending = waiters.values
+        waiters.removeAll()
+        for continuation in pending {
+            continuation.resume(with: result)
+        }
+    }
+
+    private func cancel(id: UUID) {
+        waiters.removeValue(forKey: id)?.resume(throwing: CancellationError())
     }
 }
 

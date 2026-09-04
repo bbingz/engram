@@ -101,6 +101,54 @@ private final class EngramDatabaseIndexingSink: IndexingWriteSink {
         }
     }
 
+    func upsertBatch(
+        _ snapshots: [AuthoritativeSessionSnapshot],
+        fileIndexStates: [FileIndexState?],
+        reason: IndexingWriteReason
+    ) throws -> SessionBatchUpsertResult {
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            var results: [SessionBatchItemResult] = []
+            results.reserveCapacity(snapshots.count)
+
+            for (index, snapshot) in snapshots.enumerated() {
+                do {
+                    var writeResult: SessionWriteResult?
+                    try db.inSavepoint {
+                        let result = try snapshotWriter.writeAuthoritativeSnapshot(snapshot)
+                        if (result.action == .merge || result.action == .noop),
+                           index < fileIndexStates.count,
+                           let state = fileIndexStates[index] {
+                            try EngramDatabaseWriter.upsertFileIndexState(state, in: db)
+                        }
+                        writeResult = result
+                        return .commit
+                    }
+                    guard let writeResult else {
+                        preconditionFailure("savepoint committed without a snapshot write result")
+                    }
+                    results.append(
+                        SessionBatchItemResult(
+                            sessionId: snapshot.id,
+                            action: writeResult.action,
+                            enqueuedJobs: snapshotWriter.jobKinds(for: writeResult, snapshot: snapshot)
+                        )
+                    )
+                } catch {
+                    results.append(
+                        SessionBatchItemResult(
+                            sessionId: snapshot.id,
+                            action: .failure,
+                            enqueuedJobs: [],
+                            error: "\(error)"
+                        )
+                    )
+                }
+            }
+            return SessionBatchUpsertResult(reason: reason, results: results)
+        }
+    }
+
     func suppressExcludedSnapshots(_ snapshots: [AuthoritativeSessionSnapshot]) throws {
         guard !snapshots.isEmpty else { return }
         try writer.write { db in
@@ -389,47 +437,51 @@ public extension EngramDatabaseWriter {
 
     func upsertFileIndexState(_ state: FileIndexState) throws {
         try write { db in
-            try db.execute(
-                sql: """
-                INSERT INTO file_index_state (
-                  source, locator, size_bytes, mtime_ns, inode, device,
-                  parsed_offset, boundary_hash, parse_status, failure_kind,
-                  retry_after, retry_count, last_error, schema_version, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(source, locator) DO UPDATE SET
-                  size_bytes = excluded.size_bytes,
-                  mtime_ns = excluded.mtime_ns,
-                  inode = excluded.inode,
-                  device = excluded.device,
-                  parsed_offset = excluded.parsed_offset,
-                  boundary_hash = excluded.boundary_hash,
-                  parse_status = excluded.parse_status,
-                  failure_kind = excluded.failure_kind,
-                  retry_after = excluded.retry_after,
-                  retry_count = excluded.retry_count,
-                  last_error = excluded.last_error,
-                  schema_version = excluded.schema_version,
-                  updated_at = excluded.updated_at
-                """,
-                arguments: [
-                    state.source.rawValue,
-                    state.locator,
-                    state.sizeBytes,
-                    state.modifiedAtNanos,
-                    state.inode,
-                    state.device,
-                    state.parsedOffset,
-                    state.boundaryHash,
-                    state.parseStatus.rawValue,
-                    state.failureKind?.rawValue,
-                    state.retryAfterEpochSeconds,
-                    state.retryCount,
-                    state.lastError,
-                    state.schemaVersion,
-                    state.updatedAtEpochSeconds
-                ]
-            )
+            try Self.upsertFileIndexState(state, in: db)
         }
+    }
+
+    fileprivate static func upsertFileIndexState(_ state: FileIndexState, in db: Database) throws {
+        try db.execute(
+            sql: """
+            INSERT INTO file_index_state (
+              source, locator, size_bytes, mtime_ns, inode, device,
+              parsed_offset, boundary_hash, parse_status, failure_kind,
+              retry_after, retry_count, last_error, schema_version, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source, locator) DO UPDATE SET
+              size_bytes = excluded.size_bytes,
+              mtime_ns = excluded.mtime_ns,
+              inode = excluded.inode,
+              device = excluded.device,
+              parsed_offset = excluded.parsed_offset,
+              boundary_hash = excluded.boundary_hash,
+              parse_status = excluded.parse_status,
+              failure_kind = excluded.failure_kind,
+              retry_after = excluded.retry_after,
+              retry_count = excluded.retry_count,
+              last_error = excluded.last_error,
+              schema_version = excluded.schema_version,
+              updated_at = excluded.updated_at
+            """,
+            arguments: [
+                state.source.rawValue,
+                state.locator,
+                state.sizeBytes,
+                state.modifiedAtNanos,
+                state.inode,
+                state.device,
+                state.parsedOffset,
+                state.boundaryHash,
+                state.parseStatus.rawValue,
+                state.failureKind?.rawValue,
+                state.retryAfterEpochSeconds,
+                state.retryCount,
+                state.lastError,
+                state.schemaVersion,
+                state.updatedAtEpochSeconds
+            ]
+        )
     }
 
     /// Delete orphan `file_index_state` rows for `source` under `roots` whose

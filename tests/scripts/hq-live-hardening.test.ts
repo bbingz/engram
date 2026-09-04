@@ -55,6 +55,10 @@ async function waitForFile(path: string): Promise<void> {
   }
 }
 
+async function wait(milliseconds: number): Promise<void> {
+  await new Promise((resolveWait) => setTimeout(resolveWait, milliseconds));
+}
+
 async function waitForExit(child: ChildProcess): Promise<number | null> {
   return await new Promise((resolveExit, rejectExit) => {
     child.once('error', rejectExit);
@@ -121,6 +125,254 @@ describe('HQ live boot hardening', () => {
     expect(ensure).toContain('flock-exec');
     expect(ensure).not.toContain('lockdir');
     expect(ensure).not.toMatch(/kill\s+-0|\/bin\/kill\s+-0/);
+  });
+
+  it('releases the advisory lock when the guarded command leaves a long-lived descendant_repro', async () => {
+    const root = makeTempRoot();
+    const lock = join(root, 'ensure.lock');
+    const ready = join(root, 'descendant-ready');
+    const release = join(root, 'descendant-release');
+    const done = join(root, 'descendant-done');
+    const contenderRan = join(root, 'contender-ran');
+    const forkScript = [
+      'import os, sys, time',
+      'pid = os.fork()',
+      'if pid:',
+      '    os._exit(0)',
+      'open(sys.argv[1], "w").close()',
+      'while not os.path.exists(sys.argv[2]):',
+      '    time.sleep(0.01)',
+      'open(sys.argv[3], "w").close()',
+    ].join('\n');
+
+    const guarded = spawnSync(
+      flockExecPath,
+      [lock, '/usr/bin/python3', '-c', forkScript, ready, release, done],
+      { stdio: 'ignore' },
+    );
+    expect(guarded.status).toBe(0);
+    await waitForFile(ready);
+
+    try {
+      const contender = spawnSync(
+        flockExecPath,
+        [
+          lock,
+          '/bin/sh',
+          '-c',
+          'printf contender > "$1"',
+          'contender',
+          contenderRan,
+        ],
+        { encoding: 'utf8' },
+      );
+      expect(contender.status).toBe(0);
+      expect(existsSync(contenderRan)).toBe(true);
+    } finally {
+      writeFileSync(release, 'release\n');
+      await waitForFile(done);
+    }
+  });
+
+  it('forwards termination and keeps the lock until the guarded child exits_repro', async () => {
+    const root = makeTempRoot();
+    const lock = join(root, 'ensure.lock');
+    const childPidFile = join(root, 'child-pid');
+    const ready = join(root, 'ready');
+    const terminated = join(root, 'terminated');
+    const childDone = join(root, 'child-done');
+    const contenderDuring = join(root, 'contender-during');
+    const contenderAfter = join(root, 'contender-after');
+    const guardedScript =
+      'printf %s "$$" > "$1"; printf ready > "$2"; ' +
+      'trap \'printf terminated > "$3"; sleep 0.4; printf done > "$4"; exit 0\' TERM INT HUP; ' +
+      'while :; do sleep 0.02; done';
+    const holder = spawn(
+      flockExecPath,
+      [
+        lock,
+        '/bin/sh',
+        '-c',
+        guardedScript,
+        'guarded',
+        childPidFile,
+        ready,
+        terminated,
+        childDone,
+      ],
+      { stdio: 'ignore' },
+    );
+    const holderExit = waitForExit(holder);
+
+    try {
+      await waitForFile(ready);
+      expect(holder.kill('SIGTERM')).toBe(true);
+      await wait(100);
+
+      const during = spawnSync(
+        flockExecPath,
+        [
+          lock,
+          '/bin/sh',
+          '-c',
+          'printf contender > "$1"',
+          'contender',
+          contenderDuring,
+        ],
+        { encoding: 'utf8' },
+      );
+      expect(during.status).toBe(0);
+      expect(existsSync(contenderDuring)).toBe(false);
+      expect(existsSync(terminated)).toBe(true);
+
+      await waitForFile(childDone);
+      await holderExit;
+      const after = spawnSync(
+        flockExecPath,
+        [
+          lock,
+          '/bin/sh',
+          '-c',
+          'printf contender > "$1"',
+          'contender',
+          contenderAfter,
+        ],
+        { encoding: 'utf8' },
+      );
+      expect(after.status).toBe(0);
+      expect(existsSync(contenderAfter)).toBe(true);
+
+      const wrapper = readFileSync(flockExecPath, 'utf8');
+      for (const forwarded of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
+        expect(wrapper).toContain(`signal.${forwarded}`);
+      }
+    } finally {
+      if (existsSync(childPidFile)) {
+        try {
+          process.kill(Number(readFileSync(childPidFile, 'utf8')), 'SIGKILL');
+        } catch {
+          // The guarded child already exited and was reaped.
+        }
+      }
+      if (holder.exitCode === null && holder.signalCode === null) {
+        holder.kill('SIGKILL');
+      }
+      await holderExit;
+    }
+  });
+
+  it('requires remote health and the managed service identity before reporting healthy_repro', () => {
+    const ensure = readFileSync(ensurePath, 'utf8');
+    const serviceStart = ensure.indexOf('service_running()');
+    const serviceEnd = ensure.indexOf('\n}\n', serviceStart);
+    const servicePredicate = ensure.slice(serviceStart, serviceEnd);
+
+    expect(ensure).toContain('/v1/health');
+    expect(ensure).toContain('[[ "$response" == "ok" ]]');
+    expect(ensure).not.toContain('lsof -nP -iTCP:8787');
+    expect(servicePredicate).toContain('[[ -S "$service_socket" ]]');
+    expect(servicePredicate).toContain('/bin/ps -p "$pid" -o command=');
+    expect(servicePredicate).toContain('"$HOME/.engram-service/"*');
+    expect(servicePredicate).toContain(
+      '"/Helpers/EngramService --service-socket $service_socket"*',
+    );
+    expect(servicePredicate).toContain(
+      '/usr/sbin/lsof -nP -a -p "$pid" "$service_socket"',
+    );
+  });
+
+  it('rejects a stale service socket even when a process has the exact managed argv_repro', async () => {
+    const root = makeTempRoot();
+    const home = join(root, 'h');
+    const serviceSocket = join(root, 'svc.sock');
+    const sentinel = join(root, 'degraded');
+    writeFileSync(sentinel, 'already degraded\n');
+    const staleSocket = spawnSync(
+      '/usr/bin/python3',
+      [
+        '-c',
+        'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.close()',
+        serviceSocket,
+      ],
+      { encoding: 'utf8' },
+    );
+    expect(staleSocket.status).toBe(0);
+    expect(statSync(serviceSocket).isSocket()).toBe(true);
+
+    const fakeCommand = `${home}/.engram-service/current/Engram.app/Contents/Helpers/EngramService --service-socket ${serviceSocket}`;
+    const fakeService = spawn(
+      '/bin/bash',
+      ['-c', 'exec -a "$0" /bin/sleep 30', fakeCommand],
+      { stdio: 'ignore' },
+    );
+    const fakeExit = waitForExit(fakeService);
+    const ensure = readFileSync(ensurePath, 'utf8');
+    const serviceStart = ensure.indexOf('service_running()');
+    const serviceEnd = ensure.indexOf('\n}\n', serviceStart) + 3;
+    const predicateScript = join(root, 'check-service-running.sh');
+    writeFileSync(
+      predicateScript,
+      [
+        '#!/bin/bash',
+        'set -u',
+        `export HOME=${JSON.stringify(home)}`,
+        `service_socket=${JSON.stringify(serviceSocket)}`,
+        `degraded_sentinel=${JSON.stringify(sentinel)}`,
+        ensure.slice(serviceStart, serviceEnd),
+        'if service_running; then',
+        '  /bin/rm -f "$degraded_sentinel"',
+        '  exit 0',
+        'fi',
+        'exit 1',
+      ].join('\n'),
+    );
+    chmodSync(predicateScript, 0o700);
+    let owningService: ChildProcess | undefined;
+    let owningExit: Promise<number | null> | undefined;
+
+    try {
+      await wait(100);
+      const result = spawnSync('/bin/bash', [predicateScript], {
+        encoding: 'utf8',
+      });
+      expect(result.status).toBe(1);
+      expect(existsSync(sentinel)).toBe(true);
+
+      fakeService.kill('SIGKILL');
+      await fakeExit;
+      rmSync(serviceSocket);
+      owningService = spawn(
+        '/bin/bash',
+        ['-c', 'exec -a "$0" /usr/bin/nc -lU "$1"', fakeCommand, serviceSocket],
+        { stdio: 'ignore' },
+      );
+      owningExit = waitForExit(owningService);
+      await waitForFile(serviceSocket);
+
+      const healthy = spawnSync('/bin/bash', [predicateScript], {
+        encoding: 'utf8',
+      });
+      const owningCommand = spawnSync(
+        '/bin/ps',
+        ['-p', String(owningService.pid), '-o', 'command='],
+        { encoding: 'utf8' },
+      );
+      const owningSocket = spawnSync(
+        '/usr/sbin/lsof',
+        ['-nP', '-a', '-p', String(owningService.pid), serviceSocket],
+        { encoding: 'utf8' },
+      );
+      expect(
+        healthy.status,
+        `ps=${owningCommand.stdout} lsof=${owningSocket.stdout}${owningSocket.stderr}`,
+      ).toBe(0);
+      expect(existsSync(sentinel)).toBe(false);
+    } finally {
+      fakeService.kill('SIGKILL');
+      await fakeExit;
+      owningService?.kill('SIGKILL');
+      await owningExit;
+    }
   });
 
   it('exits without launching a second remote server when health is already ready_repro', async () => {

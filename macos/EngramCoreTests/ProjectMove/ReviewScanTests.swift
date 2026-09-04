@@ -75,6 +75,38 @@ final class ReviewScanTests: XCTestCase {
         XCTAssertTrue(r.other.contains(otherCc.path))
     }
 
+    func testDarwinAliasesScanLexicalAndCanonicalOldPathInLexicalDestinationDir_repro() throws {
+        let token = UUID().uuidString
+        let oldPath = "/tmp/engram-review-old-\(token)"
+        let newPath = "/tmp/engram-review-new-\(token)"
+        let canonicalOld = try XCTUnwrap(
+            projectMovePatchSourcePaths(oldPath).first(where: { $0 != oldPath })
+        )
+        let lexicalOwnName = ClaudeCodeProjectDir.encode(newPath)
+        let canonicalOwnName = ClaudeCodeProjectDir.encode(
+            ProjectPathVariants.canonicalEncodingPath(newPath)
+        )
+        XCTAssertNotEqual(lexicalOwnName, canonicalOwnName)
+
+        let lexicalHit = tmpHome.appendingPathComponent(
+            ".claude/projects/\(lexicalOwnName)/lexical.jsonl"
+        )
+        let canonicalHit = tmpHome.appendingPathComponent(
+            ".claude/projects/\(lexicalOwnName)/canonical.jsonl"
+        )
+        try write("{\"cwd\":\"\(oldPath)\"}", to: lexicalHit)
+        try write("{\"cwd\":\"\(canonicalOld)\"}", to: canonicalHit)
+
+        let result = ReviewScan.run(
+            oldPath: oldPath,
+            newPath: newPath,
+            homeDirectory: tmpHome
+        )
+
+        XCTAssertEqual(result.own, [canonicalHit.path, lexicalHit.path].sorted())
+        XCTAssertEqual(result.other, [])
+    }
+
     func testNonCcSourceHitsAlwaysCountAsOwn() throws {
         let codexFile = tmpHome.appendingPathComponent(
             ".codex/sessions/rollout.jsonl"

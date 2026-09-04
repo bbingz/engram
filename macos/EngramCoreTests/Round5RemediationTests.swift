@@ -348,6 +348,8 @@ final class Round5RemediationTests: XCTestCase {
         XCTAssertTrue(sources.contains("enum ProjectPathVariants"))
         XCTAssertTrue(sources.contains("path.precomposedStringWithCanonicalMapping"))
         XCTAssertTrue(sources.contains("path.decomposedStringWithCanonicalMapping"))
+        XCTAssertTrue(sources.contains("static func filesystemAliases(_ path: String)"))
+        XCTAssertTrue(sources.contains("func projectMovePatchSourcePaths(_ path: String)"))
 
         let patch = try source("EngramCoreWrite/ProjectMove/JsonlPatch.swift")
         XCTAssertTrue(patch.contains("private static func patchingVariants("))
@@ -356,10 +358,9 @@ final class Round5RemediationTests: XCTestCase {
         XCTAssertTrue(patch.contains("let needle = Data((variant +"))
 
         let store = try source("EngramCoreWrite/ProjectMove/MigrationLogStore.swift")
-        XCTAssertTrue(store.contains("let oldVariants = ProjectPathVariants.variants(oldPath)"))
-        XCTAssertTrue(store.contains(#""old0": oldVariants[0]"#))
-        XCTAssertTrue(store.contains(#""old1": oldVariants[1]"#))
-        XCTAssertTrue(store.contains(#""old2": oldVariants[2]"#))
+        XCTAssertTrue(store.contains("let oldVariants = projectMovePatchSourcePaths(oldPath)"))
+        XCTAssertTrue(store.contains("for (index, variant) in oldVariants.enumerated()"))
+        XCTAssertTrue(store.contains(#"pathBindings["old\(index)"] = variant"#))
         XCTAssertTrue(store.contains("let old = \":old\\(idx)\""))
         XCTAssertTrue(store.contains("SUBSTR(\\(col), 1, LENGTH(\\(old)) + 1)"))
         XCTAssertFalse(store.contains(#"StatementArguments = ["old": oldPath, "new": newPath]"#))

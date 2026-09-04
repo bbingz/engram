@@ -428,6 +428,7 @@ enum ServiceTranscriptReader {
     static func readMessagesWithMetadata(filePath: String, source: String) async throws -> ReadResult {
         try Task.checkCancellation()
         let guardBeforeAdapter = requiresFullJSONTranscriptGuard(source: source)
+            && !isVirtualCursorLocator(filePath: filePath, source: source)
         if guardBeforeAdapter {
             try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
         }
@@ -451,6 +452,7 @@ enum ServiceTranscriptReader {
         source: String
     ) async throws -> ReadResult {
         let guardBeforeAdapter = requiresFullJSONTranscriptGuard(source: source)
+            && !isVirtualCursorLocator(filePath: filePath, source: source)
         if guardBeforeAdapter {
             try TranscriptSizeGuard.validateFullJSONTranscript(
                 filePath: filePath,
@@ -482,6 +484,7 @@ enum ServiceTranscriptReader {
     static func readPrimerMessagesWithMetadata(filePath: String, source: String, limit: Int) async throws -> ReadResult {
         try Task.checkCancellation()
         let guardBeforeAdapter = requiresFullJSONTranscriptGuard(source: source)
+            && !isVirtualCursorLocator(filePath: filePath, source: source)
         if guardBeforeAdapter {
             try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
         }
@@ -541,6 +544,11 @@ enum ServiceTranscriptReader {
         default:
             return false
         }
+    }
+
+    private static func isVirtualCursorLocator(filePath: String, source: String) -> Bool {
+        source == "cursor"
+            && (filePath.contains("?composer=") || filePath.hasPrefix("cursor-modern:"))
     }
 
     // Async by design: await the adapter stream directly instead of bridging

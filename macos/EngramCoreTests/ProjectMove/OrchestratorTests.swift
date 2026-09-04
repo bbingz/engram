@@ -476,6 +476,83 @@ final class OrchestratorTests: XCTestCase {
         XCTAssertEqual(result.review.own, [])
     }
 
+    func testOpenCodeSqliteCountsAndPatchesCanonicalDarwinAlias_repro() async throws {
+        let token = UUID().uuidString
+        let src = "/tmp/engram-opencode-alias-src-\(token)"
+        let dst = "/tmp/engram-opencode-alias-dst-\(token)"
+        try FileManager.default.createDirectory(atPath: src, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: src) }
+        let resolved = try XCTUnwrap(Darwin.realpath(src, nil))
+        defer { free(resolved) }
+        let canonicalSrc = String(cString: resolved)
+        XCTAssertNotEqual(src, canonicalSrc)
+
+        let openCodeRoot = tempRoot
+            .appendingPathComponent(".local/share/opencode", isDirectory: true)
+        let openCodeDb = openCodeRoot.appendingPathComponent("opencode.db")
+        try makeOpenCodeDatabase(
+            at: openCodeDb,
+            rows: [
+                ("open-canonical", canonicalSrc + "/nested"),
+                ("open-lookalike", canonicalSrc + "-lookalike"),
+            ]
+        )
+
+        let oldPaths = projectMovePatchSourcePaths(src)
+        let counted = try OpenCodeSQLiteProjectMove.countReferences(
+            root: openCodeRoot.path,
+            oldPaths: oldPaths
+        )
+        XCTAssertEqual(counted.sessionIds, ["open-canonical"])
+        let patched = try OpenCodeSQLiteProjectMove.patch(
+            root: openCodeRoot.path,
+            oldPaths: oldPaths,
+            newPath: dst
+        )
+        XCTAssertEqual(patched.sessionIds, ["open-canonical"])
+
+        let queue = try DatabaseQueue(path: openCodeDb.path)
+        try await queue.write { db in
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT directory FROM session WHERE id = 'open-canonical'"
+                ),
+                dst + "/nested"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT directory FROM session WHERE id = 'open-lookalike'"
+                ),
+                canonicalSrc + "-lookalike"
+            )
+            let canonicalDst = try XCTUnwrap(
+                projectMovePatchSourcePaths(dst).first(where: { $0 != dst })
+            )
+            try db.execute(
+                sql: "UPDATE session SET directory = ? WHERE id = 'open-canonical'",
+                arguments: [canonicalDst + "/nested"]
+            )
+        }
+
+        try OpenCodeSQLiteProjectMove.reverse(
+            databasePath: openCodeDb.path,
+            sessionIds: patched.sessionIds,
+            oldPaths: projectMovePatchSourcePaths(dst),
+            newPath: src
+        )
+        try await queue.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT directory FROM session WHERE id = 'open-canonical'"
+                ),
+                src + "/nested"
+            )
+        }
+    }
+
     func testOpenCodeSqliteRowsRollBackWhenLaterSourcePatchFails() async throws {
         let (src, _) = try makeProjectFixture(name: "opencode-rollback")
         let dst = tempRoot.appendingPathComponent("opencode-rollback-renamed").path
@@ -928,6 +1005,153 @@ final class OrchestratorTests: XCTestCase {
         let patched = try String(contentsOf: movedSession, encoding: .utf8)
         XCTAssertTrue(patched.contains(#""cwd":"\#(dst)""#), patched)
         XCTAssertFalse(patched.contains(canonicalSrc), patched)
+    }
+
+    func testKimiRegistryAndLocalAndKaosWorkspaceDirectoriesMove_repro() async throws {
+        let (src, _) = try makeProjectFixture(name: "kimi-project")
+        let dst = tempRoot.appendingPathComponent("kimi-project-renamed").path
+        let kimiHome = tempRoot.appendingPathComponent(".kimi", isDirectory: true)
+        let kimiRoot = kimiHome.appendingPathComponent("sessions", isDirectory: true)
+        let config = kimiHome.appendingPathComponent("kimi.json")
+        try FileManager.default.createDirectory(at: kimiRoot, withIntermediateDirectories: true)
+        let configObject: [String: Any] = [
+            "theme": "dark",
+            "work_dirs": [
+                ["path": src, "kaos": "local", "last_session_id": "kimi-local", "extra": "keep"],
+                ["path": src, "kaos": "remote", "last_session_id": "kimi-remote"],
+            ],
+        ]
+        try JSONSerialization.data(withJSONObject: configObject, options: [.sortedKeys])
+            .write(to: config)
+
+        let oldLocal = kimiRoot.appendingPathComponent(SessionSources.encodeKimi(src))
+        let oldRemote = kimiRoot.appendingPathComponent(
+            SessionSources.encodeKimi(src, kaos: "remote")
+        )
+        try FileManager.default.createDirectory(at: oldLocal, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: oldRemote, withIntermediateDirectories: true)
+        try "{}\n".write(
+            to: oldLocal.appendingPathComponent("context.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "{}\n".write(
+            to: oldRemote.appendingPathComponent("context.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let result = try await ProjectMoveOrchestrator.run(
+            writer: writer,
+            options: makeOptions(src: src, dst: dst)
+        )
+
+        XCTAssertEqual(result.state, .committed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: oldLocal.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: oldRemote.path))
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: kimiRoot.appendingPathComponent(SessionSources.encodeKimi(dst)).path
+            )
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: kimiRoot.appendingPathComponent(
+                    SessionSources.encodeKimi(dst, kaos: "remote")
+                ).path
+            )
+        )
+
+        let updated = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: config)) as? [String: Any]
+        )
+        XCTAssertEqual(updated["theme"] as? String, "dark")
+        let workDirs = try XCTUnwrap(updated["work_dirs"] as? [[String: Any]])
+        XCTAssertEqual(workDirs.compactMap { $0["path"] as? String }, [dst, dst])
+        XCTAssertEqual(workDirs.first?["extra"] as? String, "keep")
+    }
+
+    func testKimiRegistryAndKaosWorkspaceRollBackAfterLaterPatchFailure_repro() async throws {
+        let (src, _) = try makeProjectFixture(name: "kimi-rollback")
+        let dst = tempRoot.appendingPathComponent("kimi-rollback-renamed").path
+        let kimiHome = tempRoot.appendingPathComponent(".kimi", isDirectory: true)
+        let kimiRoot = kimiHome.appendingPathComponent("sessions", isDirectory: true)
+        let config = kimiHome.appendingPathComponent("kimi.json")
+        try FileManager.default.createDirectory(at: kimiRoot, withIntermediateDirectories: true)
+        let original = #"{"theme":"dark","work_dirs":[{"path":"\#(src)","kaos":"remote","last_session_id":"s"}]}"#
+        try original.write(to: config, atomically: true, encoding: .utf8)
+
+        let oldWorkspace = kimiRoot.appendingPathComponent(
+            SessionSources.encodeKimi(src, kaos: "remote")
+        )
+        let newWorkspace = kimiRoot.appendingPathComponent(
+            SessionSources.encodeKimi(dst, kaos: "remote")
+        )
+        try FileManager.default.createDirectory(at: oldWorkspace, withIntermediateDirectories: true)
+        try "{}\n".write(
+            to: oldWorkspace.appendingPathComponent("context.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let badFile = tempRoot.appendingPathComponent(".gemini/antigravity-cli/brain/bad.jsonl")
+        try FileManager.default.createDirectory(
+            at: badFile.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        var badData = Data("{\"cwd\":\"\(src)\"}".utf8)
+        badData.append(0xff)
+        try badData.write(to: badFile)
+
+        do {
+            _ = try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: makeOptions(src: src, dst: dst)
+            )
+            XCTFail("expected InvalidUtf8Error")
+        } catch is InvalidUtf8Error {
+            // expected
+        } catch {
+            XCTFail("expected InvalidUtf8Error, got \(error)")
+        }
+
+        XCTAssertEqual(try String(contentsOf: config, encoding: .utf8), original)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: oldWorkspace.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: newWorkspace.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: src))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dst))
+    }
+
+    func testKimiRegistryDestinationOwnershipRejectsSharedEncodingBeforeMutation_repro() async throws {
+        let (src, _) = try makeProjectFixture(name: "kimi-collision")
+        let dst = tempRoot.appendingPathComponent("kimi-destination-owner").path
+        let kimiHome = tempRoot.appendingPathComponent(".kimi", isDirectory: true)
+        let kimiRoot = kimiHome.appendingPathComponent("sessions", isDirectory: true)
+        let config = kimiHome.appendingPathComponent("kimi.json")
+        try FileManager.default.createDirectory(at: kimiRoot, withIntermediateDirectories: true)
+        let original = #"{"work_dirs":[{"path":"\#(src)","kaos":"local"},{"path":"\#(dst)","kaos":"local"}]}"#
+        try original.write(to: config, atomically: true, encoding: .utf8)
+
+        let oldWorkspace = kimiRoot.appendingPathComponent(SessionSources.encodeKimi(src))
+        try FileManager.default.createDirectory(at: oldWorkspace, withIntermediateDirectories: true)
+
+        do {
+            _ = try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: makeOptions(src: src, dst: dst)
+            )
+            XCTFail("expected SharedEncodingCollisionError")
+        } catch let error as SharedEncodingCollisionError {
+            XCTAssertEqual(error.sourceId, .kimi)
+            XCTAssertEqual(error.sharingCwds, [dst])
+        } catch {
+            XCTFail("expected SharedEncodingCollisionError, got \(error)")
+        }
+
+        XCTAssertEqual(try String(contentsOf: config, encoding: .utf8), original)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: oldWorkspace.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: src))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dst))
     }
 
     func testCommandCodeSharedLiveSlugRejectsSiblingCwd_repro() async throws {

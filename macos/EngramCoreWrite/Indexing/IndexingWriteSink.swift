@@ -48,6 +48,7 @@ public struct FileIndexStat: Equatable, Sendable {
 
     public static func directFileStat(locator: String) -> FileIndexStat? {
         guard !locator.hasPrefix("sync://"),
+              !locator.hasPrefix("cursor-modern:"),
               !locator.contains("::"),
               locator.range(of: "?composer=") == nil
         else {
@@ -260,6 +261,15 @@ public protocol IndexingWriteSink {
         reason: IndexingWriteReason
     ) throws -> SessionBatchUpsertResult
 
+    /// Atomically pair each snapshot write with its parsed file identity when
+    /// the sink supports a transactional writer. The array preserves batch
+    /// index pairing for adapters that emit duplicate session ids.
+    func upsertBatch(
+        _ snapshots: [AuthoritativeSessionSnapshot],
+        fileIndexStates: [FileIndexState?],
+        reason: IndexingWriteReason
+    ) throws -> SessionBatchUpsertResult
+
     /// Reclassify and hide any existing rows whose latest parsed snapshot
     /// belongs to a disabled output source. This intentionally does not mark
     /// the backing file as indexed, so re-enabling the source reparses it.
@@ -280,6 +290,31 @@ public protocol IndexingWriteSink {
 }
 
 public extension IndexingWriteSink {
+    func upsertBatch(
+        _ snapshots: [AuthoritativeSessionSnapshot],
+        fileIndexStates: [FileIndexState?],
+        reason: IndexingWriteReason
+    ) throws -> SessionBatchUpsertResult {
+        let result = try upsertBatch(snapshots, reason: reason)
+        for (index, item) in result.results.enumerated() {
+            guard item.action == .merge || item.action == .noop,
+                  index < fileIndexStates.count,
+                  let state = fileIndexStates[index] else {
+                continue
+            }
+            do {
+                try upsertFileIndexState(state)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // Test/custom sinks keep the historical best-effort behavior.
+                // The production database sink overrides this method and writes
+                // the snapshot + state in one per-item savepoint.
+            }
+        }
+        return result
+    }
+
     func suppressExcludedSnapshots(_ snapshots: [AuthoritativeSessionSnapshot]) throws {}
 
     func knownIndexedFileStates(source: SourceName, locators: [String]) throws -> [String: KnownIndexedFileState] {

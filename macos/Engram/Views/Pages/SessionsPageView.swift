@@ -433,7 +433,7 @@ struct SessionsPageView: View {
                 if favoritesOnly {
                     favoriteIds = Set(parentIds)
                 } else {
-                    favoriteIds = Set((try? db.listFavorites())?.map(\.id) ?? [])
+                    favoriteIds = Set((try? db.favoriteIds()) ?? [])
                 }
                 let annotated = Session.applyingFavoriteIds(loaded, favoriteIds: favoriteIds)
                 return (annotated, confirmed, suggested, stats, sourceOptions)
@@ -558,7 +558,7 @@ struct SessionsPageView: View {
                     if favoritesOnly {
                         favoriteIds = Set(parentIds)
                     } else {
-                        favoriteIds = Set((try? db.listFavorites())?.map(\.id) ?? [])
+                        favoriteIds = Set((try? db.favoriteIds()) ?? [])
                     }
                     let annotated = Session.applyingFavoriteIds(loaded, favoriteIds: favoriteIds)
                     return (annotated, confirmed, suggested)

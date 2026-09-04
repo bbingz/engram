@@ -326,7 +326,11 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
             guard !content.isEmpty else { return nil }
             return NormalizedMessage(role: .tool, content: content, timestamp: timestamp)
         default:
-            return nil
+            let body = content.isEmpty && type == "ERROR_MESSAGE"
+                ? (JSONLAdapterSupport.string(object["error"]) ?? "")
+                : content
+            guard !body.isEmpty else { return nil }
+            return NormalizedMessage(role: .tool, content: body, timestamp: timestamp)
         }
     }
 

@@ -55,6 +55,7 @@ public struct OffloadRunner: Sendable {
         var succeeded = 0
         var failed = 0
         for job in claimed {
+            try Task.checkCancellation()
             do {
                 guard let inputs = try writer.read({ db in
                     try OffloadRepo.bundleInputs(db, sessionId: job.sessionId)
@@ -127,6 +128,7 @@ public struct OffloadRunner: Sendable {
         var succeeded = 0
         var failed = 0
         for job in claimed {
+            try Task.checkCancellation()
             do {
                 guard let key = try writer.read({ db in
                     try OffloadRepo.latestRemoteKey(db, sessionId: job.sessionId)

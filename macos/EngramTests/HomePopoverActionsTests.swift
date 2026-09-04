@@ -65,6 +65,14 @@ final class HomePopoverActionsTests: XCTestCase {
         XCTAssertTrue(s.contains("navigate(to: .settings)"), "Service KPI must navigate to .settings")
     }
 
+    func testHomeSessionsKpiMatchesSessionBrowsePopulation_repro() throws {
+        let s = try homeView()
+        XCTAssertTrue(s.contains("let sessionStats = try db.sessionListStats("))
+        XCTAssertTrue(s.contains("topLevelOnly: true"))
+        XCTAssertTrue(s.contains("humanDriven: humanDriven"))
+        XCTAssertTrue(s.contains("sessions: sessionStats.totalSessions"))
+    }
+
     func testHomeSeeAllLinksGatedOnCount() throws {
         let s = try homeView()
         XCTAssertTrue(s.contains("trailingAction"), "overflow panels must pass a See-all trailingAction")
@@ -139,27 +147,19 @@ final class HomePopoverActionsTests: XCTestCase {
         )
     }
 
-    /// R1.P1.parent_filter_surface_drift — menu-bar recent list must share the
-    /// same top-level + list-visible predicates as Home/Sessions/Timeline.
-    func testPopoverRecentSessionsUsesTopLevelVisibilityFilter_repro() throws {
+    /// core-read-1: the popover must use the executable DatabaseManager helper
+    /// instead of maintaining a second raw SQL query with drifting aliases.
+    func testPopoverRecentSessionsUsesDatabaseHelper_repro() throws {
         let s = try popoverView()
         XCTAssertTrue(
-            s.contains("SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL"),
-            "Popover recent sessions must use the shared root-or-promoted-suggestion predicate"
+            s.contains("db.recentSessions(limit: 12, humanDriven: true)"),
+            "Popover recent sessions must use the tested shared fetch path"
         )
-        XCTAssertTrue(
-            s.contains("SessionVisibilityFilter.listVisibleSQL"),
-            "Popover recent sessions must use shared listVisibleSQL (not ad-hoc hidden/tier only)"
-        )
-        // Pre-fix ad-hoc clause used bare columns without the shared filter type.
         XCTAssertFalse(
-            s.contains("hidden_at IS NULL \\") && s.contains("AND (tier IS NULL OR tier != 'skip')"),
-            "Popover must not keep the pre-fix ad-hoc hidden/tier whereClause"
+            s.contains("Session.fetchAll(d, sql:"),
+            "Popover must not keep an inline raw sessions query"
         )
-        XCTAssertTrue(
-            s.contains("SearchFilterPredicates.activityTimeSQL()"),
-            "Popover glance rows must sort by latest session activity"
-        )
+        XCTAssertFalse(s.contains("SearchFilterPredicates.activityTimeSQL()"))
     }
 
     func testPopoverStaleLiveBadgeKeepsActiveCount() throws {
@@ -208,6 +208,11 @@ final class HomePopoverActionsTests: XCTestCase {
 
         XCTAssertFalse(SessionNavigationGate.isCurrent(first))
         XCTAssertTrue(SessionNavigationGate.isCurrent(second))
+        SessionNavigationGate.complete(first)
+        XCTAssertTrue(
+            SessionNavigationGate.isCurrent(second),
+            "completing a stale live resolution must not clear the replacement navigation"
+        )
         SessionNavigationGate.complete(second)
     }
 
@@ -233,7 +238,7 @@ final class HomePopoverActionsTests: XCTestCase {
         XCTAssertTrue(body.contains("presentWindow(initialSession: box)"))
     }
 
-    func testLiveResolutionBeginsNavigationAtClickBeforeAsyncResolve_repro() throws {
+    func testLiveResolutionBeginsNavigationAtClickAndCompletesNilToken_repro() throws {
         for path in [
             "macos/Engram/Views/PopoverView.swift",
             "macos/Engram/Views/Pages/SourcePulseView.swift",
@@ -251,12 +256,26 @@ final class HomePopoverActionsTests: XCTestCase {
             XCTAssertLessThan(begin.lowerBound, task.lowerBound, "\(path) must reserve navigation at click time")
             XCTAssertLessThan(resolved.lowerBound, requestGate.lowerBound)
             XCTAssertLessThan(begin.lowerBound, post.lowerBound, "\(path) must reserve the global gate only for a resolved post")
-            let functionEnd = tail.dropFirst().range(of: "\n    ")?.lowerBound ?? tail.endIndex
-            XCTAssertFalse(
-                tail[..<functionEnd].contains("SessionNavigationGate.complete"),
-                "resolve-nil must not clear another navigation's gate token"
+            XCTAssertTrue(
+                tail[resolved.lowerBound..<requestGate.lowerBound]
+                    .contains("SessionNavigationGate.complete(token)"),
+                "resolve-nil must complete only its captured navigation token"
             )
         }
+    }
+
+    func testPaletteResolutionClearsItsPendingIdentityWhenAnotherNavigationStealsGate_repro() throws {
+        let source = try source("macos/Engram/Views/MainWindowView.swift")
+        let navigateStart = try XCTUnwrap(source.range(of: "private func navigateToSession("))
+        let navigateBody = source[navigateStart.lowerBound...]
+        let identityGuard = try XCTUnwrap(navigateBody.range(of: "guard pendingNavigationId == token else { return }"))
+        let gateGuard = try XCTUnwrap(navigateBody.range(of: "guard SessionNavigationGate.isCurrent(token) else {"))
+        let successStart = try XCTUnwrap(navigateBody.range(of: "pendingSearchTerm = nil", range: gateGuard.upperBound..<navigateBody.endIndex))
+        let stolenBranch = navigateBody[gateGuard.lowerBound..<successStart.lowerBound]
+
+        XCTAssertLessThan(identityGuard.lowerBound, gateGuard.lowerBound)
+        XCTAssertTrue(stolenBranch.contains("pendingNavigationId = nil"))
+        XCTAssertFalse(stolenBranch.contains("SessionNavigationGate.cancelAll()"))
     }
 
     func testActivityAndProjectTimelineReserveNavigationBeforeLookup_repro() throws {

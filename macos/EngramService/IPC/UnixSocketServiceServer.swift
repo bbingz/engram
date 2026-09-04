@@ -15,11 +15,17 @@ final class UnixSocketServiceServer: Sendable {
 
     private let socketPath: String
     private let handler: Handler
+    private let onShutdown: (@Sendable () -> Void)?
     private let connectionLimiter = ServiceConnectionLimiter(value: maximumConcurrentClients)
     private let state = OSAllocatedUnfairLock(initialState: UnixSocketServerState())
 
-    init(socketPath: String, handler: @escaping Handler) {
+    init(
+        socketPath: String,
+        onShutdown: (@Sendable () -> Void)? = nil,
+        handler: @escaping Handler
+    ) {
         self.socketPath = socketPath
+        self.onShutdown = onShutdown
         self.handler = handler
     }
 
@@ -53,6 +59,7 @@ final class UnixSocketServiceServer: Sendable {
         }
 
         let handler = handler
+        let onShutdown = onShutdown
         let connectionLimiter = connectionLimiter
         let state = state
         let serviceEuid = geteuid()
@@ -159,6 +166,9 @@ final class UnixSocketServiceServer: Sendable {
                             handler: handler
                         )
                         try await Self.writeFrameOffCooperativePool(try JSONEncoder().encode(response), to: client)
+                        if request.command == "shutdown", case .success = response {
+                            onShutdown?()
+                        }
                     } catch {
                         let response = Self.errorResponse(for: error, requestId: decodedRequestId)
                         try? await Self.writeFrameOffCooperativePool(try JSONEncoder().encode(response), to: client)
@@ -307,9 +317,11 @@ final class UnixSocketServiceServer: Sendable {
         request: EngramServiceRequestEnvelope,
         handler: @escaping Handler
     ) async -> EngramServiceResponseEnvelope {
-        await withTaskGroup(of: HandlerRaceOutcome.self) { group in
+        return await withTaskGroup(of: HandlerRaceOutcome.self) { group in
             group.addTask {
-                let response = await handler(request)
+                let response = await ServiceWriterGate.$preserveAcceptedWriteProducer.withValue(true) {
+                    await handler(request)
+                }
                 return .completed(response)
             }
             group.addTask {

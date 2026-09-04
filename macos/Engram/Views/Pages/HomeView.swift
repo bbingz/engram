@@ -448,9 +448,26 @@ struct HomeView: View {
         let shouldProbeMCP = !mcpConfigured
         do {
             let data = try await Task.detached {
-                let kpi = try db.kpiStats()
+                let aggregateKpi = try db.kpiStats()
+                let sessionStats = try db.sessionListStats(
+                    subAgent: false,
+                    topLevelOnly: true,
+                    humanDriven: humanDriven
+                )
+                let kpi = DatabaseManager.KPIStats(
+                    sessions: sessionStats.totalSessions,
+                    sources: aggregateKpi.sources,
+                    messages: aggregateKpi.messages,
+                    projects: aggregateKpi.projects
+                )
                 let rawRecent = try db.recentSessions(limit: 12, humanDriven: humanDriven)
-                let followUps = try loadTodayFollowUps(from: db, limit: 8, excluding: handledIds, now: now)
+                let followUps = try loadTodayFollowUps(
+                    from: db,
+                    limit: 8,
+                    excluding: handledIds,
+                    humanDriven: humanDriven,
+                    now: now
+                )
                 let projects = try db.listSessionsByProject(limit: 5, humanDriven: humanDriven)
                 let repos = try db.listGitRepos()
                 let countIds = Array(Set((rawRecent + followUps).map(\.id)))
@@ -718,6 +735,7 @@ private func loadTodayFollowUps(
     from db: DatabaseManager,
     limit: Int,
     excluding handledIds: Set<String>,
+    humanDriven: Bool,
     now: Date = Date()
 ) throws -> [Session] {
     let since = ISO8601DateFormatter().string(from: now.addingTimeInterval(-TodayFollowUps.recencyWindow))
@@ -725,7 +743,8 @@ private func loadTodayFollowUps(
         queries: TodayFollowUps.queries,
         startedSince: since,
         excluding: handledIds,
-        limit: limit
+        limit: limit,
+        humanDriven: humanDriven
     )
 }
 

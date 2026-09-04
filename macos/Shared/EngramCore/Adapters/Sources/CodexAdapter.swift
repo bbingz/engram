@@ -591,6 +591,7 @@ enum JSONLAdapterSupport {
             var produced = 0
             var billedMessages = 0
             var messages: [NormalizedMessage] = []
+            var stoppedAtFilledWindow = false
 
             var exceededMessageLimit = false
             var producedAtMessageLimit: Int?
@@ -610,6 +611,10 @@ enum JSONLAdapterSupport {
                 }
                 if messages.count < cappedLimit {
                     messages.append(message)
+                }
+                if messages.count == cappedLimit {
+                    stoppedAtFilledWindow = true
+                    break
                 }
             }
 
@@ -650,7 +655,7 @@ enum JSONLAdapterSupport {
             }
             return WindowedMessagesResult(
                 messages: messages,
-                totalKnownComplete: truncatedAt == nil,
+                totalKnownComplete: truncatedAt == nil && !stoppedAtFilledWindow,
                 truncatedAt: truncatedAt,
                 maxRawMessages: exceededMessageLimit ? producedAtMessageLimit : nil
             )
@@ -1196,7 +1201,7 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
             let isCustomToolCall = JSONLAdapterSupport.string(payload["type"]) == "custom_tool_call"
             let inputValue = payload[isCustomToolCall ? "input" : "arguments"]
             let input: String
-            if isCustomToolCall, let string = JSONLAdapterSupport.string(inputValue) {
+            if let string = JSONLAdapterSupport.string(inputValue) {
                 input = String(string.prefix(500))
             } else if let inputValue {
                 input = JSONLAdapterSupport.jsonString(inputValue, limit: 500) ?? ""

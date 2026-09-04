@@ -142,7 +142,9 @@ enum MCPTranscriptReader {
             pageSize: effectivePageSize
         )
 
+        let virtualCursorLocator = isVirtualCursorLocator(filePath: filePath, source: source)
         let guardBeforeAdapter = requiresFullJSONTranscriptGuard(source: source)
+            && !isVirtualCursorLocator(filePath: filePath, source: source)
         if guardBeforeAdapter {
             try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
         }
@@ -157,7 +159,7 @@ enum MCPTranscriptReader {
             return adapterPage
         }
 
-        if !guardBeforeAdapter {
+        if !guardBeforeAdapter && !virtualCursorLocator {
             try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
         }
 
@@ -195,7 +197,9 @@ enum MCPTranscriptReader {
         if isRemoteSnapshotLocator(filePath) {
             throw MCPTranscriptReadError.remoteSnapshotUnavailable
         }
+        let virtualCursorLocator = isVirtualCursorLocator(filePath: filePath, source: source)
         let guardBeforeAdapter = requiresFullJSONTranscriptGuard(source: source)
+            && !isVirtualCursorLocator(filePath: filePath, source: source)
         if guardBeforeAdapter {
             try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
         }
@@ -204,7 +208,7 @@ enum MCPTranscriptReader {
             return adapterMessages
         }
 
-        if !guardBeforeAdapter {
+        if !guardBeforeAdapter && !virtualCursorLocator {
             try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
         }
 
@@ -231,6 +235,11 @@ enum MCPTranscriptReader {
         default:
             return false
         }
+    }
+
+    private static func isVirtualCursorLocator(filePath: String, source: String) -> Bool {
+        source == "cursor"
+            && (filePath.contains("?composer=") || filePath.hasPrefix("cursor-modern:"))
     }
 
     private static func normalizeRoles(_ roles: [String]?) -> [String]? {
@@ -339,7 +348,9 @@ enum MCPTranscriptReader {
             // streaming — O(offset + limit) raw records, stopping as soon as the
             // page window is filled, so page 1 of a 39k-message transcript never
             // parses 39k records.
-            if roles == nil, let identity = transcriptIdentity(filePath) {
+            if roles == nil,
+               !isVirtualCursorLocator(filePath: filePath, source: source),
+               let identity = transcriptIdentity(filePath) {
                 let key = TranscriptVisibleCountKey(
                     locator: filePath,
                     source: source,
@@ -492,7 +503,10 @@ enum MCPTranscriptReader {
     }
 
     private static func isVirtualLocator(_ locator: String) -> Bool {
-        locator.contains("::") || locator.contains("?composer=") || isRemoteSnapshotLocator(locator)
+        locator.contains("::")
+            || locator.contains("?composer=")
+            || locator.hasPrefix("cursor-modern:")
+            || isRemoteSnapshotLocator(locator)
     }
 
     // Full visible scan of the adapter stream: dense visible-unit page window plus

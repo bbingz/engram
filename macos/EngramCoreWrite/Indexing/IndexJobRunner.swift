@@ -243,7 +243,11 @@ public final class IndexJobRunner: StartupIndexJobRunning {
                     try FTSRebuildPolicy.purgeFtsContent(db, sessionId: job.sessionId)
                     try Self.markNotApplicable(db, id: job.id, enabledSources: enabledSources)
                 } else {
+                    let hadFtsContent = try Self.hasNonemptyFtsContent(db, sessionId: job.sessionId)
                     try FTSRebuildPolicy.replaceFtsContent(db, sessionId: job.sessionId, contents: [shadow])
+                    if !hadFtsContent {
+                        try Self.reenqueueEmbeddingAfterFirstFtsFill(db, sessionId: job.sessionId)
+                    }
                     try Self.markCompleted(db, id: job.id)
                 }
                 try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources)
@@ -279,12 +283,16 @@ public final class IndexJobRunner: StartupIndexJobRunning {
                     try FTSRebuildPolicy.purgeFtsContent(db, sessionId: job.sessionId)
                     try Self.markNotApplicable(db, id: job.id, enabledSources: enabledSources)
                 } else {
+                    let hadFtsContent = try Self.hasNonemptyFtsContent(db, sessionId: job.sessionId)
                     try FTSRebuildPolicy.replaceFtsContent(
                         db,
                         sessionId: job.sessionId,
                         messages: messages,
                         summary: contentSource.summary
                     )
+                    if !hadFtsContent {
+                        try Self.reenqueueEmbeddingAfterFirstFtsFill(db, sessionId: job.sessionId)
+                    }
                     try Self.markCompleted(db, id: job.id)
                 }
                 try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources)
@@ -327,7 +335,10 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         )
         // Fail closed when the adapter already marked a whole-transcript cap so
         // FTS cannot complete on a silently truncated prefix (Wave 7A L05).
-        if result.truncated {
+        let isIntentionalCopilotPrefix = adapter.source == .copilot
+            && result.truncatedAt != nil
+            && result.parseFailure == nil
+        if result.truncated, !isIntentionalCopilotPrefix {
             throw ParserFailure.messageLimitExceeded
         }
         var visibleCount = 0
@@ -345,6 +356,55 @@ public final class IndexJobRunner: StartupIndexJobRunning {
     }
 
     // MARK: - SQL helpers (static so they run inside writer.read/write blocks)
+
+    private static func hasNonemptyFtsContent(_ db: Database, sessionId: String) throws -> Bool {
+        try Bool.fetchOne(
+            db,
+            sql: """
+            SELECT EXISTS(
+              SELECT 1 FROM sessions_fts
+              WHERE session_id = ? AND LENGTH(TRIM(content)) > 0
+            )
+            """,
+            arguments: [sessionId]
+        ) ?? false
+    }
+
+    private static func reenqueueEmbeddingAfterFirstFtsFill(
+        _ db: Database,
+        sessionId: String
+    ) throws {
+        let hasEmbeddingJob = try Bool.fetchOne(
+            db,
+            sql: """
+            SELECT EXISTS(
+              SELECT 1 FROM session_index_jobs
+              WHERE session_id = ? AND job_kind = 'embedding'
+            )
+            """,
+            arguments: [sessionId]
+        ) ?? false
+        guard hasEmbeddingJob else { return }
+
+        // A pre-FTS backfill could only have embedded the summary fallback.
+        // Remove that vector before making the authoritative FTS job selectable.
+        try db.execute(
+            sql: "DELETE FROM semantic_chunks WHERE session_id = ?",
+            arguments: [sessionId]
+        )
+        try db.execute(
+            sql: """
+            UPDATE session_index_jobs
+            SET status = 'pending',
+                retry_count = 0,
+                last_error = NULL,
+                not_before = NULL,
+                updated_at = datetime('now')
+            WHERE session_id = ? AND job_kind = 'embedding'
+            """,
+            arguments: [sessionId]
+        )
+    }
 
     private static func takeRecoverableJobs(
         _ db: Database,

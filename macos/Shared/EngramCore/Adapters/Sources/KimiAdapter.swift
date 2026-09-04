@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 
 final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sendable {
@@ -52,9 +53,13 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
         fileManager: FileManager
     ) async throws -> [String] {
         try await listSessionLocators().filter { locator in
-            Self.compositeModificationDate(locator: locator, fileManager: fileManager)
+            compositeModificationDate(locator: locator, fileManager: fileManager)
                 .map { $0 >= modifiedSince } ?? false
         }
+    }
+
+    func indexingInputIdentity(locator: String) -> IndexingInputIdentity? {
+        compositeInputIdentity(locator: locator)
     }
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
@@ -93,10 +98,16 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
             let userMessages = messages.filter { JSONLAdapterSupport.string($0["role"]) == "user" }
             let assistantMessages = messages.filter { JSONLAdapterSupport.string($0["role"]) == "assistant" }
             let toolMessages = messages.filter { JSONLAdapterSupport.string($0["role"]) == "tool" }
-            let timestamps = try Self.readTimestamps(wirePath: URL(fileURLWithPath: locator)
-                .deletingLastPathComponent()
-                .appendingPathComponent("wire.jsonl")
-                .path, limits: limits)
+            let timestamps: (startTime: String, endTime: String)
+            do {
+                timestamps = try Self.readTimestamps(wirePath: URL(fileURLWithPath: locator)
+                    .deletingLastPathComponent()
+                    .appendingPathComponent("wire.jsonl")
+                    .path, limits: limits)
+            } catch let failure as ParserFailure {
+                guard !messages.isEmpty else { return .failure(failure) }
+                timestamps = ("", "")
+            }
             let fileDate = (try? FileManager.default.attributesOfItem(atPath: locator)[.modificationDate] as? Date) ?? Date(timeIntervalSince1970: 0)
             let fallbackStart = ISO8601DateFormatter().string(from: fileDate.addingTimeInterval(-60))
             let firstUserText = Self.extractContent(userMessages.first?["content"])
@@ -144,8 +155,9 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
 
     func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
         do {
-            let url = URL(fileURLWithPath: locator)
-            let before = try limits.fileIdentity(for: url)
+            guard let before = indexingInputIdentity(locator: locator) else {
+                return .failure(.fileMissing)
+            }
             let info: NormalizedSessionInfo
             switch try await parseSessionInfo(locator: locator) {
             case .success(let value): info = value
@@ -158,22 +170,11 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
             if result.truncatedAt != nil { return .failure(.messageLimitExceeded) }
             var messages: [NormalizedMessage] = []
             for try await message in result.messages { messages.append(message) }
-            let after: FileIdentity
-            do {
-                after = try limits.fileIdentity(for: url)
-            } catch {
-                guard !messages.isEmpty else { return .failure(.fileModifiedDuringParse) }
-                return .success(IndexingScan(
-                    info: info,
-                    messages: messages,
-                    parseFailure: .fileModifiedDuringParse
-                ))
-            }
-            let identityFailure: ParserFailure? = limits.isSameFileIdentity(before, after)
+            let identityFailure: ParserFailure? = indexingInputIdentity(locator: locator) == before
                 ? nil
                 : .fileModifiedDuringParse
             if let failure = result.parseFailure ?? identityFailure {
-                guard failure == .fileModifiedDuringParse, !messages.isEmpty else {
+                guard !messages.isEmpty else {
                     return .failure(failure)
                 }
                 return .success(IndexingScan(info: info, messages: messages, parseFailure: failure))
@@ -213,13 +214,18 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
         limits: ParserLimits
     ) throws -> JSONLAdapterSupport.WindowedMessagesResult {
         var messages: [NormalizedMessage] = []
-        let turnResult = try Self.readTurnMetadata(
-            wirePath: URL(fileURLWithPath: locator)
-                .deletingLastPathComponent()
-                .appendingPathComponent("wire.jsonl")
-                .path,
-            limits: limits
-        )
+        let turnResult: (turns: [TurnMetadata], parseFailure: ParserFailure?)
+        do {
+            turnResult = try Self.readTurnMetadata(
+                wirePath: URL(fileURLWithPath: locator)
+                    .deletingLastPathComponent()
+                    .appendingPathComponent("wire.jsonl")
+                    .path,
+                limits: limits
+            )
+        } catch let failure as ParserFailure {
+            turnResult = ([], failure)
+        }
         let turns = turnResult.turns
         var records: [(object: Phase4AdapterSupport.JSONObject, role: String, turnIndex: Int)] = []
         var turnIndex = 0
@@ -341,18 +347,51 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
         return files
     }
 
-    private static func compositeModificationDate(
+    private func compositeModificationDate(
         locator: String,
         fileManager: FileManager
     ) -> Date? {
+        _ = fileManager
+        guard let identity = compositeInputIdentity(locator: locator) else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(identity.modifiedAtNanos) / 1_000_000_000)
+    }
+
+    private func compositeInputPaths(locator: String) -> [String] {
         let wirePath = URL(fileURLWithPath: locator)
             .deletingLastPathComponent()
             .appendingPathComponent("wire.jsonl")
             .path
-        return (contextFiles(for: locator) + [wirePath]).compactMap { path in
-            try? fileManager.attributesOfItem(atPath: path)[.modificationDate] as? Date
+        return Self.contextFiles(for: locator) + [wirePath, kimiJsonPath.path]
+    }
+
+    private func compositeInputIdentity(locator: String) -> IndexingInputIdentity? {
+        var totalSize: Int64 = 0
+        var newestNanos: Int64 = 0
+        var locatorInode: Int64?
+        var locatorDevice: Int64?
+        var foundLocator = false
+
+        for path in Set(compositeInputPaths(locator: locator)) {
+            var info = stat()
+            guard lstat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { continue }
+            totalSize += Int64(info.st_size)
+            let modifiedNanos = Int64(info.st_mtimespec.tv_sec) * 1_000_000_000
+                + Int64(info.st_mtimespec.tv_nsec)
+            newestNanos = max(newestNanos, modifiedNanos)
+            if path == locator {
+                foundLocator = true
+                locatorInode = Int64(info.st_ino)
+                locatorDevice = Int64(info.st_dev)
+            }
         }
-        .max()
+
+        guard foundLocator else { return nil }
+        return IndexingInputIdentity(
+            sizeBytes: totalSize,
+            modifiedAtNanos: newestNanos,
+            locatorInode: locatorInode,
+            locatorDevice: locatorDevice
+        )
     }
 
     private static func contextShardIndex(_ filename: String) -> Int? {

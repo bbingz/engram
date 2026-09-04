@@ -1,5 +1,6 @@
-import Foundation
 import CryptoKit
+import Darwin
+import Foundation
 
 public enum BlobStoreError: Error, Equatable {
     case invalidKey(String)
@@ -49,7 +50,7 @@ public struct BlobStore: Sendable {
     public func put(_ key: String, plaintext: Data) throws {
         let sealed = try AES.GCM.seal(plaintext, using: self.key)
         guard let combined = sealed.combined else { throw BlobStoreError.sealFailed }
-        try combined.write(to: try url(for: key), options: .atomic)
+        try Self.durableReplace(combined, at: try url(for: key))
     }
 
     public func get(_ key: String) throws -> Data {
@@ -145,5 +146,67 @@ public struct BlobStore: Sendable {
         }
         if let enumerationError { throw enumerationError }
         return names.sorted()
+    }
+
+    private static func durableReplace(_ data: Data, at target: URL) throws {
+        let parent = target.deletingLastPathComponent()
+        let temporary = parent.appendingPathComponent(
+            ".engram-remote-\(UUID().uuidString).tmp",
+            isDirectory: false
+        )
+        let opened = Darwin.open(
+            temporary.path,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            S_IRUSR | S_IWUSR
+        )
+        guard opened >= 0 else { throw posixError() }
+        var descriptor = opened
+        var temporaryExists = true
+        defer {
+            if descriptor >= 0 { _ = Darwin.close(descriptor) }
+            if temporaryExists { _ = Darwin.unlink(temporary.path) }
+        }
+
+        try writeAll(data, to: descriptor)
+        guard Darwin.fsync(descriptor) == 0 else { throw posixError() }
+        guard Darwin.close(descriptor) == 0 else {
+            descriptor = -1
+            throw posixError()
+        }
+        descriptor = -1
+        guard Darwin.rename(temporary.path, target.path) == 0 else { throw posixError() }
+        temporaryExists = false
+        try fsyncDirectory(parent)
+    }
+
+    private static func writeAll(_ data: Data, to descriptor: Int32) throws {
+        try data.withUnsafeBytes { bytes in
+            guard let baseAddress = bytes.baseAddress else { return }
+            var offset = 0
+            while offset < bytes.count {
+                let count = Darwin.write(
+                    descriptor,
+                    baseAddress.advanced(by: offset),
+                    bytes.count - offset
+                )
+                if count < 0, errno == EINTR { continue }
+                guard count > 0 else { throw posixError() }
+                offset += count
+            }
+        }
+    }
+
+    private static func fsyncDirectory(_ directory: URL) throws {
+        let descriptor = Darwin.open(
+            directory.path,
+            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+        )
+        guard descriptor >= 0 else { throw posixError() }
+        defer { _ = Darwin.close(descriptor) }
+        guard Darwin.fsync(descriptor) == 0 else { throw posixError() }
+    }
+
+    private static func posixError() -> POSIXError {
+        POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
 }

@@ -145,8 +145,11 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
     }
 
     func liveSessions() async throws -> EngramServiceLiveSessionsResponse {
-        let sessions = try await liveSessionCache.sessions(now: now()) { now in
-            try scanLiveSessions(now: now)
+        let sessions = try await liveSessionCache.sessions(
+            now: now(),
+            finishedAt: now
+        ) { scanStartedAt in
+            try scanLiveSessions(now: scanStartedAt)
         }
         return EngramServiceLiveSessionsResponse(sessions: sessions, count: sessions.count)
     }
@@ -164,16 +167,21 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
         )) ?? []
 
         for projectURL in projects {
-            guard (try? projectURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { continue }
+            guard Self.isDirectoryNoFollow(atPath: projectURL.path) else { continue }
             let memoryURL = projectURL.appendingPathComponent("memory", isDirectory: true)
+            guard Self.isDirectoryNoFollow(atPath: memoryURL.path) else { continue }
             let files = (try? FileManager.default.contentsOfDirectory(
                 at: memoryURL,
-                includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]
+                includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey]
             )) ?? []
             for fileURL in files where fileURL.pathExtension == "md" {
-                guard (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
-                let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey])
-                let content = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
+                guard let values = try? fileURL.resourceValues(
+                    forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey]
+                ), values.isSymbolicLink != true, values.isRegularFile == true else { continue }
+                guard let content = Self.readRegularFileNoFollow(
+                    atPath: fileURL.path,
+                    maxBytes: 512
+                ) else { continue }
                 // LIST responses carry only a short preview, never the full body:
                 // up to 500 memory files × full content would blow past the
                 // 256 KiB IPC frame. The detail viewer fetches the full content
@@ -183,8 +191,8 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
                         name: fileURL.lastPathComponent,
                         project: projectURL.lastPathComponent.replacingOccurrences(of: "-", with: "/"),
                         path: displayPath(fileURL),
-                        sizeBytes: values?.fileSize ?? 0,
-                        preview: content.prefixString(200),
+                        sizeBytes: values.fileSize ?? 0,
+                        preview: content.text.prefixString(200),
                         content: nil
                     )
                 )
@@ -198,13 +206,15 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
     static let memoryFileContentCap = 200 * 1024
 
     func memoryFileContent(_ request: EngramServiceMemoryFileContentRequest) async throws -> EngramServiceMemoryFileContentResponse {
-        // Wave 7D H09 + SEC-M2: confine under ~/.claude/projects/*/memory/*.md,
-        // open with O_NOFOLLOW so a TOCTOU symlink swap cannot exfiltrate.
+        // Wave 7D H09 + SEC-M2: confine under ~/.claude/projects/*/memory/*.md.
+        // Pin each directory component with openat(O_NOFOLLOW) so an ancestor
+        // symlink cannot redirect the leaf open.
         let resolved = resolveDisplayPath(request.path)
-        let projectsRoot = homeDirectory
+        let declaredProjectsRoot = homeDirectory
             .appendingPathComponent(".claude/projects", isDirectory: true)
-            .resolvingSymlinksInPath()
-        let candidate = URL(fileURLWithPath: resolved)
+            .standardizedFileURL
+        let canonicalProjectsRoot = declaredProjectsRoot.resolvingSymlinksInPath().standardizedFileURL
+        let candidate = URL(fileURLWithPath: resolved).standardizedFileURL
         // Refuse symlink hops before open: lstat the path itself.
         var isSymlink = false
         if let values = try? candidate.resourceValues(forKeys: [.isSymbolicLinkKey]),
@@ -214,25 +224,29 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
         guard !isSymlink else {
             return EngramServiceMemoryFileContentResponse(path: request.path, content: "", truncated: false)
         }
-        let standardized = candidate.resolvingSymlinksInPath()
-        let standardizedPath = standardized.path
-        let projectsRootPath = projectsRoot.path
-        // Must live under ~/.claude/projects/<project>/memory/*.md
-        guard standardizedPath.hasPrefix(projectsRootPath + "/"),
-              standardized.pathExtension == "md" else {
+        let candidateComponents = candidate.pathComponents
+        let declaredRootComponents = declaredProjectsRoot.pathComponents
+        let canonicalRootComponents = canonicalProjectsRoot.pathComponents
+        let rootComponentCount: Int
+        if candidateComponents.starts(with: declaredRootComponents) {
+            rootComponentCount = declaredRootComponents.count
+        } else if candidateComponents.starts(with: canonicalRootComponents) {
+            rootComponentCount = canonicalRootComponents.count
+        } else {
             return EngramServiceMemoryFileContentResponse(path: request.path, content: "", truncated: false)
         }
-        let relative = String(standardizedPath.dropFirst(projectsRootPath.count + 1))
-        let parts = relative.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        let parts = Array(candidateComponents.dropFirst(rootComponentCount))
         // Expect: <projectId>/memory/<file.md>  (projectId may contain path segments
         // only if nested under projects; require a "memory" path component before file).
         guard parts.count >= 3,
               parts[parts.count - 2] == "memory",
-              !parts.dropLast().contains("..") else {
+              parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+              candidate.pathExtension == "md" else {
             return EngramServiceMemoryFileContentResponse(path: request.path, content: "", truncated: false)
         }
         guard let content = Self.readRegularFileNoFollow(
-            atPath: standardizedPath,
+            relativeComponents: parts,
+            rootDirectory: canonicalProjectsRoot,
             maxBytes: Self.memoryFileContentCap
         ) else {
             return EngramServiceMemoryFileContentResponse(path: request.path, content: "", truncated: false)
@@ -247,31 +261,91 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
         return EngramServiceMemoryFileContentResponse(path: request.path, content: content.text, truncated: false)
     }
 
+    private static func isDirectoryNoFollow(atPath path: String) -> Bool {
+        var info = stat()
+        return lstat(path, &info) == 0 && (info.st_mode & S_IFMT) == S_IFDIR
+    }
+
     /// SEC-M2: open with O_NOFOLLOW|O_CLOEXEC, fstat regular file, then read.
     private static func readRegularFileNoFollow(
         atPath path: String,
         maxBytes: Int
     ) -> (text: String, truncated: Bool)? {
         let fd = path.withCString { cPath in
-            open(cPath, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            open(cPath, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         }
         guard fd >= 0 else { return nil }
         defer { close(fd) }
+        return readRegularFile(fileDescriptor: fd, maxBytes: maxBytes)
+    }
+
+    private static func readRegularFileNoFollow(
+        relativeComponents: [String],
+        rootDirectory: URL,
+        maxBytes: Int
+    ) -> (text: String, truncated: Bool)? {
+        guard let fileName = relativeComponents.last,
+              relativeComponents.allSatisfy({
+                  !$0.isEmpty && $0 != "." && $0 != ".." && !$0.contains("/")
+              })
+        else {
+            return nil
+        }
+        var directoryFD = rootDirectory.path.withCString {
+            open($0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        }
+        guard directoryFD >= 0 else { return nil }
+        defer { close(directoryFD) }
+        for component in relativeComponents.dropLast() {
+            let nextFD = component.withCString {
+                openat(directoryFD, $0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            }
+            guard nextFD >= 0 else { return nil }
+            close(directoryFD)
+            directoryFD = nextFD
+        }
+        let fd = fileName.withCString {
+            openat(directoryFD, $0, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        }
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        return readRegularFile(fileDescriptor: fd, maxBytes: maxBytes)
+    }
+
+    private static func readRegularFile(
+        fileDescriptor fd: Int32,
+        maxBytes: Int
+    ) -> (text: String, truncated: Bool)? {
+        guard maxBytes >= 0, maxBytes < Int.max else { return nil }
         var info = stat()
         guard fstat(fd, &info) == 0 else { return nil }
         guard (info.st_mode & S_IFMT) == S_IFREG else { return nil }
         let size = Int(info.st_size)
         guard size >= 0 else { return nil }
         let toRead = min(size, maxBytes + 1)
-        var buffer = Data(count: toRead)
-        let readCount = buffer.withUnsafeMutableBytes { raw -> Int in
-            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return -1 }
-            return Int(read(fd, base, toRead))
+        var buffer = Data()
+        buffer.reserveCapacity(toRead)
+        var chunk = [UInt8](repeating: 0, count: min(4096, max(1, toRead)))
+        while buffer.count < toRead {
+            let readCount = chunk.withUnsafeMutableBytes { raw -> Int in
+                Int(read(fd, raw.baseAddress, min(raw.count, toRead - buffer.count)))
+            }
+            if readCount == 0 { break }
+            if readCount < 0 {
+                if errno == EINTR { continue }
+                return nil
+            }
+            buffer.append(contentsOf: chunk.prefix(readCount))
         }
-        guard readCount >= 0 else { return nil }
-        buffer.count = readCount
-        guard let text = String(data: buffer.prefix(maxBytes), encoding: .utf8) else { return nil }
-        return (text, readCount > maxBytes)
+        let bounded = Data(buffer.prefix(maxBytes))
+        let maximumTrim = min(3, bounded.count)
+        for trailingBytesToDrop in 0...maximumTrim {
+            let end = bounded.count - trailingBytesToDrop
+            if let text = String(data: bounded.prefix(end), encoding: .utf8) {
+                return (text, size > maxBytes || buffer.count > maxBytes)
+            }
+        }
+        return nil
     }
 
     private func resolveDisplayPath(_ path: String) -> String {
@@ -354,15 +428,16 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
 
         func sessions(
             now: Date,
-            load: @Sendable (Date) throws -> [EngramServiceLiveSessionInfo]
-        ) throws -> [EngramServiceLiveSessionInfo] {
+            finishedAt: @Sendable () -> Date,
+            load: @Sendable (Date) async throws -> [EngramServiceLiveSessionInfo]
+        ) async throws -> [EngramServiceLiveSessionInfo] {
             try Task.checkCancellation()
             if let cachedAt, let cachedSessions, now.timeIntervalSince(cachedAt) < ttl {
                 return cachedSessions
             }
-            let sessions = try load(now)
+            let sessions = try await load(now)
             try Task.checkCancellation()
-            cachedAt = now
+            cachedAt = finishedAt()
             cachedSessions = sessions
             return sessions
         }
@@ -464,6 +539,11 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
         )
         try liveSessionFinalizationCheckpoint()
         try Task.checkCancellation()
+        let disabledSources = EngramServiceRunner.readDisabledSources(
+            environment: ProcessInfo.processInfo.environment,
+            settingsURL: homeDirectory.appendingPathComponent(".engram/settings.json")
+        )
+        candidates.removeAll { disabledSources.contains($0.source) }
         // Sort + cap ONCE after the full scan. The per-insert sort+truncate this
         // replaces re-sorted the whole array on every accepted file (O(M·N log N));
         // a single sort is O(M log M) and produces the identical top-N result set.
@@ -523,9 +603,16 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
         let age = now.timeIntervalSince(modifiedAt)
         guard age >= 0, age <= recentWindow else { return }
         guard seen.insert(file.path).inserted else { return }
+        let source: String
+        if root.source == SourceName.claudeCode.rawValue {
+            guard let detected = SessionAdapterFactory.detectClaudeCodeSourceHint(locator: file.path) else { return }
+            source = detected.rawValue
+        } else {
+            source = root.source
+        }
         candidates.append(
             LiveSessionCandidate(
-                source: root.source,
+                source: source,
                 file: file,
                 locator: file.path,
                 explicitSessionID: nil,
@@ -641,8 +728,15 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
         let cutoffMilliseconds = Int64(now.addingTimeInterval(-recentWindow).timeIntervalSince1970 * 1_000)
         guard let database = try? DatabaseQueue(path: databaseURL.path, configuration: configuration),
               let rows = try? database.read({ db in
-                  try Row.fetchAll(db, sql: """
-                      SELECT id, directory, title, time_updated
+                  let columns = Set(
+                      try Row.fetchAll(db, sql: "PRAGMA table_info(session)")
+                          .map { $0["name"] as String }
+                  )
+                  let roleColumns = ["parent_id", "agent", "slug"]
+                      .map { columns.contains($0) ? $0 : "NULL AS \($0)" }
+                      .joined(separator: ", ")
+                  return try Row.fetchAll(db, sql: """
+                      SELECT id, directory, title, time_updated, \(roleColumns)
                       FROM session
                       WHERE time_archived IS NULL
                         AND time_updated >= ?
@@ -657,6 +751,12 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
             let title: String? = row["title"]
             let updatedMilliseconds: Int64 = row["time_updated"]
             guard !id.isEmpty else { continue }
+            guard !OpenCodeSessionRoleClassifier.isDispatchedChild(
+                parentSessionId: row["parent_id"],
+                title: title ?? "",
+                agent: row["agent"],
+                slug: row["slug"]
+            ) else { continue }
             let locator = "\(databaseURL.path)::\(id)"
             guard seen.insert(locator).inserted else { continue }
             candidates.append(
@@ -997,17 +1097,10 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 )
             } catch {
                 ServiceLogger.warn(
-                    "semantic search failed; falling back to keyword: \(error.localizedDescription)",
+                    "semantic search failed: \(error.localizedDescription)",
                     category: .reader
                 )
-                let reason = SessionVectorSearchAvailability.SemanticDegradeReason.embedFailed
-                return try await keywordSearch(
-                    query: query,
-                    request: request,
-                    limit: limit,
-                    warning: reason.serviceWarning(detail: error.localizedDescription),
-                    warningCode: reason.structuredCode
-                )
+                throw error
             }
         }
 
@@ -1537,7 +1630,6 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     FROM sessions s
                     WHERE s.id IN (\(placeholders))
                       AND s.hidden_at IS NULL
-                      AND s.orphan_status IS NULL
                       AND \(SessionSemanticSearchPolicy.searchableTierSQL)
                     """,
                 arguments: StatementArguments(sessionIds)
@@ -1613,6 +1705,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     name: source,
                     sessionCount: sessionCount,
                     latestIndexed: row["latest_indexed"] as String?,
+                    listVisibleSessionCount: indexEligible,
                     searchableSessionCount: searchable,
                     searchCoveragePercent: coverage,
                     failedIndexJobCount: failed,
@@ -2224,6 +2317,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     WHERE project = ?
                       AND cwd IS NOT NULL
                       AND cwd != ''
+                      AND \(SessionVisibilityFilter.listVisibleSQL)
                     ORDER BY cwd
                 """,
                 arguments: [request.project]

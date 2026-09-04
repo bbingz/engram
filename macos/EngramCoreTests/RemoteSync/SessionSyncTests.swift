@@ -1183,6 +1183,26 @@ final class SessionSyncTests: XCTestCase {
         XCTAssertEqual(try ManifestCodec.decodeCatalog(catalog), [])
     }
 
+    func testLocalCatalogRejectsAboveManifestCeilingBeforeBoundedRead_repro() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macosRoot.appendingPathComponent("EngramCoreWrite/RemoteSync/RemoteStorageBackend.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(source.range(of: "public func catalog() async throws -> Data"))
+        let body = source[start.lowerBound...]
+
+        XCTAssertTrue(body.contains("fileSize <= Self.maximumCatalogManifestBytes"))
+        XCTAssertTrue(body.contains("read(upToCount: Self.maximumCatalogManifestBytes + 1)"))
+        XCTAssertFalse(
+            body.contains("Data(contentsOf: target)"),
+            "catalog manifests must never be materialized with an unbounded read"
+        )
+    }
+
     func testLocalCatalogSkipsArrayThatExhaustsBudgetWithoutCatalogTooLarge_repro() async throws {
         let dir = tempDir.appendingPathComponent("catalog-skippable-limit-store", isDirectory: true)
         let backend = try LocalDirectoryBackend(root: dir)

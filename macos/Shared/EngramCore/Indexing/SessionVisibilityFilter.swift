@@ -50,7 +50,8 @@ public enum SessionVisibilityFilter {
         hasHumanDrivenColumns: Bool = true,
         hasOrphanStatusColumn: Bool = true,
         applyHumanDrivenOnHost: Bool = true,
-        applyHumanDrivenOnChild: Bool = true
+        applyHumanDrivenOnChild: Bool = true,
+        includeHiddenHosts: Bool = false
     ) -> String {
         let parentSessionID = column("parent_session_id", alias: alias)
         let suggestedParentID = column("suggested_parent_id", alias: alias)
@@ -67,7 +68,9 @@ public enum SessionVisibilityFilter {
 
         var hostConditions = [
             "\(hostAlias).id = \(suggestedParentID)",
-            listVisibleSQL(alias: hostAlias),
+            includeHiddenHosts
+                ? nonSkipTierSQL(alias: hostAlias)
+                : listVisibleSQL(alias: hostAlias),
             topLevelSQL(alias: hostAlias),
         ]
         if hasHumanDrivenColumns && applyHumanDrivenOnHost {

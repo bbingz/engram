@@ -85,6 +85,34 @@ private struct ModelBEmbeddingProvider: EmbeddingProvider {
     }
 }
 
+private final class EmbeddingRepairFTSAdapter: SessionAdapter {
+    let source: SourceName = .codex
+    let content: String
+
+    init(content: String) {
+        self.content = content
+    }
+
+    func detect() async -> Bool { true }
+    func listSessionLocators() async throws -> [String] { [] }
+    func isAccessible(locator: String) async -> Bool { true }
+
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        .failure(.fileMissing)
+    }
+
+    func streamMessages(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        let content = self.content
+        return AsyncThrowingStream { continuation in
+            continuation.yield(NormalizedMessage(role: .assistant, content: content))
+            continuation.finish()
+        }
+    }
+}
+
 final class InsightEmbeddingBackfillTests: XCTestCase {
     private var tempDir: URL!
 
@@ -403,6 +431,72 @@ final class InsightEmbeddingBackfillTests: XCTestCase {
         XCTAssertEqual(embedded[0].chunks.count, 20)
         let batchSizes = await provider.batchSizes()
         XCTAssertEqual(batchSizes, [4, 4, 4, 4, 4])
+    }
+
+    func testSessionEmbeddingWaitsForFtsAndFtsCompletionRepairsSummaryOnlyVector_repro() async throws {
+        let path = tempDir.appendingPathComponent("fts-before-embedding.sqlite").path
+        let writer = try EngramDatabaseWriter(path: path)
+        try writer.migrate()
+        let locator = tempDir.appendingPathComponent("repair-source.jsonl")
+        try Data("{}".utf8).write(to: locator)
+
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO sessions(id, source, start_time, file_path, tier, summary) VALUES
+                  ('not-ready', 'codex', datetime('now'), '/tmp/not-ready.jsonl', 'normal', 'summary must not embed'),
+                  ('repair', 'codex', datetime('now'), ?, 'normal', 'old summary-only text');
+                INSERT INTO session_index_jobs(
+                  id, session_id, job_kind, target_sync_version, status, retry_count, created_at, updated_at
+                ) VALUES
+                  ('not-ready:embedding', 'not-ready', 'embedding', 1, 'pending', 0, datetime('now'), datetime('now')),
+                  ('repair:embedding', 'repair', 'embedding', 1, 'completed', 0, datetime('now'), datetime('now')),
+                  ('repair:fts', 'repair', 'fts', 1, 'pending', 0, datetime('now'), datetime('now'));
+                INSERT INTO semantic_chunks(
+                  id, session_id, chunk_index, text, embedding, model, dim
+                ) VALUES (
+                  'repair:c0', 'repair', 0, 'old summary-only text', X'000000000000000000000000', 'old-model', 3
+                );
+                """,
+                arguments: [locator.path]
+            )
+        }
+
+        let beforeFts = try SessionEmbeddingBackfill.pendingSessions(writer: writer, limit: 10)
+        XCTAssertTrue(
+            beforeFts.isEmpty,
+            "a pending embedding job with no FTS content must stay pending without sending the summary"
+        )
+
+        let runner = IndexJobRunner(
+            writer: writer,
+            adapters: [EmbeddingRepairFTSAdapter(content: "fresh transcript content")]
+        )
+        let (ftsResult, _) = try await runner.runRecoverableJobsOnce()
+        XCTAssertEqual(ftsResult.completed, 1)
+
+        try writer.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT status FROM session_index_jobs WHERE id = 'repair:embedding'"
+                ),
+                "pending",
+                "the first successful FTS fill must re-enqueue an earlier summary-only embedding"
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM semantic_chunks WHERE session_id = 'repair'"),
+                0,
+                "the summary-only semantic vector must not remain queryable after FTS becomes authoritative"
+            )
+        }
+
+        let afterFts = try SessionEmbeddingBackfill.pendingSessions(writer: writer, limit: 10)
+        XCTAssertEqual(afterFts.map(\.sessionId), ["repair"])
+        XCTAssertTrue(
+            afterFts.first?.content.hasPrefix("fresh transcript content") == true,
+            "embedding input must now be sourced from the authoritative FTS rows"
+        )
     }
 
     func testSessionEmbeddingDefaultBatchDoesNotExceedEight_repro() async throws {

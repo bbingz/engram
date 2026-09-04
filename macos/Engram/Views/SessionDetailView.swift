@@ -80,6 +80,7 @@ struct SessionDetailView: View {
     // `displayIndexed` before the debounced scan runs, so deriving this UUID
     // from old ordinals in the new array can jump to the wrong message.
     @State private var committedFindMatchMessageID: UUID? = nil
+    @State private var committedFindQuery = ""
     /// Hidden-type find matches (row 10): buckets of query hits that the current
     /// type / system-category gates hide. Cleared when the query is empty.
     @State private var hiddenMatchBuckets: [HiddenMatchBucket] = []
@@ -375,7 +376,7 @@ struct SessionDetailView: View {
     }
 
     private var matchScanToken: String {
-        "\(displayVersion)\u{1}\(viewMode.rawValue)\u{1}\(ColorBarMessageView.normalizedFindNeedle(searchText))"
+        "\(session.id)\u{1}\(displayVersion)\u{1}\(viewMode.rawValue)\u{1}\(ColorBarMessageView.normalizedFindNeedle(searchText))"
     }
 
     private var currentFindMatchMessageID: UUID? {
@@ -422,31 +423,28 @@ struct SessionDetailView: View {
     /// re-runs (cancelling the prior scan) whenever the query OR the displayed set
     /// changes — always reading live state, so it can't clobber a concurrent edit.
     private func updateMatchIndicesDebounced() async {
-        // Trim before lowercasing so the visible match scan and
-        // hiddenTypeMatchSummary share the same needle (SPEC R2 accepted
-        // count/highlight divergence for marker queries, not for whitespace).
+        // Trim once so visible, hidden, and highlighted matches share the same
+        // query and Foundation case-insensitive range semantics.
         let needle = ColorBarMessageView.normalizedFindNeedle(searchText)
-        let query = needle.lowercased()
-        guard !query.isEmpty else {
+        guard !needle.isEmpty else {
             matchIndices = []
             hiddenMatchBuckets = []
+            currentMatchIndex = -1
             committedFindMatchMessageID = nil
+            committedFindQuery = ""
             return
         }
-        let previousMatchedMessageID = currentFindMatchMessageID
-        // Never expose ordinals computed against the prior display array while
-        // the replacement scan is debouncing.
-        matchIndices = []
-        hiddenMatchBuckets = []
-        currentMatchIndex = -1
+        let scanToken = matchScanToken
+        let rawQuery = needle
+        let queryChanged = rawQuery != committedFindQuery
+        let previousMatchedMessageID = queryChanged ? nil : currentFindMatchMessageID
         try? await Task.sleep(nanoseconds: 200_000_000)
-        if Task.isCancelled { return }
+        guard !Task.isCancelled, scanToken == matchScanToken else { return }
         let snapshot = findIndexedMessages
         let allLoaded = indexedMessages
         let visibility = typeVisibility
         let systemPrompts = showSystemPrompts
         let agentComm = showAgentComm
-        let rawQuery = needle
         let isTextMode = viewMode == .text
         let (indices, hidden): ([Int], [HiddenMatchBucket]) = await Task.detached(priority: .userInitiated) {
             let visibleMatches = snapshot.enumerated().compactMap { i, msg -> Int? in
@@ -457,7 +455,7 @@ struct SessionDetailView: View {
                     for: msg,
                     viewMode: isTextMode ? .text : .session,
                     query: rawQuery
-                ).lowercased().contains(query) ? i : nil
+                ).range(of: rawQuery, options: .caseInsensitive) != nil ? i : nil
             }
             // Full-prefix hidden-type scan (row 10) — not page-incremental.
             // Must stay wholesale per query change; do not fold into a per-page
@@ -471,7 +469,7 @@ struct SessionDetailView: View {
             )
             return (visibleMatches, hiddenBuckets)
         }.value
-        if Task.isCancelled { return }
+        guard !Task.isCancelled, scanToken == matchScanToken else { return }
         let reboundFindMatchIndex = Self.reboundFindMatchIndex(
             previousMessageID: previousMatchedMessageID,
             indices: indices,
@@ -487,13 +485,14 @@ struct SessionDetailView: View {
             scrollTarget = snapshot[indices[reboundFindMatchIndex]].id
         } else if indices.isEmpty {
             currentMatchIndex = -1
-        } else if currentMatchIndex < 0, let first = indices.first {
+        } else if queryChanged || currentMatchIndex < 0, let first = indices.first {
             currentMatchIndex = 0
             scrollTarget = snapshot[first].id
         } else {
             currentMatchIndex = min(currentMatchIndex, indices.count - 1)
             scrollTarget = snapshot[indices[currentMatchIndex]].id
         }
+        committedFindQuery = rawQuery
         if indices.indices.contains(currentMatchIndex) {
             committedFindMatchMessageID = snapshot[indices[currentMatchIndex]].id
         } else {
@@ -897,6 +896,7 @@ struct SessionDetailView: View {
             displayIndexed = []
             matchIndices = []
             committedFindMatchMessageID = nil
+            committedFindQuery = ""
             currentMatchIndex = -1
             // Prime the find bar from a search-driven open; closed/empty otherwise.
             searchText = searchTerm ?? ""
@@ -940,13 +940,11 @@ struct SessionDetailView: View {
             searchText = newSearchTerm ?? ""
             showFind = (newSearchTerm?.isEmpty == false)
         }
-        // A new/edited query restarts find navigation from the top; the debounced
-        // scan then re-selects the first match (guarded by currentMatchIndex < 0).
+        // Keep the committed count/ordinal visible while the replacement scan
+        // debounces. The current scan atomically restarts navigation on commit.
         .onChange(of: searchText) { oldValue, newValue in
             guard ColorBarMessageView.normalizedFindNeedle(oldValue)
                 != ColorBarMessageView.normalizedFindNeedle(newValue) else { return }
-            currentMatchIndex = -1
-            committedFindMatchMessageID = nil
             scrollTarget = nil
         }
         .task(id: matchScanToken) { await updateMatchIndicesDebounced() }
@@ -1456,12 +1454,7 @@ struct SessionDetailView: View {
     // MARK: - Helpers
 
     var unsupportedMessage: LocalizedStringKey {
-        switch session.source {
-        case "vscode":
-            return "This source (\(session.source)) uses a SQLite database — conversation preview is not yet supported."
-        default:
-            return "No messages found."
-        }
+        "No messages found."
     }
 
     func navigateType(_ type: MessageType, direction: Int) {
@@ -1695,20 +1688,26 @@ struct SessionDetailView: View {
     /// first page for large ones (`hasMoreToLoad` then drives the footer).
     private func loadInitialTranscript() async {
         let limit = Self.initialTranscriptLimit(messageCount: session.messageCount)
-        guard let (parsed, produced, truncated, parseFailed) = try? await parseWindow(offset: 0, limit: limit) else {
+        let result: (messages: [ChatMessage], producedCount: Int, truncated: Bool, parseFailed: Bool)
+        do {
+            result = try await parseWindow(offset: 0, limit: limit)
+        } catch {
+            guard !Task.isCancelled else { return }
+            transcriptParseFailed = true
+            hasMoreToLoad = true
             return
         }
         if Task.isCancelled { return }
-        messages = parsed
-        loadedProducedCount = produced
-        let reachedTruncation = truncated
+        messages = result.messages
+        loadedProducedCount = result.producedCount
+        let reachedTruncation = result.truncated
         transcriptTruncated = reachedTruncation
-        transcriptParseFailed = parseFailed
+        transcriptParseFailed = result.parseFailed
         hasMoreToLoad = Self.hasMoreAfterLoad(
-            returnedCount: produced,
+            returnedCount: result.producedCount,
             requestedLimit: limit,
             truncated: reachedTruncation
-        ) || parseFailed
+        ) || result.parseFailed
         await rebuildIndexed(appended: nil)
     }
 
@@ -1718,43 +1717,32 @@ struct SessionDetailView: View {
     /// rebuilds the indexed view over the full prefix.
     private func appendMessages(all: Bool) async {
         if all {
-            var offset = loadedProducedCount
-            var appended: [ChatMessage] = []
-            var producedTotal = 0
-            var stoppedAtTruncation = false
-            var stoppedAtParseFailure = false
-
-            while true {
-                guard let result = try? await parseWindow(offset: offset, limit: transcriptPageSize) else {
-                    return
-                }
-                if Task.isCancelled { return }
-                appended += result.messages
-                offset += result.producedCount
-                producedTotal += result.producedCount
-
-                if Self.shouldStopLoadAllPage(
-                    producedCount: result.producedCount,
-                    requestedLimit: transcriptPageSize,
-                    truncated: result.truncated,
-                    parseFailed: result.parseFailed
-                ) {
-                    stoppedAtTruncation = result.truncated
-                    stoppedAtParseFailure = result.parseFailed
-                    break
-                }
+            let result: (messages: [ChatMessage], producedCount: Int, truncated: Bool, parseFailed: Bool)
+            do {
+                result = try await parseWindow(offset: loadedProducedCount, limit: nil)
+            } catch {
+                guard !Task.isCancelled else { return }
+                transcriptParseFailed = true
+                hasMoreToLoad = true
+                return
             }
-
-            messages += appended
-            loadedProducedCount += producedTotal
-            transcriptTruncated = stoppedAtTruncation
-            transcriptParseFailed = stoppedAtParseFailure
-            hasMoreToLoad = stoppedAtTruncation || stoppedAtParseFailure
-            await rebuildIndexed(appended: appended)
+            if Task.isCancelled { return }
+            messages += result.messages
+            loadedProducedCount += result.producedCount
+            transcriptTruncated = result.truncated
+            transcriptParseFailed = result.parseFailed
+            hasMoreToLoad = result.truncated || result.parseFailed
+            await rebuildIndexed(appended: result.messages)
             return
         }
 
-        guard let result = try? await parseWindow(offset: loadedProducedCount, limit: transcriptPageSize) else {
+        let result: (messages: [ChatMessage], producedCount: Int, truncated: Bool, parseFailed: Bool)
+        do {
+            result = try await parseWindow(offset: loadedProducedCount, limit: transcriptPageSize)
+        } catch {
+            guard !Task.isCancelled else { return }
+            transcriptParseFailed = true
+            hasMoreToLoad = true
             return
         }
         if Task.isCancelled { return }

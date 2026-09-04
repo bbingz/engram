@@ -139,11 +139,13 @@ final class AISettingsSectionTests: XCTestCase {
 
         AISettingsPersister.persistAIOffMain(
             aiSnapshot(model: "older"),
+            serviceSocketPath: "/tmp/engram-ai-settings-tests.sock",
             testHooks: hooks,
             onAPIKeyResult: { _ in }
         )
         AISettingsPersister.persistAIOffMain(
             aiSnapshot(model: "newer"),
+            serviceSocketPath: "/tmp/engram-ai-settings-tests.sock",
             testHooks: hooks,
             onAPIKeyResult: { _ in }
         )
@@ -170,11 +172,13 @@ final class AISettingsSectionTests: XCTestCase {
 
         AISettingsPersister.persistTitleOffMain(
             titleSnapshot(model: "older"),
+            serviceSocketPath: "/tmp/engram-ai-settings-tests.sock",
             testHooks: hooks,
             onAPIKeyResult: { _ in }
         )
         AISettingsPersister.persistTitleOffMain(
             titleSnapshot(model: "newer"),
+            serviceSocketPath: "/tmp/engram-ai-settings-tests.sock",
             testHooks: hooks,
             onAPIKeyResult: { _ in }
         )
@@ -426,6 +430,7 @@ final class AISettingsSectionTests: XCTestCase {
 
         AISettingsPersister.persistAIOffMain(
             aiSnapshot(model: "must-finish-before-load"),
+            serviceSocketPath: "/tmp/engram-ai-settings-tests.sock",
             testHooks: hooks,
             onAPIKeyResult: { _ in }
         )
@@ -567,6 +572,113 @@ final class AISettingsSectionTests: XCTestCase {
         )
 
         XCTAssertFalse(source.contains("if result == .savedMarkerFailed, bridgeWritten { result = .saved }"))
+    }
+
+    func testRuntimeBridgeFailureDoesNotReportSavedOrCleared_repro() throws {
+        let source = try String(
+            contentsOf: macOSRoot.appendingPathComponent("Engram/Views/Settings/AISettingsSection.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("case runtimeBridgeRefreshFailed"))
+        XCTAssertTrue(source.contains("func reconcilingRuntimeBridgeRefresh"))
+
+        let persistAIStart = try XCTUnwrap(source.range(of: "func persistAI("))
+        let persistAIEnd = try XCTUnwrap(
+            source.range(of: "func persistTitle(", range: persistAIStart.upperBound..<source.endIndex)
+        )
+        let persistAI = String(source[persistAIStart.lowerBound..<persistAIEnd.lowerBound])
+        XCTAssertFalse(persistAI.contains("_ = refreshRuntimeAISecrets"), persistAI)
+        XCTAssertTrue(persistAI.contains("reconcilingRuntimeBridgeRefresh"), persistAI)
+
+        let persistTitleStart = persistAIEnd
+        let persistTitleEnd = try XCTUnwrap(
+            source.range(of: "private func applyAPIKey", range: persistTitleStart.upperBound..<source.endIndex)
+        )
+        let persistTitle = String(source[persistTitleStart.lowerBound..<persistTitleEnd.lowerBound])
+        XCTAssertFalse(persistTitle.contains("_ = refreshRuntimeAISecrets"), persistTitle)
+        XCTAssertTrue(persistTitle.contains("reconcilingRuntimeBridgeRefresh"), persistTitle)
+
+        var refreshCalls = 0
+        XCTAssertEqual(
+            APIKeyPersistenceResult.saved.reconcilingRuntimeBridgeRefresh {
+                refreshCalls += 1
+                return false
+            },
+            .runtimeBridgeRefreshFailed
+        )
+        XCTAssertEqual(
+            APIKeyPersistenceResult.cleared.reconcilingRuntimeBridgeRefresh {
+                refreshCalls += 1
+                return false
+            },
+            .runtimeBridgeRefreshFailed
+        )
+        XCTAssertEqual(refreshCalls, 2)
+        XCTAssertTrue(APIKeyPersistenceResult.runtimeBridgeRefreshFailed.permitsSettingsSnapshotPersistence)
+    }
+
+    func testRuntimeSecretRefreshUsesInjectedAppSocket_repro() throws {
+        let app = try String(
+            contentsOf: macOSRoot.appendingPathComponent("Engram/App.swift"),
+            encoding: .utf8
+        )
+        let settings = try String(
+            contentsOf: macOSRoot.appendingPathComponent("Engram/Views/SettingsView.swift"),
+            encoding: .utf8
+        )
+        let menuBar = try String(
+            contentsOf: macOSRoot.appendingPathComponent("Engram/MenuBarController.swift"),
+            encoding: .utf8
+        )
+        let mainWindow = try String(
+            contentsOf: macOSRoot.appendingPathComponent("Engram/Views/MainWindowView.swift"),
+            encoding: .utf8
+        )
+        let ai = try String(
+            contentsOf: macOSRoot.appendingPathComponent("Engram/Views/Settings/AISettingsSection.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(app.contains("SettingsView(serviceSocketPath: appDelegate.environment.serviceSocketPath)"))
+        XCTAssertTrue(app.contains("serviceSocketPath: environment.serviceSocketPath"))
+        XCTAssertTrue(settings.contains("AISettingsSection(serviceSocketPath: serviceSocketPath)"))
+        XCTAssertTrue(menuBar.contains("private let serviceSocketPath: String"))
+        XCTAssertGreaterThanOrEqual(
+            menuBar.components(separatedBy: "SettingsView(serviceSocketPath: serviceSocketPath)").count - 1,
+            1
+        )
+        XCTAssertTrue(menuBar.contains("serviceSocketPath: serviceSocketPath"))
+        XCTAssertTrue(mainWindow.contains("let serviceSocketPath: String"))
+        XCTAssertTrue(mainWindow.contains("SettingsView(serviceSocketPath: serviceSocketPath)"))
+        XCTAssertTrue(ai.contains("serviceSocketPath: serviceSocketPath"))
+        XCTAssertFalse(settings.contains("serviceSocketPath: String ="))
+        XCTAssertFalse(ai.contains("serviceSocketPath: String ="))
+        XCTAssertFalse(menuBar.contains("defaultSocketPath"))
+        XCTAssertFalse(mainWindow.contains("defaultSocketPath"))
+
+        let refreshStart = try XCTUnwrap(ai.range(of: "private func refreshRuntimeAISecrets("))
+        let refreshEnd = try XCTUnwrap(ai.range(of: "\n        }\n    }", range: refreshStart.upperBound..<ai.endIndex))
+        let refresh = String(ai[refreshStart.lowerBound..<refreshEnd.upperBound])
+        XCTAssertTrue(refresh.contains("forSocketPath: serviceSocketPath"), refresh)
+        XCTAssertFalse(refresh.contains("defaultSocketPath()"), refresh)
+    }
+
+    func testMarkerFailureStillAttemptsRuntimeBridgeRefresh_repro() throws {
+        let source = try String(
+            contentsOf: macOSRoot.appendingPathComponent("Engram/Views/Settings/AISettingsSection.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(APIKeyPersistenceResult.savedMarkerFailed.changedKeychain)
+        XCTAssertTrue(source.contains("result = result.reconcilingRuntimeBridgeRefresh"))
+
+        var refreshCalls = 0
+        let result = APIKeyPersistenceResult.savedMarkerFailed.reconcilingRuntimeBridgeRefresh {
+            refreshCalls += 1
+            return false
+        }
+        XCTAssertEqual(refreshCalls, 1)
+        XCTAssertEqual(result, .savedMarkerFailed)
     }
 
     func testEmptyDeleteVerifiesKeychainRemovalBeforeReportingCleared_repro() {

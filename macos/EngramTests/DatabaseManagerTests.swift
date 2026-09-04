@@ -140,6 +140,20 @@ final class DatabaseManagerTests: XCTestCase {
         )
     }
 
+    func testPopoverRecentSessionsFetchExecutesWithHumanFilter_repro() throws {
+        try insertTestSession(
+            at: dbPath,
+            id: "popover-human",
+            startTime: "2026-08-24T11:00:00Z",
+            endTime: nil
+        )
+
+        XCTAssertEqual(
+            try db.recentSessions(limit: 12, humanDriven: true).map(\.id),
+            ["popover-human"]
+        )
+    }
+
     func testDefaultBrowsePromotesHumanSuggestedChildOverWeakHost_repro() throws {
         let queue = try DatabaseQueue(path: dbPath)
         try queue.write { database in
@@ -2269,6 +2283,27 @@ final class DatabaseManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testIncludeHiddenTopLevelDoesNotPromoteSuggestedChildrenWithExistingHosts_repro() throws {
+        try insertTestSession(at: dbPath, id: "visible-host")
+        try insertTestSession(at: dbPath, id: "visible-child")
+        try setParentLinks(at: dbPath, sessionId: "visible-child", suggestedParentId: "visible-host")
+        try insertTestSession(at: dbPath, id: "hidden-host", hiddenAt: "2026-09-01T00:00:00Z")
+        try insertTestSession(at: dbPath, id: "hidden-child")
+        try setParentLinks(at: dbPath, sessionId: "hidden-child", suggestedParentId: "hidden-host")
+
+        let ids = Set(
+            try db.listSessions(
+                includeHidden: true,
+                subAgent: false,
+                topLevelOnly: true,
+                humanDriven: false
+            ).map(\.id)
+        )
+
+        XCTAssertEqual(ids, Set(["visible-host", "hidden-host"]))
+    }
+
+    @MainActor
     func testSessionListStatsTopLevelOnlyExcludesChildren() throws {
         try insertTestSession(at: dbPath, id: "parent", messageCount: 5)
         try insertTestSession(at: dbPath, id: "confirmed-child", messageCount: 7)
@@ -2406,6 +2441,28 @@ final class DatabaseManagerTests: XCTestCase {
                 limit: 200
             ).map(\.id),
             ["old-target"]
+        )
+    }
+
+    @MainActor
+    func testParentPickerExcludesSuggestedChildrenEvenWhenHostIsUnavailable_repro() throws {
+        try insertTestSession(at: dbPath, id: "strict-root")
+        try insertTestSession(at: dbPath, id: "suggested-child")
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET suggested_parent_id = 'missing-host' WHERE id = 'suggested-child'"
+            )
+        }
+
+        XCTAssertEqual(
+            Set(try db.sessionPickerCandidates(
+                query: "",
+                topLevelOnly: true,
+                excluding: [],
+                limit: 200
+            ).map(\.id)),
+            ["strict-root"]
         )
     }
 
@@ -2640,8 +2697,9 @@ final class DatabaseManagerTests: XCTestCase {
             try db.execute(sql: """
                 INSERT OR REPLACE INTO sessions (
                     id, source, start_time, end_time, cwd, project,
-                    message_count, file_path, size_bytes, indexed_at, tier
-                ) VALUES (?, 'claude-code', ?, NULL, ?, 'engram', 1, '/tmp/test.jsonl', 0, datetime('now'), ?)
+                    message_count, file_path, size_bytes, indexed_at, tier,
+                    instruction_count, human_turn_count
+                ) VALUES (?, 'claude-code', ?, NULL, ?, 'engram', 1, '/tmp/test.jsonl', 0, datetime('now'), ?, 2, 2)
             """, arguments: [id, startTime, cwd, tier])
         }
     }

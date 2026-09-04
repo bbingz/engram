@@ -89,10 +89,26 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         lastListingRoots.replace(with: [])
         let profiles = refreshProfilesForListing().filter(\.available)
         let listing = try await listSessionLocators(profiles: profiles)
+        var locators: [String] = []
+        for locator in listing.locators {
+            try Task.checkCancellation()
+            if Self.profile(for: locator, profiles: profiles)?.origin != .default {
+                locators.append(locator)
+                continue
+            }
+            let signature = Self.sourceHintSignature(locator: locator, fileManager: .default)
+            let detected = await sourceHintCache.source(for: locator, signature: signature) {
+                Self.detectSourceHint(locator: locator) ?? .claudeCode
+            }
+            if detected != .minimax, detected != .lobsterai {
+                locators.append(locator)
+            }
+        }
+        await sourceHintCache.flush()
         if listing.complete {
             lastListingRoots.replace(with: Self.enumerationRoots(from: profiles))
         }
-        return listing.locators
+        return locators
     }
 
     private struct LocatorListing {
@@ -265,7 +281,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             }
             let signature = Self.sourceHintSignature(locator: locator, fileManager: fileManager)
             let detected = await sourceHintCache.source(for: locator, signature: signature) {
-                Self.detectSourceHint(locator: locator)
+                Self.detectSourceHint(locator: locator) ?? .claudeCode
             }
             if detected == source {
                 locators.append(locator)
@@ -579,6 +595,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             locator: locator,
             options: options,
             limits: limits,
+            countsTowardMessageLimit: { $0.role != .system },
             transform: Self.makeMessageTransform(includeSystemInjections: true)
         )
         return JSONLAdapterSupport.stream(messages)
@@ -595,6 +612,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             locator: locator,
             options: options,
             limits: limits,
+            countsTowardMessageLimit: { $0.role != .system },
             transform: Self.makeMessageTransform(includeSystemInjections: true)
         )
         return JSONLAdapterSupport.stream(result)
@@ -704,9 +722,15 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             }
     }
 
-    private static func detectSourceHint(locator: String) -> SourceName {
+    static func detectSourceHint(locator: String) -> SourceName? {
         if hasLobsterAIPathComponent(locator) { return .lobsterai }
-        return detectSource(model: firstModelHint(locator: locator) ?? "")
+        guard let hint = sourceHint(locator: locator), hint.sawRecognizedRecord else { return nil }
+        guard let model = hint.model?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !model.isEmpty
+        else {
+            return .claudeCode
+        }
+        return detectSource(model: model)
     }
 
     private static func sourceHintSignature(
@@ -723,7 +747,16 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         }
     }
 
-    private static func firstModelHint(locator: String) -> String? {
+    private struct SourceHintScan {
+        let model: String?
+        let sawRecognizedRecord: Bool
+    }
+
+    private struct SourceHintRecord {
+        let model: String?
+    }
+
+    private static func sourceHint(locator: String) -> SourceHintScan? {
         let url = URL(fileURLWithPath: locator)
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
@@ -733,6 +766,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         var scannedLines = 0
         var droppingOversizedLine = false
         var reachedEOF = false
+        var sawRecognizedRecord = false
 
         while scannedBytes < sourceHintScanByteLimit && scannedLines < sourceHintLineLimit {
             let remaining = sourceHintScanByteLimit - scannedBytes
@@ -756,7 +790,12 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
                 let lineData = buffer[buffer.startIndex..<newlineIndex]
                 buffer = Data(buffer[(newlineIndex + 1)...])
                 scannedLines += 1
-                if let model = modelHint(inLine: lineData) { return model }
+                if let record = sourceHintRecord(inLine: lineData) {
+                    sawRecognizedRecord = true
+                    if let model = record.model {
+                        return SourceHintScan(model: model, sawRecognizedRecord: true)
+                    }
+                }
             }
 
             if buffer.count > sourceHintMaxLineBytes {
@@ -768,13 +807,16 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         if reachedEOF,
            !buffer.isEmpty,
            scannedLines < sourceHintLineLimit,
-           let model = modelHint(inLine: buffer) {
-            return model
+           let record = sourceHintRecord(inLine: buffer) {
+            sawRecognizedRecord = true
+            if let model = record.model {
+                return SourceHintScan(model: model, sawRecognizedRecord: true)
+            }
         }
-        return nil
+        return SourceHintScan(model: nil, sawRecognizedRecord: sawRecognizedRecord)
     }
 
-    private static func modelHint(inLine lineData: Data) -> String? {
+    private static func sourceHintRecord(inLine lineData: Data) -> SourceHintRecord? {
         guard lineData.count <= sourceHintMaxLineBytes,
               let text = String(data: lineData, encoding: .utf8),
               !text.trimmingCharacters(in: .whitespaces).isEmpty,
@@ -782,7 +824,11 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         else {
             return nil
         }
-        return modelHint(in: object)
+        let model = modelHint(in: object)
+        let type = JSONLAdapterSupport.string(object["type"])?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard model != nil || type?.isEmpty == false else { return nil }
+        return SourceHintRecord(model: model)
     }
 
     private static func modelHint(in object: JSONLAdapterSupport.JSONObject) -> String? {
@@ -1052,6 +1098,12 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
 
 }
 
+public extension SessionAdapterFactory {
+    static func detectClaudeCodeSourceHint(locator: String) -> SourceName? {
+        ClaudeCodeAdapter.detectSourceHint(locator: locator)
+    }
+}
+
 private actor ClaudeCodeSourceHintCache {
     struct Signature: Equatable, Sendable {
         let modifiedAt: TimeInterval  // timeIntervalSince1970
@@ -1210,7 +1262,9 @@ extension ClaudeCodeAdapter {
     }
 }
 
-final class ClaudeCodeDerivedSourceAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sendable {
+final class ClaudeCodeDerivedSourceAdapter:
+    SessionAdapter, TailIndexingSessionAdapter, ModificationFilteredSessionAdapter, Sendable
+{
     let source: SourceName
     private let base: ClaudeCodeAdapter
     /// Separate from the base's holder: three adapters share one base instance in
@@ -1274,6 +1328,38 @@ final class ClaudeCodeDerivedSourceAdapter: SessionAdapter, ModificationFiltered
             return .success(info)
         case .success:
             return .failure(.unsupportedVirtualLocator)
+        case .failure(let failure):
+            return .failure(failure)
+        }
+    }
+
+    func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
+        switch try await base.scanForIndexing(locator: locator) {
+        case .success(let scan) where scan.info.source == source:
+            return .success(scan)
+        case .success:
+            return .failure(.unsupportedVirtualLocator)
+        case .failure(let failure):
+            return .failure(failure)
+        }
+    }
+
+    func scanTailForIndexing(
+        locator: String,
+        from parsedOffset: Int64,
+        expectedBoundaryHash: String
+    ) async throws -> IndexingTailScanResult {
+        switch try await base.scanTailForIndexing(
+            locator: locator,
+            from: parsedOffset,
+            expectedBoundaryHash: expectedBoundaryHash
+        ) {
+        case .success(let tail) where tail.infoDelta.source == source:
+            return .success(tail)
+        case .success:
+            return .fallback
+        case .fallback:
+            return .fallback
         case .failure(let failure):
             return .failure(failure)
         }
