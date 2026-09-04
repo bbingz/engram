@@ -298,6 +298,7 @@ describe('CI workflow hardening', () => {
     expect(testWorkflow).toContain(
       'tests/scripts/swift-boundary-scripts.test.ts',
     );
+    expect(testWorkflow).toContain('tests/scripts/hq-live-hardening.test.ts');
     // pure-rg gates stay on ubuntu coverage; do not re-pin on macos-vitest
     expect(testWorkflow).not.toContain(
       'tests/scripts/product-boundary-scripts.test.ts',

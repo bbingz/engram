@@ -79,10 +79,13 @@ final class OSLogReaderTests: XCTestCase {
             errorName: nil,
             errorMessage: nil
         )
-        let chatter = (0..<250).map { index in
-            LogEntry(
+        let chatter: [LogEntry] = (0..<250).map { index -> LogEntry in
+            let minute = (index / 60) % 60
+            let second = index % 60
+            let timestamp = String(format: "2026-08-24T01:%02d:%02dZ", minute, second)
+            return LogEntry(
                 id: Int64(index + 2),
-                ts: String(format: "2026-08-24T01:%02d:%02dZ", (index / 60) % 60, index % 60),
+                ts: timestamp,
                 level: "info",
                 module: "indexer",
                 message: "notice \(index)",

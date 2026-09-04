@@ -86,7 +86,7 @@ async function runChild(
   return { status, output };
 }
 
-describe('HQ live boot hardening', () => {
+describe.skipIf(process.platform !== 'darwin')('HQ live boot hardening', () => {
   it('keeps the advisory lock held across exec and routes ensure through it_repro', async () => {
     const root = makeTempRoot();
     const lock = join(root, 'ensure.lock');
