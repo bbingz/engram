@@ -47,7 +47,7 @@ if (violations.length > 0) {
 }
 NODE
 
-if rg -n "import EngramCoreWrite" \
+if grep -R -n -F "import EngramCoreWrite" \
   "$ROOT_DIR/macos/Engram" \
   "$ROOT_DIR/macos/EngramCLI" \
   "$ROOT_DIR/macos/Shared" >/tmp/engram-core-write-imports.txt; then
@@ -58,7 +58,7 @@ fi
 # Invariant 1: MCP mutations still go through EngramServiceClient. The sole
 # WriteCore import is the read-only project_review scanner required to keep its
 # path semantics identical to the service/orchestrator implementation.
-MCP_WRITE_IMPORT_FILES="$(rg -l "import EngramCoreWrite" "$ROOT_DIR/macos/EngramMCP" || true)"
+MCP_WRITE_IMPORT_FILES="$(grep -R -l -F "import EngramCoreWrite" "$ROOT_DIR/macos/EngramMCP" || true)"
 EXPECTED_MCP_WRITE_IMPORT="$ROOT_DIR/macos/EngramMCP/Core/MCPFileTools.swift"
 if [[ "$MCP_WRITE_IMPORT_FILES" != "$EXPECTED_MCP_WRITE_IMPORT" ]]; then
   printf '%s\n' "$MCP_WRITE_IMPORT_FILES" >&2

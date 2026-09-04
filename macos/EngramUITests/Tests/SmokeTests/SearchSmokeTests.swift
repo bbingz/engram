@@ -55,7 +55,8 @@ final class SearchSmokeTests: XCTestCase {
         let stdout = Pipe()
         let stderr = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        process.arguments = [path, sql]
+        let immutableURI = URL(fileURLWithPath: path).absoluteString + "?immutable=1"
+        process.arguments = [immutableURI, sql]
         process.standardOutput = stdout
         process.standardError = stderr
         try process.run()

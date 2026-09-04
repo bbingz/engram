@@ -94,10 +94,17 @@ enum TestLaunchConfig {
             return
         }
         let fixtureURL = home.appendingPathComponent("test-index.sqlite")
+        let fixtureSessionsURL = home.appendingPathComponent("sessions", isDirectory: true)
         do {
+            let sourceFixtureURL = URL(fileURLWithPath: Self.fixtureDBPath)
             try FileManager.default.copyItem(
-                at: URL(fileURLWithPath: Self.fixtureDBPath),
+                at: sourceFixtureURL,
                 to: fixtureURL
+            )
+            try FileManager.default.copyItem(
+                at: sourceFixtureURL.deletingLastPathComponent()
+                    .appendingPathComponent("sessions", isDirectory: true),
+                to: fixtureSessionsURL
             )
             let fixtureWriter = try DatabaseQueue(path: fixtureURL.path)
             try fixtureWriter.writeWithoutTransaction { db in

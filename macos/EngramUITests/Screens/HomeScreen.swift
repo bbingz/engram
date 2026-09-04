@@ -26,6 +26,10 @@ struct HomeScreen {
         app.element(id: "home_recentSession_\(index)")
     }
 
+    func recentSession(containingText text: String) -> XCUIElement {
+        recentSessions.element(containingText: text)
+    }
+
     func followUpSession(at index: Int) -> XCUIElement {
         app.element(id: "home_followUpSession_\(index)")
     }
