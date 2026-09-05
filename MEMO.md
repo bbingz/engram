@@ -4,6 +4,10 @@
 
 ### 2026-09-05
 
+- [提交] #444 已正常合并至 `81ee3a1d`；main 完整 CI 全绿，UI 61 项/2 既有 skip/0 失败，截图 31/31；PR 与 resulting-main CodeQL 均已通过。
+- [部署] 1569 签名包安装复验通过；HQ 新 Service 已完成初扫（约 2 分 17 秒），post-scan 状态与两条 pending 队列验收通过。M1/HQ RemoteServer 与新构建二进制相同，保留健康实例，不重复部署。
+- [部署] 本机旧 Service 等待近 30 分钟后，按继续收尾确认、复核 PID/路径/备份后仅强制结束旧 PID；launchd 已自动拉起 1569，哈希/socket/MCP/live DB quick_check 通过，Live 阶段推进后复验返回 87 会话/14 秒；初扫完成与 post-scan 同步状态未冒报。
+- [验证] HQ 直连恢复后，watchdog 13:21/23/25/27 连续自然周期正常、无 degraded sentinel；此前 exit 255 保留为历史失败，详见 `CHANGELOG.md`。
 - [修复] 真机验收定位到初扫逐 session 重扫 FTS 的热点；生产 SQL 仅改 2 行，确定性 VM-step 回归先 RED 后 GREEN，focused 110/110、独立 Core 1,450（1 skip）通过。无新依赖/索引/配置，待新包部署；1566 尚不含此修复。
 - [部署] #443 已正常合并至 `dfc988b7`；产品代码与签名 build 1566 的 `2b31a40a` 完全相同，不为测试/文档变更重复构建。M1/HQ RemoteServer 已切换并通过实际路径、哈希、健康和鉴权验证。
 - [部署] 两端旧 Service 均正常退出，未强杀；日用 App/HQ Service 已运行 1566 对应的新 helper，Live 分别 2.0s/0.7s，MCP 均 27 tools。数据库备份已校验，watchdog 恢复并通过自然周期。
