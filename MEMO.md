@@ -4,6 +4,7 @@
 
 ### 2026-09-05
 
+- [提交] W1 已提交推送 `52fcc86e` 并建 Draft PR #446；CI 抓到新增 invariant 的符号反引号违反文件锚点约定，已复现并仅修文档，本地完整脚本门 135/135；待新 head CI 通过后继续 W2，未合并或部署，详见 `CHANGELOG.md`。
 - [设计] 新工作树已写完整 collector→HQ 索引/Web→独立双副本的七波实施顺序；Grok 经 Herdr 审出的 7 组合同缺口已修订并通过复核（PASS/APPROVED），W2 接收协议与 W3/W4 接口冻结；详见 `CHANGELOG.md` 及其链接设计/计划。
 - [修复] 第一波本地完成 embedding 热查询与“App 不拥有已 adopted 的外部 Service”；查询真实 VM-step RED→GREEN，启动器含退出后迟到探测竞态，未更改生产实例。
 - [验证] 两切片独立 spec/quality 门通过；Core 1,452（1 既有性能 skip）/0 失败，launcher 56/0 失败；新 collector、服务器接收协议、HQ ingest、Web 和生产切换尚未完成，不能据此宣称本机已轻量化。

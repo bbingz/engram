@@ -7,6 +7,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### W1 PR CI anchor correction (2026-09-05)
+
+The owner authorized commit/push and iterative CI through W6. W1 was committed
+as `52fcc86e85414294f273218664430b43b6df067a` and pushed to Draft PR #446
+(`https://github.com/bbingz/engram/pull/446`); no merge or deployment occurred.
+Tests run `33961291016` caught a new documentation anchor error: four backticked
+symbol names in External Service Ownership's Enforced-by line violated the
+existing checked-file-path contract. The earlier shell ledger gate did not
+cover that Vitest assertion and was not proof of the full script suite.
+
+Local reproduction: `npm test -- tests/scripts/invariants-ledger.test.ts` failed
+one of 12 tests with those exact symbols. Removed only their backticks, retaining
+the checked source path and all tests unchanged. The full eight-file macOS CI
+script suite then passed 135/135, exit 0. Local logs:
+`/tmp/engram-w1-invariant-anchor-red.log` and
+`/tmp/engram-w1-invariant-anchor-green.log`; original CI evidence:
+`/tmp/engram-w1-ci-script-gates-33961291016.log`. Remaining W1 CI jobs and the
+follow-up head still require successful completion before W2 implementation.
+
 ### Collector/server/Web foundation (2026-09-05; W1 local only)
 
 The implementation worktree `codex/collector-server-web-20260905` starts from
