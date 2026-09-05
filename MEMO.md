@@ -4,6 +4,9 @@
 
 ### 2026-09-05
 
+- [设计] 新工作树已写完整 collector→HQ 索引/Web→独立双副本的七波实施顺序；Grok 经 Herdr 审出的 7 组合同缺口已修订并通过复核（PASS/APPROVED），W2 接收协议与 W3/W4 接口冻结；详见 `CHANGELOG.md` 及其链接设计/计划。
+- [修复] 第一波本地完成 embedding 热查询与“App 不拥有已 adopted 的外部 Service”；查询真实 VM-step RED→GREEN，启动器含退出后迟到探测竞态，未更改生产实例。
+- [验证] 两切片独立 spec/quality 门通过；Core 1,452（1 既有性能 skip）/0 失败，launcher 56/0 失败；新 collector、服务器接收协议、HQ ingest、Web 和生产切换尚未完成，不能据此宣称本机已轻量化。
 - [提交] #444 已正常合并至 `81ee3a1d`；main 完整 CI 全绿，UI 61 项/2 既有 skip/0 失败，截图 31/31；PR 与 resulting-main CodeQL 均已通过。
 - [部署] 1569 签名包安装复验通过；HQ 新 Service 已完成初扫（约 2 分 17 秒），post-scan 状态与两条 pending 队列验收通过。M1/HQ RemoteServer 与新构建二进制相同，保留健康实例，不重复部署。
 - [部署] 本机旧 Service 等待近 30 分钟后，按继续收尾确认、复核 PID/路径/备份后仅强制结束旧 PID；launchd 已自动拉起 1569，哈希/socket/MCP/live DB quick_check 通过，Live 阶段推进后复验返回 87 会话/14 秒；初扫完成与 post-scan 同步状态未冒报。

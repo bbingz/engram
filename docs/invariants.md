@@ -107,6 +107,13 @@ Invariants are properties that must survive every change; each entry names where
 - **Verified by** - `macos/EngramMCPTests/EngramMCPExecutableTests.swift` (testInitializeAcceptsOlderCodexProtocolVersion, testInitializeAcceptsCurrentCodexProtocolVersion, testInitializeNegotiatesUnknownProtocolVersionToLatest, testModernRequestWithUnsupportedVersionReturnsUnsupportedProtocolVersionError, testModernMetaWithNonStringVersionIsUnsupportedProtocolVersion_repro).
 - **Gate** - `none`.
 
+## External Service Ownership
+
+- **Statement** - Once the App adopts an externally managed service, quitting, failed health probes, and manual reconnect do not signal or replace that service, acquire its writer locks, or remove its runtime secrets. This guarantee does not cover the initial connection attempt before ownership is known.
+- **Enforced by** - `macos/Engram/Core/EngramServiceLauncher.swift` (`adoptedConfiguration`, `startHealthMonitor`, `restart`, `stopIfOwned`).
+- **Verified by** - `macos/EngramTests/EngramServiceLauncherTests.swift` (testQuitPreservesAdoptedServiceAndItsRuntimeSecrets_repro, testAdoptedServiceProbeFailureRecoversWithoutShutdownOrReplacement_repro, testSuspendedAdoptedProbeCannotRestartAfterQuit_repro, testRestartOfAdoptedServiceOnlyReconnects_repro).
+- **Gate** - `none`.
+
 ## Unverified Anchors
 
 None.

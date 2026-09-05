@@ -7,6 +7,73 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Collector/server/Web foundation (2026-09-05; W1 local only)
+
+The implementation worktree `codex/collector-server-web-20260905` starts from
+`625ecc9737c219f401200d3c2e301f537582ff11`. The complete target and seven-wave
+dependency plan are in
+`docs/superpowers/specs/2026-09-05-collector-server-web-design.md` and
+`docs/superpowers/plans/2026-09-05-collector-server-web.md`. The target is a
+no-index daily-Mac collector, HQ-owned parsing/indexing and a read-only native
+Web module, independent HQ/M1 archive copies, and an optional App. No offline
+local MCP requirement is assumed; this remains a stated design assumption.
+
+W1 repairs the independently sampled `SessionEmbeddingBackfill.pendingSessions`
+hot query, not the earlier startup FTS-enqueue query. A materialized ordered
+candidate batch plus non-correlated membership/selected-text aggregation avoids
+candidate-multiplied full FTS scans. Full-text row order, eligibility, job order,
+and limit semantics are preserved; no migration, index, or dependency was added.
+The deterministic old-query RED is 49,767,267 SQLite VM steps against a 500,000
+budget; the semantics test passed on old SQL. GREEN passes the budget and all
+22 focused embedding tests. This still scans the FTS corpus; it is not O(limit).
+
+The App now treats an adopted service as externally owned: quit detaches without
+shutdown or secret removal, health failures reconnect without replacement, and
+manual restart is connection-only. Existing App-owned process behavior remains.
+Four behavior tests include a suspended health probe returning after quit.
+The initial RED has three tests/ten failures (two thrown errors caused by the
+old shutdown/secret deletion); the cancellation mutation RED has one test/one
+failure. Final launcher GREEN is 56 tests, zero failures. The guarantee is
+recorded in `docs/invariants.md` as External Service Ownership; it does not fix
+initial ownership-unknown probe cancellation or implement collector-role startup.
+
+Both W1 diffs passed independent spec-compliance PASS/code-quality APPROVED
+reviews. Coordinator full Core: 1,452 tests, one existing disabled throughput
+benchmark skip, zero failures, producer exit 0. Local-only evidence:
+`/tmp/engram-embedding-fts-wave1.kD08Wi/{red-vm-reset.log,green.log}`,
+`/tmp/engram-collector-lifecycle.YKQOGn/{red.log,race-red.log,final-green.log,final-green.xcresult}`,
+and `/tmp/engram-collector-server-web-gates.jKa3wP/{core-full.log,core-full.xcresult,design-revised-boundaries.log}`.
+The earlier embedding `red.log` overcounted reused SQLite statements and is
+superseded by `red-vm-reset.log`. The design path/behavioral boundary wrapper
+passed its five registered scans; `git diff --check` passed.
+
+An owner-provided Grok pane was used through Herdr for independent read-only
+design review. Its initial FAIL/CHANGES_REQUESTED identified seven grouped
+contract gaps. The revised design records their adjudication: stable identity
+and old-data reconciliation, independent shadow catalogs, generation-bound
+privacy projection, real IPC content continuation, persisted App role gating,
+durable publication/epoch recovery, and explicit Web authority/threat boundaries.
+The bounded follow-up at approximately 17:03 CST returned design
+SPEC_COMPLIANCE: PASS / CODE_QUALITY: APPROVED and closed B1-B7 after source
+rechecks. W2 intake and W3/W4 interface boundaries are frozen. No new collector,
+publication endpoint, HQ ingest, or Web implementation is claimed by W1; the
+next slice is W2 wire models/fixtures and then receiver storage/routes.
+
+Full Core generated only two previously absent fixture sidecars (32 KiB SHM,
+empty WAL). After the test producer exited and `lsof` found no open handles,
+they were moved recoverably to
+`/tmp/engram-collector-server-web-gates.jKa3wP/test-generated-sidecars/`.
+The tracked fixture main file retained Git blob
+`41b13c349f078c261e16dffb8ba44dfe61ebce5b`, equal to HEAD. No source or production
+database was deleted. Final invariant-ledger plus all five boundary gates also
+passed in `final-invariants.log` under the same evidence directory.
+
+Full App/UI, remaining Service/MCP/Remote suites, CI, package/installation,
+production performance, source coverage, two-replica intake, Web/browser and
+cross-host cutover have not been verified for this tranche. No commit/push,
+Docker, SSH, install, production-data/config/credential write, service restart,
+public exposure, or production cleanup was performed. Production paths were not changed.
+
 ### Final build 1569 closeout (2026-09-05)
 
 PR #444 merged normally as `81ee3a1d06ea26845f390359776bbed45f861891`
