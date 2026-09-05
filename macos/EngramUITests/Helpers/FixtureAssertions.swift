@@ -1,4 +1,5 @@
 import XCTest
+import GRDB
 
 enum FixtureAssertions {
     @discardableResult
@@ -16,8 +17,8 @@ enum FixtureAssertions {
             line: line
         )
 
-        let count = sqliteScalar(
-            "SELECT COUNT(*) FROM \(table);",
+        let count = fixtureRowCount(
+            table,
             path: path,
             file: file,
             line: line
@@ -32,45 +33,28 @@ enum FixtureAssertions {
         return count
     }
 
-    private static func sqliteScalar(
-        _ query: String,
+    private static func fixtureRowCount(
+        _ table: String,
         path: String,
         file: StaticString,
         line: UInt
     ) -> Int {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        process.arguments = [path, query]
-
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-
         do {
-            try process.run()
-            process.waitUntilExit()
+            let database = try DatabaseQueue()
+            let immutableURI = URL(fileURLWithPath: path).absoluteString + "?immutable=1"
+            return try database.writeWithoutTransaction { db in
+                try db.execute(
+                    sql: "ATTACH DATABASE ? AS fixture",
+                    arguments: [immutableURI]
+                )
+                return try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM fixture.\(table.quotedDatabaseIdentifier)"
+                ) ?? 0
+            }
         } catch {
-            XCTFail("Failed to run sqlite3: \(error)", file: file, line: line)
+            XCTFail("Fixture DB query failed: \(error)", file: file, line: line)
             return 0
         }
-
-        let errorOutput = String(
-            decoding: stderr.fileHandleForReading.readDataToEndOfFile(),
-            as: UTF8.self
-        )
-        XCTAssertEqual(
-            process.terminationStatus,
-            0,
-            "sqlite3 fixture query failed: \(errorOutput)",
-            file: file,
-            line: line
-        )
-
-        let output = String(
-            decoding: stdout.fileHandleForReading.readDataToEndOfFile(),
-            as: UTF8.self
-        ).trimmingCharacters(in: .whitespacesAndNewlines)
-        return Int(output) ?? 0
     }
 }

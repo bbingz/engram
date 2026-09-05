@@ -12,7 +12,7 @@ final class SessionsTests: XCTestCase {
     }
 
     override func tearDown() {
-        app.terminate()
+        app?.terminate()
     }
 
     func testSortByDuration() throws {

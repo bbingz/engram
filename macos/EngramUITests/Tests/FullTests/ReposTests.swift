@@ -12,7 +12,7 @@ final class ReposTests: XCTestCase {
     }
 
     override func tearDown() {
-        app.terminate()
+        app?.terminate()
     }
 
     func testRepoList() {

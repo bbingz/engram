@@ -281,6 +281,7 @@ struct HomeView: View {
                 }
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("home_followUps")
     }
 
@@ -320,6 +321,7 @@ struct HomeView: View {
                 }
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("home_changedRepos")
     }
 

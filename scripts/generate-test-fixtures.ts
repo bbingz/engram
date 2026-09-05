@@ -663,7 +663,13 @@ const insertFTS = raw.prepare(`
 `);
 const insertAllFTS = raw.transaction(() => {
   for (const session of sessions) {
-    const content = [session.generatedTitle, session.summary]
+    const homeFollowUpMarker =
+      session.id === 'seed-01' ? 'remaining follow-up' : undefined;
+    const content = [
+      session.generatedTitle,
+      session.summary,
+      homeFollowUpMarker,
+    ]
       .filter((value): value is string => Boolean(value))
       .join('\n');
     if (content) insertFTS.run(session.id, content);

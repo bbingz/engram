@@ -61,7 +61,11 @@ enum TestLaunchConfig {
         "-AppleLocale", "en_US",
     ]
 
-    func configure(_ app: XCUIApplication) {
+    func configure(
+        _ app: XCUIApplication,
+        appLanguage: String = "english",
+        localizationArguments: [String] = TestLaunchConfig.localizationArguments
+    ) {
         let home = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("engram-ui-home-\(UUID().uuidString)", isDirectory: true)
         let defaultsSuite = "com.engram.app.ui-test.\(UUID().uuidString)"
@@ -128,14 +132,14 @@ enum TestLaunchConfig {
             "--fixed-date", "2026-01-15T10:00:00Z",
             // LocalizedRoot follows the app-owned preference, so pin its
             // argument-domain value as well as Apple's process locale.
-            "-appLanguage", "english",
+            "-appLanguage", appLanguage,
             // Observability is gated behind the `showDeveloperTools` setting,
             // which defaults OFF for real users (SidebarView filters it out).
             // The navigation/observability UI tests still traverse that page, so
             // enable the gate through the NSUserDefaults argument domain — the
             // same `-key value` mechanism as `localizationArguments` below.
             "-showDeveloperTools", "YES",
-        ] + Self.localizationArguments
+        ] + localizationArguments
 
         switch self {
         case .mainWindow:
