@@ -1,8 +1,18 @@
 import Foundation
+import GRDB
 import SQLite3
 import XCTest
 @testable import EngramCoreRead
 @testable import EngramCoreWrite
+
+private struct AdapterNoopIndexingWriteSink: IndexingWriteSink {
+    func upsertBatch(
+        _ snapshots: [AuthoritativeSessionSnapshot],
+        reason: IndexingWriteReason
+    ) throws -> SessionBatchUpsertResult {
+        SessionBatchUpsertResult(reason: reason, results: [])
+    }
+}
 
 /// Coverage for the adapter message-count fixes (data-integrity review pass):
 /// parseSessionInfo counts must reflect only the turns that streamMessages
@@ -24,14 +34,16 @@ final class AdapterMessageCountTests: XCTestCase {
         case .success(let value):
             return value
         case .failure(let failure):
-            throw XCTSkip("unexpected adapter failure: \(failure)")
+            XCTFail("unexpected adapter failure: \(failure)")
+            throw failure
         }
     }
 
     private func parseFailure<T>(_ result: AdapterParseResult<T>) throws -> ParserFailure {
         switch result {
         case .success:
-            throw XCTSkip("expected adapter failure")
+            XCTFail("expected adapter failure")
+            throw ParserFailure.malformedJSON
         case .failure(let failure):
             return failure
         }
@@ -49,6 +61,1016 @@ final class AdapterMessageCountTests: XCTestCase {
     private func jsonLine(_ object: [String: Any]) throws -> String {
         let data = try JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes])
         return String(decoding: data, as: UTF8.self)
+    }
+
+    func testBoundedWindowDefersLaterParseFailureUntilShortPage_repro() {
+        let messages = (0..<600).map {
+            NormalizedMessage(role: .user, content: "m\($0)")
+        }
+
+        let first = JSONLAdapterSupport.boundedWindowWithMetadata(
+            messages,
+            options: StreamMessagesOptions(offset: 0, limit: 500),
+            maxMessages: 10_000,
+            parseFailure: .lineTooLarge
+        )
+        XCTAssertEqual(first.messages.count, 500)
+        XCTAssertNil(first.parseFailure, "a filled page must not expose a later file-level failure")
+
+        let last = JSONLAdapterSupport.boundedWindowWithMetadata(
+            messages,
+            options: StreamMessagesOptions(offset: 500, limit: 500),
+            maxMessages: 10_000,
+            parseFailure: .lineTooLarge
+        )
+        XCTAssertEqual(last.messages.count, 100)
+        XCTAssertEqual(last.parseFailure, .lineTooLarge)
+    }
+
+    private func assertLoadAllCollectsProducedCap(
+        _ adapter: SessionAdapter,
+        locator: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        var offset = 0
+        var collected: [NormalizedMessage] = []
+        var pageLimit = 2
+        var sawTruncation = false
+        while true {
+            let result = try await adapter.streamMessagesWithMetadata(
+                locator: locator,
+                options: StreamMessagesOptions(offset: offset, limit: pageLimit)
+            )
+            var page: [NormalizedMessage] = []
+            for try await message in result.messages { page.append(message) }
+            collected += page
+            offset += page.count
+            sawTruncation = result.truncated
+            if result.truncated || page.count < pageLimit { break }
+            pageLimit = 500
+        }
+        XCTAssertEqual(collected.count, 3, file: file, line: line)
+        XCTAssertEqual(offset, 3, file: file, line: line)
+        XCTAssertTrue(sawTruncation, file: file, line: line)
+    }
+
+    func testClineLoadAllCollectsProducedPrefixCap_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let taskDir = root.appendingPathComponent("load-all-task", isDirectory: true)
+        try FileManager.default.createDirectory(at: taskDir, withIntermediateDirectories: true)
+        let locator = taskDir.appendingPathComponent("ui_messages.json")
+        let rows: [[String: Any]] = (0..<8).map { index in
+            ["ts": 1_771_392_000_000 + index * 1_000, "type": "say",
+             "say": index.isMultiple(of: 2) ? "task" : "text", "text": "cline \(index)"]
+        }
+        try JSONSerialization.data(withJSONObject: rows).write(to: locator)
+        try await assertLoadAllCollectsProducedCap(
+            ClineAdapter(tasksRoot: root.path, limits: ParserLimits(maxMessages: 3)),
+            locator: locator.path
+        )
+    }
+
+    func testClineUnclosedArrayKeepsParsedPrefix_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let taskDir = root.appendingPathComponent("cline-unclosed-prefix", isDirectory: true)
+        try FileManager.default.createDirectory(at: taskDir, withIntermediateDirectories: true)
+        let locator = taskDir.appendingPathComponent("ui_messages.json")
+        try #"[{"ts":1771392000000,"type":"say","say":"task","text":"cline prefix"}"#
+            .write(to: locator, atomically: true, encoding: .utf8)
+
+        let result = try await ClineAdapter(tasksRoot: root.path)
+            .streamMessagesWithMetadata(
+                locator: locator.path,
+                options: StreamMessagesOptions(offset: 0, limit: 500)
+            )
+        var messages: [NormalizedMessage] = []
+        for try await message in result.messages { messages.append(message) }
+
+        XCTAssertEqual(messages.map(\.content), ["cline prefix"])
+        XCTAssertEqual(result.parseFailure, .malformedJSON)
+        XCTAssertFalse(result.totalKnownComplete)
+        XCTAssertNil(result.truncatedAt)
+    }
+
+    func testClineUnclosedArrayScanKeepsParsedPrefix_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let taskDir = root.appendingPathComponent("cline-unclosed-scan", isDirectory: true)
+        try FileManager.default.createDirectory(at: taskDir, withIntermediateDirectories: true)
+        let locator = taskDir.appendingPathComponent("ui_messages.json")
+        try #"[{"ts":1771392000000,"type":"say","say":"task","text":"scan prefix"},{"ts":1771392001000,"type":"say","say":"text","text":"scan reply"}"#
+            .write(to: locator, atomically: true, encoding: .utf8)
+
+        guard case .success(let scan) = try await ClineAdapter(tasksRoot: root.path)
+            .scanForIndexing(locator: locator.path)
+        else {
+            return XCTFail("an unclosed array with messages must keep its indexing prefix")
+        }
+        XCTAssertEqual(scan.messages.map(\.content), ["scan prefix", "scan reply"])
+        XCTAssertEqual(scan.parseFailure, .malformedJSON)
+    }
+
+    func testCodexFilledPageStillRunsAfterIdentityValidation_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let locator = root.appendingPathComponent("rollout-filled-page.jsonl")
+        let valid = try jsonLine([
+            "type": "response_item",
+            "payload": [
+                "type": "message", "role": "user",
+                "content": [["type": "input_text", "text": "filled page"]],
+            ],
+        ])
+        try valid.appending("\n").write(to: locator, atomically: true, encoding: .utf8)
+        let adapter = CodexAdapter(
+            sessionsRoot: root.path,
+            testHooks: CodexAdapterTestHooks(beforeFinalIdentityValidation: {
+                try? FileManager.default.removeItem(at: locator)
+            })
+        )
+
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: locator.path,
+            options: StreamMessagesOptions(offset: 0, limit: 1)
+        )
+        var messages: [NormalizedMessage] = []
+        for try await message in result.messages { messages.append(message) }
+        XCTAssertEqual(messages.map(\.content), ["filled page"])
+        XCTAssertEqual(result.parseFailure, .fileModifiedDuringParse)
+    }
+
+    func testCodexAfterIdentityFailureKeepsNonemptyWindow_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let locator = root.appendingPathComponent("rollout-unlimited-prefix.jsonl")
+        let valid = try jsonLine([
+            "type": "response_item",
+            "payload": [
+                "type": "message", "role": "user",
+                "content": [["type": "input_text", "text": "unlimited prefix"]],
+            ],
+        ])
+        try valid.appending("\n").write(to: locator, atomically: true, encoding: .utf8)
+        let adapter = CodexAdapter(
+            sessionsRoot: root.path,
+            testHooks: CodexAdapterTestHooks(beforeFinalIdentityValidation: {
+                try? FileManager.default.removeItem(at: locator)
+            })
+        )
+
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: locator.path,
+            options: StreamMessagesOptions()
+        )
+        var messages: [NormalizedMessage] = []
+        for try await message in result.messages { messages.append(message) }
+        XCTAssertEqual(messages.map(\.content), ["unlimited prefix"])
+        XCTAssertEqual(result.parseFailure, .fileModifiedDuringParse)
+    }
+
+    func testCopilotCheckpointBodyMutationKeepsEarlierPrefix_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("checkpoint-stream-prefix", isDirectory: true)
+        let checkpointsDir = sessionDir.appendingPathComponent("checkpoints", isDirectory: true)
+        try FileManager.default.createDirectory(at: checkpointsDir, withIntermediateDirectories: true)
+        try "id: checkpoint-stream-prefix\ncwd: /tmp/copilot\n"
+            .write(to: sessionDir.appendingPathComponent("workspace.yaml"), atomically: true, encoding: .utf8)
+        let index = checkpointsDir.appendingPathComponent("index.md")
+        try "| 1 | First | 001.md |\n| 2 | Second | 002.md |\n"
+            .write(to: index, atomically: true, encoding: .utf8)
+        try "first body".write(to: checkpointsDir.appendingPathComponent("001.md"), atomically: true, encoding: .utf8)
+        let second = checkpointsDir.appendingPathComponent("002.md")
+        try "second body".write(to: second, atomically: true, encoding: .utf8)
+        let adapter = CopilotAdapter(
+            sessionRoot: root.path,
+            testHooks: CopilotAdapterTestHooks(beforeCheckpointBodyIdentityValidation: { number in
+                if number == 2 { try? FileManager.default.removeItem(at: second) }
+            })
+        )
+
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: index.path,
+            options: StreamMessagesOptions()
+        )
+        var messages: [NormalizedMessage] = []
+        for try await message in result.messages { messages.append(message) }
+        XCTAssertEqual(messages.map(\.content), ["Checkpoint 1: First\n\nfirst body"])
+        XCTAssertEqual(result.parseFailure, .fileModifiedDuringParse)
+    }
+
+    func testCopilotPlainStreamsKeepCheckpointAndEventsPrefixes_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let checkpointSession = root.appendingPathComponent("checkpoint-plain-prefix", isDirectory: true)
+        let checkpoints = checkpointSession.appendingPathComponent("checkpoints", isDirectory: true)
+        try FileManager.default.createDirectory(at: checkpoints, withIntermediateDirectories: true)
+        try "id: checkpoint-plain-prefix\ncwd: /tmp/copilot\n"
+            .write(to: checkpointSession.appendingPathComponent("workspace.yaml"), atomically: true, encoding: .utf8)
+        let index = checkpoints.appendingPathComponent("index.md")
+        try "| 1 | First | 001.md |\n| 2 | Second | 002.md |\n"
+            .write(to: index, atomically: true, encoding: .utf8)
+        try "first body".write(to: checkpoints.appendingPathComponent("001.md"), atomically: true, encoding: .utf8)
+        let secondBody = checkpoints.appendingPathComponent("002.md")
+        try "second body".write(to: secondBody, atomically: true, encoding: .utf8)
+        let checkpointAdapter = CopilotAdapter(
+            sessionRoot: root.path,
+            testHooks: CopilotAdapterTestHooks(beforeCheckpointBodyIdentityValidation: { number in
+                if number == 2 { try? FileManager.default.removeItem(at: secondBody) }
+            })
+        )
+        let checkpointMessages = try await drain(checkpointAdapter, locator: index.path)
+        XCTAssertEqual(checkpointMessages.map(\.content), ["Checkpoint 1: First\n\nfirst body"])
+
+        let eventsSession = root.appendingPathComponent("events-plain-prefix", isDirectory: true)
+        try FileManager.default.createDirectory(at: eventsSession, withIntermediateDirectories: true)
+        try "id: events-plain-prefix\ncwd: /tmp/copilot\n"
+            .write(to: eventsSession.appendingPathComponent("workspace.yaml"), atomically: true, encoding: .utf8)
+        let events = eventsSession.appendingPathComponent("events.jsonl")
+        let valid = try jsonLine(["type": "user.message", "data": ["content": "events prefix"]])
+        try (valid + "\n" + String(repeating: "x", count: 300) + "\n")
+            .write(to: events, atomically: true, encoding: .utf8)
+        let eventMessages = try await drain(
+            CopilotAdapter(sessionRoot: root.path, limits: ParserLimits(maxLineBytes: 256)),
+            locator: events.path
+        )
+        XCTAssertEqual(eventMessages.map(\.content), ["events prefix"])
+    }
+
+    func testCopilotParseInfoKeepsEventsWhenWorkspaceChanges_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let session = root.appendingPathComponent("events-info-prefix", isDirectory: true)
+        try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+        let workspace = session.appendingPathComponent("workspace.yaml")
+        try "id: events-info-prefix\ncwd: /tmp/copilot\n"
+            .write(to: workspace, atomically: true, encoding: .utf8)
+        let events = session.appendingPathComponent("events.jsonl")
+        try jsonLine(["type": "user.message", "data": ["content": "retained info"]])
+            .appending("\n")
+            .write(to: events, atomically: true, encoding: .utf8)
+        let adapter = CopilotAdapter(
+            sessionRoot: root.path,
+            testHooks: CopilotAdapterTestHooks(beforeEventsWorkspaceIdentityValidation: {
+                try? FileManager.default.removeItem(at: workspace)
+            })
+        )
+
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: events.path))
+        XCTAssertEqual(info.messageCount, 1)
+        XCTAssertEqual(info.summary, "retained info")
+    }
+
+    func testKimiWireFailureKeepsContextPrefix_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let session = root.appendingPathComponent("workspace/session", isDirectory: true)
+        try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+        let context = session.appendingPathComponent("context.jsonl")
+        try jsonLine(["role": "user", "content": "kimi prefix"])
+            .appending("\n")
+            .write(to: context, atomically: true, encoding: .utf8)
+        let wire = session.appendingPathComponent("wire.jsonl")
+        let turn = try jsonLine(["timestamp": 1_700_000_000.0, "message": ["type": "TurnBegin"]])
+        try (turn + "\n" + String(repeating: "x", count: 300) + "\n")
+            .write(to: wire, atomically: true, encoding: .utf8)
+        let adapter = KimiAdapter(
+            sessionsRoot: root.path,
+            kimiJsonPath: root.appendingPathComponent("kimi.json").path,
+            limits: ParserLimits(maxLineBytes: 256)
+        )
+
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: context.path,
+            options: StreamMessagesOptions()
+        )
+        var messages: [NormalizedMessage] = []
+        for try await message in result.messages { messages.append(message) }
+        XCTAssertEqual(messages.map(\.content), ["kimi prefix"])
+        XCTAssertEqual(result.parseFailure, .lineTooLarge)
+    }
+
+    func testCopilotEventsReadFailureKeepsProducedIndexingPrefix_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let session = root.appendingPathComponent("events-prefix", isDirectory: true)
+        try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+        try "id: events-prefix\ncwd: /tmp/copilot\n"
+            .write(to: session.appendingPathComponent("workspace.yaml"), atomically: true, encoding: .utf8)
+        let events = session.appendingPathComponent("events.jsonl")
+        let valid = try jsonLine(["type": "user.message", "data": ["content": "events prefix"]])
+        try (valid + "\n" + String(repeating: "x", count: 300) + "\n")
+            .write(to: events, atomically: true, encoding: .utf8)
+
+        let result = try await CopilotAdapter(
+            sessionRoot: root.path,
+            limits: ParserLimits(maxLineBytes: 256)
+        ).scanForIndexing(locator: events.path)
+        guard case .success(let scan) = result else {
+            return XCTFail("a non-cap events read failure must retain produced messages")
+        }
+        XCTAssertEqual(scan.messages.map(\.content), ["events prefix"])
+        XCTAssertEqual(scan.parseFailure, .lineTooLarge)
+    }
+
+    func testCopilotWorkspaceIdentityFailureKeepsProducedIndexingPrefix_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let session = root.appendingPathComponent("workspace-prefix", isDirectory: true)
+        try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+        let workspace = session.appendingPathComponent("workspace.yaml")
+        try "id: workspace-prefix\ncwd: /tmp/copilot\n"
+            .write(to: workspace, atomically: true, encoding: .utf8)
+        let events = session.appendingPathComponent("events.jsonl")
+        try (try jsonLine(["type": "user.message", "data": ["content": "workspace prefix"]]) + "\n")
+            .write(to: events, atomically: true, encoding: .utf8)
+        let adapter = CopilotAdapter(
+            sessionRoot: root.path,
+            testHooks: CopilotAdapterTestHooks(beforeEventsWorkspaceIdentityValidation: {
+                try? FileManager.default.removeItem(at: workspace)
+            })
+        )
+
+        guard case .success(let scan) = try await adapter.scanForIndexing(locator: events.path) else {
+            return XCTFail("a workspace identity tick must retain produced events")
+        }
+        XCTAssertEqual(scan.messages.map(\.content), ["workspace prefix"])
+        XCTAssertEqual(scan.parseFailure, .fileModifiedDuringParse)
+    }
+
+    func testCopilotEventsMessageLimitKeepsCompositePrefix_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let session = root.appendingPathComponent("events-cap", isDirectory: true)
+        try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+        try "id: events-cap\ncwd: /tmp/copilot\n"
+            .write(to: session.appendingPathComponent("workspace.yaml"), atomically: true, encoding: .utf8)
+        let events = session.appendingPathComponent("events.jsonl")
+        let lines = try (0..<3).map { index in
+            try jsonLine(["type": "user.message", "data": ["content": "m\(index)"]])
+        }
+        try lines.joined(separator: "\n").appending("\n")
+            .write(to: events, atomically: true, encoding: .utf8)
+
+        let result = try await CopilotAdapter(
+            sessionRoot: root.path,
+            limits: ParserLimits(maxMessages: 2)
+        ).scanForIndexing(locator: events.path)
+        guard case .success(let scan) = result else {
+            return XCTFail("a capped events prefix must still read workspace metadata and index")
+        }
+        XCTAssertEqual(scan.info.id, "events-cap")
+        XCTAssertEqual(scan.info.cwd, "/tmp/copilot")
+        XCTAssertEqual(scan.messages.map(\.content), ["m0", "m1"])
+        XCTAssertEqual(scan.parseFailure, .messageLimitExceeded)
+    }
+
+    func testGeminiJSONThreadsSnapshotIdentityFailure_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chats = root.appendingPathComponent("tmp/project/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chats, withIntermediateDirectories: true)
+        let locator = chats.appendingPathComponent("gemini-live.json")
+        let session: [String: Any] = [
+            "sessionId": "gemini-live", "startTime": "2026-08-23T00:00:00Z",
+            "messages": [["type": "user", "content": "gemini snapshot"]],
+        ]
+        try JSONSerialization.data(withJSONObject: session).write(to: locator)
+        let adapter = GeminiCliAdapter(
+            tmpRoot: root.appendingPathComponent("tmp").path,
+            projectsFile: root.appendingPathComponent("projects.json").path,
+            testHooks: GeminiCliAdapterTestHooks(beforeFinalIdentityValidation: {
+                if let handle = try? FileHandle(forWritingTo: locator) {
+                    try? handle.seekToEnd()
+                    try? handle.write(contentsOf: Data(" ".utf8))
+                    try? handle.close()
+                }
+            })
+        )
+
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: locator.path,
+            options: StreamMessagesOptions()
+        )
+        var messages: [NormalizedMessage] = []
+        for try await message in result.messages { messages.append(message) }
+        XCTAssertEqual(messages.map(\.content), ["gemini snapshot"])
+        XCTAssertEqual(result.parseFailure, .fileModifiedDuringParse)
+    }
+
+    func testGeminiScanKeepsPrefixWhenFileChanges_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chats = root.appendingPathComponent("tmp/project/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chats, withIntermediateDirectories: true)
+        let locator = chats.appendingPathComponent("gemini-scan-live.json")
+        let session: [String: Any] = [
+            "sessionId": "gemini-scan-live", "startTime": "2026-08-24T00:00:00Z",
+            "messages": [["type": "user", "content": "gemini scan prefix"]],
+        ]
+        try JSONSerialization.data(withJSONObject: session).write(to: locator)
+        let adapter = GeminiCliAdapter(
+            tmpRoot: root.appendingPathComponent("tmp").path,
+            projectsFile: root.appendingPathComponent("projects.json").path,
+            testHooks: GeminiCliAdapterTestHooks(beforeFinalIdentityValidation: {
+                if let handle = try? FileHandle(forWritingTo: locator) {
+                    try? handle.seekToEnd()
+                    try? handle.write(contentsOf: Data(" ".utf8))
+                    try? handle.close()
+                }
+            })
+        )
+
+        guard case .success(let scan) = try await adapter.scanForIndexing(locator: locator.path) else {
+            return XCTFail("a Gemini file change after a produced prefix must remain indexable")
+        }
+        XCTAssertEqual(scan.messages.map(\.content), ["gemini scan prefix"])
+        XCTAssertEqual(scan.parseFailure, .fileModifiedDuringParse)
+    }
+
+    func testCursorModernTruncatedJSONLKeepsParsedPrefix_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cursorRoot = root.appendingPathComponent(".cursor", isDirectory: true)
+        let sessionID = "modern-prefix"
+        try Self.buildModernCursorFixture(cursorRoot: cursorRoot, sessionID: sessionID, name: "Prefix")
+        let adapter = CursorAdapter(
+            dbPath: root.appendingPathComponent("missing.vscdb").path,
+            cursorDataRoot: cursorRoot,
+            limits: ParserLimits(maxLineBytes: 256)
+        )
+        let locators = try await adapter.listSessionLocators()
+        let locator = try XCTUnwrap(locators.first)
+        let transcript = cursorRoot
+            .appendingPathComponent("projects/Users-test-project/agent-transcripts/\(sessionID)/\(sessionID).jsonl")
+        if let handle = try? FileHandle(forWritingTo: transcript) {
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data(("\n" + String(repeating: "x", count: 300) + "\n").utf8))
+            try handle.close()
+        }
+
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: locator,
+            options: StreamMessagesOptions()
+        )
+        var messages: [NormalizedMessage] = []
+        for try await message in result.messages { messages.append(message) }
+        XCTAssertEqual(messages.map(\.content), ["Modern first user prompt", "Modern assistant reply"])
+        XCTAssertEqual(result.parseFailure, .lineTooLarge)
+    }
+
+    func testCursorModernScanKeepsPrefixWhenFileChanges_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cursorRoot = root.appendingPathComponent(".cursor", isDirectory: true)
+        let sessionID = "modern-scan-prefix"
+        try Self.buildModernCursorFixture(cursorRoot: cursorRoot, sessionID: sessionID, name: "Prefix")
+        let transcript = cursorRoot
+            .appendingPathComponent("projects/Users-test-project/agent-transcripts/\(sessionID)/\(sessionID).jsonl")
+        let adapter = CursorAdapter(
+            dbPath: root.appendingPathComponent("missing.vscdb").path,
+            cursorDataRoot: cursorRoot,
+            testHooks: CursorAdapterTestHooks(beforeModernIdentityValidation: {
+                if let handle = try? FileHandle(forWritingTo: transcript) {
+                    try? handle.seekToEnd()
+                    try? handle.write(contentsOf: Data(" \n".utf8))
+                    try? handle.close()
+                }
+            })
+        )
+        let locators = try await adapter.listSessionLocators()
+        let locator = try XCTUnwrap(locators.first)
+
+        guard case .success(let scan) = try await adapter.scanForIndexing(locator: locator) else {
+            return XCTFail("a Cursor file change after a produced prefix must remain indexable")
+        }
+        XCTAssertEqual(scan.messages.map(\.content), ["Modern first user prompt", "Modern assistant reply"])
+        XCTAssertEqual(scan.parseFailure, .fileModifiedDuringParse)
+    }
+
+    func testCursorLoadAllCollectsProducedPrefixCap_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("state.vscdb").path
+        try Self.buildCursorOversizedFixture(dbPath: dbPath)
+        try await assertLoadAllCollectsProducedCap(
+            CursorAdapter(dbPath: dbPath, limits: ParserLimits(maxMessages: 3)),
+            locator: "\(dbPath)?composer=cmp_oversize"
+        )
+    }
+
+    func testCursorModernStreamMessagesAppliesPaging_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cursorRoot = root.appendingPathComponent(".cursor", isDirectory: true)
+        try Self.buildModernCursorFixture(
+            cursorRoot: cursorRoot,
+            sessionID: "modern-paging",
+            name: "Paging"
+        )
+        let adapter = CursorAdapter(
+            dbPath: root.appendingPathComponent("missing.vscdb").path,
+            cursorDataRoot: cursorRoot
+        )
+        let locators = try await adapter.listSessionLocators()
+        let locator = try XCTUnwrap(locators.first)
+
+        var messages: [NormalizedMessage] = []
+        for try await message in try await adapter.streamMessages(
+            locator: locator,
+            options: StreamMessagesOptions(offset: 1, limit: 1)
+        ) {
+            messages.append(message)
+        }
+
+        XCTAssertEqual(messages.map(\.content), ["Modern assistant reply"])
+    }
+
+    func testCursorOversizedTranscriptStreamMessagesFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("state.vscdb").path
+        try Self.buildCursorOversizedFixture(dbPath: dbPath)
+        let adapter = CursorAdapter(dbPath: dbPath, limits: ParserLimits(maxMessages: 3))
+
+        do {
+            _ = try await adapter.streamMessages(
+                locator: "\(dbPath)?composer=cmp_oversize",
+                options: StreamMessagesOptions()
+            )
+            XCTFail("an unwindowed oversized Cursor stream must fail closed")
+        } catch let failure as ParserFailure {
+            XCTAssertEqual(failure, .messageLimitExceeded)
+        }
+    }
+
+    func testCursorLegacyCapCountsInterleavedVisibleMessages_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("state.vscdb").path
+        let composerID = "cmp_interleaved_visible"
+        try Self.buildCursorBubbleSequenceFixture(
+            dbPath: dbPath,
+            composerID: composerID,
+            values: [
+                #"{"type":3,"text":"hidden tool event"}"#,
+                #"{"type":1,"text":"   "}"#,
+                #"{"type":1,"text":"visible user one"}"#,
+                #"{"type":2,"text":"visible assistant two"}"#,
+                #"{"type":1,"text":"visible user three"}"#,
+            ]
+        )
+        let adapter = CursorAdapter(dbPath: dbPath, limits: ParserLimits(maxMessages: 2))
+
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: "\(dbPath)?composer=\(composerID)",
+            options: StreamMessagesOptions()
+        )
+        var messages: [NormalizedMessage] = []
+        for try await message in result.messages { messages.append(message) }
+
+        XCTAssertEqual(messages.map(\.content), ["visible user one", "visible assistant two"])
+        XCTAssertEqual(result.truncatedAt, 2)
+        XCTAssertFalse(result.totalKnownComplete)
+    }
+
+    func testCursorLegacyCapSkipsCorruptRowsAndFindsLaterValidMessages_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("state.vscdb").path
+        let composerID = "cmp_corrupt_then_valid"
+        try Self.buildCursorBubbleSequenceFixture(
+            dbPath: dbPath,
+            composerID: composerID,
+            values: [
+                "{not-json",
+                #""json scalar""#,
+                #"{"type":3,"text":"hidden event"}"#,
+                #"{"type":1,"text":"later user"}"#,
+                #"{"type":2,"text":"later assistant"}"#,
+            ]
+        )
+        let adapter = CursorAdapter(dbPath: dbPath, limits: ParserLimits(maxMessages: 2))
+
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: "\(dbPath)?composer=\(composerID)",
+            options: StreamMessagesOptions()
+        )
+        var messages: [NormalizedMessage] = []
+        for try await message in result.messages { messages.append(message) }
+
+        XCTAssertEqual(messages.map(\.content), ["later user", "later assistant"])
+        XCTAssertNil(result.truncatedAt)
+        XCTAssertTrue(result.totalKnownComplete)
+    }
+
+    func testCursorLegacyTruncatedReadsRepeatWithoutCachingPrefixAsComplete_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("state.vscdb").path
+        let composerID = "cmp_repeat_truncated"
+        try Self.buildCursorBubbleSequenceFixture(
+            dbPath: dbPath,
+            composerID: composerID,
+            values: [
+                "{not-json",
+                #"{"type":3,"text":"hidden event"}"#,
+                #"{"type":1,"text":"repeat user one"}"#,
+                #"{"type":2,"text":"repeat assistant two"}"#,
+                #"{"type":1,"text":"repeat user three"}"#,
+            ]
+        )
+        let adapter = CursorAdapter(dbPath: dbPath, limits: ParserLimits(maxMessages: 2))
+        let locator = "\(dbPath)?composer=\(composerID)"
+
+        for _ in 0..<2 {
+            let result = try await adapter.streamMessagesWithMetadata(
+                locator: locator,
+                options: StreamMessagesOptions()
+            )
+            var messages: [NormalizedMessage] = []
+            for try await message in result.messages { messages.append(message) }
+            XCTAssertEqual(messages.map(\.content), ["repeat user one", "repeat assistant two"])
+            XCTAssertEqual(result.truncatedAt, 2)
+            XCTAssertFalse(result.totalKnownComplete)
+        }
+    }
+
+    func testCursorModernStoreScanKeepsPrefixWhenDatabaseChanges_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cursorRoot = root.appendingPathComponent(".cursor", isDirectory: true)
+        let sessionID = "modern-moving-store"
+        try Self.buildModernCursorFixture(
+            cursorRoot: cursorRoot,
+            sessionID: sessionID,
+            name: "Moving Store",
+            includeTranscript: false
+        )
+        let store = cursorRoot
+            .appendingPathComponent("chats/workspace/\(sessionID)/store.db")
+        let adapter = CursorAdapter(
+            dbPath: root.appendingPathComponent("missing.vscdb").path,
+            cursorDataRoot: cursorRoot,
+            testHooks: CursorAdapterTestHooks(beforeModernIdentityValidation: {
+                try? FileManager.default.setAttributes(
+                    [.modificationDate: Date(timeIntervalSinceNow: 60)],
+                    ofItemAtPath: store.path
+                )
+            })
+        )
+        let locators = try await adapter.listSessionLocators()
+        let locator = try XCTUnwrap(locators.first)
+
+        guard case .success(let scan) = try await adapter.scanForIndexing(locator: locator) else {
+            return XCTFail("a moving Cursor store with a parsed prefix must remain indexable")
+        }
+        XCTAssertEqual(scan.messages.map(\.content), ["Modern first user prompt", "Modern assistant reply"])
+        XCTAssertEqual(scan.parseFailure, .fileModifiedDuringParse)
+    }
+
+    func testOpenCodeLoadAllCollectsProducedPrefixCap_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("opencode.db").path
+        try Self.buildOpenCodeOversizedFixture(dbPath: dbPath)
+        try await assertLoadAllCollectsProducedCap(
+            OpenCodeAdapter(dbPath: dbPath, limits: ParserLimits(maxMessages: 3)),
+            locator: "\(dbPath)::ses_oversize"
+        )
+    }
+
+    func testCopilotCheckpointLoadAllCollectsProducedPrefixCap_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("session-load-all-checkpoint", isDirectory: true)
+        let checkpointsDir = sessionDir.appendingPathComponent("checkpoints", isDirectory: true)
+        try FileManager.default.createDirectory(at: checkpointsDir, withIntermediateDirectories: true)
+        try "id: session-load-all-checkpoint\ncwd: /tmp/copilot\n"
+            .write(to: sessionDir.appendingPathComponent("workspace.yaml"), atomically: true, encoding: .utf8)
+        var table = "# Checkpoint History\n\n| # | Title | File |\n|---|-------|------|"
+        for index in 1...8 { table += "\n| \(index) | checkpoint \(index) | |" }
+        let locator = checkpointsDir.appendingPathComponent("index.md")
+        try table.write(to: locator, atomically: true, encoding: .utf8)
+        try await assertLoadAllCollectsProducedCap(
+            CopilotAdapter(sessionRoot: root.path, limits: ParserLimits(maxMessages: 3)),
+            locator: locator.path
+        )
+    }
+
+    func testGeminiCliJSONLLoadAllCollectsProducedPrefixCap_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatsDir = root.appendingPathComponent("tmp/proj/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+        let locator = chatsDir.appendingPathComponent("session-jsonl-load-all.jsonl")
+        let lines: [[String: Any]] = (0..<8).map { index in
+            ["type": index.isMultiple(of: 2) ? "user" : "gemini",
+             "sessionId": "g-jsonl-load-all", "content": "gemini \(index)"]
+        }
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: locator, atomically: true, encoding: .utf8)
+        try await assertLoadAllCollectsProducedCap(
+            GeminiCliAdapter(
+                tmpRoot: root.appendingPathComponent("tmp").path,
+                projectsFile: root.appendingPathComponent("projects.json").path,
+                limits: ParserLimits(maxMessages: 3)
+            ),
+            locator: locator.path
+        )
+    }
+
+    func testKimiLoadAllCollectsProducedPrefixCap_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("workspace/session-load-all", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        let locator = sessionDir.appendingPathComponent("context.jsonl")
+        let rows: [[String: Any]] = (0..<8).map { index in
+            ["role": index.isMultiple(of: 2) ? "user" : "assistant", "content": "kimi \(index)"]
+        }
+        try rows.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: locator, atomically: true, encoding: .utf8)
+        try await assertLoadAllCollectsProducedCap(
+            KimiAdapter(
+                sessionsRoot: root.path,
+                kimiJsonPath: root.appendingPathComponent("kimi.json").path,
+                limits: ParserLimits(maxMessages: 3)
+            ),
+            locator: locator.path
+        )
+    }
+
+    func testCodexKeepsPrefixWhenLaterLineIsOversized_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let locator = root.appendingPathComponent("rollout-prefix.jsonl")
+        let valid = try jsonLine([
+            "type": "response_item",
+            "payload": [
+                "type": "message",
+                "role": "user",
+                "content": [["type": "input_text", "text": "codex prefix"]],
+            ],
+        ])
+        try (valid + "\n" + String(repeating: "x", count: 300) + "\n")
+            .write(to: locator, atomically: true, encoding: .utf8)
+        try await assertMetadataKeepsParseFailurePrefix(
+            CodexAdapter(sessionsRoot: root.path, limits: ParserLimits(maxLineBytes: 256)),
+            locator: locator.path,
+            expected: "codex prefix"
+        )
+    }
+
+    func testGeminiJSONLKeepsPrefixWhenLaterLineIsOversized_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let locator = root.appendingPathComponent("gemini-prefix.jsonl")
+        let valid = try jsonLine([
+            "type": "user", "sessionId": "gemini-prefix", "content": "gemini prefix",
+        ])
+        try (valid + "\n" + String(repeating: "x", count: 300) + "\n")
+            .write(to: locator, atomically: true, encoding: .utf8)
+        try await assertMetadataKeepsParseFailurePrefix(
+            GeminiCliAdapter(
+                tmpRoot: root.path,
+                projectsFile: root.appendingPathComponent("projects.json").path,
+                limits: ParserLimits(maxLineBytes: 256)
+            ),
+            locator: locator.path,
+            expected: "gemini prefix"
+        )
+    }
+
+    func testQwenKeepsPrefixWhenLaterLineIsOversized_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let locator = root.appendingPathComponent("qwen-prefix.jsonl")
+        let valid = try jsonLine([
+            "type": "user",
+            "sessionId": "qwen-prefix",
+            "message": ["role": "user", "parts": [["text": "qwen prefix"]]],
+        ])
+        try (valid + "\n" + String(repeating: "x", count: 300) + "\n")
+            .write(to: locator, atomically: true, encoding: .utf8)
+        try await assertMetadataKeepsParseFailurePrefix(
+            QwenAdapter(projectsRoot: root.path, limits: ParserLimits(maxLineBytes: 256)),
+            locator: locator.path,
+            expected: "qwen prefix"
+        )
+    }
+
+    func testQwenScanAndPlainStreamKeepPrefixWhenFileChanges_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let locator = root.appendingPathComponent("qwen-changing-prefix.jsonl")
+        let valid = try jsonLine([
+            "type": "user",
+            "sessionId": "qwen-changing-prefix",
+            "message": ["role": "user", "parts": [["text": "qwen changing prefix"]]],
+        ])
+        try valid.appending("\n").write(to: locator, atomically: true, encoding: .utf8)
+        let adapter = QwenAdapter(
+            projectsRoot: root.path,
+            testHooks: QwenAdapterTestHooks(beforeFinalIdentityValidation: {
+                if let handle = try? FileHandle(forWritingTo: locator) {
+                    try? handle.seekToEnd()
+                    try? handle.write(contentsOf: Data(" \n".utf8))
+                    try? handle.close()
+                }
+            })
+        )
+
+        guard case .success(let scan) = try await adapter.scanForIndexing(locator: locator.path) else {
+            return XCTFail("a Qwen file change after a produced prefix must remain indexable")
+        }
+        XCTAssertEqual(scan.messages.map(\.content), ["qwen changing prefix"])
+        XCTAssertEqual(scan.parseFailure, .fileModifiedDuringParse)
+
+        var streamed: [NormalizedMessage] = []
+        for try await message in try await adapter.streamMessages(
+            locator: locator.path,
+            options: StreamMessagesOptions()
+        ) {
+            streamed.append(message)
+        }
+        XCTAssertEqual(streamed.map(\.content), ["qwen changing prefix"])
+    }
+
+    func testCommandCodeScanKeepsPrefixWhenFileChanges_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let project = root.appendingPathComponent("project", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let locator = project.appendingPathComponent("commandcode-changing.jsonl")
+        try jsonLine([
+            "role": "user",
+            "sessionId": "commandcode-changing",
+            "cwd": "/tmp/commandcode",
+            "content": "commandcode prefix",
+        ]).appending("\n").write(to: locator, atomically: true, encoding: .utf8)
+        let adapter = CommandCodeAdapter(
+            projectsRoot: root.path,
+            testHooks: JSONLIdentityTestHooks(beforeFinalIdentityValidation: {
+                if let handle = try? FileHandle(forWritingTo: locator) {
+                    try? handle.seekToEnd()
+                    try? handle.write(contentsOf: Data(" \n".utf8))
+                    try? handle.close()
+                }
+            })
+        )
+
+        guard case .success(let scan) = try await adapter.scanForIndexing(locator: locator.path) else {
+            return XCTFail("a CommandCode file change after a produced prefix must remain indexable")
+        }
+        XCTAssertEqual(scan.messages.map(\.content), ["commandcode prefix"])
+        XCTAssertEqual(scan.parseFailure, .fileModifiedDuringParse)
+    }
+
+    func testQoderScanKeepsPrefixWhenFileChanges_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let project = root.appendingPathComponent("project", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let locator = project.appendingPathComponent("qoder-changing.jsonl")
+        try jsonLine([
+            "type": "user",
+            "sessionId": "qoder-changing",
+            "cwd": "/tmp/qoder",
+            "message": ["role": "user", "content": "qoder prefix"],
+        ]).appending("\n").write(to: locator, atomically: true, encoding: .utf8)
+        let adapter = QoderAdapter(
+            projectsRoot: root.path,
+            testHooks: JSONLIdentityTestHooks(beforeFinalIdentityValidation: {
+                if let handle = try? FileHandle(forWritingTo: locator) {
+                    try? handle.seekToEnd()
+                    try? handle.write(contentsOf: Data(" \n".utf8))
+                    try? handle.close()
+                }
+            })
+        )
+
+        guard case .success(let scan) = try await adapter.scanForIndexing(locator: locator.path) else {
+            return XCTFail("a Qoder file change after a produced prefix must remain indexable")
+        }
+        XCTAssertEqual(scan.messages.map(\.content), ["qoder prefix"])
+        XCTAssertEqual(scan.parseFailure, .fileModifiedDuringParse)
+    }
+
+    func testKimiScanKeepsPrefixWhenFileChanges_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let session = root.appendingPathComponent("workspace/kimi-changing", isDirectory: true)
+        try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+        let locator = session.appendingPathComponent("context.jsonl")
+        try jsonLine(["role": "user", "content": "kimi changing prefix"])
+            .appending("\n")
+            .write(to: locator, atomically: true, encoding: .utf8)
+        let adapter = KimiAdapter(
+            sessionsRoot: root.path,
+            kimiJsonPath: root.appendingPathComponent("kimi.json").path,
+            testHooks: JSONLIdentityTestHooks(beforeFinalIdentityValidation: {
+                if let handle = try? FileHandle(forWritingTo: locator) {
+                    try? handle.seekToEnd()
+                    try? handle.write(contentsOf: Data(" \n".utf8))
+                    try? handle.close()
+                }
+            })
+        )
+
+        guard case .success(let scan) = try await adapter.scanForIndexing(locator: locator.path) else {
+            return XCTFail("a Kimi file change after a produced prefix must remain indexable")
+        }
+        XCTAssertEqual(scan.messages.map(\.content), ["kimi changing prefix"])
+        XCTAssertEqual(scan.parseFailure, .fileModifiedDuringParse)
+    }
+
+    func testWholeDocumentFailureIsReportedOnlyWhenWindowReachesPrefixEnd_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let locator = root.appendingPathComponent("qwen-window-scoped-failure.jsonl")
+        let valid = try (0..<3).map { index in
+            try jsonLine([
+                "type": index.isMultiple(of: 2) ? "user" : "assistant",
+                "sessionId": "qwen-window-failure",
+                "message": ["role": "user", "parts": [["text": "qwen \(index)"]]],
+            ])
+        }
+        try (valid.joined(separator: "\n") + "\n" + String(repeating: "x", count: 300) + "\n")
+            .write(to: locator, atomically: true, encoding: .utf8)
+        let adapter = QwenAdapter(projectsRoot: root.path, limits: ParserLimits(maxLineBytes: 256))
+
+        let first = try await adapter.streamMessagesWithMetadata(
+            locator: locator.path,
+            options: StreamMessagesOptions(offset: 0, limit: 2)
+        )
+        var firstMessages: [NormalizedMessage] = []
+        for try await message in first.messages { firstMessages.append(message) }
+        XCTAssertEqual(firstMessages.count, 2)
+        XCTAssertNil(first.parseFailure)
+        XCTAssertTrue(first.totalKnownComplete)
+
+        let second = try await adapter.streamMessagesWithMetadata(
+            locator: locator.path,
+            options: StreamMessagesOptions(offset: 2, limit: 500)
+        )
+        var secondMessages: [NormalizedMessage] = []
+        for try await message in second.messages { secondMessages.append(message) }
+        XCTAssertEqual(secondMessages.map(\.content), ["qwen 2"])
+        XCTAssertEqual(second.parseFailure, .lineTooLarge)
+        XCTAssertFalse(second.totalKnownComplete)
+    }
+
+    func testClaudeKeepsPrefixWhenLaterLineIsOversized_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let locator = root.appendingPathComponent("claude-prefix.jsonl")
+        let valid = try jsonLine([
+            "type": "user",
+            "sessionId": "claude-prefix",
+            "message": ["role": "user", "content": "claude prefix"],
+        ])
+        try (valid + "\n" + String(repeating: "x", count: 300) + "\n")
+            .write(to: locator, atomically: true, encoding: .utf8)
+        try await assertMetadataKeepsParseFailurePrefix(
+            ClaudeCodeAdapter(projectsRoot: root.path, limits: ParserLimits(maxLineBytes: 256)),
+            locator: locator.path,
+            expected: "claude prefix"
+        )
+    }
+
+    private func assertMetadataKeepsParseFailurePrefix(
+        _ adapter: SessionAdapter,
+        locator: String,
+        expected: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: locator,
+            options: StreamMessagesOptions(offset: 0, limit: 500)
+        )
+        var messages: [NormalizedMessage] = []
+        for try await message in result.messages { messages.append(message) }
+        XCTAssertEqual(messages.map(\.content), [expected], file: file, line: line)
+        XCTAssertEqual(result.parseFailure, .lineTooLarge, file: file, line: line)
+        XCTAssertFalse(result.totalKnownComplete, file: file, line: line)
+        XCTAssertNil(result.truncatedAt, file: file, line: line)
+    }
+
+    func testAdapterAssertionHelpersNeverSkipOppositeResults_repro() throws {
+        let source = try String(contentsOfFile: #filePath, encoding: .utf8)
+        let helpers = try XCTUnwrap(source.range(of: "private func sessionInfo<T>")?.lowerBound)
+        let helperEnd = try XCTUnwrap(source.range(of: "private func drain(_ adapter", range: helpers..<source.endIndex)?.lowerBound)
+        let helperSource = source[helpers..<helperEnd]
+        XCTAssertFalse(
+            helperSource.contains("XCTSkip"),
+            "opposite adapter results are assertion failures, never green skips"
+        )
     }
 
     private func assertStreamInjectionParity(
@@ -165,6 +1187,54 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(result.truncatedAt, 3)
         XCTAssertFalse(result.totalKnownComplete)
         XCTAssertTrue(result.truncated)
+    }
+
+    func testVsCodeOversizedTranscriptStreamMessagesFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatDir = root.appendingPathComponent("ws-oversized-stream/chatSessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatDir, withIntermediateDirectories: true)
+        let requests: [[String: Any]] = (0..<4).map { index in
+            [
+                "timestamp": 1_700_000_000_000 + index * 1_000,
+                "message": ["text": "vs stream question \(index)"],
+                "response": [
+                    ["value": ["kind": "markdownContent", "content": ["value": "vs stream answer \(index)"]]],
+                ],
+            ]
+        }
+        let session: [String: Any] = [
+            "kind": 0,
+            "v": [
+                "sessionId": "vs-oversized-stream",
+                "creationDate": 1_700_000_000_000,
+                "requests": requests,
+            ],
+        ]
+        let file = chatDir.appendingPathComponent("oversized-stream.jsonl")
+        try (try jsonLine(session) + "\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = VsCodeAdapter(
+            workspaceStorageDir: root.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let metadata = try await adapter.streamMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions()
+        )
+        var prefix: [NormalizedMessage] = []
+        for try await message in metadata.messages { prefix.append(message) }
+        XCTAssertEqual(prefix.count, 3)
+        XCTAssertEqual(metadata.truncatedAt, 3)
+
+        for _ in 0..<2 {
+            do {
+                _ = try await drain(adapter, locator: file.path)
+                XCTFail("an unwindowed oversized VS Code stream must fail closed")
+            } catch let failure as ParserFailure {
+                XCTAssertEqual(failure, .messageLimitExceeded)
+            }
+        }
     }
 
     /// parseSessionInfo counted every request without the produced-message cap,
@@ -430,6 +1500,79 @@ final class AdapterMessageCountTests: XCTestCase {
         }
     }
 
+    func testVsCodeMutationLogMetadataCapsVisibleMessagesNotMutationObjects_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatDir = root.appendingPathComponent("ws-metadata-limit/chatSessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatDir, withIntermediateDirectories: true)
+        let initial: [String: Any] = [
+            "kind": 0,
+            "v": [
+                "sessionId": "vs-metadata-limit",
+                "creationDate": 1_700_000_000_000,
+                "requests": [],
+            ],
+        ]
+        let request: [String: Any] = [
+            "timestamp": 1_700_000_000_000,
+            "message": ["text": "question"],
+            "response": [["value": ["kind": "markdownContent", "content": ["value": "answer"]]]],
+        ]
+        let push: [String: Any] = ["kind": 2, "k": ["requests"], "v": [request]]
+        let file = chatDir.appendingPathComponent("sess.jsonl")
+        try ([try jsonLine(initial), try jsonLine(push), try jsonLine(push)].joined(separator: "\n") + "\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+        let adapter = VsCodeAdapter(
+            workspaceStorageDir: root.path,
+            limits: ParserLimits(maxMessages: 2)
+        )
+
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions(offset: 0, limit: 1)
+        )
+        var messages: [NormalizedMessage] = []
+        for try await message in result.messages { messages.append(message) }
+        XCTAssertEqual(messages.map(\.content), ["question"])
+        XCTAssertNil(result.truncatedAt, "the first page has not reached the produced-message cap")
+    }
+
+    func testVsCodeMetadataKeepsMutationPrefixOnLaterLineFailure_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatDir = root.appendingPathComponent("ws-prefix/chatSessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatDir, withIntermediateDirectories: true)
+        let initial: [String: Any] = [
+            "kind": 0,
+            "v": [
+                "sessionId": "vs-prefix",
+                "creationDate": 1_700_000_000_000,
+                "requests": [[
+                    "timestamp": 1_700_000_001_000,
+                    "message": ["text": "kept question"],
+                    "response": [["value": ["kind": "markdownContent", "content": ["value": "kept answer"]]]],
+                ]],
+            ],
+        ]
+        let file = chatDir.appendingPathComponent("prefix.jsonl")
+        try (try jsonLine(initial) + "\n" + String(repeating: "x", count: 2_000) + "\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+        let adapter = VsCodeAdapter(
+            workspaceStorageDir: root.path,
+            limits: ParserLimits(maxLineBytes: 1_000)
+        )
+
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions(offset: 0, limit: 500)
+        )
+        var messages: [NormalizedMessage] = []
+        for try await message in result.messages { messages.append(message) }
+        XCTAssertEqual(messages.map(\.content), ["kept question", "kept answer"])
+        XCTAssertEqual(result.parseFailure, .lineTooLarge)
+        XCTAssertFalse(result.totalKnownComplete)
+    }
+
     // MARK: - Gemini CLI
 
     // Audit L-b: a function-call-only model turn is a tool event, not an empty
@@ -473,6 +1616,37 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(info.messageCount, streamed.count)
         XCTAssertEqual(streamed.map(\.role), [.user, .assistant, .tool])
         XCTAssertEqual(streamed.last?.toolCalls?.first?.name, "read")
+    }
+
+    func testGeminiLeavesCwdEmptyForAmbiguousOrUnresolvedProjectHash_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tmpRoot = root.appendingPathComponent("tmp", isDirectory: true)
+        let projectsFile = root.appendingPathComponent("projects.json")
+        try JSONSerialization.data(withJSONObject: [
+            "projects": [
+                "/repo/one": "duplicate-hash",
+                "/repo/two": "duplicate-hash",
+            ],
+        ]).write(to: projectsFile)
+
+        for projectHash in ["duplicate-hash", "unknown-sha-leaf"] {
+            let chatsDir = tmpRoot
+                .appendingPathComponent(projectHash, isDirectory: true)
+                .appendingPathComponent("chats", isDirectory: true)
+            try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+            let file = chatsDir.appendingPathComponent("session.json")
+            let session: [String: Any] = [
+                "sessionId": "session-\(projectHash)",
+                "startTime": "2026-08-21T00:00:00Z",
+                "messages": [["type": "user", "content": "hello"]],
+            ]
+            try JSONSerialization.data(withJSONObject: session).write(to: file)
+
+            let adapter = GeminiCliAdapter(tmpRoot: tmpRoot.path, projectsFile: projectsFile.path)
+            let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+            XCTAssertEqual(info.cwd, "", "unverified project hashes must not become cwd values")
+        }
     }
 
     // Audit L-b: current Gemini CLI stores calls/results in a gemini record's
@@ -906,6 +2080,93 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertTrue(result.truncated)
     }
 
+    func testGeminiCliOversizedTranscriptStreamMessagesFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatsDir = root.appendingPathComponent("tmp/proj/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+        let turns: [[String: Any]] = (0..<4).map { index in
+            [
+                "type": index % 2 == 0 ? "user" : "gemini",
+                "timestamp": "2026-01-01T00:00:0\(index).000Z",
+                "content": "gemini stream turn \(index)",
+            ]
+        }
+        let session: [String: Any] = [
+            "sessionId": "g-oversized-stream",
+            "startTime": "2026-01-01T00:00:00.000Z",
+            "lastUpdated": "2026-01-01T00:00:04.000Z",
+            "messages": turns,
+        ]
+        let file = chatsDir.appendingPathComponent("session-oversized-stream.json")
+        try (try jsonLine(session)).write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = GeminiCliAdapter(
+            tmpRoot: root.appendingPathComponent("tmp").path,
+            projectsFile: root.appendingPathComponent("projects.json").path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let metadata = try await adapter.streamMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions()
+        )
+        var prefix: [NormalizedMessage] = []
+        for try await message in metadata.messages { prefix.append(message) }
+        XCTAssertEqual(prefix.count, 3)
+        XCTAssertEqual(metadata.truncatedAt, 3)
+
+        for _ in 0..<2 {
+            do {
+                _ = try await drain(adapter, locator: file.path)
+                XCTFail("an unwindowed oversized Gemini stream must fail closed")
+            } catch let failure as ParserFailure {
+                XCTAssertEqual(failure, .messageLimitExceeded)
+            }
+        }
+    }
+
+    func testGeminiCliJSONLMetadataReplaysCappedPrefix_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatsDir = root.appendingPathComponent("tmp/proj/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+        let file = chatsDir.appendingPathComponent("session-jsonl-cap.jsonl")
+        let metadata: [String: Any] = [
+            "kind": "main",
+            "sessionId": "g-jsonl-cap",
+            "startTime": "2026-08-21T00:00:00Z",
+        ]
+        let seedMessages: [[String: Any]] = (0..<4).map { index in
+            [
+                "type": index % 2 == 0 ? "user" : "gemini",
+                "sessionId": "g-jsonl-cap",
+                "timestamp": "2026-08-21T00:00:0\(index)Z",
+                "content": "gemini jsonl turn \(index)",
+            ]
+        }
+        let lines = [metadata] + seedMessages
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = GeminiCliAdapter(
+            tmpRoot: root.appendingPathComponent("tmp").path,
+            projectsFile: root.appendingPathComponent("projects.json").path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let parseFailure = try parseFailure(await adapter.parseSessionInfo(locator: file.path))
+        XCTAssertEqual(parseFailure, .messageLimitExceeded)
+
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions()
+        )
+        var messages: [NormalizedMessage] = []
+        for try await message in result.messages { messages.append(message) }
+        XCTAssertEqual(messages.map(\.content), (0..<3).map { "gemini jsonl turn \($0)" })
+        XCTAssertEqual(result.truncatedAt, 3)
+        XCTAssertFalse(result.totalKnownComplete)
+    }
+
     /// parseSessionInfo counted every flattened message without the produced
     /// cap, so an oversized Gemini session returned prefix counts as complete.
     /// invariant: ADAPTER-PARSEINFO-CAP-001M
@@ -982,10 +2243,40 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(failure, .messageLimitExceeded)
     }
 
+    func testIflowParseSessionInfoKeepsPrefixWhenFileChanges_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("projects/project", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+        let file = projectDir.appendingPathComponent("session-changing.jsonl")
+        try jsonLine([
+            "sessionId": "iflow-changing",
+            "timestamp": "2026-08-24T00:00:00Z",
+            "type": "user",
+            "message": ["role": "user", "content": "retained task"],
+            "cwd": "/tmp/iflow-changing",
+        ]).appending("\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = IflowAdapter(
+            projectsRoot: root.appendingPathComponent("projects").path,
+            testHooks: JSONLIdentityTestHooks(beforeFinalIdentityValidation: {
+                if let handle = try? FileHandle(forWritingTo: file) {
+                    try? handle.seekToEnd()
+                    try? handle.write(contentsOf: Data(" \n".utf8))
+                    try? handle.close()
+                }
+            })
+        )
+
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+        XCTAssertEqual(info.messageCount, 1)
+        XCTAssertEqual(info.summary, "retained task")
+    }
+
     /// streamMessages used windowedMessages, which swallows messageLimitExceeded
     /// and streams a prefix as complete when limit is nil.
     /// invariant: ADAPTER-STREAM-WHOLE-CAP-001E
-    func testIflowOversizedTranscriptStreamMessagesFailsClosed_repro() async throws {
+    func testIflowOversizedTranscriptStreamMessagesKeepsProducedPrefix_repro() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
         let projectDir = root.appendingPathComponent("projects/-Users-test-iflow-oversized-stream", isDirectory: true)
@@ -1014,12 +2305,10 @@ final class AdapterMessageCountTests: XCTestCase {
             projectsRoot: root.appendingPathComponent("projects").path,
             limits: ParserLimits(maxMessages: 3)
         )
-        do {
-            _ = try await drain(adapter, locator: file.path)
-            XCTFail("oversized whole-transcript stream must fail closed")
-        } catch let failure as ParserFailure {
-            XCTAssertEqual(failure, .messageLimitExceeded)
-        }
+        let messages = try await drain(adapter, locator: file.path)
+        XCTAssertEqual(messages.map(\.content), [
+            "iflow stream turn 0", "iflow stream turn 1", "iflow stream turn 2",
+        ])
     }
 
     // Audit L10: the batch parser already excludes injected wrappers from user
@@ -1065,6 +2354,81 @@ final class AdapterMessageCountTests: XCTestCase {
 
         let adapter = IflowAdapter(projectsRoot: root.appendingPathComponent("projects").path)
         try await assertStreamInjectionParity(adapter, locator: file.path, firstUserText: "real Iflow task")
+    }
+
+    func testIflowProducedCapIgnoresToolMetaAndCompactionRows_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("projects/-tmp-iflow-cap", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+        let file = projectDir.appendingPathComponent("session-produced-cap.jsonl")
+        let rows: [[String: Any]] = [
+            ["type": "user", "sessionId": "iflow-cap", "cwd": "/tmp/iflow-cap",
+             "message": ["role": "user", "content": "real task"]],
+            ["type": "user", "sessionId": "iflow-cap", "isMeta": true,
+             "message": ["role": "user", "content": ""]],
+            ["type": "user", "sessionId": "iflow-cap", "isCompactSummary": true,
+             "message": ["role": "user", "content": ""]],
+            ["type": "user", "sessionId": "iflow-cap",
+             "message": ["role": "user", "content": [["type": "tool_result", "content": ""]]]],
+            ["type": "assistant", "sessionId": "iflow-cap",
+             "message": ["role": "assistant", "content": "done"]],
+        ]
+        try rows.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+        let adapter = IflowAdapter(
+            projectsRoot: root.appendingPathComponent("projects").path,
+            limits: ParserLimits(maxMessages: 2)
+        )
+
+        let scan = try sessionInfo(await adapter.scanForIndexing(locator: file.path))
+        XCTAssertEqual(scan.info.messageCount, 2)
+        XCTAssertEqual(scan.messages.map(\.content), ["real task", "done"])
+    }
+
+    func testIflowProducedCapIgnoresInjectedSystemWrappersInScan_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("projects/-tmp-iflow-wrapper-cap", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+        let file = projectDir.appendingPathComponent("session-wrapper-cap.jsonl")
+        let wrappers = [
+            "# AGENTS.md instructions for /tmp/iflow\n<INSTRUCTIONS>noise</INSTRUCTIONS>",
+            "<INSTRUCTIONS>workspace bootstrap</INSTRUCTIONS>",
+            "<INSTRUCTIONS><local-command-caveat>ignore this wrapper</local-command-caveat></INSTRUCTIONS>",
+            "You are Qwen Code.\n<INSTRUCTIONS>compatibility wrapper</INSTRUCTIONS>",
+            "<system-reminder>generated reminder</system-reminder>",
+            "<environment_context><cwd>/tmp/iflow</cwd></environment_context>",
+        ]
+        var rows = wrappers.map { content in
+            [
+                "type": "user",
+                "sessionId": "iflow-wrapper-cap",
+                "cwd": "/tmp/iflow-wrapper-cap",
+                "message": ["role": "user", "content": content],
+            ] as [String: Any]
+        }
+        rows += [
+            ["type": "user", "sessionId": "iflow-wrapper-cap",
+             "message": ["role": "user", "content": "real task"]],
+            ["type": "assistant", "sessionId": "iflow-wrapper-cap",
+             "message": ["role": "assistant", "content": "done"]],
+        ]
+        try rows.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = IflowAdapter(
+            projectsRoot: root.appendingPathComponent("projects").path,
+            limits: ParserLimits(maxMessages: 2)
+        )
+        let scan = try sessionInfo(await adapter.scanForIndexing(locator: file.path))
+
+        XCTAssertEqual(scan.info.messageCount, 2)
+        XCTAssertEqual(
+            scan.messages.map(\.role),
+            [.system, .system, .system, .system, .system, .system, .user, .assistant]
+        )
+        XCTAssertEqual(scan.messages.suffix(2).map(\.content), ["real task", "done"])
     }
 
     /// R184-3: injection-only Iflow files must be terminal, not zero-count sessions.
@@ -1456,6 +2820,87 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(failure, .messageLimitExceeded)
     }
 
+    func testKimiCombinedContextShardsEnforceMessageLimit_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("workspace-1/kimi-combined-limit", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+
+        for (name, prefix) in [("context.jsonl", "primary"), ("context_1.jsonl", "shard")] {
+            let records: [[String: Any]] = [
+                ["role": "user", "content": "\(prefix) user"],
+                ["role": "assistant", "content": "\(prefix) assistant"],
+            ]
+            try records.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+                .write(to: sessionDir.appendingPathComponent(name), atomically: true, encoding: .utf8)
+        }
+
+        let adapter = KimiAdapter(
+            sessionsRoot: root.path,
+            kimiJsonPath: root.appendingPathComponent("kimi.json").path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let context = sessionDir.appendingPathComponent("context.jsonl")
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: context.path))
+        XCTAssertEqual(failure, .messageLimitExceeded)
+    }
+
+    func testKimiPagedReadReportsGlobalMessageCap_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("workspace-1/kimi-paged-limit", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        let context = sessionDir.appendingPathComponent("context.jsonl")
+        let rows: [[String: Any]] = (0..<4).map { index in
+            ["role": index.isMultiple(of: 2) ? "user" : "assistant", "content": "turn \(index)"]
+        }
+        try rows.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: context, atomically: true, encoding: .utf8)
+
+        let adapter = KimiAdapter(
+            sessionsRoot: root.path,
+            kimiJsonPath: root.appendingPathComponent("kimi.json").path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: context.path,
+            options: StreamMessagesOptions(offset: 3, limit: 2)
+        )
+        var messages: [NormalizedMessage] = []
+        for try await message in result.messages { messages.append(message) }
+
+        XCTAssertTrue(messages.isEmpty)
+        XCTAssertEqual(result.truncatedAt, 3)
+        XCTAssertFalse(result.totalKnownComplete)
+    }
+
+    func testKimiContextTelemetryDoesNotHideProducedTurn_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("workspace/session-telemetry", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        let context = sessionDir.appendingPathComponent("context.jsonl")
+        var lines = Array(repeating: #"{"type":"progress","content":"working"}"#, count: 10_000)
+        lines.append(#"{"role":"user","content":"real produced turn"}"#)
+        try lines.joined(separator: "\n").appending("\n")
+            .write(to: context, atomically: true, encoding: .utf8)
+
+        let adapter = KimiAdapter(
+            sessionsRoot: root.path,
+            kimiJsonPath: root.appendingPathComponent("kimi.json").path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: context.path,
+            options: StreamMessagesOptions()
+        )
+        var messages: [NormalizedMessage] = []
+        for try await message in result.messages { messages.append(message) }
+
+        XCTAssertEqual(messages.map(\.content), ["real produced turn"])
+        XCTAssertNil(result.truncatedAt)
+    }
+
     /// R184-3: a Kimi session directory with only wire metadata and no
     /// conversation turns must be terminal, not a zero-count session.
     func testKimiWireOnlySessionIsTerminalNoVisibleMessages_repro() async throws {
@@ -1519,10 +2964,94 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(failure, .messageLimitExceeded)
     }
 
-    /// streamMessages used readObjects without reportFailures, so an
-    /// oversized transcript streamed a prefix as complete.
-    /// invariant: ADAPTER-STREAM-WHOLE-CAP-001B
-    func testQwenOversizedTranscriptStreamMessagesFailsClosed_repro() async throws {
+    /// The JSONL safety cap counts normalized messages, not telemetry or other
+    /// sidecar records that `message(from:)` intentionally ignores.
+    func testQwenProducedMessageLimitIgnoresTelemetryForParseAndScan_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatsDir = root.appendingPathComponent("project-produced-cap/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+        let file = chatsDir.appendingPathComponent("qwen-produced-cap.jsonl")
+
+        func message(_ index: Int) -> [String: Any] {
+            let isUser = index % 2 == 0
+            return [
+                "type": isUser ? "user" : "assistant",
+                "sessionId": "qwen-produced-cap",
+                "cwd": "/tmp/qwen-produced-cap",
+                "timestamp": "2026-08-22T00:00:0\(index).000Z",
+                "message": [
+                    "role": isUser ? "user" : "model",
+                    "parts": [["text": "produced turn \(index)"]],
+                ],
+            ]
+        }
+        var lines: [[String: Any]] = [
+            message(0), ["type": "telemetry", "event": "one"],
+            message(1), ["type": "telemetry", "event": "two"],
+            message(2), ["type": "telemetry", "event": "three"],
+        ]
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = QwenAdapter(projectsRoot: root.path, limits: ParserLimits(maxMessages: 3))
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+        XCTAssertEqual(info.messageCount, 3)
+        let scan = try sessionInfo(await adapter.scanForIndexing(locator: file.path))
+        XCTAssertEqual(scan.messages.count, 3)
+
+        lines.append(message(3))
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+        let parseLimitFailure = try parseFailure(await adapter.parseSessionInfo(locator: file.path))
+        XCTAssertEqual(parseLimitFailure, .messageLimitExceeded)
+        let scanLimitFailure = try parseFailure(await adapter.scanForIndexing(locator: file.path))
+        XCTAssertEqual(scanLimitFailure, .messageLimitExceeded)
+    }
+
+    func testQwenProducedCapIgnoresInjectedSystemWrappersInScan_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatsDir = root.appendingPathComponent("project-wrapper-cap/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+        let file = chatsDir.appendingPathComponent("qwen-wrapper-cap.jsonl")
+        let wrappers = [
+            "# AGENTS.md instructions for /tmp/qwen\n<INSTRUCTIONS>noise</INSTRUCTIONS>",
+            "<INSTRUCTIONS>workspace bootstrap</INSTRUCTIONS>",
+            "<INSTRUCTIONS><local-command-caveat>ignore this wrapper</local-command-caveat></INSTRUCTIONS>",
+            "You are Qwen Code.\n<INSTRUCTIONS>compatibility wrapper</INSTRUCTIONS>",
+            "<system-reminder>generated reminder</system-reminder>",
+            "<environment_context><cwd>/tmp/qwen</cwd></environment_context>",
+        ]
+        var rows = wrappers.map { content in
+            [
+                "type": "user",
+                "sessionId": "qwen-wrapper-cap",
+                "cwd": "/tmp/qwen-wrapper-cap",
+                "message": ["role": "user", "parts": [["text": content]]],
+            ] as [String: Any]
+        }
+        rows += [
+            ["type": "user", "sessionId": "qwen-wrapper-cap",
+             "message": ["role": "user", "parts": [["text": "real task"]]]],
+            ["type": "assistant", "sessionId": "qwen-wrapper-cap",
+             "message": ["role": "model", "parts": [["text": "done"]]]],
+        ]
+        try rows.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = QwenAdapter(projectsRoot: root.path, limits: ParserLimits(maxMessages: 2))
+        let scan = try sessionInfo(await adapter.scanForIndexing(locator: file.path))
+
+        XCTAssertEqual(scan.info.messageCount, 2)
+        XCTAssertEqual(
+            scan.messages.map(\.role),
+            Array(repeating: .system, count: wrappers.count) + [.user, .assistant]
+        )
+        XCTAssertEqual(scan.messages.suffix(2).map(\.content), ["real task", "done"])
+    }
+
+    func testQwenOversizedTranscriptStreamMessagesKeepsProducedPrefix_repro() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
         let chatsDir = root.appendingPathComponent("project-oversized-stream/chats", isDirectory: true)
@@ -1550,12 +3079,10 @@ final class AdapterMessageCountTests: XCTestCase {
             projectsRoot: root.path,
             limits: ParserLimits(maxMessages: 3)
         )
-        do {
-            _ = try await drain(adapter, locator: file.path)
-            XCTFail("oversized whole-transcript stream must fail closed")
-        } catch let failure as ParserFailure {
-            XCTAssertEqual(failure, .messageLimitExceeded)
-        }
+        let messages = try await drain(adapter, locator: file.path)
+        XCTAssertEqual(messages.map(\.content), [
+            "qwen stream turn 0", "qwen stream turn 1", "qwen stream turn 2",
+        ])
     }
 
     // Audit L10: Qwen's injected bootstrap prompt is system metadata on both
@@ -1644,6 +3171,101 @@ final class AdapterMessageCountTests: XCTestCase {
         try await assertStreamInjectionParity(adapter, locator: file.path, firstUserText: "real Qoder task")
     }
 
+    func testQoderProducedCapBillsOnlyUserAssistantAndTool_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("project-produced-cap", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+        let file = projectDir.appendingPathComponent("qoder-produced-cap.jsonl")
+        let wrappers = [
+            "<local-command-caveat>generated shell context</local-command-caveat>",
+            "<local-command-stdout>generated output</local-command-stdout>",
+            "<command-name>generated-command</command-name>",
+            "Base directory for this skill: /tmp/generated",
+        ]
+        var rows: [[String: Any]] = wrappers.map { wrapper in
+            ["type": "user", "sessionId": "qoder-cap", "cwd": "/tmp/qoder-cap",
+             "message": [
+                 "role": "user",
+                 "content": wrapper,
+             ]]
+        }
+        rows.append([
+            "type": "user", "sessionId": "qoder-cap", "cwd": "/tmp/qoder-cap",
+            "message": ["role": "user", "content": "real task"],
+        ])
+        rows.append([
+            "type": "assistant", "sessionId": "qoder-cap", "cwd": "/tmp/qoder-cap",
+            "message": ["role": "assistant", "content": "done"],
+        ])
+        try rows.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+        let adapter = QoderAdapter(projectsRoot: root.path, limits: ParserLimits(maxMessages: 2))
+
+        let scan = try sessionInfo(await adapter.scanForIndexing(locator: file.path))
+        XCTAssertEqual(scan.info.messageCount, 2)
+        XCTAssertEqual(scan.info.systemMessageCount, 4)
+        XCTAssertEqual(scan.messages.filter { $0.role != .system }.map(\.content), ["real task", "done"])
+    }
+
+    func testQoderProjectLevelSubagentKeepsDistinctSkipIdentity_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("encoded-project", isDirectory: true)
+        let subagentsDir = projectDir.appendingPathComponent("subagents", isDirectory: true)
+        try FileManager.default.createDirectory(at: subagentsDir, withIntermediateDirectories: true)
+        let sessionID = "11111111-2222-3333-4444-555555555555"
+
+        func writeTranscript(_ url: URL, text: String) throws {
+            let records: [[String: Any]] = [
+                [
+                    "type": "user", "sessionId": sessionID, "cwd": "/tmp/qoder",
+                    "timestamp": "2026-08-23T00:00:00Z",
+                    "message": ["role": "user", "content": text],
+                ],
+                [
+                    "type": "assistant", "sessionId": sessionID, "cwd": "/tmp/qoder",
+                    "timestamp": "2026-08-23T00:00:01Z",
+                    "message": ["role": "assistant", "content": "done"],
+                ],
+            ]
+            try records.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+                .write(to: url, atomically: true, encoding: .utf8)
+        }
+
+        let parentURL = projectDir.appendingPathComponent("\(sessionID).jsonl")
+        let childURL = subagentsDir.appendingPathComponent("agent-worker.jsonl")
+        try writeTranscript(parentURL, text: "parent task")
+        try writeTranscript(childURL, text: "child task")
+        let adapter = QoderAdapter(projectsRoot: root.path)
+
+        let locators = try await adapter.listSessionLocators()
+        XCTAssertEqual(locators.count, 2)
+        XCTAssertTrue(locators.contains { $0.hasSuffix("/encoded-project/\(sessionID).jsonl") })
+        XCTAssertTrue(locators.contains { $0.hasSuffix("/encoded-project/subagents/agent-worker.jsonl") })
+        let parent = try sessionInfo(await adapter.parseSessionInfo(locator: parentURL.path))
+        let child = try sessionInfo(await adapter.parseSessionInfo(locator: childURL.path))
+
+        XCTAssertEqual(parent.id, sessionID)
+        XCTAssertNil(parent.agentRole)
+        XCTAssertEqual(child.id, "sub:\(sessionID):subagents/agent-worker.jsonl")
+        XCTAssertEqual(child.agentRole, "subagent")
+        XCTAssertEqual(child.parentSessionId, sessionID)
+        XCTAssertEqual(
+            SessionTier.compute(
+                TierInput(
+                    messageCount: child.messageCount,
+                    agentRole: child.agentRole,
+                    filePath: child.filePath,
+                    source: child.source.rawValue,
+                    assistantCount: child.assistantMessageCount,
+                    toolCount: child.toolMessageCount
+                )
+            ),
+            .skip
+        )
+    }
+
     /// parseSessionInfo used readObjects without reportFailures, so an
     /// oversized Qoder transcript returned prefix counts as if complete.
     /// invariant: ADAPTER-PARSEINFO-CAP-001F
@@ -1682,7 +3304,7 @@ final class AdapterMessageCountTests: XCTestCase {
     /// streamMessages used windowedMessages, which swallows messageLimitExceeded
     /// and streams a prefix as complete when limit is nil.
     /// invariant: ADAPTER-STREAM-WHOLE-CAP-001G
-    func testQoderOversizedTranscriptStreamMessagesFailsClosed_repro() async throws {
+    func testQoderOversizedTranscriptStreamMessagesKeepsProducedPrefix_repro() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
         let projectDir = root.appendingPathComponent("project-oversized-stream", isDirectory: true)
@@ -1710,12 +3332,8 @@ final class AdapterMessageCountTests: XCTestCase {
             projectsRoot: root.path,
             limits: ParserLimits(maxMessages: 3)
         )
-        do {
-            _ = try await drain(adapter, locator: file.path)
-            XCTFail("oversized whole-transcript stream must fail closed")
-        } catch let failure as ParserFailure {
-            XCTAssertEqual(failure, .messageLimitExceeded)
-        }
+        let messages = try await drain(adapter, locator: file.path)
+        XCTAssertEqual(messages.count, 3)
     }
 
     /// R184-3: injection-only Qoder files must be terminal, not zero-count sessions.
@@ -2038,6 +3656,27 @@ final class AdapterMessageCountTests: XCTestCase {
 
     // MARK: - Cline
 
+    func testClineIgnoresUntimestampedVisibleRowsInSessionCounts_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let taskDir = root.appendingPathComponent("timestamped-count", isDirectory: true)
+        try FileManager.default.createDirectory(at: taskDir, withIntermediateDirectories: true)
+        let file = taskDir.appendingPathComponent("ui_messages.json")
+        let rows: [[String: Any]] = [
+            ["ts": 1_771_392_000_000, "say": "task", "text": "counted"],
+            ["say": "text", "text": "missing timestamp"],
+        ]
+        try JSONSerialization.data(withJSONObject: rows).write(to: file)
+
+        let adapter = ClineAdapter(tasksRoot: root.path)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+        let messages = try await drain(adapter, locator: file.path)
+
+        XCTAssertEqual(info.messageCount, messages.count)
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 0)
+    }
+
     func testClineListsLegacyClaudeMessagesWhenUiMessagesMissing() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -2157,6 +3796,62 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(result.truncatedAt, 3)
         XCTAssertFalse(result.totalKnownComplete)
         XCTAssertTrue(result.truncated)
+    }
+
+    func testClinePagedReadNeverCrossesGlobalMessageCap_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let taskDir = root.appendingPathComponent("paged-cap-task", isDirectory: true)
+        try FileManager.default.createDirectory(at: taskDir, withIntermediateDirectories: true)
+        let file = taskDir.appendingPathComponent("ui_messages.json")
+        let rows: [[String: Any]] = (0..<4).map { index in
+            [
+                "ts": 1_771_392_000_000 + index * 1_000,
+                "type": "say",
+                "say": index % 2 == 0 ? "task" : "text",
+                "text": "cline paged turn \(index)",
+            ]
+        }
+        try JSONSerialization.data(withJSONObject: rows, options: [.withoutEscapingSlashes])
+            .write(to: file)
+
+        let adapter = ClineAdapter(tasksRoot: root.path, limits: ParserLimits(maxMessages: 3))
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions(offset: 2, limit: 500)
+        )
+        var messages: [NormalizedMessage] = []
+        for try await message in result.messages { messages.append(message) }
+
+        XCTAssertEqual(messages.map(\.content), ["cline paged turn 2"])
+        XCTAssertEqual(result.truncatedAt, 3)
+        XCTAssertFalse(result.totalKnownComplete)
+    }
+
+    func testClineMalformedObjectAfterPrefixReturnsPrefixMetadata_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let taskDir = root.appendingPathComponent("malformed-prefix", isDirectory: true)
+        try FileManager.default.createDirectory(at: taskDir, withIntermediateDirectories: true)
+        let file = taskDir.appendingPathComponent("ui_messages.json")
+        let valid = try jsonLine([
+            "ts": 1_771_392_000_000,
+            "type": "say",
+            "say": "task",
+            "text": "kept prefix",
+        ])
+        try "[\(valid),{\"ts\":1771392001000,\"type\":\"say\",\"text\":}]"
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let result = try await ClineAdapter(tasksRoot: root.path)
+            .streamMessagesWithMetadata(
+                locator: file.path,
+                options: StreamMessagesOptions(offset: 0, limit: 500)
+            )
+        var messages: [NormalizedMessage] = []
+        for try await message in result.messages { messages.append(message) }
+        XCTAssertEqual(messages.map(\.content), ["kept prefix"])
+        XCTAssertEqual(result.parseFailure, .malformedJSON)
     }
 
     /// streamMessages used applyWindow on the produced list, so an oversized
@@ -2298,6 +3993,104 @@ final class AdapterMessageCountTests: XCTestCase {
 
     // MARK: - Codex
 
+    func testCodexMessageCapIgnoresEnvelopeRecords_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("rollout-codex-envelope-cap.jsonl")
+        let lines: [[String: Any]] = [
+            ["timestamp": "2026-08-21T00:00:00Z", "type": "session_meta",
+             "payload": ["id": "codex-envelope-cap", "timestamp": "2026-08-21T00:00:00Z", "cwd": "/tmp/codex"]],
+            ["timestamp": "2026-08-21T00:00:01Z", "type": "turn_context", "payload": ["model": "gpt-5"]],
+            ["timestamp": "2026-08-21T00:00:02Z", "type": "event_msg", "payload": ["type": "token_count"]],
+            ["timestamp": "2026-08-21T00:00:03Z", "type": "response_item",
+             "payload": ["type": "message", "role": "user", "content": [["type": "input_text", "text": "request"]]]],
+            ["timestamp": "2026-08-21T00:00:04Z", "type": "response_item",
+             "payload": ["type": "message", "role": "assistant", "content": [["type": "output_text", "text": "reply"]]]],
+        ]
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = CodexAdapter(sessionsRoot: root.path, limits: ParserLimits(maxMessages: 2))
+        guard case .success(let info) = try await adapter.parseSessionInfo(locator: file.path) else {
+            return XCTFail("envelope records must not consume the Codex message cap")
+        }
+        let messages = try await drain(adapter, locator: file.path)
+        XCTAssertEqual(info.messageCount, 2)
+        XCTAssertEqual(messages.count, 2)
+    }
+
+    func testCodexMessageCapIgnoresClassifierSystemRows_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("rollout-codex-system-cap.jsonl")
+        let texts = [
+            "<system-reminder>generated reminder</system-reminder>",
+            "<environment_context><cwd>/tmp/codex</cwd></environment_context>",
+            "real Codex task",
+        ]
+        var lines: [[String: Any]] = [[
+            "timestamp": "2026-08-24T00:00:00Z", "type": "session_meta",
+            "payload": ["id": "codex-system-cap", "timestamp": "2026-08-24T00:00:00Z", "cwd": "/tmp/codex"],
+        ]]
+        for (index, text) in texts.enumerated() {
+            lines.append([
+                "timestamp": "2026-08-24T00:00:0\(index + 1)Z", "type": "response_item",
+                "payload": ["type": "message", "role": "user", "content": [["type": "input_text", "text": text]]],
+            ])
+        }
+        lines.append([
+            "timestamp": "2026-08-24T00:00:04Z", "type": "response_item",
+            "payload": ["type": "message", "role": "assistant", "content": [["type": "output_text", "text": "done"]]],
+        ])
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let scan = try sessionInfo(await CodexAdapter(
+            sessionsRoot: root.path,
+            limits: ParserLimits(maxMessages: 2)
+        ).scanForIndexing(locator: file.path))
+        XCTAssertEqual(scan.info.messageCount, 2)
+        XCTAssertEqual(scan.messages.map(\.content), ["real Codex task", "done"])
+    }
+
+    func testCodexPagedReadNeverCrossesGlobalMessageCap_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("rollout-codex-paged-cap.jsonl")
+        var lines: [[String: Any]] = [
+            [
+                "timestamp": "2026-08-21T00:00:00Z",
+                "type": "session_meta",
+                "payload": ["id": "codex-paged-cap", "timestamp": "2026-08-21T00:00:00Z", "cwd": "/tmp/codex"],
+            ],
+        ]
+        for index in 0..<4 {
+            lines.append([
+                "timestamp": "2026-08-21T00:00:0\(index + 1)Z",
+                "type": "response_item",
+                "payload": [
+                    "type": "message",
+                    "role": index.isMultiple(of: 2) ? "user" : "assistant",
+                    "content": [["type": index.isMultiple(of: 2) ? "input_text" : "output_text", "text": "codex turn \(index)"]],
+                ],
+            ])
+        }
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = CodexAdapter(sessionsRoot: root.path, limits: ParserLimits(maxMessages: 3))
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions(offset: 2, limit: 500)
+        )
+        var messages: [NormalizedMessage] = []
+        for try await message in result.messages { messages.append(message) }
+
+        XCTAssertEqual(messages.map(\.content), ["codex turn 2"])
+        XCTAssertEqual(result.truncatedAt, 3)
+        XCTAssertFalse(result.totalKnownComplete)
+    }
+
     /// parseSessionInfo used readObjects without reportFailures, so an
     /// oversized Codex transcript returned prefix counts as if complete.
     /// invariant: ADAPTER-PARSEINFO-CAP-001B
@@ -2317,7 +4110,7 @@ final class AdapterMessageCountTests: XCTestCase {
                 ],
             ],
         ]
-        for index in 0..<3 {
+        for index in 0..<4 {
             let isUser = index % 2 == 0
             lines.append([
                 "timestamp": "2026-08-14T10:00:0\(index + 1).000Z",
@@ -2400,6 +4193,12 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(info.toolMessageCount, 2)
         XCTAssertEqual(info.messageCount, 4)
         XCTAssertEqual(info.messageCount, streamed.count)
+        let functionCall = try XCTUnwrap(streamed.first { $0.toolCalls?.first?.name == "read_file" })
+        XCTAssertEqual(functionCall.content, #"read_file {"path":"a.ts"}"#)
+        XCTAssertEqual(
+            functionCall.toolCalls,
+            [NormalizedToolCall(name: "read_file", input: #"{"path":"a.ts"}"#)]
+        )
     }
 
     // Audit ADAPTER-CODEX-001: custom tool records must stream and count as tool messages.
@@ -2691,6 +4490,45 @@ final class AdapterMessageCountTests: XCTestCase {
         }
     }
 
+    func testCodexTailMessageCapIgnoresSidecarEvents_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("rollout-codex-tail-sidecars.jsonl")
+        let initial: [[String: Any]] = [
+            ["timestamp": "2026-06-01T10:00:00.000Z", "type": "session_meta",
+             "payload": ["id": "codex-tail-sidecars", "timestamp": "2026-06-01T10:00:00.000Z", "cwd": "/tmp/t"]],
+            ["timestamp": "2026-06-01T10:00:01.000Z", "type": "response_item",
+             "payload": ["type": "message", "role": "user", "content": [["type": "input_text", "text": "initial"]]]],
+        ]
+        try initial.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+        let adapter = CodexAdapter(sessionsRoot: root.path, limits: ParserLimits(maxMessages: 3))
+        let scan = try sessionInfo(await adapter.scanForIndexing(locator: file.path))
+        let offset = try XCTUnwrap(scan.checkpointParsedOffset)
+        let boundary = try XCTUnwrap(scan.checkpointBoundaryHash)
+        var tail: [[String: Any]] = (0..<10).map { index in
+            ["timestamp": "2026-06-01T10:00:\(10 + index).000Z", "type": "event_msg",
+             "payload": ["type": "task_progress", "message": "progress \(index)"]]
+        }
+        tail.append([
+            "timestamp": "2026-06-01T10:00:30.000Z", "type": "response_item",
+            "payload": ["type": "message", "role": "user", "content": [["type": "input_text", "text": "real tail turn"]]],
+        ])
+        let handle = try FileHandle(forWritingTo: file)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data((try tail.map(jsonLine).joined(separator: "\n") + "\n").utf8))
+
+        switch try await adapter.scanTailForIndexing(locator: file.path, from: offset, expectedBoundaryHash: boundary) {
+        case .success(let result):
+            XCTAssertEqual(result.messages.map(\.content), ["real tail turn"])
+        case .fallback:
+            XCTFail("expected produced-message tail success")
+        case .failure(let failure):
+            XCTFail("sidecar records must not exhaust the produced-message cap: \(failure)")
+        }
+    }
+
     func testCodexAttachesTokenCountEventUsageToPreviousAssistantMessage() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -2881,6 +4719,133 @@ final class AdapterMessageCountTests: XCTestCase {
     }
 
     // MARK: - Claude Code
+
+    func testClaudeCodeMessageCapIgnoresProgressRecords_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let project = root.appendingPathComponent("-tmp-claude-cap", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let file = project.appendingPathComponent("claude-cap.jsonl")
+        let lines: [[String: Any]] = [
+            ["type": "progress", "sessionId": "claude-cap", "timestamp": "2026-08-21T00:00:00Z"],
+            ["type": "file-history-snapshot", "sessionId": "claude-cap", "timestamp": "2026-08-21T00:00:01Z"],
+            ["type": "user", "sessionId": "claude-cap", "cwd": "/tmp/claude", "timestamp": "2026-08-21T00:00:02Z",
+             "message": ["role": "user", "content": "request"]],
+            ["type": "assistant", "sessionId": "claude-cap", "timestamp": "2026-08-21T00:00:03Z",
+             "message": ["role": "assistant", "content": [["type": "text", "text": "reply"]]]],
+        ]
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = ClaudeCodeAdapter(projectsRoot: root.path, limits: ParserLimits(maxMessages: 2))
+        guard case .success(let info) = try await adapter.parseSessionInfo(locator: file.path) else {
+            return XCTFail("progress records must not consume the Claude Code message cap")
+        }
+        let messages = try await drain(adapter, locator: file.path)
+        XCTAssertEqual(info.messageCount, 2)
+        XCTAssertEqual(messages.count, 2)
+    }
+
+    func testClaudeCodeRenderCapIgnoresSystemInjections_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let project = root.appendingPathComponent("-tmp-claude-render-cap", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let file = project.appendingPathComponent("claude-render-cap.jsonl")
+        let lines: [[String: Any]] = [
+            [
+                "type": "user", "sessionId": "claude-render-cap", "cwd": "/tmp/claude",
+                "timestamp": "2026-08-21T00:00:00Z",
+                "message": [
+                    "role": "user",
+                    "content": "# AGENTS.md instructions for /tmp/claude\n<INSTRUCTIONS>noise</INSTRUCTIONS>",
+                ],
+            ],
+            [
+                "type": "user", "sessionId": "claude-render-cap",
+                "timestamp": "2026-08-21T00:00:01Z",
+                "message": ["role": "user", "content": "<system-reminder>noise</system-reminder>"],
+            ],
+            [
+                "type": "user", "sessionId": "claude-render-cap",
+                "timestamp": "2026-08-21T00:00:02Z",
+                "message": ["role": "user", "content": "real task"],
+            ],
+            [
+                "type": "assistant", "sessionId": "claude-render-cap",
+                "timestamp": "2026-08-21T00:00:03Z",
+                "message": ["role": "assistant", "content": "done"],
+            ],
+        ]
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = ClaudeCodeAdapter(
+            projectsRoot: root.path,
+            limits: ParserLimits(maxMessages: 2)
+        )
+        let streamed = try await drain(adapter, locator: file.path)
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions()
+        )
+        var metadataMessages: [NormalizedMessage] = []
+        for try await message in result.messages { metadataMessages.append(message) }
+
+        XCTAssertEqual(streamed.map(\.role), [.system, .system, .user, .assistant])
+        XCTAssertEqual(metadataMessages.map(\.content), streamed.map(\.content))
+        XCTAssertNil(result.truncatedAt)
+        XCTAssertTrue(result.totalKnownComplete)
+    }
+
+    func testClaudeCodeTailMessageCapIgnoresSidecarsAndFallsBackWithoutProducedMessages_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let project = root.appendingPathComponent("-tmp-claude-tail-cap", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let file = project.appendingPathComponent("claude-tail-cap.jsonl")
+        let initial: [[String: Any]] = [
+            [
+                "type": "user",
+                "sessionId": "claude-tail-cap",
+                "cwd": "/tmp/claude",
+                "timestamp": "2026-08-21T00:00:00Z",
+                "message": ["role": "user", "content": "request"],
+            ],
+        ]
+        try initial.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = ClaudeCodeAdapter(projectsRoot: root.path, limits: ParserLimits(maxMessages: 3))
+        let scan = try sessionInfo(await adapter.scanForIndexing(locator: file.path))
+        let offset = try XCTUnwrap(scan.checkpointParsedOffset)
+        let boundary = try XCTUnwrap(scan.checkpointBoundaryHash)
+        let sidecars: [[String: Any]] = (0..<10).map { index in
+            [
+                "type": "progress",
+                "sessionId": "claude-tail-cap",
+                "timestamp": "2026-08-21T00:00:\(10 + index)Z",
+                "data": ["message": "progress \(index)"],
+            ]
+        }
+        let handle = try FileHandle(forWritingTo: file)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data((try sidecars.map(jsonLine).joined(separator: "\n") + "\n").utf8))
+
+        switch try await adapter.scanTailForIndexing(
+            locator: file.path,
+            from: offset,
+            expectedBoundaryHash: boundary
+        ) {
+        case .fallback:
+            break
+        case .success:
+            XCTFail("a sidecar-only Claude tail must fall back instead of advancing an empty delta")
+        case .failure(let failure):
+            XCTFail("sidecars must not consume the produced-message cap: \(failure)")
+        }
+    }
 
     // Audit ADAPTER-CC-001: shared non-empty message.id must not double-count
     // response-level usage while still streaming every content block.
@@ -3182,7 +5147,7 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertGreaterThan(state.retryCount, 0)
     }
 
-    func testClaudeCodeSystemInjectionCountMatchesStream() async throws {
+    func testClaudeCodeRenderStreamIncludesSystemInjectionButIndexScanExcludes_repro() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
         let projectDir = root.appendingPathComponent("-Users-test-system-mixed", isDirectory: true)
@@ -3203,6 +5168,18 @@ final class AdapterMessageCountTests: XCTestCase {
                 "type": "user",
                 "sessionId": "cc-system-mixed",
                 "timestamp": "2026-01-01T00:00:01Z",
+                "message": ["role": "user", "content": "<system-reminder>generated reminder</system-reminder>"],
+            ],
+            [
+                "type": "user",
+                "sessionId": "cc-system-mixed",
+                "timestamp": "2026-01-01T00:00:01.500Z",
+                "message": ["role": "user", "content": "<environment_context><cwd>/tmp/claude</cwd></environment_context>"],
+            ],
+            [
+                "type": "user",
+                "sessionId": "cc-system-mixed",
+                "timestamp": "2026-01-01T00:00:01.750Z",
                 "message": ["role": "user", "content": "real task"],
             ],
             [
@@ -3219,13 +5196,27 @@ final class AdapterMessageCountTests: XCTestCase {
         let adapter = ClaudeCodeAdapter(projectsRoot: root.path)
         let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
         let streamed = try await drain(adapter, locator: file.path)
+        let indexingScan = try sessionInfo(await adapter.scanForIndexing(locator: file.path))
 
         XCTAssertEqual(info.userMessageCount, 1)
         XCTAssertEqual(info.assistantMessageCount, 1)
-        XCTAssertEqual(info.systemMessageCount, 1)
+        XCTAssertEqual(info.systemMessageCount, 3)
         XCTAssertEqual(info.messageCount, 2)
-        XCTAssertEqual(info.messageCount, streamed.count, "count must match streamed message count")
-        XCTAssertEqual(streamed.map(\.content), ["real task", "done"])
+        XCTAssertEqual(
+            streamed.map(\.role),
+            [.system, .system, .system, .user, .assistant]
+        )
+        XCTAssertEqual(
+            streamed.map(\.content),
+            [
+                "# AGENTS.md instructions for /Users/test/system-mixed\n<INSTRUCTIONS>...</INSTRUCTIONS>",
+                "<system-reminder>generated reminder</system-reminder>",
+                "<environment_context><cwd>/tmp/claude</cwd></environment_context>",
+                "real task",
+                "done",
+            ]
+        )
+        XCTAssertEqual(indexingScan.messages.map(\.content), ["real task", "done"])
     }
 
     func testClaudeCodeMultiRootIndexingScanForcesNonDefaultSourceAndOriginator() async throws {
@@ -3282,6 +5273,38 @@ final class AdapterMessageCountTests: XCTestCase {
     }
 
     // MARK: - Copilot
+
+    func testCopilotMessageCapIgnoresLifecycleRecords_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("copilot-envelope-cap", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        try "id: copilot-envelope-cap\ncwd: /tmp/copilot\ncreated_at: 2026-08-21T00:00:00Z\n"
+            .write(to: sessionDir.appendingPathComponent("workspace.yaml"), atomically: true, encoding: .utf8)
+        let events = sessionDir.appendingPathComponent("events.jsonl")
+        let lines: [[String: Any]] = [
+            ["type": "session.start", "timestamp": "2026-08-21T00:00:00Z", "data": ["context": ["cwd": "/tmp/copilot"]]],
+            ["type": "tool.execution_start", "timestamp": "2026-08-21T00:00:01Z", "data": [:]],
+            ["type": "user.message", "timestamp": "2026-08-21T00:00:02Z", "data": ["content": "request"]],
+            ["type": "assistant.message", "timestamp": "2026-08-21T00:00:03Z", "data": ["content": "reply"]],
+        ]
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: events, atomically: true, encoding: .utf8)
+
+        let adapter = CopilotAdapter(sessionRoot: root.path, limits: ParserLimits(maxMessages: 2))
+        guard case .success(let info) = try await adapter.parseSessionInfo(locator: events.path) else {
+            return XCTFail("lifecycle records must not consume the Copilot message cap")
+        }
+        let messages = try await drain(adapter, locator: events.path)
+        XCTAssertEqual(info.messageCount, 2)
+        XCTAssertEqual(messages.count, 2)
+        switch try await adapter.scanForIndexing(locator: events.path) {
+        case .success(let scan):
+            XCTAssertEqual(scan.messages.count, 2)
+        case .failure(let failure):
+            XCTFail("indexing scan must preserve the Copilot message cap: \(failure)")
+        }
+    }
 
     func testCopilotAttachesShutdownModelMetricsToLastAssistantMessage() async throws {
         let root = tempDir()
@@ -3345,7 +5368,7 @@ final class AdapterMessageCountTests: XCTestCase {
         )
     }
 
-    func testCopilotFallsBackToCheckpointIndexWhenEventsAreMissing() async throws {
+    func testCopilotFallsBackToCheckpointIndexWhenEventsAreMissing_repro() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
         let sessionDir = root.appendingPathComponent("session-no-events", isDirectory: true)
@@ -3402,10 +5425,11 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(info.startTime, "2026-06-01T10:00:00.000Z")
         XCTAssertEqual(info.endTime, "2026-06-01T10:05:00.000Z")
         XCTAssertEqual(info.summary, "Initial production deploy audit")
-        XCTAssertEqual(info.systemMessageCount, 2)
+        XCTAssertEqual(info.assistantMessageCount, 2)
+        XCTAssertEqual(info.systemMessageCount, 0)
         XCTAssertEqual(info.messageCount, 2)
         XCTAssertEqual(info.messageCount, streamed.count)
-        XCTAssertEqual(streamed.map(\.role), [.system, .system])
+        XCTAssertEqual(streamed.map(\.role), [.assistant, .assistant])
         XCTAssertEqual(streamed.map(\.content), [
             """
             Checkpoint 1: Initial production deploy audit
@@ -3473,11 +5497,41 @@ final class AdapterMessageCountTests: XCTestCase {
         switch try await adapter.parseSessionInfo(locator: checkpointIndex.path) {
         case .success(let info):
             XCTAssertEqual(info.id, "session-start-only")
-            XCTAssertEqual(info.systemMessageCount, 1)
+            XCTAssertEqual(info.assistantMessageCount, 1)
+            XCTAssertEqual(info.systemMessageCount, 0)
             XCTAssertEqual(info.messageCount, 1)
         case .failure(let failure):
             XCTFail("unexpected adapter failure: \(failure)")
         }
+    }
+
+    func testCopilotConversationSniffSkipsMalformedLines_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("session-malformed-sniff", isDirectory: true)
+        let checkpointsDir = sessionDir.appendingPathComponent("checkpoints", isDirectory: true)
+        try FileManager.default.createDirectory(at: checkpointsDir, withIntermediateDirectories: true)
+        let events = sessionDir.appendingPathComponent("events.jsonl")
+        let valid = try jsonLine([
+            "type": "user.message",
+            "timestamp": "2026-06-01T10:00:00.000Z",
+            "data": ["content": "real conversation"],
+        ])
+        try ("{ malformed\n" + valid + "\n").write(
+            to: events,
+            atomically: true,
+            encoding: .utf8
+        )
+        let checkpointIndex = checkpointsDir.appendingPathComponent("index.md")
+        try "| # | Title | File |\n| 1 | stale checkpoint | |\n"
+            .write(to: checkpointIndex, atomically: true, encoding: .utf8)
+
+        let locators = try await CopilotAdapter(sessionRoot: root.path).listSessionLocators()
+
+        XCTAssertEqual(
+            locators.map { URL(fileURLWithPath: $0).standardizedFileURL.path },
+            [events.standardizedFileURL.path]
+        )
     }
 
     /// R184-3 / ADAPTER-EMPTY-SESSION-001J: a valid Copilot session whose
@@ -3550,10 +5604,10 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(failure, .messageLimitExceeded)
     }
 
-    /// streamMessages used readObjects without reportFailures when limit is
-    /// nil, so an oversized events.jsonl streamed a prefix as complete.
-    /// invariant: ADAPTER-STREAM-WHOLE-CAP-001
-    func testCopilotOversizedTranscriptStreamMessagesFailsClosed_repro() async throws {
+    /// Plain streams preserve the produced prefix for pagination/export even
+    /// when a later event crosses the configured message cap. Metadata and
+    /// parseSessionInfo retain the fail-closed truncation signal.
+    func testCopilotOversizedTranscriptStreamMessagesKeepsPrefix_repro() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
         let sessionDir = root.appendingPathComponent("session-oversized-stream", isDirectory: true)
@@ -3582,12 +5636,12 @@ final class AdapterMessageCountTests: XCTestCase {
             sessionRoot: root.path,
             limits: ParserLimits(maxMessages: 3)
         )
-        do {
-            _ = try await drain(adapter, locator: events.path)
-            XCTFail("oversized whole-transcript stream must fail closed")
-        } catch let failure as ParserFailure {
-            XCTAssertEqual(failure, .messageLimitExceeded)
-        }
+        let messages = try await drain(adapter, locator: events.path)
+        XCTAssertEqual(messages.map(\.content), [
+            "copilot stream turn 0",
+            "copilot stream turn 1",
+            "copilot stream turn 2",
+        ])
     }
 
     /// Copilot checkpoint indexes inherit SessionAdapter's default
@@ -3634,6 +5688,36 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(result.truncatedAt, 3)
         XCTAssertFalse(result.totalKnownComplete)
         XCTAssertTrue(result.truncated)
+    }
+
+    func testCopilotPagedEventsNeverCrossGlobalMessageCap_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("session-paged-events", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        try "id: session-paged-events\ncwd: /tmp/copilot\n"
+            .write(to: sessionDir.appendingPathComponent("workspace.yaml"), atomically: true, encoding: .utf8)
+        let events = sessionDir.appendingPathComponent("events.jsonl")
+        let rows: [[String: Any]] = (0..<4).map { index in
+            [
+                "type": index.isMultiple(of: 2) ? "user.message" : "assistant.message",
+                "data": ["content": "copilot paged turn \(index)"],
+            ]
+        }
+        try rows.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: events, atomically: true, encoding: .utf8)
+
+        let adapter = CopilotAdapter(sessionRoot: root.path, limits: ParserLimits(maxMessages: 3))
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: events.path,
+            options: StreamMessagesOptions(offset: 2, limit: 500)
+        )
+        var messages: [NormalizedMessage] = []
+        for try await message in result.messages { messages.append(message) }
+
+        XCTAssertEqual(messages.map(\.content), ["copilot paged turn 2"])
+        XCTAssertEqual(result.truncatedAt, 3)
+        XCTAssertFalse(result.totalKnownComplete)
     }
 
     /// parseCheckpointSessionInfo counted every index.md row without the
@@ -3792,7 +5876,8 @@ final class AdapterMessageCountTests: XCTestCase {
         let beforeSize: Int64
         switch try await adapter.parseSessionInfo(locator: checkpointIndex.path) {
         case .success(let before):
-            XCTAssertEqual(before.systemMessageCount, 1)
+            XCTAssertEqual(before.assistantMessageCount, 1)
+            XCTAssertEqual(before.systemMessageCount, 0)
             beforeSize = before.sizeBytes
         case .failure(let failure):
             XCTFail("unexpected adapter failure: \(failure)")
@@ -3828,6 +5913,91 @@ final class AdapterMessageCountTests: XCTestCase {
         case .failure(let failure):
             XCTFail("unexpected adapter failure: \(failure)")
         }
+    }
+
+    func testCopilotCheckpointScanRejectsWorkspaceMutation_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("session-workspace-race", isDirectory: true)
+        let checkpointsDir = sessionDir.appendingPathComponent("checkpoints", isDirectory: true)
+        try FileManager.default.createDirectory(at: checkpointsDir, withIntermediateDirectories: true)
+        let workspace = sessionDir.appendingPathComponent("workspace.yaml")
+        try "id: session-workspace-race\ncwd: /tmp/original\n"
+            .write(to: workspace, atomically: true, encoding: .utf8)
+        let checkpointIndex = checkpointsDir.appendingPathComponent("index.md")
+        try "| 1 | Race | 001-race.md |\n"
+            .write(to: checkpointIndex, atomically: true, encoding: .utf8)
+        try "<overview>stable body</overview>\n"
+            .write(to: checkpointsDir.appendingPathComponent("001-race.md"), atomically: true, encoding: .utf8)
+
+        let adapter = CopilotAdapter(
+            sessionRoot: root.path,
+            testHooks: CopilotAdapterTestHooks(beforeCompositeIdentityValidation: {
+                try? "id: session-workspace-race\ncwd: /tmp/changed\n"
+                    .write(to: workspace, atomically: true, encoding: .utf8)
+            })
+        )
+        guard case .failure(let failure) = try await adapter.scanForIndexing(locator: checkpointIndex.path) else {
+            return XCTFail("a workspace rewrite during the composite scan must fail closed")
+        }
+        XCTAssertEqual(failure, .fileModifiedDuringParse)
+    }
+
+    func testCopilotCheckpointScanRejectsBodyMutation_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("session-body-race", isDirectory: true)
+        let checkpointsDir = sessionDir.appendingPathComponent("checkpoints", isDirectory: true)
+        try FileManager.default.createDirectory(at: checkpointsDir, withIntermediateDirectories: true)
+        try "id: session-body-race\ncwd: /tmp/project\n"
+            .write(to: sessionDir.appendingPathComponent("workspace.yaml"), atomically: true, encoding: .utf8)
+        let checkpointIndex = checkpointsDir.appendingPathComponent("index.md")
+        try "| 1 | Race | 001-race.md |\n"
+            .write(to: checkpointIndex, atomically: true, encoding: .utf8)
+        let body = checkpointsDir.appendingPathComponent("001-race.md")
+        try "<overview>original body</overview>\n".write(to: body, atomically: true, encoding: .utf8)
+
+        let adapter = CopilotAdapter(
+            sessionRoot: root.path,
+            testHooks: CopilotAdapterTestHooks(beforeCompositeIdentityValidation: {
+                try? "<overview>changed checkpoint body</overview>\n"
+                    .write(to: body, atomically: true, encoding: .utf8)
+            })
+        )
+        guard case .failure(let failure) = try await adapter.scanForIndexing(locator: checkpointIndex.path) else {
+            return XCTFail("a checkpoint rewrite during the composite scan must fail closed")
+        }
+        XCTAssertEqual(failure, .fileModifiedDuringParse)
+    }
+
+    func testCopilotEventsMutationYieldsProducedPrefixWithoutCleanIdentity_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("copilot-events-prefix-\(UUID().uuidString)", isDirectory: true)
+        let sessionDir = root.appendingPathComponent("session-events-prefix", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = sessionDir.appendingPathComponent("workspace.yaml")
+        try "id: session-events-prefix\ncwd: /tmp/old\n"
+            .write(to: workspace, atomically: true, encoding: .utf8)
+        let events = sessionDir.appendingPathComponent("events.jsonl")
+        try [
+            #"{"type":"user.message","data":{"content":"produced user"}}"#,
+            #"{"type":"assistant.message","data":{"content":"produced assistant"}}"#,
+        ].joined(separator: "\n").appending("\n")
+            .write(to: events, atomically: true, encoding: .utf8)
+        let adapter = CopilotAdapter(
+            sessionRoot: root.path,
+            testHooks: CopilotAdapterTestHooks(beforeCompositeIdentityValidation: {
+                try? "id: session-events-prefix\ncwd: /tmp/new\n"
+                    .write(to: workspace, atomically: true, encoding: .utf8)
+            })
+        )
+
+        guard case .success(let scan) = try await adapter.scanForIndexing(locator: events.path) else {
+            return XCTFail("a produced events prefix must remain indexable")
+        }
+        XCTAssertEqual(scan.messages.map(\.content), ["produced user", "produced assistant"])
+        XCTAssertEqual(scan.parseFailure, .fileModifiedDuringParse)
     }
 
     // Audit COPILOT-AUX/DISCOVERY transition: conversation stripped from events
@@ -3920,7 +6090,8 @@ final class AdapterMessageCountTests: XCTestCase {
         switch try await adapter.parseSessionInfo(locator: checkpointIndex.path) {
         case .success(let info):
             XCTAssertEqual(info.id, "session-events-to-checkpoint")
-            XCTAssertEqual(info.systemMessageCount, 1)
+            XCTAssertEqual(info.assistantMessageCount, 1)
+            XCTAssertEqual(info.systemMessageCount, 0)
         case .failure(let failure):
             XCTFail("unexpected adapter failure: \(failure)")
         }
@@ -3984,7 +6155,8 @@ final class AdapterMessageCountTests: XCTestCase {
         )
         switch try await adapter.parseSessionInfo(locator: checkpointIndex.path) {
         case .success(let info):
-            XCTAssertEqual(info.systemMessageCount, 1)
+            XCTAssertEqual(info.assistantMessageCount, 1)
+            XCTAssertEqual(info.systemMessageCount, 0)
             // Title remains even when body file is gone.
             XCTAssertTrue(info.summary?.contains("Deletable body") == true)
         case .failure(let failure):
@@ -4049,7 +6221,7 @@ final class AdapterMessageCountTests: XCTestCase {
 
         let adapter = CopilotAdapter(
             sessionRoot: root.path,
-            limits: ParserLimits(maxFileBytes: 128)
+            limits: ParserLimits(maxFileBytes: 180)
         )
         let streamed = try await drain(adapter, locator: checkpointIndex.path)
 
@@ -4188,6 +6360,22 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(info.messageCount, 2)
         XCTAssertEqual(info.messageCount, streamed.count, "count must match streamed message count")
         XCTAssertEqual(streamed.map(\.content), ["question", "answer\nfollow-up"])
+    }
+
+    func testOpenCodeLinksParentsWithoutSkipHidingContinuedForks_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("opencode.db").path
+        try Self.buildOpenCodeParentFixture(dbPath: dbPath)
+        let adapter = OpenCodeAdapter(dbPath: dbPath)
+
+        let fork = try sessionInfo(await adapter.parseSessionInfo(locator: "\(dbPath)::fork"))
+        let task = try sessionInfo(await adapter.parseSessionInfo(locator: "\(dbPath)::task"))
+
+        XCTAssertEqual(fork.parentSessionId, "parent")
+        XCTAssertNil(fork.agentRole, "a continued fork must remain visible")
+        XCTAssertEqual(task.parentSessionId, "parent")
+        XCTAssertEqual(task.agentRole, "dispatched", "a non-primary TaskTool agent is dispatched even without a title suffix")
     }
 
     /// R184-3: a live OpenCode session with no contentful text parts must be
@@ -4355,6 +6543,343 @@ final class AdapterMessageCountTests: XCTestCase {
 
         XCTAssertEqual(info.startTime, "2023-11-14T22:13:21.000Z")
         XCTAssertEqual(info.endTime, "2023-11-14T22:13:22.000Z")
+    }
+
+    func testCursorUnwrapsNestedConversationSummaryAndCapsIt_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("state.vscdb").path
+        let summary = String(repeating: "nested summary ", count: 20)
+        try Self.buildCursorNestedSummaryFixture(dbPath: dbPath, summary: summary)
+
+        let adapter = CursorAdapter(dbPath: dbPath)
+        let info = try sessionInfo(
+            await adapter.parseSessionInfo(locator: "\(dbPath)?composer=cmp_nested_summary")
+        )
+
+        XCTAssertEqual(info.summary, String(summary.prefix(200)))
+        XCTAssertEqual(info.summary?.count, 200)
+    }
+
+    func testCursorFallsBackToFirstUserTextForSummaryButNotOfficialTitle_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("state.vscdb").path
+        try Self.buildCursorOwnershipComposerFixture(
+            dbPath: dbPath,
+            composerId: "cmp_first_user",
+            selectedFile: "/tmp/ignored.swift"
+        )
+
+        let info = try sessionInfo(
+            await CursorAdapter(dbPath: dbPath).parseSessionInfo(
+                locator: "\(dbPath)?composer=cmp_first_user"
+            )
+        )
+
+        XCTAssertEqual(info.summary, "ownership probe")
+        XCTAssertNil(info.displayTitle)
+    }
+
+    func testCursorDiscoversModernStoreAndTranscriptAsOneNamedSession_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cursorRoot = root.appendingPathComponent(".cursor", isDirectory: true)
+        let sessionID = "modern-cursor-session"
+        try Self.buildModernCursorFixture(
+            cursorRoot: cursorRoot,
+            sessionID: sessionID,
+            name: "Modern Cursor Chat"
+        )
+
+        let adapter = CursorAdapter(
+            dbPath: root.appendingPathComponent("missing-state.vscdb").path,
+            cursorDataRoot: cursorRoot
+        )
+        let locators = try await adapter.listSessionLocators()
+
+        XCTAssertEqual(locators.count, 1)
+        let locator = try XCTUnwrap(locators.first)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: locator))
+        XCTAssertEqual(info.id, sessionID)
+        XCTAssertEqual(info.displayTitle, "Modern Cursor Chat")
+        XCTAssertEqual(info.summary, "Modern first user prompt")
+        let roles = try await drain(adapter, locator: locator).map(\.role)
+        XCTAssertEqual(roles, [.user, .assistant])
+    }
+
+    func testCursorModernSummaryUsesConversationDigestWithoutInventingOfficialTitle_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cursorRoot = root.appendingPathComponent(".cursor", isDirectory: true)
+        let sessionID = "modern-cursor-summary"
+        try Self.buildModernCursorFixture(
+            cursorRoot: cursorRoot,
+            sessionID: sessionID,
+            name: nil,
+            conversationSummary: "Modern conversation digest"
+        )
+
+        let adapter = CursorAdapter(
+            dbPath: root.appendingPathComponent("missing-state.vscdb").path,
+            cursorDataRoot: cursorRoot
+        )
+        let locators = try await adapter.listSessionLocators()
+        let locator = try XCTUnwrap(locators.first)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: locator))
+
+        XCTAssertEqual(info.summary, "Modern conversation digest")
+        XCTAssertNil(info.displayTitle)
+    }
+
+    func testCursorModernMetaJSONProvidesOfficialTitleCwdAndCreatedTime_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cursorRoot = root.appendingPathComponent(".cursor", isDirectory: true)
+        let sessionID = "modern-cursor-meta"
+        try Self.buildModernCursorFixture(
+            cursorRoot: cursorRoot,
+            sessionID: sessionID,
+            name: nil
+        )
+        let sessionRoot = cursorRoot
+            .appendingPathComponent("chats/workspace", isDirectory: true)
+            .appendingPathComponent(sessionID, isDirectory: true)
+        let meta: [String: Any] = [
+            "title": "Live Cursor Meta Title",
+            "cwd": "/Users/test/live-project",
+            "createdAtMs": 1_710_000_000_000,
+        ]
+        try JSONSerialization.data(withJSONObject: meta).write(
+            to: sessionRoot.appendingPathComponent("meta.json")
+        )
+
+        let adapter = CursorAdapter(
+            dbPath: root.appendingPathComponent("missing-state.vscdb").path,
+            cursorDataRoot: cursorRoot
+        )
+        let locators = try await adapter.listSessionLocators()
+        let locator = try XCTUnwrap(locators.first)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: locator))
+
+        XCTAssertEqual(info.displayTitle, "Live Cursor Meta Title")
+        XCTAssertEqual(info.cwd, "/Users/test/live-project")
+        XCTAssertEqual(info.project, "live-project")
+        XCTAssertEqual(info.startTime, Phase4AdapterSupport.isoFromMilliseconds(1_710_000_000_000))
+    }
+
+    func testCursorSwiftIndexerRefreshesSummaryAtSameCountAndUsesFirstNonemptyOfficialName_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cursorRoot = root.appendingPathComponent(".cursor", isDirectory: true)
+        let sessionID = "cursor-live-summary-version"
+        try Self.buildModernCursorFixture(
+            cursorRoot: cursorRoot,
+            sessionID: sessionID,
+            name: nil,
+            conversationSummary: "Initial Cursor conversation digest"
+        )
+        let adapter = CursorAdapter(
+            dbPath: root.appendingPathComponent("missing-state.vscdb").path,
+            cursorDataRoot: cursorRoot
+        )
+        let databaseURL = root.appendingPathComponent("engram.sqlite")
+        let writer = try EngramDatabaseWriter(path: databaseURL.path)
+        try writer.migrate()
+
+        let first = try await SwiftIndexer(
+            sink: AdapterNoopIndexingWriteSink(),
+            adapters: [adapter]
+        ).collectSnapshots()
+        try writer.write { db in
+            _ = try SessionBatchUpsert(db: db).upsertBatch(first, reason: .initialScan)
+        }
+
+        let sessionRoot = cursorRoot
+            .appendingPathComponent("chats/workspace", isDirectory: true)
+            .appendingPathComponent(sessionID, isDirectory: true)
+        let updatedMetadata: [String: Any] = [
+            "title": "   ",
+            "name": "Official Cursor Name",
+            "latestConversationSummary": [
+                "summary": ["summary": "Updated Cursor conversation digest"],
+            ],
+        ]
+        let updatedData = try JSONSerialization.data(withJSONObject: updatedMetadata)
+        try updatedData.write(to: sessionRoot.appendingPathComponent("meta.json"))
+
+        let second = try await SwiftIndexer(
+            sink: AdapterNoopIndexingWriteSink(),
+            adapters: [adapter]
+        ).collectSnapshots()
+        try writer.write { db in
+            _ = try SessionBatchUpsert(db: db).upsertBatch(second, reason: .initialScan)
+        }
+
+        try writer.read { db in
+            let row = try XCTUnwrap(Row.fetchOne(
+                db,
+                sql: "SELECT summary, summary_message_count, generated_title FROM sessions WHERE id = ?",
+                arguments: [sessionID]
+            ))
+            XCTAssertEqual(row["summary"] as String?, "Updated Cursor conversation digest")
+            XCTAssertNil(row["summary_message_count"] as Int?)
+            XCTAssertEqual(row["generated_title"] as String?, "Official Cursor Name")
+        }
+    }
+
+    func testCursorEmptyLiveConversationSummaryDoesNotInventFirstUserDigest_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cursorRoot = root.appendingPathComponent(".cursor", isDirectory: true)
+        let sessionID = "cursor-empty-live-summary"
+        try Self.buildModernCursorFixture(
+            cursorRoot: cursorRoot,
+            sessionID: sessionID,
+            name: nil,
+            conversationSummary: "Stored Cursor digest"
+        )
+        let sessionRoot = cursorRoot
+            .appendingPathComponent("chats/workspace", isDirectory: true)
+            .appendingPathComponent(sessionID, isDirectory: true)
+        try JSONSerialization.data(withJSONObject: [
+            "latestConversationSummary": ["summary": ["summary": "   "]],
+        ]).write(to: sessionRoot.appendingPathComponent("meta.json"))
+
+        let adapter = CursorAdapter(
+            dbPath: root.appendingPathComponent("missing-state.vscdb").path,
+            cursorDataRoot: cursorRoot
+        )
+        let locators = try await adapter.listSessionLocators()
+        let locator = try XCTUnwrap(locators.first)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: locator))
+        XCTAssertNil(info.summary)
+    }
+
+    func testCursorIndexerReplacesDriftedMechanicalPreviewWithNewDigest_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cursorRoot = root.appendingPathComponent(".cursor", isDirectory: true)
+        let sessionID = "cursor-drifted-preview"
+        try Self.buildModernCursorFixture(
+            cursorRoot: cursorRoot,
+            sessionID: sessionID,
+            name: nil,
+            conversationSummary: "Stored Cursor digest"
+        )
+        let adapter = CursorAdapter(
+            dbPath: root.appendingPathComponent("missing-state.vscdb").path,
+            cursorDataRoot: cursorRoot
+        )
+        let writer = try EngramDatabaseWriter(path: root.appendingPathComponent("engram.sqlite").path)
+        try writer.migrate()
+        let first = try await SwiftIndexer(
+            sink: AdapterNoopIndexingWriteSink(),
+            adapters: [adapter]
+        ).collectSnapshots()
+        try writer.write { db in
+            _ = try SessionBatchUpsert(db: db).upsertBatch(first, reason: .initialScan)
+            try db.execute(
+                sql: "UPDATE sessions SET generated_title = ? WHERE id = ?",
+                arguments: ["Modern first user prompt", sessionID]
+            )
+        }
+
+        let sessionRoot = cursorRoot
+            .appendingPathComponent("chats/workspace", isDirectory: true)
+            .appendingPathComponent(sessionID, isDirectory: true)
+        try JSONSerialization.data(withJSONObject: [
+            "latestConversationSummary": ["summary": ["summary": "New Cursor digest"]],
+        ]).write(to: sessionRoot.appendingPathComponent("meta.json"))
+        let second = try await SwiftIndexer(
+            sink: AdapterNoopIndexingWriteSink(),
+            adapters: [adapter]
+        ).collectSnapshots()
+        try writer.write { db in
+            _ = try SessionBatchUpsert(db: db).upsertBatch(second, reason: .initialScan)
+        }
+        try writer.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT generated_title FROM sessions WHERE id = ?", arguments: [sessionID]),
+                "New Cursor digest"
+            )
+        }
+    }
+
+    func testCursorMigratedWorkspaceHeaderSetsUniqueOwnershipAndOfficialTitle_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let globalStorage = root.appendingPathComponent("globalStorage", isDirectory: true)
+        let workspaceStorage = root.appendingPathComponent("workspaceStorage", isDirectory: true)
+        try FileManager.default.createDirectory(at: globalStorage, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: workspaceStorage, withIntermediateDirectories: true)
+        let dbPath = globalStorage.appendingPathComponent("state.vscdb").path
+        let composerId = "cmp_migrated_header"
+        let officialName = "  Official migrated Cursor title  "
+        try Self.buildCursorMigratedHeaderFixture(
+            globalDBPath: dbPath,
+            workspaceStorage: workspaceStorage,
+            workspaceName: "migrated-workspace",
+            composerId: composerId,
+            officialName: officialName
+        )
+
+        let adapter = CursorAdapter(dbPath: dbPath)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: "\(dbPath)?composer=\(composerId)"))
+
+        XCTAssertEqual(info.cwd, "/Users/test/migrated-project")
+        XCTAssertEqual(info.project, "migrated-project")
+        XCTAssertEqual(info.displayTitle, "Official migrated Cursor title")
+        XCTAssertEqual(info.summary, "Nested migrated digest")
+    }
+
+    func testCursorOfficialTitleUsesSwiftCharacterBoundary_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let globalStorage = root.appendingPathComponent("globalStorage", isDirectory: true)
+        let workspaceStorage = root.appendingPathComponent("workspaceStorage", isDirectory: true)
+        try FileManager.default.createDirectory(at: globalStorage, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: workspaceStorage, withIntermediateDirectories: true)
+        let dbPath = globalStorage.appendingPathComponent("state.vscdb").path
+        let expectedTitle = String(repeating: "a", count: 119) + "👩🏽‍💻"
+        try Self.buildCursorMigratedHeaderFixture(
+            globalDBPath: dbPath,
+            workspaceStorage: workspaceStorage,
+            workspaceName: "emoji-workspace",
+            composerId: "cmp_emoji_title",
+            officialName: expectedTitle + " tail"
+        )
+
+        let adapter = CursorAdapter(dbPath: dbPath)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: "\(dbPath)?composer=cmp_emoji_title"))
+
+        XCTAssertEqual(info.displayTitle, expectedTitle)
+        XCTAssertEqual(info.displayTitle?.count, 120)
+    }
+
+    func testCursorConflictingGlobalHeaderOwnershipFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let globalStorage = root.appendingPathComponent("globalStorage", isDirectory: true)
+        let workspaceStorage = root.appendingPathComponent("workspaceStorage", isDirectory: true)
+        try FileManager.default.createDirectory(at: globalStorage, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: workspaceStorage, withIntermediateDirectories: true)
+        let dbPath = globalStorage.appendingPathComponent("state.vscdb").path
+        let composerId = "cmp_conflicting_headers"
+        try Self.buildCursorMigratedHeaderFixture(
+            globalDBPath: dbPath,
+            workspaceStorage: workspaceStorage,
+            workspaceName: "first-header-workspace",
+            composerId: composerId,
+            officialName: "Official title",
+            additionalWorkspace: ("second-header-workspace", "/Users/test/second-project")
+        )
+
+        let adapter = CursorAdapter(dbPath: dbPath)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: "\(dbPath)?composer=\(composerId)"))
+
+        XCTAssertEqual(info.cwd, "")
+        XCTAssertNil(info.project)
     }
 
     // CURSOR-CWD-001 (P2): only Cursor's composer-to-workspace index may
@@ -4595,6 +7120,34 @@ final class AdapterMessageCountTests: XCTestCase {
         try exec("INSERT INTO part VALUES ('p4', 'm4', 1700000004000, '{\"type\":\"text\",\"text\":\"second\"}')")
     }
 
+    private static func buildOpenCodeParentFixture(dbPath: String) throws {
+        var db: OpaquePointer?
+        guard sqlite3_open(dbPath, &db) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 1)
+        }
+        defer { sqlite3_close(db) }
+
+        func exec(_ sql: String) throws {
+            var err: UnsafeMutablePointer<CChar>?
+            guard sqlite3_exec(db, sql, nil, nil, &err) == SQLITE_OK else {
+                let message = err.map { String(cString: $0) } ?? "unknown"
+                sqlite3_free(err)
+                throw NSError(domain: "test", code: 2, userInfo: [NSLocalizedDescriptionKey: message])
+            }
+        }
+
+        try exec("CREATE TABLE session (id TEXT, parent_id TEXT, slug TEXT, agent TEXT, directory TEXT, title TEXT, time_created INTEGER, time_updated INTEGER, time_archived INTEGER)")
+        try exec("CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)")
+        try exec("CREATE TABLE part (id TEXT, message_id TEXT, time_created INTEGER, data TEXT)")
+        try exec("INSERT INTO session VALUES ('parent', NULL, 'root-session', 'build', '/tmp/project', 'Parent', 1700000000000, 1700000001000, NULL)")
+        try exec("INSERT INTO session VALUES ('fork', 'parent', 'continued-fork', NULL, '/tmp/project', 'Fork', 1700000002000, 1700000003000, NULL)")
+        try exec("INSERT INTO session VALUES ('task', 'parent', 'task-child', 'explore', '/tmp/project', 'Task work', 1700000004000, 1700000005000, NULL)")
+        for (index, sessionID) in ["fork", "task"].enumerated() {
+            try exec("INSERT INTO message VALUES ('m\(index)', '\(sessionID)', 170000000\(index + 2)000, '{\"role\":\"user\"}')")
+            try exec("INSERT INTO part VALUES ('p\(index)', 'm\(index)', 170000000\(index + 2)000, '{\"type\":\"text\",\"text\":\"question\"}')")
+        }
+    }
+
     private static func buildOpenCodeOversizedFixture(dbPath: String) throws {
         var db: OpaquePointer?
         guard sqlite3_open(dbPath, &db) == SQLITE_OK else {
@@ -4614,8 +7167,8 @@ final class AdapterMessageCountTests: XCTestCase {
         try exec("CREATE TABLE session (id TEXT, directory TEXT, title TEXT, time_created INTEGER, time_updated INTEGER, time_archived INTEGER)")
         try exec("CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)")
         try exec("CREATE TABLE part (id TEXT, message_id TEXT, time_created INTEGER, data TEXT)")
-        try exec("INSERT INTO session VALUES ('ses_oversize', '/tmp/opencode-oversized', 'Oversized', 1700000000000, 1700000004000, NULL)")
-        for index in 0..<4 {
+        try exec("INSERT INTO session VALUES ('ses_oversize', '/tmp/opencode-oversized', 'Oversized', 1700000000000, 1700000008000, NULL)")
+        for index in 0..<8 {
             let role = index % 2 == 0 ? "user" : "assistant"
             try exec("INSERT INTO message VALUES ('m\(index)', 'ses_oversize', \(1_700_000_001_000 + index * 1_000), '{\"role\":\"\(role)\"}')")
             try exec("INSERT INTO part VALUES ('p\(index)', 'm\(index)', \(1_700_000_001_000 + index * 1_000), '{\"type\":\"text\",\"text\":\"opencode info turn \(index)\"}')")
@@ -4768,6 +7321,35 @@ final class AdapterMessageCountTests: XCTestCase {
         try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_usage:a1', '{\"type\":2,\"text\":\"Cursor usage tracked.\",\"timingInfo\":{\"clientStartTime\":1700000002000},\"tokenCount\":{\"inputTokens\":123,\"outputTokens\":45}}')")
     }
 
+    private static func buildCursorNestedSummaryFixture(dbPath: String, summary: String) throws {
+        var db: OpaquePointer?
+        guard sqlite3_open(dbPath, &db) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 1)
+        }
+        defer { sqlite3_close(db) }
+
+        func exec(_ sql: String) throws {
+            var err: UnsafeMutablePointer<CChar>?
+            guard sqlite3_exec(db, sql, nil, nil, &err) == SQLITE_OK else {
+                let message = err.map { String(cString: $0) } ?? "unknown"
+                sqlite3_free(err)
+                throw NSError(domain: "test", code: 2, userInfo: [NSLocalizedDescriptionKey: message])
+            }
+        }
+
+        let composer: [String: Any] = [
+            "composerId": "cmp_nested_summary",
+            "latestConversationSummary": ["summary": ["summary": summary]],
+        ]
+        let composerJSON = try JSONSerialization.data(withJSONObject: composer)
+        let composerValue = try XCTUnwrap(String(data: composerJSON, encoding: .utf8))
+            .replacingOccurrences(of: "'", with: "''")
+
+        try exec("CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)")
+        try exec("INSERT INTO cursorDiskKV VALUES ('composerData:cmp_nested_summary', '\(composerValue)')")
+        try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_nested_summary:u1', '{\"type\":1,\"text\":\"summarize this\",\"timingInfo\":{\"clientStartTime\":1700000001000}}')")
+    }
+
     private static func buildCursorOversizedFixture(dbPath: String) throws {
         var db: OpaquePointer?
         guard sqlite3_open(dbPath, &db) == SQLITE_OK else {
@@ -4786,10 +7368,45 @@ final class AdapterMessageCountTests: XCTestCase {
 
         try exec("CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)")
         try exec("INSERT INTO cursorDiskKV VALUES ('composerData:cmp_oversize', '{\"composerId\":\"cmp_oversize\"}')")
-        try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_oversize:u1', '{\"type\":1,\"text\":\"cursor user 0\",\"timingInfo\":{\"clientStartTime\":1700000001000}}')")
-        try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_oversize:a1', '{\"type\":2,\"text\":\"cursor assistant 0\",\"timingInfo\":{\"clientStartTime\":1700000002000}}')")
-        try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_oversize:u2', '{\"type\":1,\"text\":\"cursor user 1\",\"timingInfo\":{\"clientStartTime\":1700000003000}}')")
-        try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_oversize:a2', '{\"type\":2,\"text\":\"cursor assistant 1\",\"timingInfo\":{\"clientStartTime\":1700000004000}}')")
+        for index in 0..<8 {
+            let type = index.isMultiple(of: 2) ? 1 : 2
+            try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_oversize:b\(index)', '{\"type\":\(type),\"text\":\"cursor turn \(index)\",\"timingInfo\":{\"clientStartTime\":\(1_700_000_001_000 + index * 1_000)}}')")
+        }
+    }
+
+    private static func buildCursorBubbleSequenceFixture(
+        dbPath: String,
+        composerID: String,
+        values: [String]
+    ) throws {
+        var database: OpaquePointer?
+        guard sqlite3_open(dbPath, &database) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 1)
+        }
+        defer { sqlite3_close(database) }
+        guard sqlite3_exec(
+            database,
+            "CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)",
+            nil,
+            nil,
+            nil
+        ) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 2)
+        }
+        try insertSQLiteKeyValue(
+            database: database,
+            table: "cursorDiskKV",
+            key: "composerData:\(composerID)",
+            value: "{\"composerId\":\"\(composerID)\"}"
+        )
+        for (index, value) in values.enumerated() {
+            try insertSQLiteKeyValue(
+                database: database,
+                table: "cursorDiskKV",
+                key: "bubbleId:\(composerID):\(index)",
+                value: value
+            )
+        }
     }
 
     private static func buildCursorMissingCreatedAtFixture(dbPath: String) throws {
@@ -4858,6 +7475,75 @@ final class AdapterMessageCountTests: XCTestCase {
         )
     }
 
+    private static func buildModernCursorFixture(
+        cursorRoot: URL,
+        sessionID: String,
+        name: String?,
+        conversationSummary: String? = nil,
+        includeTranscript: Bool = true
+    ) throws {
+        let sessionRoot = cursorRoot
+            .appendingPathComponent("chats/workspace", isDirectory: true)
+            .appendingPathComponent(sessionID, isDirectory: true)
+        let transcriptRoot = cursorRoot
+            .appendingPathComponent("projects/Users-test-project/agent-transcripts", isDirectory: true)
+            .appendingPathComponent(sessionID, isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: transcriptRoot, withIntermediateDirectories: true)
+
+        let storePath = sessionRoot.appendingPathComponent("store.db").path
+        var database: OpaquePointer?
+        guard sqlite3_open(storePath, &database) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 1)
+        }
+        defer { sqlite3_close(database) }
+        guard sqlite3_exec(
+            database,
+            "CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB); CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);",
+            nil,
+            nil,
+            nil
+        ) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 2)
+        }
+        var metadataObject: [String: Any] = ["createdAt": 1_700_000_000_000]
+        if let name { metadataObject["name"] = name }
+        if let conversationSummary {
+            metadataObject["latestConversationSummary"] = [
+                "summary": ["summary": conversationSummary],
+            ]
+        }
+        let metadata = try JSONSerialization.data(withJSONObject: metadataObject)
+        let metadataHex = metadata.map { String(format: "%02x", $0) }.joined()
+        try insertSQLiteKeyValue(database: database, table: "meta", key: "0", value: metadataHex)
+
+        guard sqlite3_exec(
+            database,
+            """
+            INSERT INTO blobs (id, data) VALUES
+              ('user', '{"role":"user","content":"Modern first user prompt"}'),
+              ('assistant', '{"role":"assistant","content":"Modern assistant reply"}');
+            """,
+            nil,
+            nil,
+            nil
+        ) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 3)
+        }
+
+        let transcript = """
+        {"role":"user","message":{"content":[{"type":"text","text":"Modern first user prompt"}]}}
+        {"role":"assistant","message":{"content":[{"type":"text","text":"Modern assistant reply"}]}}
+        """
+        if includeTranscript {
+            try transcript.write(
+                to: transcriptRoot.appendingPathComponent("\(sessionID).jsonl"),
+                atomically: true,
+                encoding: .utf8
+            )
+        }
+    }
+
     private static func buildCursorWorkspaceIndexFixture(
         workspaceStorage: URL,
         workspaceName: String,
@@ -4905,6 +7591,86 @@ final class AdapterMessageCountTests: XCTestCase {
             key: "composer.composerData",
             value: value
         )
+    }
+
+    private static func buildCursorMigratedHeaderFixture(
+        globalDBPath: String,
+        workspaceStorage: URL,
+        workspaceName: String,
+        composerId: String,
+        officialName: String,
+        additionalWorkspace: (String, String)? = nil
+    ) throws {
+        var globalDatabase: OpaquePointer?
+        guard sqlite3_open(globalDBPath, &globalDatabase) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 1)
+        }
+        defer { sqlite3_close(globalDatabase) }
+        guard sqlite3_exec(
+            globalDatabase,
+            "CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT); CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)",
+            nil,
+            nil,
+            nil
+        ) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 2)
+        }
+        let composer: [String: Any] = [
+            "composerId": composerId,
+            "name": officialName,
+            "createdAt": 1_700_000_000_000,
+            "latestConversationSummary": ["summary": ["summary": "Nested migrated digest"]],
+            "conversation": [["type": 1, "text": "ownership probe"]],
+        ]
+        var workspaces = [(workspaceName, "/Users/test/migrated-project")]
+        if let additionalWorkspace { workspaces.append(additionalWorkspace) }
+        let headers: [String: Any] = [
+            "allComposers": workspaces.map { workspace in
+                [
+                    "composerId": composerId,
+                    "workspaceIdentifier": ["id": workspace.0],
+                ]
+            },
+        ]
+        try insertSQLiteKeyValue(
+            database: globalDatabase,
+            table: "cursorDiskKV",
+            key: "composerData:\(composerId)",
+            value: String(decoding: try JSONSerialization.data(withJSONObject: composer), as: UTF8.self)
+        )
+        try insertSQLiteKeyValue(
+            database: globalDatabase,
+            table: "ItemTable",
+            key: "composer.composerHeaders",
+            value: String(decoding: try JSONSerialization.data(withJSONObject: headers), as: UTF8.self)
+        )
+
+        for workspaceEntry in workspaces {
+            let workspace = workspaceStorage.appendingPathComponent(workspaceEntry.0, isDirectory: true)
+            try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: ["folder": "file://\(workspaceEntry.1)"])
+                .write(to: workspace.appendingPathComponent("workspace.json"), options: .atomic)
+            var workspaceDatabase: OpaquePointer?
+            guard sqlite3_open(workspace.appendingPathComponent("state.vscdb").path, &workspaceDatabase) == SQLITE_OK else {
+                throw NSError(domain: "test", code: 3)
+            }
+            defer { sqlite3_close(workspaceDatabase) }
+            guard sqlite3_exec(
+                workspaceDatabase,
+                "CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)",
+                nil,
+                nil,
+                nil
+            ) == SQLITE_OK else {
+                throw NSError(domain: "test", code: 4)
+            }
+            try insertSQLiteKeyValue(
+                database: workspaceDatabase,
+                table: "ItemTable",
+                key: "composer.composerData",
+                value: "{\"selectedComposerId\":\"\(composerId)\"}"
+            )
+        }
     }
 
     private static func insertSQLiteKeyValue(
@@ -4994,7 +7760,7 @@ final class AdapterMessageCountTests: XCTestCase {
     /// streamMessages used windowedMessages, which swallows messageLimitExceeded
     /// and streams a prefix as complete when limit is nil.
     /// invariant: ADAPTER-STREAM-WHOLE-CAP-001F
-    func testCommandCodeOversizedTranscriptStreamMessagesFailsClosed_repro() async throws {
+    func testCommandCodeOversizedTranscriptStreamMessagesKeepsProducedPrefix_repro() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
         let projectDir = root.appendingPathComponent("-Users-test-commandcode-oversized-stream", isDirectory: true)
@@ -5019,12 +7785,8 @@ final class AdapterMessageCountTests: XCTestCase {
             projectsRoot: root.path,
             limits: ParserLimits(maxMessages: 3)
         )
-        do {
-            _ = try await drain(adapter, locator: file.path)
-            XCTFail("oversized whole-transcript stream must fail closed")
-        } catch let failure as ParserFailure {
-            XCTAssertEqual(failure, .messageLimitExceeded)
-        }
+        let messages = try await drain(adapter, locator: file.path)
+        XCTAssertEqual(messages.count, 3)
     }
 
     // Audit L10: CommandCode's batch parser classifies injected wrappers as
@@ -5067,6 +7829,45 @@ final class AdapterMessageCountTests: XCTestCase {
 
         let adapter = CommandCodeAdapter(projectsRoot: root.path)
         try await assertStreamInjectionParity(adapter, locator: file.path, firstUserText: "real CommandCode task")
+    }
+
+    func testCommandCodeProducedCapDoesNotBillSystemWrappers_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("project", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+        var lines: [[String: Any]] = (0..<4).map { index in
+            [
+                "role": "user",
+                "sessionId": "commandcode-produced-cap",
+                "cwd": "/tmp/commandcode",
+                "timestamp": "2026-08-23T00:00:0\(index).000Z",
+                "content": [[
+                    "type": "text",
+                    "text": "# AGENTS.md instructions for /tmp/commandcode/\(index)\n<INSTRUCTIONS>noise</INSTRUCTIONS>",
+                ]],
+            ]
+        }
+        lines.append([
+            "role": "user", "sessionId": "commandcode-produced-cap", "cwd": "/tmp/commandcode",
+            "timestamp": "2026-08-23T00:00:04.000Z",
+            "content": [["type": "text", "text": "real task"]],
+        ])
+        lines.append([
+            "role": "assistant", "sessionId": "commandcode-produced-cap", "cwd": "/tmp/commandcode",
+            "timestamp": "2026-08-23T00:00:05.000Z",
+            "content": [["type": "text", "text": "done"]],
+        ])
+        let file = projectDir.appendingPathComponent("session.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = CommandCodeAdapter(projectsRoot: root.path, limits: ParserLimits(maxMessages: 2))
+        let scan = try sessionInfo(await adapter.scanForIndexing(locator: file.path))
+
+        XCTAssertEqual(scan.info.messageCount, 2)
+        XCTAssertEqual(scan.info.systemMessageCount, 4)
+        XCTAssertEqual(scan.messages.filter { $0.role != .system }.map(\.content), ["real task", "done"])
     }
 
     /// R184-3: injection-only CommandCode files must be terminal, not zero-count sessions.
@@ -5238,6 +8039,84 @@ final class AdapterMessageCountTests: XCTestCase {
     }
 
     // MARK: - Antigravity
+
+    func testAntigravityAdapterListsEveryDocumentedBrainRoot_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let geminiRoot = root.appendingPathComponent(".gemini", isDirectory: true)
+        let brainRoots = ["antigravity-cli", "antigravity", "antigravity-ide"].map {
+            geminiRoot.appendingPathComponent("\($0)/brain", isDirectory: true)
+        }
+        var expected: [String] = []
+        for (index, brainRoot) in brainRoots.enumerated() {
+            let transcript = brainRoot
+                .appendingPathComponent("brain-\(index)/.system_generated/logs", isDirectory: true)
+                .appendingPathComponent("transcript.jsonl")
+            try FileManager.default.createDirectory(
+                at: transcript.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try "{}\n".write(to: transcript, atomically: true, encoding: .utf8)
+            expected.append(FileSystemPathIdentity.realpathPath(transcript.path))
+        }
+
+        let adapter = AntigravityAdapter(
+            cacheDir: root.appendingPathComponent("cache").path,
+            conversationsDir: root.appendingPathComponent("conversations").path,
+            cliBrainDir: brainRoots[0].path
+        )
+
+        let locators = try await adapter.listSessionLocators()
+        XCTAssertEqual(
+            Set(locators.map(FileSystemPathIdentity.realpathPath)),
+            Set(expected)
+        )
+    }
+
+    func testAntigravityCliPreservesCatchAllToolAndErrorMessages_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let brainDir = root.appendingPathComponent("brain", isDirectory: true)
+        let logsDir = brainDir
+            .appendingPathComponent("antigravity-cli-tools", isDirectory: true)
+            .appendingPathComponent(".system_generated/logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
+        let file = logsDir.appendingPathComponent("transcript.jsonl")
+        let toolTypes = [
+            "GREP_SEARCH", "RUN_COMMAND", "LIST_DIRECTORY",
+            "FIND", "SEARCH_WEB", "CODE_ACTION",
+        ]
+        var lines: [[String: Any]] = toolTypes.enumerated().map { index, type in
+            [
+                "type": type,
+                "created_at": "2026-08-31T00:00:0\(index)Z",
+                "content": "\(type) output",
+            ]
+        }
+        lines.append([
+            "type": "ERROR_MESSAGE",
+            "created_at": "2026-08-31T00:00:06Z",
+            "error": "command failed",
+        ])
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = AntigravityAdapter(
+            cacheDir: root.appendingPathComponent("cache").path,
+            conversationsDir: root.appendingPathComponent("conversations").path,
+            cliBrainDir: brainDir.path
+        )
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+        let messages = try await drain(adapter, locator: file.path)
+
+        XCTAssertEqual(info.toolMessageCount, 7)
+        XCTAssertEqual(info.messageCount, 7)
+        XCTAssertEqual(messages.map(\.role), Array(repeating: .tool, count: 7))
+        XCTAssertEqual(
+            messages.map(\.content),
+            toolTypes.map { "\($0) output" } + ["command failed"]
+        )
+    }
 
     /// parseSessionInfo called readCache without reportFailures, so an
     /// oversized Cascade cache returned prefix counts as complete.

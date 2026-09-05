@@ -315,6 +315,7 @@ struct EngramServiceSearchRequest: Codable, Equatable, Sendable {
     let project: String?
     let source: String?
     let since: String?
+    let origin: String?
 
     init(
         query: String,
@@ -322,7 +323,8 @@ struct EngramServiceSearchRequest: Codable, Equatable, Sendable {
         limit: Int,
         project: String? = nil,
         source: String? = nil,
-        since: String? = nil
+        since: String? = nil,
+        origin: String? = nil
     ) {
         self.query = query
         self.mode = mode
@@ -330,6 +332,7 @@ struct EngramServiceSearchRequest: Codable, Equatable, Sendable {
         self.project = project
         self.source = source
         self.since = since
+        self.origin = origin
     }
 }
 
@@ -364,6 +367,7 @@ struct EngramServiceSearchResponse: Codable, Equatable, Sendable {
         let suggestedParentId: String?
         let linkSource: String?
         let qualityScore: Int?
+        let origin: String?
 
         init(
             id: String,
@@ -394,7 +398,8 @@ struct EngramServiceSearchResponse: Codable, Equatable, Sendable {
             parentSessionId: String? = nil,
             suggestedParentId: String? = nil,
             linkSource: String? = nil,
-            qualityScore: Int? = nil
+            qualityScore: Int? = nil,
+            origin: String? = nil
         ) {
             self.id = id
             self.title = title
@@ -425,6 +430,7 @@ struct EngramServiceSearchResponse: Codable, Equatable, Sendable {
             self.suggestedParentId = suggestedParentId
             self.linkSource = linkSource
             self.qualityScore = qualityScore
+            self.origin = origin
         }
     }
 
@@ -460,7 +466,7 @@ struct EngramServiceLiveSessionsResponse: Codable, Equatable, Sendable {
 }
 
 struct EngramServiceLiveSessionInfo: Codable, Equatable, Identifiable, Sendable {
-    var id: String { sessionId ?? filePath }
+    var id: String { filePath }
     let source: String
     let sessionId: String?
     let project: String?
@@ -478,6 +484,8 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
     var id: String { name }
     let name: String
     let sessionCount: Int
+    /// Sessions eligible for list/search UI counts (excludes hidden and skip noise).
+    let listVisibleSessionCount: Int
     let latestIndexed: String?
     let searchableSessionCount: Int
     let searchCoveragePercent: Int
@@ -504,6 +512,7 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
         name: String,
         sessionCount: Int,
         latestIndexed: String?,
+        listVisibleSessionCount: Int? = nil,
         searchableSessionCount: Int = 0,
         searchCoveragePercent: Int = 0,
         failedIndexJobCount: Int = 0,
@@ -522,6 +531,7 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
     ) {
         self.name = name
         self.sessionCount = sessionCount
+        self.listVisibleSessionCount = listVisibleSessionCount ?? sessionCount
         self.latestIndexed = latestIndexed
         self.searchableSessionCount = searchableSessionCount
         self.searchCoveragePercent = searchCoveragePercent
@@ -543,6 +553,7 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case name
         case sessionCount
+        case listVisibleSessionCount
         case latestIndexed
         case searchableSessionCount
         case searchCoveragePercent
@@ -565,6 +576,10 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         name = try container.decode(String.self, forKey: .name)
         sessionCount = try container.decode(Int.self, forKey: .sessionCount)
+        listVisibleSessionCount = try container.decodeIfPresent(
+            Int.self,
+            forKey: .listVisibleSessionCount
+        ) ?? sessionCount
         latestIndexed = try container.decodeIfPresent(String.self, forKey: .latestIndexed)
         searchableSessionCount = try container.decodeIfPresent(Int.self, forKey: .searchableSessionCount) ?? 0
         searchCoveragePercent = try container.decodeIfPresent(Int.self, forKey: .searchCoveragePercent) ?? 0
@@ -726,6 +741,12 @@ struct EngramServiceGenerateSummaryResponse: Codable, Equatable, Sendable {
 
 struct EngramServiceGenerateProjectWorkTitlesRequest: Codable, Equatable, Sendable {
     let project: String
+    let now: Date?
+
+    init(project: String, now: Date? = nil) {
+        self.project = project
+        self.now = now
+    }
 }
 
 struct EngramServiceWorkItemTitle: Codable, Equatable, Sendable {
@@ -934,10 +955,52 @@ struct EngramServiceExportSessionResponse: Codable, Equatable, Sendable {
     let outputPath: String
     let format: String
     let messageCount: Int
+    let totalKnownComplete: Bool
+    let truncated: Bool
+    let truncatedAt: Int?
+    let parseFailure: String?
+
+    init(
+        outputPath: String,
+        format: String,
+        messageCount: Int,
+        totalKnownComplete: Bool = true,
+        truncated: Bool = false,
+        truncatedAt: Int? = nil,
+        parseFailure: String? = nil
+    ) {
+        self.outputPath = outputPath
+        self.format = format
+        self.messageCount = messageCount
+        self.totalKnownComplete = totalKnownComplete
+        self.truncated = truncated
+        self.truncatedAt = truncatedAt
+        self.parseFailure = parseFailure
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        outputPath = try container.decode(String.self, forKey: .outputPath)
+        format = try container.decode(String.self, forKey: .format)
+        messageCount = try container.decode(Int.self, forKey: .messageCount)
+        totalKnownComplete = try container.decodeIfPresent(Bool.self, forKey: .totalKnownComplete) ?? true
+        truncated = try container.decodeIfPresent(Bool.self, forKey: .truncated) ?? false
+        truncatedAt = try container.decodeIfPresent(Int.self, forKey: .truncatedAt)
+        parseFailure = try container.decodeIfPresent(String.self, forKey: .parseFailure)
+    }
 }
 
 struct EngramServiceResumeCommandRequest: Codable, Equatable, Sendable {
     let sessionId: String
+}
+
+struct EngramServiceLiveIngestResetShrinkGuardRequest: Codable, Equatable, Sendable {
+    let peer: String
+}
+
+struct EngramServiceLiveIngestResetShrinkGuardResponse: Codable, Equatable, Sendable {
+    let ok: Bool
+    let peer: String
 }
 
 struct EngramServiceResumeCommandResponse: Codable, Equatable, Sendable {
@@ -2848,15 +2911,55 @@ struct EmbeddingBreakerTelemetry: Codable, Equatable, Identifiable, Sendable {
 /// it carries no raw paths/ids/emails/error tails. Mirrors `ServiceSpan` as a
 /// flat Codable DTO stored directly in the in-process ring buffer.
 struct ServiceLogLineDTO: Codable, Equatable, Identifiable, Sendable {
-    var id: String { "\(timestamp)#\(category)" }
+    var id: String { "\(sequence.map(String.init) ?? "legacy")#\(timestamp)#\(category)" }
+    let sequence: UInt64?
     let timestamp: String
     let level: String
     let category: String
     let message: String
+
+    init(
+        sequence: UInt64? = nil,
+        timestamp: String,
+        level: String,
+        category: String,
+        message: String
+    ) {
+        self.sequence = sequence
+        self.timestamp = timestamp
+        self.level = level
+        self.category = category
+        self.message = message
+    }
 }
 
 struct ServiceLogSnapshot: Codable, Equatable, Sendable {
     let lines: [ServiceLogLineDTO]
+    let coverageStartedAt: String?
+    let isTruncated: Bool
+
+    init(
+        lines: [ServiceLogLineDTO],
+        coverageStartedAt: String? = nil,
+        isTruncated: Bool = false
+    ) {
+        self.lines = lines
+        self.coverageStartedAt = coverageStartedAt
+        self.isTruncated = isTruncated
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case lines
+        case coverageStartedAt
+        case isTruncated
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        lines = try container.decode([ServiceLogLineDTO].self, forKey: .lines)
+        coverageStartedAt = try container.decodeIfPresent(String.self, forKey: .coverageStartedAt)
+        isTruncated = try container.decodeIfPresent(Bool.self, forKey: .isTruncated) ?? false
+    }
 }
 
 struct EngramServiceServiceLogsRequest: Codable, Equatable, Sendable {

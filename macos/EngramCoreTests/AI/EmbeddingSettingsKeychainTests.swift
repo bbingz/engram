@@ -1,4 +1,5 @@
 import EngramCoreRead
+import Darwin
 import Foundation
 import XCTest
 
@@ -57,6 +58,10 @@ final class EmbeddingSettingsKeychainTests: XCTestCase {
     private func writeSettings(_ object: [String: Any]) throws {
         let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         try data.write(to: URL(fileURLWithPath: settingsPath), options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: settingsPath
+        )
     }
 
     private func readSettings() throws -> [String: Any] {
@@ -86,6 +91,70 @@ final class EmbeddingSettingsKeychainTests: XCTestCase {
     }
 
     // MARK: - M13: plaintext migration
+
+    func testDefaultSettingsPathUsesFixedTestHome_repro() throws {
+        let fixedHome = tempDir.appendingPathComponent("fixed-home", isDirectory: true)
+        let fixedSettings = fixedHome.appendingPathComponent(".engram/settings.json")
+        try FileManager.default.createDirectory(
+            at: fixedSettings.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let data = try JSONSerialization.data(withJSONObject: [
+            "embeddingApiKey": "fixed-home-key",
+            "embeddingModel": "fixed-home-model",
+        ])
+        try data.write(to: fixedSettings)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: fixedSettings.path
+        )
+        let store = InMemorySecretStore()
+
+        let config = EmbeddingSettings.load(
+            environment: [
+                "XCTestConfigurationFilePath": "test.xctestconfiguration",
+                "CFFIXED_USER_HOME": fixedHome.path,
+            ],
+            secretStore: store
+        )
+
+        XCTAssertEqual(config?.model, "fixed-home-model")
+    }
+
+    func testDefaultSettingsPathIgnoresProcessHomeWithoutFixedTestHome_repro() throws {
+        let hostHome = tempDir.appendingPathComponent("host-home", isDirectory: true)
+        let hostSettings = hostHome.appendingPathComponent(".engram/settings.json")
+        try FileManager.default.createDirectory(
+            at: hostSettings.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let original = try JSONSerialization.data(withJSONObject: [
+            "embeddingApiKey": "must-not-migrate",
+            "embeddingModel": "must-not-load",
+        ], options: [.sortedKeys])
+        try original.write(to: hostSettings)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: hostSettings.path
+        )
+        let before = try FileManager.default.attributesOfItem(atPath: hostSettings.path)
+        let store = InMemorySecretStore()
+
+        let config = EmbeddingSettings.load(
+            environment: [
+                "XCTestConfigurationFilePath": "test.xctestconfiguration",
+                "HOME": hostHome.path,
+            ],
+            secretStore: store
+        )
+
+        XCTAssertNil(config)
+        XCTAssertEqual(try Data(contentsOf: hostSettings), original)
+        let after = try FileManager.default.attributesOfItem(atPath: hostSettings.path)
+        XCTAssertEqual(after[.posixPermissions] as? NSNumber, before[.posixPermissions] as? NSNumber)
+        XCTAssertEqual(after[.modificationDate] as? Date, before[.modificationDate] as? Date)
+        XCTAssertEqual(store.setCallCount, 0)
+    }
 
     func testPlaintextEmbeddingApiKeyMigratesOnceToKeychain() throws {
         let secret = "sk-live-plaintext-embedding-key"
@@ -137,6 +206,7 @@ final class EmbeddingSettingsKeychainTests: XCTestCase {
         let bridgePath = tempDir.appendingPathComponent("ai-secrets.json")
         try JSONSerialization.data(withJSONObject: ["embeddingApiKey": secret])
             .write(to: bridgePath)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: bridgePath.path)
         let store = InMemorySecretStore()
 
         let config = load(
@@ -148,6 +218,42 @@ final class EmbeddingSettingsKeychainTests: XCTestCase {
         XCTAssertEqual(store.getCallCount, 0, "runtime bridge must resolve before direct Keychain access")
     }
 
+    func testRuntimeSecretWinsOverStalePlaintextSharedAIKey_repro() throws {
+        try writeSettings(["aiApiKey": "stale-plaintext"])
+        let bridgePath = tempDir.appendingPathComponent("ai-secrets.json")
+        try JSONSerialization.data(withJSONObject: ["aiApiKey": "fresh-runtime-secret"])
+            .write(to: bridgePath)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: bridgePath.path)
+
+        let config = load(
+            store: InMemorySecretStore(),
+            environment: ["ENGRAM_RUNTIME_AI_SECRETS_PATH": bridgePath.path]
+        )
+
+        XCTAssertEqual(config?.apiKey, "fresh-runtime-secret")
+    }
+
+    func testExplicitMissingRuntimeSecretBridgeDoesNotFallBackToKeychain_repro() throws {
+        let store = InMemorySecretStore()
+        store.set(KeychainSecretStore.Account.embeddingApiKey, value: "live-keychain-secret")
+        let baselineGets = store.getCallCount
+
+        let config = load(
+            store: store,
+            environment: [
+                "ENGRAM_RUNTIME_AI_SECRETS_PATH": tempDir
+                    .appendingPathComponent("missing-runtime-secrets.json").path,
+            ]
+        )
+
+        XCTAssertNil(config)
+        XCTAssertEqual(
+            store.getCallCount,
+            baselineGets,
+            "an explicitly isolated runtime bridge must fail closed instead of reading Keychain"
+        )
+    }
+
     func testAtKeychainMarkerLoadsFromDefaultRuntimeSecretBridgeForMCP() throws {
         let secret = "sk-default-runtime-bridge"
         try writeSettings(["embeddingApiKey": "@keychain"])
@@ -156,12 +262,96 @@ final class EmbeddingSettingsKeychainTests: XCTestCase {
         let bridgePath = runDirectory.appendingPathComponent("ai-secrets.json")
         try JSONSerialization.data(withJSONObject: ["embeddingApiKey": secret])
             .write(to: bridgePath)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: bridgePath.path)
         let store = InMemorySecretStore()
 
         let config = load(store: store)
 
         XCTAssertEqual(config?.apiKey, secret)
         XCTAssertEqual(store.getCallCount, 0)
+    }
+
+    func testRuntimeSecretBridgeRejectsSymlink_repro() throws {
+        try writeSettings(["embeddingApiKey": "@keychain"])
+        let outside = tempDir.appendingPathComponent("outside-secrets.json")
+        try JSONSerialization.data(withJSONObject: ["embeddingApiKey": "linked-secret"])
+            .write(to: outside)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outside.path)
+        let bridgePath = tempDir.appendingPathComponent("ai-secrets.json")
+        try FileManager.default.createSymbolicLink(atPath: bridgePath.path, withDestinationPath: outside.path)
+
+        let config = load(
+            store: InMemorySecretStore(),
+            environment: ["ENGRAM_RUNTIME_AI_SECRETS_PATH": bridgePath.path]
+        )
+
+        XCTAssertNil(config)
+    }
+
+    func testEmbeddingSettingsRepairsOwnerReadableSettingsPermissions_repro() throws {
+        try writeSettings([
+            "embeddingApiKey": "plaintext-test-key",
+            "embeddingModel": "permission-model",
+        ])
+        chmod(settingsPath, 0o644)
+
+        let config = load(store: InMemorySecretStore())
+
+        XCTAssertEqual(config?.model, "permission-model")
+        var info = stat()
+        XCTAssertEqual(lstat(settingsPath, &info), 0)
+        XCTAssertEqual(info.st_mode & 0o777, 0o600)
+    }
+
+    func testSecureAtomicSettingsWriteRejectsSymlinkWithoutTouchingVictim_repro() throws {
+        let victim = tempDir.appendingPathComponent("victim.json")
+        let original = Data("{\"keep\":true}".utf8)
+        try original.write(to: victim)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: victim.path)
+        let linkedSettings = tempDir.appendingPathComponent("linked-settings.json")
+        try FileManager.default.createSymbolicLink(
+            atPath: linkedSettings.path,
+            withDestinationPath: victim.path
+        )
+
+        XCTAssertThrowsError(
+            try SecureRegularFile.writeAtomically(
+                Data("{\"embeddingApiKey\":\"@keychain\"}".utf8),
+                toPath: linkedSettings.path,
+                maximumExistingBytes: 1024 * 1024
+            )
+        )
+        XCTAssertEqual(try Data(contentsOf: victim), original)
+        var info = stat()
+        XCTAssertEqual(lstat(linkedSettings.path, &info), 0)
+        XCTAssertEqual(info.st_mode & S_IFMT, S_IFLNK)
+    }
+
+    func testDefaultSettingsPathRejectsFIFOPromptly_repro() throws {
+        let home = tempDir.appendingPathComponent("home", isDirectory: true)
+        let engram = home.appendingPathComponent(".engram", isDirectory: true)
+        try FileManager.default.createDirectory(at: engram, withIntermediateDirectories: true)
+        let fifo = engram.appendingPathComponent("settings.json")
+        XCTAssertEqual(mkfifo(fifo.path, S_IRUSR | S_IWUSR), 0)
+        let returned = expectation(description: "FIFO settings read returned")
+        DispatchQueue.global().async {
+            let config = EmbeddingSettings.load(
+                environment: [
+                    "HOME": home.path,
+                    "CFFIXED_USER_HOME": home.path,
+                ],
+                secretStore: InMemorySecretStore()
+            )
+            XCTAssertNil(config)
+            returned.fulfill()
+        }
+
+        let result = XCTWaiter.wait(for: [returned], timeout: 0.2)
+        XCTAssertEqual(result, .completed, "settings readers must not block opening a FIFO")
+        if result != .completed {
+            let writer = open(fifo.path, O_WRONLY | O_NONBLOCK)
+            if writer >= 0 { close(writer) }
+        }
     }
 
     func testMissingKeychainEntryReturnsNilConfig() throws {
@@ -174,6 +364,52 @@ final class EmbeddingSettingsKeychainTests: XCTestCase {
         let config = load(store: store)
 
         XCTAssertNil(config, "missing Keychain secret must keep semantic search disabled")
+    }
+
+    func testMissingSettingsFallsBackAcrossRuntimeAndKeychainAccounts_repro() throws {
+        let store = InMemorySecretStore()
+        store.set(KeychainSecretStore.Account.embeddingApiKey, value: "embedding-keychain")
+        store.set(KeychainSecretStore.Account.aiApiKey, value: "ai-keychain")
+        let runtimeURL = tempDir.appendingPathComponent("runtime.json")
+        try JSONSerialization.data(withJSONObject: [
+            KeychainSecretStore.Account.embeddingApiKey: "embedding-runtime",
+        ]).write(to: runtimeURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: runtimeURL.path)
+
+        let embeddingRuntime = EmbeddingSettings.load(
+            environment: [
+                "ENGRAM_RUNTIME_AI_SECRETS_PATH": runtimeURL.path,
+            ],
+            settingsPath: tempDir.appendingPathComponent("missing.json").path,
+            secretStore: store
+        )
+        XCTAssertEqual(embeddingRuntime?.apiKey, "embedding-runtime")
+
+        let aiOnlyStore = InMemorySecretStore()
+        aiOnlyStore.set(KeychainSecretStore.Account.aiApiKey, value: "ai-only-keychain")
+        let aiFallback = EmbeddingSettings.load(
+            environment: [:],
+            settingsPath: tempDir.appendingPathComponent("also-missing.json").path,
+            secretStore: aiOnlyStore
+        )
+        XCTAssertEqual(aiFallback?.apiKey, "ai-only-keychain")
+    }
+
+    func testMalformedSettingsFallsBackWithoutRewritingFile_repro() throws {
+        let malformed = Data("{not-json".utf8)
+        try malformed.write(to: URL(fileURLWithPath: settingsPath))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: settingsPath)
+        let store = InMemorySecretStore()
+        store.set(KeychainSecretStore.Account.aiApiKey, value: "fallback-key")
+
+        let config = EmbeddingSettings.load(
+            environment: [:],
+            settingsPath: settingsPath,
+            secretStore: store
+        )
+
+        XCTAssertEqual(config?.apiKey, "fallback-key")
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: settingsPath)), malformed)
     }
 
     func testFailedKeychainSaveRetainsRecoverablePlaintext() throws {

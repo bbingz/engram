@@ -18,6 +18,12 @@ READ_ONLY_DB_FILES=(
   "macos/Shared/EngramCore/AI/SessionVectorSearchAvailability.swift"
 )
 
+CONNECTION_POLICY_FILES=(
+  # Invariant 1: this shared policy sets connection PRAGMAs only; product row
+  # writes remain owned by EngramCoreWrite/ServiceWriterGate call sites.
+  "macos/Shared/EngramCore/Database/SQLiteConnectionPolicy.swift"
+)
+
 contains_path() {
   local needle="$1"
   shift
@@ -33,6 +39,8 @@ classify_hit() {
 
   if contains_path "$path" "${READ_ONLY_DB_FILES[@]}"; then
     echo "ALLOW_READ_ONLY_DB"
+  elif contains_path "$path" "${CONNECTION_POLICY_FILES[@]}"; then
+    echo "ALLOW_CONNECTION_POLICY"
   else
     echo "FAIL_UNCLASSIFIED"
   fi
@@ -47,6 +55,7 @@ format_hit() {
 
 declare -a unclassified_failures=()
 declare -a read_only_hits=()
+declare -a connection_policy_hits=()
 
 while IFS=: read -r path line text; do
   [[ -z "${path:-}" || -z "${line:-}" ]] && continue
@@ -54,6 +63,9 @@ while IFS=: read -r path line text; do
   case "$category" in
     ALLOW_READ_ONLY_DB)
       read_only_hits+=("$(format_hit "$path" "$line" "$text")")
+      ;;
+    ALLOW_CONNECTION_POLICY)
+      connection_policy_hits+=("$(format_hit "$path" "$line" "$text")")
       ;;
     FAIL_UNCLASSIFIED)
       unclassified_failures+=("$(format_hit "$path" "$line" "$text")")
@@ -92,6 +104,13 @@ echo "none"
 echo
 echo "Allowed Stage 4 MCP DB/project-op hits:"
 echo "none"
+echo
+echo "Allowed shared connection-policy PRAGMA hits (not product row writes):"
+if (( ${#connection_policy_hits[@]} > 0 )); then
+  printf '%s\n' "${connection_policy_hits[@]}"
+else
+  echo "none"
+fi
 echo
 echo "Allowed read-only DB hits (not second-writer paths):"
 if (( ${#read_only_hits[@]} > 0 )); then

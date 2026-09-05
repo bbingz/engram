@@ -10,13 +10,40 @@ extension Notification.Name {
     static let showOnboarding = Notification.Name("com.engram.showOnboarding")
 }
 
+@MainActor
+enum SessionNavigationGate {
+    private static var currentToken: UUID?
+
+    static func begin() -> UUID {
+        let token = UUID()
+        currentToken = token
+        return token
+    }
+
+    static func isCurrent(_ token: UUID) -> Bool {
+        currentToken == token
+    }
+
+    static func complete(_ token: UUID) {
+        if currentToken == token {
+            currentToken = nil
+        }
+    }
+
+    static func cancelAll() {
+        currentToken = nil
+    }
+}
+
 /// Box wrapper to safely pass Swift structs through `Notification.object`.
 final class SessionBox {
     let session: Session
     let searchTerm: String?
+    let navigationId: UUID?
 
-    init(_ session: Session, searchTerm: String? = nil) {
+    init(_ session: Session, searchTerm: String? = nil, navigationId: UUID? = nil) {
         self.session = session
         self.searchTerm = searchTerm
+        self.navigationId = navigationId
     }
 }

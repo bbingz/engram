@@ -3,6 +3,37 @@ import XCTest
 import GRDB
 @testable import Engram
 
+struct HermeticRPCEnvironment {
+    let environment: [String: String]
+    let root: URL
+}
+
+func makeHermeticRPCEnvironment(
+    overrides: [String: String]
+) throws -> HermeticRPCEnvironment {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("engram-app-rpc-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    // docs/invariants.md #6: subprocess tests use a closed, temporary home.
+    var environment = [
+        "TZ": "UTC",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "HOME": root.path,
+        "CFFIXED_USER_HOME": root.path,
+        "TMPDIR": root.path,
+        "ENGRAM_MCP_SERVICE_SOCKET": root.appendingPathComponent("no-service.sock").path,
+        "ENGRAM_SETTINGS_PATH": root.appendingPathComponent("missing-settings.json").path,
+        "ENGRAM_RUNTIME_AI_SECRETS_PATH": root.appendingPathComponent("missing-ai-secrets.json").path,
+    ]
+    for (key, value) in overrides {
+        environment[key] = value
+    }
+    if let home = overrides["HOME"], overrides["CFFIXED_USER_HOME"] == nil {
+        environment["CFFIXED_USER_HOME"] = home
+    }
+    return HermeticRPCEnvironment(environment: environment, root: root)
+}
+
 // MARK: - Database Table Creation
 
 /// Create a minimal sessions table (plus FTS and observability tables)
@@ -10,6 +41,9 @@ import GRDB
 /// idempotent migrations.
 func createSessionsTable(at path: String) throws {
     let queue = try DatabaseQueue(path: path)
+    try queue.writeWithoutTransaction { db in
+        try db.execute(sql: "PRAGMA journal_mode = WAL")
+    }
     try queue.write { db in
         try db.execute(sql: """
             CREATE TABLE IF NOT EXISTS sessions (
@@ -40,13 +74,44 @@ func createSessionsTable(at path: String) throws {
                 generated_title TEXT,
                 last_accessed_at TEXT,
                 access_count INTEGER NOT NULL DEFAULT 0,
-                quality_score INTEGER
+                quality_score INTEGER,
+                instruction_count INTEGER,
+                human_turn_count INTEGER,
+                instruction_summary TEXT,
+                orphan_status TEXT,
+                orphan_since TEXT,
+                orphan_reason TEXT,
+                -- Mirrors EngramMigrations.swift ("origin", "TEXT DEFAULT 'local'").
+                origin TEXT DEFAULT 'local'
             );
             CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
                 session_id UNINDEXED,
                 content,
                 tokenize='trigram case_sensitive 0'
             );
+
+            CREATE TABLE IF NOT EXISTS git_repos (
+                path TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                branch TEXT,
+                dirty_count INTEGER DEFAULT 0,
+                untracked_count INTEGER DEFAULT 0,
+                unpushed_count INTEGER DEFAULT 0,
+                last_commit_hash TEXT,
+                last_commit_msg TEXT,
+                last_commit_at TEXT,
+                session_count INTEGER DEFAULT 0,
+                probed_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS git_repo_cwd_aliases (
+                cwd TEXT PRIMARY KEY,
+                real_cwd TEXT NOT NULL,
+                repo_path TEXT NOT NULL REFERENCES git_repos(path) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_git_repo_cwd_alias_real
+                ON git_repo_cwd_aliases(real_cwd);
+            CREATE INDEX IF NOT EXISTS idx_git_repo_cwd_alias_repo
+                ON git_repo_cwd_aliases(repo_path);
 
             -- Observability tables (matches daemon schema: ts, trace_id, error_name, error_message)
             CREATE TABLE IF NOT EXISTS logs (
@@ -129,8 +194,8 @@ func insertTestSession(at path: String,
                 message_count, user_message_count, assistant_message_count,
                 tool_message_count, system_message_count, summary, file_path,
                 size_bytes, indexed_at, agent_role, hidden_at, custom_name, tier,
-                generated_title
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?)
+                generated_title, instruction_count, human_turn_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 2, 2)
         """, arguments: [
             id, source, startTime, endTime, "/Users/test/project", project, "sonnet",
             messageCount, userMessageCount, assistantMessageCount,

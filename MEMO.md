@@ -2,6 +2,119 @@
 
 ## Changelog Memo
 
+### 2026-09-02（2026-09-04 复验）
+
+- [修复] 已按当前源码裁决完成四份清单中全部 115 个确认 ID（109 个实现簇），覆盖 High/Medium/Low 等全部确认问题；rejected、duplicate-only、stale 行保持排除，完整目录与分包证据见 `CHANGELOG.md` 和 `.grok/all-confirmed-remediation-ledger-2026-09-02.md`。
+- [验证] 2026-09-04 Node build/typecheck/knip/coverage 全绿（130 files / 1,561 tests），lint exit 0，Engram 2,588（1 skip）；2026-09-02 final-source 独立门为 Core 1,449（1 skip）、MCP 265、Service 833（1 skip）、Remote 161，RemoteServer executable Debug link、adapter parity、fixture 等价重生成字节比较及 diff check 通过。
+- [修复] 2026-09-04 提交前复验捕获到启动器 stderr drain 与退出分类竞态；原有 repro 在全量门中 RED。现以同一锁串行读取、子进程退出后关闭父端 writer 并 drain 到 EOF，再做 writer-busy 判定；无任意 sleep。focused、连续 20 次、launcher 54 项及 Engram 全量 2,588 项随后均通过。
+- [修复] 首次 commit 被 Xcode drift hook 拦下：两个仓库外 UI fixture 会把 worktree 目录名写进 pbxproj，且 commit hook 的绝对 `GIT_DIR` 会让脚本在 `cd macos` 后误判全部生成文件。`project.yml` 现固定 `UITestFixtures` group，Git 查询显式锚定 repo root；两项回归均先 RED，两个不同目录随后生成相同 pbxproj 字节，focused 8 项、typecheck、Biome、普通及显式 `GIT_DIR` hook 均通过。
+- [排查] 最终源码的 3 个 focused UI test 在任何测试体/截图执行前失败；fresh Runner 卡在连接 XCTest 前的 `AppleSystemPolicy` 签名策略评估，属于未签名测试基础设施阻断，不是产品断言。2026-08-22 旧截图不能代表本轮 UI。
+- [未验证] 当前前台 UI/截图、真实 deployed-server 联调、远端 CI、签名发布包及各机器运行状态仍未验证；Service xcresult 的既有 QoS warning 和 Xcode 27 beta 的 Swift 6 migration warnings 未隐去，详见 `CHANGELOG.md`。
+- [边界] 本条只记录源码修复与预部署验证；集成、CI 和三机部署状态以其后单独收口条目为准。未执行 Docker、tag、公开 release、公证或生产数据修改。
+
+### 2026-08-31
+
+- [提交] 主仓完整门通过后已提交 `40218c0b`（`feat: integrate HQ live ingest and product hardening`）；未 push/tag/release。完整测试计数和产物哈希见 `CHANGELOG.md`。
+- [部署] 日用机已运行 Developer ID 签名的 Engram 1.0.5 (1554)；M1/HQ RemoteServer 均运行 `40218c0b`，HQ Service 运行 `40218c0b-build1554`。三机均为单实例、目标路径/哈希命中，Remote `/v1/health` 为 200。
+- [验证] 日用机部署回执为 `status` 0.551s、`liveSessions` 17.425s/100；HQ `status` 0.029s、`liveSessions` 1.297s/100；MCP 27 tools。HQ T9/watchdog 字节命中仓库，4 次自然运行均 exit 0，无 degraded sentinel，root plist 未改。
+- [安全切换] HQ 旧 Service 在 TERM 后继续初扫，未强杀、未用 `kickstart -k`；待 PID 28608 自然退出后才启动新 PID 42994。四处回滚点和完整过程证据见 `CHANGELOG.md`。
+- [验证] HQ 初扫随后完成：`status` 恢复 running/56022/`lastScanAt` 有值；仅补跑一次 `remoteSyncStatus`，0.010s 成功，pending 两队列均为 0。日用机两小时后仍无初扫标记，health/IPC 可用但 `status` 因 last successful scan stale 如实为 degraded；日用机 `remoteSyncStatus` 仍未调用。
+- [未验证] 锁屏导致菜单栏最终目检未补；真实 post-reboot 唯一关键词 16 分钟跨机 SLA 仍开放。
+- [边界] 未 push/tag/GitHub Release、公证、更新 Sparkle/Homebrew、运行 Docker 或重写生产数据；当前是已提交且已部署的内部 build1554，不是新的公开发布。
+- [修复] `liveSessions` 本地源码门已闭：Claude 改为仅扫描项目目录的直接常规会话文件，每个配置 root 只 canonicalize 一次，不再递归 `subagents` 或逐文件做 subagent layout；Codex 递归、symlink 拒绝、全局 newest-100、24h 边界和 TTL 语义保留。详见 `CHANGELOG.md`。
+- [验证] 尾段取消先稳定 RED（取消后仍返回并污染 cache），修复后新增 5/5、focused 14/14、完整 `EngramServiceIPCTests` 259/259；两路独立终审均为 `SPEC_COMPLIANCE: PASS` / `CODE_QUALITY: APPROVED`。
+- [历史节点] 该修复在本地源码收口时仍是未提交、未部署字节；当时尚未复测已安装 v1.0.5、真实 95,280 文件语料、菜单栏 Live 恢复和生产取消链。后续提交/部署结果以上方本日最新条目为准。
+- [重启] 按用户授权仅重启了日常 Mac 的 `com.engram.service`；两次 bounded kickstart 将 PID 25143→93400→96776，当前 launchd 为 running、runs=3、last exit=0，socket 与 status/health 已恢复响应。
+- [故障] `Live` 仍未恢复：`liveSessions` 超过 35 秒，3 小时后服务仍约 64% CPU；采样持续落在对 `~/.claude/projects` 95,280 个文件的递归枚举、realpath 与 subagent 路径判定。重启不是修复，详见 `CHANGELOG.md`。
+- [历史节点] 部署前审计时，各机均非 2026-08-31 脏树新字节：日常 Mac/HQ 的 Service 为 2026-08-25 同一二进制，HQ/M1 的 RemoteServer 均为 `986e7fb0`，M1 没有运行 EngramService；该状态已由上方本日部署条目取代。
+- [历史边界] 该审计 pass 未 build/install/deploy，未重启远端，未 commit/push/tag、Docker 或改生产数据；“本地服务已重启但 Live 仍降级、各机未升级”仅描述当时状态。
+- [已闭合] HQ live ingest 的最终本地门已收口：单 consumer、真实 delta token、idle interval、变更后 trailing 60 秒、多页同 wake 排空、publish 后重探测及 complete-only retract ack/finalize 均已覆盖；Settings/Mock 诚实修复、origin pre-LIMIT、安装器校验和四项 UI residual 也已落入主仓。细节见 `CHANGELOG.md`。
+- [验证] 最终字节通过 App 1,097、Core 1,386+1 skip、Service 793+1 skip、runner 31、Vitest 1,549+2 skip、Settings 14、Command Palette 15、UIUX+Onboarding wiring 47，以及 Onboarding hunk 之后的未签名 Debug build；74 路径审计为 68 同 blob、6 个预期差异、零缺失/意外覆盖。默认布局 UI smoke 的 runner 在任何 Onboarding test method 执行前被取消：0 case、1 canceled runner，不算产品行为通过。
+- [未验证] 真实双机 16 分钟 SLA、远端 CI、真实 Dynamic Type 交互及签名真机部署仍未验证。
+- [历史边界] 该本地收口 pass 没有 commit/push/tag、Docker、生产 `~/.engram`、部署、launchd 修改或服务重启；当时仍是 `d97d0257` 主脏树，后续状态以上方本日最新条目为准。
+- [遗留] `live-ingest-arm-1` 仍要求首次启用后重启服务（UI 已明确提示）；硬删 session 缺 tombstone，以及 manifest GC 删除失败无 durable retry，作为低优先级真实 residual 留在 `docs/followups.md`。
+
+### 2026-08-30
+
+- [整合] 已把冻结的 T0–T9 主仓修复与 UI Wave 1–8/merge-gate 工作树合回同一 `d97d0257` 脏树：68 个 UI 文件逐字节采用、45 个路径保留主仓、3 个重叠文件做语义合并；xcodeproj/project.yml 未漂移，也未引入 `AsyncEntryGate.swift`。完整合并细节见 `CHANGELOG.md`。
+- [验证] 合并树隔离双 home 全绿：App 聚焦 298、App 全量 1,088、Core 1,382（skip 1）、Service 769（skip 1）、MCP 254、Remote 158、Vitest 1,548（skip 2），以及 Debug build、TS build/typecheck、lint、knip、adapter parity、direct-writer、diff check。fixture schema 通过，重生成 blob 与门前一致；仅因该 fixture 本就相对 HEAD 为 dirty，`check:fixtures` 的最终 HEAD 比较如实 exit 1。
+- [历史节点] UI 合并门完成时，前台 UI 自动化、远端 CI、真实跨机 16 分钟 ingest SLA 未跑，且仍是本地未发布合并态；后续部署未改变 UI/SLA 的未验证边界。
+- [边界] 未使用 Docker，未 commit/push/tag/release，未部署/安装/SSH/重启/改 launchd，未读取或写入生产 `~/.engram`；测试生成器清掉的两个既有 SQLite sidecar 已按冻结哈希恢复。
+- [修复] 按派工修订范围在 `d97d0257` 脏树依次完成 T0→T9；独立 spec gate 随后重开并闭合九项阻断。第四次 follow-up 修复同为 version 1 时旧 snapshot-hash 的 `failed_permanent` FTS job 永久污染 readiness：只淘汰 `id != 当前 jobId` 的旧 permanent，当前同一 permanent job 仍保持 terminal、不越界重试。其余八项及完整细节见 `CHANGELOG.md`。
+- [验证] 九项 follow-up 均先有真实行为 RED；本次 `SessionSnapshotWriter` RED 证明旧 permanent 与新 job 共存且新 job 完成后仍无 live candidate。最小一行生产修复后，新 FTS 可发布，当前 permanent 的 status/retry/error 保持不变；IndexerParity 72、SessionSync 43、RemoteSyncCoordinator 40（skip 1）、隔离双 home 的 Core 1,382（skip 1）和 ServiceCore 769（skip 1）均通过。生产 TS build、测试 typecheck、direct-writer scan 与 lint 也通过；lint 仍仅有既有 1 warning/1 schema info。本次 Swift-only follow-up 未重跑 Vitest，前次 1,548（skip 2）仅保留为既有证据。
+- [更正] 本条原称 Settings“启用后需重启”/occupancy 语义和 Mock 失败注入未认领；它们不属于 T0–T9 pass，但 2026-08-31 已确认随 UI 合并闭合，以上方新条目为准。HQ 脚本与 wrapper 仍只在 repo，待 owner 授权部署后验证重复启动、degraded sentinel、无控制台登录重启和真实跨机 16 分钟 SLA；远端 CI 仍未跑。
+- [边界] follow-up 未修改 UI 或 xcodeproj；未使用 Docker，未开 worktree，未 commit/push/tag，未 SSH/部署/安装/重启/改 launchd，未读取或写入两台机器的生产 `~/.engram`；公开基线仍为 v1.0.5。
+
+### 2026-08-29
+
+- [修复] HQ 重启后 LaunchAgent 要等控制台登录才起；日常机加了 SSH 看门狗 `com.engram.hq-live-ensure`（120s），并在 HQ 装了开机 LaunchDaemon（`com.engram.*.boot`，`UserName=bing`）。详见 `CHANGELOG.md`。
+- [验证] ensure 空跑不重复进程；日常机 agent last exit 0；daemon 已注册且因现有进程占用端口/锁而 exit 0；现有 pid 5669/5682 未动。
+- [未验证] 下次 HQ 重启、无控制台登录时 daemon 是否真的拉起。FileVault 解锁前仍不会起。16 分钟 SLA 仍未证明。
+- [边界] 未发布、未 commit。公开基线仍为 v1.0.5。未重启 HQ helper。
+
+### 2026-08-25
+
+- [启用] HQ 无头 `EngramService` launchd 已装（`com.engram.service`，publish on / offload off，peer=`hq`）；日常机已换成脏树 Release App，并打开 ingest 开关。详见 `CHANGELOG.md`。
+- [验证] 两边 sanitizer 日志都有 `live ingest armed`。HQ 尚未写出 `live.hq.*`（卡在 Archive v2 初始扫描）；日常机 `origin=hq` 仍为 0。16 分钟 SLA 未跑。
+- [未验证] 从 Spotlight/`open -a Engram` 启动日常机 App 不会带上 offload token（ad-hoc helper 读不到 Keychain）；必须走 `~/.engram/run/start-engram-app`。
+- [边界] 未发布、未 commit。公开基线仍为 v1.0.5；未创建 v1.0.6，未 tag/公证/Homebrew/Sparkle。
+
+### 2026-08-24
+
+- [新增] 脏树上落地 HQ → 日常 Mac 单向 live ingest：独立 `makeLiveIfEnabled`（不走 `runOnce`/catalog）、ledger-join 发布、完整代才撤回、缩量闩锁、App `HQ` 徽标与 `remote://` 索引快照、MCP 先于适配器处理、Resume 诚实报错、Settings 开关与 shrink-guard 复位 IPC。详见 `CHANGELOG.md`。
+- [验证] 本能力的聚焦 `_repro` 已绿（config/occupancy/candidates/codec/publish-pull/runner、Session origin、MessageParser/MCP `remote://`、Resume IPC）。完整 Swift/Vitest、live XcodeGen、HQ launchd 与 16 分钟跨机 SLA 未跑。
+- [未验证] Settings 在服务已以 ingest=off 启动后打开，要等下次服务启动才会构造 live coordinator；Settings/IPC 复位没有单独 `_repro`。遗留见 `docs/followups.md`。
+- [边界] 未发布、未 commit。公开基线仍为 v1.0.5；未创建 v1.0.6，未 tag/公证/Homebrew/Sparkle，未改生产 `~/.engram`。
+
+- [更正] 撤回同日 Round-11 “Package 1→13 均已完成、leftover #4 已闭合”的过早收口；Round-12 仍确认 12 个遗留和 59 个新增确认项。详见 `CHANGELOG.md`。
+- [修复] 最终收口已完成 Round-12 十三个去重 must-fix 包，并补齐 Transcript Find、Cursor 标题/摘要、Timeline 日计数、live locator/Antigravity、SearchPage 并发及 OpenPGP 脱敏等相邻高优先级修复；dual-constructor 前缀回归已在磁盘通过。
+- [遗留] 未继续追逐的 runtime secrets、SessionDetail 并发及中低优先级项已按 ID、文件位置和原因登记到 `docs/followups.md`，均明确为“未声称修复”。不再启动下一轮 review/fix 循环。
+- [验证] Core、Service、MCP、App 的本轮聚焦 hermetic 回归通过；完整 Swift/Vitest 套件、前台 UI 自动化、远端 CI 与共享脏树 live XcodeGen 未执行。
+- [边界] 这是面向未来合并的本地停止点，不是全仓零缺陷或公开发布。公开基线仍为 v1.0.5；未创建 v1.0.6，未使用 Docker，未 commit、push、部署、安装、重启、修改生产数据、tag、GitHub Release、公证或更新 Homebrew/Sparkle。
+
+- [更正] 撤回同日 Round-10 “四个点名遗留均已闭合”的过早收口；Round-11 仍确认 3 个未闭合项和 67 个新增确认项。Unicode/Darwin CommandCode slug、CommandCode/Qoder/Kimi 增长中 JSONL 前缀、MCP keep-hits 与 `adapterMessages` dual-throw 当时仍不完整。详见 `CHANGELOG.md`。
+- [修复] 已在原脏工作树完成 Round-11 报告 Package 1→13 的去重实现与 `_repro`，保留既定 do-not-fix 契约；报告内点名包现均有本地实现，仍待 Grok 独立复审。
+- [验证] Core、App、Service、MCP 聚焦 hermetic 回归及 Engram 全量 `build-for-testing`（含 UI test target 编译）通过；仓库边界脚本和 `git diff --check` 用于收口核验。
+- [未验证] 本轮未重跑五个 Swift/Vitest 全量套件、前台 UI 自动化、远端 CI，也未在共享脏工程上 live XcodeGen；这些项目不能由聚焦回归替代。
+- [边界] 这是 Round-11 报告范围的本地实现证据，不是全仓“零缺陷”或公开发布；HEAD 与 `origin/main` 仍为 `d97d0257`，工作树保持未提交。未使用 Docker，未 commit、push、部署、安装、重启、修改生产数据、tag、GitHub Release、公证或更新 Homebrew/Sparkle。
+
+- [更正] 撤回同日 Round-9 “五个遗留均已修复、没有故意延期簇、parser prefix 与 live semantic probe 已完成”的过早收口；Round-10 仍确认 2 个未闭合项和 60 个新增项。独立点名遗留为 CommandCode live slug 编码反向、Qwen/Gemini/Cursor 默认扫描丢前缀、MCP semantic/hybrid BUSY 错报 `searchModeUnavailable`、dual-throw 空 `parseFailed`。此前 Round-9/8/7 撤回、2026-08-22 hermetic-home 更正与 Qoder 0/0/0 窄范围说明继续有效。详见 `CHANGELOG.md`。
+- [修复] 已在原脏工作树完成 Wave CN→DI 去重实现和对应 `_repro`，保留既定 do-not-fix 契约；上述四个点名遗留及 Round-10 报告内 CN→DI 各簇现均有当前实现与聚焦回归，仍待 Grok 独立复审。
+- [验证] hermetic Service 720（1 跳过）及 Core、MCP、App、Remote 五个非 UI Swift 全量 scheme 通过；Vitest 129 files / 1,539 通过 / 2 跳过，Node build、test typecheck、Biome、knip、adapter parity 与 XcodeGen 路由聚焦测试通过。两份 fixture DB 连续生成 SHA-256 稳定，schema 检查通过。
+- [未验证] Grok 独立复审、远端 CI、前台 UI 自动化与共享脏树 live XcodeGen 未执行；fixture freshness 因本轮生成物相对 HEAD 的预期差异仍返回失败，adapter-format 因本机 Claude/Codex corpus 超过已验证 baseline 而 fail-closed。
+- [边界] 这是 Round-10 报告范围的本地实现证据，不是全仓“零缺陷”或公开发布；HEAD 与 `origin/main` 仍为 `d97d0257`，工作树保持未提交。未使用 Docker，未 commit、push、部署、安装、重启、修改生产数据、tag、GitHub Release、公证或更新 Homebrew/Sparkle。
+
+- [更正] 撤回 2026-08-23 “Round-8 点名遗留均已修复、activity-time usage 已完成”的过早收口；Round-9 仍确认 3 个未闭合项和 60 个新增项。`loadall-cap-5`、Copilot `parseSessionInfo`、`workitem-localtime-1`、`observability-ring-1`、本地 catalog remaining-budget 及剩余 `start_time` 成本/ready 查询当时仍未闭合。此前各轮撤回、2026-08-22 hermetic-home 更正和 Qoder 0/0/0 窄范围说明继续有效。详见 `CHANGELOG.md`。
+- [历史更正] “Wave CA→CL 点名遗留均已修复、本地没有故意延期簇”的句子已由上方 Round-10 更正撤回；该轮的已落地实现与既定 do-not-fix 清单保持不动。
+- [验证] Core 1,313（1 跳过）、App 1,000、Service 712（1 跳过）、MCP 245、Remote 155 项非 UI Swift 测试通过；Vitest 129 files / 1,538 通过 / 2 脏树跳过，Node build、test typecheck、Biome、knip、直接写入/模块/归档边界和 diff check 均通过。
+- [未验证] Grok 独立复审、远端 CI、前台 UI 自动化及共享脏树上的 live XcodeGen 再生成未执行；后者的 tracked/untracked fixture 闸和四份 workflow 路由已通过，不能替代 live drift 结论。
+- [边界] 这是 Round-9 报告范围的本地实现证据，不是全仓“零缺陷”或公开发布；HEAD 与 `origin/main` 仍为 `d97d0257`，工作树保持未提交。未使用 Docker，未 commit、push、部署、安装、重启、修改生产数据、tag、GitHub Release、公证或更新 Homebrew/Sparkle。
+
+### 2026-08-23
+
+- [更正] 撤回此前“Round-7 当前没有故意延期 ID”的错误收口；Round-8 仍确认 6 个未闭合项和 73 个新增项。遗留项至少包括 `loadall-cap-5`、`copilot-composite-2`、`workitem-localtime-1`、`observability-ring-1`、`remote-catalog-1`。此前 Round-6、AB→AJ、2026-08-22 hermetic-home 更正及 Qoder 0/0/0 窄范围说明继续有效。详见 `CHANGELOG.md`。
+- [修复] 已在原脏工作树完成 Wave BI→BY 去重实现和对应 `_repro`；上述遗留项均已落实本地修复，其中 `remote-catalog-1` 已覆盖本地与 HTTP 跳过 65 MiB 坏对象后仍返回后续有效对象。既定 do-not-fix 清单保持不动。
+- [验证] Core 1,295（1 跳过）、App 979、Service 705（1 跳过）、MCP 241、Remote 155 项非 UI Swift 测试通过；Vitest 129 files / 1,537 通过 / 2 跳过，Node build、test typecheck、Biome、knip、adapter parity、Cursor 聚焦套件、直接写入/模块边界、diff check 和临时索引 xcodeproj drift 闸通过。固定 XcodeGen 输出哈希稳定为 `ad144b3a…`，真实 Git 索引未修改。
+- [未验证] Grok 独立复审、远端 CI 和用户离开后的前台 UI 自动化尚未执行；旧的 UI 运行数字不能作为本轮收口证据。
+- [边界] 这是报告范围的本地实现与验证，不是全仓“零缺陷”或公开发布结论；HEAD 与 `origin/main` 仍为 `d97d0257`，工作树保持未提交。未使用 Docker，未 commit、push、部署、安装、tag、GitHub Release、公证、Homebrew/Sparkle、重启服务或修改生产数据。
+
+### 2026-08-22
+
+- [更正] 撤回此前“Wave L→R 无遗留确认项、测试 home 已全部隔离”的结论；Round-4 复核确认仍有 3 个不完整补丁和 72 个新增确认项，部分 App/MCP 子进程、UI 测试与进程内工厂仍可能解析宿主环境。详见 `CHANGELOG.md`。
+- [进展] 本轮已推进 Wave S→Z，并完成 Wave AA 的仓库归属、日志覆盖、insight 链、MCP orphan/catalog 与 TS 子代理布局簇；RED/GREEN 证据和具体文件见 `CHANGELOG.md`。
+- [历史遗留] 截至该 2026-08-22 节点，Cursor 标题、Timeline 诚实分页/项目切换、Transcript Find、Replay 截断、归档脱敏、关闭竞态、UITest 固定时钟/搜索命中仍待继续；该清单已被后续 Round-5/6 复核与修复替代，不再代表当前剩余项。
+- [更正] 撤回此前“Round-2 Wave G→K 已全部收口”的结论；Round-3 复核确认仍有 7 个不完整补丁和 76 个新增确认项，旧测试计数不能证明缺陷清单已清零。详细证据见 `CHANGELOG.md`。
+- [修复] 已在原脏工作树完成 Wave L→R 去重整改，覆盖 skip/FTS、密钥与测试隔离、搜索/解析、索引/归档、UI 并发与分页、远端目录、关闭路径、部署脚本、Warp 及文档真实性；do-not-fix 清单保持不动。
+- [验证] 每组行为均先补或强化 `_repro` 并取得真实 RED，再做最小修复转 GREEN；Node 129 files / 1,528 passed、Core 1,179、Service 655、MCP 222、Remote 149、App 881 与无签名 Debug build 均通过，`xcodegen` 连续生成哈希一致。
+- [未验证] 签名 UI 搜索 hit/miss 因本机缺少配置的 Mac Development 证书未能执行；禁用签名后 runner 在握手前被系统终止。远端 CI 未运行；未使用 Docker，未 commit、push、部署、安装、重启、发布或修改生产数据。
+
+### 2026-08-21
+
+- [收口] `engram-multi-review` 经裁决确认的 55 项产品缺陷已按 Wave A→F 全部修复；9 个误报保持不动。详细分组与边界见 `CHANGELOG.md`。
+- [约束] 保持 Swift-first、single-writer、skip tier 不升级、按 id 可读取隐藏子会话、测试不接触生产 `~/.engram`；未恢复 Node 产品启动路径。
+- [验证] 完整 `EngramCoreTests`、`EngramServiceCore`、App 单元测试（跳过 UI 自动化）、`EngramMCPTests`、`EngramRemoteServerCore` 全绿；`git diff --check` 通过，HEAD 仍为 `d97d0257`。
+- [边界] 未使用 Docker，未 push、部署、安装、重启、发布或修改生产数据；`.grok/` 原始复核报告保持未跟踪且未改动。
+
 ### 2026-08-19
 
 - [修复] Dependabot #431 的 6 处 CodeQL `init`/`analyze` 已统一固定到 v4.37.7 提交 `ff2f1c62`，共享 workflow pin 契约同步更新；未改触发条件、权限或作业结构。详见 `CHANGELOG.md`。

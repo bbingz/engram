@@ -77,7 +77,10 @@ extension EngramServiceCommandHandler {
         let messages = pageMessages.map { message in
             EngramServiceArchiveTranscriptMessage(
                 role: message.role,
-                content: message.content,
+                // Redact the complete message before any response-budget utf8Prefix.
+                // Truncating first can separate a PEM header from its footer and
+                // turn a redaction match into leaked credential bytes.
+                content: TranscriptRedactionPolicy.redact(message.content),
                 timestamp: Self.boundedTimestamp(message.timestamp)
             )
         }

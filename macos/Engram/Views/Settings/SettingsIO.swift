@@ -1,17 +1,46 @@
 // macos/Engram/Views/Settings/SettingsIO.swift
+import Darwin
 import Foundation
 
-let engramSettingsPath = FileManager.default.homeDirectoryForCurrentUser
-    .appendingPathComponent(".engram/settings.json")
+private let engramSettingsMaximumBytes = 1024 * 1024
+
+func resolveEngramSettingsURL(
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) -> URL {
+    if let override = environment["ENGRAM_SETTINGS_PATH"], !override.isEmpty {
+        return URL(fileURLWithPath: override)
+    }
+    if let fixedHome = environment["CFFIXED_USER_HOME"], !fixedHome.isEmpty {
+        return URL(fileURLWithPath: fixedHome).appendingPathComponent(".engram/settings.json")
+    }
+    if environment["XCTestConfigurationFilePath"] != nil
+        || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+        // docs/invariants.md #6: an in-process XCTest host never falls back to
+        // the passwd-backed production home when no explicit path is supplied.
+        return FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "engram-tests-\(ProcessInfo.processInfo.processIdentifier)",
+                isDirectory: true
+            )
+            .appendingPathComponent(".engram/settings.json")
+    }
+    let home = environment["HOME"].flatMap { $0.isEmpty ? nil : $0 }
+        ?? FileManager.default.homeDirectoryForCurrentUser.path
+    return URL(fileURLWithPath: home).appendingPathComponent(".engram/settings.json")
+}
+
+let engramSettingsPath = resolveEngramSettingsURL()
 
 func repairEngramSettingsPermissionsIfPresent(at url: URL = engramSettingsPath) throws {
-    let fileManager = FileManager.default
-    let directory = url.deletingLastPathComponent()
-    if fileManager.fileExists(atPath: directory.path) {
-        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
-    }
-    if fileManager.fileExists(atPath: url.path) {
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    try prepareEngramSettingsDirectory(for: url, fileManager: .default)
+    if try nodeExists(at: url) {
+        guard SecureRegularFile.read(
+            atPath: url.path,
+            maximumBytes: engramSettingsMaximumBytes,
+            repairPermissions: true
+        ) != nil else {
+            throw CocoaError(.fileReadNoPermission)
+        }
     }
 }
 
@@ -26,12 +55,24 @@ func writeEngramSettingsDataSecurely(_ data: Data, to url: URL = engramSettingsP
 
 private func prepareEngramSettingsDirectory(for url: URL, fileManager: FileManager) throws {
     let directory = url.deletingLastPathComponent()
-    try fileManager.createDirectory(
-        at: directory,
-        withIntermediateDirectories: true,
-        attributes: [.posixPermissions: 0o700]
-    )
-    try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+    if !fileManager.fileExists(atPath: directory.path) {
+        try fileManager.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+    }
+    let descriptor = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    guard descriptor >= 0 else { throw CocoaError(.fileReadNoPermission) }
+    defer { close(descriptor) }
+    var info = stat()
+    guard fstat(descriptor, &info) == 0,
+          (info.st_mode & S_IFMT) == S_IFDIR,
+          info.st_uid == geteuid(),
+          fchmod(descriptor, 0o700) == 0
+    else {
+        throw CocoaError(.fileReadNoPermission)
+    }
 }
 
 private func writeEngramSettingsDataSecurelyUnlocked(
@@ -50,7 +91,14 @@ private func writeEngramSettingsDataSecurelyUnlocked(
         throw CocoaError(.fileWriteUnknown)
     }
     try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tempURL.path)
-    if fileManager.fileExists(atPath: url.path) {
+    if try nodeExists(at: url) {
+        guard SecureRegularFile.read(
+            atPath: url.path,
+            maximumBytes: engramSettingsMaximumBytes,
+            repairPermissions: true
+        ) != nil else {
+            throw CocoaError(.fileReadNoPermission)
+        }
         _ = try fileManager.replaceItemAt(
             url,
             withItemAt: tempURL,
@@ -59,7 +107,20 @@ private func writeEngramSettingsDataSecurelyUnlocked(
     } else {
         try fileManager.moveItem(at: tempURL, to: url)
     }
-    try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    guard SecureRegularFile.read(
+        atPath: url.path,
+        maximumBytes: max(engramSettingsMaximumBytes, data.count),
+        repairPermissions: false
+    ) != nil else {
+        throw CocoaError(.fileWriteUnknown)
+    }
+}
+
+private func nodeExists(at url: URL) throws -> Bool {
+    var info = stat()
+    if lstat(url.path, &info) == 0 { return true }
+    if errno == ENOENT { return false }
+    throw CocoaError(.fileReadUnknown)
 }
 
 // MARK: - Keychain Helper
@@ -109,13 +170,13 @@ enum KeychainHelper {
 
 // MARK: - One-time migration from plaintext JSON to Keychain
 
-func migrateKeysToKeychainIfNeeded() {
+func migrateKeysToKeychainIfNeeded(at url: URL = engramSettingsPath) {
     let keysToMigrate: [(jsonKey: String, keychainKey: String)] = [
         ("aiApiKey", KeychainSecretStore.Account.aiApiKey),
         ("titleApiKey", KeychainSecretStore.Account.titleApiKey),
         ("embeddingApiKey", KeychainSecretStore.Account.embeddingApiKey),
     ]
-    mutateEngramSettingsIfNeeded { settings in
+    mutateEngramSettingsIfNeeded(at: url) { settings in
         var changed = false
         for entry in keysToMigrate {
             guard let value = settings[entry.jsonKey] as? String, !value.isEmpty else { continue }
@@ -132,39 +193,72 @@ func migrateKeysToKeychainIfNeeded() {
 }
 
 func readEngramSettings() -> [String: Any]? {
-    try? repairEngramSettingsPermissionsIfPresent()
-    guard let data = try? Data(contentsOf: engramSettingsPath),
-          let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-        return nil
-    }
-    return settings
+    guard let data = readEngramSettingsData() else { return nil }
+    return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
 }
 
-func mutateEngramSettings(_ transform: (inout [String: Any]) -> Void) {
+func readEngramSettingsData(at url: URL = engramSettingsPath) -> Data? {
+    SecureRegularFile.read(
+        atPath: url.path,
+        maximumBytes: engramSettingsMaximumBytes,
+        repairPermissions: true
+    )
+}
+
+/// Checks whether an existing settings node is safe and readable without
+/// creating, locking, chmodding, or rewriting it. ENOENT is a valid empty state.
+func probeEngramSettingsForMutation(at url: URL = engramSettingsPath) -> Bool {
+    do {
+        guard try nodeExists(at: url) else { return true }
+        guard let data = SecureRegularFile.read(
+            atPath: url.path,
+            maximumBytes: engramSettingsMaximumBytes,
+            repairPermissions: false
+        ) else { return false }
+        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) != nil
+    } catch {
+        return false
+    }
+}
+
+@discardableResult
+func mutateEngramSettings(_ transform: (inout [String: Any]) -> Void) -> Bool {
     mutateEngramSettingsIfNeeded { settings in
         transform(&settings)
         return true
     }
 }
 
-private func mutateEngramSettingsIfNeeded(
+@discardableResult
+func mutateEngramSettingsIfNeeded(
     at url: URL = engramSettingsPath,
     _ transform: (inout [String: Any]) -> Bool
-) {
+) -> Bool {
     let fileManager = FileManager.default
-    guard (try? prepareEngramSettingsDirectory(for: url, fileManager: fileManager)) != nil else { return }
-    try? EngramSettingsFileLock.withExclusiveLock(for: url) {
-        var settings: [String: Any] = [:]
-        if let data = try? Data(contentsOf: url),
-           let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            settings = existing
+    do {
+        try prepareEngramSettingsDirectory(for: url, fileManager: fileManager)
+        return try EngramSettingsFileLock.withExclusiveLock(for: url) {
+            var settings: [String: Any] = [:]
+            if try nodeExists(at: url) {
+                guard let data = SecureRegularFile.read(
+                    atPath: url.path,
+                    maximumBytes: engramSettingsMaximumBytes,
+                    repairPermissions: true
+                ),
+                      let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else { return false }
+                settings = existing
+            }
+            guard transform(&settings) else { return false }
+            let data = try JSONSerialization.data(
+                withJSONObject: settings,
+                options: [.prettyPrinted, .sortedKeys]
+            )
+            try writeEngramSettingsDataSecurelyUnlocked(data, to: url, fileManager: fileManager)
+            return true
         }
-        guard transform(&settings) else { return }
-        let data = try JSONSerialization.data(
-            withJSONObject: settings,
-            options: [.prettyPrinted, .sortedKeys]
-        )
-        try writeEngramSettingsDataSecurelyUnlocked(data, to: url, fileManager: fileManager)
+    } catch {
+        return false
     }
 }
 

@@ -209,7 +209,7 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
 
     // L5 / RECLAMATION-ABORT-001: one generation-changed recovery must not
     // prevent later recoveries, new candidates, or the cycle's CAS snapshot.
-    func testSingleRecoverFailureDoesNotAbortLaterReclaimAndEvict_repro() async throws {
+    func testRecoveryPolicyAbortDoesNotBlockLaterReclaimAndEvict_repro() async throws {
         let projectsRoot = try makeProjectsRoot(
             parent: homeDirectory.appendingPathComponent(".claude", isDirectory: true)
         )
@@ -248,8 +248,8 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
             manifestSHA256: healthyRecovery.binding.manifestSHA256
         )
 
-        // Recovery intents are ordered by updatedAt: the corrupt C is visited
-        // first, then healthy A. C is also bound before healthy B.
+        // Recovery intents are ordered by updatedAt: the policy-invalid C is
+        // restored first, then healthy A. C is also bound before healthy B.
         try markQuarantinePlanned(
             failedRecovery,
             updatedAt: "2026-07-12T23:57:00.000Z"
@@ -268,7 +268,7 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
         XCTAssertTrue(run.accepted)
         XCTAssertNil(run.error)
         XCTAssertEqual(run.sourceFilesReclaimed, 2)
-        XCTAssertEqual(run.casObjectsEvicted, 1)
+        XCTAssertEqual(run.casObjectsEvicted, 2)
         XCTAssertFalse(FileManager.default.fileExists(atPath: healthyRecovery.sourceURL.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: healthyCandidate.sourceURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: failedRecovery.sourceURL.path))
@@ -282,7 +282,7 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
             try catalog.reclamationIntent(
                 manifestSHA256: failedRecovery.binding.manifestSHA256
             )?.lastError,
-            "generation_changed"
+            "policy_changed"
         )
         XCTAssertEqual(
             try catalog.localObject(objectSHA256: casFixture.objectSHA256)?.residency,
@@ -295,12 +295,12 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
             .localContentEvicted
         )
         let status = await coordinator.status(now: now)
-        XCTAssertEqual(status.lastError, "reclamation_item_failure")
+        XCTAssertNil(status.lastError)
     }
 
-    // A later successful candidate must not move the durable cursor beyond an
-    // eligible row whose planAndReclaim operation failed.
-    func testFailedEligiblePlanDoesNotAdvanceCursorPastLaterSuccess_repro() async throws {
+    // A prior-cycle paused intent is resumed before planning and therefore does
+    // not pin the cursor or block later dual-receipt candidates.
+    func testPausedIntentResumesWithoutBlockingLaterCandidate_repro() async throws {
         try writeSettings(customProjectsRoots: [])
         let projectsRoot = try makeProjectsRoot(
             parent: homeDirectory.appendingPathComponent(".claude", isDirectory: true)
@@ -341,15 +341,17 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
 
         XCTAssertTrue(run.accepted)
         XCTAssertNil(run.error)
-        XCTAssertEqual(run.sourceFilesReclaimed, 1)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: failed.sourceURL.path))
+        XCTAssertEqual(run.sourceFilesReclaimed, 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: failed.sourceURL.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: later.sourceURL.path))
-        XCTAssertNil(
-            try catalog.archiveCursorCheckpoint(for: .reclamationCycle),
-            "later success must not advance the cursor past the failed eligible row"
+        XCTAssertEqual(
+            try catalog.reclamationIntent(
+                manifestSHA256: failed.binding.manifestSHA256
+            )?.phase,
+            .sourceDeleted
         )
         let status = await coordinator.status(now: now)
-        XCTAssertEqual(status.lastError, "reclamation_item_failure")
+        XCTAssertNil(status.lastError)
     }
 
     // A corrupt CAS object for one source-deleted intent must not prevent a
@@ -685,6 +687,43 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
         )
     }
 
+    func testReclamationRechecksFavoriteAfterClaimBeforeDeletingSource_repro() async throws {
+        try writeSettings(customProjectsRoots: [])
+        let projectsRoot = try makeProjectsRoot(
+            parent: homeDirectory.appendingPathComponent(".claude", isDirectory: true)
+        )
+        let fixture = try addEligibleBinding(
+            seed: "favorite-after-claim",
+            source: "claude-code",
+            projectsRoot: projectsRoot
+        )
+        try await replicate([fixture])
+        try recordCurrentRecoveryLeases(manifestSHA256: fixture.binding.manifestSHA256)
+
+        let databasePath = databaseURL.path
+        let coordinator = try makeCoordinator(
+            testHooks: ArchiveReclamationCoordinatorTestHooks(beforeSourceReclaim: { candidate in
+                let queue = try DatabaseQueue(path: databasePath)
+                try queue.write { db in
+                    try db.execute(
+                        sql: "INSERT INTO favorites(session_id) VALUES (?)",
+                        arguments: [candidate.binding.sessionID]
+                    )
+                }
+            })
+        )
+
+        let run = await coordinator.runNow(now: now)
+
+        XCTAssertTrue(run.accepted)
+        XCTAssertEqual(run.sourceFilesReclaimed, 0)
+        XCTAssertEqual(try Data(contentsOf: fixture.sourceURL), fixture.bytes)
+        XCTAssertEqual(
+            try catalog.reclamationIntent(manifestSHA256: fixture.binding.manifestSHA256)?.phase,
+            .eligible
+        )
+    }
+
     func testClaudeProfileGateDoesNotChangeCASEvictionEligibility() async throws {
         let customRoot = try makeProjectsRoot(
             parent: root.appendingPathComponent("custom-profile", isDirectory: true)
@@ -716,7 +755,7 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
         )
     }
 
-    func testRunDoesNotResumeLegacySourceIntentForProtectedClaudeRoot() async throws {
+    func testRunRestoresOrPausesLegacySourceIntentForProtectedClaudeRoot_repro() async throws {
         let customRoot = try makeProjectsRoot(
             parent: root.appendingPathComponent("custom-profile", isDirectory: true)
         )
@@ -754,10 +793,78 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceURL.path))
         XCTAssertEqual(
             try catalog.reclamationIntent(manifestSHA256: fixture.binding.manifestSHA256)?.phase,
-            .quarantinePlanned
+            .paused
         )
         if FileManager.default.fileExists(atPath: fixture.sourceURL.path) {
             XCTAssertEqual(try Data(contentsOf: fixture.sourceURL), fixture.bytes)
+        }
+    }
+
+    func testPausedConfigurationStillAbortsInFlightRecovery_repro() async throws {
+        let defaultRoot = try makeProjectsRoot(
+            parent: homeDirectory.appendingPathComponent(".claude", isDirectory: true)
+        )
+        try writeSettings(reclamationEnabled: false, customProjectsRoots: [])
+        let fixture = try addEligibleBinding(
+            seed: "disabled-recovery",
+            source: "claude-code",
+            projectsRoot: defaultRoot
+        )
+        try markQuarantinePlanned(fixture, updatedAt: "2026-07-12T23:59:00.000Z")
+
+        let coordinator = try makeCoordinator()
+        let run = await coordinator.runNow(now: now)
+
+        XCTAssertFalse(run.accepted)
+        XCTAssertEqual(run.error, "reclamation_paused")
+        XCTAssertEqual(try Data(contentsOf: fixture.sourceURL), fixture.bytes)
+        XCTAssertEqual(
+            try catalog.reclamationIntent(manifestSHA256: fixture.binding.manifestSHA256)?.phase,
+            .paused
+        )
+    }
+
+    func testRemoteReplicationAndBothLiveBackendsGateDeletionAndCASEviction_repro() async throws {
+        let projectsRoot = try makeProjectsRoot(
+            parent: homeDirectory.appendingPathComponent(".claude", isDirectory: true)
+        )
+        try writeSettings(customProjectsRoots: [])
+        let sourceFixture = try addEligibleBinding(
+            seed: "remote-gate-source",
+            source: "claude-code",
+            projectsRoot: projectsRoot
+        )
+        let casFixture = try addEligibleBinding(
+            seed: "remote-gate-cas",
+            source: "claude-code",
+            projectsRoot: projectsRoot,
+            boundAt: "2026-05-01T00:02:00.000Z"
+        )
+        try await replicate([sourceFixture, casFixture])
+        try recordCurrentRecoveryLeases(
+            manifestSHA256: sourceFixture.binding.manifestSHA256
+        )
+        try markSourceDeleted(casFixture)
+
+        let unavailableCoordinators = [
+            try makeCoordinator(
+                remoteReplicationEnabled: false,
+                remoteBackendsLive: true
+            ),
+            try makeCoordinator(
+                remoteReplicationEnabled: true,
+                remoteBackendsLive: false
+            ),
+        ]
+        for coordinator in unavailableCoordinators {
+            let run = await coordinator.runNow(now: now)
+            XCTAssertFalse(run.accepted)
+            XCTAssertEqual(run.error, "reclamation_paused")
+            XCTAssertEqual(try Data(contentsOf: sourceFixture.sourceURL), sourceFixture.bytes)
+            XCTAssertEqual(
+                try catalog.localObject(objectSHA256: casFixture.objectSHA256)?.residency,
+                .resident
+            )
         }
     }
 
@@ -887,7 +994,7 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
         }
         XCTAssertEqual(
             try catalog.reclamationIntent(manifestSHA256: legacyFixture.binding.manifestSHA256)?.phase,
-            .quarantinePlanned
+            .paused
         )
         XCTAssertFalse(FileManager.default.fileExists(atPath: codexFixture.sourceURL.path))
         XCTAssertEqual(
@@ -912,7 +1019,11 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
         let binding: ArchiveBinding
     }
 
-    private func makeCoordinator() throws -> ArchiveReclamationCoordinator {
+    private func makeCoordinator(
+        remoteReplicationEnabled: Bool = true,
+        remoteBackendsLive: Bool = true,
+        testHooks: ArchiveReclamationCoordinatorTestHooks = .init()
+    ) throws -> ArchiveReclamationCoordinator {
         try ArchiveReclamationCoordinator(
             settingsURL: settingsURL,
             environment: [:],
@@ -922,7 +1033,10 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
             profileResolver: ClaudeCodeProfileResolver(
                 homeDirectory: homeDirectory,
                 settingsURL: settingsURL
-            )
+            ),
+            remoteReplicationEnabled: remoteReplicationEnabled,
+            remoteAvailability: { remoteBackendsLive },
+            testHooks: testHooks
         )
     }
 

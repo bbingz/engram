@@ -7,6 +7,7 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
     private let cacheDir: URL
     private let conversationsDir: URL
     private let cliBrainDir: URL
+    private let brainDirs: [URL]
     private let limits: ParserLimits
 
     init(
@@ -23,13 +24,24 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
     ) {
         self.cacheDir = URL(fileURLWithPath: cacheDir)
         self.conversationsDir = URL(fileURLWithPath: conversationsDir)
-        self.cliBrainDir = URL(fileURLWithPath: cliBrainDir)
+        let cliBrainURL = URL(fileURLWithPath: cliBrainDir)
+        self.cliBrainDir = cliBrainURL
+        if cliBrainURL.deletingLastPathComponent().lastPathComponent == "antigravity-cli" {
+            let geminiRoot = cliBrainURL.deletingLastPathComponent().deletingLastPathComponent()
+            self.brainDirs = [
+                cliBrainURL,
+                geminiRoot.appendingPathComponent("antigravity/brain", isDirectory: true),
+                geminiRoot.appendingPathComponent("antigravity-ide/brain", isDirectory: true),
+            ]
+        } else {
+            self.brainDirs = [cliBrainURL]
+        }
         self.limits = limits
     }
 
     func detect() async -> Bool {
         JSONLAdapterSupport.isDirectory(cacheDir) ||
-            JSONLAdapterSupport.isDirectory(cliBrainDir)
+            brainDirs.contains(where: JSONLAdapterSupport.isDirectory)
     }
 
     func listSessionLocators() async throws -> [String] {
@@ -44,7 +56,8 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
             let (metadata, rawMessages, failure) = try CascadeCacheSupport.readCache(
                 locator: locator,
                 limits: limits,
-                reportFailures: true
+                reportFailures: true,
+                countsTowardMessageLimit: CascadeCacheSupport.countsTowardMessageLimit
             )
             if let failure { return .failure(failure) }
             guard let metadata,
@@ -112,7 +125,8 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
                 let (objects, failure) = try JSONLAdapterSupport.readObjects(
                     locator: locator,
                     limits: limits,
-                    reportFailures: true
+                    reportFailures: true,
+                    countsTowardMessageLimit: { Self.cliMessage(from: $0) != nil }
                 )
                 if let failure { throw failure }
                 return JSONLAdapterSupport.stream(
@@ -130,7 +144,8 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
         let (_, rawMessages, failure) = try CascadeCacheSupport.readCache(
             locator: locator,
             limits: limits,
-            reportFailures: true
+            reportFailures: true,
+            countsTowardMessageLimit: CascadeCacheSupport.countsTowardMessageLimit
         )
         if let failure { throw failure }
         let messages = CascadeCacheSupport.normalizedMessages(from: rawMessages)
@@ -141,9 +156,6 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> StreamMessagesResult {
-        guard options.limit == nil else {
-            return StreamMessagesResult(messages: try await streamMessages(locator: locator, options: options))
-        }
         if isCLITranscript(locator) {
             let result = try JSONLAdapterSupport.windowedMessagesWithMetadata(
                 locator: locator,
@@ -156,10 +168,12 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
         let result = try JSONLAdapterSupport.wholeDocumentMessagesWithMetadata(
             locator: locator,
             options: options,
-            limits: limits
-        ) { objects in
-            CascadeCacheSupport.normalizedMessages(from: Array(objects.dropFirst()))
-        }
+            limits: limits,
+            transform: { objects in
+                CascadeCacheSupport.normalizedMessages(from: Array(objects.dropFirst()))
+            },
+            countsTowardMessageLimit: CascadeCacheSupport.countsTowardMessageLimit
+        )
         return JSONLAdapterSupport.stream(result)
     }
 
@@ -182,15 +196,16 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
     }
 
     private func cliTranscriptLocators() -> [String] {
-        guard JSONLAdapterSupport.isDirectory(cliBrainDir) else { return [] }
         var locators: [String] = []
-        for sessionURL in JSONLAdapterSupport.directChildren(of: cliBrainDir)
-            where JSONLAdapterSupport.isDirectory(sessionURL)
-        {
-            let transcriptURL = sessionURL
-                .appendingPathComponent(".system_generated/logs/transcript.jsonl")
-            if JSONLAdapterSupport.fileExists(transcriptURL.path) {
-                locators.append(transcriptURL.path)
+        for brainDir in brainDirs where JSONLAdapterSupport.isDirectory(brainDir) {
+            for sessionURL in JSONLAdapterSupport.directChildren(of: brainDir)
+                where JSONLAdapterSupport.isDirectory(sessionURL)
+            {
+                let transcriptURL = sessionURL
+                    .appendingPathComponent(".system_generated/logs/transcript.jsonl")
+                if JSONLAdapterSupport.fileExists(transcriptURL.path) {
+                    locators.append(transcriptURL.path)
+                }
             }
         }
         return locators
@@ -198,12 +213,15 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
 
     private func isCLITranscript(_ locator: String) -> Bool {
         let path = URL(fileURLWithPath: locator).standardizedFileURL.path
-        let root = cliBrainDir.standardizedFileURL.path
-        if path == root || path.hasPrefix(root + "/") {
+        if brainDirs.contains(where: {
+            let root = $0.standardizedFileURL.path
+            return path == root || path.hasPrefix(root + "/")
+        }) {
             return true
         }
-        return path.contains("/.gemini/antigravity-cli/brain/") &&
-            path.hasSuffix("/.system_generated/logs/transcript.jsonl")
+        return ["antigravity-cli", "antigravity", "antigravity-ide"].contains {
+            path.contains("/.gemini/\($0)/brain/")
+        } && path.hasSuffix("/.system_generated/logs/transcript.jsonl")
     }
 
     private func parseCLITranscript(locator: String) throws -> AdapterParseResult<NormalizedSessionInfo> {
@@ -211,7 +229,8 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
             let (objects, failure) = try JSONLAdapterSupport.readObjects(
                 locator: locator,
                 limits: limits,
-                reportFailures: true
+                reportFailures: true,
+                countsTowardMessageLimit: { Self.cliMessage(from: $0) != nil }
             )
             if let failure { return .failure(failure) }
 
@@ -307,7 +326,11 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
             guard !content.isEmpty else { return nil }
             return NormalizedMessage(role: .tool, content: content, timestamp: timestamp)
         default:
-            return nil
+            let body = content.isEmpty && type == "ERROR_MESSAGE"
+                ? (JSONLAdapterSupport.string(object["error"]) ?? "")
+                : content
+            guard !body.isEmpty else { return nil }
+            return NormalizedMessage(role: .tool, content: body, timestamp: timestamp)
         }
     }
 

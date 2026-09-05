@@ -83,6 +83,35 @@ final class TodayWorkbenchTests: XCTestCase {
         XCTAssertEqual(reloaded.handledIds.count, 2)
     }
 
+    func testHomeInjectsHermeticAppStorageIntoHandledFollowUps_repro() throws {
+        let macos = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let support = try String(
+            contentsOf: macos.appendingPathComponent("Engram/Views/Pages/TodayWorkbenchSupport.swift"),
+            encoding: .utf8
+        )
+        let home = try String(
+            contentsOf: macos.appendingPathComponent("Engram/Views/Pages/HomeView.swift"),
+            encoding: .utf8
+        )
+        let main = try String(
+            contentsOf: macos.appendingPathComponent("Engram/Views/MainWindowView.swift"),
+            encoding: .utf8
+        )
+        let menu = try String(
+            contentsOf: macos.appendingPathComponent("Engram/MenuBarController.swift"),
+            encoding: .utf8
+        )
+
+        // docs/invariants.md #6: UI-test app storage must stay inside its sandbox suite.
+        XCTAssertFalse(support.contains("UserDefaults = .standard"))
+        XCTAssertTrue(home.contains("init(appStorage: UserDefaults)"))
+        XCTAssertTrue(home.contains("State(initialValue: TodayHandledFollowUps(defaults: appStorage))"))
+        XCTAssertTrue(main.contains("HomeView(appStorage: appStorage)"))
+        XCTAssertTrue(menu.contains("appStorage: appStorage"))
+    }
+
     func testContinueRankingPrefersResumableSessionsWithAgentContext() {
         let recent = [
             makeSession(id: "newer-plain", source: "unknown", startTime: "2026-06-01T10:00:00Z"),
@@ -145,6 +174,40 @@ final class TodayWorkbenchTests: XCTestCase {
                 String.localizedStringWithFormat(String(localized: "%lld changed"), 3),
                 String.localizedStringWithFormat(String(localized: "%lld unpushed"), 4),
             ].joined(separator: " · ")
+        )
+    }
+
+    func testProjectWarningMatchesDarwinRealpathAliases_repro() {
+        let suffix = "engram-warning-\(UUID().uuidString)"
+        let group = DatabaseManager.ProjectGroup(
+            id: "/tmp/\(suffix)",
+            project: "/tmp/\(suffix)",
+            sessionCount: 1,
+            lastActive: "2026-08-24T12:00:00Z",
+            sessions: [makeSession(
+                id: "realpath-session",
+                source: "codex",
+                startTime: "2026-08-24T12:00:00Z",
+                cwd: "/tmp/\(suffix)/child"
+            )]
+        )
+        let repo = GitRepo(
+            path: "/private/tmp/\(suffix)",
+            name: "canonical-repo",
+            branch: "main",
+            dirtyCount: 1,
+            untrackedCount: 0,
+            unpushedCount: 0,
+            lastCommitHash: nil,
+            lastCommitMsg: nil,
+            lastCommitAt: nil,
+            sessionCount: 1,
+            probedAt: nil
+        )
+
+        XCTAssertEqual(
+            TodayProjectWarning.warning(for: group, repos: [repo], migrations: []),
+            String.localizedStringWithFormat(String(localized: "%lld changed"), 1)
         )
     }
 

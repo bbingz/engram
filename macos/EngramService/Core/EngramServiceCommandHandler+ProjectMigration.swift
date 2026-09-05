@@ -42,16 +42,18 @@ extension EngramServiceCommandHandler {
         writerGate: ServiceWriterGate,
         hooks: ProjectMoveLongOpHooks = .none
     ) async throws -> ServiceWriterGateResult<EngramServiceProjectMoveResult> {
+        let trimmedSrc = request.src.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedDst = request.dst.trimmingCharacters(in: .whitespacesAndNewlines)
         ServiceLogger.notice(
-            "projectMove requested actor=\(request.actor ?? "mcp") dryRun=\(request.dryRun) force=\(request.force) src=\(request.src) dst=\(request.dst) operationId=\(request.operationId ?? "")",
+            "projectMove requested actor=\(request.actor ?? "mcp") dryRun=\(request.dryRun) force=\(request.force) src=\(trimmedSrc) dst=\(trimmedDst) operationId=\(request.operationId ?? "")",
             category: .writer
         )
         let operationId = normalizeOperationId(request.operationId)
         let actor = parseActor(request.actor) ?? .mcp
         let fingerprint = ProjectMoveOperationFingerprint.encode([
             "kind": "move",
-            "src": request.src,
-            "dst": request.dst,
+            "src": trimmedSrc,
+            "dst": trimmedDst,
             "dryRun": String(request.dryRun),
             "force": String(request.force),
             "auditNote": request.auditNote ?? "",
@@ -69,12 +71,15 @@ extension EngramServiceCommandHandler {
         }
 
         do {
-            try validateProjectMovePaths(src: request.src, dst: request.dst)
+            try validateProjectMovePaths(src: trimmedSrc, dst: trimmedDst)
         } catch {
             let terminal = terminalizeAndCache(operationId: operationId, error: error)
             logProjectMigrationFailure(commandName: "projectMove", error: terminal)
             throw terminal
         }
+        let homeDirectory = homeDirectoryURL()
+        let expandedSrc = ProjectPath.expandHome(trimmedSrc, homeDirectory: homeDirectory)
+        let expandedDst = ProjectPath.expandHome(trimmedDst, homeDirectory: homeDirectory)
 
         return try await produceWithGate(
             operationId: operationId,
@@ -86,16 +91,16 @@ extension EngramServiceCommandHandler {
             try await ProjectMoveOrchestrator.run(
                 writer: writer,
                 options: RunProjectMoveOptions(
-                    src: request.src,
-                    dst: request.dst,
+                    src: expandedSrc,
+                    dst: expandedDst,
                     dryRun: request.dryRun,
                     force: request.force,
                     archived: false,
                     auditNote: request.auditNote,
                     actor: actor,
-                    homeDirectory: homeDirectoryURL(),
+                    homeDirectory: homeDirectory,
                     rolledBackOf: nil,
-                    shouldCancel: { shouldStop(operationId: operationId) },
+                    shouldCancel: { Task.isCancelled || shouldStop(operationId: operationId) },
                     beginCommitIfNotCancelled: {
                         ProjectMoveBatchCancelRegistry.shared.beginCommitIfNotCancelled(
                             operationId: operationId
@@ -138,14 +143,16 @@ extension EngramServiceCommandHandler {
         }
 
         let suggestion: ArchiveSuggestion
+        let expandedSrc: String
         do {
             // Preflight / suggestion only — no FS mutation outside the writer gate.
             try validateProjectPathConfined(request.src, label: "source")
+            expandedSrc = ProjectPath.expandHome(request.src, homeDirectory: homeDirectoryURL())
             suggestion = try Archive.suggestTarget(
-                src: request.src,
+                src: expandedSrc,
                 options: ArchiveOptions(
                     archiveRoot: nil,
-                    skipProbe: request.dryRun,
+                    skipProbe: false,
                     forceCategory: request.archiveTo
                 )
             )
@@ -168,7 +175,7 @@ extension EngramServiceCommandHandler {
             try await ProjectMoveOrchestrator.run(
                 writer: writer,
                 options: RunProjectMoveOptions(
-                    src: request.src,
+                    src: expandedSrc,
                     dst: suggestion.dst,
                     dryRun: request.dryRun,
                     force: request.force,
@@ -177,7 +184,7 @@ extension EngramServiceCommandHandler {
                     actor: actor,
                     homeDirectory: homeDirectoryURL(),
                     rolledBackOf: nil,
-                    shouldCancel: { shouldStop(operationId: operationId) },
+                    shouldCancel: { Task.isCancelled || shouldStop(operationId: operationId) },
                     beginCommitIfNotCancelled: {
                         ProjectMoveBatchCancelRegistry.shared.beginCommitIfNotCancelled(
                             operationId: operationId
@@ -227,7 +234,8 @@ extension EngramServiceCommandHandler {
                 migrationId: request.migrationId,
                 force: request.force,
                 actor: actor,
-                shouldCancel: { shouldStop(operationId: operationId) },
+                homeDirectory: homeDirectoryURL(),
+                shouldCancel: { Task.isCancelled || shouldStop(operationId: operationId) },
                 beginCommitIfNotCancelled: {
                     ProjectMoveBatchCancelRegistry.shared.beginCommitIfNotCancelled(
                         operationId: operationId
@@ -250,6 +258,7 @@ extension EngramServiceCommandHandler {
         let fingerprint = ProjectMoveOperationFingerprint.encode([
             "kind": "batch",
             "yaml": request.yaml,
+            "dryRun": String(request.dryRun),
             "force": String(request.force),
             "actor": request.actor ?? "",
         ])
@@ -265,7 +274,11 @@ extension EngramServiceCommandHandler {
 
         let document: BatchDocument
         do {
-            document = try Batch.parseJSON(Data(request.yaml.utf8))
+            var parsed = try Batch.parseJSON(Data(request.yaml.utf8))
+            if request.dryRun {
+                parsed.defaults.dryRun = true
+            }
+            document = parsed
             for operation in document.operations {
                 try validateProjectPathConfined(operation.src, label: "source")
                 if let dst = operation.dst, !dst.isEmpty {
@@ -320,7 +333,7 @@ extension EngramServiceCommandHandler {
                         writer: writer,
                         overrides: overrides,
                         shouldCancel: {
-                            ProjectMoveBatchCancelRegistry.shared.shouldStop(operationId: operationId)
+                            Task.isCancelled || ProjectMoveBatchCancelRegistry.shared.shouldStop(operationId: operationId)
                         },
                         beginCommitIfNotCancelled: {
                             ProjectMoveBatchCancelRegistry.shared.beginCommitIfNotCancelled(

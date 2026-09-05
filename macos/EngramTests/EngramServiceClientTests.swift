@@ -227,6 +227,35 @@ final class EngramServiceClientTests: XCTestCase {
         XCTAssertTrue(sent.allSatisfy { ($0.timeout ?? 0) >= 300 }, "migration commands need more than the 30s default timeout")
     }
 
+    func testUIWriteCommandsUseLongQueueAwareTimeout_repro() async throws {
+        let transport = RecordingServiceTransport { request in
+            if request.command == "status" {
+                return .success(
+                    requestId: request.requestId,
+                    result: #"{"state":"running","total":1,"todayParents":1}"#.data(using: .utf8)!
+                )
+            }
+            return .success(requestId: request.requestId, result: Data("{}".utf8))
+        }
+        let client = EngramServiceClient(transport: transport)
+
+        try await client.setFavorite(sessionId: "s1", favorite: true)
+        try await client.setSessionHidden(sessionId: "s1", hidden: true)
+        try await client.renameSession(sessionId: "s1", name: "Renamed")
+        try await client.recordSessionAccess(sessionId: "s1")
+        _ = try await client.status()
+
+        let sent = await transport.sent
+        XCTAssertEqual(sent.map(\.command), [
+            "setFavorite", "setSessionHidden", "renameSession", "recordSessionAccess", "status",
+        ])
+        XCTAssertTrue(
+            sent.dropLast().allSatisfy { ($0.timeout ?? 0) >= 60 },
+            "UI writes parked behind healthy indexing need more than the 30s default timeout"
+        )
+        XCTAssertEqual(sent.last?.timeout, 30, "read-only RPCs keep the normal interactive timeout")
+    }
+
     func testRegenerateAllTitlesUsesExtendedTimeout() async throws {
         let transport = RecordingServiceTransport { request in
             XCTAssertEqual(request.command, "regenerateAllTitles")
@@ -244,6 +273,29 @@ final class EngramServiceClientTests: XCTestCase {
         XCTAssertTrue(
             sent.allSatisfy { ($0.timeout ?? 0) >= 300 },
             "bulk title regeneration can exceed the default 30s command timeout"
+        )
+    }
+
+    func testGenerateSummaryUsesMutationTimeout_repro() async throws {
+        let transport = RecordingServiceTransport { request in
+            XCTAssertEqual(request.command, "generateSummary")
+            return .success(
+                requestId: request.requestId,
+                result: #"{"summary":"Short summary"}"#.data(using: .utf8)!
+            )
+        }
+        let client = EngramServiceClient(transport: transport)
+
+        _ = try await client.generateSummary(
+            EngramServiceGenerateSummaryRequest(sessionId: "s1")
+        )
+
+        let sent = await transport.sent
+        XCTAssertEqual(sent.count, 1)
+        XCTAssertGreaterThanOrEqual(
+            sent[0].timeout ?? 0,
+            300,
+            "summary persistence can queue behind a long service writer"
         )
     }
 
@@ -266,15 +318,8 @@ final class EngramServiceClientTests: XCTestCase {
 
         let sent = await transport.sent
         XCTAssertEqual(sent.map(\.command), ["generateSummary", "linkSessions"])
-        // Wave 7C H03: generateSummary/linkSessions use frameBoundCommandTimeout (45s)
-        // above the 30s inter-byte floor but with AI HTTP headroom below it.
-        XCTAssertTrue(
-            sent.allSatisfy { timeout in
-                guard let value = timeout.timeout else { return false }
-                return value > 2 && value <= 45
-            },
-            "long synchronous commands need explicit timeouts with AI/IPC headroom"
-        )
+        XCTAssertGreaterThanOrEqual(sent[0].timeout ?? 0, 300)
+        XCTAssertTrue((sent[1].timeout ?? 0) > 2 && (sent[1].timeout ?? 0) <= 45)
     }
 
     func testConcurrentRequestsResolveAgainstMatchingRequestIds() async throws {

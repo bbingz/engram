@@ -5,6 +5,23 @@ import GRDB
 @testable import EngramServiceCore
 
 final class DatabaseManagerTests: XCTestCase {
+    func testDefaultDatabasePathUsesInjectedFixedHome_repro() throws {
+        let fixedHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-db-fixed-home-\(UUID().uuidString)", isDirectory: true)
+        let oldFixedHome = getenv("CFFIXED_USER_HOME").map { String(cString: $0) }
+        let oldHome = getenv("HOME").map { String(cString: $0) }
+        setenv("CFFIXED_USER_HOME", fixedHome.path, 1)
+        setenv("HOME", fixedHome.path, 1)
+        defer {
+            if let oldFixedHome { setenv("CFFIXED_USER_HOME", oldFixedHome, 1) } else { unsetenv("CFFIXED_USER_HOME") }
+            if let oldHome { setenv("HOME", oldHome, 1) } else { unsetenv("HOME") }
+        }
+
+        XCTAssertEqual(
+            DatabaseManager().path,
+            fixedHome.appendingPathComponent(".engram/index.sqlite").path
+        )
+    }
     var db: DatabaseManager!
     var dbPath: String!
 
@@ -51,12 +68,17 @@ final class DatabaseManagerTests: XCTestCase {
         try FileManager.default.copyItem(atPath: fixturePath, toPath: copiedPath)
         defer { cleanupTempDatabase(at: copiedPath) }
 
-        let queue = try DatabaseQueue(path: copiedPath)
-        try queue.write { db in
-            try db.execute(
-                sql: "INSERT INTO sessions_fts(session_id, content) VALUES (?, ?)",
-                arguments: ["seed-01", "fixture bridge marker"]
-            )
+        try autoreleasepool {
+            let queue = try DatabaseQueue(path: copiedPath)
+            try queue.writeWithoutTransaction { db in
+                try db.execute(sql: "PRAGMA journal_mode = WAL")
+            }
+            try queue.write { db in
+                try db.execute(
+                    sql: "INSERT INTO sessions_fts(session_id, content) VALUES (?, ?)",
+                    arguments: ["seed-01", "fixture bridge marker"]
+                )
+            }
         }
 
         let fixtureDb = DatabaseManager(path: copiedPath)
@@ -71,8 +93,250 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertTrue(search.first?.snippet.contains("<mark>") ?? false)
     }
 
+    func testBundledFixtureAuthenticationSearch_repro() throws {
+        let fixturePath = try XCTUnwrap(Bundle(for: type(of: self)).path(
+            forResource: "test-index",
+            ofType: "sqlite",
+            inDirectory: "test-fixtures"
+        ))
+        let copiedPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-auth-search-\(UUID().uuidString).sqlite")
+            .path
+        try FileManager.default.copyItem(atPath: fixturePath, toPath: copiedPath)
+        var fixtureWriter: DatabaseQueue? = try keepFixtureWALOpen(at: copiedPath)
+        var fixtureDb: DatabaseManager? = DatabaseManager(path: copiedPath)
+        defer {
+            fixtureDb = nil
+            fixtureWriter = nil
+            cleanupTempDatabase(at: copiedPath)
+        }
+        try fixtureDb?.open()
+
+        let hits = try XCTUnwrap(fixtureDb).searchWithSnippets(query: "authentication", limit: 30)
+        XCTAssertEqual(hits.map(\.session.id), ["seed-02"])
+    }
+
     func testPathReturnsCorrectPath() throws {
         XCTAssertEqual(db.path, dbPath)
+    }
+
+    func testRecentSessionsOrdersByLatestActivity_repro() throws {
+        try insertTestSession(
+            at: dbPath,
+            id: "recent-started-newer",
+            startTime: "2026-08-24T11:00:00Z",
+            endTime: nil
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "recent-ended-newer",
+            startTime: "2026-08-24T09:00:00Z",
+            endTime: "2026-08-24T12:00:00Z"
+        )
+
+        XCTAssertEqual(
+            try db.recentSessions(limit: 2).map(\.id),
+            ["recent-ended-newer", "recent-started-newer"]
+        )
+    }
+
+    func testPopoverRecentSessionsFetchExecutesWithHumanFilter_repro() throws {
+        try insertTestSession(
+            at: dbPath,
+            id: "popover-human",
+            startTime: "2026-08-24T11:00:00Z",
+            endTime: nil
+        )
+
+        XCTAssertEqual(
+            try db.recentSessions(limit: 12, humanDriven: true).map(\.id),
+            ["popover-human"]
+        )
+    }
+
+    func testDefaultBrowsePromotesHumanSuggestedChildOverWeakHost_repro() throws {
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { database in
+            try database.execute(sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, file_path, message_count,
+                  user_message_count, instruction_count, human_turn_count, tier,
+                  agent_role, parent_session_id, suggested_parent_id, summary
+                ) VALUES
+                  ('app-weak-host', 'claude-code', '2026-08-24T10:00:00Z', '/tmp/promote',
+                   'promote', '/tmp/app-host.jsonl', 1, 1, 1, 1, 'normal', NULL, NULL, NULL,
+                   'weak host'),
+                  ('app-human-child', 'gemini-cli', '2026-08-24T11:00:00Z', '/tmp/promote',
+                   'promote', '/tmp/app-child.jsonl', 4, 4, 4, 4, 'normal', NULL, NULL,
+                   'app-weak-host', 'promoted child')
+                """)
+        }
+
+        XCTAssertEqual(
+            try db.recentSessions(limit: 10, humanDriven: true).map(\.id),
+            ["app-human-child"]
+        )
+    }
+
+    func testPopoverLiveClickDoesNotGuessOpenCodeRowFromDatabasePrefix_repro() throws {
+        let sourceDatabasePath = "/tmp/opencode-live-click.db"
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { database in
+            try database.execute(
+                sql: """
+                    INSERT INTO sessions (
+                      id, source, start_time, cwd, file_path, size_bytes, indexed_at
+                    ) VALUES (?, 'opencode', '2026-08-22T00:00:00Z', '/tmp', ?, 1, '2026-08-22T00:00:00Z')
+                    """,
+                arguments: ["indexed-opencode-session", "\(sourceDatabasePath)::indexed-source-id"]
+            )
+        }
+        let live = Engram.EngramServiceLiveSessionInfo(
+            source: "opencode",
+            sessionId: nil,
+            project: nil,
+            title: nil,
+            cwd: nil,
+            filePath: "\(sourceDatabasePath)::live-source-id",
+            startedAt: nil,
+            model: nil,
+            currentActivity: nil,
+            lastModifiedAt: "2026-08-22T00:00:00Z",
+            activityLevel: "active"
+        )
+
+        let resolved = try PopoverView.resolveLiveSession(live, database: db)
+
+        XCTAssertNil(resolved)
+    }
+
+    func testPopoverLiveResolutionRequiresMatchingSourceForIDAndPath_repro() throws {
+        let locator = "/tmp/live-source-match.jsonl"
+        try DatabaseQueue(path: dbPath).write { database in
+            try database.execute(
+                sql: """
+                    INSERT INTO sessions (
+                      id, source, start_time, cwd, file_path, size_bytes, indexed_at
+                    ) VALUES ('shared-live-id', 'codex', '2026-08-23T00:00:00Z', '/tmp', ?, 1, '2026-08-23T00:00:00Z')
+                    """,
+                arguments: [locator]
+            )
+        }
+        let byID = Engram.EngramServiceLiveSessionInfo(
+            source: "antigravity", sessionId: "shared-live-id", project: nil, title: nil,
+            cwd: nil, filePath: "/tmp/different.jsonl", startedAt: nil, model: nil,
+            currentActivity: nil, lastModifiedAt: "2026-08-23T00:00:00Z", activityLevel: "active"
+        )
+        let byPath = Engram.EngramServiceLiveSessionInfo(
+            source: "antigravity", sessionId: nil, project: nil, title: nil,
+            cwd: nil, filePath: locator, startedAt: nil, model: nil,
+            currentActivity: nil, lastModifiedAt: "2026-08-23T00:00:00Z", activityLevel: "active"
+        )
+
+        XCTAssertNil(try PopoverView.resolveLiveSession(byID, database: db))
+        XCTAssertNil(try PopoverView.resolveLiveSession(byPath, database: db))
+    }
+
+    func testPopoverLiveClickMatchesFullOpenCodeVirtualLocatorFromTheRight_repro() throws {
+        let virtualLocator = "/tmp/opencode::data/opencode.db::live-source-id"
+        try DatabaseQueue(path: dbPath).write { database in
+            try database.execute(
+                sql: """
+                    INSERT INTO sessions (
+                      id, source, start_time, cwd, file_path, size_bytes, indexed_at
+                    ) VALUES ('indexed-opencode-live', 'opencode', '2026-08-23T00:00:00Z', '/tmp', ?, 1, '2026-08-23T00:00:00Z')
+                    """,
+                arguments: [virtualLocator]
+            )
+        }
+        let live = Engram.EngramServiceLiveSessionInfo(
+            source: "opencode",
+            sessionId: nil,
+            project: nil,
+            title: nil,
+            cwd: nil,
+            filePath: virtualLocator,
+            startedAt: nil,
+            model: nil,
+            currentActivity: nil,
+            lastModifiedAt: "2026-08-23T00:00:00Z",
+            activityLevel: "active"
+        )
+
+        XCTAssertEqual(try PopoverView.resolveLiveSession(live, database: db)?.id, "indexed-opencode-live")
+    }
+
+    func testPopoverLiveClickResolvesAntigravityBrainLocatorWithoutJSONID_repro() throws {
+        let locator = "/tmp/brain/brain-session/.system_generated/logs/transcript.jsonl"
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { database in
+            try database.execute(
+                sql: """
+                    INSERT INTO sessions (
+                      id, source, start_time, cwd, file_path, size_bytes, indexed_at
+                    ) VALUES (?, 'antigravity', '2026-08-22T00:00:00Z', '/tmp', ?, 1, '2026-08-22T00:00:00Z')
+                    """,
+                arguments: ["brain-session", locator]
+            )
+        }
+        let live = Engram.EngramServiceLiveSessionInfo(
+            source: "antigravity",
+            sessionId: nil,
+            project: nil,
+            title: nil,
+            cwd: nil,
+            filePath: locator,
+            startedAt: nil,
+            model: nil,
+            currentActivity: nil,
+            lastModifiedAt: "2026-08-22T00:00:00Z",
+            activityLevel: "active"
+        )
+
+        let resolved = try PopoverView.resolveLiveSession(live, database: db)
+        XCTAssertEqual(resolved?.id, "brain-session")
+    }
+
+    func testPopoverLiveClickNormalizesTheAdapterFileLocator_repro() throws {
+        let physicalRoot = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath()
+            .appendingPathComponent("engram-live-resolve-\(UUID().uuidString)", isDirectory: true)
+        let linkRoot = physicalRoot.deletingLastPathComponent()
+            .appendingPathComponent("engram-live-resolve-link-\(UUID().uuidString)")
+        defer {
+            try? FileManager.default.removeItem(at: linkRoot)
+            try? FileManager.default.removeItem(at: physicalRoot)
+        }
+        try FileManager.default.createDirectory(at: physicalRoot, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: linkRoot, withDestinationURL: physicalRoot)
+        let physicalLocator = physicalRoot.appendingPathComponent("rollout-live.jsonl").path
+        let linkedLocator = linkRoot.appendingPathComponent("rollout-live.jsonl").path
+        try "{}\n".write(toFile: physicalLocator, atomically: true, encoding: .utf8)
+
+        try DatabaseQueue(path: dbPath).write { database in
+            try database.execute(
+                sql: """
+                    INSERT INTO sessions (
+                      id, source, start_time, cwd, file_path, size_bytes, indexed_at
+                    ) VALUES ('canonical-live', 'codex', '2026-08-23T00:00:00Z', '/tmp', ?, 1, '2026-08-23T00:00:00Z')
+                    """,
+                arguments: [physicalLocator]
+            )
+        }
+        let live = Engram.EngramServiceLiveSessionInfo(
+            source: "codex",
+            sessionId: nil,
+            project: nil,
+            title: nil,
+            cwd: nil,
+            filePath: linkedLocator,
+            startedAt: nil,
+            model: nil,
+            currentActivity: nil,
+            lastModifiedAt: "2026-08-23T00:00:00Z",
+            activityLevel: "active"
+        )
+
+        XCTAssertEqual(try PopoverView.resolveLiveSession(live, database: db)?.id, "canonical-live")
     }
 
     // UI-M4: `journalMode()` must report the real PRAGMA value, not a hardcoded
@@ -89,6 +353,18 @@ final class DatabaseManagerTests: XCTestCase {
     // cannot drift from SQLiteConnectionPolicy. cache_size is negative (KiB).
     func testReadPoolAppliesSharedCacheSize() throws {
         XCTAssertEqual(try db.cacheSize(), -SharedDBConfig.cacheSizeKiB)
+    }
+
+    func testAppReadPoolUsesWalAndThirtySecondBusyTimeout_repro() throws {
+        let pragmas = try db.readInBackground { database in
+            (
+                try String.fetchOne(database, sql: "PRAGMA journal_mode") ?? "",
+                try Int.fetchOne(database, sql: "PRAGMA busy_timeout") ?? 0
+            )
+        }
+
+        XCTAssertEqual(pragmas.0.lowercased(), "wal")
+        XCTAssertEqual(pragmas.1, 30_000)
     }
 
     @MainActor
@@ -172,6 +448,19 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(try db.listFavorites().map(\.id), ["favorite-visible"])
     }
 
+    func testFavoriteIdsIncludesSkipChildrenForSymmetricToggle_repro() throws {
+        try insertTestSession(at: dbPath, id: "favorite-visible", tier: "normal")
+        try insertTestSession(at: dbPath, id: "favorite-skip-child", tier: "skip")
+        try insertFavorite(at: dbPath, sessionId: "favorite-visible")
+        try insertFavorite(at: dbPath, sessionId: "favorite-skip-child")
+
+        XCTAssertEqual(
+            try db.favoriteIds(),
+            ["favorite-skip-child", "favorite-visible"],
+            "child annotation needs raw favorite membership even though Starred hides skip sessions"
+        )
+    }
+
     @MainActor
     func testListSessionsCanFilterFavoritesWithoutUsingFavoritesPageQuery() throws {
         try insertTestSession(at: dbPath, id: "favorite-visible", source: "claude-code")
@@ -215,6 +504,46 @@ final class DatabaseManagerTests: XCTestCase {
 
         let sessions = try db.listSessions()
         XCTAssertEqual(sessions.count, 3)
+    }
+
+    // Wave 6C-1 (design §9): "HQ only" toggles an `origin = 'hq'` SQL filter so
+    // a paginated Sessions page can exclude remote-ingested rows. Fails on the
+    // pre-origin-parameter listSessions (no such parameter / no filtering).
+    @MainActor
+    func testListSessionsOriginFilter_repro() throws {
+        try insertTestSession(at: dbPath, id: "hq-ingested", source: "claude-code")
+        try insertTestSession(at: dbPath, id: "local-laptop", source: "claude-code")
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET origin = ? WHERE id = ?",
+                arguments: ["hq", "hq-ingested"]
+            )
+        }
+
+        let all = try db.listSessions(origin: nil, sort: .createdDesc)
+        XCTAssertEqual(all.map(\.id).sorted(), ["hq-ingested", "local-laptop"], "nil origin = all machines")
+
+        let hqOnly = try db.listSessions(origin: "hq", sort: .createdDesc)
+        XCTAssertEqual(hqOnly.map(\.id), ["hq-ingested"])
+        XCTAssertEqual(hqOnly.first?.originBadge, "HQ")
+    }
+
+    @MainActor
+    func testSessionListStatsOriginFilter_repro() throws {
+        try insertTestSession(at: dbPath, id: "hq-ingested", source: "claude-code", messageCount: 5)
+        try insertTestSession(at: dbPath, id: "local-laptop", source: "claude-code", messageCount: 7)
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET origin = ? WHERE id = ?",
+                arguments: ["hq", "hq-ingested"]
+            )
+        }
+
+        let stats = try db.sessionListStats(origin: "hq")
+        XCTAssertEqual(stats.totalSessions, 1)
+        XCTAssertEqual(stats.totalMessages, 5)
     }
 
     @MainActor
@@ -314,6 +643,21 @@ final class DatabaseManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testListSessionsSinceTreatsEmptyEndTimeAsMissing_repro() throws {
+        try insertTestSession(
+            at: dbPath,
+            id: "empty-end-recent-start",
+            startTime: "2026-05-10T01:00:00Z",
+            endTime: ""
+        )
+
+        XCTAssertEqual(
+            try db.listSessions(since: "2026-05-10T00:00:00Z").map(\.id),
+            ["empty-end-recent-start"]
+        )
+    }
+
+    @MainActor
     func testSessionTimelineCanUseActivityOrCreatedTime() throws {
         try insertTestSession(
             at: dbPath,
@@ -330,17 +674,86 @@ final class DatabaseManagerTests: XCTestCase {
 
         let byActivity = try db.sessionTimeline(days: 10_000, sort: .updatedDesc)
 
-        XCTAssertEqual(byActivity.map(\.date), ["2026-05-09"])
+        XCTAssertEqual(byActivity.groups.map(\.date), ["2026-05-09"])
         XCTAssertEqual(
-            byActivity.first?.sessions.map(\.id),
+            byActivity.groups.first?.sessions.map(\.id),
             ["started-yesterday-active-today", "created-today"]
         )
 
         let byCreated = try db.sessionTimeline(days: 10_000, sort: .createdDesc)
 
-        XCTAssertEqual(byCreated.map(\.date), ["2026-05-09", "2026-05-08"])
-        XCTAssertEqual(byCreated[0].sessions.map(\.id), ["created-today"])
-        XCTAssertEqual(byCreated[1].sessions.map(\.id), ["started-yesterday-active-today"])
+        XCTAssertEqual(byCreated.groups.map(\.date), ["2026-05-09", "2026-05-08"])
+        XCTAssertEqual(byCreated.groups[0].sessions.map(\.id), ["created-today"])
+        XCTAssertEqual(byCreated.groups[1].sessions.map(\.id), ["started-yesterday-active-today"])
+    }
+
+    @MainActor
+    func testSessionTimelineUsesLocalCalendarWindow_repro() throws {
+        let localStart = Calendar.current.startOfDay(for: Date())
+        let activeAt = try XCTUnwrap(Calendar.current.date(byAdding: .hour, value: 1, to: localStart))
+        let timestamp = ISO8601DateFormatter().string(from: activeAt)
+        try insertTestSession(
+            at: dbPath,
+            id: "local-day-boundary",
+            startTime: timestamp,
+            endTime: timestamp
+        )
+
+        let timeline = try db.sessionTimeline(days: 0, sort: .updatedDesc)
+        XCTAssertEqual(timeline.groups.flatMap(\.sessions).map(\.id), ["local-day-boundary"])
+    }
+
+    @MainActor
+    func testSessionTimelineGregorianGroupsMatchSQLiteDaysWithEmptyEndTime_repro() throws {
+        try insertTestSession(
+            at: dbPath,
+            id: "empty-end-local-day",
+            startTime: "2026-05-08T23:30:00Z",
+            endTime: ""
+        )
+        var buddhist = Calendar(identifier: .buddhist)
+        buddhist.timeZone = .current
+        let fixedNow = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-05-10T00:00:00Z"))
+
+        let timeline = try db.sessionTimeline(
+            days: 10,
+            sort: .updatedDesc,
+            now: fixedNow,
+            calendar: buddhist
+        )
+
+        XCTAssertEqual(timeline.groups.map(\.date), Array(timeline.dailyCounts.map(\.date).reversed()))
+        XCTAssertEqual(timeline.groups.first?.sessions.map(\.id), ["empty-end-local-day"])
+    }
+
+    @MainActor
+    func testDashboardDateWindowsHonorInjectedClock_repro() throws {
+        try seedWorkBeats(at: dbPath)
+        let fixedNow = try XCTUnwrap(
+            ISO8601DateFormatter().date(from: "2026-06-02T12:00:00Z")
+        )
+
+        let activity = try db.dailySourceActivity(days: 2, now: fixedNow)
+        XCTAssertEqual(activity.flatMap(\.segments).reduce(0) { $0 + $1.count }, 2)
+
+        let timeline = try db.sessionTimeline(
+            days: 2,
+            sort: .updatedDesc,
+            now: fixedNow
+        )
+        XCTAssertEqual(Set(timeline.groups.flatMap(\.sessions).map(\.id)), ["s-alpha", "s-beta"])
+        XCTAssertEqual(
+            try db.sessionTimelineProjects(days: 2, sort: .updatedDesc, now: fixedNow),
+            ["alpha", "beta"]
+        )
+
+        let work = try db.implementationTimeline(
+            days: 2,
+            project: nil,
+            humanDriven: false,
+            now: fixedNow
+        )
+        XCTAssertEqual(Set(work.flatMap(\.beats).map(\.sessionId)), ["s-alpha", "s-beta"])
     }
 
     @MainActor
@@ -367,18 +780,18 @@ final class DatabaseManagerTests: XCTestCase {
 
         let byAccessed = try db.sessionTimeline(days: 10_000, sort: .accessedDesc)
 
-        XCTAssertEqual(byAccessed.map(\.date), ["2026-05-09"])
+        XCTAssertEqual(byAccessed.groups.map(\.date), ["2026-05-09"])
         XCTAssertEqual(
-            byAccessed.first?.sessions.map(\.id),
+            byAccessed.groups.first?.sessions.map(\.id),
             ["started-yesterday-accessed-today", "created-today"]
         )
     }
 
     @MainActor
-    func testSessionTimelineAppliesDefaultLimit() throws {
+    func testSessionTimelineReportsTruncationForTwoThousandAndOneRows_repro() throws {
         let queue = try DatabaseQueue(path: dbPath)
         try queue.write { db in
-            for index in 0..<2_005 {
+            for index in 0..<2_001 {
                 let timestamp = String(
                     format: "2026-05-09T%02d:%02d:%02dZ",
                     index / 3_600,
@@ -398,11 +811,242 @@ final class DatabaseManagerTests: XCTestCase {
         }
 
         let byCreated = try db.sessionTimeline(days: 10_000, sort: .createdDesc)
-        let sessions = byCreated.flatMap(\.sessions)
+        let sessions = byCreated.groups.flatMap(\.sessions)
 
         XCTAssertEqual(sessions.count, 2_000)
-        XCTAssertEqual(sessions.first?.id, "limit-2004")
-        XCTAssertEqual(sessions.last?.id, "limit-5")
+        XCTAssertEqual(sessions.first?.id, "limit-2000")
+        XCTAssertEqual(sessions.last?.id, "limit-1")
+        XCTAssertEqual(byCreated.totalCount, 2_001)
+        XCTAssertTrue(byCreated.hasMore)
+    }
+
+    @MainActor
+    func testSessionTimelineScopesProjectBeforeLimitAndListsProjectsAcrossWindow_repro() throws {
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            for index in 0..<2_001 {
+                try db.execute(sql: """
+                    INSERT INTO sessions (
+                        id, source, start_time, cwd, project, message_count,
+                        user_message_count, assistant_message_count, tool_message_count,
+                        system_message_count, file_path, indexed_at, tier
+                    ) VALUES (?, 'codex', '2099-01-02T00:00:00Z', '/work/alpha',
+                              'alpha', 1, 1, 0, 0, 0, ?, datetime('now'), 'normal')
+                    """, arguments: ["alpha-\(index)", "/tmp/alpha-\(index).jsonl"])
+            }
+            try db.execute(sql: """
+                INSERT INTO sessions (
+                    id, source, start_time, cwd, project, message_count,
+                    user_message_count, assistant_message_count, tool_message_count,
+                    system_message_count, file_path, indexed_at, tier
+                ) VALUES ('beta-only', 'codex', '2099-01-01T00:00:00Z', '/work/beta',
+                          'beta', 1, 1, 0, 0, 0, '/tmp/beta.jsonl', datetime('now'), 'normal')
+                """)
+        }
+
+        let alpha = try db.sessionTimeline(
+            days: 100_000,
+            sort: .createdDesc,
+            project: "alpha"
+        )
+        XCTAssertEqual(alpha.groups.flatMap(\.sessions).count, 2_000)
+        XCTAssertEqual(alpha.totalCount, 2_001)
+        XCTAssertTrue(alpha.hasMore)
+
+        let beta = try db.sessionTimeline(
+            days: 100_000,
+            sort: .createdDesc,
+            project: "beta"
+        )
+        XCTAssertEqual(beta.groups.flatMap(\.sessions).map(\.id), ["beta-only"])
+        XCTAssertEqual(
+            try db.sessionTimelineProjects(days: 100_000, sort: .createdDesc),
+            ["alpha", "beta"]
+        )
+    }
+
+    @MainActor
+    func testSessionTimelineChartCountsEntireFilteredRange_repro() throws {
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { database in
+            for index in 0..<2_001 {
+                let day = index < 1_001 ? "08" : "09"
+                try database.execute(sql: """
+                    INSERT INTO sessions (
+                        id, source, start_time, cwd, project, message_count,
+                        user_message_count, assistant_message_count, tool_message_count,
+                        system_message_count, file_path, indexed_at, tier
+                    ) VALUES (?, 'codex', ?, '/work/engram', 'engram', 1,
+                              1, 0, 0, 0, ?, datetime('now'), 'normal')
+                    """, arguments: [
+                        "chart-\(index)",
+                        "2026-05-\(day)T12:00:00Z",
+                        "/tmp/chart-\(index).jsonl",
+                    ])
+            }
+        }
+
+        let result = try db.sessionTimeline(days: 10_000, sort: .createdDesc)
+
+        XCTAssertEqual(result.groups.flatMap(\.sessions).count, 2_000)
+        XCTAssertEqual(result.dailyCounts.reduce(0) { $0 + $1.count }, 2_001)
+        XCTAssertEqual(result.dailyCounts.count, 2)
+        XCTAssertEqual(
+            TimelinePageView.rangeBadge(range: "30d", shown: 2_000, total: 2_001, hasMore: true),
+            "30d · 2000 of 2001"
+        )
+    }
+
+    @MainActor
+    func testSessionTimelineRetainsNilProjectRowsWhenProjectExpiresFromShorterRange_repro() throws {
+        let formatter = ISO8601DateFormatter()
+        let recent = try XCTUnwrap(Calendar.current.date(byAdding: .day, value: -1, to: Date()))
+        let expired = try XCTUnwrap(Calendar.current.date(byAdding: .day, value: -8, to: Date()))
+        try insertTestSession(
+            at: dbPath,
+            id: "expired-project",
+            project: "expired-project",
+            startTime: formatter.string(from: expired),
+            endTime: formatter.string(from: expired)
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "recent-nil-project",
+            project: nil,
+            startTime: formatter.string(from: recent),
+            endTime: formatter.string(from: recent)
+        )
+
+        XCTAssertEqual(
+            try db.sessionTimelineProjects(days: 30, sort: .updatedDesc),
+            ["expired-project"]
+        )
+        XCTAssertEqual(try db.sessionTimelineProjects(days: 7, sort: .updatedDesc), [])
+
+        let allProjects = try db.sessionTimeline(days: 7, sort: .updatedDesc)
+        XCTAssertEqual(allProjects.groups.flatMap(\.sessions).map(\.id), ["recent-nil-project"])
+        XCTAssertEqual(allProjects.totalCount, 1)
+        XCTAssertFalse(allProjects.hasMore)
+    }
+
+    @MainActor
+    func testTimelineProjectSelectionResetsExpiredProjectThenReloadsAll_repro() throws {
+        let formatter = ISO8601DateFormatter()
+        let recent = try XCTUnwrap(Calendar.current.date(byAdding: .day, value: -1, to: Date()))
+        let expired = try XCTUnwrap(Calendar.current.date(byAdding: .day, value: -8, to: Date()))
+        try insertTestSession(
+            at: dbPath,
+            id: "expired-project",
+            project: "expired-project",
+            startTime: formatter.string(from: expired),
+            endTime: formatter.string(from: expired)
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "recent-nil-project",
+            project: nil,
+            startTime: formatter.string(from: recent),
+            endTime: formatter.string(from: recent)
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "recent-valid-project",
+            project: "valid-project",
+            startTime: formatter.string(from: recent),
+            endTime: formatter.string(from: recent)
+        )
+
+        let projectsAtThirtyDays = try db.sessionTimelineProjects(days: 30, sort: .updatedDesc)
+        XCTAssertTrue(projectsAtThirtyDays.contains("expired-project"))
+        let projectsAtSevenDays = try db.sessionTimelineProjects(days: 7, sort: .updatedDesc)
+        XCTAssertEqual(projectsAtSevenDays, ["valid-project"])
+
+        let reconciled = TimelinePageView.reconciledProjectSelection(
+            selectedProject: "expired-project",
+            availableProjects: projectsAtSevenDays
+        )
+        XCTAssertEqual(reconciled, "All Projects")
+        let finalProjectFilter = reconciled == "All Projects" ? nil : reconciled
+        let finalGroups = try db.sessionTimeline(
+            days: 7,
+            sort: .updatedDesc,
+            project: finalProjectFilter
+        ).groups
+        XCTAssertEqual(
+            Set(finalGroups.flatMap(\.sessions).map(\.id)),
+            Set(["recent-nil-project", "recent-valid-project"])
+        )
+
+        let valid = TimelinePageView.reconciledProjectSelection(
+            selectedProject: "valid-project",
+            availableProjects: projectsAtSevenDays
+        )
+        XCTAssertEqual(valid, "valid-project")
+        XCTAssertEqual(
+            TimelinePageView.reconciledProjectSelection(
+                selectedProject: valid,
+                availableProjects: projectsAtSevenDays
+            ),
+            valid
+        )
+    }
+
+    @MainActor
+    func testTimelineChartCountsEntireFilteredRangeWithSmallPage_repro() throws {
+        for (id, start) in [
+            ("limited-new-1", "2026-08-24T12:00:00Z"),
+            ("limited-new-2", "2026-08-24T11:00:00Z"),
+            ("limited-old", "2026-08-23T10:00:00Z"),
+        ] {
+            try insertTestSession(at: dbPath, id: id, startTime: start, endTime: start)
+        }
+
+        let result = try db.sessionTimeline(
+            days: 30,
+            sort: .updatedDesc,
+            humanDriven: false,
+            limit: 2,
+            now: ISO8601DateFormatter().date(from: "2026-08-24T13:00:00Z")!
+        )
+
+        XCTAssertEqual(result.groups.flatMap(\.sessions).count, 2)
+        XCTAssertEqual(result.dailyCounts.reduce(0) { $0 + $1.count }, 3)
+        XCTAssertEqual(result.totalCount, 3)
+        XCTAssertTrue(result.hasMore)
+    }
+
+    @MainActor
+    func testImplementationTimelineProjectsUseBeatActionDateWindow_repro() throws {
+        try seedWorkBeats(at: dbPath)
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { database in
+            try database.execute(sql: """
+                INSERT INTO sessions (
+                    id, source, start_time, end_time, cwd, project, file_path, tier
+                ) VALUES (
+                    'old-session-recent-work', 'cursor', '2025-01-01T00:00:00Z', '',
+                    '/work/recent-beat', 'recent-beat-project', '/tmp/recent-beat.jsonl', 'normal'
+                );
+                INSERT INTO session_work_beats (
+                    session_id, beat_index, action_date, action_timestamp, work_key,
+                    work_title, human_intent, assistant_outcome, kind, status,
+                    operation_events, confidence
+                ) VALUES (
+                    'old-session-recent-work', 0, date('now', 'localtime'), datetime('now'),
+                    'recent-beat', 'Recent beat', 'intent', 'outcome', 'implementation',
+                    'completed', '[]', 0.9
+                );
+                """)
+        }
+
+        XCTAssertEqual(
+            try db.implementationTimelineProjects(days: 7),
+            ["recent-beat-project"]
+        )
+        XCTAssertEqual(
+            try db.sessionTimelineProjects(days: 7, sort: .updatedDesc),
+            []
+        )
     }
 
     @MainActor
@@ -675,6 +1319,114 @@ final class DatabaseManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testSearchWithSnippetsAppliesOriginBeforeLimit_repro() throws {
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { database in
+            for index in 0 ..< 31 {
+                let id = "local-origin-\(index)"
+                try database.execute(
+                    sql: """
+                        INSERT INTO sessions (
+                          id, source, start_time, cwd, project, message_count,
+                          file_path, size_bytes, indexed_at, tier, origin
+                        ) VALUES (?, 'codex', ?, '/tmp/local', 'engram', 2,
+                                  ?, 42, ?, 'normal', 'local')
+                        """,
+                    arguments: [
+                        id,
+                        String(format: "2026-08-%02dT12:00:00Z", index + 1),
+                        "/tmp/\(id).jsonl",
+                        String(format: "2026-08-%02dT12:30:00Z", index + 1),
+                    ]
+                )
+                try database.execute(
+                    sql: "INSERT INTO sessions_fts(session_id, content) VALUES (?, 'originneedle')",
+                    arguments: [id]
+                )
+            }
+            try database.execute(sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, message_count,
+                  file_path, size_bytes, indexed_at, tier, origin
+                ) VALUES (
+                  'hq-origin-target', 'codex', '2000-01-01T00:00:00Z', '/tmp/hq',
+                  'engram', 2, 'remote://hq/hq-origin-target', 42,
+                  '2000-01-01T00:00:00Z', 'normal', 'hq'
+                );
+                INSERT INTO sessions_fts(session_id, content)
+                VALUES ('hq-origin-target', 'originneedle');
+                """)
+        }
+
+        let hqOnly = try db.searchWithSnippets(
+            query: "originneedle",
+            limit: 30,
+            origin: "hq"
+        )
+        let localOnly = try db.searchWithSnippets(
+            query: "originneedle",
+            limit: 30,
+            origin: "local"
+        )
+        let all = try db.searchWithSnippets(query: "originneedle", limit: 30)
+
+        XCTAssertEqual(hqOnly.map(\.session.id), ["hq-origin-target"])
+        XCTAssertEqual(localOnly.count, 30)
+        XCTAssertFalse(localOnly.contains { $0.session.id == "hq-origin-target" })
+        XCTAssertEqual(all.count, 30, "nil origin must remain all machines")
+    }
+
+    @MainActor
+    func testSearchWithSnippetsLocalOriginIncludesLegacyAndNonHQRows_repro() throws {
+        try insertTestSession(
+            at: dbPath,
+            id: "legacy-local",
+            startTime: "2026-08-01T12:00:00Z"
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "named-local",
+            startTime: "2026-08-02T12:00:00Z"
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "hq-ingested",
+            startTime: "2026-08-03T12:00:00Z"
+        )
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { database in
+            try database.execute(
+                sql: "UPDATE sessions SET origin = 'm1' WHERE id = 'named-local'"
+            )
+            try database.execute(
+                sql: "UPDATE sessions SET origin = 'hq' WHERE id = 'hq-ingested'"
+            )
+        }
+        for id in ["legacy-local", "named-local", "hq-ingested"] {
+            try insertFTSContent(at: dbPath, sessionId: id, content: "localoriginneedle")
+        }
+
+        let local = try db.searchWithSnippets(
+            query: "localoriginneedle",
+            limit: 10,
+            origin: "local"
+        )
+        let all = try db.searchWithSnippets(
+            query: "localoriginneedle",
+            limit: 10,
+            origin: nil
+        )
+
+        XCTAssertEqual(Set(local.map(\.session.id)), Set(["legacy-local", "named-local"]))
+        XCTAssertFalse(local.contains { $0.session.id == "hq-ingested" })
+        XCTAssertEqual(
+            Set(all.map(\.session.id)),
+            Set(["legacy-local", "named-local", "hq-ingested"]),
+            "nil origin must preserve all machines"
+        )
+    }
+
+    @MainActor
     func testSearchWithSnippetsMatchesTermsAcrossMessagesWithinSameSession() throws {
         try insertTestSession(at: dbPath, id: "s1", source: "claude-code")
         try insertTestSession(at: dbPath, id: "s2", source: "claude-code")
@@ -687,6 +1439,56 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(hits.map(\.session.id), ["s1"])
         let snippet = try XCTUnwrap(hits.first?.snippet)
         XCTAssertTrue(snippet.contains("<mark>alpha</mark>") || snippet.contains("<mark>beta</mark>"), "got: \(snippet)")
+    }
+
+    @MainActor
+    func testMixedTokenSnippetHighlightsEveryMatchedMessageTerm_repro() throws {
+        try insertTestSession(at: dbPath, id: "mixed-highlight-all", source: "claude-code")
+        try insertFTSContent(at: dbPath, sessionId: "mixed-highlight-all", content: "alpha planning note")
+        try insertFTSContent(at: dbPath, sessionId: "mixed-highlight-all", content: "beta verifier note")
+
+        let snippet = try XCTUnwrap(
+            db.searchWithSnippets(query: "alpha beta", limit: 10).first?.snippet
+        )
+
+        XCTAssertTrue(snippet.contains("<mark>alpha</mark>"), snippet)
+        XCTAssertTrue(snippet.contains("<mark>beta</mark>"), snippet)
+    }
+
+    @MainActor
+    func testSearchWithSnippetsMixedShortTokenHighlightsWholePhrase_repro() throws {
+        try insertTestSession(at: dbPath, id: "s-ai-usage", source: "codex")
+        try insertFTSContent(
+            at: dbPath,
+            sessionId: "s-ai-usage",
+            content: "Ship the AI usage monitor before release"
+        )
+
+        let hits = try db.searchWithSnippets(query: "AI usage", limit: 10)
+
+        XCTAssertEqual(hits.map(\.session.id), ["s-ai-usage"])
+        XCTAssertTrue(
+            hits.first?.snippet.contains("<mark>AI usage</mark>") ?? false,
+            "got: \(hits.first?.snippet ?? "")"
+        )
+    }
+
+    @MainActor
+    func testSearchWithSnippetsRehighlightsWholeMatchFirstPhrase_repro() throws {
+        try insertTestSession(at: dbPath, id: "s-usage-monitor", source: "codex")
+        try insertFTSContent(
+            at: dbPath,
+            sessionId: "s-usage-monitor",
+            content: "Deploy the usage monitor before release"
+        )
+
+        let hits = try db.searchWithSnippets(query: "usage monitor", limit: 10)
+
+        XCTAssertEqual(hits.map(\.session.id), ["s-usage-monitor"])
+        XCTAssertTrue(
+            hits.first?.snippet.contains("<mark>usage monitor</mark>") ?? false,
+            "got: \(hits.first?.snippet ?? "")"
+        )
     }
 
     @MainActor
@@ -808,6 +1610,26 @@ final class DatabaseManagerTests: XCTestCase {
 
         let results = try db.search(query: "search terms")
         XCTAssertEqual(results.map(\.id), ["s-visible"])
+    }
+
+    /// ui-search-settings-4: Search filter counts use the same tier visibility
+    /// as keyword results, so list-visible lite rows cannot inflate the facets.
+    @MainActor
+    func testSearchFilterCountsExcludeLiteAndSkipSessions_repro() throws {
+        try insertTestSession(at: dbPath, id: "normal", source: "codex", project: "engram", tier: "normal")
+        try insertTestSession(at: dbPath, id: "lite", source: "codex", project: "engram", tier: "lite")
+        try insertTestSession(at: dbPath, id: "skip", source: "codex", project: "engram", tier: "skip")
+        try insertTestSession(
+            at: dbPath,
+            id: "hidden",
+            source: "codex",
+            project: "engram",
+            tier: "normal",
+            hiddenAt: "2026-08-22T00:00:00Z"
+        )
+
+        XCTAssertEqual(try db.countsByProject()["engram"], 1)
+        XCTAssertEqual(try db.sourceStats().first(where: { $0.source == "codex" })?.count, 1)
     }
 
     @MainActor
@@ -1026,7 +1848,7 @@ final class DatabaseManagerTests: XCTestCase {
     // (a) result parity with the service-shaped CTE query, and (b) the local
     // plan contains no correlated per-row MATCH.
     @MainActor
-    func testSearchFTSFallbackUsesCTEShapeMatchingService() throws {
+    func testSearchFTSFallbackUsesCTEShapeMatchingService_repro() throws {
         try insertTestSession(at: dbPath, id: "s1", source: "claude-code", startTime: "2026-05-01T10:00:00Z")
         try insertTestSession(at: dbPath, id: "s2", source: "claude-code", startTime: "2026-05-02T10:00:00Z")
         try insertTestSession(at: dbPath, id: "s3", source: "claude-code", startTime: "2026-05-03T10:00:00Z")
@@ -1062,8 +1884,8 @@ final class DatabaseManagerTests: XCTestCase {
 
         // (b) The generated SQL no longer probes MATCH per sessions row.
         let built = DatabaseManager.keywordSearchSQL(
+            rawTokens: ["alpha", "beta"],
             termMatches: terms,
-            snippetMatch: terms.first ?? CJKText.ftsMatchQuery("alpha beta"),
             sources: [], projects: [], since: nil, limit: 10, withSnippet: false
         )
         XCTAssertTrue(built.sql.contains("m0 AS ("), "must be CTE-driven: \(built.sql)")
@@ -1092,6 +1914,49 @@ final class DatabaseManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testSearchMixedShortAndLongTokensUsesPerTokenFallback_repro() throws {
+        try insertTestSession(at: dbPath, id: "mixed-token-app", source: "claude-code")
+        try insertFTSContent(
+            at: dbPath,
+            sessionId: "mixed-token-app",
+            content: "AI planning note"
+        )
+        try insertFTSContent(at: dbPath, sessionId: "mixed-token-app", content: "usage report")
+
+        let results = try db.search(query: "AI usage")
+
+        XCTAssertEqual(results.map(\.id), ["mixed-token-app"])
+
+        let snippets = try db.searchWithSnippets(query: "AI usage")
+        XCTAssertEqual(snippets.map(\.session.id), ["mixed-token-app"])
+        XCTAssertTrue(snippets[0].snippet.contains("<mark>AI</mark>"), "got: \(snippets[0].snippet)")
+    }
+
+    @MainActor
+    func testQuotedShortTokenDoesNotBecomeBroadLIKE_repro() throws {
+        try insertTestSession(at: dbPath, id: "quoted-short-app", source: "claude-code")
+        try insertFTSContent(at: dbPath, sessionId: "quoted-short-app", content: "I parser")
+
+        // mixed-token-1: classify the original whitespace tokens. Stripping the
+        // FTS quoting first would turn `"I"` into a one-character `%I%` LIKE and
+        // empty quotes into `%%`, over-recalling unrelated sessions.
+        XCTAssertEqual(try db.search(query: #""I" parser"#).map(\.id), [])
+        XCTAssertEqual(try db.search(query: #""" parser"#).map(\.id), [])
+    }
+
+    @MainActor
+    func testSearchSkipsOneCharacterLatinTokenWithoutOverRecall_repro() throws {
+        try insertTestSession(at: dbPath, id: "email-parser", source: "claude-code")
+        try insertTestSession(at: dbPath, id: "ai-parser", source: "claude-code")
+        try insertFTSContent(at: dbPath, sessionId: "email-parser", content: "email parser")
+        try insertFTSContent(at: dbPath, sessionId: "ai-parser", content: "AI parser")
+
+        XCTAssertEqual(Set(try db.search(query: "a parser").map(\.id)), Set(["email-parser", "ai-parser"]))
+        XCTAssertEqual(Set(try db.search(query: "C parser").map(\.id)), Set(["email-parser", "ai-parser"]))
+        XCTAssertEqual(try db.search(query: "I").map(\.id), [])
+    }
+
+    @MainActor
     func testWhitespaceOnlySearchBrowsesRecentVisibleSessions_repro() throws {
         try insertTestSession(at: dbPath, id: "old-visible", startTime: "2026-05-01T10:00:00Z", tier: "normal")
         try insertTestSession(at: dbPath, id: "new-visible", startTime: "2026-05-03T10:00:00Z", tier: "normal")
@@ -1104,8 +1969,6 @@ final class DatabaseManagerTests: XCTestCase {
             hiddenAt: "2026-05-06T10:01:00Z"
         )
 
-        // PR #142 regression: a whitespace-only query has no FTS terms, so the
-        // app read path must browse recent visible sessions instead of returning [].
         let results = try db.search(query: "   ", limit: 10).map(\.id)
 
         XCTAssertEqual(results, ["new-visible", "old-visible"])
@@ -1230,9 +2093,34 @@ final class DatabaseManagerTests: XCTestCase {
     /// M5: dashboard aggregates must exclude skip-tier (subagent noise).
     @MainActor
     func testDashboardAggregatesExcludeSkipTier_repro() throws {
-        try insertTestSession(at: dbPath, id: "normal-1", source: "codex", messageCount: 10, tier: "normal")
-        try insertTestSession(at: dbPath, id: "skip-1", source: "codex", messageCount: 99, tier: "skip")
-        try insertTestSession(at: dbPath, id: "skip-2", source: "claude-code", messageCount: 50, tier: "skip")
+        let recent = ISO8601DateFormatter().string(from: Date())
+        try insertTestSession(
+            at: dbPath,
+            id: "normal-1",
+            source: "codex",
+            startTime: recent,
+            endTime: recent,
+            messageCount: 10,
+            tier: "normal"
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "skip-1",
+            source: "codex",
+            startTime: recent,
+            endTime: recent,
+            messageCount: 99,
+            tier: "skip"
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "skip-2",
+            source: "claude-code",
+            startTime: recent,
+            endTime: recent,
+            messageCount: 50,
+            tier: "skip"
+        )
 
         let kpi = try db.kpiStats()
         XCTAssertEqual(kpi.sessions, 1, "M5: kpiStats must not count skip-tier")
@@ -1262,6 +2150,7 @@ final class DatabaseManagerTests: XCTestCase {
             id: "normal-r3",
             source: "codex",
             startTime: "2026-07-18T12:00:00Z",
+            endTime: "2026-07-18T12:30:00Z",
             messageCount: 5,
             tier: "normal"
         )
@@ -1270,6 +2159,7 @@ final class DatabaseManagerTests: XCTestCase {
             id: "skip-r3",
             source: "codex",
             startTime: "2026-07-18T13:00:00Z",
+            endTime: "2026-07-18T13:30:00Z",
             messageCount: 99,
             tier: "skip"
         )
@@ -1278,6 +2168,7 @@ final class DatabaseManagerTests: XCTestCase {
             id: "skip-other",
             source: "claude-code",
             startTime: "2026-07-18T14:00:00Z",
+            endTime: "2026-07-18T14:30:00Z",
             messageCount: 40,
             tier: "skip"
         )
@@ -1302,6 +2193,17 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(bySource, ["codex": 1], "countsBySource must exclude skip-tier")
         let projects = try db.listProjects()
         XCTAssertEqual(projects, ["engram"], "listProjects must exclude skip-only projects")
+    }
+
+    func testCountSessionsSinceUsesLatestActivityTimestamp_repro() throws {
+        try insertTestSession(
+            at: dbPath,
+            id: "started-before-cutoff-active-after",
+            startTime: "2026-06-30T23:00:00Z",
+            endTime: "2026-07-01T01:00:00Z"
+        )
+
+        XCTAssertEqual(try db.countSessionsSince("2026-07-01T00:00:00Z"), 1)
     }
 
     /// VIS-FILTER-ADHOC: a project that only has skip-tier sessions must not
@@ -1381,6 +2283,27 @@ final class DatabaseManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testIncludeHiddenTopLevelDoesNotPromoteSuggestedChildrenWithExistingHosts_repro() throws {
+        try insertTestSession(at: dbPath, id: "visible-host")
+        try insertTestSession(at: dbPath, id: "visible-child")
+        try setParentLinks(at: dbPath, sessionId: "visible-child", suggestedParentId: "visible-host")
+        try insertTestSession(at: dbPath, id: "hidden-host", hiddenAt: "2026-09-01T00:00:00Z")
+        try insertTestSession(at: dbPath, id: "hidden-child")
+        try setParentLinks(at: dbPath, sessionId: "hidden-child", suggestedParentId: "hidden-host")
+
+        let ids = Set(
+            try db.listSessions(
+                includeHidden: true,
+                subAgent: false,
+                topLevelOnly: true,
+                humanDriven: false
+            ).map(\.id)
+        )
+
+        XCTAssertEqual(ids, Set(["visible-host", "hidden-host"]))
+    }
+
+    @MainActor
     func testSessionListStatsTopLevelOnlyExcludesChildren() throws {
         try insertTestSession(at: dbPath, id: "parent", messageCount: 5)
         try insertTestSession(at: dbPath, id: "confirmed-child", messageCount: 7)
@@ -1391,6 +2314,32 @@ final class DatabaseManagerTests: XCTestCase {
         let stats = try db.sessionListStats(subAgent: false, topLevelOnly: true)
         XCTAssertEqual(stats.totalSessions, 1)
         XCTAssertEqual(stats.totalMessages, 5)
+    }
+
+    @MainActor
+    func testChildSessionPagesStartWithNewestAndReachOlderRows_repro() throws {
+        try insertTestSession(at: dbPath, id: "parent")
+        for index in 0..<25 {
+            try insertTestSession(
+                at: dbPath,
+                id: "child-\(index)",
+                startTime: String(format: "2026-01-%02dT12:00:00Z", index + 1)
+            )
+            try setParentLinks(
+                at: dbPath,
+                sessionId: "child-\(index)",
+                parentSessionId: "parent"
+            )
+        }
+
+        XCTAssertEqual(
+            try db.childSessions(parentId: "parent", limit: 20).map(\.id),
+            (5..<25).reversed().map { "child-\($0)" }
+        )
+        XCTAssertEqual(
+            try db.childSessions(parentId: "parent", limit: 20, offset: 20).map(\.id),
+            (0..<5).reversed().map { "child-\($0)" }
+        )
     }
 
     // listSessionsByProject backs ProjectsView's per-project counts; those
@@ -1407,6 +2356,36 @@ final class DatabaseManagerTests: XCTestCase {
         let engram = try XCTUnwrap(groups.first { $0.project == "engram" })
         XCTAssertEqual(engram.sessionCount, 1)
         XCTAssertEqual(engram.sessions.map(\.id), ["parent"])
+    }
+
+    @MainActor
+    func testListSessionsByProjectCanExcludeNewerSingleShotRoot_repro() throws {
+        try insertTestSession(
+            at: dbPath,
+            id: "human-project-session",
+            project: "engram",
+            startTime: "2026-08-22T10:00:00Z"
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "newer-single-shot",
+            project: "engram",
+            startTime: "2026-08-23T10:00:00Z"
+        )
+        try DatabaseQueue(path: dbPath).write { database in
+            try database.execute(
+                sql: "UPDATE sessions SET instruction_count = 2, human_turn_count = 2 WHERE id = 'human-project-session'"
+            )
+            try database.execute(
+                sql: "UPDATE sessions SET instruction_count = 0, human_turn_count = 1, user_message_count = 1 WHERE id = 'newer-single-shot'"
+            )
+        }
+
+        let group = try XCTUnwrap(
+            try db.listSessionsByProject(limit: 5, humanDriven: true).first { $0.project == "engram" }
+        )
+        XCTAssertEqual(group.sessionCount, 1)
+        XCTAssertEqual(group.sessions.map(\.id), ["human-project-session"])
     }
 
     /// H1: Projects page must not drop older projects when the global session
@@ -1437,6 +2416,56 @@ final class DatabaseManagerTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testPickerSearchScopesBeforeLimitSoOlderSessionsRemainFindable_repro() throws {
+        for index in 0..<205 {
+            try insertTestSession(
+                at: dbPath,
+                id: "newer-\(index)",
+                startTime: String(format: "2026-08-23T12:%02d:%02dZ", (index / 60) % 60, index % 60),
+                generatedTitle: "Routine \(index)"
+            )
+        }
+        try insertTestSession(
+            at: dbPath,
+            id: "old-target",
+            startTime: "2025-01-01T00:00:00Z",
+            generatedTitle: "Needle parent"
+        )
+
+        XCTAssertEqual(
+            try db.sessionPickerCandidates(
+                query: "needle",
+                topLevelOnly: true,
+                excluding: [],
+                limit: 200
+            ).map(\.id),
+            ["old-target"]
+        )
+    }
+
+    @MainActor
+    func testParentPickerExcludesSuggestedChildrenEvenWhenHostIsUnavailable_repro() throws {
+        try insertTestSession(at: dbPath, id: "strict-root")
+        try insertTestSession(at: dbPath, id: "suggested-child")
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET suggested_parent_id = 'missing-host' WHERE id = 'suggested-child'"
+            )
+        }
+
+        XCTAssertEqual(
+            Set(try db.sessionPickerCandidates(
+                query: "",
+                topLevelOnly: true,
+                excluding: [],
+                limit: 200
+            ).map(\.id)),
+            ["strict-root"]
+        )
+    }
+
     // MARK: - sparklineData date bucketing
 
     // sparklineData buckets by local calendar day on both the SQL and Swift
@@ -1446,6 +2475,7 @@ final class DatabaseManagerTests: XCTestCase {
     @MainActor
     func testSparklineDataBucketsByLocalDay() throws {
         let repoPath = "/Users/test/repo"
+        try insertGitRepo(at: dbPath, path: repoPath)
         let calendar = Calendar.current
         let now = Date()
         // Pick a wall-clock time today at 23:30 local; in UTC this can roll to
@@ -1505,7 +2535,55 @@ final class DatabaseManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testActivityChartsBucketOvernightSessionByEndTime_repro() throws {
+        let repoPath = "/Users/test/activity-time"
+        try insertGitRepo(at: dbPath, path: repoPath)
+        let start = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-8 * 86_400))
+        let end = ISO8601DateFormatter().string(from: Date())
+        try insertSessionWithCwd(
+            at: dbPath,
+            id: "overnight-activity-chart",
+            cwd: repoPath,
+            startTime: start
+        )
+        try DatabaseQueue(path: dbPath).write { database in
+            try database.execute(
+                sql: "UPDATE sessions SET end_time = ? WHERE id = 'overnight-activity-chart'",
+                arguments: [end]
+            )
+        }
+
+        XCTAssertEqual(try db.dailyActivity(days: 7).reduce(0) { $0 + $1.count }, 1)
+        XCTAssertEqual(
+            try db.dailySourceActivity(days: 7).flatMap(\.segments).reduce(0) { $0 + $1.count },
+            1
+        )
+        XCTAssertEqual(try db.sparklineData(for: repoPath)[6], 1)
+        let group = try XCTUnwrap(try db.listSessionsByProject().first { $0.project == "engram" })
+        XCTAssertEqual(group.lastActive, end)
+        XCTAssertEqual(group.sessions.first?.id, "overnight-activity-chart")
+        let endHour = Calendar.current.component(.hour, from: Date())
+        XCTAssertEqual(try db.hourlyActivity()[endHour], 1)
+    }
+
+    func testSparklineParserPinsGregorianPOSIXCalendar_repro() throws {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macOSRoot.appendingPathComponent("Engram/Core/Database.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(source.range(of: "func sparklineData(for repoPath:"))
+        let end = try XCTUnwrap(source.range(of: "func listSessionsByProject(", range: start.upperBound..<source.endIndex))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("Calendar(identifier: .gregorian)"))
+        XCTAssertTrue(body.contains("Locale(identifier: \"en_US_POSIX\")"))
+    }
+
+    @MainActor
     func testSparklineDataMatchesCwdPrefixOnly() throws {
+        try insertGitRepo(at: dbPath, path: "/Users/test/repo")
         let utc = ISO8601DateFormatter()
         utc.timeZone = TimeZone(identifier: "UTC")
         let today = utc.string(from: Date())
@@ -1521,6 +2599,7 @@ final class DatabaseManagerTests: XCTestCase {
     /// L6: unanchored `cwd LIKE path%` over-counts sibling repos (`app` vs `app-v2`).
     @MainActor
     func testSparklineDataDoesNotMatchSiblingPathPrefix_repro() throws {
+        try insertGitRepo(at: dbPath, path: "/Users/test/app")
         let utc = ISO8601DateFormatter()
         utc.timeZone = TimeZone(identifier: "UTC")
         let today = utc.string(from: Date())
@@ -1538,7 +2617,46 @@ final class DatabaseManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testSparklineDataPrefersLongestRepoOverStaleAlias_repro() throws {
+        try insertGitRepo(at: dbPath, path: "/Users/test")
+        try insertGitRepo(at: dbPath, path: "/Users/test/engram")
+        let today = ISO8601DateFormatter().string(from: Date())
+        try insertSessionWithCwd(
+            at: dbPath,
+            id: "nested-stale-alias",
+            cwd: "/Users/test/engram",
+            startTime: today
+        )
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { database in
+            try database.execute(
+                sql: "INSERT INTO git_repo_cwd_aliases(cwd, real_cwd, repo_path) VALUES (?, ?, ?)",
+                arguments: ["/Users/test/engram", "/Users/test/engram", "/Users/test"]
+            )
+        }
+
+        XCTAssertEqual(try db.sparklineData(for: "/Users/test").reduce(0, +), 0)
+        XCTAssertEqual(try db.sparklineData(for: "/Users/test/engram").reduce(0, +), 1)
+    }
+
+    @MainActor
+    func testSparklineDataMatchesRealpathEquivalentWithoutStoredAlias_repro() throws {
+        let name = "engram-sparkline-realpath-\(UUID().uuidString)"
+        let storedPath = "/private/tmp/\(name)"
+        try insertGitRepo(at: dbPath, path: storedPath)
+        try insertSessionWithCwd(
+            at: dbPath,
+            id: "sparkline-realpath-equivalent",
+            cwd: "/tmp/\(name)/subdir",
+            startTime: ISO8601DateFormatter().string(from: Date())
+        )
+
+        XCTAssertEqual(try db.sparklineData(for: storedPath).reduce(0, +), 1)
+    }
+
+    @MainActor
     func testSparklineDataEscapesLikeWildcards() throws {
+        try insertGitRepo(at: dbPath, path: "/Users/test/my_repo")
         let utc = ISO8601DateFormatter()
         utc.timeZone = TimeZone(identifier: "UTC")
         let today = utc.string(from: Date())
@@ -1579,9 +2697,20 @@ final class DatabaseManagerTests: XCTestCase {
             try db.execute(sql: """
                 INSERT OR REPLACE INTO sessions (
                     id, source, start_time, end_time, cwd, project,
-                    message_count, file_path, size_bytes, indexed_at, tier
-                ) VALUES (?, 'claude-code', ?, NULL, ?, 'engram', 1, '/tmp/test.jsonl', 0, datetime('now'), ?)
+                    message_count, file_path, size_bytes, indexed_at, tier,
+                    instruction_count, human_turn_count
+                ) VALUES (?, 'claude-code', ?, NULL, ?, 'engram', 1, '/tmp/test.jsonl', 0, datetime('now'), ?, 2, 2)
             """, arguments: [id, startTime, cwd, tier])
+        }
+    }
+
+    private func insertGitRepo(at databasePath: String, path: String) throws {
+        let queue = try DatabaseQueue(path: databasePath)
+        try queue.write { database in
+            try database.execute(
+                sql: "INSERT INTO git_repos (path, name) VALUES (?, ?)",
+                arguments: [path, URL(fileURLWithPath: path).lastPathComponent]
+            )
         }
     }
 
@@ -1638,6 +2767,82 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(alpha.count, 1)
         XCTAssertNil(alpha.first?.semanticTitle)
         XCTAssertEqual(alpha.first?.title, "Alpha feature")
+    }
+
+    func testFiniteWorkTimelineExcludesUnknownActionDates_repro() throws {
+        try seedWorkBeats(at: dbPath)
+        try DatabaseQueue(path: dbPath).write { database in
+            try database.execute(
+                sql: """
+                    INSERT INTO session_work_beats (
+                      session_id, beat_index, action_date, action_timestamp,
+                      work_key, work_title, human_intent, assistant_outcome,
+                      kind, status, operation_events, confidence
+                    ) VALUES ('s-alpha', 1, 'unknown', NULL, 'wk-unknown', 'Unknown date',
+                              'intent', 'outcome', 'implementation', 'complete', '[]', 0.5)
+                    """
+            )
+        }
+
+        XCTAssertEqual(
+            try db.implementationTimeline(days: 100_000, project: "alpha", humanDriven: false).map(\.workKey),
+            ["wk-alpha"]
+        )
+    }
+
+    func testImplementationTimelinePromotesSuggestedChildOfHiddenHost_repro() throws {
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { database in
+            try database.execute(sql: """
+                CREATE TABLE IF NOT EXISTS session_work_beats (
+                  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                  beat_index INTEGER NOT NULL,
+                  action_date TEXT NOT NULL,
+                  action_timestamp TEXT,
+                  work_key TEXT NOT NULL,
+                  work_title TEXT NOT NULL,
+                  human_intent TEXT NOT NULL,
+                  assistant_outcome TEXT NOT NULL,
+                  kind TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  operation_events TEXT NOT NULL DEFAULT '[]',
+                  confidence REAL NOT NULL DEFAULT 0,
+                  PRIMARY KEY (session_id, beat_index)
+                )
+                """)
+            try database.execute(sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, file_path, message_count,
+                  user_message_count, instruction_count, human_turn_count, tier,
+                  suggested_parent_id, hidden_at
+                ) VALUES
+                  ('timeline-hidden-host', 'claude-code', '2026-08-24T10:00:00Z', '/tmp/timeline',
+                   'timeline-promote', '/tmp/host.jsonl', 1, 1, 1, 1, 'normal', NULL,
+                   '2026-08-24T10:30:00Z'),
+                  ('timeline-promoted-child', 'gemini-cli', '2026-08-24T11:00:00Z', '/tmp/timeline',
+                   'timeline-promote', '/tmp/child.jsonl', 4, 1, NULL, NULL, 'normal',
+                   'timeline-hidden-host', NULL)
+                """)
+            try database.execute(sql: """
+                INSERT INTO session_work_beats (
+                  session_id, beat_index, action_date, action_timestamp,
+                  work_key, work_title, human_intent, assistant_outcome,
+                  kind, status, operation_events, confidence
+                ) VALUES ('timeline-promoted-child', 0, '2026-08-24', '2026-08-24T11:30:00Z',
+                          'wk-promoted-child', 'Promoted work', 'human request', 'completed',
+                          'implementation', 'complete', '[]', 0.9)
+                """)
+        }
+
+        XCTAssertEqual(
+            try db.implementationTimeline(days: 100_000, project: "timeline-promote", humanDriven: false)
+                .map(\.workKey),
+            ["wk-promoted-child"]
+        )
+        XCTAssertTrue(
+            try db.implementationTimelineProjects(days: 100_000, humanDriven: false)
+                .contains("timeline-promote")
+        )
     }
 
     /// Seed `session_work_beats` (a service/daemon-owned table the app read model
@@ -1796,10 +3001,11 @@ final class DatabaseManagerTests: XCTestCase {
 
         let process = Process()
         process.executableURL = executableURL
-        process.environment = ProcessInfo.processInfo.environment.merging([
+        let sandbox = try makeHermeticRPCEnvironment(overrides: [
             "ENGRAM_MCP_DB_PATH": databasePath,
-            "TZ": "UTC",
-        ]) { _, new in new }
+        ])
+        defer { try? FileManager.default.removeItem(at: sandbox.root) }
+        process.environment = sandbox.environment
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -1836,13 +3042,12 @@ final class DatabaseManagerTests: XCTestCase {
 }
 
 private func createLegacySessionsTableWithoutAccessMetadata(at path: String) throws {
-    var configuration = Configuration()
-    configuration.prepareDatabase { db in
-        try db.execute(sql: "PRAGMA journal_mode = DELETE")
-    }
+    let configuration = Configuration()
     let queue = try DatabaseQueue(path: path, configuration: configuration)
+    try queue.writeWithoutTransaction { db in
+        try db.execute(sql: "PRAGMA journal_mode = WAL")
+    }
     try queue.write { db in
-        try db.execute(sql: "PRAGMA journal_mode = DELETE")
         try db.execute(sql: """
             CREATE TABLE sessions (
                 id TEXT PRIMARY KEY,

@@ -47,6 +47,9 @@ struct Session: FetchableRecord, Decodable, Identifiable {
     /// surfaces from the favorites table (or true when the Starred filter is
     /// active). Defaults false so GRDB/JSON decode paths stay source-compatible.
     var isFavorite: Bool = false
+    /// Machine origin for live-ingested rows (`hq` on the daily Mac). Missing
+    /// or local origin stays nil and shows no badge.
+    var origin: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, source, cwd, project, model, summary
@@ -74,12 +77,25 @@ struct Session: FetchableRecord, Decodable, Identifiable {
         case qualityScore     = "quality_score"
         case instructionCount   = "instruction_count"
         case instructionSummary = "instruction_summary"
+        case origin
     }
 
     /// Prefer filePath; fall back to sourceLocator when filePath is empty.
     var effectiveFilePath: String {
         if filePath.isEmpty, let sl = sourceLocator, !sl.isEmpty { return sl }
         return filePath
+    }
+
+    /// HQ badge only when the stored origin is exactly `hq`.
+    var originBadge: String? { origin == "hq" ? "HQ" : nil }
+
+    /// Imported live-ingest rows use a virtual locator, never a local file.
+    var isRemoteSnapshot: Bool {
+        Self.isRemoteSnapshotLocator(filePath) || id.hasPrefix("remote:")
+    }
+
+    static func isRemoteSnapshotLocator(_ path: String) -> Bool {
+        path.hasPrefix("remote://")
     }
 
     /// Coarse value tier from `qualityScore` for an at-a-glance relevance cue in
@@ -176,6 +192,7 @@ extension Session {
         instructionSummary = try c.decodeIfPresent(String.self, forKey: .instructionSummary)
         // Favorites live in a separate table; list surfaces set this after fetch.
         isFavorite = false
+        origin = try c.decodeIfPresent(String.self, forKey: .origin)
     }
 
     /// Target value for a symmetric favorite toggle (`favorite: !isFavorite`).

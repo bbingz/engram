@@ -19,7 +19,7 @@ public struct UndoNotAllowedError: ProjectMoveError, Equatable {
     public var errorName: String { "UndoNotAllowedError" }
     public var errorMessage: String {
         "undoMigration: cannot undo migration \(migrationId) in state '\(state)'. " +
-        "Only 'committed' migrations can be undone. Run `engram project recover` " +
+        "Only 'committed' migrations can be undone. Use `project_recover` " +
         "for non-terminal or failed migrations."
     }
     public var errorDetails: ErrorDetails? {

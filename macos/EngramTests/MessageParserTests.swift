@@ -3,6 +3,60 @@ import XCTest
 @testable import Engram
 
 final class MessageParserTests: XCTestCase {
+    private struct MetadataThrowingPrefixAdapter: SessionAdapter {
+        let source: SourceName = .iflow
+
+        func detect() async -> Bool { true }
+        func listSessionLocators() async throws -> [String] { [] }
+        func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+            .failure(.malformedJSON)
+        }
+        func isAccessible(locator: String) async -> Bool { true }
+
+        func streamMessages(
+            locator: String,
+            options: StreamMessagesOptions
+        ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+            AsyncThrowingStream { continuation in
+                continuation.yield(NormalizedMessage(role: .user, content: "retained-prefix"))
+                continuation.finish(throwing: ParserFailure.malformedJSON)
+            }
+        }
+
+        func streamMessagesWithMetadata(
+            locator: String,
+            options: StreamMessagesOptions
+        ) async throws -> StreamMessagesResult {
+            throw ParserFailure.fileModifiedDuringParse
+        }
+    }
+
+    private struct MetadataThrowingCappedQwenAdapter: SessionAdapter {
+        let source: SourceName = .qwen
+        let inner: QwenAdapter
+
+        func detect() async -> Bool { true }
+        func listSessionLocators() async throws -> [String] { [] }
+        func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+            try await inner.parseSessionInfo(locator: locator)
+        }
+        func isAccessible(locator: String) async -> Bool { true }
+
+        func streamMessages(
+            locator: String,
+            options: StreamMessagesOptions
+        ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+            try await inner.streamMessages(locator: locator, options: options)
+        }
+
+        func streamMessagesWithMetadata(
+            locator: String,
+            options: StreamMessagesOptions
+        ) async throws -> StreamMessagesResult {
+            throw ParserFailure.fileModifiedDuringParse
+        }
+    }
+
     private struct ClassificationFixtureCase: Decodable {
         let name: String
         let source: String
@@ -41,9 +95,9 @@ final class MessageParserTests: XCTestCase {
     // MARK: - claude-code format (type/message)
 
     /// 1. Parse claude-code JSONL with string and array content
-    func testParseClaudeCodeFormat() async throws {
+    func testParseClaudeCodeFormat() throws {
         let path = try fixturePath("claude-code.jsonl")
-        let messages = await MessageParser.parse(filePath: path, source: "claude-code")
+        let messages = MessageParser.parseLegacy(filePath: path, source: "claude-code")
 
         XCTAssertEqual(messages.count, 4)
         XCTAssertEqual(messages[0].role, "user")
@@ -58,7 +112,7 @@ final class MessageParserTests: XCTestCase {
     /// 2. Parse codex format (response_item/payload)
     func testParseCodexFormat() async throws {
         let path = try fixturePath("codex.jsonl")
-        let messages = await MessageParser.parse(filePath: path, source: "codex")
+        let messages = try await MessageParser.parse(filePath: path, source: "codex")
 
         guard messages.count == 2 else {
             return XCTFail("Expected 2 codex display messages, got \(messages.count)")
@@ -72,7 +126,7 @@ final class MessageParserTests: XCTestCase {
     /// 3. Parse gemini-cli format (whole-file JSON with messages array)
     func testParseGeminiFormat() async throws {
         let path = try fixturePath("gemini.json")
-        let messages = await MessageParser.parse(filePath: path, source: "gemini-cli")
+        let messages = try await MessageParser.parse(filePath: path, source: "gemini-cli")
 
         XCTAssertEqual(messages.count, 3)
         XCTAssertEqual(messages[0].role, "user")
@@ -84,25 +138,25 @@ final class MessageParserTests: XCTestCase {
     }
 
     /// 4. Malformed JSON lines are silently skipped
-    func testMalformedJSONSkipped() async throws {
+    func testMalformedJSONSkipped() throws {
         let path = try fixturePath("malformed.jsonl")
-        let messages = await MessageParser.parse(filePath: path, source: "claude-code")
+        let messages = MessageParser.parseLegacy(filePath: path, source: "claude-code")
 
         // malformed.jsonl: 1 unparseable, 1 missing message field, 1 empty message content
         XCTAssertEqual(messages.count, 0, "All malformed entries should be skipped")
     }
 
     /// 5. Empty file returns empty array
-    func testEmptyFileReturnsEmpty() async throws {
+    func testEmptyFileReturnsEmpty() throws {
         let path = try fixturePath("empty.jsonl")
-        let messages = await MessageParser.parse(filePath: path, source: "claude-code")
+        let messages = MessageParser.parseLegacy(filePath: path, source: "claude-code")
         XCTAssertTrue(messages.isEmpty)
     }
 
     /// 6. Mixed valid/invalid lines — empty content skipped, whitespace-only content kept
-    func testMixedValidInvalid() async throws {
+    func testMixedValidInvalid() throws {
         let path = try fixturePath("empty-content.jsonl")
-        let messages = await MessageParser.parse(filePath: path, source: "claude-code")
+        let messages = MessageParser.parseLegacy(filePath: path, source: "claude-code")
 
         // empty-content.jsonl: "" is skipped (isEmpty), "valid" kept, "   " kept (not empty, just whitespace)
         guard messages.count == 2 else {
@@ -113,9 +167,9 @@ final class MessageParserTests: XCTestCase {
     }
 
     /// 7. CJK content preserved in claude-code format
-    func testCJKContentPreserved() async throws {
+    func testCJKContentPreserved() throws {
         let path = try fixturePath("cjk-claude.jsonl")
-        let messages = await MessageParser.parse(filePath: path, source: "claude-code")
+        let messages = MessageParser.parseLegacy(filePath: path, source: "claude-code")
 
         XCTAssertEqual(messages.count, 3)
         XCTAssertEqual(messages[0].content, "请帮我写一个函数")
@@ -126,7 +180,7 @@ final class MessageParserTests: XCTestCase {
     /// 8. Kimi format (role/content, no skip)
     func testParseKimiFormat() async throws {
         let path = try fixturePath("kimi.jsonl")
-        let messages = await MessageParser.parse(filePath: path, source: "kimi")
+        let messages = try await MessageParser.parse(filePath: path, source: "kimi")
 
         XCTAssertEqual(messages.count, 2)
         XCTAssertEqual(messages[0].role, "user")
@@ -137,7 +191,7 @@ final class MessageParserTests: XCTestCase {
     /// 9. Antigravity format (role/content, skips first line)
     func testParseAntigravityFormat() async throws {
         let path = try fixturePath("antigravity.jsonl")
-        let messages = await MessageParser.parse(filePath: path, source: "antigravity")
+        let messages = try await MessageParser.parse(filePath: path, source: "antigravity")
 
         // First line is metadata, should be skipped
         XCTAssertEqual(messages.count, 2)
@@ -148,7 +202,7 @@ final class MessageParserTests: XCTestCase {
     /// 10. Copilot format (type-based with data.content)
     func testParseCopilotFormat() async throws {
         let path = try fixturePath("copilot.jsonl")
-        let messages = await MessageParser.parse(filePath: path, source: "copilot")
+        let messages = try await MessageParser.parse(filePath: path, source: "copilot")
 
         XCTAssertEqual(messages.count, 2)
         XCTAssertEqual(messages[0].role, "user")
@@ -158,7 +212,7 @@ final class MessageParserTests: XCTestCase {
     }
 
     func testParseQoderThroughAdapterRegistry() async throws {
-        let messages = await MessageParser.parse(
+        let messages = try await MessageParser.parse(
             filePath: repoFixturePath("qoder/sample.jsonl"),
             source: "qoder"
         )
@@ -175,7 +229,7 @@ final class MessageParserTests: XCTestCase {
     }
 
     func testParseCommandCodeThroughAdapterRegistry() async throws {
-        let messages = await MessageParser.parse(
+        let messages = try await MessageParser.parse(
             filePath: repoFixturePath("commandcode/sample.jsonl"),
             source: "commandcode"
         )
@@ -204,7 +258,7 @@ final class MessageParserTests: XCTestCase {
             to: transcript
         )
 
-        let messages = await MessageParser.parse(filePath: transcript.path, source: "antigravity")
+        let messages = try await MessageParser.parse(filePath: transcript.path, source: "antigravity")
 
         guard messages.count == 3 else {
             return XCTFail("Expected 3 antigravity CLI display messages, got \(messages.count)")
@@ -218,9 +272,9 @@ final class MessageParserTests: XCTestCase {
     }
 
     /// 11. Cline format (whole-file JSON array with say/text)
-    func testParseClineFormat() async throws {
+    func testParseClineFormat() throws {
         let path = try fixturePath("cline.json")
-        let messages = await MessageParser.parse(filePath: path, source: "cline")
+        let messages = MessageParser.parseLegacy(filePath: path, source: "cline")
 
         // task → user, text(partial=false) → assistant, user_feedback → user, text(partial=true) → skipped
         XCTAssertEqual(messages.count, 3)
@@ -233,7 +287,7 @@ final class MessageParserTests: XCTestCase {
     }
 
     /// 12. System prompt detection — systemPrompt category
-    func testSystemPromptDetection() async throws {
+    func testSystemPromptDetection_repro() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("engram-system-prompts-\(UUID().uuidString)", isDirectory: true)
         let homeDirectory = root.appendingPathComponent("home", isDirectory: true)
@@ -251,14 +305,14 @@ final class MessageParserTests: XCTestCase {
             settingsURL: homeDirectory.appendingPathComponent(".engram/settings.json")
         )
 
-        let messages = await MessageParser.parse(
+        let messages = try await MessageParser.parse(
             filePath: transcript.path,
             source: "claude-code",
             claudeCodeProfileResolver: resolver
         )
 
-        XCTAssertEqual(messages.count, 3)
-        guard messages.count == 3 else { return }
+        XCTAssertEqual(messages.count, 4)
+        guard messages.count == 4 else { return }
         // <system-reminder> → systemPrompt
         XCTAssertEqual(messages[0].systemCategory, .systemPrompt)
         XCTAssertTrue(messages[0].isSystem)
@@ -267,11 +321,13 @@ final class MessageParserTests: XCTestCase {
         XCTAssertFalse(messages[1].isSystem)
         // <environment_context> → systemPrompt
         XCTAssertEqual(messages[2].systemCategory, .systemPrompt)
+        // <local-command-stdout> → agentComm
+        XCTAssertEqual(messages[3].systemCategory, .agentComm)
     }
 
     func testParseWithOffsetAndLimit() async throws {
         let path = try fixturePath("codex.jsonl")
-        let messages = await MessageParser.parse(filePath: path, source: "codex", offset: 1, limit: 1)
+        let messages = try await MessageParser.parse(filePath: path, source: "codex", offset: 1, limit: 1)
 
         XCTAssertEqual(messages.count, 1)
         XCTAssertEqual(messages[0].role, "assistant")
@@ -282,14 +338,14 @@ final class MessageParserTests: XCTestCase {
     /// remainder from `offset = loadedCount`. That must reconstruct the full
     /// transcript exactly — no gap, dup, or silent truncation at the page seam.
     func testPagedParseConcatenationEqualsFullTranscript() async throws {
-        let path = try fixturePath("claude-code.jsonl")
-        let full = await MessageParser.parse(filePath: path, source: "claude-code")
-        XCTAssertGreaterThan(full.count, 2, "fixture must have enough messages to page")
+        let path = try fixturePath("codex.jsonl")
+        let full = try await MessageParser.parse(filePath: path, source: "codex")
+        XCTAssertGreaterThan(full.count, 1, "fixture must have enough messages to page")
 
-        let firstPage = await MessageParser.parse(filePath: path, source: "claude-code", offset: 0, limit: 2)
-        XCTAssertEqual(firstPage.count, 2)
+        let firstPage = try await MessageParser.parse(filePath: path, source: "codex", offset: 0, limit: 1)
+        XCTAssertEqual(firstPage.count, 1)
         // "Load all" continues from the loaded count to the end (limit nil).
-        let remainder = await MessageParser.parse(filePath: path, source: "claude-code", offset: firstPage.count, limit: nil)
+        let remainder = try await MessageParser.parse(filePath: path, source: "codex", offset: firstPage.count, limit: nil)
         XCTAssertEqual(remainder.count, full.count - firstPage.count)
 
         let paged = (firstPage + remainder).map { ($0.role, $0.content) }
@@ -319,10 +375,134 @@ final class MessageParserTests: XCTestCase {
         }
         try lines.joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
 
-        let messages = await MessageParser.parse(filePath: file.path, source: "iflow")
+        let messages = try await MessageParser.parse(filePath: file.path, source: "iflow")
         XCTAssertEqual(messages.count, cap)
         XCTAssertEqual(messages.first?.content, "iflow parse turn 0")
         XCTAssertEqual(messages.last?.content, "iflow parse turn \(cap - 1)")
+    }
+
+    func testRegisteredAdapterFailureNeverFallsBackToLegacyParser_repro() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-adapter-failure-no-legacy-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("iflow-line-too-large.jsonl")
+        let valid = #"{"type":"user","timestamp":"2026-08-21T00:00:00Z","message":{"role":"user","content":"legacy-visible"}}"#
+        let oversized = String(repeating: "x", count: ParserLimits.default.maxLineBytes + 1)
+        try (valid + "\n" + oversized + "\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let parsed = try await MessageParser.parse(filePath: file.path, source: "iflow")
+        let windowed = try await MessageParser.parseWindowed(
+            filePath: file.path,
+            source: "iflow",
+            offset: 0,
+            limit: 10
+        )
+
+        XCTAssertEqual(parsed.map(\.content), ["legacy-visible"])
+        XCTAssertEqual(windowed.messages.map(\.content), ["legacy-visible"])
+        XCTAssertEqual(windowed.producedCount, 1)
+        XCTAssertFalse(windowed.truncated, "a parser failure is distinct from the produced-message cap")
+        XCTAssertTrue(windowed.parseFailed, "the retained prefix must still report the parser failure")
+    }
+
+    func testMetadataConstructionFailureKeepsFallbackStreamPrefix_repro() async throws {
+        let result = try await MessageParser.adapterMessages(
+            adapter: MetadataThrowingPrefixAdapter(),
+            locator: "/tmp/unused",
+            source: "iflow",
+            options: StreamMessagesOptions()
+        )
+
+        XCTAssertEqual(result.messages.map(\.content), ["retained-prefix"])
+        XCTAssertEqual(result.producedCount, 1)
+        XCTAssertFalse(result.truncated)
+        XCTAssertTrue(result.parseFailed)
+    }
+
+    func testMetadataAndCappedFallbackKeepProducedPrefix_repro() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-dual-constructor-prefix-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("qwen.jsonl")
+        let lines = (0..<4).map { index in
+            let type = index.isMultiple(of: 2) ? "user" : "assistant"
+            return #"{"type":"\#(type)","sessionId":"dual-prefix","message":{"role":"\#(type)","parts":[{"text":"m\#(index)"}]}}"#
+        }
+        try lines.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = MetadataThrowingCappedQwenAdapter(
+            inner: QwenAdapter(projectsRoot: dir.path, limits: ParserLimits(maxMessages: 3))
+        )
+        let result = try await MessageParser.adapterMessages(
+            adapter: adapter,
+            locator: file.path,
+            source: "qwen",
+            options: StreamMessagesOptions()
+        )
+
+        XCTAssertEqual(result.messages.map(\.content), ["m0", "m1", "m2"])
+        XCTAssertEqual(result.producedCount, 3)
+        XCTAssertTrue(result.parseFailed)
+    }
+
+    func testParseWindowedReportsAdapterTruncation_repro() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-window-truncation-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("iflow-over-cap.jsonl")
+        let cap = ParserLimits.default.maxMessages
+        let lines = (0...cap).map { index -> String in
+            let role = index % 2 == 0 ? "user" : "assistant"
+            return #"{"type":"\#(role)","message":{"role":"\#(role)","content":"m\#(index)"}}"#
+        }
+        try lines.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let result = try await MessageParser.parseWindowed(
+            filePath: file.path,
+            source: "iflow",
+            offset: 0,
+            limit: nil
+        )
+
+        XCTAssertEqual(result.producedCount, cap)
+        XCTAssertTrue(result.truncated)
+    }
+
+    func testParseWindowedPagesStopAtParserMaxMessages_repro() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-window-max-pages-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("iflow-over-page-cap.jsonl")
+        let cap = ParserLimits.default.maxMessages
+        let lines = (0...cap).map { index -> String in
+            #"{"type":"user","message":{"role":"user","content":"page\#(index)"}}"#
+        }
+        try lines.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        var offset = 0
+        var collected = 0
+        var sawTruncation = false
+        while true {
+            let page = try await MessageParser.parseWindowed(
+                filePath: file.path,
+                source: "iflow",
+                offset: offset,
+                limit: 500
+            )
+            collected += page.producedCount
+            offset += page.producedCount
+            sawTruncation = page.truncated
+            if page.truncated || page.producedCount < 500 { break }
+        }
+        XCTAssertEqual(collected, cap)
+        XCTAssertTrue(sawTruncation)
     }
 
     /// Adapter path must thread `NormalizedMessage.timestamp` into `ChatMessage`
@@ -341,7 +521,7 @@ final class MessageParserTests: XCTestCase {
         ]
         try (lines.joined(separator: "\n") + "\n").write(to: path, atomically: true, encoding: .utf8)
 
-        let stamped = await MessageParser.parse(filePath: path.path, source: "codex")
+        let stamped = try await MessageParser.parse(filePath: path.path, source: "codex")
         XCTAssertEqual(stamped.count, 2, stamped.map(\.content).description)
         XCTAssertEqual(stamped[0].timestamp, "2026-07-25T10:00:00.000Z")
         XCTAssertEqual(stamped[1].timestamp, "2026-07-25T10:00:05.000Z")
@@ -352,7 +532,7 @@ final class MessageParserTests: XCTestCase {
         // timestamps on every row — parse with claude-code fixture via legacy
         // happens only when adapter fails; instead assert ChatMessage default
         // and that adapterMessages threading is the production site under test.
-        let legacy = await MessageParser.parse(filePath: legacyPath, source: "claude-code")
+        let legacy = MessageParser.parseLegacy(filePath: legacyPath, source: "claude-code")
         // Fixture rows that lack timestamps must not invent them. If the adapter
         // path is used and the fixture has timestamps, non-nil is fine; we only
         // require no crash and that explicit missing stays nil via bare construct.
@@ -393,14 +573,18 @@ final class MessageParserTests: XCTestCase {
         try (lines.joined(separator: "\n") + "\n").write(to: locator, atomically: true, encoding: .utf8)
         let resolver = ClaudeCodeProfileResolver(homeDirectory: homeDirectory, settingsURL: settingsURL)
 
-        let full = await MessageParser.parse(
+        let full = try await MessageParser.parse(
             filePath: locator.path,
             source: "claude-code",
             claudeCodeProfileResolver: resolver
         )
-        XCTAssertEqual(full.map(\.content), ["visible request", "visible response"])
+        XCTAssertEqual(
+            full.map(\.content),
+            ["# AGENTS.md instructions for custom", "visible request", "visible response"]
+        )
+        XCTAssertEqual(full.first?.systemCategory, .systemPrompt)
 
-        let firstPage = await MessageParser.parseWindowed(
+        let firstPage = try await MessageParser.parseWindowed(
             filePath: locator.path,
             source: "claude-code",
             offset: 0,
@@ -408,9 +592,10 @@ final class MessageParserTests: XCTestCase {
             claudeCodeProfileResolver: resolver
         )
         XCTAssertEqual(firstPage.producedCount, 1)
-        XCTAssertEqual(firstPage.messages.map(\.content), ["visible request"])
+        XCTAssertEqual(firstPage.messages.map(\.content), ["# AGENTS.md instructions for custom"])
+        XCTAssertEqual(firstPage.messages.first?.systemCategory, .systemPrompt)
 
-        let secondPage = await MessageParser.parseWindowed(
+        let secondPage = try await MessageParser.parseWindowed(
             filePath: locator.path,
             source: "claude-code",
             offset: firstPage.producedCount,
@@ -418,7 +603,40 @@ final class MessageParserTests: XCTestCase {
             claudeCodeProfileResolver: resolver
         )
         XCTAssertEqual(secondPage.producedCount, 1)
-        XCTAssertEqual(secondPage.messages.map(\.content), ["visible response"])
+        XCTAssertEqual(secondPage.messages.map(\.content), ["visible request"])
+
+        let thirdPage = try await MessageParser.parseWindowed(
+            filePath: locator.path,
+            source: "claude-code",
+            offset: firstPage.producedCount + secondPage.producedCount,
+            limit: 1,
+            claudeCodeProfileResolver: resolver
+        )
+        XCTAssertEqual(thirdPage.producedCount, 1)
+        XCTAssertEqual(thirdPage.messages.map(\.content), ["visible response"])
+    }
+
+    func testMessageParserUsesInjectedHomeForAdapterRegistry_repro() async throws {
+        // docs/invariants.md #6: the UI parser must not construct adapters from
+        // the production home while running against a temporary transcript.
+        let fixtureRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-message-parser-home-\(UUID().uuidString)", isDirectory: true)
+        let homeDirectory = fixtureRoot.appendingPathComponent("home", isDirectory: true)
+        let projectDirectory = homeDirectory
+            .appendingPathComponent(".claude/projects/-Users-injected", isDirectory: true)
+        let locator = projectDirectory.appendingPathComponent("injected.jsonl")
+        try FileManager.default.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fixtureRoot) }
+        try (#"{"type":"user","sessionId":"injected","timestamp":"2026-08-23T00:00:00Z","message":{"role":"user","content":"injected request"}}"# + "\n")
+            .write(to: locator, atomically: true, encoding: .utf8)
+
+        let messages = try await MessageParser.parse(
+            filePath: locator.path,
+            source: "claude-code",
+            homeDirectory: homeDirectory
+        )
+
+        XCTAssertEqual(messages.map(\.content), ["injected request"])
     }
 
     /// `parseWindowed` reports a PRODUCED count that includes filtered (tool)
@@ -448,12 +666,12 @@ final class MessageParserTests: XCTestCase {
         ]
         try lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
 
-        let full = await MessageParser.parse(filePath: path, source: "codex")
+        let full = try await MessageParser.parse(filePath: path, source: "codex")
         XCTAssertEqual(full.map(\.content), ["u0", "a0", "u1", "a1"])
 
         // First 3 PRODUCED messages: user, function_call, function_call_output —
         // only the user survives filtering, so produced (3) > displayable (1).
-        let page1 = await MessageParser.parseWindowed(filePath: path, source: "codex", offset: 0, limit: 3)
+        let page1 = try await MessageParser.parseWindowed(filePath: path, source: "codex", offset: 0, limit: 3)
         XCTAssertEqual(page1.producedCount, 3)
         XCTAssertLessThan(page1.messages.count, page1.producedCount)
         XCTAssertEqual(page1.messages.map(\.content), ["u0"])
@@ -464,7 +682,7 @@ final class MessageParserTests: XCTestCase {
         var collected: [ChatMessage] = []
         var producedOffset = 0
         while true {
-            let page = await MessageParser.parseWindowed(filePath: path, source: "codex", offset: producedOffset, limit: 2)
+            let page = try await MessageParser.parseWindowed(filePath: path, source: "codex", offset: producedOffset, limit: 2)
             collected += page.messages
             producedOffset += page.producedCount
             if page.producedCount < 2 { break }
@@ -475,13 +693,13 @@ final class MessageParserTests: XCTestCase {
     /// 13. Unknown source returns empty array
     func testUnknownSourceReturnsEmpty() async throws {
         let path = try fixturePath("valid.jsonl")
-        let messages = await MessageParser.parse(filePath: path, source: "unknown-source")
+        let messages = try await MessageParser.parse(filePath: path, source: "unknown-source")
         XCTAssertTrue(messages.isEmpty)
     }
 
     /// 14. Nonexistent file returns empty array
     func testNonexistentFileReturnsEmpty() async throws {
-        let messages = await MessageParser.parse(filePath: "/nonexistent/path.jsonl", source: "claude-code")
+        let messages = try await MessageParser.parse(filePath: "/nonexistent/path.jsonl", source: "claude-code")
         XCTAssertTrue(messages.isEmpty)
     }
 
@@ -568,5 +786,17 @@ final class MessageParserTests: XCTestCase {
                 fixtureCase.name
             )
         }
+    }
+
+    func testRemoteLocatorRendersSnapshotNotFilesystem_repro() async throws {
+        let parsed = try await MessageParser.parseWindowed(
+            filePath: "remote://hq/native-id",
+            source: "codex",
+            offset: 0,
+            limit: 10
+        )
+        XCTAssertEqual(parsed.messages.first?.content, "HQ 索引快照，不是源文件")
+        XCTAssertFalse(parsed.parseFailed)
+        XCTAssertGreaterThanOrEqual(parsed.producedCount, 1)
     }
 }

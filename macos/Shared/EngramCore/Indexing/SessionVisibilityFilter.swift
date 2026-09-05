@@ -42,6 +42,53 @@ public enum SessionVisibilityFilter {
         return "(\(parentSessionID) IS NULL AND \(suggestedParentID) IS NULL)"
     }
 
+    /// Keep ordinary roots while promoting a human-driven suggested child when
+    /// its proposed host is missing or is not itself default-visible. Confirmed
+    /// children and skip/dispatched rows remain nested/hidden (invariant 2).
+    public static func topLevelOrPromotedSuggestedSQL(
+        alias: String,
+        hasHumanDrivenColumns: Bool = true,
+        hasOrphanStatusColumn: Bool = true,
+        applyHumanDrivenOnHost: Bool = true,
+        applyHumanDrivenOnChild: Bool = true,
+        includeHiddenHosts: Bool = false
+    ) -> String {
+        let parentSessionID = column("parent_session_id", alias: alias)
+        let suggestedParentID = column("suggested_parent_id", alias: alias)
+        let agentRole = column("agent_role", alias: alias)
+        let hostAlias = "engram_suggested_host"
+        var childConditions = [
+            "\(parentSessionID) IS NULL",
+            "\(suggestedParentID) IS NOT NULL",
+            "\(agentRole) IS NULL",
+        ]
+        if hasHumanDrivenColumns && applyHumanDrivenOnChild {
+            childConditions.append(HumanDrivenFilter.sqlPredicate(alias: alias))
+        }
+
+        var hostConditions = [
+            "\(hostAlias).id = \(suggestedParentID)",
+            includeHiddenHosts
+                ? nonSkipTierSQL(alias: hostAlias)
+                : listVisibleSQL(alias: hostAlias),
+            topLevelSQL(alias: hostAlias),
+        ]
+        if hasHumanDrivenColumns && applyHumanDrivenOnHost {
+            hostConditions.append(HumanDrivenFilter.sqlPredicate(alias: hostAlias))
+        }
+        if hasOrphanStatusColumn {
+            hostConditions.append("\(hostAlias).orphan_status IS NULL")
+        }
+        childConditions.append(
+            "NOT EXISTS (SELECT 1 FROM sessions \(hostAlias) WHERE \(hostConditions.joined(separator: " AND ")))"
+        )
+        var topLevelConditions = [topLevelSQL(alias: alias)]
+        if hasHumanDrivenColumns && applyHumanDrivenOnHost {
+            topLevelConditions.append(HumanDrivenFilter.sqlPredicate(alias: alias))
+        }
+        return "((\(topLevelConditions.joined(separator: " AND "))) OR (\(childConditions.joined(separator: " AND "))))"
+    }
+
     private static func column(_ name: String, alias: String) -> String {
         precondition(
             alias.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" },

@@ -185,7 +185,7 @@ struct ClaudeCodeProfilesSettingsState: Equatable {
 }
 
 struct ClaudeCodeProfilesSettingsCard: View {
-    @Environment(EngramServiceClient.self) private var serviceClient
+    @Environment(\.engramServiceClient) private var serviceClient
 
     @State private var editor = ClaudeCodeProfilesSettingsState()
     @State private var loading = false
@@ -242,7 +242,7 @@ struct ClaudeCodeProfilesSettingsCard: View {
                 if let message {
                     Text(verbatim: message)
                         .font(.caption)
-                        .foregroundStyle(messageIsError ? Color.red : Color.green)
+                        .foregroundStyle(messageIsError ? Theme.red : Theme.green)
                         .accessibilityIdentifier("claudeProfiles_message")
                 }
 
@@ -388,7 +388,7 @@ private struct ClaudeCodeProfileStatusRow: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 Circle()
-                    .fill(profile.available ? Color.green : Color.orange)
+                    .fill(profile.available ? Theme.green : Theme.orange)
                     .frame(width: 8, height: 8)
                 Text(verbatim: row.displayName)
                     .font(.caption.bold())
@@ -452,7 +452,7 @@ private struct ClaudeCodeProfileStatusRow: View {
                         : String(localized: "Source files protected from local reclamation")
                 )
                 .foregroundStyle(
-                    profile.sourceReclamationAllowed ? Color.secondary : Color.blue
+                    profile.sourceReclamationAllowed ? Color.secondary : Theme.accent
                 )
             }
             .font(.caption2)
@@ -460,7 +460,7 @@ private struct ClaudeCodeProfileStatusRow: View {
             if profile.error != nil {
                 Text("Profile status unavailable.")
                     .font(.caption2)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Theme.orange)
             }
         }
         .padding(8)
@@ -496,7 +496,7 @@ private struct ClaudeCodePendingProfileRow: View {
                 }
                 Text("Source files protected from local reclamation")
                     .font(.caption2)
-                    .foregroundStyle(.blue)
+                    .foregroundStyle(Theme.accent)
             }
             Spacer()
             Button("Remove", action: remove)
@@ -526,7 +526,7 @@ struct PathExistsIndicator: View {
 
     var body: some View {
         Circle()
-            .fill(exists ? Color.green : Color.red)
+            .fill(exists ? Theme.green : Theme.red)
             .frame(width: 8, height: 8)
             .help(exists ? LocalizedStringKey("Path exists") : LocalizedStringKey("Path not found"))
     }
@@ -593,7 +593,7 @@ struct MCPSetupGuideView: View {
                 "engram": {
                   "command": "\(helper)",
                   "args": [],
-                  "trust": true
+                  "trust": false
                 }
                 """
             }
@@ -658,11 +658,11 @@ struct MCPSetupGuideView: View {
                 case .result(let result) where result.passed:
                     Text("MCP setup verified")
                         .font(.caption)
-                        .foregroundStyle(.green)
+                        .foregroundStyle(Theme.green)
                 case .result(let result):
                     Text(verbatim: result.remedy ?? "Verification failed")
                         .font(.caption)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(Theme.red)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -744,7 +744,7 @@ struct MCPClientRow: View {
                         .font(.caption2)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(copied ? Color.green.opacity(0.15) : Color.secondary.opacity(0.1))
+                        .background(copied ? Theme.green.opacity(0.15) : Color.secondary.opacity(0.1))
                         .foregroundStyle(copied ? .green : .secondary)
                         .clipShape(RoundedRectangle(cornerRadius: 4))
                 }

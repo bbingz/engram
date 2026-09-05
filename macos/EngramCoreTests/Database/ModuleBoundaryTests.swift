@@ -1,7 +1,24 @@
 import XCTest
 
 final class ModuleBoundaryTests: XCTestCase {
-    func testAppMCPAndCLIDoNotDependOnWriteCore() throws {
+    func testDefaultHomeCallersUseHermeticResolver_repro() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let expected: [(String, String)] = [
+            ("EngramService/Core/EngramServiceReadProvider.swift", "EngramUserDataDirectory.resolvedHomeDirectory()"),
+            ("EngramService/Core/ArchiveReclamationCoordinator.swift", "EngramUserDataDirectory.resolvedHomeDirectory(environment: environment)"),
+            ("EngramService/Core/EngramServiceRunner.swift", "let serviceHome = isTestProcess"),
+            ("EngramCoreWrite/UserDataBackup.swift", "EngramUserDataDirectory.resolvedHomeDirectory(environment: environment)"),
+        ]
+
+        for (relativePath, requiredText) in expected {
+            let source = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+            XCTAssertTrue(source.contains(requiredText), "\(relativePath) must use the hermetic home resolver")
+        }
+    }
+    func testWriteCoreBoundaryAllowsOnlyMCPProjectReviewImport_repro() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()

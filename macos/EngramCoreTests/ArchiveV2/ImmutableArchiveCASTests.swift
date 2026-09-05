@@ -270,6 +270,40 @@ final class ImmutableArchiveCASTests: XCTestCase {
         )
     }
 
+    func testPostFinalLinkThrowRemovesOnlyStagingAlias_repro() throws {
+        enum Marker: Error {
+            case stopAfterFinalLink
+        }
+
+        let raw = Data("published before injected failure".utf8)
+        let digest = ArchiveV2Hash.sha256(raw)
+        let hooks = ImmutableArchiveCASTestHooks(
+            afterFinalLinkPublished: { _ in
+                throw Marker.stopAfterFinalLink
+            }
+        )
+        let cas = try ImmutableArchiveCAS(root: root, testHooks: hooks)
+
+        XCTAssertThrowsError(
+            try cas.publishObject(raw: raw, expectedSHA256: digest)
+        ) { error in
+            guard case Marker.stopAfterFinalLink = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+
+        XCTAssertEqual(try Data(contentsOf: objectURL(digest)), raw)
+        XCTAssertTrue(
+            try FileManager.default.contentsOfDirectory(
+                at: root.appendingPathComponent("tmp", isDirectory: true),
+                includingPropertiesForKeys: nil
+            ).isEmpty
+        )
+        var info = stat()
+        XCTAssertEqual(lstat(objectURL(digest).path, &info), 0)
+        XCTAssertEqual(info.st_nlink, 1)
+    }
+
     private func objectURL(_ digest: String) -> URL {
         root.appendingPathComponent("objects/sha256/\(digest.prefix(2))/\(digest)")
     }

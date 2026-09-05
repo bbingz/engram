@@ -1,7 +1,7 @@
 {
   "failure": null,
   "fileToolCounts": {},
-  "generatedAtCommit": "c17fd8fb",
+  "generatedAtCommit": "d97d0257",
   "inputPath": "codex/input/2026/01/15/rollout-sample.jsonl",
   "insightFields": {
     "firstUserSummary": "帮我修复登录 bug，用户无法登录",
@@ -42,7 +42,7 @@
       "timestamp": "2026-01-15T10:00:10.000Z"
     }
   ],
-  "nodeVersion": "v26.4.0",
+  "nodeVersion": "v26.7.0",
   "projectFields": {
     "cwd": "/Users/test/my-project",
     "project": null,

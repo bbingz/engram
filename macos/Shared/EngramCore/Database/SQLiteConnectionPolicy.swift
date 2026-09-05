@@ -41,13 +41,17 @@ public enum SQLiteConnectionPolicy {
         return configuration
     }
 
-    public static func readerConfiguration() -> Configuration {
+    public static func readerConfiguration(
+        busyTimeoutMilliseconds timeoutMilliseconds: Int = busyTimeoutMilliseconds
+    ) -> Configuration {
         var configuration = Configuration()
         configuration.readonly = true
         configuration.prepareDatabase { db in
-            try applyCommonPragmas(db)
+            // docs/invariants.md #1: reader configuration must not execute
+            // writer-only PRAGMAs that create or modify WAL sidecars.
+            try applyReaderPragmas(db, busyTimeoutMilliseconds: timeoutMilliseconds)
             let timeout = try Int.fetchOne(db, sql: "PRAGMA busy_timeout") ?? 0
-            guard timeout >= minimumBusyTimeoutMilliseconds else {
+            guard timeoutMilliseconds == 0 || timeout >= minimumBusyTimeoutMilliseconds else {
                 throw SQLiteConnectionPolicyError.busyTimeoutTooLow(timeout)
             }
             let journalMode = (try String.fetchOne(db, sql: "PRAGMA journal_mode") ?? "").lowercased()
@@ -58,15 +62,65 @@ public enum SQLiteConnectionPolicy {
         return configuration
     }
 
+    /// Availability and semantic readers must fail closed instead of occupying
+    /// a request for the normal reader's 30-second lock wait.
+    public static func immediateReaderConfiguration() -> Configuration {
+        var configuration = Configuration()
+        configuration.readonly = true
+        configuration.busyMode = .immediateError
+        configuration.prepareDatabase { db in
+            // docs/invariants.md #1: this remains a read-only connection and
+            // must not execute writer-only PRAGMAs or create WAL sidecars.
+            try applyReaderPragmas(db, busyTimeoutMilliseconds: 0)
+            let journalMode = (try String.fetchOne(db, sql: "PRAGMA journal_mode") ?? "").lowercased()
+            guard journalMode == "wal" else {
+                throw SQLiteConnectionPolicyError.journalModeNotWAL(journalMode)
+            }
+        }
+        return configuration
+    }
+
     public static func applyCommonPragmas(_ db: GRDB.Database) throws {
-        try db.execute(sql: "PRAGMA busy_timeout = \(busyTimeoutMilliseconds)")
-        try db.execute(sql: "PRAGMA foreign_keys = ON")
+        try applyReaderPragmas(db)
         try db.execute(sql: "PRAGMA synchronous = NORMAL")
         try db.execute(sql: "PRAGMA wal_autocheckpoint = \(walAutocheckpointPages)")
+    }
+
+    private static func applyReaderPragmas(
+        _ db: GRDB.Database,
+        busyTimeoutMilliseconds timeoutMilliseconds: Int = busyTimeoutMilliseconds
+    ) throws {
+        try db.execute(sql: "PRAGMA busy_timeout = \(timeoutMilliseconds)")
+        try db.execute(sql: "PRAGMA foreign_keys = ON")
         try db.execute(sql: "PRAGMA cache_size = -\(cacheSizeKiB)")
         let timeout = try Int.fetchOne(db, sql: "PRAGMA busy_timeout") ?? 0
-        guard timeout >= minimumBusyTimeoutMilliseconds else {
+        guard timeoutMilliseconds == 0 || timeout >= minimumBusyTimeoutMilliseconds else {
             throw SQLiteConnectionPolicyError.busyTimeoutTooLow(timeout)
+        }
+    }
+}
+
+public enum FileSystemPathIdentity {
+    /// Resolve the longest existing prefix so equivalent macOS spellings such
+    /// as `/tmp/x` and `/private/tmp/x` compare consistently even when `x`
+    /// has not been created yet.
+    public static func realpathPath(_ path: String) -> String {
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        var existingPrefix = standardized
+        var missingSuffix: [String] = []
+
+        while true {
+            if let resolved = Darwin.realpath(existingPrefix, nil) {
+                defer { free(resolved) }
+                return missingSuffix.reduce(URL(fileURLWithPath: String(cString: resolved))) { url, component in
+                    url.appendingPathComponent(component)
+                }.standardizedFileURL.path
+            }
+            let prefixURL = URL(fileURLWithPath: existingPrefix).standardizedFileURL
+            let parent = prefixURL.deletingLastPathComponent().path
+            guard parent != existingPrefix else { return standardized }
+            missingSuffix.insert(prefixURL.lastPathComponent, at: 0)
+            existingPrefix = parent
         }
     }
 }

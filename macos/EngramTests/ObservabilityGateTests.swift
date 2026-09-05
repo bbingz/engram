@@ -53,6 +53,82 @@ final class ObservabilityGateTests: XCTestCase {
                        "LevelBadge must not have a warn color branch")
     }
 
+    func testErrorDashboardLoadDataRequiresBothSourcesToCoverFullWindow_repro() async {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let youngService = ServiceLogSnapshot(
+            lines: [
+                ServiceLogLineDTO(
+                    timestamp: formatter.string(from: now.addingTimeInterval(-60)),
+                    level: "error",
+                    category: "runner",
+                    message: "recent service error"
+                ),
+            ],
+            coverageStartedAt: formatter.string(from: now.addingTimeInterval(-3_600))
+        )
+
+        let result = await ErrorDashboardLoader.load(
+            now: now,
+            appLoad: { throw OSLogReaderError.unavailable("denied") },
+            serviceLoad: { youngService }
+        )
+
+        XCTAssertNil(result.totalErrors24h)
+        XCTAssertEqual(result.coverageHoles, [.appLogUnavailable, .serviceRingTooYoung])
+        XCTAssertEqual(result.recentErrors.map(\.message), ["recent service error"])
+    }
+
+    func testErrorDashboardHidesAffectedModulesWhenCoverageIsIncomplete_repro() async {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let youngService = ServiceLogSnapshot(
+            lines: [],
+            coverageStartedAt: formatter.string(from: now.addingTimeInterval(-3_600))
+        )
+
+        let result = await ErrorDashboardLoader.load(
+            now: now,
+            appLoad: {
+                ErrorDashboardAppLogData(
+                    entries: [],
+                    errorCount24h: 4,
+                    errorsByModule: [(module: "ui", count: 4)]
+                )
+            },
+            serviceLoad: { youngService }
+        )
+
+        XCTAssertNil(result.totalErrors24h)
+        XCTAssertTrue(result.errorsByModule.isEmpty)
+        XCTAssertEqual(result.coverageHoles, [.serviceRingTooYoung])
+    }
+
+    func testErrorDashboardRejectsYoungAppProcessCoverage_repro() throws {
+        let source = try source("macos/Engram/Views/Observability/ErrorDashboardView.swift")
+        XCTAssertTrue(source.contains("case appLogTooYoung"))
+        XCTAssertTrue(source.contains("appData.map { $0.coverageStartedAt <= cutoff } == true"))
+        XCTAssertTrue(source.contains("holes.append(.appLogTooYoung)"))
+    }
+
+    func testSystemHealthUsesUnknownCountForIncomplete24HourCoverage_repro() throws {
+        let source = try source("macos/Engram/Views/Observability/SystemHealthView.swift")
+        XCTAssertTrue(source.contains("@State private var errorCount24h: Int? = nil"))
+        XCTAssertTrue(source.contains("errorCount24h = logCoverageComplete ? loaded.3 + serviceErrors : nil"))
+        XCTAssertTrue(source.contains("Text(\"—\")"))
+    }
+
+    func testCoreWriteLogsTeeThroughServiceLogger_repro() throws {
+        let bridge = try source("macos/EngramCoreWrite/ObservabilityRetention.swift")
+        let serviceLogger = try source("macos/EngramService/Core/ServiceLogger.swift")
+
+        XCTAssertTrue(bridge.contains("CoreWriteLogger"))
+        XCTAssertTrue(bridge.contains("installSink"))
+        XCTAssertTrue(serviceLogger.contains("CoreWriteLogBridge.installSink"))
+    }
+
 
     /// L33 / LOGSTREAM-MODULES-001: module picker must keep growing as new
     /// categories appear across reloads (not only on the first empty fill).
@@ -78,6 +154,16 @@ final class ObservabilityGateTests: XCTestCase {
         XCTAssertTrue(second.contains("ui"), "prior modules must survive later reloads")
         XCTAssertTrue(second.contains("brand-new-module"), "late-appearing modules must be added")
         XCTAssertEqual(second, second.sorted(), "picker modules stay sorted")
+    }
+
+    func testLogStreamPushesSelectedModuleIntoTheServiceRingBeforeLimit_repro() throws {
+        let source = try source("macos/Engram/Views/Observability/LogStreamView.swift")
+
+        XCTAssertTrue(source.contains("let serviceCategory = module == \"All\" ? nil : module"))
+        XCTAssertTrue(source.contains("category: serviceCategory"))
+        for category in ["indexer", "index-jobs", "startup-backfill", "user-data-backup"] {
+            XCTAssertTrue(LogStreamModuleCatalog.knownServiceModules.contains(category))
+        }
     }
 
     func testObservabilityIsGatedDefaultOff() throws {

@@ -1,10 +1,17 @@
 import XCTest
 import GRDB
+import Darwin
 import Foundation
 import EngramCoreWrite
 @testable import EngramServiceCore
 
 final class ServiceTelemetryTests: XCTestCase {
+    func testInitialFtsDrainStopsAfterBoundedConsecutiveFailures_repro() {
+        XCTAssertFalse(EngramServiceRunner.shouldStopInitialFtsDrain(consecutiveFailures: 1))
+        XCTAssertFalse(EngramServiceRunner.shouldStopInitialFtsDrain(consecutiveFailures: 2))
+        XCTAssertTrue(EngramServiceRunner.shouldStopInitialFtsDrain(consecutiveFailures: 3))
+    }
+
     // MARK: - Collector unit tests
 
     func testRingBufferEvictsOldestAt200() async {
@@ -420,6 +427,302 @@ final class ServiceTelemetryTests: XCTestCase {
         XCTAssertEqual(failObject["error"] as? String, "boom \"x\"")
     }
 
+    func testRunnerUsesListeningThenTopLevelIndexedLifecycleEvents_repro() throws {
+        let source = try serviceRunnerSource()
+        let listenStart = try XCTUnwrap(source.range(of: "try server.start()"))
+        let listenEnd = try XCTUnwrap(
+            source.range(of: "let initialInterval", range: listenStart.lowerBound..<source.endIndex)
+        )
+        let listenBody = String(source[listenStart.lowerBound..<listenEnd.lowerBound])
+        XCTAssertTrue(listenBody.contains("emit(ServiceReadyEvent(socket: socketPath))"))
+
+        let readyStructStart = try XCTUnwrap(source.range(of: "private struct ServiceReadyEvent"))
+        let readyStructEnd = try XCTUnwrap(
+            source.range(of: "private struct ServiceCheckpointEvent", range: readyStructStart.lowerBound..<source.endIndex)
+        )
+        let readyStruct = String(source[readyStructStart.lowerBound..<readyStructEnd.lowerBound])
+        XCTAssertTrue(
+            readyStruct.contains(#"let event = "listening""#),
+            "the socket-listen notification must not masquerade as initial indexing readiness"
+        )
+
+        let initialStart = try XCTUnwrap(source.range(of: "static func runInitialScan("))
+        let initialEnd = try XCTUnwrap(
+            source.range(of: "private static func elapsedMs", range: initialStart.lowerBound..<source.endIndex)
+        )
+        let initialBody = String(source[initialStart.lowerBound..<initialEnd.lowerBound])
+        XCTAssertTrue(
+            initialBody.contains(#"guard event.event != "ready" else { return }"#),
+            "the legacy nested ready payload must not reach stdout"
+        )
+        let completionEvent = try XCTUnwrap(initialBody.range(of: "emit(ServiceIndexEvent("))
+        let finalStatusRead = try XCTUnwrap(initialBody.range(of: #"name: "initialScanCompletionStatus""#))
+        XCTAssertGreaterThan(
+            completionEvent.lowerBound,
+            finalStatusRead.lowerBound,
+            "the top-level indexed event must carry totals read after the initial scan completes"
+        )
+
+        let indexStructStart = try XCTUnwrap(source.range(of: "private struct ServiceIndexEvent"))
+        let indexStructEnd = try XCTUnwrap(
+            source.range(of: "private struct ServiceIndexErrorEvent", range: indexStructStart.lowerBound..<source.endIndex)
+        )
+        let indexStruct = String(source[indexStructStart.lowerBound..<indexStructEnd.lowerBound])
+        XCTAssertTrue(indexStruct.contains(#"let event = "indexed""#))
+        XCTAssertTrue(indexStruct.contains("let total: Int"))
+        XCTAssertTrue(indexStruct.contains("let todayParents: Int"))
+        XCTAssertFalse(indexStruct.contains("payload"), "app-consumed counters must stay top-level")
+    }
+
+    func testOpenCodeLiveSessionsExcludeDispatchedChildrenButKeepContinuedForks_repro() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("engram-live-opencode-role-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let databaseURL = root.appendingPathComponent(".local/share/opencode/opencode.db")
+        try FileManager.default.createDirectory(
+            at: databaseURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let updated = Int64(Date().timeIntervalSince1970 * 1_000)
+        try await DatabaseQueue(path: databaseURL.path).write { db in
+            try db.execute(
+                sql: """
+                    CREATE TABLE session (
+                      id TEXT PRIMARY KEY,
+                      parent_id TEXT,
+                      agent TEXT,
+                      slug TEXT,
+                      directory TEXT,
+                      title TEXT,
+                      time_updated INTEGER NOT NULL,
+                      time_archived INTEGER
+                    );
+                    INSERT INTO session VALUES
+                      ('parent', NULL, 'build', 'main', '/repo', 'Main work', ?, NULL),
+                      ('task-child', 'parent', 'explore', 'task-research', '/repo', 'Research (@explore subagent)', ?, NULL),
+                      ('continued-fork', 'parent', 'build', 'continued-work', '/repo', 'Continue work', ?, NULL);
+                    """,
+                arguments: [updated, updated, updated]
+            )
+        }
+
+        let response = try await FileSystemEngramServiceReadProvider(
+            homeDirectory: root,
+            liveSessionCacheTTL: 0
+        ).liveSessions()
+        let ids = Set(response.sessions.compactMap(\.sessionId))
+
+        XCTAssertFalse(ids.contains("task-child"), "TaskTool-dispatched children must not consume live-session slots")
+        XCTAssertTrue(ids.contains("continued-fork"), "a parent_id alone must not hide a continued fork")
+        XCTAssertTrue(ids.contains("parent"))
+    }
+
+    func testImplicitArchivedDefaultsHideHistoryAndStillParticipateInOrphanScan_repro() async throws {
+        let paths = try makeServicePaths()
+        defer { try? FileManager.default.removeItem(at: paths.runtime.deletingLastPathComponent()) }
+        let home = paths.runtime.deletingLastPathComponent().appendingPathComponent("home", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        _ = try await gate.performWriteCommand(name: "migrate") { writer in
+            try writer.migrate()
+            try writer.write { db in
+                for source in ArchivedDefaultOffSources.orderedIDs {
+                    try db.execute(
+                        sql: """
+                            INSERT INTO sessions(id, source, start_time, file_path)
+                            VALUES (?, ?, '2026-09-01T00:00:00Z', ?)
+                            """,
+                        arguments: ["archived-\(source)", source, home.appendingPathComponent("missing-\(source)").path]
+                    )
+                }
+            }
+        }
+
+        await runBoundedInitialScan(gate: gate, home: home)
+
+        let rows = try await gate.performReadCommand(name: "verifyImplicitArchivedDefaults") { writer in
+            try writer.read { db in
+                try Row.fetchAll(
+                    db,
+                    sql: """
+                        SELECT source, hidden_at, orphan_status
+                        FROM sessions
+                        WHERE source IN ('cline', 'iflow', 'lobsterai')
+                        ORDER BY source
+                        """
+                ).map { row in
+                    ArchivedSessionState(
+                        source: row["source"],
+                        hiddenAt: row["hidden_at"],
+                        orphanStatus: row["orphan_status"]
+                    )
+                }
+            }
+        }.value
+        XCTAssertEqual(rows.map(\.source), ["cline", "iflow", "lobsterai"])
+        XCTAssertTrue(rows.allSatisfy { $0.hiddenAt != nil })
+        XCTAssertTrue(
+            rows.allSatisfy { $0.orphanStatus == "suspect" },
+            "default-off sources still need their shipped adapters for missing-file detection"
+        )
+    }
+
+    func testExplicitlyEnabledArchivedSourceIsNotHiddenAgainAtStartup_repro() async throws {
+        let paths = try makeServicePaths()
+        defer { try? FileManager.default.removeItem(at: paths.runtime.deletingLastPathComponent()) }
+        let home = paths.runtime.deletingLastPathComponent().appendingPathComponent("home", isDirectory: true)
+        let settingsURL = home.appendingPathComponent(".engram/settings.json")
+        try FileManager.default.createDirectory(
+            at: settingsURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try JSONSerialization.data(withJSONObject: [
+            "disabledSources": ["cline", "iflow"],
+            ArchivedDefaultOffSources.settingsMigrationKey: true,
+        ]).write(to: settingsURL)
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        _ = try await gate.performWriteCommand(name: "migrate") { writer in
+            try writer.migrate()
+            try writer.write { db in
+                try db.execute(
+                    sql: """
+                        INSERT INTO sessions(id, source, start_time, file_path)
+                        VALUES ('enabled-lobsterai', 'lobsterai', '2026-09-01T00:00:00Z', ?)
+                        """,
+                    arguments: [home.appendingPathComponent("missing-lobsterai").path]
+                )
+            }
+        }
+
+        await runBoundedInitialScan(gate: gate, home: home, settingsURL: settingsURL)
+
+        let hiddenAt = try await gate.performReadCommand(name: "verifyEnabledArchivedSource") { writer in
+            try writer.read { db in
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT hidden_at FROM sessions WHERE id = 'enabled-lobsterai'"
+                )
+            }
+        }.value
+        XCTAssertNil(hiddenAt, "an explicit migration marker makes lobsterai enabled and startup must preserve that choice")
+    }
+
+    func testConcurrentArchivedSourceEnableWinsOverStartupVisibilitySnapshot_repro() async throws {
+        let paths = try makeServicePaths()
+        defer { try? FileManager.default.removeItem(at: paths.runtime.deletingLastPathComponent()) }
+        let home = paths.runtime.deletingLastPathComponent().appendingPathComponent("home", isDirectory: true)
+        let settingsURL = home.appendingPathComponent(".engram/settings.json")
+        try FileManager.default.createDirectory(
+            at: settingsURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try JSONSerialization.data(withJSONObject: ["disabledSources": [] as [String]])
+            .write(to: settingsURL)
+
+        let priorHome = getenv("HOME").map { String(cString: $0) }
+        let priorFixedHome = getenv("CFFIXED_USER_HOME").map { String(cString: $0) }
+        let priorSettingsPath = getenv("ENGRAM_SETTINGS_PATH").map { String(cString: $0) }
+        setenv("HOME", home.path, 1)
+        setenv("CFFIXED_USER_HOME", home.path, 1)
+        setenv("ENGRAM_SETTINGS_PATH", settingsURL.path, 1)
+        defer {
+            if let priorHome {
+                setenv("HOME", priorHome, 1)
+            } else {
+                unsetenv("HOME")
+            }
+            if let priorFixedHome {
+                setenv("CFFIXED_USER_HOME", priorFixedHome, 1)
+            } else {
+                unsetenv("CFFIXED_USER_HOME")
+            }
+            if let priorSettingsPath {
+                setenv("ENGRAM_SETTINGS_PATH", priorSettingsPath, 1)
+            } else {
+                unsetenv("ENGRAM_SETTINGS_PATH")
+            }
+        }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        _ = try await gate.performWriteCommand(name: "migrate") { writer in
+            try writer.migrate()
+            try writer.write { db in
+                try db.execute(
+                    sql: """
+                        INSERT INTO sessions(id, source, start_time, file_path, hidden_at)
+                        VALUES ('concurrent-lobsterai', 'lobsterai', '2026-09-01T00:00:00Z', ?, '2026-09-01T00:00:00Z')
+                        """,
+                    arguments: [home.appendingPathComponent("missing-lobsterai").path]
+                )
+            }
+        }
+
+        let snapshotBarrier = InitialArchivedVisibilitySnapshotBarrier()
+        let scanTask = Task {
+            await EngramServiceRunner.runInitialScan(
+                gate: gate,
+                statusMonitor: ServiceStatusMonitor(),
+                environment: [
+                    "HOME": home.path,
+                    "CFFIXED_USER_HOME": home.path,
+                    "ENGRAM_SETTINGS_PATH": settingsURL.path,
+                ],
+                tokenLimitsProvider: { [:] },
+                testHooks: .init(
+                    maxFtsDrainIterations: 0,
+                    afterDisabledSourceConfigurationRead: {
+                        await snapshotBarrier.pause()
+                    }
+                )
+            )
+        }
+        await snapshotBarrier.waitUntilPaused()
+
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let response = await handler.handle(
+            EngramServiceRequestEnvelope(
+                command: "setSourceEnabled",
+                payload: try JSONEncoder().encode(
+                    EngramServiceSetSourceEnabledRequest(source: "lobsterai", enabled: true)
+                )
+            )
+        )
+        if case .failure(_, let error) = response {
+            await snapshotBarrier.release()
+            await scanTask.value
+            XCTFail("setSourceEnabled failed: \(error.name): \(error.message)")
+            return
+        }
+
+        let afterEnable = try await gate.performReadCommand(name: "verifyConcurrentEnable") { writer in
+            try writer.read { db in
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT hidden_at FROM sessions WHERE id = 'concurrent-lobsterai'"
+                )
+            }
+        }.value
+        XCTAssertNil(afterEnable, "the serialized enable command must unhide history before startup resumes")
+        let migratedSettings = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: settingsURL)) as? [String: Any]
+        )
+        XCTAssertEqual(migratedSettings[ArchivedDefaultOffSources.settingsMigrationKey] as? Bool, true)
+
+        await snapshotBarrier.release()
+        await scanTask.value
+
+        let afterStartup = try await gate.performReadCommand(name: "verifyConcurrentStartupVisibility") { writer in
+            try writer.read { db in
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT hidden_at FROM sessions WHERE id = 'concurrent-lobsterai'"
+                )
+            }
+        }.value
+        XCTAssertNil(afterStartup, "startup must re-check settings under the gate instead of replaying its stale snapshot")
+    }
+
     // MARK: - Handler dispatch instrumentation
 
     func testHandlerRecordsSpanOnDispatchAndExcludesStatusAndTelemetry() async throws {
@@ -529,6 +832,53 @@ final class ServiceTelemetryTests: XCTestCase {
         )
     }
 
+    private func serviceRunnerSource() throws -> String {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try String(
+            contentsOf: macosRoot.appendingPathComponent("EngramService/Core/EngramServiceRunner.swift"),
+            encoding: .utf8
+        )
+    }
+
+    private func runBoundedInitialScan(
+        gate: ServiceWriterGate,
+        home: URL,
+        settingsURL: URL? = nil
+    ) async {
+        let priorHome = getenv("HOME").map { String(cString: $0) }
+        let priorFixedHome = getenv("CFFIXED_USER_HOME").map { String(cString: $0) }
+        setenv("HOME", home.path, 1)
+        setenv("CFFIXED_USER_HOME", home.path, 1)
+        defer {
+            if let priorHome {
+                setenv("HOME", priorHome, 1)
+            } else {
+                unsetenv("HOME")
+            }
+            if let priorFixedHome {
+                setenv("CFFIXED_USER_HOME", priorFixedHome, 1)
+            } else {
+                unsetenv("CFFIXED_USER_HOME")
+            }
+        }
+        var environment = [
+            "HOME": home.path,
+            "CFFIXED_USER_HOME": home.path,
+        ]
+        if let settingsURL {
+            environment["ENGRAM_SETTINGS_PATH"] = settingsURL.path
+        }
+        await EngramServiceRunner.runInitialScan(
+            gate: gate,
+            statusMonitor: ServiceStatusMonitor(),
+            environment: environment,
+            tokenLimitsProvider: { [:] },
+            testHooks: .init(maxFtsDrainIterations: 0)
+        )
+    }
+
     private func seedSessionsFixture(at path: String) throws {
         var configuration = Configuration()
         configuration.prepareDatabase { db in
@@ -550,6 +900,46 @@ final class ServiceTelemetryTests: XCTestCase {
                 );
             """)
         }
+    }
+}
+
+private struct ArchivedSessionState: Sendable {
+    let source: String
+    let hiddenAt: String?
+    let orphanStatus: String?
+}
+
+private actor InitialArchivedVisibilitySnapshotBarrier {
+    private var paused = false
+    private var released = false
+    private var pauseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func pause() async {
+        paused = true
+        pauseWaiters.forEach { $0.resume() }
+        pauseWaiters.removeAll()
+        guard !released else { return }
+        await withCheckedContinuation { continuation in
+            if released {
+                continuation.resume()
+            } else {
+                releaseWaiters.append(continuation)
+            }
+        }
+    }
+
+    func waitUntilPaused() async {
+        guard !paused else { return }
+        await withCheckedContinuation { continuation in
+            pauseWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        released = true
+        releaseWaiters.forEach { $0.resume() }
+        releaseWaiters.removeAll()
     }
 }
 

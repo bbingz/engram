@@ -1,7 +1,7 @@
 {
   "failure": null,
   "fileToolCounts": {},
-  "generatedAtCommit": "88f86631",
+  "generatedAtCommit": "d97d0257",
   "inputPath": "cursor/input/state.vscdb?composer=abc-123",
   "insightFields": {
     "firstUserSummary": "Fix the login bug",
@@ -21,7 +21,7 @@
       "timestamp": "2026-02-18T05:20:30.000Z"
     }
   ],
-  "nodeVersion": "v26.0.0",
+  "nodeVersion": "v26.7.0",
   "projectFields": {
     "cwd": "",
     "project": null,
@@ -43,7 +43,7 @@
     "filePath": "<fixtureRoot>/cursor/input/state.vscdb?composer=abc-123",
     "id": "abc-123",
     "messageCount": 2,
-    "sizeBytes": 382,
+    "sizeBytes": 394,
     "source": "cursor",
     "startTime": "2026-02-18T05:20:00.000Z",
     "summary": "Fix the login bug",

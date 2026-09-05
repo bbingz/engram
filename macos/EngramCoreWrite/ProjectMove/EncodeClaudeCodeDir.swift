@@ -19,46 +19,13 @@
 // appends a base36 Java-style 32-bit hash of the original path. Verified
 // against Claude Code 2.1.165's bundled `Hj()` function.
 import Foundation
+import EngramCoreRead
 
 public enum ClaudeCodeProjectDir {
-    private static let maxEncodedUnits = 200
-
     /// Encode an absolute path into the directory name Claude Code uses
     /// under `~/.claude/projects/`. Caller is responsible for normalizing
     /// the input (e.g. stripping trailing slashes).
     public static func encode(_ absolutePath: String) -> String {
-        let units = absolutePath.utf16.map { u -> UInt16 in
-            let isAlnum = (u >= 48 && u <= 57) // 0-9
-                || (u >= 65 && u <= 90) // A-Z
-                || (u >= 97 && u <= 122) // a-z
-            return isAlnum ? u : 45 // '-'
-        }
-        if units.count > maxEncodedUnits {
-            let prefix = Array(units.prefix(maxEncodedUnits))
-            return String(utf16CodeUnits: prefix, count: prefix.count) + "-" + hashSuffix(absolutePath)
-        }
-        return String(utf16CodeUnits: units, count: units.count)
-    }
-
-    private static func hashSuffix(_ absolutePath: String) -> String {
-        var hash: Int32 = 0
-        for unit in absolutePath.utf16 {
-            hash = hash &* 31 &+ Int32(unit)
-        }
-        let value = Int64(hash)
-        let magnitude = UInt64(value < 0 ? -value : value)
-        return base36(magnitude)
-    }
-
-    private static func base36(_ value: UInt64) -> String {
-        if value == 0 { return "0" }
-        let alphabet = Array("0123456789abcdefghijklmnopqrstuvwxyz")
-        var n = value
-        var output = ""
-        while n > 0 {
-            output.insert(alphabet[Int(n % 36)], at: output.startIndex)
-            n /= 36
-        }
-        return output
+        ProjectReviewPathSupport.encodeClaudeCodeProjectDirectory(absolutePath)
     }
 }

@@ -24,6 +24,8 @@ struct PaletteItem: Identifiable {
     let category: PaletteCategory
     let action: () -> Void
     var secondaryActions: [PaletteAction] = []
+    /// Machine origin of a session result (`hq`); nil for commands/local rows.
+    var origin: String? = nil
 
     static func navigationCommands(navigate: @escaping (Screen) -> Void) -> [PaletteItem] {
         Screen.allCases.map { screen in
@@ -80,21 +82,26 @@ struct PaletteItem: Identifiable {
         id: String,
         title: String,
         subtitle: String?,
+        origin: String? = nil,
         onSelect: @escaping () -> Void,
         onResume: @escaping () -> Void,
         onExport: @escaping () -> Void
     ) -> PaletteItem {
-        PaletteItem(
+        // Residual 3a: Resume/Export are local-only — never offer them on
+        // HQ/remote rows (mirrors ExpandableSessionCard.canResumeLocally).
+        let secondaries: [PaletteAction] = origin == "hq" ? [] : [
+            PaletteAction(id: "\(id)-resume", label: "Resume", icon: "play.fill", run: onResume),
+            PaletteAction(id: "\(id)-export", label: "Export", icon: "square.and.arrow.up", run: onExport),
+        ]
+        return PaletteItem(
             id: id,
             title: title,
             subtitle: subtitle,
             icon: "bubble.left.and.bubble.right",
             category: .session,
             action: onSelect,
-            secondaryActions: [
-                PaletteAction(id: "\(id)-resume", label: "Resume", icon: "play.fill", run: onResume),
-                PaletteAction(id: "\(id)-export", label: "Export", icon: "square.and.arrow.up", run: onExport),
-            ]
+            secondaryActions: secondaries,
+            origin: origin
         )
     }
 }

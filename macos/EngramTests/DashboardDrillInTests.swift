@@ -12,6 +12,21 @@ final class DashboardDrillInTests: XCTestCase {
     var db: DatabaseManager!
     var dbPath: String!
 
+    func testActivitySourceDrillInScopesBeforeItsSingleRowLimit_repro() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("macos/Engram/Views/Pages/ActivityView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("topLevelOnly: true"))
+        XCTAssertTrue(source.contains("humanDriven: true"))
+        XCTAssertFalse(source.contains("let session = try? await Task.detached"))
+    }
+
     @MainActor
     override func setUpWithError() throws {
         let tempDir = FileManager.default.temporaryDirectory
@@ -71,9 +86,21 @@ final class DashboardDrillInTests: XCTestCase {
         let queue = try DatabaseQueue(path: dbPath)
         try queue.write { db in
             try db.execute(sql: """
-                INSERT INTO sessions (id, source, start_time, cwd, project, file_path, hidden_at, tier)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO sessions (
+                    id, source, start_time, cwd, project, file_path, hidden_at, tier,
+                    instruction_count, human_turn_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 2, 2)
             """, arguments: [id, "claude-code", startTime, cwd, project, "/tmp/\(id).jsonl", hiddenAt, tier])
+        }
+    }
+
+    private func insertGitRepo(path: String) throws {
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            try db.execute(
+                sql: "INSERT INTO git_repos (path, name) VALUES (?, ?)",
+                arguments: [path, URL(fileURLWithPath: path).lastPathComponent]
+            )
         }
     }
 
@@ -108,8 +135,20 @@ final class DashboardDrillInTests: XCTestCase {
     @MainActor
     func testFileActivityProjectAndSinceFilters() throws {
         try createSessionFilesTable()
-        try insertTestSession(at: dbPath, id: "old", project: "alpha", startTime: "2026-01-01T10:00:00Z")
-        try insertTestSession(at: dbPath, id: "new", project: "beta", startTime: "2026-05-01T10:00:00Z")
+        try insertTestSession(
+            at: dbPath,
+            id: "old",
+            project: "alpha",
+            startTime: "2026-01-01T10:00:00Z",
+            endTime: "2026-01-01T11:00:00Z"
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "new",
+            project: "beta",
+            startTime: "2026-05-01T10:00:00Z",
+            endTime: "2026-05-01T11:00:00Z"
+        )
         try insertSessionFile(sessionId: "old", filePath: "/x/Old.swift", action: "edit", count: 4)
         try insertSessionFile(sessionId: "new", filePath: "/x/New.swift", action: "edit", count: 7)
 
@@ -120,6 +159,34 @@ final class DashboardDrillInTests: XCTestCase {
         // since filter excludes the January session.
         let bySince = try db.fileActivity(project: nil, since: "2026-03-01T00:00:00Z", limit: 10)
         XCTAssertEqual(bySince.map(\.filePath), ["/x/New.swift"])
+    }
+
+    @MainActor
+    func testFileActivitySinceUsesLatestSessionActivity_repro() throws {
+        try createSessionFilesTable()
+        try insertTestSession(
+            at: dbPath,
+            id: "active-after-cutoff",
+            project: "alpha",
+            startTime: "2026-02-28T23:00:00Z"
+        )
+        try DatabaseQueue(path: dbPath).write { database in
+            try database.execute(
+                sql: "UPDATE sessions SET end_time = ? WHERE id = ?",
+                arguments: ["2026-03-01T01:00:00Z", "active-after-cutoff"]
+            )
+        }
+        try insertSessionFile(
+            sessionId: "active-after-cutoff",
+            filePath: "/x/Active.swift",
+            action: "edit",
+            count: 1
+        )
+
+        XCTAssertEqual(
+            try db.fileActivity(project: nil, since: "2026-03-01T00:00:00Z", limit: 10).map(\.filePath),
+            ["/x/Active.swift"]
+        )
     }
 
     // ARCH-001C: file aggregates must use only list-visible sessions.
@@ -143,10 +210,39 @@ final class DashboardDrillInTests: XCTestCase {
         XCTAssertEqual(row.sessionCount, 1)
     }
 
+    @MainActor
+    func testFileActivityExcludesChildAndNonHumanSessions_repro() throws {
+        try createSessionFilesTable()
+        try insertTestSession(at: dbPath, id: "human-parent")
+        try insertTestSession(at: dbPath, id: "confirmed-child")
+        try insertTestSession(at: dbPath, id: "single-shot-root")
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { database in
+            try database.execute(
+                sql: "UPDATE sessions SET instruction_count = 2, human_turn_count = 2 WHERE id IN ('human-parent', 'confirmed-child')"
+            )
+            try database.execute(
+                sql: "UPDATE sessions SET instruction_count = 0, human_turn_count = 1, user_message_count = 1 WHERE id = 'single-shot-root'"
+            )
+            try database.execute(
+                sql: "UPDATE sessions SET parent_session_id = 'human-parent' WHERE id = 'confirmed-child'"
+            )
+        }
+        try insertSessionFile(sessionId: "human-parent", filePath: "/x/Parent.swift", action: "edit", count: 2)
+        try insertSessionFile(sessionId: "confirmed-child", filePath: "/x/Child.swift", action: "edit", count: 100)
+        try insertSessionFile(sessionId: "single-shot-root", filePath: "/x/Noise.swift", action: "edit", count: 200)
+
+        XCTAssertEqual(
+            try db.fileActivity(project: nil, since: nil, limit: 10).map(\.filePath),
+            ["/x/Parent.swift"]
+        )
+    }
+
     // MARK: - sessionsForRepo
 
     @MainActor
     func testSessionsForRepoUsesAnchoredCwdPrefix() throws {
+        try insertGitRepo(path: "/Users/a/app")
         try insertSessionWithCwd(id: "app", cwd: "/Users/a/app")
         try insertSessionWithCwd(id: "webhook", cwd: "/Users/a/webhook")
         // Trailing-collision row that proves anchoring beats a substring match.
@@ -158,6 +254,7 @@ final class DashboardDrillInTests: XCTestCase {
 
     @MainActor
     func testSessionsForRepoExcludesHidden() throws {
+        try insertGitRepo(path: "/Users/a/app")
         try insertSessionWithCwd(id: "visible", cwd: "/Users/a/app")
         try insertSessionWithCwd(id: "hidden", cwd: "/Users/a/app/sub", hiddenAt: "2026-03-21T10:00:00Z")
 
@@ -168,9 +265,121 @@ final class DashboardDrillInTests: XCTestCase {
     // ARCH-001C: repo drill-in is a browse surface and must hide skip-tier rows.
     @MainActor
     func testSessionsForRepoExcludesSkipTier_repro() throws {
+        try insertGitRepo(path: "/Users/a/app")
         try insertSessionWithCwd(id: "repo-visible", cwd: "/Users/a/app", tier: "normal")
         try insertSessionWithCwd(id: "repo-skip", cwd: "/Users/a/app/sub", tier: "skip")
 
         XCTAssertEqual(try db.sessionsForRepo(path: "/Users/a/app").map(\.id), ["repo-visible"])
+    }
+
+    @MainActor
+    func testSessionsForRepoFiltersChildrenAndSingleShotRowsBeforeLimit_repro() throws {
+        try insertGitRepo(path: "/Users/a/app")
+        try insertSessionWithCwd(
+            id: "human-parent",
+            cwd: "/Users/a/app",
+            startTime: "2026-03-01T10:00:00Z"
+        )
+        try insertSessionWithCwd(
+            id: "single-shot",
+            cwd: "/Users/a/app",
+            startTime: "2026-03-31T10:00:00Z"
+        )
+        for index in 0..<12 {
+            try insertSessionWithCwd(
+                id: "child-\(index)",
+                cwd: "/Users/a/app/sub",
+                startTime: String(format: "2026-03-%02dT10:00:00Z", index + 2)
+            )
+        }
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { database in
+            try database.execute(
+                sql: "UPDATE sessions SET instruction_count = 2, human_turn_count = 2 WHERE id = 'human-parent'"
+            )
+            try database.execute(
+                sql: "UPDATE sessions SET instruction_count = 0, human_turn_count = 1, user_message_count = 1 WHERE id = 'single-shot'"
+            )
+            try database.execute(
+                sql: "UPDATE sessions SET parent_session_id = 'human-parent' WHERE id LIKE 'child-%'"
+            )
+        }
+
+        XCTAssertEqual(try db.sessionsForRepo(path: "/Users/a/app", limit: 1).map(\.id), ["human-parent"])
+    }
+
+    @MainActor
+    func testSessionsForRepoPrefersLongestRepoOverStaleAlias_repro() throws {
+        try insertGitRepo(path: "/Users/a")
+        try insertGitRepo(path: "/Users/a/app")
+        try insertSessionWithCwd(id: "nested-stale-alias", cwd: "/Users/a/app")
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { database in
+            try database.execute(
+                sql: "INSERT INTO git_repo_cwd_aliases(cwd, real_cwd, repo_path) VALUES (?, ?, ?)",
+                arguments: ["/Users/a/app", "/Users/a/app", "/Users/a"]
+            )
+        }
+
+        XCTAssertEqual(try db.sessionsForRepo(path: "/Users/a").map(\.id), [])
+        XCTAssertEqual(try db.sessionsForRepo(path: "/Users/a/app").map(\.id), ["nested-stale-alias"])
+    }
+
+    @MainActor
+    func testSessionsForRepoMatchesRealpathEquivalentWithoutStoredAlias_repro() throws {
+        let name = "engram-realpath-\(UUID().uuidString)"
+        let storedPath = "/private/tmp/\(name)"
+        try insertGitRepo(path: storedPath)
+        try insertSessionWithCwd(id: "realpath-equivalent", cwd: "/tmp/\(name)/subdir")
+
+        XCTAssertEqual(try db.sessionsForRepo(path: storedPath).map(\.id), ["realpath-equivalent"])
+    }
+
+    @MainActor
+    func testSessionsForRepoOrdersByLatestActivity_repro() throws {
+        try insertGitRepo(path: "/Users/a/app")
+        try insertSessionWithCwd(
+            id: "started-newer",
+            cwd: "/Users/a/app",
+            startTime: "2026-08-24T11:00:00Z"
+        )
+        try insertSessionWithCwd(
+            id: "ended-newer",
+            cwd: "/Users/a/app",
+            startTime: "2026-08-24T09:00:00Z"
+        )
+        try DatabaseQueue(path: dbPath).write { database in
+            try database.execute(
+                sql: "UPDATE sessions SET end_time = ? WHERE id = ?",
+                arguments: ["2026-08-24T12:00:00Z", "ended-newer"]
+            )
+        }
+
+        XCTAssertEqual(
+            try db.sessionsForRepo(path: "/Users/a/app").map(\.id),
+            ["ended-newer", "started-newer"]
+        )
+    }
+
+    @MainActor
+    func testRepoSparklineMatchesRepoDetailRootPopulation_repro() throws {
+        try insertGitRepo(path: "/Users/a/app")
+        let now = ISO8601DateFormatter().string(from: Date())
+        try insertSessionWithCwd(id: "human-root", cwd: "/Users/a/app", startTime: now)
+        try insertSessionWithCwd(id: "confirmed-child", cwd: "/Users/a/app/sub", startTime: now)
+        try insertSessionWithCwd(id: "single-shot-root", cwd: "/Users/a/app", startTime: now)
+        try DatabaseQueue(path: dbPath).write { database in
+            try database.execute(
+                sql: "UPDATE sessions SET parent_session_id = 'human-root' WHERE id = 'confirmed-child'"
+            )
+            try database.execute(
+                sql: "UPDATE sessions SET instruction_count = 0, human_turn_count = 1, user_message_count = 1 WHERE id = 'single-shot-root'"
+            )
+        }
+
+        let detailCount = try db.sessionsForRepo(path: "/Users/a/app").count
+        let sparklineCount = try db.sparklineData(for: "/Users/a/app").reduce(0, +)
+        XCTAssertEqual(detailCount, 1)
+        XCTAssertEqual(sparklineCount, detailCount)
     }
 }

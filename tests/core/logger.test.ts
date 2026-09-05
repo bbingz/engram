@@ -417,24 +417,23 @@ describe('logger error count', () => {
 
 describe('logger performance', () => {
   it('sanitize + stderr write averages < 250μs per call', () => {
-    const db = new Database(':memory:');
-    const writer = new LogWriter(db.raw);
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
     const log = createLogger('perf', {
-      writer,
       level: 'info',
       stderrJson: true,
     });
 
-    const start = performance.now();
-    for (let i = 0; i < 1000; i++) {
-      log.info(`message ${i}`, { count: i, path: '/api/sessions' });
-    }
-    const elapsed = performance.now() - start;
-    const avgUs = (elapsed / 1000) * 1000; // ms to μs
+    try {
+      const start = performance.now();
+      for (let i = 0; i < 1000; i++) {
+        log.info(`message ${i}`, { count: i, path: '/api/sessions' });
+      }
+      const elapsed = performance.now() - start;
+      const avgUs = (elapsed / 1000) * 1000; // ms to μs
 
-    expect(avgUs).toBeLessThan(process.env.CI ? 500 : 250);
-    stderrSpy.mockRestore();
-    db.close();
+      expect(avgUs).toBeLessThan(process.env.CI ? 500 : 250);
+    } finally {
+      stderrSpy.mockRestore();
+    }
   });
 });

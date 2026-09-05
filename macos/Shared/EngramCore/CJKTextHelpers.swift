@@ -48,6 +48,29 @@ public enum CJKText {
             .map { "\"" + $0.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
     }
 
+    /// Terms that can participate in the shipped trigram/LIKE search plan.
+    /// A one-character Latin term has neither a useful trigram nor an acceptably
+    /// selective LIKE fallback, so omit it while preserving the remaining
+    /// implicit-AND terms. CJK remains searchable at any length.
+    public static func searchableTerms(_ raw: String) -> [String] {
+        raw.split(whereSeparator: { $0.isWhitespace })
+            .map(String.init)
+            .filter { containsCJK($0) || $0.count >= 2 }
+    }
+
+    public static func ftsMatchTerms(_ rawTokens: [String]) -> [String] {
+        rawTokens.map { "\"" + $0.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
+    }
+
+    /// FTS5 trigram cannot represent one-character Latin terms, and LIKE on
+    /// those terms causes severe substring over-recall. CJK stays eligible at
+    /// any length; two-character Latin terms keep the existing LIKE fallback.
+    public static func hasUnsupportedLatinToken(_ raw: String) -> Bool {
+        raw.split(whereSeparator: { $0.isWhitespace }).contains { token in
+            !containsCJK(String(token)) && token.count < 2
+        }
+    }
+
     /// Build a match-centered, `<mark>`-highlighted preview for the CJK/LIKE
     /// search path, where FTS5 `snippet()` is unavailable (LIKE is not a MATCH
     /// query). Windows `content` around the first case-insensitive occurrence of
@@ -76,6 +99,70 @@ public enum CJKText {
         let prefixEllipsis = lower > content.startIndex ? "…" : ""
         let suffixEllipsis = upper < content.endIndex ? "…" : ""
         return prefixEllipsis + highlighted + suffixEllipsis
+    }
+
+    /// Highlight the complete mixed query when it appears contiguously, then
+    /// fall back to individual terms. Shared by service and offline app search.
+    public static func highlightedSnippet(content: String, query: String) -> String? {
+        let content = removingHighlightMarks(from: content)
+        if let exact = cjkHighlightedSnippet(content: content, query: query) {
+            return exact
+        }
+        let terms = query.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        var windows: [Range<String.Index>] = terms.compactMap { term in
+            guard let hit = content.range(of: term, options: .caseInsensitive) else { return nil }
+            let lower = content.index(hit.lowerBound, offsetBy: -40, limitedBy: content.startIndex)
+                ?? content.startIndex
+            let upper = content.index(hit.upperBound, offsetBy: 40, limitedBy: content.endIndex)
+                ?? content.endIndex
+            return lower..<upper
+        }.sorted { $0.lowerBound < $1.lowerBound }
+        guard !windows.isEmpty else { return nil }
+
+        var merged: [Range<String.Index>] = []
+        for window in windows {
+            if let last = merged.last, window.lowerBound <= last.upperBound {
+                merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, window.upperBound)
+            } else {
+                merged.append(window)
+            }
+        }
+        windows.removeAll(keepingCapacity: false)
+
+        return merged.map { window in
+            let prefix = window.lowerBound > content.startIndex ? "…" : ""
+            let suffix = window.upperBound < content.endIndex ? "…" : ""
+            return prefix + highlightTerms(in: content[window], terms: terms) + suffix
+        }.joined(separator: " … ")
+    }
+
+    private static func highlightTerms(in content: Substring, terms: [String]) -> String {
+        var output = ""
+        var rest = content
+        while !rest.isEmpty {
+            let next = terms.compactMap { term in
+                rest.range(of: term, options: .caseInsensitive).map { (range: $0, term: term) }
+            }.min {
+                if $0.range.lowerBound == $1.range.lowerBound {
+                    return $0.term.count > $1.term.count
+                }
+                return $0.range.lowerBound < $1.range.lowerBound
+            }
+            guard let next else {
+                output += rest
+                break
+            }
+            output += rest[..<next.range.lowerBound]
+            output += "<mark>" + rest[next.range] + "</mark>"
+            rest = rest[next.range.upperBound...]
+        }
+        return output
+    }
+
+    public static func removingHighlightMarks(from content: String) -> String {
+        content
+            .replacingOccurrences(of: "<mark>", with: "")
+            .replacingOccurrences(of: "</mark>", with: "")
     }
 }
 

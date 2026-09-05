@@ -63,7 +63,8 @@ final class ArchiveSourceReclaimerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: before.sourceURL.path))
         _ = try ArchiveSourceReclaimer(catalog: before.catalog).recover(
             intent: beforePlanned,
-            capture: before.capture
+            capture: before.capture,
+            deletionAllowed: true
         )
         XCTAssertFalse(FileManager.default.fileExists(atPath: before.sourceURL.path))
 
@@ -83,7 +84,8 @@ final class ArchiveSourceReclaimerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(afterPlanned.quarantinePath)))
         _ = try ArchiveSourceReclaimer(catalog: after.catalog).recover(
             intent: afterPlanned,
-            capture: after.capture
+            capture: after.capture,
+            deletionAllowed: true
         )
         XCTAssertEqual(
             try after.catalog.reclamationIntent(manifestSHA256: after.intent.manifestSHA256)?.phase,
@@ -151,7 +153,8 @@ final class ArchiveSourceReclaimerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(deletePlanned.quarantinePath)))
         _ = try ArchiveSourceReclaimer(catalog: beforeUnlink.catalog).recover(
             intent: deletePlanned,
-            capture: beforeUnlink.capture
+            capture: beforeUnlink.capture,
+            deletionAllowed: true
         )
         XCTAssertEqual(
             try beforeUnlink.catalog.reclamationIntent(manifestSHA256: beforeUnlink.intent.manifestSHA256)?.phase,
@@ -185,7 +188,8 @@ final class ArchiveSourceReclaimerTests: XCTestCase {
         XCTAssertThrowsError(
             try ArchiveSourceReclaimer(catalog: recoveryMismatch.catalog).recover(
                 intent: mismatchPlanned,
-                capture: recoveryMismatch.capture
+                capture: recoveryMismatch.capture,
+                deletionAllowed: true
             )
         )
         XCTAssertTrue(FileManager.default.fileExists(atPath: recoveryMismatch.sourceURL.path))
@@ -215,7 +219,8 @@ final class ArchiveSourceReclaimerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(afterDeletePlanned.quarantinePath)))
         _ = try ArchiveSourceReclaimer(catalog: afterUnlink.catalog).recover(
             intent: afterDeletePlanned,
-            capture: afterUnlink.capture
+            capture: afterUnlink.capture,
+            deletionAllowed: true
         )
         XCTAssertEqual(
             try afterUnlink.catalog.reclamationIntent(manifestSHA256: afterUnlink.intent.manifestSHA256)?.phase,
@@ -257,7 +262,8 @@ final class ArchiveSourceReclaimerTests: XCTestCase {
         XCTAssertThrowsError(
             try ArchiveSourceReclaimer(catalog: fixture.catalog).recover(
                 intent: planned,
-                capture: fixture.capture
+                capture: fixture.capture,
+                deletionAllowed: true
             )
         )
         let paused = try XCTUnwrap(
@@ -266,6 +272,53 @@ final class ArchiveSourceReclaimerTests: XCTestCase {
         XCTAssertEqual(paused.phase, .paused)
         XCTAssertEqual(paused.lastError, "generation_changed")
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceURL.path))
+    }
+
+    func testRecoveryBeforeRenameRequiresCurrentDeletionPolicy_repro() throws {
+        let fixture = try makeFixture(name: "policy-recheck", bytes: Data("keep source".utf8))
+        XCTAssertThrowsError(
+            try ArchiveSourceReclaimer(
+                catalog: fixture.catalog,
+                testHooks: ArchiveSourceReclaimerTestHooks(afterPlan: { _ in throw Marker.crash })
+            ).planAndReclaim(intent: fixture.intent, capture: fixture.capture)
+        )
+        let planned = try XCTUnwrap(
+            fixture.catalog.reclamationIntent(manifestSHA256: fixture.intent.manifestSHA256)
+        )
+
+        let result = try ArchiveSourceReclaimer(catalog: fixture.catalog).recover(
+            intent: planned,
+            capture: fixture.capture,
+            deletionAllowed: false
+        )
+
+        XCTAssertEqual(result.releasedBytes, 0)
+        XCTAssertEqual(try Data(contentsOf: fixture.sourceURL), fixture.bytes)
+        let paused = try XCTUnwrap(
+            fixture.catalog.reclamationIntent(manifestSHA256: fixture.intent.manifestSHA256)
+        )
+        XCTAssertEqual(paused.phase, .paused)
+        XCTAssertEqual(paused.lastError, "policy_changed")
+    }
+
+    func testCancellationAfterDeletePlanRestoresSourceAndPauses_repro() throws {
+        let fixture = try makeFixture(name: "cancel-after-delete-plan", bytes: Data("restore me".utf8))
+        do {
+            _ = try ArchiveSourceReclaimer(
+                catalog: fixture.catalog,
+                testHooks: ArchiveSourceReclaimerTestHooks(
+                    afterDeletePlan: { _ in throw CancellationError() }
+                )
+            ).planAndReclaim(intent: fixture.intent, capture: fixture.capture)
+            XCTFail("expected cancellation")
+        } catch is CancellationError {}
+
+        XCTAssertEqual(try Data(contentsOf: fixture.sourceURL), fixture.bytes)
+        let paused = try XCTUnwrap(
+            fixture.catalog.reclamationIntent(manifestSHA256: fixture.intent.manifestSHA256)
+        )
+        XCTAssertEqual(paused.phase, .paused)
+        XCTAssertEqual(paused.lastError, "cancelled")
     }
 
     func testSymlinkOversizeCancellationAndDirectorySyncFailureNeverDeleteSource() throws {

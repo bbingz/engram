@@ -123,7 +123,7 @@ final class TranscriptLabelAndCopyTests: XCTestCase {
             "search must not destroy segmented rendering via an isEmpty fork"
         )
         XCTAssertTrue(colorBar.contains("usesSegmentedView(for:"))
-        XCTAssertTrue(colorBar.contains("SegmentedMessageView(content: indexed.message.content, searchText: searchText)"))
+        XCTAssertTrue(colorBar.contains("SegmentedMessageView(content: indexed.message.content, searchText: needle)"))
     }
 
     // #5: "Copy Entire Conversation" has one testable source of truth.
@@ -147,5 +147,56 @@ final class TranscriptLabelAndCopyTests: XCTestCase {
             sessionDetail.contains("TranscriptText.conversationText(displayIndexed)"),
             "Copy Entire Conversation must not copy only the currently visible filtered rows"
         )
+    }
+
+    func testLoadAllParsesTheRemainderOnceWithoutPaging_repro() throws {
+        let sessionDetail = try source("macos/Engram/Views/SessionDetailView.swift")
+            .filter { !$0.isWhitespace }
+        let start = try XCTUnwrap(sessionDetail.range(of: "privatefuncappendMessages(all:Bool)async{"))
+        let end = try XCTUnwrap(
+            sessionDetail.range(of: "privatefuncloadMoreMessages", range: start.upperBound..<sessionDetail.endIndex)
+        )
+        let append = String(sessionDetail[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(append.contains("tryawaitparseWindow(offset:loadedProducedCount,limit:nil)"))
+        XCTAssertFalse(append.contains("whiletrue"), "Load all must not retain the 500-message paging loop")
+        XCTAssertTrue(
+            append.contains("tryawaitparseWindow(offset:loadedProducedCount,limit:transcriptPageSize)"),
+            "incremental Load more must keep its bounded page"
+        )
+    }
+
+    func testTranscriptParseThrowsFailClosedIntoExistingFooter_repro() throws {
+        let sessionDetail = try source("macos/Engram/Views/SessionDetailView.swift")
+        let initialStart = try XCTUnwrap(sessionDetail.range(of: "private func loadInitialTranscript() async"))
+        let appendStart = try XCTUnwrap(
+            sessionDetail.range(of: "private func appendMessages(all: Bool) async", range: initialStart.upperBound..<sessionDetail.endIndex)
+        )
+        let loadMoreStart = try XCTUnwrap(
+            sessionDetail.range(of: "private func loadMoreMessages", range: appendStart.upperBound..<sessionDetail.endIndex)
+        )
+        let initial = String(sessionDetail[initialStart.lowerBound..<appendStart.lowerBound])
+        let append = String(sessionDetail[appendStart.lowerBound..<loadMoreStart.lowerBound])
+
+        XCTAssertTrue(initial.contains("catch"))
+        XCTAssertTrue(initial.contains("transcriptParseFailed = true"))
+        XCTAssertTrue(initial.contains("hasMoreToLoad = true"))
+        XCTAssertGreaterThanOrEqual(append.components(separatedBy: "catch").count - 1, 2)
+        XCTAssertGreaterThanOrEqual(append.components(separatedBy: "transcriptParseFailed = true").count - 1, 2)
+        XCTAssertGreaterThanOrEqual(append.components(separatedBy: "hasMoreToLoad = true").count - 1, 2)
+        XCTAssertTrue(sessionDetail.contains("else if transcriptParseFailed"))
+    }
+
+    func testVSCodeEmptyTranscriptUsesTheNormalEmptyState_repro() throws {
+        let sessionDetail = try source("macos/Engram/Views/SessionDetailView.swift")
+        let start = try XCTUnwrap(sessionDetail.range(of: "var unsupportedMessage: LocalizedStringKey"))
+        let end = try XCTUnwrap(
+            sessionDetail.range(of: "func navigateType", range: start.upperBound..<sessionDetail.endIndex)
+        )
+        let emptyMessage = String(sessionDetail[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(emptyMessage.contains("No messages found."))
+        XCTAssertFalse(emptyMessage.contains("case \"vscode\""))
+        XCTAssertFalse(emptyMessage.contains("conversation preview is not yet supported"))
     }
 }

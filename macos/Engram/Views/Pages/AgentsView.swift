@@ -3,7 +3,7 @@ import SwiftUI
 
 struct AgentsView: View {
     @Environment(DatabaseManager.self) var db
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
     @Environment(EngramServiceStatusStore.self) var serviceStatusStore
 
     @State private var parents: [Session] = []
@@ -16,13 +16,17 @@ struct AgentsView: View {
     @State private var inFlightRows: Set<String> = []
     @State private var linkTarget: Session? = nil
     @State private var isLoading = true
+    @State private var loadGeneration = 0
+    @State private var lastFilterKey: [AnyHashable]? = nil
     @State private var loadError: String? = nil
+    /// Keyboard focus for session rows (Wave 8-2, mirrors SessionsPageView 7-1).
+    @FocusState private var focusedSessionId: String?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 if let loadError {
-                    AlertBanner(message: "Failed to load agent sessions: \(loadError)")
+                    AlertBanner(message: "Failed to load agent sessions: \(loadError)", action: ("Retry", { Task { await loadData() } }))
                 }
                 HStack(spacing: 12) {
                     KPICard(value: "\(subAgentCount)", label: "Agent Sessions")
@@ -78,13 +82,28 @@ struct AgentsView: View {
                                 confirmedChildCount: confirmedCounts[session.id] ?? 0,
                                 suggestedChildCount: suggestedCounts[session.id] ?? 0,
                                 onTap: {
-                                    NotificationCenter.default.post(name: .openSession, object: SessionBox(session))
+                                    open(session)
                                 },
                                 onChildTap: { child in
                                     NotificationCenter.default.post(name: .openSession, object: SessionBox(child))
                                 },
                                 onConfirmSuggestion: { child in confirmSuggestion(child) },
                                 onDismissSuggestion: { child in dismissSuggestion(child) }
+                            )
+                            // Keyboard navigation (Wave 8-2): focus + ring +
+                            // Enter/Space, sharing the tap's open path.
+                            .focusable()
+                            .focused($focusedSessionId, equals: session.id)
+                            .onKeyPress(keys: [.return, .space]) { _ in
+                                guard focusedSessionId == session.id else { return .ignored }
+                                open(session)
+                                return .handled
+                            }
+                            .overlay(
+                                RoundedRectangle(cornerRadius: Theme.cornerRadius)
+                                    .stroke(Theme.accent, lineWidth: 2)
+                                    .opacity(focusedSessionId == session.id ? 1 : 0)
+                                    .allowsHitTesting(false)
                             )
                         }
                     }
@@ -97,12 +116,39 @@ struct AgentsView: View {
         .sheet(item: $linkTarget) { child in
             LinkParentPicker(child: child, onLinked: { Task { await loadData() } })
         }
-        .task(id: serviceStatusStore.browseReloadToken) { await loadData() }
+        .task(id: serviceStatusStore.browseReloadToken) {
+            let filterKey: [AnyHashable] = []
+            let plan = BrowseReloadCoalescer.plan(
+                filterKey: filterKey,
+                lastFilterKey: lastFilterKey
+            )
+            if plan.debounce {
+                try? await Task.sleep(for: BrowseReloadCoalescer.debounceInterval)
+                if Task.isCancelled { return }
+            }
+            lastFilterKey = filterKey
+            await loadData()
+        }
+    }
+
+    /// The navigation notification shared by tap and keyboard. Static and pure
+    /// so tests can verify the contract without a service client (Wave 8-2).
+    static func openNotification(for session: Session) -> Notification {
+        Notification(name: .openSession, object: SessionBox(session))
+    }
+
+    /// Shared by card tap and keyboard Enter/Space.
+    func open(_ session: Session) {
+        NotificationCenter.default.post(Self.openNotification(for: session))
     }
 
     private func loadData() async {
+        loadGeneration += 1
+        let generation = loadGeneration
         isLoading = true
-        defer { isLoading = false }
+        defer {
+            if generation == loadGeneration { isLoading = false }
+        }
         let db = self.db
         do {
             let data = try await Task.detached { () -> (
@@ -111,31 +157,50 @@ struct AgentsView: View {
                 suggested: [String: Int],
                 pending: [Session],
                 ambiguous: [DatabaseManager.AmbiguousSuggestionSession],
-                subAgents: [Session]
+                stats: DatabaseManager.AgentSessionStats
             ) in
-                let topLevel = try db.listSessions(subAgent: false, topLevelOnly: true, limit: 200)
-                let parentIds = topLevel.map(\.id)
-                let confirmed = try db.childCount(parentIds: parentIds)
-                let suggested = try db.suggestedChildCount(parentIds: parentIds)
-                // Keep only top-level sessions that actually own a group.
-                let groups = topLevel.filter { (confirmed[$0.id] ?? 0) + (suggested[$0.id] ?? 0) > 0 }
+                let pageSize = 200
+                var groups: [Session] = []
+                var confirmed: [String: Int] = [:]
+                var suggested: [String: Int] = [:]
+                var offset = 0
+                while true {
+                    let page = try db.agentParentSessions(limit: pageSize, offset: offset)
+                    let parentIds = page.map(\.id)
+                    confirmed.merge(try db.childCount(parentIds: parentIds)) { _, new in new }
+                    suggested.merge(try db.suggestedChildCount(parentIds: parentIds)) { _, new in new }
+                    groups.append(contentsOf: page)
+                    guard page.count == pageSize else { break }
+                    offset += page.count
+                }
                 let pending = try db.pendingSuggestionSessions(limit: 200)
                 let ambiguous = try db.ambiguousSuggestionSessions(limit: 200)
-                // KPI source: the subagent population (NOT rendered as the list).
-                let subAgents = try db.listSessions(subAgent: true, limit: 200)
-                return (groups, confirmed, suggested, pending, ambiguous, subAgents)
+                let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
+                let activeSince = ISO8601DateFormatter().string(from: weekAgo)
+                let stats = try db.agentSessionStats(activeSince: activeSince)
+                return (groups, confirmed, suggested, pending, ambiguous, stats)
             }.value
+            guard BrowseReloadCoalescer.shouldApplyLoad(
+                resultGeneration: generation,
+                currentGeneration: loadGeneration,
+                isCancelled: Task.isCancelled
+            ) else { return }
             parents = data.parents
             confirmedCounts = data.confirmed
             suggestedCounts = data.suggested
             pendingSuggestions = data.pending
             ambiguousSuggestions = data.ambiguous
-            subAgentCount = data.subAgents.count
-            activeCount = Self.activeRoleCount(among: data.subAgents)
+            subAgentCount = data.stats.total
+            activeCount = data.stats.active
             loadError = nil
         } catch {
+            guard BrowseReloadCoalescer.shouldApplyLoad(
+                resultGeneration: generation,
+                currentGeneration: loadGeneration,
+                isCancelled: Task.isCancelled
+            ) else { return }
             EngramLogger.error("AgentsView load failed", module: .ui, error: error)
-            loadError = error.localizedDescription
+            loadError = ServiceErrorPresenter.displayMessage(for: error)
         }
     }
 
@@ -144,13 +209,6 @@ struct AgentsView: View {
     private func suggestedParentTitle(for child: Session) -> String? {
         guard let parentId = child.suggestedParentId else { return nil }
         return parents.first { $0.id == parentId }?.displayTitle ?? parentId
-    }
-
-    private static func activeRoleCount(among subAgents: [Session]) -> Int {
-        let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
-        return Set(subAgents.filter { s in
-            EngramTimestampParser.date(from: s.startTime).map { $0 > weekAgo } ?? false
-        }.compactMap(\.agentRole)).count
     }
 
     private func confirmSuggestion(_ child: Session) {
@@ -167,7 +225,7 @@ struct AgentsView: View {
                 await loadData()
             } catch {
                 EngramLogger.error("AgentsView confirm suggestion failed", module: .ui, error: error)
-                loadError = error.localizedDescription
+                loadError = ServiceErrorPresenter.displayMessage(for: error)
             }
         }
     }
@@ -189,7 +247,7 @@ struct AgentsView: View {
                 await loadData()
             } catch {
                 EngramLogger.error("AgentsView dismiss suggestion failed", module: .ui, error: error)
-                loadError = error.localizedDescription
+                loadError = ServiceErrorPresenter.displayMessage(for: error)
             }
         }
     }
@@ -212,7 +270,7 @@ struct AgentsView: View {
                 await loadData()
             } catch {
                 EngramLogger.error("AgentsView resolve ambiguous suggestion failed", module: .ui, error: error)
-                loadError = error.localizedDescription
+                loadError = ServiceErrorPresenter.displayMessage(for: error)
             }
         }
     }
@@ -232,7 +290,7 @@ struct AgentsView: View {
                 await loadData()
             } catch {
                 EngramLogger.error("AgentsView dismiss ambiguous suggestion failed", module: .ui, error: error)
-                loadError = error.localizedDescription
+                loadError = ServiceErrorPresenter.displayMessage(for: error)
             }
         }
     }
@@ -284,12 +342,13 @@ private struct PendingSuggestionRow: View {
                 }
                 .menuStyle(.borderlessButton)
                 .frame(width: 24)
+                .accessibilityLabel("More actions")
                 .accessibilityIdentifier("agents_setParent")
             }
         }
         .disabled(isBusy)
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.vertical, Theme.listRowVerticalPadding)
         .background(Theme.surface)
         .overlay(
             RoundedRectangle(cornerRadius: Theme.cornerRadius)
@@ -340,7 +399,7 @@ private struct AmbiguousSuggestionRow: View {
         }
         .disabled(isBusy)
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.vertical, Theme.listRowVerticalPadding)
         .background(Theme.surface)
         .overlay(
             RoundedRectangle(cornerRadius: Theme.cornerRadius)

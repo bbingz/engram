@@ -8,7 +8,7 @@ struct PerformanceView: View {
     // latency aggregates). Before any scan/command is recorded the snapshot is
     // collected-but-empty, so we show an honest "no data yet" EmptyState rather
     // than a false all-clear.
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
     @State private var snapshot: ServiceTelemetrySnapshot?
     @State private var loadFailed = false
 
@@ -96,7 +96,7 @@ struct PerformanceView: View {
             cell("Max", width: 64, align: .trailing)
             cell("Err", width: 44, align: .trailing)
         }
-        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+        .scaledFont(10, weight: .semibold, design: .monospaced)
         .foregroundStyle(Theme.secondaryText)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -114,7 +114,7 @@ struct PerformanceView: View {
                 .frame(width: 44, alignment: .trailing)
                 .foregroundStyle(cmd.errorCount > 0 ? Theme.red : Theme.secondaryText)
         }
-        .font(.system(size: 11, design: .monospaced))
+        .scaledFont(11, design: .monospaced)
         .foregroundStyle(Theme.primaryText)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)

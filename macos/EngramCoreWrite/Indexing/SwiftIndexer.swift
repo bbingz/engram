@@ -1,12 +1,11 @@
 import CryptoKit
 import Foundation
 import EngramCoreRead
-import os
 
 public final class SwiftIndexer {
     private static let writeBatchSize = 100
     private static let activeFileGraceInterval: TimeInterval = 120
-    private static let log = os.Logger(subsystem: "com.engram.service", category: "indexer")
+    private static let log = CoreWriteLogger(category: "indexer")
     // Shared formatter — allocating one per indexed session is wasteful.
     private static let iso8601 = ISO8601DateFormatter()
 
@@ -90,24 +89,22 @@ public final class SwiftIndexer {
     /// Logs each per-snapshot failure so a silent fake-success cannot happen.
     private func writeBatchCountingSuccesses(_ batch: [ScannedSnapshot]) throws -> Int {
         let snapshots = batch.map(\.snapshot)
-        let result = try sink.upsertBatch(snapshots, reason: .initialScan)
+        let result = try sink.upsertBatch(
+            snapshots,
+            fileIndexStates: batch.map(\.fileState),
+            reason: .initialScan
+        )
         var merged = 0
-        // Pair file_index_state by batch index, not session id. Some adapters
-        // (notably gemini-cli) can emit the same sessionId for distinct
-        // locators in one batch; uniqueKeysWithValues would fatal on that.
-        // upsertBatch preserves input order, so index pairing is stable.
-        for (index, item) in result.results.enumerated() {
+        for item in result.results {
             if item.action == .failure {
                 Self.log.error(
-                    "session upsert failed: session=\(item.sessionId, privacy: .private) error=\(item.error ?? "unknown", privacy: .private)"
+                    "session upsert failed: session=\(item.sessionId) error=\(item.error ?? "unknown")"
                 )
                 continue
             }
             if item.action == .merge {
                 merged += 1
             }
-            guard index < batch.count, let state = batch[index].fileState else { continue }
-            try upsertFileIndexStateIsolated(state, source: state.source, locator: state.locator)
         }
         return merged
     }
@@ -144,7 +141,7 @@ public final class SwiftIndexer {
                 // Isolate per-adapter failures: one unreadable source must not
                 // abort the entire scan across all other adapters.
                 Self.log.error(
-                    "adapter listSessionLocators failed: source=\(adapter.source.rawValue, privacy: .private) error=\(String(describing: error), privacy: .private)"
+                    "adapter listSessionLocators failed: source=\(adapter.source.rawValue) error=\(String(describing: error))"
                 )
                 continue
             }
@@ -162,7 +159,7 @@ public final class SwiftIndexer {
                     )
                 } catch {
                     Self.log.error(
-                        "file_index_state prune failed: source=\(adapter.source.rawValue, privacy: .private) error=\(String(describing: error), privacy: .private)"
+                        "file_index_state prune failed: source=\(adapter.source.rawValue) error=\(String(describing: error))"
                     )
                 }
             }
@@ -185,17 +182,27 @@ public final class SwiftIndexer {
 
             for locator in locators {
                 try Task.checkCancellation()
-                let currentStat = FileIndexStat.directFileStat(locator: locator)
+                let currentStat = Self.fileIndexStat(adapter: adapter, locator: locator)
                 let knownIndexedState = knownFileStates?[locator]
                 let knownParseState = fileIndexStates?[locator]
+                // docs/invariants.md #2 and #9: only a current parser state may
+                // take the startup known-locator shortcut. A version mismatch
+                // must reparse so false legacy subagent roles can heal while
+                // genuine relative subagent layouts remain classified as skip.
+                let canSkipKnownLocator = skipKnownFileLocators
+                    && knownParseState?.schemaVersion == FileIndexState.currentSchemaVersion
                 // Historical rows can be known/unchanged but predate instruction extraction.
                 let needsInstructionBackfill =
                     knownIndexedState?.needsInstructionBackfill == true
                     && Self.reliableInstructionSources.contains(adapter.source)
                     && (knownParseState?.parseStatus ?? .ok) == .ok
-                // Composite-input sources can change without touching the main locator.
-                // Main-file FileIndexDecision would skip sidecar/aux rewrites.
-                if !Self.usesCompositeInputs(adapter.source),
+                // Gemini can change without touching the main locator and still
+                // reparses here. Copilot and Kimi expose complete composite
+                // identities, so unchanged terminal inputs can safely skip.
+                if skipUnchangedFileLocators,
+                   (!Self.usesCompositeInputs(adapter.source)
+                       || adapter.source == .copilot
+                       || adapter.source == .kimi),
                    let currentStat,
                    !needsInstructionBackfill,
                    FileIndexDecision.decide(
@@ -205,7 +212,7 @@ public final class SwiftIndexer {
                    ) == .skip {
                     continue
                 }
-                if !skipKnownFileLocators {
+                if !canSkipKnownLocator {
                     switch try await attemptTailIndexing(
                         adapter: adapter,
                         locator: locator,
@@ -243,20 +250,33 @@ public final class SwiftIndexer {
                                 previous: knownParseState
                             )
                             Self.log.notice(
-                                "session tail skipped: source=\(adapter.source.rawValue, privacy: .private) reason=\(failure.rawValue, privacy: .private) locator=\(locator, privacy: .private)"
+                                "session tail skipped: source=\(adapter.source.rawValue) reason=\(failure.rawValue) locator=\(locator)"
                             )
                             continue
                         }
                         Self.log.error(
-                            "session tail parse retryable; falling back to full scan: source=\(adapter.source.rawValue, privacy: .private) reason=\(failure.rawValue, privacy: .private) locator=\(locator, privacy: .private)"
+                            "session tail parse retryable; falling back to full scan: source=\(adapter.source.rawValue) reason=\(failure.rawValue) locator=\(locator)"
                         )
                         break
                     case .fallback:
                         break
                     }
                 }
+                if !skipKnownFileLocators,
+                   !Self.usesCompositeInputs(adapter.source),
+                   knownParseState == nil,
+                   knownIndexedState != nil,
+                   let currentStat,
+                   currentStat.legacyState.modifiedAt > activeFileCutoff {
+                    // A recent scan may observe an actively-written transcript
+                    // before file_index_state exists. Defer without inventing a
+                    // successful parse identity; startup scans still heal missing
+                    // state once the transcript has settled. Existing checkpoints
+                    // get their safe tail-merge attempt above before this grace.
+                    continue
+                }
                 if !Self.usesCompositeInputs(adapter.source),
-                   (knownParseState == nil || skipKnownFileLocators),
+                   canSkipKnownLocator,
                    let currentFile = currentStat?.legacyState,
                    let indexed = knownIndexedState {
                     if !needsInstructionBackfill {
@@ -264,7 +284,7 @@ public final class SwiftIndexer {
                         // success for an unparsed (or actively-writing) identity.
                         // Leaving the prior parse state dirty lets a later recent
                         // scan see the identity mismatch and reparse.
-                        if skipKnownFileLocators {
+                        if canSkipKnownLocator {
                             continue
                         }
                         if currentFile.modifiedAt > activeFileCutoff {
@@ -293,11 +313,11 @@ public final class SwiftIndexer {
                         )
                         if FileIndexState.isTerminalFailure(reason) {
                             Self.log.notice(
-                                "session skipped: source=\(adapter.source.rawValue, privacy: .private) reason=\(reason.rawValue, privacy: .private) locator=\(locator, privacy: .private)"
+                                "session skipped: source=\(adapter.source.rawValue) reason=\(reason.rawValue) locator=\(locator)"
                             )
                         } else {
                             Self.log.error(
-                                "session parse failed: source=\(adapter.source.rawValue, privacy: .private) reason=\(reason.rawValue, privacy: .private) locator=\(locator, privacy: .private)"
+                                "session parse failed: source=\(adapter.source.rawValue) reason=\(reason.rawValue) locator=\(locator)"
                             )
                         }
                         continue
@@ -315,15 +335,31 @@ public final class SwiftIndexer {
                         // costs and other read paths stay identical.
                         let provableSkip = Self.isProvableSkip(info: info, locator: locator)
                         let stats = computeStats(messages: scan.messages, provableSkip: provableSkip)
-                        let fileState = currentStat.map {
-                            FileIndexState.success(
-                                source: adapter.source,
-                                locator: locator,
-                                stat: $0,
-                                now: Date(),
-                                parsedOffset: scan.checkpointParsedOffset,
-                                boundaryHash: scan.checkpointBoundaryHash
-                            )
+                        let fileState: FileIndexState?
+                        if scan.parseFailure == nil {
+                            fileState = currentStat.map { stat in
+                                FileIndexState.success(
+                                    source: adapter.source,
+                                    locator: locator,
+                                    stat: stat,
+                                    now: Date(),
+                                    parsedOffset: scan.checkpointParsedOffset,
+                                    boundaryHash: scan.checkpointBoundaryHash
+                                )
+                            }
+                        } else if let parseFailure = scan.parseFailure {
+                            fileState = currentStat.map { stat in
+                                FileIndexState.failure(
+                                    source: adapter.source,
+                                    locator: locator,
+                                    stat: stat,
+                                    failure: parseFailure,
+                                    previous: fileIndexStates?[locator],
+                                    now: Date()
+                                )
+                            }
+                        } else {
+                            fileState = nil
                         }
                         let snapshot = buildSnapshot(info: info, locator: locator, stats: stats)
                         if excludedSnapshotSources.contains(snapshot.source) {
@@ -364,7 +400,7 @@ public final class SwiftIndexer {
                     // Isolate per-session errors (e.g. transient stream failures)
                     // so a single bad transcript does not abort the whole scan.
                     Self.log.error(
-                        "session index error: source=\(adapter.source.rawValue, privacy: .private) locator=\(locator, privacy: .private) error=\(String(describing: error), privacy: .private)"
+                        "session index error: source=\(adapter.source.rawValue) locator=\(locator) error=\(String(describing: error))"
                     )
                     continue
                 }
@@ -432,6 +468,16 @@ public final class SwiftIndexer {
         case .failure(let failure):
             return .failure(failure)
         case .success(let tail):
+            // Tail adapters cap only the appended segment. Enforce the product
+            // transcript cap cumulatively before recording a successful file
+            // identity or enqueueing FTS work for an incomplete snapshot.
+            let maxMessages = 10_000
+            if let currentSnapshot,
+               (currentSnapshot.messageCount > maxMessages
+                   || tail.infoDelta.messageCount > maxMessages - currentSnapshot.messageCount)
+            {
+                return .failure(.messageLimitExceeded)
+            }
             let fileState = FileIndexState.success(
                 source: adapter.source,
                 locator: locator,
@@ -650,7 +696,7 @@ public final class SwiftIndexer {
             throw CancellationError()
         } catch {
             Self.log.error(
-                "file index state write failed: source=\(source.rawValue, privacy: .private) locator=\(locator, privacy: .private) error=\(String(describing: error), privacy: .private)"
+                "file index state write failed: source=\(source.rawValue) locator=\(locator) error=\(String(describing: error))"
             )
         }
     }
@@ -717,7 +763,6 @@ public final class SwiftIndexer {
     private static func isProvableSkip(info: NormalizedSessionInfo, locator: String) -> Bool {
         locator.contains("/.engram/probes/")
             || info.agentRole != nil
-            || locator.contains("/subagents/")
             || info.messageCount <= 1
     }
 
@@ -804,7 +849,9 @@ public final class SwiftIndexer {
                 toolCount: stats.toolCount
             )
         )
-        let summaryMessageCount = stats.indexedMessageCount
+        // Cursor's compact conversation summary can change without the visible
+        // bubble count changing, so that count is not a summary version.
+        let summaryMessageCount = info.source == .cursor ? nil : stats.indexedMessageCount
         // Instruction signals are only stored for sources whose adapter emits
         // reliable .user roles; others store nil → NULL-tolerant predicate keeps
         // them default-visible (≈ today's behavior).
@@ -817,7 +864,7 @@ public final class SwiftIndexer {
         let implementationBeats = ImplementationDigestExtractor.extract(
             messages: stats.implementationMessages,
             sessionId: info.id,
-            sessionTitle: info.summary
+            sessionTitle: info.displayTitle ?? info.summary
         )
         return AuthoritativeSessionSnapshot(
             id: info.id,
@@ -843,6 +890,7 @@ public final class SwiftIndexer {
             toolMessageCount: info.toolMessageCount,
             systemMessageCount: info.systemMessageCount,
             summary: info.summary,
+            displayTitle: info.displayTitle,
             summaryMessageCount: summaryMessageCount,
             instructionCount: instructionCount,
             humanTurnCount: humanTurnCount,
@@ -860,7 +908,7 @@ public final class SwiftIndexer {
 
     private func snapshotHash(
         info: NormalizedSessionInfo,
-        summaryMessageCount: Int,
+        summaryMessageCount: Int?,
         contentFingerprint: String
     ) -> String {
         var fields: [(String, String)] = [
@@ -882,7 +930,10 @@ public final class SwiftIndexer {
         fields.append(("toolMessageCount", "\(info.toolMessageCount)"))
         fields.append(("systemMessageCount", "\(info.systemMessageCount)"))
         if let summary = info.summary { fields.append(("summary", jsonString(summary))) }
-        fields.append(("summaryMessageCount", "\(summaryMessageCount)"))
+        if let displayTitle = info.displayTitle { fields.append(("displayTitle", jsonString(displayTitle))) }
+        if let summaryMessageCount {
+            fields.append(("summaryMessageCount", "\(summaryMessageCount)"))
+        }
         // Sidecar/aux metadata (e.g. Gemini parent/role) must invalidate even when
         // transcript body counts are unchanged.
         if let parentSessionId = info.parentSessionId {
@@ -959,7 +1010,7 @@ public final class SwiftIndexer {
     }
 
     private static let healthProbePrompts: Set<String> = [
-        "ping"
+        "ping", "quick ping", "test ping", "quick ping check", "ping-pong test"
     ]
 
     // Sources whose adapter emits reliable .user roles in streamMessages, so
@@ -972,6 +1023,21 @@ public final class SwiftIndexer {
     // reflected in the main locator. Main-file FileIndexDecision short-circuits
     // would permanently retain stale parent/cwd/content after aux-only rewrites.
     private static func usesCompositeInputs(_ source: SourceName) -> Bool {
-        source == .kimi || source == .geminiCli || source == .copilot
+        source == .kimi || source == .geminiCli || source == .copilot || source == .cursor
+    }
+
+    private static func fileIndexStat(
+        adapter: any SessionAdapter,
+        locator: String
+    ) -> FileIndexStat? {
+        if let identity = adapter.indexingInputIdentity(locator: locator) {
+            return FileIndexStat(
+                sizeBytes: identity.sizeBytes,
+                modifiedAtNanos: identity.modifiedAtNanos,
+                inode: identity.locatorInode,
+                device: identity.locatorDevice
+            )
+        }
+        return FileIndexStat.directFileStat(locator: locator)
     }
 }

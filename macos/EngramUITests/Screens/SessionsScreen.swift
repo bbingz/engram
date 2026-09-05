@@ -9,7 +9,15 @@ struct SessionsScreen {
     var sessionList: XCUIElement { app.element(id: "sessions_list") }
     var filterPills: XCUIElement { app.element(id: "sessions_filterPills") }
     var sourcePicker: XCUIElement { app.element(id: "sessions_sourcePicker") }
+    var showAllToggle: XCUIElement { app.element(id: "sessions_showAllToggle") }
     var emptyState: XCUIElement { app.element(id: "sessions_emptyState") }
+
+    func filterPill(named name: String) -> XCUIElement {
+        app.buttons
+            .matching(identifier: "sessions_filterPills")
+            .matching(NSPredicate(format: "label == %@", name))
+            .firstMatch
+    }
 
     // MARK: - KPI Cards
 
@@ -21,6 +29,10 @@ struct SessionsScreen {
 
     func row(at index: Int) -> XCUIElement {
         app.element(id: "sessions_row_\(index)")
+    }
+
+    func result(containingText text: String) -> XCUIElement {
+        sessionList.element(containingText: text)
     }
 
     func selectSession(at index: Int) {

@@ -1,7 +1,6 @@
 import Foundation
 import GRDB
 import EngramCoreRead
-import os
 
 public struct EngramDatabaseIndexStatus: Sendable, Equatable {
     public let total: Int
@@ -99,6 +98,54 @@ private final class EngramDatabaseIndexingSink: IndexingWriteSink {
     ) throws -> SessionBatchUpsertResult {
         try writer.write { db in
             try SessionBatchUpsert(db: db).upsertBatch(snapshots, reason: reason)
+        }
+    }
+
+    func upsertBatch(
+        _ snapshots: [AuthoritativeSessionSnapshot],
+        fileIndexStates: [FileIndexState?],
+        reason: IndexingWriteReason
+    ) throws -> SessionBatchUpsertResult {
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            var results: [SessionBatchItemResult] = []
+            results.reserveCapacity(snapshots.count)
+
+            for (index, snapshot) in snapshots.enumerated() {
+                do {
+                    var writeResult: SessionWriteResult?
+                    try db.inSavepoint {
+                        let result = try snapshotWriter.writeAuthoritativeSnapshot(snapshot)
+                        if (result.action == .merge || result.action == .noop),
+                           index < fileIndexStates.count,
+                           let state = fileIndexStates[index] {
+                            try EngramDatabaseWriter.upsertFileIndexState(state, in: db)
+                        }
+                        writeResult = result
+                        return .commit
+                    }
+                    guard let writeResult else {
+                        preconditionFailure("savepoint committed without a snapshot write result")
+                    }
+                    results.append(
+                        SessionBatchItemResult(
+                            sessionId: snapshot.id,
+                            action: writeResult.action,
+                            enqueuedJobs: snapshotWriter.jobKinds(for: writeResult, snapshot: snapshot)
+                        )
+                    )
+                } catch {
+                    results.append(
+                        SessionBatchItemResult(
+                            sessionId: snapshot.id,
+                            action: .failure,
+                            enqueuedJobs: [],
+                            error: "\(error)"
+                        )
+                    )
+                }
+            }
+            return SessionBatchUpsertResult(reason: reason, results: results)
         }
     }
 
@@ -390,47 +437,51 @@ public extension EngramDatabaseWriter {
 
     func upsertFileIndexState(_ state: FileIndexState) throws {
         try write { db in
-            try db.execute(
-                sql: """
-                INSERT INTO file_index_state (
-                  source, locator, size_bytes, mtime_ns, inode, device,
-                  parsed_offset, boundary_hash, parse_status, failure_kind,
-                  retry_after, retry_count, last_error, schema_version, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(source, locator) DO UPDATE SET
-                  size_bytes = excluded.size_bytes,
-                  mtime_ns = excluded.mtime_ns,
-                  inode = excluded.inode,
-                  device = excluded.device,
-                  parsed_offset = excluded.parsed_offset,
-                  boundary_hash = excluded.boundary_hash,
-                  parse_status = excluded.parse_status,
-                  failure_kind = excluded.failure_kind,
-                  retry_after = excluded.retry_after,
-                  retry_count = excluded.retry_count,
-                  last_error = excluded.last_error,
-                  schema_version = excluded.schema_version,
-                  updated_at = excluded.updated_at
-                """,
-                arguments: [
-                    state.source.rawValue,
-                    state.locator,
-                    state.sizeBytes,
-                    state.modifiedAtNanos,
-                    state.inode,
-                    state.device,
-                    state.parsedOffset,
-                    state.boundaryHash,
-                    state.parseStatus.rawValue,
-                    state.failureKind?.rawValue,
-                    state.retryAfterEpochSeconds,
-                    state.retryCount,
-                    state.lastError,
-                    state.schemaVersion,
-                    state.updatedAtEpochSeconds
-                ]
-            )
+            try Self.upsertFileIndexState(state, in: db)
         }
+    }
+
+    fileprivate static func upsertFileIndexState(_ state: FileIndexState, in db: Database) throws {
+        try db.execute(
+            sql: """
+            INSERT INTO file_index_state (
+              source, locator, size_bytes, mtime_ns, inode, device,
+              parsed_offset, boundary_hash, parse_status, failure_kind,
+              retry_after, retry_count, last_error, schema_version, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source, locator) DO UPDATE SET
+              size_bytes = excluded.size_bytes,
+              mtime_ns = excluded.mtime_ns,
+              inode = excluded.inode,
+              device = excluded.device,
+              parsed_offset = excluded.parsed_offset,
+              boundary_hash = excluded.boundary_hash,
+              parse_status = excluded.parse_status,
+              failure_kind = excluded.failure_kind,
+              retry_after = excluded.retry_after,
+              retry_count = excluded.retry_count,
+              last_error = excluded.last_error,
+              schema_version = excluded.schema_version,
+              updated_at = excluded.updated_at
+            """,
+            arguments: [
+                state.source.rawValue,
+                state.locator,
+                state.sizeBytes,
+                state.modifiedAtNanos,
+                state.inode,
+                state.device,
+                state.parsedOffset,
+                state.boundaryHash,
+                state.parseStatus.rawValue,
+                state.failureKind?.rawValue,
+                state.retryAfterEpochSeconds,
+                state.retryCount,
+                state.lastError,
+                state.schemaVersion,
+                state.updatedAtEpochSeconds
+            ]
+        )
     }
 
     /// Delete orphan `file_index_state` rows for `source` under `roots` whose
@@ -490,7 +541,7 @@ public extension EngramDatabaseWriter {
         }
         if deleted > 0 {
             Self.fileIndexLog.info(
-                "pruned orphan file_index_state rows: source=\(source.rawValue, privacy: .public) deleted=\(deleted, privacy: .public)"
+                "pruned orphan file_index_state rows: source=\(source.rawValue) deleted=\(deleted)"
             )
         }
         return deleted
@@ -512,7 +563,7 @@ public extension EngramDatabaseWriter {
         return result
     }
 
-    private static let fileIndexLog = Logger(subsystem: "com.engram.service", category: "indexer")
+    private static let fileIndexLog = CoreWriteLogger(category: "indexer")
 
     private static func fileIndexState(from row: Row) -> FileIndexState? {
         guard let sourceRaw = row["source"] as String?,
@@ -580,13 +631,16 @@ public extension EngramDatabaseWriter {
     func indexAllSessions(
         adapters: [any SessionAdapter] = SessionAdapterFactory.defaultAdapters(),
         excludedSnapshotSources: Set<SourceName> = [],
+        forceReparseKnownFiles: Bool = false,
         didFinishAdapter: @escaping @Sendable (SourceName) -> Void = { _ in }
     ) async throws -> EngramDatabaseIndexResult {
+        // docs/invariants.md #9: versioned parser backfills must bypass both
+        // unchanged-file and already-known-file short circuits.
         try await indexSessions(
             adapters: adapters,
             runParentBackfills: true,
-            skipUnchangedFileLocators: true,
-            skipKnownFileLocators: true,
+            skipUnchangedFileLocators: !forceReparseKnownFiles,
+            skipKnownFileLocators: !forceReparseKnownFiles,
             excludedSnapshotSources: excludedSnapshotSources,
             didFinishAdapter: didFinishAdapter
         )
@@ -1049,12 +1103,12 @@ public extension EngramDatabaseWriter {
                 db,
                 sql: """
                 SELECT COUNT(*)
-                FROM sessions
-                WHERE hidden_at IS NULL
-                  AND parent_session_id IS NULL
-                  AND suggested_parent_id IS NULL
-                  AND (tier IS NULL OR tier != 'skip')
-                  AND start_time >= ?
+                FROM sessions s
+                WHERE s.hidden_at IS NULL
+                  AND s.parent_session_id IS NULL
+                  AND s.suggested_parent_id IS NULL
+                  AND (s.tier IS NULL OR s.tier != 'skip')
+                  AND \(SearchFilterPredicates.activityTimeSQL(alias: "s")) >= ?
                 """,
                 arguments: [since]
             ) ?? 0

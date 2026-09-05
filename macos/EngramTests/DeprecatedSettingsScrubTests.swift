@@ -28,7 +28,7 @@ final class DeprecatedSettingsScrubTests: XCTestCase {
 
     func testTitleSettingsPreserveStoredApiKeyWhenSwitchingToOllama() throws {
         let source = try source("macos/Engram/Views/Settings/AISettingsSection.swift")
-        let start = try XCTUnwrap(source.range(of: "func persistTitle(_ snapshot: TitleSettingsPersistSnapshot)"))
+        let start = try XCTUnwrap(source.range(of: "func persistTitle("))
         let end = try XCTUnwrap(source.range(of: "private func applyAPIKey", range: start.lowerBound..<source.endIndex))
         let persistTitle = String(source[start.lowerBound..<end.lowerBound])
 
@@ -40,13 +40,13 @@ final class DeprecatedSettingsScrubTests: XCTestCase {
             persistTitle.contains("case .preserveExisting:"),
             "Ollama provider changes must keep the stored titleApiKey"
         )
-        let deleteRange = try XCTUnwrap(persistTitle.range(of: "KeychainHelper.delete(\"titleApiKey\")"))
+        let deleteRange = try XCTUnwrap(persistTitle.range(of: "value: \"\""))
         let deleteExisting = try XCTUnwrap(persistTitle.range(of: "case .deleteExisting:"))
         let preserveExisting = try XCTUnwrap(persistTitle.range(of: "case .preserveExisting:"))
         XCTAssertTrue(
             deleteRange.lowerBound > deleteExisting.lowerBound
                 && deleteRange.lowerBound < preserveExisting.lowerBound,
-            "Switching to Ollama must not delete the stored titleApiKey; only clearing a non-Ollama key should delete it"
+            "Switching to Ollama must not clear the stored titleApiKey; only clearing a non-Ollama key should apply an empty value"
         )
     }
 
@@ -433,13 +433,11 @@ final class DeprecatedSettingsScrubTests: XCTestCase {
         )
         let applyAPIKey = String(ai[applyStart.lowerBound..<applyEnd.lowerBound])
         XCTAssertTrue(applyAPIKey.contains("allowsPlaintextSettingsFallback"))
+        XCTAssertTrue(applyAPIKey.contains("-> APIKeyPersistenceResult"))
+        XCTAssertTrue(ai.contains("return .failed"))
         XCTAssertTrue(
-            applyAPIKey.contains("settings[settingsKey] = \"@keychain\""),
-            "SEC-M3: fail-closed path must write @keychain marker, not raw secret"
-        )
-        XCTAssertTrue(
-            applyAPIKey.contains("} else {"),
-            "Keychain failure outside DEBUG must keep the @keychain marker"
+            ai.contains("case .failed: return \"Could not store API key in macOS Keychain\""),
+            "SEC-M3: Release Keychain failure must preserve prior settings and surface the failure"
         )
     }
 

@@ -2,7 +2,7 @@
 import SwiftUI
 
 struct MemoryView: View {
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
     @State private var memoryFiles: [EngramServiceMemoryFile] = []
     @State private var insights: [EngramServiceInsightInfo] = []
     @State private var searchText = ""
@@ -12,10 +12,15 @@ struct MemoryView: View {
     // fetched off-main when a row is selected. nil while loading.
     @State private var selectedFileContent: String? = nil
     @State private var selectedInsightDetail: EngramServiceInsightInfo? = nil
+    @State private var loadGeneration = 0
+    @State private var insightDetailGeneration = 0
     @State private var isDetailLoading = false
     @State private var isLoading = true
     @State private var error: String? = nil
     @State private var showNewInsight = false
+    /// Keyboard focus for insight/file rows (Wave 7-10): ring + Enter/Space to
+    /// select, mirroring the 6A-5 search-row pattern.
+    @FocusState private var focusedRowId: String?
 
     /// Detail text for a memory file: full content when present, otherwise the
     /// short preview (older/leaner service payloads omit `content`).
@@ -57,7 +62,10 @@ struct MemoryView: View {
                 .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadius))
                 .accessibilityIdentifier("memory_search")
 
-                if let error { AlertBanner(message: error) }
+                if let error {
+                    AlertBanner(message: error, action: ("Retry", { Task { await loadData() } }))
+                        .accessibilityIdentifier("memory_failedState")
+                }
 
                 if isLoading && memoryFiles.isEmpty && insights.isEmpty {
                     ProgressView("Loading memory…")
@@ -66,7 +74,7 @@ struct MemoryView: View {
                         .accessibilityIdentifier("memory_loading")
                 } else if let selected = selectedFile {
                     fileDetail(selected)
-                } else {
+                } else if error == nil || !memoryFiles.isEmpty || !insights.isEmpty {
                     insightsSection
                     filesSection
                 }
@@ -97,7 +105,7 @@ struct MemoryView: View {
             await loadData()
             return nil
         } catch {
-            return "Could not save insight: \(error.localizedDescription)"
+            return "Could not save insight: \(ServiceErrorPresenter.displayMessage(for: error))"
         }
     }
 
@@ -114,24 +122,36 @@ struct MemoryView: View {
                 .accessibilityIdentifier("memory_insights_emptyState")
         } else if let selected = selectedInsight {
             HStack {
-                Button(action: { selectedInsight = nil; selectedInsightDetail = nil }) {
+                Button(action: {
+                    insightDetailGeneration &+= 1
+                    selectedInsight = nil
+                    selectedInsightDetail = nil
+                    isDetailLoading = false
+                }) {
                     HStack(spacing: 4) { Image(systemName: "chevron.left"); Text("All Insights") }
                         .font(.callout).foregroundStyle(Theme.accent)
                 }.buttonStyle(.plain)
                 Spacer()
             }
-            if isDetailLoading && selectedInsightDetail == nil {
-                ProgressView()
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 20)
-                    .accessibilityIdentifier("memory_insight_detail_loading")
+            Group {
+                if isDetailLoading && selectedInsightDetail == nil {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 20)
+                        .accessibilityIdentifier("memory_insight_detail_loading")
+                } else if let detail = selectedInsightDetail {
+                    InsightDetailView(
+                        insight: detail,
+                        onDelete: { Task { await deleteInsight(detail) } }
+                    )
+                } else {
+                    EmptyState(
+                        icon: "lightbulb.slash",
+                        title: "Insight unavailable",
+                        message: "This insight is no longer active."
+                    )
+                }
             }
-            // Render the fetched full insight when available; fall back to the
-            // preview row so the body never goes blank.
-            InsightDetailView(
-                insight: selectedInsightDetail ?? selected,
-                onDelete: { Task { await deleteInsight(selected) } }
-            )
             .task(id: selected.id) { await loadInsightDetail(selected) }
         } else {
             ForEach(insights) { insight in
@@ -144,12 +164,27 @@ struct MemoryView: View {
                         Spacer()
                         Image(systemName: "chevron.right").font(.caption2).foregroundStyle(Theme.tertiaryText.opacity(0.5))
                     }
-                    .padding(.horizontal, 12).padding(.vertical, 10)
+                    .padding(.horizontal, 12).padding(.vertical, Theme.listRowVerticalPadding)
                     .background(Theme.surface)
                     .overlay(RoundedRectangle(cornerRadius: Theme.cornerRadius).stroke(Theme.border, lineWidth: 1))
                     .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadius))
                 }
                 .buttonStyle(.plain)
+                // One VoiceOver stop per insight row.
+                .accessibilityElement(children: .combine)
+                .focusable()
+                .focused($focusedRowId, equals: "insight-\(insight.id)")
+                .onKeyPress(keys: [.return, .space]) { _ in
+                    guard focusedRowId == "insight-\(insight.id)" else { return .ignored }
+                    selectedInsight = insight
+                    return .handled
+                }
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.cornerRadius)
+                        .stroke(Theme.accent, lineWidth: 2)
+                        .opacity(focusedRowId == "insight-\(insight.id)" ? 1 : 0)
+                        .allowsHitTesting(false)
+                )
                 .contextMenu {
                     Button(role: .destructive) { Task { await deleteInsight(insight) } } label: {
                         Label("Delete", systemImage: "trash")
@@ -174,11 +209,26 @@ struct MemoryView: View {
                         Text(formatSize(file.sizeBytes)).font(.caption).foregroundStyle(Theme.tertiaryText)
                         Image(systemName: "chevron.right").font(.caption2).foregroundStyle(Theme.tertiaryText.opacity(0.5))
                     }
-                    .padding(.horizontal, 12).padding(.vertical, 10)
+                    .padding(.horizontal, 12).padding(.vertical, Theme.listRowVerticalPadding)
                     .background(Theme.surface)
                     .overlay(RoundedRectangle(cornerRadius: Theme.cornerRadius).stroke(Theme.border, lineWidth: 1))
                     .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadius))
                 }.buttonStyle(.plain)
+                // One VoiceOver stop per memory-file row.
+                .accessibilityElement(children: .combine)
+                .focusable()
+                .focused($focusedRowId, equals: "file-\(file.id)")
+                .onKeyPress(keys: [.return, .space]) { _ in
+                    guard focusedRowId == "file-\(file.id)" else { return .ignored }
+                    selectedFile = file
+                    return .handled
+                }
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.cornerRadius)
+                        .stroke(Theme.accent, lineWidth: 2)
+                        .opacity(focusedRowId == "file-\(file.id)" ? 1 : 0)
+                        .allowsHitTesting(false)
+                )
             }
         }
         if filteredFiles.isEmpty {
@@ -227,16 +277,44 @@ struct MemoryView: View {
     }
 
     private func loadData() async {
+        loadGeneration &+= 1
+        let generation = loadGeneration
         isLoading = true; error = nil
-        defer { isLoading = false }
+        defer {
+            if generation == loadGeneration {
+                isLoading = false
+            }
+        }
         do {
             async let files = serviceClient.memoryFiles()
             async let rows = serviceClient.insights()
-            memoryFiles = try await files
-            insights = try await rows
+            let (loadedFiles, loadedInsights) = try await (files, rows)
+            guard generation == loadGeneration else { return }
+            memoryFiles = loadedFiles
+            insights = loadedInsights
+            let retainedInsight = Self.retainedSelection(selectedInsight, in: loadedInsights)
+            insightDetailGeneration &+= 1
+            selectedInsight = retainedInsight
+            if let retainedInsight {
+                if selectedInsightDetail == nil {
+                    await loadInsightDetail(retainedInsight)
+                }
+            } else {
+                selectedInsightDetail = nil
+                isDetailLoading = false
+            }
         } catch {
-            self.error = "Could not load memory: \(error.localizedDescription)"
+            guard generation == loadGeneration else { return }
+            self.error = "Could not load memory: \(ServiceErrorPresenter.displayMessage(for: error))"
         }
+    }
+
+    static func retainedSelection(
+        _ selection: EngramServiceInsightInfo?,
+        in activeInsights: [EngramServiceInsightInfo]
+    ) -> EngramServiceInsightInfo? {
+        guard let selection else { return nil }
+        return activeInsights.first { $0.id == selection.id }
     }
 
     /// Fetch a memory file's full content on demand (list rows carry only a
@@ -259,26 +337,40 @@ struct MemoryView: View {
     /// Fetch an insight's full content on demand (list rows carry only a
     /// truncated preview).
     private func loadInsightDetail(_ insight: EngramServiceInsightInfo) async {
+        insightDetailGeneration &+= 1
+        let generation = insightDetailGeneration
         selectedInsightDetail = nil
         isDetailLoading = true
-        defer { isDetailLoading = false }
+        defer {
+            if generation == insightDetailGeneration {
+                isDetailLoading = false
+            }
+        }
         do {
             let detail = try await serviceClient.insightDetail(id: insight.id)
-            guard selectedInsight?.id == insight.id else { return }
-            selectedInsightDetail = detail ?? insight
+            guard generation == insightDetailGeneration,
+                  selectedInsight?.id == insight.id else { return }
+            selectedInsightDetail = detail
         } catch {
-            guard selectedInsight?.id == insight.id else { return }
-            selectedInsightDetail = insight
+            guard generation == insightDetailGeneration,
+                  selectedInsight?.id == insight.id else { return }
+            selectedInsightDetail = nil
         }
     }
 
     private func deleteInsight(_ insight: EngramServiceInsightInfo) async {
         do {
             _ = try await serviceClient.deleteInsight(.init(id: insight.id))
-            if selectedInsight?.id == insight.id { selectedInsight = nil }
+            insights.removeAll { $0.id == insight.id }
+            insightDetailGeneration &+= 1
+            if selectedInsight?.id == insight.id {
+                selectedInsight = nil
+                selectedInsightDetail = nil
+                isDetailLoading = false
+            }
             await loadData()
         } catch {
-            self.error = "Could not delete insight: \(error.localizedDescription)"
+            self.error = "Could not delete insight: \(ServiceErrorPresenter.displayMessage(for: error))"
         }
     }
 
@@ -297,6 +389,8 @@ private struct NewInsightSheet: View {
     @State private var importance = 5
     @State private var isSaving = false
     @State private var saveError: String? = nil
+    // Keyboard-first: the editor owns focus when the sheet opens.
+    @FocusState private var editorFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -304,6 +398,7 @@ private struct NewInsightSheet: View {
             TextEditor(text: $content)
                 .font(.system(.body, design: .monospaced))
                 .frame(minHeight: 160)
+                .focused($editorFocused)
                 .overlay(RoundedRectangle(cornerRadius: Theme.cornerRadius).stroke(Theme.border, lineWidth: 1))
                 .accessibilityIdentifier("new_insight_content")
             // Backend `normalizedImportance` accepts only 0...5, so cap the
@@ -312,7 +407,7 @@ private struct NewInsightSheet: View {
             if let saveError {
                 Text(saveError)
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Theme.red)
                     .accessibilityIdentifier("new_insight_error")
             }
             HStack {
@@ -337,5 +432,6 @@ private struct NewInsightSheet: View {
         }
         .padding(24)
         .frame(width: 420)
+        .onAppear { editorFocused = true }
     }
 }

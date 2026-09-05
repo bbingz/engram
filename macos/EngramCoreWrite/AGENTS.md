@@ -19,7 +19,7 @@
 - Write paths should be reachable through service-owned writers, not app/MCP local writers.
 - `SessionSnapshotWriter` and indexer behavior should preserve tiering and parent/child invariants.
 - Startup/backfill code must not surface provider health probes or review probes as normal sessions.
-- Product sqlite-vec scaffolding has been removed; future vector work should introduce a fresh implementation with runtime callers and tests instead of wiring speculative placeholders.
+- shipped semantic/hybrid uses `embedding_meta` + `semantic_chunks`/`insight_embeddings` Float32 BLOBs; do not reintroduce sqlite-vec.
 
 ## ANTI-PATTERNS
 - Do not use TypeScript schema code as source of truth for Swift-only defaults.

@@ -18,6 +18,11 @@ enum TranscriptExportService {
         guard let session = try fetchSession(id: request.id, queue: queue) else {
             throw EngramServiceError.invalidRequest(message: "Session not found: \(request.id)")
         }
+        guard session.origin != "hq", !session.filePath.hasPrefix("remote://") else {
+            throw EngramServiceError.invalidRequest(
+                message: "HQ index snapshots do not contain a source transcript and cannot be exported from this Mac."
+            )
+        }
 
         let transcript: ServiceTranscriptReader.ReadResult
         if let archiveTranscriptResolver,
@@ -83,7 +88,11 @@ enum TranscriptExportService {
         return EngramServiceExportSessionResponse(
             outputPath: outputURL.path,
             format: request.format,
-            messageCount: transcript.messages.count
+            messageCount: transcript.messages.count,
+            totalKnownComplete: transcript.totalKnownComplete,
+            truncated: transcript.truncated,
+            truncatedAt: transcript.truncatedAt,
+            parseFailure: transcript.parseFailure?.rawValue
         )
     }
 
@@ -215,6 +224,9 @@ enum TranscriptExportService {
             ]
             if let truncatedAt = transcript.truncatedAt {
                 transcriptMetadata["truncatedAt"] = truncatedAt
+            }
+            if let parseFailure = transcript.parseFailure {
+                transcriptMetadata["parseFailure"] = parseFailure.rawValue
             }
             let payload: [String: Any] = [
                 "session": session.jsonObject,
@@ -392,6 +404,19 @@ enum ServiceTranscriptReader {
         let messages: [ServiceTranscriptMessage]
         let totalKnownComplete: Bool
         let truncatedAt: Int?
+        let parseFailure: ParserFailure?
+
+        init(
+            messages: [ServiceTranscriptMessage],
+            totalKnownComplete: Bool,
+            truncatedAt: Int?,
+            parseFailure: ParserFailure? = nil
+        ) {
+            self.messages = messages
+            self.totalKnownComplete = totalKnownComplete
+            self.truncatedAt = truncatedAt
+            self.parseFailure = parseFailure
+        }
 
         var truncated: Bool { truncatedAt != nil || !totalKnownComplete }
     }
@@ -401,24 +426,21 @@ enum ServiceTranscriptReader {
     }
 
     static func readMessagesWithMetadata(filePath: String, source: String) async throws -> ReadResult {
+        try Task.checkCancellation()
         let guardBeforeAdapter = requiresFullJSONTranscriptGuard(source: source)
+            && !isVirtualCursorLocator(filePath: filePath, source: source)
         if guardBeforeAdapter {
             try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
         }
 
-        if let adapterResult = try await readWithAdapterRegistry(filePath: filePath, source: source) {
-            return adapterResult
+        guard let adapterResult = try await readWithAdapterRegistry(
+            filePath: filePath,
+            source: source,
+            failurePolicy: .terminal
+        ) else {
+            throw ReaderError.authoritativeAdapterUnavailable(source: source)
         }
-
-        if !guardBeforeAdapter {
-            try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
-        }
-
-        return ReadResult(
-            messages: parseFallbackMessages(filePath: filePath, source: source),
-            totalKnownComplete: true,
-            truncatedAt: nil
-        )
+        return adapterResult
     }
 
     /// Archive bytes are replayed against the one adapter authoritative for
@@ -430,6 +452,7 @@ enum ServiceTranscriptReader {
         source: String
     ) async throws -> ReadResult {
         let guardBeforeAdapter = requiresFullJSONTranscriptGuard(source: source)
+            && !isVirtualCursorLocator(filePath: filePath, source: source)
         if guardBeforeAdapter {
             try TranscriptSizeGuard.validateFullJSONTranscript(
                 filePath: filePath,
@@ -459,7 +482,9 @@ enum ServiceTranscriptReader {
     }
 
     static func readPrimerMessagesWithMetadata(filePath: String, source: String, limit: Int) async throws -> ReadResult {
+        try Task.checkCancellation()
         let guardBeforeAdapter = requiresFullJSONTranscriptGuard(source: source)
+            && !isVirtualCursorLocator(filePath: filePath, source: source)
         if guardBeforeAdapter {
             try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
         }
@@ -467,20 +492,12 @@ enum ServiceTranscriptReader {
         if let windowed = try await readWithAdapterRegistry(
             filePath: filePath,
             source: source,
-            primerLimit: limit
+            primerLimit: limit,
+            failurePolicy: .terminal
         ) {
             return windowed
         }
-
-        if !guardBeforeAdapter {
-            try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
-        }
-
-        return ReadResult(
-            messages: primerWindow(parseFallbackMessages(filePath: filePath, source: source), limit: limit),
-            totalKnownComplete: true,
-            truncatedAt: nil
-        )
+        throw ReaderError.authoritativeAdapterUnavailable(source: source)
     }
 
     /// Select the primer window from a fully materialized visible-message
@@ -527,6 +544,11 @@ enum ServiceTranscriptReader {
         default:
             return false
         }
+    }
+
+    private static func isVirtualCursorLocator(filePath: String, source: String) -> Bool {
+        source == "cursor"
+            && (filePath.contains("?composer=") || filePath.hasPrefix("cursor-modern:"))
     }
 
     // Async by design: await the adapter stream directly instead of bridging
@@ -589,10 +611,14 @@ enum ServiceTranscriptReader {
                     if tail.count > primerLimit { tail.removeFirst() }
                     visibleCount += 1
                 }
+                if visibleCount == 0, let parseFailure = result.parseFailure {
+                    throw parseFailure
+                }
                 return ReadResult(
                     messages: assemblePrimer(first: first, tail: tail, count: visibleCount, limit: primerLimit),
                     totalKnownComplete: result.totalKnownComplete,
-                    truncatedAt: result.truncatedAt
+                    truncatedAt: result.truncatedAt,
+                    parseFailure: result.parseFailure
                 )
             }
             var messages: [ServiceTranscriptMessage] = []
@@ -610,11 +636,17 @@ enum ServiceTranscriptReader {
                     )
                 )
             }
+            if messages.isEmpty, let parseFailure = result.parseFailure {
+                throw parseFailure
+            }
             return ReadResult(
                 messages: messages,
                 totalKnownComplete: result.totalKnownComplete,
-                truncatedAt: result.truncatedAt
+                truncatedAt: result.truncatedAt,
+                parseFailure: result.parseFailure
             )
+        } catch is CancellationError {
+            throw CancellationError()
         } catch let failure as ParserFailure where isFallbackUnsafeParserFailure(failure) {
             throw failure
         } catch {
@@ -642,12 +674,11 @@ enum ServiceTranscriptReader {
     }
 
     private static func isFallbackUnsafeParserFailure(_ failure: ParserFailure) -> Bool {
-        switch failure {
-        case .fileTooLarge, .messageLimitExceeded, .lineTooLarge, .invalidUtf8, .deeplyNestedRecord:
-            return true
-        default:
-            return false
-        }
+        // Every parser failure invalidates completeness. Falling back to the
+        // permissive legacy reader would turn a partial/corrupt live transcript
+        // into a falsely complete export or primer.
+        _ = failure
+        return true
     }
 
     private static func adapterSourceName(for source: String) -> SourceName? {

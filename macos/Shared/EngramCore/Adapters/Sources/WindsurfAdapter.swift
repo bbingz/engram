@@ -13,12 +13,14 @@ enum CascadeCacheSupport {
     static func readCache(
         locator: String,
         limits: ParserLimits,
-        reportFailures: Bool = false
+        reportFailures: Bool = false,
+        countsTowardMessageLimit: ((JSONObject) -> Bool)? = nil
     ) throws -> (JSONObject?, [JSONObject], ParserFailure?) {
         let (objects, failure) = try JSONLAdapterSupport.readObjects(
             locator: locator,
             limits: limits,
-            reportFailures: reportFailures
+            reportFailures: reportFailures,
+            countsTowardMessageLimit: countsTowardMessageLimit
         )
         if let failure { return (objects.first, Array(objects.dropFirst()), failure) }
         return (objects.first, Array(objects.dropFirst()), nil)
@@ -40,6 +42,15 @@ enum CascadeCacheSupport {
                 usage: nil
             )
         }
+    }
+
+    static func countsTowardMessageLimit(_ object: JSONObject) -> Bool {
+        guard let roleValue = JSONLAdapterSupport.string(object["role"]),
+              let role = NormalizedMessageRole(rawValue: roleValue)
+        else {
+            return false
+        }
+        return role == .user || role == .assistant
     }
 
     static func fileSize(_ url: URL) -> Int64? {
@@ -81,7 +92,8 @@ final class WindsurfAdapter: SessionAdapter, Sendable {
             let (metadata, rawMessages, failure) = try CascadeCacheSupport.readCache(
                 locator: locator,
                 limits: limits,
-                reportFailures: true
+                reportFailures: true,
+                countsTowardMessageLimit: CascadeCacheSupport.countsTowardMessageLimit
             )
             if let failure { return .failure(failure) }
             guard let metadata,
@@ -147,7 +159,8 @@ final class WindsurfAdapter: SessionAdapter, Sendable {
         let (_, rawMessages, failure) = try CascadeCacheSupport.readCache(
             locator: locator,
             limits: limits,
-            reportFailures: true
+            reportFailures: true,
+            countsTowardMessageLimit: CascadeCacheSupport.countsTowardMessageLimit
         )
         if let failure { throw failure }
         let messages = CascadeCacheSupport.normalizedMessages(from: rawMessages)
@@ -158,16 +171,15 @@ final class WindsurfAdapter: SessionAdapter, Sendable {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> StreamMessagesResult {
-        guard options.limit == nil else {
-            return StreamMessagesResult(messages: try await streamMessages(locator: locator, options: options))
-        }
         let result = try JSONLAdapterSupport.wholeDocumentMessagesWithMetadata(
             locator: locator,
             options: options,
-            limits: limits
-        ) { objects in
-            CascadeCacheSupport.normalizedMessages(from: Array(objects.dropFirst()))
-        }
+            limits: limits,
+            transform: { objects in
+                CascadeCacheSupport.normalizedMessages(from: Array(objects.dropFirst()))
+            },
+            countsTowardMessageLimit: CascadeCacheSupport.countsTowardMessageLimit
+        )
         return JSONLAdapterSupport.stream(result)
     }
 

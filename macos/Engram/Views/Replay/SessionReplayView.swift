@@ -3,7 +3,7 @@ import SwiftUI
 
 struct SessionReplayView: View {
     let sessionId: String
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
     @State private var replayState = ReplayState()
 
     var body: some View {
@@ -27,7 +27,7 @@ struct SessionReplayView: View {
                 VStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle")
                         .font(.title2)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Theme.orange)
                     Text(error)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -46,6 +46,21 @@ struct SessionReplayView: View {
             } else if !replayState.entries.isEmpty {
                 // Transport controls
                 transportBar
+
+                if let notice = replayState.truncationNotice {
+                    Divider()
+
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                        Text(notice)
+                    }
+                    .font(.caption)
+                    .foregroundStyle(Theme.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 6)
+                    .accessibilityIdentifier("replay_truncationNotice")
+                }
 
                 Divider()
 
@@ -75,15 +90,23 @@ struct SessionReplayView: View {
 
     // MARK: - Transport Bar
 
+    /// VoiceOver/help label for the play-pause toggle: names the action the
+    /// button will take, mirroring the icon swap (Wave 8-5).
+    static func playPauseLabel(isPlaying: Bool) -> String {
+        isPlaying ? "Pause" : "Play"
+    }
+
     private var transportBar: some View {
         HStack(spacing: 16) {
             // Step back
             Button(action: { replayState.stepBack() }) {
                 Image(systemName: "backward.frame.fill")
-                    .font(.system(size: 16))
+                    .scaledFont(16)
             }
             .buttonStyle(.plain)
             .disabled(replayState.currentIndex <= 0)
+            .accessibilityLabel("Step back")
+            .help("Step back")
 
             // Play / Pause
             Button(action: {
@@ -94,17 +117,21 @@ struct SessionReplayView: View {
                 }
             }) {
                 Image(systemName: replayState.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 20))
+                    .scaledFont(20)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(Self.playPauseLabel(isPlaying: replayState.isPlaying))
+            .help(Self.playPauseLabel(isPlaying: replayState.isPlaying))
 
             // Step forward
             Button(action: { replayState.stepForward() }) {
                 Image(systemName: "forward.frame.fill")
-                    .font(.system(size: 16))
+                    .scaledFont(16)
             }
             .buttonStyle(.plain)
             .disabled(replayState.currentIndex >= replayState.entries.count - 1)
+            .accessibilityLabel("Step forward")
+            .help("Step forward")
 
             Divider().frame(height: 20)
 
@@ -118,13 +145,14 @@ struct SessionReplayView: View {
                 }
             }
             .pickerStyle(.segmented)
+            .accessibilityLabel("Playback speed")
             .frame(width: 120)
 
             Spacer()
 
             // Position indicator
             Text(replayState.progress)
-                .font(.system(size: 12, design: .monospaced))
+                .scaledFont(12, design: .monospaced)
                 .foregroundStyle(.secondary)
 
             // Scrubber
@@ -181,7 +209,7 @@ struct SessionReplayView: View {
             // Header: role + type + timestamp
             HStack(spacing: 8) {
                 Text(entry.role.capitalized)
-                    .font(.system(size: 11, weight: .semibold))
+                    .scaledFont(11, weight: .semibold)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(roleColor(entry.role).opacity(0.15))
@@ -189,27 +217,27 @@ struct SessionReplayView: View {
                     .foregroundStyle(roleColor(entry.role))
 
                 Text(entry.type)
-                    .font(.system(size: 10))
+                    .scaledFont(10)
                     .foregroundStyle(.secondary)
 
                 Spacer()
 
                 if let ts = entry.timestamp {
                     Text(ts.prefix(19).replacingOccurrences(of: "T", with: " "))
-                        .font(.system(size: 10, design: .monospaced))
+                        .scaledFont(10, design: .monospaced)
                         .foregroundStyle(.tertiary)
                 }
 
                 if let tokens = entry.tokens, tokens > 0 {
                     Text("\(tokens) tok")
-                        .font(.system(size: 10))
+                        .scaledFont(10)
                         .foregroundStyle(.tertiary)
                 }
             }
 
             // Content
             Text(entry.preview)
-                .font(.system(size: 13))
+                .scaledFont(13)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -239,8 +267,8 @@ struct SessionReplayView: View {
         defer { replayState.isLoading = false }
 
         do {
-            let response = try await serviceClient.replayTimeline(sessionId: sessionId, limit: 500)
-            replayState.entries = response.entries.map { entry in
+            let response = try await serviceClient.replayTimeline(sessionId: sessionId, limit: 2_000)
+            let entries = response.entries.map { entry in
                 ReplayTimelineEntry(
                     index: entry.index,
                     role: entry.role,
@@ -251,6 +279,11 @@ struct SessionReplayView: View {
                     durationToNextMs: entry.durationToNextMs
                 )
             }
+            replayState.replaceTimeline(
+                entries,
+                totalEntries: response.totalEntries,
+                hasMore: response.hasMore == true
+            )
         } catch {
             replayState.error = error.localizedDescription
         }

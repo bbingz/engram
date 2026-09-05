@@ -4,6 +4,7 @@ import { readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { subagentTranscriptLayout } from '../core/subagent-transcript-path.js';
 import { isFileAccessible } from './_accessible.js';
 import { truncateJSON } from './_truncate.js';
 import type {
@@ -140,17 +141,20 @@ export class ClaudeCodeAdapter implements SessionAdapter {
         startTime || new Date(fileStat.mtimeMs).toISOString();
       const safeEndTime = endTime || safeStartTime;
 
-      const isSubagent = filePath.includes('/subagents/');
-      // Subagent files share sessionId with the parent — use agentId as the unique DB key
-      const id = isSubagent && agentId ? agentId : sessionId;
+      const subagentLayout = subagentTranscriptLayout(
+        filePath,
+        this.projectsRoot,
+      );
+      const isSubagent = subagentLayout != null;
+      // Subagent files share sessionId with the parent. Missing agentId must
+      // still use a stable child key or the upsert would clobber the parent row.
+      const id = isSubagent
+        ? agentId || `sub:${sessionId}:${subagentLayout.relativePath}`
+        : sessionId;
       const source = ClaudeCodeAdapter.detectSource(detectedModel, filePath);
 
       // Extract parent session ID from subagent path
-      let parentSessionId: string | undefined;
-      if (isSubagent) {
-        const match = filePath.match(/\/([^/]+)\/subagents\/[^/]+\.jsonl$/);
-        if (match) parentSessionId = match[1];
-      }
+      const parentSessionId = subagentLayout?.parentSessionId;
 
       return {
         id,

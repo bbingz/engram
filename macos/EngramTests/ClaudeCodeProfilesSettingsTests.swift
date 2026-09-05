@@ -247,7 +247,7 @@ final class ClaudeCodeProfilesSettingsTests: XCTestCase {
         )
 
         XCTAssertTrue(card.contains("ClaudeCodeProfilesSettingsCard"))
-        XCTAssertTrue(card.contains("@Environment(EngramServiceClient.self)"))
+        XCTAssertTrue(card.contains("@Environment(\\.engramServiceClient)"))
         XCTAssertTrue(card.contains("claudeCodeProfilesStatus()"))
         XCTAssertTrue(card.contains(".task { await loadStatus() }"))
         for identifier in [

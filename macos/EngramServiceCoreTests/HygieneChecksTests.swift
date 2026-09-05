@@ -4,6 +4,44 @@ import Foundation
 @testable import EngramServiceCore
 
 final class HygieneChecksTests: XCTestCase {
+    func testReleaseVerifyRequiresRuntimeFrameworks_repro() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let script = try String(
+            contentsOf: root.appendingPathComponent("macos/scripts/release-verify.sh"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(script.contains("Contents/Frameworks/"))
+        for framework in ["EngramServiceCore", "EngramCoreRead", "EngramCoreWrite", "GRDB-dynamic"] {
+            XCTAssertTrue(
+                script.contains(framework),
+                "release verification must require \(framework).framework"
+            )
+        }
+    }
+
+    func testDeployLocalPreflightsAndWaitsForAllBundledExecutables_repro() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let script = try String(
+            contentsOf: root.appendingPathComponent("macos/scripts/deploy-local.sh"),
+            encoding: .utf8
+        )
+        let hygiene = try XCTUnwrap(script.range(of: "release-verify.sh\" \"$SRC_APP\" --hygiene-only"))
+        let removal = try XCTUnwrap(script.range(of: "rm -rf \"$DEST_APP\""))
+        XCTAssertLessThan(hygiene.lowerBound, removal.lowerBound)
+        for processName in ["Engram", "EngramService", "EngramMCP"] {
+            XCTAssertTrue(script.contains(processName))
+        }
+        let waitStart = try XCTUnwrap(script.range(of: "for process_name in"))
+        let betweenWaitAndRemoval = String(script[waitStart.lowerBound..<removal.lowerBound])
+        XCTAssertTrue(betweenWaitAndRemoval.contains("exit 1"))
+    }
+
     func testCleanDatabaseScoresFullAndNoIssues() throws {
         let path = try seedHygieneFixture { db in
             try insertSession(db, id: "ok", messageCount: 4, sizeBytes: 4096)
@@ -27,6 +65,46 @@ final class HygieneChecksTests: XCTestCase {
         )
         XCTAssertTrue(response.issues.contains(where: { $0.kind == "empty-sessions" }))
         XCTAssertEqual(response.score, 96) // 100 - 2*2
+    }
+
+    func testSkipTierEmptySessionsDoNotAffectHygiene_repro() throws {
+        let path = try seedHygieneFixture { db in
+            try insertSession(db, id: "skip-empty", messageCount: 0, sizeBytes: 100, tier: "skip")
+        }
+        let response = try EngramServiceCommandHandler.hygiene(
+            EngramServiceHygieneRequest(force: false),
+            databasePath: path
+        )
+        XCTAssertFalse(response.issues.contains(where: { $0.kind == "empty-sessions" }))
+        XCTAssertEqual(response.score, 100)
+    }
+
+    func testSkipTierSuggestionsAndOrphansDoNotAffectHygiene_repro() throws {
+        let path = try seedHygieneFixture { db in
+            try insertSession(
+                db,
+                id: "skip-suggestion",
+                messageCount: 3,
+                sizeBytes: 4096,
+                suggestedParentId: "parent",
+                tier: "skip"
+            )
+            try insertSession(
+                db,
+                id: "skip-orphan",
+                messageCount: 3,
+                sizeBytes: 4096,
+                orphanStatus: "missing-parent",
+                tier: "skip"
+            )
+        }
+        let response = try EngramServiceCommandHandler.hygiene(
+            EngramServiceHygieneRequest(force: false),
+            databasePath: path
+        )
+        XCTAssertFalse(response.issues.contains(where: { $0.kind == "pending-suggestions" }))
+        XCTAssertFalse(response.issues.contains(where: { $0.kind == "orphans" }))
+        XCTAssertEqual(response.score, 100)
     }
 
     func testPendingSuggestionProducesInfoIssue() throws {
@@ -121,7 +199,8 @@ final class HygieneChecksTests: XCTestCase {
                   hidden_at TEXT,
                   parent_session_id TEXT,
                   suggested_parent_id TEXT,
-                  orphan_status TEXT
+                  orphan_status TEXT,
+                  tier TEXT
                 );
             """)
             try seed(db)
@@ -136,15 +215,16 @@ final class HygieneChecksTests: XCTestCase {
         sizeBytes: Int,
         hiddenAt: String? = nil,
         suggestedParentId: String? = nil,
-        orphanStatus: String? = nil
+        orphanStatus: String? = nil,
+        tier: String? = nil
     ) throws {
         try db.execute(
             sql: """
                 INSERT INTO sessions
-                  (id, message_count, size_bytes, hidden_at, suggested_parent_id, orphan_status)
-                VALUES (?, ?, ?, ?, ?, ?)
+                  (id, message_count, size_bytes, hidden_at, suggested_parent_id, orphan_status, tier)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            arguments: [id, messageCount, sizeBytes, hiddenAt, suggestedParentId, orphanStatus]
+            arguments: [id, messageCount, sizeBytes, hiddenAt, suggestedParentId, orphanStatus, tier]
         )
     }
 }

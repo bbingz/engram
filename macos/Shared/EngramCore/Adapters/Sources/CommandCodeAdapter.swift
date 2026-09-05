@@ -4,15 +4,18 @@ final class CommandCodeAdapter: SessionAdapter, Sendable {
     let source: SourceName = .commandcode
     private let projectsRoot: URL
     private let limits: ParserLimits
+    private let testHooks: JSONLIdentityTestHooks
 
     init(
         projectsRoot: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".commandcode/projects")
             .path,
-        limits: ParserLimits = .default
+        limits: ParserLimits = .default,
+        testHooks: JSONLIdentityTestHooks = JSONLIdentityTestHooks()
     ) {
         self.projectsRoot = URL(fileURLWithPath: projectsRoot)
         self.limits = limits
+        self.testHooks = testHooks
     }
 
     func detect() async -> Bool {
@@ -38,104 +41,49 @@ final class CommandCodeAdapter: SessionAdapter, Sendable {
             let (objects, failure) = try JSONLAdapterSupport.readObjects(
                 locator: locator,
                 limits: limits,
-                reportFailures: true
+                reportFailures: true,
+                countsTowardMessageLimit: {
+                    guard let message = Self.message(from: $0) else { return false }
+                    return message.role != .system
+                },
+                beforeIdentityValidation: testHooks.beforeFinalIdentityValidation
             )
-            if let failure { return .failure(failure) }
-
-            var sessionId = ""
-            var startTime = ""
-            var endTime = ""
-            var userCount = 0
-            var assistantCount = 0
-            var toolCount = 0
-            var systemCount = 0
-            var firstUserText = ""
-            var cwd = ""
-            var model: String?
-
-            for object in objects {
-                guard let role = JSONLAdapterSupport.string(object["role"]),
-                      role == "user" || role == "assistant" || role == "tool"
-                else { continue }
-                if sessionId.isEmpty, let value = JSONLAdapterSupport.string(object["sessionId"]) {
-                    sessionId = value
-                }
-                if cwd.isEmpty, let value = JSONLAdapterSupport.string(object["cwd"]) {
-                    cwd = value
-                }
-                if model == nil, let value = JSONLAdapterSupport.string(object["model"]) {
-                    model = value
-                }
-                if model == nil, let value = JSONLAdapterSupport.string(JSONLAdapterSupport.object(object["metadata"])?["model"]) {
-                    model = value
-                }
-                let timestamp = Self.timestamp(from: object)
-                if startTime.isEmpty, let timestamp { startTime = timestamp }
-                if let timestamp { endTime = timestamp }
-
-                switch role {
-                case "user":
-                    let text = Self.extractContent(object["content"])
-                    // Classify Claude-style injected wrappers as system messages
-                    // (parity with the TS commandcode adapter); otherwise they
-                    // inflate the user message count and pollute the summary.
-                    if Self.isSystemInjection(text) {
-                        systemCount += 1
-                    } else {
-                        userCount += 1
-                        if firstUserText.isEmpty { firstUserText = text }
-                    }
-                case "assistant":
-                    assistantCount += 1
-                case "tool":
-                    toolCount += 1
-                default:
-                    break
-                }
+            let messages = objects.compactMap(Self.message(from:))
+            if let failure,
+               failure != .fileModifiedDuringParse || messages.isEmpty {
+                return .failure(failure)
             }
+            return Self.sessionInfo(from: objects, locator: locator)
+        } catch let failure as ParserFailure {
+            return .failure(failure)
+        } catch {
+            return .failure(.malformedJSON)
+        }
+    }
 
-            guard !sessionId.isEmpty else { return .failure(.malformedJSON) }
-            // R184-3: injection-only / empty CommandCode files must not become
-            // zero-count browsable sessions. Terminal, same as Qwen.
-            guard userCount + assistantCount + toolCount > 0 else {
-                return .failure(.noVisibleMessages)
-            }
-            // Boundary/legacy transcripts may omit every timestamp. Fall back to
-            // the file mtime so startTime is never an empty sort key.
-            if startTime.isEmpty {
-                let attrs = try? FileManager.default.attributesOfItem(atPath: locator)
-                let mtime = attrs?[.modificationDate] as? Date ?? Date(timeIntervalSince1970: 0)
-                startTime = Phase4AdapterSupport.isoFromSeconds(mtime.timeIntervalSince1970)
-                endTime = ""
-            }
-            return .success(
-                NormalizedSessionInfo(
-                    id: sessionId,
-                    source: .commandcode,
-                    startTime: startTime,
-                    endTime: endTime != startTime && !endTime.isEmpty ? endTime : nil,
-                    cwd: cwd.isEmpty ? Self.decodeCwd(from: locator) : cwd,
-                    project: nil,
-                    model: model,
-                    messageCount: userCount + assistantCount + toolCount,
-                    userMessageCount: userCount,
-                    assistantMessageCount: assistantCount,
-                    toolMessageCount: toolCount,
-                    systemMessageCount: systemCount,
-                    summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200)),
-                    filePath: locator,
-                    sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
-                    indexedAt: nil,
-                    agentRole: nil,
-                    originator: nil,
-                    origin: nil,
-                    summaryMessageCount: nil,
-                    tier: nil,
-                    qualityScore: nil,
-                    parentSessionId: nil,
-                    suggestedParentId: nil
-                )
+    func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
+        do {
+            let (objects, failure) = try JSONLAdapterSupport.readObjects(
+                locator: locator,
+                limits: limits,
+                reportFailures: true,
+                countsTowardMessageLimit: {
+                    guard let message = Self.message(from: $0) else { return false }
+                    return message.role != .system
+                },
+                beforeIdentityValidation: testHooks.beforeFinalIdentityValidation
             )
+            let messages = objects.compactMap(Self.message(from:))
+            if let failure,
+               failure != .fileModifiedDuringParse || messages.isEmpty {
+                return .failure(failure)
+            }
+            let info: NormalizedSessionInfo
+            switch Self.sessionInfo(from: objects, locator: locator) {
+            case .success(let value): info = value
+            case .failure(let failure): return .failure(failure)
+            }
+            return .success(IndexingScan(info: info, messages: messages, parseFailure: failure))
         } catch let failure as ParserFailure {
             return .failure(failure)
         } catch {
@@ -151,17 +99,21 @@ final class CommandCodeAdapter: SessionAdapter, Sendable {
             let (objects, failure) = try JSONLAdapterSupport.readObjects(
                 locator: locator,
                 limits: limits,
-                reportFailures: true
+                reportFailures: true,
+                countsTowardMessageLimit: {
+                    guard let message = Self.message(from: $0) else { return false }
+                    return message.role != .system
+                }
             )
-            if let failure { throw failure }
-            return JSONLAdapterSupport.stream(
-                JSONLAdapterSupport.applyWindow(objects.compactMap(Self.message(from:)), options: options)
-            )
+            let messages = objects.compactMap(Self.message(from:))
+            if let failure, messages.isEmpty { throw failure }
+            return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
         }
         let messages = try JSONLAdapterSupport.windowedMessages(
             locator: locator,
             options: options,
             limits: limits,
+            countsTowardMessageLimit: { $0.role != .system },
             transform: Self.message(from:)
         )
         return JSONLAdapterSupport.stream(messages)
@@ -175,6 +127,7 @@ final class CommandCodeAdapter: SessionAdapter, Sendable {
             locator: locator,
             options: options,
             limits: limits,
+            countsTowardMessageLimit: { $0.role != .system },
             transform: Self.message(from:)
         )
         return JSONLAdapterSupport.stream(result)
@@ -211,15 +164,93 @@ final class CommandCodeAdapter: SessionAdapter, Sendable {
     /// Detect Claude-style system wrappers injected into user-role messages.
     /// Mirrors the TS commandcode adapter so parity fixtures agree.
     private static func isSystemInjection(_ text: String) -> Bool {
-        text.hasPrefix("# AGENTS.md instructions for ") ||
-            text.contains("<INSTRUCTIONS>") ||
-            text.hasPrefix("<local-command-caveat>") ||
-            text.hasPrefix("<local-command-stdout>") ||
-            text.contains("<command-name>") ||
-            text.contains("<command-message>") ||
-            text.hasPrefix("Unknown skill: ") ||
-            text.hasPrefix("Invoke the superpowers:") ||
-            text.hasPrefix("Base directory for this skill:")
+        SystemMessageClassifier.classify(content: text, source: "commandcode") != .none
+    }
+
+    private static func sessionInfo(
+        from objects: [JSONLAdapterSupport.JSONObject],
+        locator: String
+    ) -> AdapterParseResult<NormalizedSessionInfo> {
+        var sessionId = ""
+        var startTime = ""
+        var endTime = ""
+        var userCount = 0
+        var assistantCount = 0
+        var toolCount = 0
+        var systemCount = 0
+        var firstUserText = ""
+        var cwd = ""
+        var model: String?
+
+        for object in objects {
+            guard let role = JSONLAdapterSupport.string(object["role"]),
+                  role == "user" || role == "assistant" || role == "tool"
+            else { continue }
+            if sessionId.isEmpty, let value = JSONLAdapterSupport.string(object["sessionId"]) {
+                sessionId = value
+            }
+            if cwd.isEmpty, let value = JSONLAdapterSupport.string(object["cwd"]) { cwd = value }
+            if model == nil, let value = JSONLAdapterSupport.string(object["model"]) { model = value }
+            if model == nil,
+               let value = JSONLAdapterSupport.string(
+                   JSONLAdapterSupport.object(object["metadata"])?["model"]
+               ) {
+                model = value
+            }
+            let timestamp = timestamp(from: object)
+            if startTime.isEmpty, let timestamp { startTime = timestamp }
+            if let timestamp { endTime = timestamp }
+            switch role {
+            case "user":
+                let text = extractContent(object["content"])
+                if isSystemInjection(text) {
+                    systemCount += 1
+                } else {
+                    userCount += 1
+                    if firstUserText.isEmpty { firstUserText = text }
+                }
+            case "assistant": assistantCount += 1
+            case "tool": toolCount += 1
+            default: break
+            }
+        }
+
+        guard !sessionId.isEmpty else { return .failure(.malformedJSON) }
+        guard userCount + assistantCount + toolCount > 0 else {
+            return .failure(.noVisibleMessages)
+        }
+        if startTime.isEmpty {
+            let attrs = try? FileManager.default.attributesOfItem(atPath: locator)
+            let mtime = attrs?[.modificationDate] as? Date ?? Date(timeIntervalSince1970: 0)
+            startTime = Phase4AdapterSupport.isoFromSeconds(mtime.timeIntervalSince1970)
+            endTime = ""
+        }
+        return .success(NormalizedSessionInfo(
+            id: sessionId,
+            source: .commandcode,
+            startTime: startTime,
+            endTime: endTime != startTime && !endTime.isEmpty ? endTime : nil,
+            cwd: cwd.isEmpty ? decodeCwd(from: locator) : cwd,
+            project: nil,
+            model: model,
+            messageCount: userCount + assistantCount + toolCount,
+            userMessageCount: userCount,
+            assistantMessageCount: assistantCount,
+            toolMessageCount: toolCount,
+            systemMessageCount: systemCount,
+            summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200)),
+            filePath: locator,
+            sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
+            indexedAt: nil,
+            agentRole: nil,
+            originator: nil,
+            origin: nil,
+            summaryMessageCount: nil,
+            tier: nil,
+            qualityScore: nil,
+            parentSessionId: nil,
+            suggestedParentId: nil
+        ))
     }
 
     private static func extractContent(_ content: Any?) -> String {

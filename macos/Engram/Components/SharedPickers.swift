@@ -87,7 +87,7 @@ struct MultiSelectPicker: View {
                                             .frame(width: 8, height: 8)
                                     }
                                     Text(verbatim: labelForItem?(item) ?? item)
-                                        .font(.system(size: 12))
+                                        .scaledFont(12)
                                         .foregroundStyle(.primary)
                                         .lineLimit(1)
                                     Spacer()

@@ -14,7 +14,7 @@ import SwiftUI
 
 struct RenameSheet: View {
     let projectName: String
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
     @Environment(\.dismiss) var dismiss
 
     @State private var availableCwds: [String] = []
@@ -86,7 +86,7 @@ struct RenameSheet: View {
                     systemImage: "questionmark.folder"
                 )
                 .font(.caption)
-                .foregroundStyle(.orange)
+                .foregroundStyle(Theme.orange)
             } else {
                 if availableCwds.count > 1 {
                     Text("Source path (multiple cwds for this project):")
@@ -155,7 +155,7 @@ struct RenameSheet: View {
                             "Path changed — click Preview again to refresh these numbers."
                         )
                         .font(.caption2)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Theme.orange)
                     }
                 }
 
@@ -269,7 +269,7 @@ struct RenameSheet: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: "doc.text.magnifyingglass")
-                    .foregroundStyle(.blue)
+                    .foregroundStyle(Theme.accent)
                 Text("Dry-run impact")
                     .font(.caption.weight(.medium))
             }
@@ -312,7 +312,7 @@ struct RenameSheet: View {
                 } label: {
                     Text("Show affected files (\(manifest.count))")
                         .font(.caption2)
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(Theme.accent)
                 }
             }
 
@@ -321,7 +321,7 @@ struct RenameSheet: View {
                     "⚠️ \(preview.review.own.count) residual own-scope ref(s) after patch — manual review may be needed"
                 )
                 .font(.caption2)
-                .foregroundStyle(.orange)
+                .foregroundStyle(Theme.orange)
             }
 
             // Round 4 Critical: surface perSource.issues (too_large /
@@ -335,14 +335,14 @@ struct RenameSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("⚠️ \(totalIssues) file(s) could not be scanned")
                         .font(.caption2.weight(.medium))
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Theme.orange)
                     ForEach(preview.perSource ?? []) { src in
                         if let issues = src.issues, !issues.isEmpty {
                             ForEach(issues) { issue in
                                 HStack(spacing: 4) {
                                     Text(reasonLabel(issue.reason))
                                         .font(.caption2.weight(.medium))
-                                        .foregroundStyle(.orange)
+                                        .foregroundStyle(Theme.orange)
                                     Text(shortenFilePath(issue.path))
                                         .font(.system(.caption2, design: .monospaced))
                                         .foregroundStyle(.secondary)
@@ -365,7 +365,7 @@ struct RenameSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("ℹ️ \(skipped.count) source(s) not renamed")
                         .font(.caption2.weight(.medium))
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(Theme.accent)
                     ForEach(skipped) { s in
                         Text("• \(s.sourceId): \(skippedReasonLabel(s.reason))")
                             .font(.caption2)
@@ -426,7 +426,7 @@ struct RenameSheet: View {
                 "Rename committed, but \(count) file(s) in the project's own scope still reference the old path.",
                 systemImage: "exclamationmark.triangle"
             )
-            .foregroundStyle(.orange)
+            .foregroundStyle(Theme.orange)
             .font(.caption)
             Text(
                 "This usually means the auto-fix regex didn't cover an edge case. Re-run the move to retry the auto-fix, or open Migration History to review what changed."
@@ -435,7 +435,7 @@ struct RenameSheet: View {
             .foregroundStyle(.secondary)
         }
         .padding(8)
-        .background(Color.orange.opacity(0.08))
+        .background(Theme.orange.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
@@ -443,7 +443,7 @@ struct RenameSheet: View {
     private func errorBox(_ message: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Label(message, systemImage: "exclamationmark.triangle")
-                .foregroundStyle(.red)
+                .foregroundStyle(Theme.red)
                 .font(.caption)
             // Round 4: structured error details (DirCollisionError /
             // SharedEncodingCollisionError) expose sourceId + conflict
@@ -468,7 +468,7 @@ struct RenameSheet: View {
             }
         }
         .padding(8)
-        .background(Color.red.opacity(0.08))
+        .background(Theme.red.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
@@ -525,11 +525,12 @@ struct RenameSheet: View {
         errorDetails = nil
         isPreviewLoading = true
         defer { isPreviewLoading = false; activeTask = nil }
+        let trimmedNewPath = newPath.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
             let res = try await serviceClient.projectMove(
                 EngramServiceProjectMoveRequest(
                     src: selectedCwd,
-                    dst: newPath,
+                    dst: trimmedNewPath,
                     dryRun: true,
                     force: false,
                     auditNote: nil,
@@ -560,6 +561,7 @@ struct RenameSheet: View {
         }
         // Publish operationId before await so Cancel can call service cancel.
         let prepared = ProjectLongOperationRunner.prepare(session: longOpSession)
+        let trimmedNewPath = newPath.trimmingCharacters(in: .whitespacesAndNewlines)
         longOpSession = prepared.session
         isReconnecting = prepared.session.transientFailures > 0
         let executeResult = await ProjectLongOperationRunner.execute(
@@ -570,7 +572,7 @@ struct RenameSheet: View {
             try await serviceClient.projectMove(
                 EngramServiceProjectMoveRequest(
                     src: selectedCwd,
-                    dst: newPath,
+                    dst: trimmedNewPath,
                     dryRun: false,
                     force: false,
                     auditNote: nil,

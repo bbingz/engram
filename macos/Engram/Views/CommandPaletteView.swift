@@ -11,7 +11,7 @@ struct CommandPaletteView: View {
     let onRegenerateTitles: () -> Void
 
     @Environment(DatabaseManager.self) var db
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var query = ""
@@ -26,6 +26,10 @@ struct CommandPaletteView: View {
     @Environment(\.dismiss) private var dismiss
 
     private var isCommandMode: Bool { query.hasPrefix(">") }
+
+    private var queryReadiness: SearchQueryReadiness {
+        SearchQueryReadiness.classify(query: query)
+    }
 
     private var filteredCommands: [PaletteItem] {
         let commands = PaletteItem.navigationCommands(navigate: onNavigate)
@@ -49,6 +53,7 @@ struct CommandPaletteView: View {
                     id: hit.id,
                     title: hit.title,
                     subtitle: hit.snippet.isEmpty ? nil : hit.snippet,
+                    origin: hit.origin,
                     onSelect: { onSelectSession(hit.id) },
                     onResume: { resume(id: hit.id) },
                     onExport: { export(id: hit.id) }
@@ -72,6 +77,7 @@ struct CommandPaletteView: View {
         let title: String
         let snippet: String
         let date: String
+        var origin: String? = nil
     }
 
     var body: some View {
@@ -79,20 +85,20 @@ struct CommandPaletteView: View {
             // Search field
             HStack(spacing: 8) {
                 Image(systemName: isCommandMode ? "chevron.right" : "magnifyingglass")
-                    .foregroundStyle(isCommandMode ? .blue : .secondary)
-                    .font(.system(size: 14))
+                    .foregroundStyle(isCommandMode ? Theme.accent : .secondary)
+                    .scaledFont(14)
                 TextField(isCommandMode ? "Type a command…" : "Search sessions… (> for commands)", text: $query)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 14))
+                    .scaledFont(14)
                     .focused($isFocused)
                     .accessibilityIdentifier("commandPalette_search")
                     .onSubmit { executeSelected() }
-                    .onChange(of: query) { _, newValue in
+                    .onChange(of: query) { _, _ in
                         selectedIndex = 0
                         searchTask?.cancel()
-                        if !isCommandMode && !newValue.isEmpty {
+                        if !isCommandMode && queryReadiness == .ready {
                             performSearch()
-                        } else if newValue.isEmpty {
+                        } else if !isCommandMode {
                             searchTask = nil
                             isSearching = false
                             sessionResults = []
@@ -107,7 +113,7 @@ struct CommandPaletteView: View {
                 }
                 Button { dismiss() } label: {
                     Text("esc")
-                        .font(.system(size: 10))
+                        .scaledFont(10)
                         .foregroundStyle(.tertiary)
                         .padding(.horizontal, 4)
                         .padding(.vertical, 2)
@@ -154,7 +160,17 @@ struct CommandPaletteView: View {
             }
 
             // Results (always keep selection/list when exporting)
-            if !query.isEmpty && !isSearching && searchOutcome == .failed {
+            if !isCommandMode && queryReadiness == .tooShort {
+                VStack(spacing: 6) {
+                    Text("Type at least 2 characters")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("Type > for navigation commands")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if !query.isEmpty && !isSearching && searchOutcome == .failed {
                 VStack(spacing: 6) {
                     Text("Search unavailable")
                         .font(.caption)
@@ -176,7 +192,7 @@ struct CommandPaletteView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if query.isEmpty {
+            } else if !isCommandMode && queryReadiness == .idle {
                 VStack(spacing: 6) {
                     Text("Type to search sessions")
                         .font(.caption)
@@ -247,16 +263,20 @@ struct CommandPaletteView: View {
             } label: {
                 HStack(spacing: 10) {
                     Image(systemName: item.icon)
-                        .font(.system(size: 12))
+                        .scaledFont(12)
                         .frame(width: 20)
                         .foregroundStyle(isSelected ? .white : .secondary)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(item.title)
-                            .font(.system(size: 13))
-                            .foregroundStyle(isSelected ? .white : .primary)
+                        HStack(spacing: 6) {
+                            Text(item.title)
+                                .scaledFont(13)
+                                .foregroundStyle(isSelected ? .white : .primary)
+                                .lineLimit(1)
+                            OriginBadge(origin: item.origin)
+                        }
                         if let subtitle = item.subtitle {
-                            Text(subtitle)
-                                .font(.system(size: 11))
+                            Text(SnippetHighlighter.attributed(subtitle))
+                                .scaledFont(11)
                                 .foregroundStyle(isSelected ? .white.opacity(0.7) : .secondary)
                                 .lineLimit(1)
                         }
@@ -275,7 +295,7 @@ struct CommandPaletteView: View {
                         secondary.run()
                     } label: {
                         Image(systemName: secondary.icon)
-                            .font(.system(size: 11))
+                            .scaledFont(11)
                             .foregroundStyle(.white)
                     }
                     .buttonStyle(.plain)
@@ -338,7 +358,11 @@ struct CommandPaletteView: View {
     }
 
     private func performSearch() {
-        guard !query.isEmpty else { return }
+        guard SearchQueryReadiness.classify(query: query) == .ready else {
+            sessionResults = []
+            searchFailed = false
+            return
+        }
         // Cancel any in-flight search before starting a new one — avoids racing
         // state writes and stops the old Task mutating state after dismiss.
         searchTask?.cancel()
@@ -364,7 +388,8 @@ struct CommandPaletteView: View {
                         id: item.id,
                         title: item.generatedTitle ?? item.title ?? item.summary ?? item.project ?? "Untitled",
                         snippet: item.snippet ?? "",
-                        date: item.startTime.map { String($0.prefix(10)) } ?? ""
+                        date: item.startTime.map { String($0.prefix(10)) } ?? "",
+                        origin: item.origin
                     )
                 }
             } catch {
@@ -384,7 +409,8 @@ struct CommandPaletteView: View {
                             id: session.id,
                             title: session.displayTitle,
                             snippet: "",
-                            date: session.displayDate
+                            date: session.displayDate,
+                            origin: session.origin
                         )
                     }
                 } catch {

@@ -73,10 +73,14 @@ final class IndexerParityTests: XCTestCase {
 
     func testComputeTierMatchesNodeReferenceCases() {
         XCTAssertEqual(SessionTier.compute(TierInput(agentRole: "subagent")), .skip)
-        XCTAssertEqual(SessionTier.compute(TierInput(filePath: "/home/user/.claude/projects/abc/subagents/xyz.jsonl")), .skip)
-        // row 32: workflow-nested path is still /subagents/ → skip.
+        XCTAssertEqual(
+            SessionTier.compute(TierInput(filePath: "/home/user/custom/subagents/projects/abc.jsonl")),
+            .normal
+        )
+        // Row 32: the adapter validates the workflow layout and stamps agentRole.
         XCTAssertEqual(
             SessionTier.compute(TierInput(
+                agentRole: "subagent",
                 filePath: "/home/user/.claude/projects/abc/uuid/subagents/workflows/wf_x/agent-y.jsonl"
             )),
             .skip
@@ -593,6 +597,237 @@ final class IndexerParityTests: XCTestCase {
         XCTAssertEqual(adapter.streamCount, 1, "unchanged startup index must not reparse message streams")
     }
 
+    func testStartupIndexAllForceReparseReadsUnchangedKnownLocator_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("startup-index-force-reparse-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = root.appendingPathComponent("session.jsonl")
+        try "synthetic\n".write(to: locator, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_000)],
+            ofItemAtPath: locator.path
+        )
+        let adapter = CountingSyntheticFileSessionAdapter(locator: locator.path)
+
+        _ = try await writer.indexAllSessions(adapters: [adapter])
+        let streamCountBeforeForce = adapter.streamCount
+        _ = try await writer.indexAllSessions(
+            adapters: [adapter],
+            forceReparseKnownFiles: true
+        )
+
+        XCTAssertEqual(streamCountBeforeForce, 1)
+        XCTAssertEqual(
+            adapter.streamCount,
+            2,
+            "usage-parser backfills must reparse an unchanged known transcript before stamping their version"
+        )
+    }
+
+    func testStartupIndexAllReparsesV1PathStampedSubagent_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("startup-index-v1-subagent-\(UUID().uuidString)", isDirectory: true)
+        let projectsRoot = root.appendingPathComponent("custom/subagents/projects", isDirectory: true)
+        let project = projectsRoot.appendingPathComponent("-tmp-project", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = project.appendingPathComponent("stale-path-subagent.jsonl")
+        var records: [[String: Any]] = []
+        for index in 0..<20 {
+            let isUser = index.isMultiple(of: 2)
+            records.append([
+                "type": isUser ? "user" : "assistant",
+                "sessionId": "stale-path-subagent",
+                "uuid": "message-\(index)",
+                "cwd": "/tmp/project",
+                "timestamp": String(format: "2026-08-23T00:00:%02dZ", index),
+                "message": [
+                    "role": isUser ? "user" : "assistant",
+                    "content": "message \(index)",
+                ],
+            ])
+        }
+        try writeJSONL(records, to: locator)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_000)],
+            ofItemAtPath: locator.path
+        )
+        let adapter = ClaudeCodeAdapter(projectsRoot: projectsRoot.path)
+
+        _ = try await writer.indexAllSessions(adapters: [adapter])
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                UPDATE sessions
+                SET tier = 'skip',
+                    agent_role = 'subagent',
+                    snapshot_hash = 'legacy-path-classification'
+                WHERE id = 'stale-path-subagent'
+                """
+            )
+            try db.execute(
+                sql: """
+                UPDATE file_index_state
+                SET schema_version = 1
+                WHERE source = 'claude-code' AND locator = ?
+                """,
+                arguments: [locator.path]
+            )
+        }
+
+        let result = try await writer.indexAllSessions(adapters: [adapter])
+
+        XCTAssertEqual(result.indexed, 1)
+        try writer.read { db in
+            let row = try XCTUnwrap(Row.fetchOne(
+                db,
+                sql: "SELECT tier, agent_role FROM sessions WHERE id = 'stale-path-subagent'"
+            ))
+            XCTAssertEqual(row["tier"] as String?, "premium")
+            XCTAssertNil(row["agent_role"] as String?)
+            XCTAssertEqual(
+                try Int.fetchOne(
+                    db,
+                    sql: """
+                    SELECT COUNT(*) FROM sessions s
+                    WHERE s.id = 'stale-path-subagent'
+                      AND \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
+                    """
+                ),
+                1
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(
+                    db,
+                    sql: """
+                    SELECT schema_version FROM file_index_state
+                    WHERE source = 'claude-code' AND locator = ?
+                    """,
+                    arguments: [locator.path]
+                ),
+                FileIndexState.currentSchemaVersion
+            )
+        }
+    }
+
+    func testStartupIndexAllReparsesV2QoderProjectSubagentIdentity_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("startup-index-v2-qoder-subagent-\(UUID().uuidString)", isDirectory: true)
+        let projectsRoot = root.appendingPathComponent("projects", isDirectory: true)
+        let project = projectsRoot.appendingPathComponent("encoded-project", isDirectory: true)
+        let subagents = project.appendingPathComponent("subagents", isDirectory: true)
+        try FileManager.default.createDirectory(at: subagents, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let parentID = "11111111-2222-3333-4444-555555555555"
+        let parent = project.appendingPathComponent("\(parentID).jsonl")
+        let child = subagents.appendingPathComponent("agent-worker.jsonl")
+        let childID = "sub:\(parentID):subagents/agent-worker.jsonl"
+
+        func records(_ prompt: String) -> [[String: Any]] {
+            [
+                [
+                    "type": "user", "sessionId": parentID, "cwd": "/tmp/qoder",
+                    "timestamp": "2026-08-23T00:00:00Z",
+                    "message": ["role": "user", "content": prompt],
+                ],
+                [
+                    "type": "assistant", "sessionId": parentID, "cwd": "/tmp/qoder",
+                    "timestamp": "2026-08-23T00:00:01Z",
+                    "message": ["role": "assistant", "content": "done"],
+                ],
+            ]
+        }
+        try writeJSONL(records("parent task"), to: parent)
+        try writeJSONL(records("child task"), to: child)
+        for locator in [parent, child] {
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date(timeIntervalSince1970: 1_000)],
+                ofItemAtPath: locator.path
+            )
+        }
+        let adapter = QoderAdapter(projectsRoot: projectsRoot.path)
+        let initialLocators = try await adapter.listSessionLocators()
+        let childLocator = try XCTUnwrap(
+            initialLocators.first { $0.hasSuffix("/encoded-project/subagents/agent-worker.jsonl") }
+        )
+
+        _ = try await writer.indexAllSessions(adapters: [adapter])
+        let childStat = try XCTUnwrap(FileIndexStat.directFileStat(locator: childLocator))
+        try writer.write { db in
+            try db.execute(sql: "DELETE FROM sessions WHERE id = ?", arguments: [childID])
+            try db.execute(
+                sql: """
+                INSERT INTO file_index_state (
+                  source, locator, size_bytes, mtime_ns, inode, device,
+                  parsed_offset, boundary_hash, parse_status, failure_kind,
+                  retry_after, retry_count, last_error, schema_version, updated_at
+                ) VALUES ('qoder', ?, ?, ?, ?, ?, 0, NULL, 'ok', NULL, NULL, 0, NULL, 2, 0)
+                ON CONFLICT(source, locator) DO UPDATE SET
+                  size_bytes = excluded.size_bytes,
+                  mtime_ns = excluded.mtime_ns,
+                  inode = excluded.inode,
+                  device = excluded.device,
+                  parse_status = 'ok',
+                  schema_version = 2
+                """,
+                arguments: [
+                    childLocator,
+                    childStat.sizeBytes,
+                    childStat.modifiedAtNanos,
+                    childStat.inode,
+                    childStat.device,
+                ]
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT schema_version FROM file_index_state WHERE source = 'qoder' AND locator = ?",
+                    arguments: [childLocator]
+                ),
+                2
+            )
+        }
+
+        let locators = try await adapter.listSessionLocators()
+        XCTAssertTrue(locators.contains(childLocator), "locators: \(locators)")
+        guard case .success(let childScan) = try await adapter.scanForIndexing(locator: childLocator) else {
+            return XCTFail("Qoder project subagent must remain directly parseable")
+        }
+        XCTAssertEqual(childScan.info.id, childID)
+        _ = try await writer.indexAllSessions(adapters: [adapter])
+
+        try writer.read { db in
+            let ids = try String.fetchAll(db, sql: "SELECT id FROM sessions ORDER BY id")
+            XCTAssertTrue(ids.contains(childID), "indexed ids: \(ids)")
+            let parentRow = try XCTUnwrap(Row.fetchOne(
+                db,
+                sql: "SELECT id FROM sessions WHERE id = ?",
+                arguments: [parentID]
+            ))
+            XCTAssertEqual(parentRow["id"] as String?, parentID)
+            let childRow = try XCTUnwrap(Row.fetchOne(
+                db,
+                sql: "SELECT id, parent_session_id, agent_role, tier FROM sessions WHERE id = ?",
+                arguments: [childID]
+            ))
+            XCTAssertEqual(childRow["parent_session_id"] as String?, parentID)
+            XCTAssertEqual(childRow["agent_role"] as String?, "subagent")
+            XCTAssertEqual(childRow["tier"] as String?, "skip")
+            XCTAssertEqual(
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT schema_version FROM file_index_state WHERE source = 'qoder' AND locator = ?",
+                    arguments: [childLocator]
+                ),
+                FileIndexState.currentSchemaVersion
+            )
+        }
+    }
+
     func testStartupIndexAllDefersKnownHotFileLocators() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("startup-index-hot-\(UUID().uuidString)", isDirectory: true)
@@ -892,7 +1127,7 @@ final class IndexerParityTests: XCTestCase {
         XCTAssertEqual(adapter.parseCount, 0, "retryable parse failures should honor retry_after before reparsing")
     }
 
-    func testStartupIndexBackfillsFileIndexStateWhenSkippingKnownSessionLocatorWithInstructionSignals() async throws {
+    func testStartupIndexHealsMissingFileIndexStateEvenWithInstructionSignals_repro() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("startup-index-manifest-backfill-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -923,11 +1158,11 @@ final class IndexerParityTests: XCTestCase {
         let result = try await writer.indexAllSessions(adapters: [adapter])
         let states = try writer.knownFileIndexStates(source: .codex, locators: [locator.path])
 
-        XCTAssertEqual(result.indexed, 0)
-        XCTAssertEqual(adapter.streamCount, 0, "known locators with instruction signals should not be reparsed during startup backfill")
-        // Wave 7A C01: startup deferral must not invent a success parseStatus for
-        // an unparsed identity — leave state absent/dirty so later scans recover.
-        XCTAssertNil(states[locator.path], "deferral must not stamp file_index_state success")
+        XCTAssertEqual(result.indexed, 1)
+        XCTAssertEqual(adapter.streamCount, 1, "a sessions row without file_index_state must heal through a real parse")
+        let state = try XCTUnwrap(states[locator.path])
+        XCTAssertEqual(state.schemaVersion, FileIndexState.currentSchemaVersion)
+        XCTAssertEqual(state.parseStatus, .ok)
     }
 
     func testInstructionBackfillIndexesExistingReliableRowsMissedByAdapterListing() async throws {
@@ -1591,6 +1826,102 @@ final class IndexerParityTests: XCTestCase {
         XCTAssertEqual(updated?["tier"] as String?, "skip")
     }
 
+    func testOpenCodeChildFirstIndexLinksParentWithoutHidingOrdinaryFork_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("opencode-parent-index-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("opencode.db").path
+        let source = try DatabaseQueue(path: dbPath)
+        try await source.write { db in
+            try db.execute(sql: """
+                CREATE TABLE session (
+                  id TEXT PRIMARY KEY, parent_id TEXT, slug TEXT, agent TEXT,
+                  directory TEXT, title TEXT, time_created INTEGER,
+                  time_updated INTEGER, time_archived INTEGER
+                );
+                CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT);
+                CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, time_created INTEGER, data TEXT);
+                INSERT INTO session VALUES
+                  ('parent', NULL, 'root', 'build', '/tmp/project', 'Root', 1000, 1000, NULL),
+                  ('fork', 'parent', 'continued', 'build', '/tmp/project', 'Ordinary continued fork', 2000, 3000, NULL),
+                  ('task', 'parent', 'task', 'explore', '/tmp/project', 'Investigate (@explore subagent)', 2000, 4000, NULL),
+                  ('orphan-task', 'missing', 'task', 'explore', '/tmp/project', 'Missing (@explore subagent)', 2000, 5000, NULL);
+                """)
+            for (index, id) in ["parent", "fork", "task", "orphan-task"].enumerated() {
+                for turn in 0..<2 {
+                    let messageId = "m-\(id)-\(turn)"
+                    let role = turn == 0 ? "user" : "assistant"
+                    try db.execute(
+                        sql: "INSERT INTO message VALUES (?, ?, ?, ?)",
+                        arguments: [messageId, id, 5_000 + index * 10 + turn, "{\"role\":\"\(role)\"}"]
+                    )
+                    try db.execute(
+                        sql: "INSERT INTO part VALUES (?, ?, ?, ?)",
+                        arguments: ["p-\(id)-\(turn)", messageId, 5_000 + index * 10 + turn, #"{"type":"text","text":"hello"}"#]
+                    )
+                }
+            }
+        }
+
+        let result = try await writer.indexAllSessions(adapters: [OpenCodeAdapter(dbPath: dbPath)])
+        XCTAssertEqual(result.indexed, 4)
+        let rows = try writer.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT id, parent_session_id, link_source, agent_role, tier
+                    FROM sessions WHERE id IN ('fork', 'orphan-task', 'task') ORDER BY id
+                    """
+            )
+        }
+
+        XCTAssertEqual(rows[0]["id"] as String?, "fork")
+        XCTAssertEqual(rows[0]["parent_session_id"] as String?, "parent")
+        XCTAssertEqual(rows[0]["link_source"] as String?, "path")
+        XCTAssertNil(rows[0]["agent_role"] as String?)
+        XCTAssertNotEqual(rows[0]["tier"] as String?, "skip")
+        XCTAssertEqual(rows[1]["id"] as String?, "orphan-task")
+        XCTAssertNil(rows[1]["parent_session_id"] as String?)
+        XCTAssertNil(rows[1]["link_source"] as String?)
+        XCTAssertEqual(rows[1]["agent_role"] as String?, "dispatched")
+        XCTAssertEqual(rows[1]["tier"] as String?, "skip")
+        XCTAssertEqual(rows[2]["id"] as String?, "task")
+        XCTAssertEqual(rows[2]["parent_session_id"] as String?, "parent")
+        XCTAssertEqual(rows[2]["agent_role"] as String?, "dispatched")
+        XCTAssertEqual(rows[2]["tier"] as String?, "skip")
+    }
+
+    func testAuthoritativeSnapshotClearsStalePathStampedSubagentClassification_repro() throws {
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(
+                    id: "stale-path-subagent",
+                    snapshotHash: "stale-role",
+                    sourceLocator: "/tmp/custom/subagents/projects/root/top-level.jsonl",
+                    tier: .skip,
+                    agentRole: "subagent"
+                )
+            )
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(
+                    id: "stale-path-subagent",
+                    snapshotHash: "authoritative-top-level",
+                    sourceLocator: "/tmp/custom/subagents/projects/root/top-level.jsonl",
+                    tier: .premium,
+                    agentRole: nil
+                )
+            )
+            let row = try Row.fetchOne(
+                db,
+                sql: "SELECT tier, agent_role FROM sessions WHERE id = 'stale-path-subagent'"
+            )
+            XCTAssertEqual(row?["tier"] as String?, "premium")
+            XCTAssertNil(row?["agent_role"] as String?)
+        }
+    }
+
     // Audit COPILOT-AUX-001: workspace.yaml-only changes must reindex cwd.
     func testCopilotWorkspaceOnlyChangeTriggersReindex_repro() async throws {
         let root = FileManager.default.temporaryDirectory
@@ -1669,6 +2000,116 @@ final class IndexerParityTests: XCTestCase {
         XCTAssertGreaterThan(try XCTUnwrap(updated?["size_bytes"] as Int64?), 0)
         // size still composite; value may equal if workspace same length, so only assert reindex wrote cwd.
         _ = initialSize
+    }
+
+    func testCopilotRecentCompositeChangeBypassesActiveFileGrace_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("copilot-recent-composite-\(UUID().uuidString)", isDirectory: true)
+        let sessionDir = root.appendingPathComponent("session-recent", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let workspace = sessionDir.appendingPathComponent("workspace.yaml")
+        let events = sessionDir.appendingPathComponent("events.jsonl")
+        try "id: session-recent\ncwd: /tmp/old\n"
+            .write(to: workspace, atomically: true, encoding: .utf8)
+        try writeJSONL(
+            [
+                ["type": "user.message", "data": ["content": "hello"]],
+                ["type": "assistant.message", "data": ["content": "world"]],
+            ],
+            to: events
+        )
+        let settled = Date(timeIntervalSinceNow: -300)
+        for path in [workspace.path, events.path, sessionDir.path] {
+            try FileManager.default.setAttributes([.modificationDate: settled], ofItemAtPath: path)
+        }
+
+        let adapter = CopilotAdapter(sessionRoot: root.path)
+        let initial = try await writer.indexAllSessions(adapters: [adapter])
+        XCTAssertEqual(initial.indexed, 1)
+
+        try "id: session-recent\ncwd: /tmp/new\n"
+            .write(to: workspace, atomically: true, encoding: .utf8)
+        let active = Date()
+        try FileManager.default.setAttributes([.modificationDate: active], ofItemAtPath: workspace.path)
+        let recent = RecentlyModifiedSessionAdapter(
+            base: adapter,
+            modifiedSince: active.addingTimeInterval(-60)
+        )
+
+        let result = try await writer.indexRecentSessions(adapters: [recent])
+        let cwd = try writer.read { db in
+            try String.fetchOne(db, sql: "SELECT cwd FROM sessions WHERE id = 'session-recent'")
+        }
+        XCTAssertEqual(result.indexed, 1)
+        XCTAssertEqual(cwd, "/tmp/new")
+    }
+
+    func testCopilotCompositeIdentitySkipsUnchangedTerminalScan_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("copilot-composite-terminal-\(UUID().uuidString)", isDirectory: true)
+        let sessionDir = root.appendingPathComponent("session-composite-terminal", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let workspace = sessionDir.appendingPathComponent("workspace.yaml")
+        try """
+        id: session-composite-terminal
+        cwd: /tmp/copilot-terminal
+        """.write(to: workspace, atomically: true, encoding: .utf8)
+        let events = sessionDir.appendingPathComponent("events.jsonl")
+        try writeJSONL(
+            [
+                ["type": "user.message", "data": ["content": "one"]],
+                ["type": "assistant.message", "data": ["content": "two"]],
+            ],
+            to: events
+        )
+        let workspaceDate = Date(timeIntervalSince1970: 2_000)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_000)],
+            ofItemAtPath: events.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: workspaceDate],
+            ofItemAtPath: workspace.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_000)],
+            ofItemAtPath: sessionDir.path
+        )
+
+        let adapter = CopilotAdapter(
+            sessionRoot: root.path,
+            limits: ParserLimits(maxMessages: 1)
+        )
+        let locators = try await adapter.listSessionLocators()
+        let locator = try XCTUnwrap(locators.first)
+        XCTAssertEqual(locators.count, 1)
+        XCTAssertEqual(
+            URL(fileURLWithPath: locator).resolvingSymlinksInPath().path,
+            events.resolvingSymlinksInPath().path
+        )
+        _ = try await writer.indexAllSessions(adapters: [adapter])
+        var state = try XCTUnwrap(
+            writer.knownFileIndexStates(source: .copilot, locators: [locator])[locator]
+        )
+        XCTAssertEqual(state.parseStatus, .terminal)
+        XCTAssertEqual(
+            state.sizeBytes,
+            JSONLAdapterSupport.fileSize(locator: events.path)
+                + JSONLAdapterSupport.fileSize(locator: workspace.path)
+        )
+        XCTAssertEqual(state.modifiedAtNanos, 2_000_000_000_000)
+
+        state.updatedAtEpochSeconds = 1
+        try writer.upsertFileIndexState(state)
+        _ = try await writer.indexRecentSessions(adapters: [adapter])
+        let unchanged = try XCTUnwrap(
+            writer.knownFileIndexStates(source: .copilot, locators: [locator])[locator]
+        )
+        XCTAssertEqual(unchanged.updatedAtEpochSeconds, 1)
     }
 
     // Audit COPILOT-AUX-001: same-byte workspace time rewrites must still reindex
@@ -1842,6 +2283,36 @@ final class IndexerParityTests: XCTestCase {
         XCTAssertEqual(second.indexed, 1)
         XCTAssertEqual(try XCTUnwrap(updated?["size_bytes"] as Int64?), initialSize)
         XCTAssertNotEqual(try XCTUnwrap(updated?["snapshot_hash"] as String?), initialHash)
+    }
+
+    func testCopilotCompositeIdentityStatsUnreferencedCheckpointMarkdown_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("copilot-unreferenced-body-\(UUID().uuidString)", isDirectory: true)
+        let sessionDir = root.appendingPathComponent("session-unreferenced-body", isDirectory: true)
+        let checkpointsDir = sessionDir.appendingPathComponent("checkpoints", isDirectory: true)
+        try FileManager.default.createDirectory(at: checkpointsDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let workspace = sessionDir.appendingPathComponent("workspace.yaml")
+        try "id: session-unreferenced-body\ncwd: /tmp/project\n"
+            .write(to: workspace, atomically: true, encoding: .utf8)
+        let checkpointIndex = checkpointsDir.appendingPathComponent("index.md")
+        try "| 1 | Title only | |\n".write(to: checkpointIndex, atomically: true, encoding: .utf8)
+        let unreferencedBody = checkpointsDir.appendingPathComponent("999-unreferenced.md")
+        try "old".write(to: unreferencedBody, atomically: true, encoding: .utf8)
+
+        let adapter = CopilotAdapter(sessionRoot: root.path)
+        let before = try XCTUnwrap(adapter.indexingInputIdentity(locator: checkpointIndex.path))
+        try "new and longer".write(to: unreferencedBody, atomically: true, encoding: .utf8)
+        let frozenDirectoryDate = Date(timeIntervalSince1970: 1_000)
+        try FileManager.default.setAttributes(
+            [.modificationDate: frozenDirectoryDate],
+            ofItemAtPath: checkpointsDir.path
+        )
+        let after = try XCTUnwrap(adapter.indexingInputIdentity(locator: checkpointIndex.path))
+
+        XCTAssertNotEqual(after, before)
+        XCTAssertGreaterThan(after.sizeBytes, before.sizeBytes)
     }
 
     func testRecentModifiedAdapterUsesBackingFileForVirtualLocators() async throws {
@@ -2165,6 +2636,87 @@ final class IndexerParityTests: XCTestCase {
         }
     }
 
+    func testSnapshotHashChangePrunesStalePermanentJobWithoutRequeueingCurrentPermanent_repro() throws {
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(id: "stale-permanent", snapshotHash: "h1", authoritativeNode: "local")
+            )
+            try db.execute(
+                sql: "UPDATE session_index_jobs SET status = 'failed_permanent' WHERE id = 'stale-permanent:1:h1:fts'"
+            )
+
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(
+                    id: "stale-permanent",
+                    snapshotHash: "h2",
+                    sizeBytes: 256,
+                    authoritativeNode: "local",
+                    summary: "new searchable summary"
+                )
+            )
+
+            let ftsJobs = try Row.fetchAll(
+                db,
+                sql: "SELECT id, status FROM session_index_jobs WHERE session_id = 'stale-permanent' AND job_kind = 'fts' ORDER BY id"
+            ).map { row in
+                (row["id"] as String, row["status"] as String)
+            }
+            XCTAssertEqual(ftsJobs.map(\.0), ["stale-permanent:1:h2:fts"])
+            XCTAssertEqual(ftsJobs.map(\.1), ["pending"])
+
+            try FTSRebuildPolicy.replaceFtsContent(
+                db,
+                sessionId: "stale-permanent",
+                contents: ["new searchable content"]
+            )
+            try db.execute(
+                sql: "UPDATE session_index_jobs SET status = 'completed' WHERE id = 'stale-permanent:1:h2:fts'"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT status FROM session_index_jobs WHERE id = 'stale-permanent:1:h2:fts'"
+                ),
+                "completed"
+            )
+            XCTAssertFalse(try OffloadRepo.hasUnreadyLivePublishCandidates(db))
+            let candidate = try XCTUnwrap(
+                try OffloadRepo.livePublishCandidates(db, limit: 1, peer: "hq").first
+            )
+            XCTAssertEqual(candidate.id, "stale-permanent")
+            XCTAssertTrue(candidate.ftsSnapshotReady)
+            XCTAssertEqual(candidate.ftsContents, ["new searchable content"])
+
+            let currentSnapshot = makeSnapshot(id: "current-permanent", snapshotHash: "current")
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(currentSnapshot)
+            try db.execute(
+                sql: """
+                UPDATE session_index_jobs
+                SET status = 'failed_permanent', retry_count = 5, last_error = 'terminal'
+                WHERE id = 'current-permanent:1:current:fts'
+                """
+            )
+
+            let sameSnapshot = try snapshotWriter.writeAuthoritativeSnapshot(currentSnapshot)
+            XCTAssertEqual(sameSnapshot.action, .noop)
+            let currentJob = try XCTUnwrap(
+                try Row.fetchOne(
+                    db,
+                    sql: """
+                    SELECT id, status, retry_count, last_error
+                    FROM session_index_jobs
+                    WHERE session_id = 'current-permanent' AND job_kind = 'fts'
+                    """
+                )
+            )
+            XCTAssertEqual(currentJob["id"] as String, "current-permanent:1:current:fts")
+            XCTAssertEqual(currentJob["status"] as String, "failed_permanent")
+            XCTAssertEqual(currentJob["retry_count"] as Int, 5)
+            XCTAssertEqual(currentJob["last_error"] as String, "terminal")
+        }
+    }
+
     func testSnapshotHashChangeWithSameSummaryStillEnqueuesFtsJob() throws {
         try writer.write { db in
             let snapshotWriter = SessionSnapshotWriter(db: db)
@@ -2195,6 +2747,16 @@ final class IndexerParityTests: XCTestCase {
             let snapshotWriter = SessionSnapshotWriter(db: db)
             _ = try snapshotWriter.writeAuthoritativeSnapshot(makeSnapshot(id: "downgrade", snapshotHash: "h1", tier: .normal))
             try db.execute(sql: "INSERT INTO sessions_fts(session_id, content) VALUES ('downgrade', 'old searchable content')")
+            try db.execute(
+                sql: """
+                INSERT INTO metadata(key, value) VALUES ('fts_version', '2')
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """
+            )
+            try FTSRebuildPolicy.apply(db)
+            try db.execute(
+                sql: "INSERT INTO sessions_fts_rebuild(session_id, content) VALUES ('downgrade', 'shadow searchable content')"
+            )
             try db.execute(sql: "CREATE TABLE IF NOT EXISTS session_embeddings(session_id TEXT PRIMARY KEY)")
             try db.execute(sql: "INSERT INTO session_embeddings(session_id) VALUES ('downgrade')")
             try db.execute(
@@ -2222,6 +2784,7 @@ final class IndexerParityTests: XCTestCase {
             _ = try snapshotWriter.writeAuthoritativeSnapshot(
                 makeSnapshot(id: "downgrade", snapshotHash: "h2", tier: .skip)
             )
+            XCTAssertTrue(try FTSRebuildPolicy.finalizeRebuildIfReady(db))
 
             XCTAssertEqual(
                 try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'downgrade'"),
@@ -2325,7 +2888,8 @@ final class IndexerParityTests: XCTestCase {
         tokenUsage: TokenUsage? = nil,
         instructionCount: Int? = nil,
         humanTurnCount: Int? = nil,
-        instructionSummary: String? = nil
+        instructionSummary: String? = nil,
+        agentRole: String? = nil
     ) -> AuthoritativeSessionSnapshot {
         AuthoritativeSessionSnapshot(
             id: id,
@@ -2353,7 +2917,7 @@ final class IndexerParityTests: XCTestCase {
             instructionSummary: instructionSummary,
             origin: nil,
             tier: tier,
-            agentRole: nil,
+            agentRole: agentRole,
             parentSessionId: parentSessionId,
             toolCallCounts: toolCallCounts,
             tokenUsage: tokenUsage

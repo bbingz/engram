@@ -4,6 +4,7 @@ enum EngramCLIResumeError: Error, CustomStringConvertible, Equatable {
     case missingSessionId
     case unknownOption(String)
     case missingOptionValue(String)
+    case invalidOptionValue(String)
     case unavailable(String)
 
     var description: String {
@@ -14,6 +15,8 @@ enum EngramCLIResumeError: Error, CustomStringConvertible, Equatable {
             "Unknown resume option: \(option)"
         case .missingOptionValue(let option):
             "Missing value for \(option)"
+        case .invalidOptionValue(let option):
+            "Invalid absolute path for \(option)"
         case .unavailable(let message):
             message
         }
@@ -35,8 +38,7 @@ struct EngramCLIResumeOptions: Equatable {
         }
 
         var rest = Array(arguments.dropFirst())
-        var socketPath = environment["ENGRAM_SERVICE_SOCKET"]
-            ?? UnixSocketEngramServiceTransport.defaultSocketPath()
+        var socketPath = try UnixSocketEngramServiceTransport.resolvedSocketPath(environment: environment)
         var json = false
         var sessionId: String?
 
@@ -49,7 +51,10 @@ struct EngramCLIResumeOptions: Equatable {
                 guard let next = rest.first else {
                     throw EngramCLIResumeError.missingOptionValue(value)
                 }
-                socketPath = next
+                guard let absolutePath = UnixSocketEngramServiceTransport.normalizedAbsolutePath(next) else {
+                    throw EngramCLIResumeError.invalidOptionValue(value)
+                }
+                socketPath = absolutePath
                 rest.removeFirst()
             default:
                 if value.hasPrefix("-") {

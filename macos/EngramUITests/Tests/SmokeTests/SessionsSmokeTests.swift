@@ -30,29 +30,15 @@ final class SessionsSmokeTests: XCTestCase {
 
         let sessions = SessionsScreen(app: app)
         sessions.waitForLoad()
-
-        let filterPills = sessions.filterPills
-        if filterPills.waitForExistence(timeout: 5) {
-            // Look for a "Today" filter button within the filter pills area
-            let todayButton = filterPills.buttons["Today"]
-            if todayButton.waitForExistence(timeout: 3) {
-                todayButton.click()
-                // Verify the list still exists after filtering
-                XCTAssertTrue(sessions.sessionList.exists || sessions.emptyState.exists,
-                              "Either session list or empty state should be visible after filtering")
-            } else {
-                // Filter pills exist but no "Today" — click the first available pill
-                let firstButton = filterPills.buttons.firstMatch
-                if firstButton.exists {
-                    firstButton.click()
-                }
-                XCTAssertTrue(sessions.sessionList.exists || sessions.emptyState.exists,
-                              "Either session list or empty state should be visible")
-            }
-        } else {
-            XCTAssertTrue(sessions.sessionList.exists,
-                          "Session list should be visible when no filter pills")
-        }
+        XCTAssertTrue(sessions.showAllToggle.waitForExistence(timeout: 5))
+        sessions.showAllToggle.click()
+        let todayButton = sessions.filterPill(named: "Today")
+        XCTAssertTrue(todayButton.waitForExistence(timeout: 5), sessions.filterPills.debugDescription)
+        todayButton.click()
+        XCTAssertTrue(
+            sessions.result(containingText: "Fixed authentication flow bug").waitForExistence(timeout: 10),
+            "The fixture session dated on --fixed-date must remain visible under Today"
+        )
     }
 
     func testSessionsSourceFilter() {
@@ -63,15 +49,13 @@ final class SessionsSmokeTests: XCTestCase {
         sessions.waitForLoad()
 
         let sourcePicker = sessions.sourcePicker
-        if sourcePicker.waitForExistence(timeout: 5) {
-            sourcePicker.click()
-            // After clicking the picker, verify the list updates
-            XCTAssertTrue(sessions.sessionList.exists || sessions.emptyState.exists,
-                          "Session list or empty state should remain visible after source filter interaction")
-        } else {
-            // Source picker may not exist in fixture data — that's acceptable
-            XCTAssertTrue(sessions.sessionList.exists,
-                          "Session list should be visible when no source picker")
-        }
+        XCTAssertTrue(sourcePicker.waitForExistence(timeout: 5),
+                      "The multi-source fixture should expose the source picker")
+        sourcePicker.click()
+        app.menuItems["Claude"].click()
+        XCTAssertTrue(
+            sessions.result(containingText: "Fixed authentication flow bug").waitForExistence(timeout: 10),
+            "Filtering to Claude should retain the seeded Claude session"
+        )
     }
 }

@@ -8,6 +8,18 @@ private func relativeTime(_ iso: String) -> String {
 // MARK: - ExpandableSessionCard
 
 struct ExpandableSessionCard: View {
+    /// Remote-snapshot action capability (merge-gate fix; design §9). The menu
+    /// keys every action off this table instead of the raw property:
+    /// - Resume/Copy/Handoff need the session live on this machine → remote off.
+    /// - Replay stays ON: replayTimeline falls back to the indexed FTS timeline
+    ///   when the locator is remote:// (EngramServiceReadProvider step 3), and
+    ///   the detail page offers it too.
+    /// - Export reads the real transcript file via TranscriptExportService, so
+    ///   a remote:// locator would fail mid-export → remote off.
+    static func canResumeLocally(_ session: Session) -> Bool { !session.isRemoteSnapshot }
+    static func canReplay(_ session: Session) -> Bool { true }
+    static func canExport(_ session: Session) -> Bool { !session.isRemoteSnapshot }
+
     let session: Session
     let confirmedChildCount: Int
     let suggestedChildCount: Int
@@ -128,6 +140,7 @@ struct ExpandableSessionCard: View {
                 Button(action: { onTap?() }) {
                     HStack(spacing: 10) {
                         SourcePill(source: session.source)
+                        OriginBadge(origin: session.origin)
 
                         Text(session.displayTitle)
                             .font(.callout)
@@ -168,7 +181,7 @@ struct ExpandableSessionCard: View {
                             .foregroundStyle(Theme.tertiaryText.opacity(0.5))
                     }
                     .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
+                    .padding(.vertical, Theme.listRowVerticalPadding)
                     .background(Theme.surface)
                     .overlay(
                         RoundedRectangle(cornerRadius: Theme.cornerRadius)
@@ -178,18 +191,30 @@ struct ExpandableSessionCard: View {
                 }
                 .buttonStyle(.plain)
                 .contextMenu {
+                    // Remote/HQ-snapshot rows cannot be resumed locally (design
+                    // §9): the card has no local transcript file. Disable with a
+                    // reason rather than drop so the menu stays spatially stable.
                     Button("Resume...") {
                         onResume?(session)
                     }
+                    .disabled(!ExpandableSessionCard.canResumeLocally(session))
+                    .help(session.isRemoteSnapshot ? "Only available on the HQ machine" : "Resume this session in a terminal")
                     Button("Copy Resume Command") {
                         onCopyResumeCommand?(session)
                     }
+                    .disabled(!ExpandableSessionCard.canResumeLocally(session))
+                    .help(session.isRemoteSnapshot ? "Only available on the HQ machine" : "Copy the resume command to the clipboard")
                     Button("Handoff") {
                         onHandoff?(session)
                     }
+                    .disabled(!ExpandableSessionCard.canResumeLocally(session))
+                    .help(session.isRemoteSnapshot ? "Only available on the HQ machine" : "Hand off to another tool")
+                    // Replay stays enabled for remote snapshots: the service
+                    // falls back to the indexed FTS timeline (canReplay).
                     Button("Replay") {
                         onReplay?(session)
                     }
+                    .help("Replay this session")
                     if let onRelate {
                         Button("Link related session…") {
                             onRelate(session)
@@ -206,6 +231,7 @@ struct ExpandableSessionCard: View {
                         onExportMarkdown: onExportMarkdown.map { cb in { cb(session) } },
                         onExportJSON: onExportJSON.map { cb in { cb(session) } },
                         exportsDisabled: exportsDisabled,
+                        exportAllowed: ExpandableSessionCard.canExport(session),
                         onHide: onHide.map { cb in { cb(session) } }
                     )
                 }
@@ -334,6 +360,10 @@ struct ExpandableSessionCard: View {
         if isExpanded && children.isEmpty && suggestedChildren.isEmpty {
             loadChildren()
         }
+        // VoiceOver: the chevron swap alone is silent — announce the new state.
+        AccessibilityNotification.Announcement(
+            isExpanded ? "Expanded, \(totalChildCount) agent sessions" : "Collapsed agent sessions"
+        ).post()
     }
 
     private func loadChildren() {
@@ -349,9 +379,9 @@ struct ExpandableSessionCard: View {
                 parentId: session.id,
                 includeHidden: includeHiddenChildren
             )) ?? []
-            // Same favorites-table source as SessionsPageView parent rows — do not
-            // infer child isFavorite from the parent page filter.
-            let favoriteIds = Set((try? db.listFavorites())?.map(\.id) ?? [])
+            // Child rows can be skip-tier by design. Use raw favorites membership
+            // so a starred child can still be unstarred after re-expanding it.
+            let favoriteIds = Set((try? db.favoriteIds()) ?? [])
             let annotatedConfirmed = Session.applyingFavoriteIds(confirmed, favoriteIds: favoriteIds)
             let annotatedSuggested = Session.applyingFavoriteIds(suggested, favoriteIds: favoriteIds)
             await MainActor.run {
@@ -377,7 +407,7 @@ struct ExpandableSessionCard: View {
                 limit: 20,
                 offset: currentCount
             )) ?? []
-            let favoriteIds = Set((try? db.listFavorites())?.map(\.id) ?? [])
+            let favoriteIds = Set((try? db.favoriteIds()) ?? [])
             let annotated = Session.applyingFavoriteIds(more, favoriteIds: favoriteIds)
             await MainActor.run {
                 defer { isLoadingMore = false }
@@ -411,10 +441,15 @@ struct CompactChildRow: View {
     var onToggleFavorite: (() -> Void)? = nil
     var isHidden = false
 
+    /// Per-row keyboard focus (Wave 8-4): child rows were tap-gesture-only, so
+    /// an expanded child was unreachable from the keyboard.
+    @FocusState private var isFocused: Bool
+
     var body: some View {
         HStack(spacing: 8) {
             SourcePill(source: session.source)
                 .scaleEffect(0.85)
+            OriginBadge(origin: session.origin)
 
             Text(session.displayTitle)
                 .font(.caption)
@@ -434,6 +469,7 @@ struct CompactChildRow: View {
                     .font(.caption)
                     .foregroundStyle(Theme.tertiaryText)
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Dismiss suggestion")
             }
 
             Text(relativeTime(session.endTime ?? session.startTime))
@@ -451,19 +487,44 @@ struct CompactChildRow: View {
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .contentShape(Rectangle())
         .onTapGesture { onTap?() }
+        // Keyboard activation (Wave 8-4). Rows rendered without a tap action
+        // stay out of the tab order instead of becoming dead stops.
+        .focusable(onTap != nil)
+        .focused($isFocused)
+        .onKeyPress(keys: [.return, .space]) { _ in
+            guard isFocused, let onTap else { return .ignored }
+            onTap()
+            return .handled
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Theme.accent, lineWidth: 2)
+                .opacity(isFocused ? 1 : 0)
+                .allowsHitTesting(false)
+        )
         .contextMenu {
+            // Same remote-snapshot guard as the parent card menu (design §9).
             Button("Resume...") {
                 onResume?()
             }
+            .disabled(!ExpandableSessionCard.canResumeLocally(session))
+            .help(session.isRemoteSnapshot ? "Only available on the HQ machine" : "Resume this session in a terminal")
             Button("Copy Resume Command") {
                 onCopyResumeCommand?()
             }
+            .disabled(!ExpandableSessionCard.canResumeLocally(session))
+            .help(session.isRemoteSnapshot ? "Only available on the HQ machine" : "Copy the resume command to the clipboard")
             Button("Handoff") {
                 onHandoff?()
             }
+            .disabled(!ExpandableSessionCard.canResumeLocally(session))
+            .help(session.isRemoteSnapshot ? "Only available on the HQ machine" : "Hand off to another tool")
+            // Replay stays enabled for remote snapshots: the service falls
+            // back to the indexed FTS timeline (canReplay).
             Button("Replay") {
                 onReplay?()
             }
+            .help("Replay this session")
             SessionWriteMenuItems(
                 isHidden: isHidden,
                 isFavorite: session.isFavorite,
@@ -472,6 +533,7 @@ struct CompactChildRow: View {
                 onExportMarkdown: onExportMarkdown,
                 onExportJSON: onExportJSON,
                 exportsDisabled: exportsDisabled,
+                exportAllowed: ExpandableSessionCard.canExport(session),
                 onHide: onHide
             )
         }
@@ -491,6 +553,9 @@ private struct SessionWriteMenuItems: View {
     var onExportMarkdown: (() -> Void)? = nil
     var onExportJSON: (() -> Void)? = nil
     var exportsDisabled = false
+    /// Remote-snapshot export capability (merge-gate fix): exportSession reads
+    /// the real transcript file, which a remote:// row does not have.
+    var exportAllowed = true
     var onHide: (() -> Void)? = nil
 
     private var hasAny: Bool {
@@ -520,7 +585,10 @@ private struct SessionWriteMenuItems: View {
                         Button("JSON") { onExportJSON() }
                     }
                 }
-                .disabled(exportsDisabled)
+                .disabled(exportsDisabled || !exportAllowed)
+                .help(exportAllowed
+                    ? "Export this session"
+                    : "Export needs the local transcript file; remote snapshots only carry indexed content")
             }
             if let onHide {
                 Button(isHidden ? "Unhide" : "Hide") { onHide() }

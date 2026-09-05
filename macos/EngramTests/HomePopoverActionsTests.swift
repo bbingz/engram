@@ -8,6 +8,12 @@ import XCTest
 /// embedding bindings, the indexing vs empty states, and the popover Live
 /// section that must reuse the badge's exact active-session predicate.
 final class HomePopoverActionsTests: XCTestCase {
+    func testOpenCodeLiveProbeUsesShortBusyTimeout_repro() throws {
+        let provider = try source("macos/EngramService/Core/EngramServiceReadProvider.swift")
+        XCTAssertTrue(provider.contains("configuration.busyMode = .timeout(0.1)"))
+        XCTAssertFalse(provider.contains("configuration.busyMode = .timeout(30)"))
+    }
+
     private var repoRoot: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -35,6 +41,20 @@ final class HomePopoverActionsTests: XCTestCase {
         try source("macos/Engram/Components/LiveSessionCard.swift")
     }
 
+    func testHomeAndPopoverTimelineRowsRenderHqOriginBadges_repro() throws {
+        let home = try homeView()
+        let popover = try popoverView()
+
+        XCTAssertTrue(
+            home.contains("OriginBadge(origin: session.origin)"),
+            "TodaySessionRow must identify HQ snapshots"
+        )
+        XCTAssertTrue(
+            popover.contains("OriginBadge(origin: session.origin)"),
+            "PopoverTimelineRow must identify HQ snapshots"
+        )
+    }
+
     // MARK: - HomeView KPI / See-all / Changed-Repos navigation
 
     func testHomeKpiCardsNavigate() throws {
@@ -43,6 +63,14 @@ final class HomePopoverActionsTests: XCTestCase {
         XCTAssertTrue(s.contains("navigate(to: .sessions)"), "Sessions KPI must navigate to .sessions")
         XCTAssertTrue(s.contains("navigate(to: .projects)"), "Projects KPI must navigate to .projects")
         XCTAssertTrue(s.contains("navigate(to: .settings)"), "Service KPI must navigate to .settings")
+    }
+
+    func testHomeSessionsKpiMatchesSessionBrowsePopulation_repro() throws {
+        let s = try homeView()
+        XCTAssertTrue(s.contains("let sessionStats = try db.sessionListStats("))
+        XCTAssertTrue(s.contains("topLevelOnly: true"))
+        XCTAssertTrue(s.contains("humanDriven: humanDriven"))
+        XCTAssertTrue(s.contains("sessions: sessionStats.totalSessions"))
     }
 
     func testHomeSeeAllLinksGatedOnCount() throws {
@@ -119,23 +147,19 @@ final class HomePopoverActionsTests: XCTestCase {
         )
     }
 
-    /// R1.P1.parent_filter_surface_drift — menu-bar recent list must share the
-    /// same top-level + list-visible predicates as Home/Sessions/Timeline.
-    func testPopoverRecentSessionsUsesTopLevelVisibilityFilter_repro() throws {
+    /// core-read-1: the popover must use the executable DatabaseManager helper
+    /// instead of maintaining a second raw SQL query with drifting aliases.
+    func testPopoverRecentSessionsUsesDatabaseHelper_repro() throws {
         let s = try popoverView()
         XCTAssertTrue(
-            s.contains("SessionVisibilityFilter.topLevelSQL"),
-            "Popover recent sessions must exclude parent/suggested children via topLevelSQL"
+            s.contains("db.recentSessions(limit: 12, humanDriven: true)"),
+            "Popover recent sessions must use the tested shared fetch path"
         )
-        XCTAssertTrue(
-            s.contains("SessionVisibilityFilter.listVisibleSQL"),
-            "Popover recent sessions must use shared listVisibleSQL (not ad-hoc hidden/tier only)"
-        )
-        // Pre-fix ad-hoc clause used bare columns without the shared filter type.
         XCTAssertFalse(
-            s.contains("hidden_at IS NULL \\") && s.contains("AND (tier IS NULL OR tier != 'skip')"),
-            "Popover must not keep the pre-fix ad-hoc hidden/tier whereClause"
+            s.contains("Session.fetchAll(d, sql:"),
+            "Popover must not keep an inline raw sessions query"
         )
+        XCTAssertFalse(s.contains("SearchFilterPredicates.activityTimeSQL()"))
     }
 
     func testPopoverStaleLiveBadgeKeepsActiveCount() throws {
@@ -173,8 +197,166 @@ final class HomePopoverActionsTests: XCTestCase {
     func testPopoverLiveCardOpensSessionOffMainThread() throws {
         let s = try popoverView()
         XCTAssertTrue(s.contains("Task.detached"), "Popover live-card open must resolve getSession off the main thread")
-        XCTAssertTrue(s.contains("db.getSession(id: id)"), "Popover live-card open must resolve via getSession")
+        XCTAssertTrue(s.contains("resolveLiveSession(session, database: db)"), "Popover live-card open must resolve by id or locator")
         XCTAssertTrue(s.contains(".openWindow"), "Popover live-card open must post .openWindow")
+    }
+
+    @MainActor
+    func testLiveNavigationTokenRejectsSupersededResolution_repro() {
+        let first = SessionNavigationGate.begin()
+        let second = SessionNavigationGate.begin()
+
+        XCTAssertFalse(SessionNavigationGate.isCurrent(first))
+        XCTAssertTrue(SessionNavigationGate.isCurrent(second))
+        SessionNavigationGate.complete(first)
+        XCTAssertTrue(
+            SessionNavigationGate.isCurrent(second),
+            "completing a stale live resolution must not clear the replacement navigation"
+        )
+        SessionNavigationGate.complete(second)
+    }
+
+    func testSourcePulseLiveCardUsesExactResolverAndOpenToken_repro() throws {
+        let sourcePulse = try source("macos/Engram/Views/Pages/SourcePulseView.swift")
+
+        XCTAssertTrue(sourcePulse.contains("LiveSessionCard(session: session, onOpen:"))
+        XCTAssertTrue(sourcePulse.contains("PopoverView.resolveLiveSession(session, database: db)"))
+        XCTAssertTrue(sourcePulse.contains("let requestId = UUID()"))
+        XCTAssertTrue(sourcePulse.contains("guard liveOpenRequestId == requestId"))
+        XCTAssertTrue(sourcePulse.contains("SessionNavigationGate.begin()"))
+        XCTAssertFalse(sourcePulse.contains("LIKE"))
+    }
+
+    func testMenuBarForwardsResolvedLiveSessionSynchronously_repro() throws {
+        let menuBar = try source("macos/Engram/MenuBarController.swift")
+        let start = try XCTUnwrap(menuBar.range(of: "@objc private func handleOpenWindow"))
+        let end = try XCTUnwrap(menuBar.range(of: "@objc func openWindow()", range: start.upperBound..<menuBar.endIndex))
+        let body = menuBar[start.lowerBound..<end.lowerBound]
+
+        XCTAssertTrue(body.contains("NotificationCenter.default.post(name: .openSession, object: box)"))
+        XCTAssertTrue(body.contains("if window != nil"))
+        XCTAssertTrue(body.contains("presentWindow(initialSession: box)"))
+    }
+
+    func testLiveResolutionBeginsNavigationAtClickAndCompletesNilToken_repro() throws {
+        for path in [
+            "macos/Engram/Views/PopoverView.swift",
+            "macos/Engram/Views/Pages/SourcePulseView.swift",
+        ] {
+            let value = try source(path)
+            let start = try XCTUnwrap(value.range(of: "private func openLive("))
+            let tail = value[start.lowerBound...]
+            let task = try XCTUnwrap(tail.range(of: "Task {"))
+            let resolved = try XCTUnwrap(tail.range(of: "guard let resolved else"))
+            let requestId = try XCTUnwrap(tail.range(of: "let requestId = UUID()"))
+            let requestGate = try XCTUnwrap(tail.range(of: "guard liveOpenRequestId == requestId"))
+            let begin = try XCTUnwrap(tail.range(of: "SessionNavigationGate.begin()"))
+            let post = try XCTUnwrap(tail.range(of: "NotificationCenter.default.post"))
+            XCTAssertLessThan(requestId.lowerBound, task.lowerBound, "\(path) must mint local identity at click time")
+            XCTAssertLessThan(begin.lowerBound, task.lowerBound, "\(path) must reserve navigation at click time")
+            XCTAssertLessThan(resolved.lowerBound, requestGate.lowerBound)
+            XCTAssertLessThan(begin.lowerBound, post.lowerBound, "\(path) must reserve the global gate only for a resolved post")
+            XCTAssertTrue(
+                tail[resolved.lowerBound..<requestGate.lowerBound]
+                    .contains("SessionNavigationGate.complete(token)"),
+                "resolve-nil must complete only its captured navigation token"
+            )
+        }
+    }
+
+    func testPaletteResolutionClearsItsPendingIdentityWhenAnotherNavigationStealsGate_repro() throws {
+        let source = try source("macos/Engram/Views/MainWindowView.swift")
+        let navigateStart = try XCTUnwrap(source.range(of: "private func navigateToSession("))
+        let navigateBody = source[navigateStart.lowerBound...]
+        let identityGuard = try XCTUnwrap(navigateBody.range(of: "guard pendingNavigationId == token else { return }"))
+        let gateGuard = try XCTUnwrap(navigateBody.range(of: "guard SessionNavigationGate.isCurrent(token) else {"))
+        let successStart = try XCTUnwrap(navigateBody.range(of: "pendingSearchTerm = nil", range: gateGuard.upperBound..<navigateBody.endIndex))
+        let stolenBranch = navigateBody[gateGuard.lowerBound..<successStart.lowerBound]
+
+        XCTAssertLessThan(identityGuard.lowerBound, gateGuard.lowerBound)
+        XCTAssertTrue(stolenBranch.contains("pendingNavigationId = nil"))
+        XCTAssertFalse(stolenBranch.contains("SessionNavigationGate.cancelAll()"))
+    }
+
+    func testActivityAndProjectTimelineReserveNavigationBeforeLookup_repro() throws {
+        for (path, marker) in [
+            ("macos/Engram/Views/Pages/ActivityView.swift", "private func openMostRecent("),
+            ("macos/Engram/Components/ProjectWorkTimeline.swift", "private func open("),
+        ] {
+            let value = try source(path)
+            let start = try XCTUnwrap(value.range(of: marker))
+            let tail = value[start.lowerBound...]
+            let requestId = try XCTUnwrap(tail.range(of: "let requestId = UUID()"))
+            let begin = try XCTUnwrap(tail.range(of: "SessionNavigationGate.begin()"))
+            let task = try XCTUnwrap(tail.range(of: "Task {"))
+            let current = try XCTUnwrap(tail.range(of: "SessionNavigationGate.isCurrent(token)"))
+            let post = try XCTUnwrap(tail.range(of: "SessionBox(session, navigationId: token)"))
+
+            XCTAssertLessThan(requestId.lowerBound, task.lowerBound, path)
+            XCTAssertLessThan(begin.lowerBound, task.lowerBound, path)
+            XCTAssertLessThan(current.lowerBound, post.lowerBound, path)
+            XCTAssertTrue(tail.prefix(1_400).contains("openRequestId == requestId"), path)
+            XCTAssertTrue(tail.prefix(1_400).contains("SessionNavigationGate.complete(token)"), path)
+        }
+    }
+
+    func testProjectTimelineClearsLocalOpenRequestOnDisappear_repro() throws {
+        let value = try source("macos/Engram/Components/ProjectWorkTimeline.swift")
+        XCTAssertTrue(value.contains(".onDisappear { openRequestId = nil }"))
+        XCTAssertFalse(value.contains(".onDisappear { SessionNavigationGate.cancelAll()"))
+    }
+
+    func testMainWindowRejectsStaleOpenAndBackCancelsEveryPendingNavigation_repro() throws {
+        let source = try source("macos/Engram/Views/MainWindowView.swift")
+        let applyStart = try XCTUnwrap(source.range(of: "private func applyOpenSession("))
+        let applyEnd = try XCTUnwrap(
+            source.range(of: "private func navigateToSession(", range: applyStart.upperBound..<source.endIndex)
+        )
+        let applyBody = source[applyStart.lowerBound..<applyEnd.lowerBound]
+        XCTAssertTrue(applyBody.contains("guard let token = box.navigationId"))
+        XCTAssertTrue(applyBody.contains("SessionNavigationGate.isCurrent(token)"))
+        XCTAssertFalse(applyBody.contains("SessionNavigationGate.begin()"), "notification delivery must never mint a newer token")
+
+        let detailStart = try XCTUnwrap(source.range(of: "SessionDetailView(session:"))
+        let detailTail = source[detailStart.lowerBound...].prefix(700)
+        XCTAssertTrue(detailTail.contains("pendingNavigationId = nil"))
+        XCTAssertTrue(detailTail.contains("SessionNavigationGate.cancelAll()"))
+        XCTAssertTrue(detailTail.contains("pendingSearchTerm = nil"))
+        XCTAssertTrue(detailTail.contains("selectedSession = nil"))
+
+        let navigateStart = try XCTUnwrap(source.range(of: "private func navigateToSession("))
+        let navigateBody = source[navigateStart.lowerBound...]
+        let selected = try XCTUnwrap(navigateBody.range(of: "selectedSession = session"))
+        let clear = try XCTUnwrap(navigateBody.range(of: "pendingSearchTerm = nil"))
+        XCTAssertLessThan(clear.lowerBound, selected.lowerBound)
+        let lookup = try XCTUnwrap(navigateBody.range(of: "guard let session"))
+        XCTAssertLessThan(lookup.lowerBound, clear.lowerBound, "failed lookup must preserve the current detail find query")
+    }
+
+    func testSessionDetailAsyncActionsApplyOnlyToCapturedDisplayedSession_repro() throws {
+        let source = try source("macos/Engram/Views/SessionDetailView.swift")
+
+        let handoffStart = try XCTUnwrap(source.range(of: "func performHandoff()"))
+        let handoffEnd = try XCTUnwrap(
+            source.range(of: "func copyAllTranscript()", range: handoffStart.upperBound..<source.endIndex)
+        )
+        let handoff = source[handoffStart.lowerBound..<handoffEnd.lowerBound]
+        XCTAssertTrue(handoff.contains("let sessionId = session.id"))
+        XCTAssertTrue(handoff.contains("let cwd = session.cwd"))
+        let mutationGate = try XCTUnwrap(handoff.range(of: "shouldApplySessionMutation"))
+        let pasteboard = try XCTUnwrap(handoff.range(of: "NSPasteboard.general.clearContents()"))
+        XCTAssertLessThan(mutationGate.lowerBound, pasteboard.lowerBound)
+
+        let summaryStart = try XCTUnwrap(source.range(of: "private func generateSummary()"))
+        let summaryEnd = try XCTUnwrap(
+            source.range(of: "private func loadParentInfo", range: summaryStart.upperBound..<source.endIndex)
+        )
+        XCTAssertTrue(source[summaryStart.lowerBound..<summaryEnd.lowerBound].contains("shouldApplySessionMutation"))
+
+        let disappearStart = try XCTUnwrap(source.range(of: ".onDisappear {"))
+        let disappearTail = source[disappearStart.lowerBound...].prefix(900)
+        XCTAssertTrue(disappearTail.contains("favoriteLoadGeneration = nil"))
+        XCTAssertTrue(disappearTail.contains("displayedSessionId = nil"))
     }
 
     // MARK: - PopoverView dead-embedding removal + states + usage empty
@@ -339,8 +521,8 @@ final class HomePopoverActionsTests: XCTestCase {
         let s = try liveCard()
         XCTAssertTrue(s.contains("var onOpen: (() -> Void)?"), "LiveSessionCard must expose an onOpen closure")
         XCTAssertTrue(
-            s.contains("session.sessionId != nil"),
-            "LiveSessionCard interactivity must be guarded on a non-nil sessionId"
+            s.contains("!session.filePath.isEmpty"),
+            "LiveSessionCard interactivity must be guarded on its stable locator"
         )
     }
 

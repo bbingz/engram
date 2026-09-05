@@ -4,7 +4,7 @@ import SwiftUI
 
 struct SourcePulseView: View {
     @Environment(DatabaseManager.self) var db
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var sources: [EngramServiceSourceInfo] = []
@@ -17,12 +17,17 @@ struct SourcePulseView: View {
     @State private var error: String? = nil
     @State private var liveTimer: Timer?
     @State private var liveRefreshTask: Task<Void, Never>? = nil
+    @State private var liveOpenRequestId: UUID? = nil
     @State private var expandedGroups: Set<String> = []
-    @State private var disabledSources: Set<String> = []
+    @State private var disabledSources = ArchivedDefaultOffSources.ids
+    @State private var disabledSourcesLoaded = false
     /// Suppress the "unavailable" row until the first poll finishes (never-polled is also `.expired`).
     @State private var livePollAttempted = false
 
-    private var totalIndexed: Int { sources.reduce(0) { $0 + $1.sessionCount } }
+    private var totalIndexed: Int { Self.listVisibleSessionTotal(sources) }
+    private var activeSourcesTotal: Int {
+        Self.activeSourceCount(catalog: SourceCatalog.all, live: sources)
+    }
     private var archiveStorePath: String { (db.path as NSString).abbreviatingWithTildeInPath }
     private var liveSessions: [EngramServiceLiveSessionInfo] { liveHold.sessions }
     private var activeSessions: [EngramServiceLiveSessionInfo] { liveSessions.filter { $0.activityLevel == "active" } }
@@ -33,7 +38,7 @@ struct SourcePulseView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 HStack(spacing: 12) {
-                    KPICard(value: "\(sources.count)", label: "Active Sources")
+                    KPICard(value: "\(activeSourcesTotal)", label: "Active Sources")
                     KPICard(value: formatNumber(totalIndexed), label: "Archived Sessions")
                     if !activeSessions.isEmpty {
                         KPICard(value: "\(activeSessions.count)", label: "Active")
@@ -73,7 +78,7 @@ struct SourcePulseView: View {
                     SectionHeader(
                         icon: "bolt.fill",
                         title: "Sessions",
-                        onRefresh: { Task { await loadLiveSessions() } }
+                        onRefresh: { requestLiveRefresh() }
                     )
                     Text("Live sessions unavailable")
                         .font(.caption)
@@ -90,7 +95,7 @@ struct SourcePulseView: View {
                         icon: "bolt.fill",
                         title: "Sessions (\(liveSessions.count))",
                         badge: staleCaption,
-                        onRefresh: { Task { await loadLiveSessions() } }
+                        onRefresh: { requestLiveRefresh() }
                     )
                     sessionGroup("Active", color: .green, sessions: activeSessions)
                     sessionGroup("Idle", color: .yellow, sessions: idleSessions)
@@ -98,6 +103,7 @@ struct SourcePulseView: View {
                 }
                 if let error {
                     AlertBanner(message: "Failed to load source data: \(error)", action: ("Retry", { Task { await loadData() } }))
+                        .accessibilityIdentifier("sourcePulse_failedState")
                 }
                 SectionHeader(icon: "antenna.radiowaves.left.and.right", title: "Sources",
                              onRefresh: { Task { await loadData() } })
@@ -121,7 +127,11 @@ struct SourcePulseView: View {
                 }
 
                 if let costsError {
-                    AlertBanner(message: "Failed to load cost data: \(costsError)")
+                    AlertBanner(
+                        message: "Failed to load cost data: \(costsError)",
+                        action: ("Retry", { Task { await loadCosts() } })
+                    )
+                    .accessibilityIdentifier("sourcePulse_costsErrorBanner")
                 }
                 CostSummarySection(costs: costs, isLoading: isLoading && costs == nil)
             }
@@ -131,16 +141,24 @@ struct SourcePulseView: View {
         .task {
             await loadData()
             await loadLiveSessions()
-            // Auto-refresh live sessions every 10s. Track the inner Task and cancel
-            // the prior one each tick so it can't outlive the view / pile up.
+            // Auto-refresh live sessions every 10s. A slow poll stays alive so it
+            // can publish the service cache; cadence ticks coalesce behind it.
             liveTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { _ in
-                liveRefreshTask?.cancel()
-                liveRefreshTask = Task { @MainActor in await loadLiveSessions() }
+                requestLiveRefresh()
             }
         }
         .onDisappear {
             liveTimer?.invalidate(); liveTimer = nil
             liveRefreshTask?.cancel(); liveRefreshTask = nil
+            liveOpenRequestId = nil
+        }
+    }
+
+    private func requestLiveRefresh() {
+        guard liveRefreshTask == nil else { return }
+        liveRefreshTask = Task { @MainActor in
+            await loadLiveSessions()
+            liveRefreshTask = nil
         }
     }
 
@@ -170,14 +188,7 @@ struct SourcePulseView: View {
             // UI-C1/C2: DB fallback read runs off the main thread.
             if let dist = try? await Task.detached(operation: { try db.sourceDistribution() }).value {
                 sourceDist = dist
-                sources = dist.map {
-                    EngramServiceSourceInfo(
-                        name: $0.source,
-                        sessionCount: $0.count,
-                        latestIndexed: nil,
-                        healthReason: "Service unavailable — counts were read directly from the local database."
-                    )
-                }
+                sources = dist.map { Self.fallbackSourceInfo(source: $0.source, count: $0.count) }
             }
         }
         // Distribution chart read also off-main.
@@ -185,8 +196,17 @@ struct SourcePulseView: View {
             sourceDist = dist
         }
         // Per-source ingest opt-out state (feature #2 slice B) for toggle render.
-        if let disabled = try? await serviceClient.disabledSources() {
+        // The service response is authoritative; until it succeeds the controls
+        // remain fail-closed with archived adapters rendered default-off.
+        disabledSourcesLoaded = false
+        do {
+            let disabled = try await serviceClient.disabledSources()
             disabledSources = Set(disabled)
+            disabledSourcesLoaded = true
+        } catch {
+            // Preserve the last known-safe set (or the archived defaults on the
+            // first load), but never enable mutation controls on an unknown set.
+            disabledSourcesLoaded = false
         }
         await loadCosts()
     }
@@ -194,6 +214,7 @@ struct SourcePulseView: View {
     /// Toggle ingest for a source, then refresh so the list reflects the new
     /// disabled set, hidden/unhidden counts, and toggle state.
     private func setSourceEnabled(_ source: String, enabled: Bool) async {
+        guard disabledSourcesLoaded else { return }
         do {
             try await serviceClient.setSourceEnabled(source: source, enabled: enabled)
             // Optimistic local update so the toggle reflects instantly; loadData
@@ -265,8 +286,8 @@ struct SourcePulseView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(Theme.surface)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: Theme.cornerRadius).stroke(Theme.border, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadius))
     }
 
     /// Per-source ingest control (feature #2 slice B). Disabling stops indexing
@@ -286,11 +307,12 @@ struct SourcePulseView: View {
             .labelsHidden()
             .toggleStyle(.switch)
             .controlSize(.mini)
+            .disabled(!disabledSourcesLoaded)
             .help(isDisabled ? "Indexing disabled — turn on to resume" : "Indexing enabled — turn off to stop and hide")
             .accessibilityIdentifier("sourcePulse_ingestToggle_\(sourceID)")
             if isDisabled {
                 Text("DISABLED")
-                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .scaledFont(9, weight: .semibold, design: .monospaced)
                     .foregroundStyle(Theme.orange)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
@@ -306,7 +328,7 @@ struct SourcePulseView: View {
             SourcePill(source: source.name)
             healthBadge(source.healthStatus, reason: source.healthReason)
             Spacer()
-            Text("\(source.sessionCount) sessions")
+            Text("\(source.listVisibleSessionCount) sessions")
                 .font(.caption)
                 .foregroundStyle(Theme.secondaryText)
             if source.latestIndexed != nil {
@@ -318,7 +340,7 @@ struct SourcePulseView: View {
                     .foregroundStyle(isStale ? Theme.orange : Theme.tertiaryText)
                 if isStale {
                     Text("STALE")
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .scaledFont(9, weight: .semibold, design: .monospaced)
                         .foregroundStyle(Theme.orange)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
@@ -361,7 +383,7 @@ struct SourcePulseView: View {
         HStack(spacing: 12) {
             SourcePill(source: entry.id)
             Text("NOT DETECTED")
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .scaledFont(9, weight: .semibold, design: .monospaced)
                 .foregroundStyle(Theme.gray)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
@@ -396,15 +418,18 @@ struct SourcePulseView: View {
 
             HStack(spacing: 6) {
                 Label(label, systemImage: "circle.fill")
-                    .font(.system(size: 11, weight: .medium))
+                    .scaledFont(11, weight: .medium)
                     .foregroundStyle(color)
                 Text("(\(sessions.count))")
-                    .font(.system(size: 10))
+                    .scaledFont(10)
                     .foregroundStyle(.secondary)
             }
+            // Color-only status cue: give VoiceOver the words, not the hue.
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(sessions.count) \(label) sessions")
             VStack(spacing: 4) {
                 ForEach(shown) { session in
-                    LiveSessionCard(session: session)
+                    LiveSessionCard(session: session, onOpen: { openLive(session) })
                 }
                 if sessions.count > 10 {
                     Button {
@@ -417,14 +442,35 @@ struct SourcePulseView: View {
                         }
                     } label: {
                         Text(isExpanded ? "Show less" : "+ \(sessions.count - 10) more")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.blue)
+                            .scaledFont(11)
+                            .foregroundStyle(Theme.accent)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 4)
                     }
                     .buttonStyle(.plain)
                 }
             }
+        }
+    }
+
+    private func openLive(_ session: EngramServiceLiveSessionInfo) {
+        let db = self.db
+        let requestId = UUID()
+        liveOpenRequestId = requestId
+        let token = SessionNavigationGate.begin()
+        Task {
+            let resolved = await Task.detached { () -> Session? in
+                try? PopoverView.resolveLiveSession(session, database: db)
+            }.value
+            guard let resolved else {
+                SessionNavigationGate.complete(token)
+                return
+            }
+            guard liveOpenRequestId == requestId else { return }
+            NotificationCenter.default.post(
+                name: .openSession,
+                object: SessionBox(resolved, navigationId: token)
+            )
         }
     }
 
@@ -487,6 +533,30 @@ struct SourcePulseView: View {
             SourceGroup(id: "active", title: "Active Sources", rows: active),
             SourceGroup(id: "archived", title: "Archived", rows: archived),
         ].filter { !$0.rows.isEmpty }
+    }
+
+    static func listVisibleSessionTotal(_ sources: [EngramServiceSourceInfo]) -> Int {
+        sources.reduce(0) { $0 + $1.listVisibleSessionCount }
+    }
+
+    static func activeSourceCount(
+        catalog: [SourceCatalogEntry],
+        live: [EngramServiceSourceInfo]
+    ) -> Int {
+        groupedSourceRows(catalog: catalog, live: live)
+            .first { $0.id == "active" }?
+            .rows.count ?? 0
+    }
+
+    static func fallbackSourceInfo(source: String, count: Int) -> EngramServiceSourceInfo {
+        EngramServiceSourceInfo(
+            name: source,
+            sessionCount: count,
+            latestIndexed: nil,
+            listVisibleSessionCount: count,
+            healthReason: "Service unavailable — counts were read directly from the local database.",
+            liveSyncDisabled: LiveSyncDisabledSources.isLiveSyncDisabled(source)
+        )
     }
 
     static func usagePillText(metric: String, value: Double, unit: String?, limit: Double? = nil) -> String {
@@ -558,7 +628,7 @@ struct SourcePulseView: View {
         default: Theme.gray
         }
         Text(status.uppercased())
-            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+            .scaledFont(9, weight: .semibold, design: .monospaced)
             .foregroundStyle(color)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)

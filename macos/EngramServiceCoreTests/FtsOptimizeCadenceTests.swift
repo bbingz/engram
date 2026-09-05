@@ -7,7 +7,7 @@ import GRDB
 final class FtsOptimizeCadenceTests: XCTestCase {
     func testRunnerPeriodicLoopWiresCadenceGatedFtsOptimize() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
-        let start = try XCTUnwrap(source.range(of: "private static func runIndexingLoop("))
+        let start = try XCTUnwrap(source.range(of: "static func runIndexingLoop("))
         let end = try XCTUnwrap(
             source.range(of: "/// V2 composition root", options: [], range: start.lowerBound..<source.endIndex)
         )

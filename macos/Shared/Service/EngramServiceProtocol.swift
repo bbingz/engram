@@ -22,6 +22,7 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     func deleteInsight(_ request: EngramServiceDeleteInsightRequest) async throws -> EngramServiceJSONValue
     func manageProjectAlias(_ request: EngramServiceProjectAliasRequest) async throws -> EngramServiceJSONValue
     func resumeCommand(sessionId: String) async throws -> EngramServiceResumeCommandResponse
+    func liveIngestResetShrinkGuard(peer: String) async throws -> EngramServiceLiveIngestResetShrinkGuardResponse
     func setParentSession(sessionId: String, parentId: String) async throws -> EngramServiceLinkResponse
     func clearParentSession(sessionId: String) async throws -> EngramServiceLinkResponse
     func confirmSuggestion(sessionId: String) async throws -> EngramServiceLinkResponse
@@ -61,6 +62,8 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     func projectMove(_ request: EngramServiceProjectMoveRequest) async throws -> EngramServiceProjectMoveResult
     func projectArchive(_ request: EngramServiceProjectArchiveRequest) async throws -> EngramServiceProjectMoveResult
     func projectUndo(_ request: EngramServiceProjectUndoRequest) async throws -> EngramServiceProjectMoveResult
+    func projectMoveBatch(_ request: EngramServiceProjectMoveBatchRequest) async throws -> EngramServiceJSONValue
+    func cancelProjectMoveBatch(operationId: String) async throws -> EngramServiceCancelProjectMoveBatchResponse
     func setFavorite(sessionId: String, favorite: Bool) async throws
     func setSessionHidden(sessionId: String, hidden: Bool) async throws
     func setSourceEnabled(source: String, enabled: Bool) async throws

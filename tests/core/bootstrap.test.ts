@@ -1,7 +1,46 @@
-import { describe, expect, it } from 'vitest';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMCPDeps } from '../../src/core/bootstrap.js';
 
 describe('createMCPDeps', () => {
+  const roots: string[] = [];
+  let home: string;
+  let dataDir: string;
+
+  beforeEach(() => {
+    const root = mkdtempSync(join(tmpdir(), 'engram-bootstrap-'));
+    roots.push(root);
+    home = join(root, 'home');
+    dataDir = join(root, 'data');
+    // docs/invariants.md #6: every bootstrap test gets a closed temporary home.
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('CFFIXED_USER_HOME', home);
+    vi.stubEnv('TMPDIR', root);
+    vi.stubEnv('ENGRAM_DIR', dataDir);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    for (const root of roots.splice(0)) {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the injected Engram directory for in-memory dependencies (repro)', () => {
+    const deps = createMCPDeps({ dbPath: ':memory:' });
+    expect(existsSync(join(dataDir, 'cache', 'antigravity'))).toBe(true);
+    expect(existsSync(join(dataDir, 'cache', 'windsurf'))).toBe(true);
+    expect(existsSync(join(home, '.engram'))).toBe(false);
+    deps.db.close();
+  });
+
+  it('runs every bootstrap case inside a hermetic home (repro)', () => {
+    expect(process.env.HOME).toMatch(/engram-bootstrap-/);
+    expect(process.env.ENGRAM_DIR).toMatch(/engram-bootstrap-/);
+  });
+
   it('returns all required fields with in-memory db', () => {
     const deps = createMCPDeps({ dbPath: ':memory:' });
     expect(deps.db).toBeDefined();

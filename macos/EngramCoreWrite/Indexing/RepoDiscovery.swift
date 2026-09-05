@@ -7,6 +7,7 @@
 import Darwin
 import Foundation
 import GRDB
+import EngramCoreRead
 
 /// Structured git metadata for a single repository root.
 public struct GitRepoProbe: Equatable, Sendable {
@@ -66,10 +67,16 @@ public struct GitRepoDiscoveryEntry: Equatable, Sendable {
 public struct GitRepoProbeBatch: Equatable, Sendable {
     public let entries: [GitRepoDiscoveryEntry]
     public let failedCwds: [String]
+    public let cwdToRepoPath: [String: String]
 
-    public init(entries: [GitRepoDiscoveryEntry], failedCwds: [String]) {
+    public init(
+        entries: [GitRepoDiscoveryEntry],
+        failedCwds: [String],
+        cwdToRepoPath: [String: String] = [:]
+    ) {
         self.entries = entries
         self.failedCwds = failedCwds
+        self.cwdToRepoPath = cwdToRepoPath
     }
 }
 
@@ -86,8 +93,13 @@ public enum RepoDiscovery {
         now: () -> String = { ISO8601DateFormatter().string(from: Date()) }
     ) throws -> Int {
         let candidates = try sessionCwdCounts(db)
-        let entries = probeRepositories(candidates, probe: probe)
-        return try upsert(db, entries: entries, probedAt: now())
+        let batch = probeRepositoriesDetailed(candidates, probe: probe)
+        return try upsert(
+            db,
+            entries: batch.entries,
+            cwdToRepoPath: batch.cwdToRepoPath,
+            probedAt: now()
+        )
     }
 
     /// Distinct session cwds to probe, capped to the `limit` busiest. Each
@@ -102,6 +114,9 @@ public enum RepoDiscovery {
             SELECT cwd, COUNT(*) AS n
             FROM sessions
             WHERE cwd IS NOT NULL AND TRIM(cwd) != ''
+              -- docs/invariants.md invariant 3: repo KPIs use list-visible sessions.
+              AND \(SessionVisibilityFilter.listVisibleSQL)
+              AND \(SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL(alias: "sessions"))
             GROUP BY cwd
             ORDER BY n DESC
             LIMIT ?
@@ -132,6 +147,7 @@ public enum RepoDiscovery {
         // one repo. Cache probes per cwd to avoid re-shelling identical paths.
         var byRepo: [String: (probe: GitRepoProbe, sessions: Int)] = [:]
         var failedCwds: [String] = []
+        var cwdToRepoPath: [String: String] = [:]
         for candidate in candidates {
             guard let info = probe(candidate.cwd) else {
                 failedCwds.append(candidate.cwd)
@@ -142,18 +158,24 @@ public enum RepoDiscovery {
             } else {
                 byRepo[info.path] = (info, candidate.sessionCount)
             }
+            cwdToRepoPath[candidate.cwd] = info.path
         }
 
         let entries = byRepo.values.map { entry in
             GitRepoDiscoveryEntry(probe: entry.probe, sessionCount: entry.sessions)
         }
-        return GitRepoProbeBatch(entries: entries, failedCwds: failedCwds)
+        return GitRepoProbeBatch(
+            entries: entries,
+            failedCwds: failedCwds,
+            cwdToRepoPath: cwdToRepoPath
+        )
     }
 
     @discardableResult
     public static func upsert(
         _ db: Database,
         entries: [GitRepoDiscoveryEntry],
+        cwdToRepoPath: [String: String] = [:],
         probedAt: String
     ) throws -> Int {
         for entry in entries {
@@ -182,7 +204,160 @@ public enum RepoDiscovery {
                 ]
             )
         }
+        try recount(db, cwdToRepoPath: cwdToRepoPath)
         return entries.count
+    }
+
+    /// Refresh counts from probe aliases and the longest stored repo path at a
+    /// path boundary. Longest-match preserves nested-repository identity.
+    public static func recount(
+        _ db: Database,
+        cwdToRepoPath: [String: String] = [:]
+    ) throws {
+        let repoPaths = Set(try String.fetchAll(db, sql: "SELECT path FROM git_repos"))
+        for (cwd, repoPath) in cwdToRepoPath where repoPaths.contains(repoPath) {
+            try db.execute(
+                sql: """
+                    INSERT INTO git_repo_cwd_aliases(cwd, real_cwd, repo_path)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(cwd) DO UPDATE SET
+                      real_cwd = excluded.real_cwd,
+                      repo_path = excluded.repo_path
+                    """,
+                arguments: [cwd, realpathPath(cwd), repoPath]
+            )
+        }
+
+        let aliasRows = try Row.fetchAll(
+            db,
+            sql: "SELECT cwd, real_cwd, repo_path FROM git_repo_cwd_aliases"
+        )
+        var identitiesByRepo: [String: Set<String>] = [:]
+        for path in repoPaths {
+            identitiesByRepo[path, default: []].insert(path)
+            identitiesByRepo[path, default: []].insert(realpathPath(path))
+        }
+        for row in aliasRows {
+            guard let cwd = row["cwd"] as String?,
+                  let realCwd = row["real_cwd"] as String?,
+                  let repoPath = row["repo_path"] as String?,
+                  repoPaths.contains(repoPath) else { continue }
+            identitiesByRepo[repoPath, default: []].insert(cwd)
+            identitiesByRepo[repoPath, default: []].insert(realCwd)
+        }
+
+        var counts: [String: Int] = [:]
+        let matchableRepoPaths = repoPaths
+            .filter { $0 != "/" }
+            .sorted { $0.count > $1.count }
+        for candidate in try sessionCwdCounts(db, limit: Int.max) {
+            let realCwd = realpathPath(candidate.cwd)
+            let repoPath = storedRepoPath(
+                for: candidate.cwd,
+                realCwd: realCwd,
+                matchableRepoPaths: matchableRepoPaths,
+                identitiesByRepo: identitiesByRepo
+            )
+            guard let repoPath else { continue }
+            try db.execute(
+                sql: """
+                    INSERT INTO git_repo_cwd_aliases(cwd, real_cwd, repo_path)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(cwd) DO UPDATE SET
+                      real_cwd = excluded.real_cwd,
+                      repo_path = excluded.repo_path
+                    """,
+                arguments: [candidate.cwd, realCwd, repoPath]
+            )
+            counts[repoPath, default: 0] += candidate.sessionCount
+        }
+        try db.execute(sql: "UPDATE git_repos SET session_count = 0")
+        for (repoPath, count) in counts {
+            try db.execute(
+                sql: "UPDATE git_repos SET session_count = ? WHERE path = ?",
+                arguments: [count, repoPath]
+            )
+        }
+        let allSessionCwds = try String.fetchAll(
+            db,
+            sql: "SELECT DISTINCT cwd FROM sessions WHERE cwd IS NOT NULL AND TRIM(cwd) != ''"
+        )
+        let referencedRepoPaths = Set(allSessionCwds.compactMap { cwd in
+            storedRepoPath(
+                for: cwd,
+                realCwd: realpathPath(cwd),
+                matchableRepoPaths: matchableRepoPaths,
+                identitiesByRepo: identitiesByRepo
+            )
+        })
+        for repoPath in repoPaths
+        where repoPath != "/" && counts[repoPath] == nil && !referencedRepoPaths.contains(repoPath) {
+            try db.execute(sql: "DELETE FROM git_repos WHERE path = ?", arguments: [repoPath])
+        }
+    }
+
+    /// Visible cwds with no stored repo identity must be probed immediately;
+    /// an in-memory metadata cooldown cannot stand in for a deleted DB row.
+    public static func candidateCwdsMissingStoredRepoIdentity(
+        _ db: Database,
+        candidates: [GitRepoCandidate]
+    ) throws -> Set<String> {
+        let repoPaths = Set(try String.fetchAll(db, sql: "SELECT path FROM git_repos"))
+        let matchableRepoPaths = repoPaths
+            .filter { $0 != "/" }
+            .sorted { $0.count > $1.count }
+        let aliasRows = try Row.fetchAll(
+            db,
+            sql: "SELECT cwd, real_cwd, repo_path FROM git_repo_cwd_aliases"
+        )
+        var identitiesByRepo: [String: Set<String>] = [:]
+        for path in repoPaths {
+            identitiesByRepo[path, default: []].insert(path)
+            identitiesByRepo[path, default: []].insert(realpathPath(path))
+        }
+        for row in aliasRows {
+            guard let cwd = row["cwd"] as String?,
+                  let realCwd = row["real_cwd"] as String?,
+                  let repoPath = row["repo_path"] as String?,
+                  repoPaths.contains(repoPath) else { continue }
+            identitiesByRepo[repoPath, default: []].insert(cwd)
+            identitiesByRepo[repoPath, default: []].insert(realCwd)
+        }
+
+        return Set(candidates.compactMap { candidate in
+            let match = storedRepoPath(
+                for: candidate.cwd,
+                realCwd: realpathPath(candidate.cwd),
+                matchableRepoPaths: matchableRepoPaths,
+                identitiesByRepo: identitiesByRepo
+            )
+            return match == nil ? candidate.cwd : nil
+        })
+    }
+
+    private static func storedRepoPath(
+        for cwd: String,
+        realCwd: String,
+        matchableRepoPaths: [String],
+        identitiesByRepo: [String: Set<String>]
+    ) -> String? {
+        matchableRepoPaths.first { path in
+            let identities = identitiesByRepo[path] ?? []
+            return identities.contains(cwd)
+                || identities.contains(realCwd)
+                || pathBoundaryContains(path, cwd)
+                || pathBoundaryContains(path, realCwd)
+                || identities.contains { pathBoundaryContains($0, cwd) }
+                || identities.contains { pathBoundaryContains($0, realCwd) }
+        }
+    }
+
+    private static func pathBoundaryContains(_ root: String, _ candidate: String) -> Bool {
+        candidate == root || candidate.hasPrefix(root.hasSuffix("/") ? root : root + "/")
+    }
+
+    public static func realpathPath(_ path: String) -> String {
+        FileSystemPathIdentity.realpathPath(path)
     }
 
     /// Real git probe. Returns `nil` when `cwd` is not inside a git repo or git

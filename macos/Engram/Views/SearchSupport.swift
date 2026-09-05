@@ -12,6 +12,18 @@ enum SearchMode: String, CaseIterable {
     }
 }
 
+enum SearchQueryReadiness: Equatable {
+    case idle
+    case tooShort
+    case ready
+
+    static func classify(query: String, minimumLength: Int = 2) -> SearchQueryReadiness {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return .idle }
+        return trimmed.count < minimumLength ? .tooShort : .ready
+    }
+}
+
 struct SearchResult: Identifiable {
     let id: String
     let session: Session?
@@ -75,7 +87,8 @@ extension EngramServiceSearchResponse.Item {
             parentSessionId: parentSessionId,
             suggestedParentId: suggestedParentId,
             linkSource: linkSource,
-            qualityScore: qualityScore
+            qualityScore: qualityScore,
+            origin: origin
         )
         return SearchResult(
             id: id,

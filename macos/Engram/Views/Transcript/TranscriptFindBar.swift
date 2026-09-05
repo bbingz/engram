@@ -15,11 +15,11 @@ struct TranscriptFindBar: View {
             HStack(spacing: 4) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
-                    .font(.system(size: 12))
+                    .scaledFont(12)
                     .accessibilityHidden(true)
                 TextField("Find in transcript...", text: $searchText)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 12))
+                    .scaledFont(12)
                     .focused($isFocused)
                     .onSubmit { onNext() }
                 if !searchText.isEmpty {
@@ -28,7 +28,7 @@ struct TranscriptFindBar: View {
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundStyle(.secondary)
-                            .font(.system(size: 11))
+                            .scaledFont(11)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Clear search")
@@ -43,13 +43,13 @@ struct TranscriptFindBar: View {
 
             if !searchText.isEmpty {
                 Text(matchCount > 0 ? "\(currentMatch + 1)/\(matchCount)" : "No matches")
-                    .font(.system(size: 11))
+                    .scaledFont(11)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
 
                 Button(action: onPrev) {
                     Image(systemName: "chevron.up")
-                        .font(.system(size: 10))
+                        .scaledFont(10)
                 }
                 .buttonStyle(.plain)
                 .disabled(matchCount == 0)
@@ -58,7 +58,7 @@ struct TranscriptFindBar: View {
 
                 Button(action: onNext) {
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 10))
+                        .scaledFont(10)
                 }
                 .buttonStyle(.plain)
                 .disabled(matchCount == 0)
@@ -73,7 +73,7 @@ struct TranscriptFindBar: View {
                 isVisible = false
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 10))
+                    .scaledFont(10)
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)

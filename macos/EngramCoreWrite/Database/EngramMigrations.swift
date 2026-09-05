@@ -2,7 +2,7 @@ import Foundation
 import GRDB
 
 enum EngramMigrations {
-    private static let auxSchemaVersion = "4"
+    private static let auxSchemaVersion = "5"
 
     static func createOrUpdateBaseSchema(_ db: GRDB.Database) throws {
         try db.execute(sql: """
@@ -84,23 +84,22 @@ enum EngramMigrations {
             CREATE TRIGGER trg_sessions_parent_cascade
             AFTER DELETE ON sessions
             BEGIN
-              -- Confirmed children: orphan the link and reset tier for re-evaluation,
-              -- but preserve 'skip' for subagent and dispatched agents (Wave 7B H05).
+              -- Confirmed children: orphan the link while preserving their existing
+              -- classification; subagent/dispatched roles remain pinned to skip.
               UPDATE sessions
                 SET parent_session_id = NULL,
                     link_source = NULL,
                     tier = CASE
                       WHEN agent_role IN ('subagent', 'dispatched') THEN 'skip'
-                      ELSE NULL
+                      ELSE tier
                     END
                 WHERE parent_session_id = OLD.id;
-              -- Suggested (advisory) children: clear the suggestion and likewise reset
-              -- tier for re-evaluation, preserving 'skip' for subagent/dispatched.
+              -- Suggested (advisory) children follow the same tier-preservation rule.
               UPDATE sessions
                 SET suggested_parent_id = NULL,
                     tier = CASE
                       WHEN agent_role IN ('subagent', 'dispatched') THEN 'skip'
-                      ELSE NULL
+                      ELSE tier
                     END
                 WHERE suggested_parent_id = OLD.id;
             END;
@@ -134,6 +133,13 @@ enum EngramMigrations {
               hidden_at TEXT,
               custom_name TEXT,
               local_readable_path TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS session_relations (
+              a_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+              b_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')),
+              PRIMARY KEY (a_id, b_id)
             );
 
             CREATE TABLE IF NOT EXISTS session_index_jobs (
@@ -238,6 +244,15 @@ enum EngramMigrations {
               session_count INTEGER DEFAULT 0,
               probed_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS git_repo_cwd_aliases (
+              cwd TEXT PRIMARY KEY,
+              real_cwd TEXT NOT NULL,
+              repo_path TEXT NOT NULL REFERENCES git_repos(path) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_git_repo_cwd_alias_real
+              ON git_repo_cwd_aliases(real_cwd);
+            CREATE INDEX IF NOT EXISTS idx_git_repo_cwd_alias_repo
+              ON git_repo_cwd_aliases(repo_path);
 
             CREATE TABLE IF NOT EXISTS session_costs (
               session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
@@ -523,11 +538,16 @@ enum EngramMigrations {
               remote_key TEXT,
               direction TEXT NOT NULL CHECK (direction IN ('out','in')),
               content_hash TEXT,
+              source_sync_version INTEGER,
+              source_snapshot_hash TEXT,
               synced_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_sync_ledger_session ON sync_ledger(session_id, synced_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_sync_ledger_peer_direction_session
+                ON sync_ledger(remote_peer, direction, session_id);
         """)
         try addSessionIndexJobColumnsIfNeeded(db)
+        try addSyncLedgerColumnsIfNeeded(db)
         try backfillFtsMapIfNeeded(db)
         try migrateAuxTablesToV2(db)
     }
@@ -539,6 +559,17 @@ enum EngramMigrations {
         let existing = Set(rows.map { $0["name"] as String })
         if !existing.contains("not_before") {
             try db.execute(sql: "ALTER TABLE session_index_jobs ADD COLUMN not_before TEXT")
+        }
+    }
+
+    private static func addSyncLedgerColumnsIfNeeded(_ db: GRDB.Database) throws {
+        let rows = try Row.fetchAll(db, sql: "PRAGMA table_info(sync_ledger)")
+        let existing = Set(rows.map { $0["name"] as String })
+        if !existing.contains("source_sync_version") {
+            try db.execute(sql: "ALTER TABLE sync_ledger ADD COLUMN source_sync_version INTEGER")
+        }
+        if !existing.contains("source_snapshot_hash") {
+            try db.execute(sql: "ALTER TABLE sync_ledger ADD COLUMN source_snapshot_hash TEXT")
         }
     }
 
@@ -595,6 +626,7 @@ enum EngramMigrations {
         try migrateUsageSnapshotsToV3(db)
         try migrateInsightsToV2(db)
         try migrateInsightsLifecycle(db)
+        try migrateSessionRelationsToV2(db)
         try db.execute(
             sql: """
             INSERT INTO metadata(key, value) VALUES ('swift_aux_schema_version', ?)
@@ -660,6 +692,40 @@ enum EngramMigrations {
             try db.execute(sql: "ALTER TABLE sessions ADD COLUMN \(name) \(definition)")
         }
         try db.execute(sql: "UPDATE sessions SET indexed_at = datetime('now') WHERE indexed_at = ''")
+    }
+
+    private static func migrateSessionRelationsToV2(_ db: GRDB.Database) throws {
+        guard try tableExists(db, "session_relations") else { return }
+        let foreignKeys = try Row.fetchAll(db, sql: "PRAGMA foreign_key_list(session_relations)")
+        let cascadingColumns = Set(foreignKeys.compactMap { row -> String? in
+            let onDelete: String = row["on_delete"]
+            return onDelete.uppercased() == "CASCADE" ? row["from"] as String? : nil
+        })
+        guard cascadingColumns != ["a_id", "b_id"] else { return }
+
+        let columns = try tableColumns(db, "session_relations")
+        let createdAt = columnExpr(columns, "created_at", fallback: "datetime('now')")
+        try db.execute(sql: "DROP TABLE IF EXISTS __engram_session_relations_v2")
+        try db.execute(sql: """
+            CREATE TABLE __engram_session_relations_v2 (
+              a_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+              b_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')),
+              PRIMARY KEY (a_id, b_id)
+            )
+        """)
+        try db.execute(sql: """
+            INSERT OR IGNORE INTO __engram_session_relations_v2(a_id, b_id, created_at)
+            SELECT
+              CASE WHEN a_id < b_id THEN a_id ELSE b_id END,
+              CASE WHEN a_id < b_id THEN b_id ELSE a_id END,
+              COALESCE(\(createdAt), datetime('now'))
+            FROM session_relations
+            WHERE a_id != b_id
+              AND a_id IN (SELECT id FROM sessions)
+              AND b_id IN (SELECT id FROM sessions)
+        """)
+        try replaceTable(db, old: "session_relations", replacement: "__engram_session_relations_v2")
     }
 
     private static func migrateSessionToolsToV2(_ db: GRDB.Database) throws {

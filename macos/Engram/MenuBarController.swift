@@ -19,7 +19,12 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     // Stored so openWindow() can inject them into the standalone window
     private let db: DatabaseManager
     private let serviceStatusStore: EngramServiceStatusStore
-    private let serviceClient: EngramServiceClient
+    private let serviceClient: any EngramServiceClientProtocol
+    private let serviceSocketPath: String
+    private let fixedDate: Date?
+    private let appStorage: UserDefaults
+    private let isTestMode: Bool
+    private let hasOnboardingWindow: @MainActor () -> Bool
     private let usagePressureNotifier = UsagePressureNotifier()
     private var badgeTimer: Timer?
     // Rate-limit the live-session FS scan: the badge timer AND every
@@ -42,19 +47,29 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     /// no usage gauge). Defaults ON via `register(defaults:)` in `init` so the
     /// current behavior is preserved for existing installs.
     private var showMenuBarActivity: Bool {
-        UserDefaults.standard.bool(forKey: "showMenuBarActivity")
+        appStorage.bool(forKey: "showMenuBarActivity")
     }
 
     init(
         db: DatabaseManager,
         serviceStatusStore: EngramServiceStatusStore,
-        serviceClient: EngramServiceClient,
-        windowSize: NSSize? = nil
+        serviceClient: any EngramServiceClientProtocol,
+        serviceSocketPath: String,
+        fixedDate: Date? = nil,
+        windowSize: NSSize? = nil,
+        appStorage: UserDefaults = .standard,
+        isTestMode: Bool = false,
+        hasOnboardingWindow: @escaping @MainActor () -> Bool = { false }
     ) {
         self.windowSize = windowSize ?? NSSize(width: 900, height: 640)
         self.db = db
         self.serviceStatusStore = serviceStatusStore
         self.serviceClient = serviceClient
+        self.serviceSocketPath = serviceSocketPath
+        self.fixedDate = fixedDate
+        self.appStorage = appStorage
+        self.isTestMode = isTestMode
+        self.hasOnboardingWindow = hasOnboardingWindow
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         popover    = NSPopover()
@@ -66,8 +81,9 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
                 PopoverView()
                     .environment(db)
                     .environment(serviceStatusStore)
-                    .environment(serviceClient)
+                    .environment(\.engramServiceClient, serviceClient)
             }
+            .defaultAppStorage(appStorage)
         )
 
         super.init()
@@ -88,7 +104,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         // Menu-bar activity (today/live counts + usage gauge) defaults ON to
         // preserve current behavior; users can silence the constantly-changing
         // badge from Settings ▸ General ▸ Menu Bar.
-        UserDefaults.standard.register(defaults: ["showMenuBarActivity": true])
+        appStorage.register(defaults: ["showMenuBarActivity": true])
         lastShowMenuBarActivity = showMenuBarActivity
 
         // Update badge: total sessions + live count (consolidated, 30s poll)
@@ -130,7 +146,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         // Apply persistent Dock icon preference
         applyDockIconPreference()
         dockIconObserver = NotificationCenter.default.addObserver(
-            forName: UserDefaults.didChangeNotification, object: nil, queue: .main
+            forName: UserDefaults.didChangeNotification, object: appStorage, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
                 self?.applyDockIconPreference()
@@ -266,11 +282,12 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
         let hostingController = NSHostingController(
             rootView: LocalizedRoot {
-                SettingsView()
+                SettingsView(serviceSocketPath: serviceSocketPath)
                     .environment(db)
                     .environment(serviceStatusStore)
-                    .environment(serviceClient)
+                    .environment(\.engramServiceClient, serviceClient)
             }
+            .defaultAppStorage(appStorage)
         )
 
         let win = NSWindow(contentViewController: hostingController)
@@ -295,16 +312,23 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     // MARK: - Standalone window (hybrid activation)
 
     @objc private func handleOpenWindow(_ notification: Notification) {
-        openWindow()
-        // If a SessionBox was passed, forward it after the window is ready
-        if let box = notification.object as? SessionBox {
-            Task { @MainActor in
-                NotificationCenter.default.post(name: .openSession, object: box)
-            }
+        guard let box = notification.object as? SessionBox else {
+            openWindow()
+            return
+        }
+        if window != nil {
+            openWindow()
+            NotificationCenter.default.post(name: .openSession, object: box)
+        } else {
+            presentWindow(initialSession: box)
         }
     }
 
     @objc func openWindow() {
+        presentWindow(initialSession: nil)
+    }
+
+    private func presentWindow(initialSession: SessionBox?) {
         // Close popover if open
         if popover.isShown { popover.performClose(nil) }
 
@@ -324,11 +348,17 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
         let hostingController = NSHostingController(
             rootView: LocalizedRoot {
-                MainWindowView()
+                MainWindowView(
+                    initialSession: initialSession,
+                    appStorage: appStorage,
+                    serviceSocketPath: serviceSocketPath
+                )
                     .environment(db)
                     .environment(serviceStatusStore)
-                    .environment(serviceClient)
+                    .environment(\.engramServiceClient, serviceClient)
+                    .environment(\.engramFixedDate, fixedDate)
             }
+            .defaultAppStorage(appStorage)
         )
 
         let win = NSWindow(contentViewController: hostingController)
@@ -368,8 +398,8 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
                 self.settingsWindow = nil
             }
             // Only revert to accessory if no windows are open and user doesn't want persistent Dock icon
-            if self.window == nil && self.settingsWindow == nil {
-                let keepDock = UserDefaults.standard.bool(forKey: "showDockIcon")
+            if self.window == nil && self.settingsWindow == nil && !self.hasOnboardingWindow() {
+                let keepDock = self.appStorage.bool(forKey: "showDockIcon")
                 if !keepDock {
                     NSApp.setActivationPolicy(.accessory)
                 }
@@ -519,6 +549,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     /// is off/monitoring disabled, skip the costs() round-trip entirely so the
     /// badge timer doesn't flood telemetry + the DB for nothing.
     private func checkCostBudget() async {
+        guard !isTestMode else { return }
         let settings = UsagePressureNotificationSettings.current()
         guard settings.monitorEnabled,
               settings.notifyOnCostThreshold,
@@ -545,7 +576,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     }
 
     private func applyDockIconPreference() {
-        let show = UserDefaults.standard.bool(forKey: "showDockIcon")
+        let show = appStorage.bool(forKey: "showDockIcon")
         guard show != lastShowDockIcon else { return }
         lastShowDockIcon = show
         if show {

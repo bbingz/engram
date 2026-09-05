@@ -33,11 +33,11 @@ final class ViewMainThreadReadTests: XCTestCase {
     func testMainWindowNavigationIgnoresSupersededLookups() throws {
         let s = try source("macos/Engram/Views/MainWindowView.swift")
         XCTAssertTrue(
-            s.contains("@State private var pendingNavigationId: String?"),
-            "palette navigation must track the latest requested session id"
+            s.contains("@State private var pendingNavigationId: UUID?"),
+            "all navigation paths must track the latest request token"
         )
         XCTAssertTrue(
-            s.contains("guard pendingNavigationId == id else { return }"),
+            s.contains("guard pendingNavigationId == token"),
             "a slower session lookup must not overwrite a newer palette navigation"
         )
     }
@@ -55,8 +55,12 @@ final class ViewMainThreadReadTests: XCTestCase {
             "App should not run the legacy events() status stream alongside EngramServiceLauncher health polling"
         )
         XCTAssertTrue(
-            s.contains("serviceLauncher.startHealthMonitor"),
-            "EngramServiceLauncher health polling remains the single periodic status probe"
+            s.contains("serviceLauncher.startOrAdopt("),
+            "EngramServiceLauncher adoption owns the single periodic status probe"
+        )
+        XCTAssertFalse(
+            s.contains("serviceLauncher.startHealthMonitor("),
+            "AppDelegate must not arm a second health monitor outside startOrAdopt"
         )
     }
 
@@ -91,6 +95,27 @@ final class ViewMainThreadReadTests: XCTestCase {
             fallback.contains("let localResults = try db.searchWithSnippets"),
             "SearchPageView offline fallback must not synchronously scan the local DB on the main actor"
         )
+    }
+
+    func testSearchPageClearsDebouncedResultsAndCancelsBeforeOfflineFallback_repro() throws {
+        let source = try source("macos/Engram/Views/Pages/SearchPageView.swift")
+        let changeStart = try XCTUnwrap(source.range(of: ".onChange(of: query)"))
+        let changeEnd = try XCTUnwrap(
+            source.range(of: ".onChange(of: selectedProjectFilter)", range: changeStart.upperBound..<source.endIndex)
+        )
+        let changeBody = source[changeStart.lowerBound..<changeEnd.lowerBound]
+        let clear = try XCTUnwrap(changeBody.range(of: "results = []"))
+        let readiness = try XCTUnwrap(changeBody.range(of: "if queryReadiness != .ready"))
+        XCTAssertLessThan(clear.lowerBound, readiness.lowerBound)
+
+        let fallback = try XCTUnwrap(source.range(of: "// Fallback to local FTS"))
+        let detached = try XCTUnwrap(
+            source.range(of: "let localResults = try await Task.detached", range: fallback.upperBound..<source.endIndex)
+        )
+        let serviceCatch = try XCTUnwrap(
+            source.range(of: "} catch {", options: .backwards, range: source.startIndex..<fallback.lowerBound)
+        )
+        XCTAssertTrue(source[serviceCatch.lowerBound..<detached.lowerBound].contains("guard !Task.isCancelled else { return }"))
     }
 
     func testCommandPaletteDebouncesAndOwnsSearchTask() throws {
@@ -161,7 +186,7 @@ final class ViewMainThreadReadTests: XCTestCase {
         ]
 
         for page in pages {
-            XCTAssertTrue(page.contains("@Environment(EngramServiceClient.self)"))
+            XCTAssertTrue(page.contains("@Environment(\\.engramServiceClient)"))
             XCTAssertTrue(page.contains("onConfirmSuggestion: { child in confirmSuggestion(child) }"))
             XCTAssertTrue(page.contains("onDismissSuggestion: { child in dismissSuggestion(child) }"))
             XCTAssertTrue(page.contains("serviceClient.confirmSuggestion(sessionId: child.id)"))
@@ -183,22 +208,41 @@ final class ViewMainThreadReadTests: XCTestCase {
         )
     }
 
+    func testTimelineWorkDateParserUsesGregorianPosixLocalCalendar_repro() throws {
+        let source = try source("macos/Engram/Views/Pages/TimelinePageView.swift")
+        let formatterStart = try XCTUnwrap(source.range(of: "private static let inputDateFormatter"))
+        let formatterEnd = try XCTUnwrap(
+            source.range(
+                of: "private static let outputDateFormatter",
+                range: formatterStart.lowerBound..<source.endIndex
+            )
+        )
+        let formatter = String(source[formatterStart.lowerBound..<formatterEnd.lowerBound])
+        XCTAssertTrue(formatter.contains("Calendar(identifier: .gregorian)"))
+        XCTAssertTrue(formatter.contains("Locale(identifier: \"en_US_POSIX\")"))
+        XCTAssertTrue(formatter.contains("TimeZone.current"))
+    }
+
     // L14 / TIMELINE-RECOMPUTE-001: pin one derived snapshot per body
     // evaluation so SwiftUI consumers do not repeatedly scan the loaded window.
     func testTimelinePageSnapshotsDerivedCollectionsPerBodyEvaluation_repro() throws {
         let s = try source("macos/Engram/Views/Pages/TimelinePageView.swift")
         let start = try XCTUnwrap(s.range(of: "var body: some View"))
         let end = try XCTUnwrap(
-            s.range(of: "private func loadData()", options: [], range: start.lowerBound..<s.endIndex)
+            s.range(
+                of: "private func loadData(preservePagination: Bool = false)",
+                options: [],
+                range: start.lowerBound..<s.endIndex
+            )
         )
         let body = String(s[start.lowerBound..<end.lowerBound])
 
         XCTAssertTrue(body.contains("let projectOptionsSnapshot = projectOptions"))
-        XCTAssertTrue(body.contains("let filteredTimelineSnapshot = filteredTimeline"))
+        XCTAssertTrue(body.contains("let timelineSnapshot = timeline"))
         XCTAssertTrue(body.contains("let visibleChartDataSnapshot"))
         XCTAssertTrue(body.contains("let hasVisibleContentSnapshot"))
         XCTAssertTrue(body.contains("ForEach(projectOptionsSnapshot, id: \\.self)"))
-        XCTAssertTrue(body.contains("ForEach(filteredTimelineSnapshot, id: \\.date)"))
+        XCTAssertTrue(body.contains("ForEach(timelineSnapshot, id: \\.date)"))
         XCTAssertFalse(body.contains("if projectOptions.count > 1"))
         XCTAssertFalse(body.contains("ForEach(projectOptions, id: \\.self)"))
         XCTAssertFalse(body.contains("ForEach(filteredTimeline, id: \\.date)"))
@@ -342,10 +386,11 @@ final class ViewMainThreadReadTests: XCTestCase {
         XCTAssertTrue(ai.contains("guard !isLoadingSettings else { return }"))
         XCTAssertFalse(
             ai.contains("defer { isLoadingSettings = false }"),
-            "AI settings must keep the loading guard active through the post-load SwiftUI onChange pass"
+            "AI settings must not clear the loading guard synchronously"
         )
-        XCTAssertTrue(ai.contains("Task { @MainActor in"))
-        XCTAssertTrue(ai.contains("await Task.yield()"))
+        XCTAssertTrue(ai.contains("defer { clearLoadingSettingsAfterViewUpdate(generation: generation) }"))
+        XCTAssertTrue(ai.contains("generation == settingsLoadGeneration"))
+        XCTAssertTrue(ai.contains(".disabled(!settingsLoadApplied)"))
 
         let advanced = try source("macos/Engram/Views/SettingsView.swift")
         XCTAssertFalse(
@@ -373,11 +418,11 @@ final class ViewMainThreadReadTests: XCTestCase {
     func testIndexJobSelectionPrioritizesPendingJobsAheadOfRetryableBacklog() throws {
         let runner = try source("macos/EngramCoreWrite/Indexing/IndexJobRunner.swift")
         XCTAssertTrue(
-            runner.contains("CASE status WHEN 'pending' THEN 0 ELSE 1 END"),
+            runner.contains("CASE j.status WHEN 'pending' THEN 0 ELSE 1 END"),
             "pending jobs must be selected before failed_retryable jobs so old retry backlogs cannot starve fresh work"
         )
         XCTAssertTrue(
-            runner.contains("retry_count,\n              created_at"),
+            runner.contains("j.retry_count,\n              j.created_at"),
             "retryable jobs should be ordered by retry_count before age"
         )
         XCTAssertFalse(
@@ -433,28 +478,28 @@ final class ViewMainThreadReadTests: XCTestCase {
             s.contains("contentSource.tier == SessionTier.skip.rawValue"),
             "recoverable FTS jobs for skip-tier sessions must not rebuild searchable content"
         )
-        XCTAssertTrue(s.contains("try Self.markNotApplicable(db, id: job.id)"))
+        XCTAssertTrue(s.contains("try Self.markNotApplicable(db, id: job.id, enabledSources: enabledSources)"))
     }
 
     func testAISettingsRefreshesRuntimeSecretBridgeAfterKeychainWrites() throws {
         let s = try source("macos/Engram/Views/Settings/AISettingsSection.swift")
-        XCTAssertTrue(s.contains("func refreshRuntimeAISecrets()"))
-        XCTAssertTrue(s.contains("EngramServiceLauncher.writeRuntimeAISecrets("))
+        XCTAssertTrue(s.contains("func refreshRuntimeAISecrets(serviceSocketPath:"))
+        XCTAssertTrue(s.contains("EngramServiceLauncher.refreshRuntimeAISecrets("))
         XCTAssertTrue(s.contains("keychainReader: KeychainHelper.get"))
         XCTAssertTrue(
             s.contains("AISettingsPersister.persistAIOffMain"),
             "AI settings saves must persist off-main after a MainActor snapshot (R9)"
         )
-        let persistAIStart = try XCTUnwrap(s.range(of: "func persistAI(_ snapshot: AISettingsPersistSnapshot)"))
+        let persistAIStart = try XCTUnwrap(s.range(of: "func persistAI("))
         let persistAIEnd = try XCTUnwrap(
             s.range(
-                of: "func persistTitle(_ snapshot: TitleSettingsPersistSnapshot)",
+                of: "func persistTitle(",
                 range: persistAIStart.lowerBound..<s.endIndex
             )
         )
         let persistAI = String(s[persistAIStart.lowerBound..<persistAIEnd.lowerBound])
         XCTAssertTrue(persistAI.contains("applyAPIKey("))
-        XCTAssertTrue(persistAI.contains("refreshRuntimeAISecrets()"))
+        XCTAssertTrue(persistAI.contains("refreshRuntimeAISecrets(serviceSocketPath:"))
 
         let persistTitleStart = persistAIEnd
         let persistTitleEnd = try XCTUnwrap(
@@ -462,7 +507,7 @@ final class ViewMainThreadReadTests: XCTestCase {
         )
         let persistTitle = String(s[persistTitleStart.lowerBound..<persistTitleEnd.lowerBound])
         XCTAssertTrue(persistTitle.contains("applyAPIKey("))
-        XCTAssertTrue(persistTitle.contains("refreshRuntimeAISecrets()"))
+        XCTAssertTrue(persistTitle.contains("refreshRuntimeAISecrets(serviceSocketPath:"))
     }
 
     // Runtime debt repro: an installed Release launch emitted Security.framework

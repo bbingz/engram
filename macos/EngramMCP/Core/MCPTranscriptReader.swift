@@ -22,6 +22,9 @@ struct MCPTranscriptPage {
 enum MCPTranscriptReadError: LocalizedError {
     case definitiveLocalExactSourceUnavailable(path: String, code: Int32)
     case unsafeLocalExactSource(path: String, reason: String)
+    case registeredAdapterUnavailable(source: String)
+    case noFallbackParser(source: String)
+    case remoteSnapshotUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -29,13 +32,17 @@ enum MCPTranscriptReadError: LocalizedError {
             return "Exact transcript source is unavailable (errno \(code))"
         case .unsafeLocalExactSource(_, let reason):
             return "Exact transcript source is unsafe (\(reason))"
+        case .registeredAdapterUnavailable(let source):
+            return "Registered transcript adapter is unavailable for source \(source)"
+        case .noFallbackParser(let source):
+            return "No transcript parser is available for source \(source)"
+        case .remoteSnapshotUnavailable:
+            return "HQ index snapshot is unavailable"
         }
     }
 }
 
 private struct MCPTranscriptPageBuilder {
-    private static let maxMessageContentCharacters = 8_192
-
     private let currentPage: Int
     private let pageSize: Int
     private let offset: Int
@@ -50,7 +57,7 @@ private struct MCPTranscriptPageBuilder {
 
     mutating func append(_ message: MCPTranscriptMessage) {
         if totalMessages >= offset && messages.count < pageSize {
-            messages.append(Self.capped(message))
+            messages.append(message)
         }
         totalMessages += 1
     }
@@ -71,18 +78,6 @@ private struct MCPTranscriptPageBuilder {
         )
     }
 
-    private static func capped(_ message: MCPTranscriptMessage) -> MCPTranscriptMessage {
-        guard message.content.count > maxMessageContentCharacters else {
-            return message
-        }
-        let omitted = message.content.count - maxMessageContentCharacters
-        return MCPTranscriptMessage(
-            role: message.role,
-            content: String(message.content.prefix(maxMessageContentCharacters))
-                + "\n[truncated \(omitted) characters]",
-            timestamp: message.timestamp
-        )
-    }
 }
 
 // Process-lifetime cache of a transcript's exact visible-message total, keyed by
@@ -104,6 +99,7 @@ private final class TranscriptVisibleCountCache: @unchecked Sendable {
         let visibleTotal: Int
         let totalKnownComplete: Bool
         let truncatedAt: Int?
+        let maxRawMessages: Int?
     }
 
     private let lock = NSLock()
@@ -134,6 +130,9 @@ enum MCPTranscriptReader {
         roles: [String]?
     ) async throws -> MCPTranscriptPage {
         try Task.checkCancellation()
+        if isRemoteSnapshotLocator(filePath) {
+            throw MCPTranscriptReadError.remoteSnapshotUnavailable
+        }
         try validateExactLocalSource(filePath: filePath, source: source)
         let currentPage = max(1, min(page, maxPage))
         let effectivePageSize = max(1, min(pageSize, maxPageSize))
@@ -143,7 +142,9 @@ enum MCPTranscriptReader {
             pageSize: effectivePageSize
         )
 
+        let virtualCursorLocator = isVirtualCursorLocator(filePath: filePath, source: source)
         let guardBeforeAdapter = requiresFullJSONTranscriptGuard(source: source)
+            && !isVirtualCursorLocator(filePath: filePath, source: source)
         if guardBeforeAdapter {
             try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
         }
@@ -158,7 +159,7 @@ enum MCPTranscriptReader {
             return adapterPage
         }
 
-        if !guardBeforeAdapter {
+        if !guardBeforeAdapter && !virtualCursorLocator {
             try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
         }
 
@@ -184,14 +185,21 @@ enum MCPTranscriptReader {
                 appendIfVisible(message, to: &builder, source: source, roles: roleFilter)
             }
         default:
-            break
+            throw MCPTranscriptReadError.noFallbackParser(source: source)
         }
 
-        return builder.build()
+        // The line-oriented compatibility parser skips malformed records and
+        // cannot prove that its total is complete.
+        return builder.build(totalKnownComplete: false)
     }
 
     static func readMessages(filePath: String, source: String) async throws -> [MCPTranscriptMessage] {
+        if isRemoteSnapshotLocator(filePath) {
+            throw MCPTranscriptReadError.remoteSnapshotUnavailable
+        }
+        let virtualCursorLocator = isVirtualCursorLocator(filePath: filePath, source: source)
         let guardBeforeAdapter = requiresFullJSONTranscriptGuard(source: source)
+            && !isVirtualCursorLocator(filePath: filePath, source: source)
         if guardBeforeAdapter {
             try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
         }
@@ -200,7 +208,7 @@ enum MCPTranscriptReader {
             return adapterMessages
         }
 
-        if !guardBeforeAdapter {
+        if !guardBeforeAdapter && !virtualCursorLocator {
             try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
         }
 
@@ -216,7 +224,7 @@ enum MCPTranscriptReader {
         case "gemini-cli":
             return visibleMessages(parseGeminiFormat(filePath: filePath), source: source)
         default:
-            return []
+            throw MCPTranscriptReadError.noFallbackParser(source: source)
         }
     }
 
@@ -227,6 +235,11 @@ enum MCPTranscriptReader {
         default:
             return false
         }
+    }
+
+    private static func isVirtualCursorLocator(filePath: String, source: String) -> Bool {
+        source == "cursor"
+            && (filePath.contains("?composer=") || filePath.hasPrefix("cursor-modern:"))
     }
 
     private static func normalizeRoles(_ roles: [String]?) -> [String]? {
@@ -253,10 +266,11 @@ enum MCPTranscriptReader {
     // cooperative-pool thread on a semaphore can starve/deadlock the pool when
     // several reads run concurrently.
     private static func readWithAdapterRegistry(filePath: String, source: String) async throws -> [MCPTranscriptMessage]? {
-        guard let sourceName = adapterSourceName(for: source),
-              let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName })
-        else {
-            return nil
+        guard let sourceName = adapterSourceName(for: source) else { return nil }
+        guard let adapter = SessionAdapterFactory.defaultAdapters(
+            homeDirectory: SessionAdapterFactory.resolvedHomeDirectory()
+        ).first(where: { $0.source == sourceName }) else {
+            throw MCPTranscriptReadError.registeredAdapterUnavailable(source: source)
         }
 
         do {
@@ -294,11 +308,11 @@ enum MCPTranscriptReader {
             throw CancellationError()
         } catch let failure as ParserFailure where failure == .fileMissing {
             try validateExactLocalSource(filePath: filePath, source: source)
-            return nil
+            throw failure
         } catch let error as MCPTranscriptReadError {
             throw error
         } catch {
-            return nil
+            throw error
         }
     }
 
@@ -309,10 +323,11 @@ enum MCPTranscriptReader {
         pageSize: Int,
         roles: [String]?
     ) async throws -> MCPTranscriptPage? {
-        guard let sourceName = adapterSourceName(for: source),
-              let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName })
-        else {
-            return nil
+        guard let sourceName = adapterSourceName(for: source) else { return nil }
+        guard let adapter = SessionAdapterFactory.defaultAdapters(
+            homeDirectory: SessionAdapterFactory.resolvedHomeDirectory()
+        ).first(where: { $0.source == sourceName }) else {
+            throw MCPTranscriptReadError.registeredAdapterUnavailable(source: source)
         }
 
         do {
@@ -333,7 +348,9 @@ enum MCPTranscriptReader {
             // streaming — O(offset + limit) raw records, stopping as soon as the
             // page window is filled, so page 1 of a 39k-message transcript never
             // parses 39k records.
-            if roles == nil, let identity = transcriptIdentity(filePath) {
+            if roles == nil,
+               !isVirtualCursorLocator(filePath: filePath, source: source),
+               let identity = transcriptIdentity(filePath) {
                 let key = TranscriptVisibleCountKey(
                     locator: filePath,
                     source: source,
@@ -347,7 +364,7 @@ enum MCPTranscriptReader {
                         source: source,
                         currentPage: currentPage,
                         pageSize: pageSize,
-                        maxRawMessages: cachedTotal.truncatedAt
+                        maxRawMessages: cachedTotal.maxRawMessages ?? cachedTotal.truncatedAt
                     )
                     return MCPTranscriptPage(
                         messages: windowMessages,
@@ -372,7 +389,8 @@ enum MCPTranscriptReader {
                     TranscriptVisibleCountCache.Value(
                         visibleTotal: page.visibleTotal,
                         totalKnownComplete: page.page.totalKnownComplete,
-                        truncatedAt: page.page.truncatedAt
+                        truncatedAt: page.page.truncatedAt,
+                        maxRawMessages: page.maxRawMessages
                     ),
                     for: key
                 )
@@ -396,18 +414,20 @@ enum MCPTranscriptReader {
             throw CancellationError()
         } catch let failure as ParserFailure where failure == .fileMissing {
             try validateExactLocalSource(filePath: filePath, source: source)
-            return nil
+            throw failure
         } catch let error as MCPTranscriptReadError {
             throw error
         } catch {
-            return nil
+            throw error
         }
     }
 
     private static func validateExactLocalSource(filePath: String, source: String) throws {
         guard !isVirtualLocator(filePath),
               let sourceName = adapterSourceName(for: source),
-              let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName }),
+              let adapter = SessionAdapterFactory.defaultAdapters(
+                  homeDirectory: SessionAdapterFactory.resolvedHomeDirectory()
+              ).first(where: { $0.source == sourceName }),
               adapter is any ExactArchiveSourceAdapter
         else {
             return
@@ -435,8 +455,58 @@ enum MCPTranscriptReader {
         }
     }
 
+    static func isRemoteSnapshotLocator(_ locator: String) -> Bool {
+        locator.hasPrefix("remote://")
+    }
+
+    static let remoteSnapshotCaption = "HQ 索引快照，不是源文件"
+
+    static func remoteSnapshotPage(
+        summary: String?,
+        lines: [String],
+        page: Int,
+        pageSize: Int,
+        roles: [String]?
+    ) -> MCPTranscriptPage {
+        let currentPage = max(1, min(page, maxPage))
+        let effectivePageSize = max(1, min(pageSize, maxPageSize))
+        var builder = MCPTranscriptPageBuilder(
+            currentPage: currentPage,
+            pageSize: effectivePageSize
+        )
+        let roleFilter = normalizeRoles(roles)
+        appendIfVisible(
+            MCPTranscriptMessage(role: "assistant", content: remoteSnapshotCaption, timestamp: nil),
+            to: &builder,
+            source: "remote",
+            roles: roleFilter
+        )
+        if let summary, !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            appendIfVisible(
+                MCPTranscriptMessage(role: "assistant", content: summary, timestamp: nil),
+                to: &builder,
+                source: "remote",
+                roles: roleFilter
+            )
+        }
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            appendIfVisible(
+                MCPTranscriptMessage(role: "assistant", content: trimmed, timestamp: nil),
+                to: &builder,
+                source: "remote",
+                roles: roleFilter
+            )
+        }
+        return builder.build(totalKnownComplete: true)
+    }
+
     private static func isVirtualLocator(_ locator: String) -> Bool {
-        locator.contains("::") || locator.contains("?composer=")
+        locator.contains("::")
+            || locator.contains("?composer=")
+            || locator.hasPrefix("cursor-modern:")
+            || isRemoteSnapshotLocator(locator)
     }
 
     // Full visible scan of the adapter stream: dense visible-unit page window plus
@@ -449,7 +519,7 @@ enum MCPTranscriptReader {
         currentPage: Int,
         pageSize: Int,
         roles: [String]?
-    ) async throws -> (page: MCPTranscriptPage, visibleTotal: Int) {
+    ) async throws -> (page: MCPTranscriptPage, visibleTotal: Int, maxRawMessages: Int?) {
         let result = try await adapter.streamMessagesWithMetadata(
             locator: filePath,
             options: StreamMessagesOptions()
@@ -459,7 +529,9 @@ enum MCPTranscriptReader {
             currentPage: currentPage,
             pageSize: pageSize
         )
+        var producedMessageCount = 0
         for try await message in stream {
+            producedMessageCount += 1
             appendIfVisible(
                 MCPTranscriptMessage(
                     role: message.role.rawValue,
@@ -471,12 +543,19 @@ enum MCPTranscriptReader {
                 roles: roles
             )
         }
+        // A metadata-only parser failure has no usable prefix. Preserve a real
+        // produced prefix as incomplete, but do not turn a zero-prefix failure
+        // into an empty successful get_session response.
+        if producedMessageCount == 0, let failure = result.parseFailure {
+            throw failure
+        }
         return (
             builder.build(
                 totalKnownComplete: result.totalKnownComplete,
                 truncatedAt: result.truncatedAt
             ),
-            builder.visibleMessageCount
+            builder.visibleMessageCount,
+            result.maxRawMessages
         )
     }
 
@@ -504,14 +583,14 @@ enum MCPTranscriptReader {
             rawLimit = min(rawLimit, maxRawMessages)
         }
         while true {
-            let stream = try await adapter.streamMessages(
+            let result = try await adapter.streamMessagesWithMetadata(
                 locator: filePath,
                 options: StreamMessagesOptions(offset: 0, limit: rawLimit)
             )
             var builder = MCPTranscriptPageBuilder(currentPage: currentPage, pageSize: pageSize)
             var rawCount = 0
             var visibleCount = 0
-            for try await message in stream {
+            for try await message in result.messages {
                 rawCount += 1
                 let transcriptMessage = MCPTranscriptMessage(
                     role: message.role.rawValue,
@@ -527,6 +606,10 @@ enum MCPTranscriptReader {
                     builder.append(transcriptMessage)
                 }
                 if visibleCount >= visibleNeeded { break }
+            }
+            if let failure = result.parseFailure {
+                if rawCount == 0 { throw failure }
+                return builder.build().messages
             }
             // Enough visible to fill the window, or the adapter yielded fewer raw
             // records than requested (EOF): the window is as complete as it can be.

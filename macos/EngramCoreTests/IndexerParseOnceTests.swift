@@ -63,6 +63,112 @@ final class IndexerParseOnceTests: XCTestCase {
         XCTAssertEqual(scan.messages, expectedMessages, "single-parse messages must match streamMessages")
     }
 
+    func testCodexScanForIndexingDoesNotDelegateToTwoReadPaths_repro() throws {
+        let testURL = URL(fileURLWithPath: #filePath)
+        let sourceURL = testURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Shared/EngramCore/Adapters/Sources/CodexAdapter.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "func scanForIndexing(locator:"))
+        let end = try XCTUnwrap(source.range(of: "func scanTailForIndexing(", range: start.upperBound..<source.endIndex))
+        let body = source[start.lowerBound..<end.lowerBound]
+
+        XCTAssertFalse(body.contains("parseSessionInfo(locator:"))
+        XCTAssertFalse(body.contains("Self.messages(\n            locator:"))
+        XCTAssertTrue(body.contains("JSONLAdapterSupport.readObjects("))
+    }
+
+    func testCopilotScanForIndexingDoesNotDelegateToTwoReadPaths_repro() throws {
+        let testURL = URL(fileURLWithPath: #filePath)
+        let sourceURL = testURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Shared/EngramCore/Adapters/Sources/CopilotAdapter.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "func scanForIndexing(locator:"))
+        let end = try XCTUnwrap(source.range(of: "func streamMessages(", range: start.upperBound..<source.endIndex))
+        let body = source[start.lowerBound..<end.lowerBound]
+
+        XCTAssertFalse(body.contains("parseSessionInfo(locator:"))
+        XCTAssertFalse(body.contains("streamMessagesWithMetadata("))
+        XCTAssertEqual(body.components(separatedBy: "JSONLAdapterSupport.readObjects(").count - 1, 1)
+    }
+
+    func testCopilotCheckpointScanUsesOneCompositeSnapshot_repro() throws {
+        let testURL = URL(fileURLWithPath: #filePath)
+        let sourceURL = testURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Shared/EngramCore/Adapters/Sources/CopilotAdapter.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "func scanForIndexing(locator:"))
+        let end = try XCTUnwrap(source.range(of: "func streamMessages(", range: start.upperBound..<source.endIndex))
+        let body = source[start.lowerBound..<end.lowerBound]
+
+        XCTAssertEqual(body.components(separatedBy: "checkpointSnapshot(locator:").count - 1, 1)
+        XCTAssertFalse(body.contains("parseCheckpointSessionInfo(locator:"))
+        XCTAssertFalse(body.contains("checkpointMessages(locator:"))
+    }
+
+    func testCopilotBypassesMainFileShortcutForCompositeInputs_repro() throws {
+        let testURL = URL(fileURLWithPath: #filePath)
+        let sourceURL = testURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("EngramCoreWrite/Indexing/SwiftIndexer.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "private static func usesCompositeInputs"))
+        let body = source[start.lowerBound...]
+
+        XCTAssertTrue(body.contains(".copilot"))
+    }
+
+    func testCursorBypassesMainFileShortcutForCompositeInputs_repro() throws {
+        let testURL = URL(fileURLWithPath: #filePath)
+        let sourceURL = testURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("EngramCoreWrite/Indexing/SwiftIndexer.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "private static func usesCompositeInputs"))
+        let body = source[start.lowerBound...]
+
+        XCTAssertTrue(body.contains(".cursor"))
+    }
+
+    func testCursorModernVirtualLocatorCannotUseUnconfinedDirectFileStat_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cursor-modern-stat-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = root.appendingPathComponent("store.db")
+        try Data("cursor store".utf8).write(to: store)
+        let payload = try JSONSerialization.data(withJSONObject: [
+            "sessionId": "cursor-modern-stat",
+            "storeDBPath": store.path,
+        ])
+        let locator = "cursor-modern:\(payload.base64EncodedString())"
+
+        XCTAssertNil(
+            FileIndexStat.directFileStat(locator: locator),
+            "modern Cursor locators require adapter-owned cursorDataRoot validation"
+        )
+    }
+
+    func testCopilotRecentCompositeInputsDeferDirtyIdentityWithoutSuccess_repro() throws {
+        let testURL = URL(fileURLWithPath: #filePath)
+        let sourceURL = testURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("EngramCoreWrite/Indexing/SwiftIndexer.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("adapter.source == .copilot"))
+        XCTAssertTrue(source.contains("currentStat.legacyState.modifiedAt > activeFileCutoff"))
+        XCTAssertTrue(source.contains("scan.parseFailure == nil"))
+    }
+
     // Audit IDX-PARTIAL-001: a capped full scan must not replace a complete snapshot.
     func testCodexTruncatedIndexScanDoesNotReplaceCompleteSnapshot_repro() async throws {
         let root = FileManager.default.temporaryDirectory
@@ -128,6 +234,41 @@ final class IndexerParseOnceTests: XCTestCase {
         XCTAssertEqual(secondState.lastError, "messageLimitExceeded")
     }
 
+    func testCopilotCappedCompositeIndexesPrefixAndRecordsTerminalIdentity_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("copilot-capped-index-\(UUID().uuidString)", isDirectory: true)
+        let session = root.appendingPathComponent("copilot-capped", isDirectory: true)
+        try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "id: copilot-capped\ncwd: /tmp/copilot-capped\n"
+            .write(to: session.appendingPathComponent("workspace.yaml"), atomically: true, encoding: .utf8)
+        let events = session.appendingPathComponent("events.jsonl")
+        try [
+            #"{"type":"user.message","data":{"content":"first"}}"#,
+            #"{"type":"assistant.message","data":{"content":"second"}}"#,
+            #"{"type":"user.message","data":{"content":"third"}}"#,
+        ].joined(separator: "\n").appending("\n")
+            .write(to: events, atomically: true, encoding: .utf8)
+
+        let adapter = CopilotAdapter(sessionRoot: root.path, limits: ParserLimits(maxMessages: 2))
+        let expectedIdentity = try XCTUnwrap(adapter.indexingInputIdentity(locator: events.path))
+        let result = try await writer.indexRecentSessions(adapters: [adapter])
+        let indexedEvents = events.resolvingSymlinksInPath().path
+        let eventLocators = indexedEvents.hasPrefix("/var/")
+            ? [indexedEvents, "/private\(indexedEvents)"]
+            : [indexedEvents]
+        let eventStates = try writer.knownFileIndexStates(source: .copilot, locators: eventLocators)
+        let state = try XCTUnwrap(
+            eventLocators.lazy.compactMap { eventStates[$0] }.first
+        )
+
+        XCTAssertEqual(result.indexed, 1)
+        XCTAssertEqual(try sessionIntValue("message_count", id: "copilot-capped"), 2)
+        XCTAssertEqual(state.parseStatus, .terminal)
+        XCTAssertEqual(state.failureKind, .messageLimitExceeded)
+        XCTAssertEqual(state.sizeBytes, expectedIdentity.sizeBytes)
+    }
+
     /// The indexer must route each changed file through `scanForIndexing` exactly
     /// once and never fall back to the old two-pass `parseSessionInfo` +
     /// `streamMessages` sequence.
@@ -183,6 +324,29 @@ final class IndexerParseOnceTests: XCTestCase {
         )
     }
 
+    func testExcludedSnapshotWithTerminalParseFailureDoesNotRecordFileState_repro() async throws {
+        let locator = FileManager.default.temporaryDirectory
+            .appendingPathComponent("excluded-terminal-\(UUID().uuidString).jsonl")
+        try Data("{}".utf8).write(to: locator)
+        defer { try? FileManager.default.removeItem(at: locator) }
+        let adapter = ParseCountingSessionAdapter(
+            locators: [locator.path],
+            outputSource: .lobsterai,
+            parseFailure: .messageLimitExceeded
+        )
+
+        let result = try await writer.indexRecentSessions(
+            adapters: [adapter],
+            excludedSnapshotSources: [.lobsterai]
+        )
+
+        XCTAssertEqual(result.indexed, 0)
+        XCTAssertNil(
+            try fileState(locator: locator.path),
+            "a disabled output source must remain eligible for a real parse after it is re-enabled"
+        )
+    }
+
     /// Startup indexing skips every already-known locator, so it must not pay
     /// the cost of materializing full tail-merge snapshots that can never be
     /// consumed by `attemptTailIndexing` in that mode.
@@ -209,6 +373,30 @@ final class IndexerParseOnceTests: XCTestCase {
             0,
             "startup skip-known mode must not materialize unused tail snapshots"
         )
+    }
+
+    func testStartupKnownLocatorWithoutFileIndexStateReparses_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("skip-known-missing-parse-state-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let locator = root.appendingPathComponent("session.jsonl")
+        try "{}\n".write(to: locator, atomically: true, encoding: .utf8)
+        let size = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: locator.path)[.size] as? NSNumber
+        ).int64Value
+        let sink = MissingParseStateKnownLocatorSink(locator: locator.path, sizeBytes: size)
+        let adapter = ParseCountingSessionAdapter(locators: [locator.path])
+        let indexer = SwiftIndexer(
+            sink: sink,
+            adapters: [adapter],
+            skipUnchangedFileLocators: true,
+            skipKnownFileLocators: true
+        )
+
+        _ = try await indexer.indexAll()
+
+        XCTAssertEqual(adapter.scanForIndexingCalls, 1, "a sessions row without file_index_state must heal through a real parse")
     }
 
     /// Startup callers need an adapter boundary where allocator pages can be
@@ -253,7 +441,7 @@ final class IndexerParseOnceTests: XCTestCase {
         let adapter = MatrixSyntheticAdapter(sessions: [
             "/repo/normal.jsonl": .init(id: "normal", agentRole: nil, messages: rich, messageCountOverride: 5),
             "/repo/premium.jsonl": .init(id: "premium", agentRole: nil, messages: rich, messageCountOverride: 25),
-            "/repo/proj/subagents/child.jsonl": .init(id: "subagent", agentRole: nil, messages: rich, messageCountOverride: 5),
+            "/repo/proj/subagents/child.jsonl": .init(id: "subagent", agentRole: "subagent", messages: rich, messageCountOverride: 5),
             "/repo/dispatched.jsonl": .init(id: "dispatched", agentRole: "dispatched", messages: rich, messageCountOverride: 5),
             "/repo/lite.jsonl": .init(id: "lite", agentRole: nil, messages: liteMessages, messageCountOverride: 2),
         ])
@@ -291,7 +479,7 @@ final class IndexerParseOnceTests: XCTestCase {
             XCTAssertGreaterThan(try beatCount("premium"), 0)
 
             // Provable-skip sessions skip the digest entirely.
-            XCTAssertEqual(try beatCount("subagent"), 0, "subagent-path skip must not persist work beats")
+            XCTAssertEqual(try beatCount("subagent"), 0, "adapter-stamped subagent skip must not persist work beats")
             XCTAssertEqual(try beatCount("dispatched"), 0, "agent-role skip must not persist work beats")
 
             // ...but their observable fields are preserved byte-for-byte.
@@ -471,6 +659,47 @@ final class IndexerParseOnceTests: XCTestCase {
             1,
             "noVisibleMessages tail must stay terminal and skip full reparse"
         )
+    }
+
+    func testTailMergeCumulativeMessageLimitBecomesTerminal_repro() async throws {
+        let fixture = try makeClaudeFixture(name: "tail-cumulative-limit")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        try writeClaudeLines(mergeSafeClaudeLines(), to: fixture.locator)
+        let adapter = CountingTailAdapter(projectsRoot: fixture.root.path)
+
+        _ = try await writer.indexRecentSessions(adapters: [adapter])
+        XCTAssertEqual(try sessionIntValue("message_count", id: "tail-session"), 6)
+
+        try appendText("\n", to: fixture.locator)
+        let appendedSize = Int64(try Data(contentsOf: fixture.locator).count)
+        adapter.forcedTailResult = .success(
+            IndexingTailScan(
+                infoDelta: IndexingTailInfoDelta(
+                    id: "tail-session",
+                    source: .claudeCode,
+                    endTime: "2026-08-21T00:00:00Z",
+                    model: nil,
+                    messageCount: 9_995,
+                    userMessageCount: 9_995,
+                    assistantMessageCount: 0,
+                    toolMessageCount: 0,
+                    systemMessageCount: 0,
+                    firstVisibleRole: .user
+                ),
+                messages: [NormalizedMessage(role: .user, content: "overflow")],
+                parsedOffset: appendedSize,
+                boundaryHash: "overflow-boundary"
+            )
+        )
+
+        let result = try await writer.indexRecentSessions(adapters: [adapter])
+        let state = try XCTUnwrap(fileState(locator: indexedLocator(fixture.locator)))
+
+        XCTAssertEqual(result.indexed, 0)
+        XCTAssertEqual(try sessionIntValue("message_count", id: "tail-session"), 6)
+        XCTAssertEqual(state.parseStatus, .terminal)
+        XCTAssertEqual(state.failureKind, .messageLimitExceeded)
+        XCTAssertEqual(state.lastError, ParserFailure.messageLimitExceeded.rawValue)
     }
 
     func testClaudeCodeTailParseRewriteInPlaceFallsBackToFullReparse() async throws {
@@ -724,6 +953,335 @@ final class IndexerParseOnceTests: XCTestCase {
                 )
             }
         )
+    }
+
+    func testOpenCodeBoundedReadUsesProducedMessageCap_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("opencode-bounded-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("opencode.db").path
+        let queue = try DatabaseQueue(path: dbPath)
+        try await queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE session (
+                    id TEXT PRIMARY KEY, directory TEXT, title TEXT,
+                    time_created INTEGER, time_updated INTEGER, time_archived INTEGER
+                );
+                CREATE TABLE message (
+                    id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT
+                );
+                CREATE TABLE part (
+                    id TEXT PRIMARY KEY, message_id TEXT, time_created INTEGER, data TEXT
+                );
+                INSERT INTO session VALUES ('bounded', '/tmp/opencode', 'Bounded', 1, 5, NULL);
+                """)
+            let rows: [(String, String, String)] = [
+                ("m0", #"{"role":"user"}"#, #"{"type":"text","text":"   "}"#),
+                ("m1", #"{"role":"user"}"#, #"{"type":"text","text":"one"}"#),
+                ("m2", #"{"role":"assistant"}"#, #"{"type":"tool","text":"ignored"}"#),
+                ("m3", #"{"role":"assistant"}"#, #"{"type":"text","text":"two"}"#),
+                ("m4", #"{"role":"user"}"#, #"{"type":"text","text":"three"}"#),
+            ]
+            for (index, row) in rows.enumerated() {
+                try db.execute(
+                    sql: "INSERT INTO message VALUES (?, 'bounded', ?, ?)",
+                    arguments: [row.0, index + 1, row.1]
+                )
+                try db.execute(
+                    sql: "INSERT INTO part VALUES (?, ?, ?, ?)",
+                    arguments: ["p\(index)", row.0, index + 1, row.2]
+                )
+            }
+            try db.execute(
+                sql: "INSERT INTO part VALUES ('p1b', 'm1', 2, ?)",
+                arguments: [#"{"type":"text","text":"one-b"}"#]
+            )
+        }
+
+        let adapter = OpenCodeAdapter(dbPath: dbPath, limits: ParserLimits(maxMessages: 2))
+        let locator = "\(dbPath)::bounded"
+        let firstPage = try await adapter.streamMessagesWithMetadata(
+            locator: locator,
+            options: StreamMessagesOptions(offset: 0, limit: 1)
+        )
+        var firstMessages: [NormalizedMessage] = []
+        for try await message in firstPage.messages { firstMessages.append(message) }
+        XCTAssertEqual(firstMessages.map(\.content), ["one\none-b"])
+        XCTAssertNil(firstPage.truncatedAt)
+
+        let terminalPage = try await adapter.streamMessagesWithMetadata(
+            locator: locator,
+            options: StreamMessagesOptions(offset: 1, limit: 1)
+        )
+        var terminalMessages: [NormalizedMessage] = []
+        for try await message in terminalPage.messages { terminalMessages.append(message) }
+        XCTAssertEqual(terminalMessages.map(\.content), ["two"])
+        XCTAssertEqual(terminalPage.truncatedAt, 2)
+
+        do {
+            _ = try await adapter.streamMessages(locator: locator, options: StreamMessagesOptions())
+            XCTFail("unwindowed OpenCode reads must fail instead of returning a capped prefix")
+        } catch let failure as ParserFailure {
+            XCTAssertEqual(failure, .messageLimitExceeded)
+        }
+    }
+
+    func testOpenCodeSQLReadIsPagedInsteadOfMaterializingAllJoinedRows_repro() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Shared/EngramCore/Adapters/Sources/OpenCodeAdapter.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "private static func messages(\n"))
+        let end = try XCTUnwrap(source.range(of: "private static func splitVirtualLocator", range: start.upperBound..<source.endIndex))
+        let body = source[start.lowerBound..<end.lowerBound]
+
+        XCTAssertTrue(
+            body.contains("LIMIT \\(pageSize) OFFSET \\(offset)"),
+            "joined SQLite rows must be fetched in bounded pages"
+        )
+        XCTAssertTrue(body.contains("hasMoreMessages"), "the extra produced message must drive truncation metadata")
+    }
+
+    func testCopilotIgnoresEmptyEventShellsForDiscoveryAndCounts_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("copilot-empty-shells-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let emptySession = root.appendingPathComponent("empty", isDirectory: true)
+        let emptyCheckpoints = emptySession.appendingPathComponent("checkpoints", isDirectory: true)
+        try FileManager.default.createDirectory(at: emptyCheckpoints, withIntermediateDirectories: true)
+        try #"{"type":"user.message","data":{"content":"   "}}"#.appending("\n")
+            .write(to: emptySession.appendingPathComponent("events.jsonl"), atomically: true, encoding: .utf8)
+        try "| 1 | Restored | 1.md |\n"
+            .write(to: emptyCheckpoints.appendingPathComponent("index.md"), atomically: true, encoding: .utf8)
+
+        let validSession = root.appendingPathComponent("valid", isDirectory: true)
+        try FileManager.default.createDirectory(at: validSession, withIntermediateDirectories: true)
+        let validEvents = validSession.appendingPathComponent("events.jsonl")
+        try [
+            #"{"type":"user.message","timestamp":"2026-01-01T00:00:00Z","data":{"content":"real"}}"#,
+            #"{"type":"assistant.message","timestamp":"2026-01-01T00:00:01Z","data":{"content":"\n\t"}}"#,
+        ].joined(separator: "\n").appending("\n")
+            .write(to: validEvents, atomically: true, encoding: .utf8)
+
+        let adapter = CopilotAdapter(sessionRoot: root.path)
+        let locators = try await adapter.listSessionLocators()
+        XCTAssertTrue(locators.contains { $0.hasSuffix("/empty/checkpoints/index.md") })
+        XCTAssertTrue(locators.contains { $0.hasSuffix("/valid/events.jsonl") })
+        guard case .success(let info) = try await adapter.parseSessionInfo(locator: validEvents.path) else {
+            return XCTFail("valid event transcript must parse")
+        }
+        XCTAssertEqual(info.messageCount, 1)
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 0)
+    }
+
+    func testCopilotOversizedEventsStillWinDiscoveryAndSurfaceParserFailure_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("copilot-oversized-discovery-\(UUID().uuidString)", isDirectory: true)
+        let session = root.appendingPathComponent("session", isDirectory: true)
+        let checkpoints = session.appendingPathComponent("checkpoints", isDirectory: true)
+        try FileManager.default.createDirectory(at: checkpoints, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let events = session.appendingPathComponent("events.jsonl")
+        try #"{"type":"user.message","data":{"content":""#
+            .appending(String(repeating: "x", count: 300))
+            .appending(#""}}"#)
+            .appending("\n")
+            .write(to: events, atomically: true, encoding: .utf8)
+        try "| 1 | Fallback | 1.md |\n"
+            .write(to: checkpoints.appendingPathComponent("index.md"), atomically: true, encoding: .utf8)
+
+        let adapter = CopilotAdapter(
+            sessionRoot: root.path,
+            limits: ParserLimits(maxFileBytes: 64, maxLineBytes: 1_024, maxMessages: 10)
+        )
+        let locators = try await adapter.listSessionLocators()
+        XCTAssertEqual(locators.count, 1)
+        XCTAssertTrue(locators.first?.hasSuffix("/session/events.jsonl") == true)
+        guard case .failure(let failure) = try await adapter.parseSessionInfo(locator: events.path) else {
+            return XCTFail("oversized events must remain selected and report their failure")
+        }
+        XCTAssertEqual(failure, .fileTooLarge)
+    }
+
+    func testCopilotCheckpointCapChecksBeforeBodiesAndScanKeepsPrefix_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("copilot-checkpoint-cap-\(UUID().uuidString)", isDirectory: true)
+        let session = root.appendingPathComponent("session", isDirectory: true)
+        let checkpoints = session.appendingPathComponent("checkpoints", isDirectory: true)
+        try FileManager.default.createDirectory(at: checkpoints, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "id: copilot-checkpoint-cap\ncwd: /tmp/copilot\n"
+            .write(to: session.appendingPathComponent("workspace.yaml"), atomically: true, encoding: .utf8)
+        let index = checkpoints.appendingPathComponent("index.md")
+        try (1...3).map { "| \($0) | Checkpoint \($0) | \($0).md |" }
+            .joined(separator: "\n").appending("\n")
+            .write(to: index, atomically: true, encoding: .utf8)
+        for number in 1...3 {
+            try "body \(number)".write(
+                to: checkpoints.appendingPathComponent("\(number).md"),
+                atomically: true,
+                encoding: .utf8
+            )
+        }
+
+        let parseRecorder = AdapterCompletionRecorder()
+        let parseAdapter = CopilotAdapter(
+            sessionRoot: root.path,
+            limits: ParserLimits(maxMessages: 2),
+            testHooks: CopilotAdapterTestHooks(beforeCheckpointBodyIdentityValidation: { _ in
+                parseRecorder.record()
+            })
+        )
+        guard case .failure(let parseFailure) = try await parseAdapter.parseSessionInfo(locator: index.path) else {
+            return XCTFail("checkpoint info beyond cap must fail closed")
+        }
+        XCTAssertEqual(parseFailure, .messageLimitExceeded)
+        XCTAssertEqual(parseRecorder.count, 0, "info parsing must reject the index before opening bodies")
+
+        let scanRecorder = AdapterCompletionRecorder()
+        let scanAdapter = CopilotAdapter(
+            sessionRoot: root.path,
+            limits: ParserLimits(maxMessages: 2),
+            testHooks: CopilotAdapterTestHooks(beforeCheckpointBodyIdentityValidation: { _ in
+                scanRecorder.record()
+            })
+        )
+        guard case .success(let scan) = try await scanAdapter.scanForIndexing(locator: index.path) else {
+            return XCTFail("checkpoint indexing must retain its bounded prefix")
+        }
+        XCTAssertEqual(scan.info.messageCount, 2)
+        XCTAssertEqual(scan.messages.map(\.content), [
+            "Checkpoint 1: Checkpoint 1\n\nbody 1",
+            "Checkpoint 2: Checkpoint 2\n\nbody 2",
+        ])
+        XCTAssertEqual(scan.parseFailure, .messageLimitExceeded)
+        XCTAssertEqual(scanRecorder.count, 2, "scan must open at most the visible prefix bodies")
+    }
+
+    func testCopilotCheckpointBodyReadIsBoundedByUTF8Bytes_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("copilot-checkpoint-bytes-\(UUID().uuidString)", isDirectory: true)
+        let session = root.appendingPathComponent("session", isDirectory: true)
+        let checkpoints = session.appendingPathComponent("checkpoints", isDirectory: true)
+        try FileManager.default.createDirectory(at: checkpoints, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let index = checkpoints.appendingPathComponent("index.md")
+        try "| 1 | Unicode | 1.md |\n".write(to: index, atomically: true, encoding: .utf8)
+        try String(repeating: "你", count: 2_000)
+            .write(to: checkpoints.appendingPathComponent("1.md"), atomically: true, encoding: .utf8)
+
+        let result = try await CopilotAdapter(sessionRoot: root.path).streamMessagesWithMetadata(
+            locator: index.path,
+            options: StreamMessagesOptions()
+        )
+        var messages: [NormalizedMessage] = []
+        for try await message in result.messages { messages.append(message) }
+        let content = try XCTUnwrap(messages.first?.content)
+        let body = try XCTUnwrap(content.components(separatedBy: "\n\n").last)
+        XCTAssertLessThanOrEqual(Data(body.utf8).count, 4_000)
+    }
+
+    func testKimiKeepsContextPrefixWhenFirstWireLineIsOversized_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kimi-wire-prefix-\(UUID().uuidString)", isDirectory: true)
+        let session = root.appendingPathComponent("workspace/kimi-wire-prefix", isDirectory: true)
+        try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = session.appendingPathComponent("context.jsonl")
+        try [
+            #"{"role":"user","content":"keep me"}"#,
+            #"{"role":"assistant","content":"kept"}"#,
+        ].joined(separator: "\n").appending("\n")
+            .write(to: context, atomically: true, encoding: .utf8)
+        try #"{"padding":""#.appending(String(repeating: "x", count: 300)).appending(#""}"#).appending("\n")
+            .write(to: session.appendingPathComponent("wire.jsonl"), atomically: true, encoding: .utf8)
+
+        let adapter = KimiAdapter(
+            sessionsRoot: root.path,
+            kimiJsonPath: root.appendingPathComponent("kimi.json").path,
+            limits: ParserLimits(maxLineBytes: 64)
+        )
+        guard case .success(let info) = try await adapter.parseSessionInfo(locator: context.path) else {
+            return XCTFail("valid context must not be discarded by auxiliary wire failure")
+        }
+        XCTAssertEqual(info.messageCount, 2)
+        guard case .success(let scan) = try await adapter.scanForIndexing(locator: context.path) else {
+            return XCTFail("indexing must retain the valid context prefix")
+        }
+        XCTAssertEqual(scan.messages.map(\.content), ["keep me", "kept"])
+        XCTAssertEqual(scan.parseFailure, .lineTooLarge)
+    }
+
+    func testKimiCompositeIdentitySkipsUnchangedAndReparsesKimiJSONChanges_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kimi-identity-skip-\(UUID().uuidString)", isDirectory: true)
+        let session = root.appendingPathComponent("workspace/kimi-skip", isDirectory: true)
+        try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = session.appendingPathComponent("context.jsonl")
+        try [
+            #"{"role":"user","content":"question"}"#,
+            #"{"role":"assistant","content":"answer"}"#,
+        ].joined(separator: "\n").appending("\n")
+            .write(to: context, atomically: true, encoding: .utf8)
+        let kimiJSON = root.appendingPathComponent("kimi.json")
+        func writeKimiJSON(path: String) throws {
+            let data = try JSONSerialization.data(withJSONObject: [
+                "work_dirs": [["path": path, "last_session_id": "kimi-skip"]],
+            ])
+            try data.write(to: kimiJSON, options: .atomic)
+        }
+        try writeKimiJSON(path: "/repo-one")
+
+        let adapter = CountingKimiAdapter(KimiAdapter(sessionsRoot: root.path, kimiJsonPath: kimiJSON.path))
+        _ = try await writer.indexRecentSessions(adapters: [adapter])
+        XCTAssertEqual(adapter.scanForIndexingCalls, 1)
+        XCTAssertEqual(try sessionValue("cwd", id: "kimi-skip"), "/repo-one")
+
+        _ = try await writer.indexRecentSessions(adapters: [adapter])
+        XCTAssertEqual(adapter.scanForIndexingCalls, 1, "unchanged composite identity must skip")
+
+        try writeKimiJSON(path: "/repo-two-with-a-different-size")
+        _ = try await writer.indexRecentSessions(adapters: [adapter])
+        XCTAssertEqual(adapter.scanForIndexingCalls, 2, "kimi.json is part of the composite identity")
+        XCTAssertEqual(try sessionValue("cwd", id: "kimi-skip"), "/repo-two-with-a-different-size")
+    }
+
+    func testQwenUntimestampedConversationUsesFileModificationTime_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen-mtime-\(UUID().uuidString)", isDirectory: true)
+        let chats = root.appendingPathComponent("project/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chats, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = chats.appendingPathComponent("session.jsonl")
+        try #"{"type":"user","sessionId":"qwen-mtime","cwd":"/tmp/qwen","message":{"role":"user","parts":[{"text":"hello"}]}}"#
+            .appending("\n").write(to: file, atomically: true, encoding: .utf8)
+        let modificationDate = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: modificationDate], ofItemAtPath: file.path)
+
+        let adapter = QwenAdapter(projectsRoot: root.path)
+        guard case .success(let info) = try await adapter.parseSessionInfo(locator: file.path) else {
+            return XCTFail("untimestamped Qwen conversation must parse")
+        }
+        XCTAssertEqual(info.startTime, Phase4AdapterSupport.isoFromSeconds(modificationDate.timeIntervalSince1970))
+    }
+
+    func testQoderScanRestatFailurePreservesNonemptyPrefix_repro() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Shared/EngramCore/Adapters/Sources/QoderAdapter.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "func scanForIndexing(locator:"))
+        let end = try XCTUnwrap(source.range(of: "func streamMessages(", range: start.upperBound..<source.endIndex))
+        let body = source[start.lowerBound..<end.lowerBound]
+
+        XCTAssertTrue(body.contains("do {\n                after = try limits.fileIdentity(for: url)"))
+        XCTAssertTrue(body.contains("parseFailure: .fileModifiedDuringParse"))
     }
 
     private struct StableParityTable {
@@ -991,6 +1549,48 @@ final class IndexerParseOnceTests: XCTestCase {
 
 // MARK: - Test doubles
 
+private final class CountingKimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, @unchecked Sendable {
+    let source: SourceName = .kimi
+    private let inner: KimiAdapter
+    private let lock = NSLock()
+    private var recordedScanForIndexingCalls = 0
+
+    var scanForIndexingCalls: Int { lock.withLock { recordedScanForIndexingCalls } }
+
+    init(_ inner: KimiAdapter) {
+        self.inner = inner
+    }
+
+    func detect() async -> Bool { await inner.detect() }
+    func listSessionLocators() async throws -> [String] { try await inner.listSessionLocators() }
+    func listSessionLocators(modifiedSince: Date, fileManager: FileManager) async throws -> [String] {
+        try await inner.listSessionLocators(modifiedSince: modifiedSince, fileManager: fileManager)
+    }
+    func indexingInputIdentity(locator: String) -> IndexingInputIdentity? {
+        inner.indexingInputIdentity(locator: locator)
+    }
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        try await inner.parseSessionInfo(locator: locator)
+    }
+    func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
+        lock.withLock { recordedScanForIndexingCalls += 1 }
+        return try await inner.scanForIndexing(locator: locator)
+    }
+    func streamMessages(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        try await inner.streamMessages(locator: locator, options: options)
+    }
+    func streamMessagesWithMetadata(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> StreamMessagesResult {
+        try await inner.streamMessagesWithMetadata(locator: locator, options: options)
+    }
+    func isAccessible(locator: String) async -> Bool { await inner.isAccessible(locator: locator) }
+}
+
 /// Minimal write sink for `collectSnapshots`, which never calls `upsertBatch`.
 private struct CollectingNoopSink: IndexingWriteSink {
     func upsertBatch(
@@ -1022,6 +1622,30 @@ private final class TailSnapshotCountingSink: IndexingWriteSink {
     ) throws -> [String: AuthoritativeSessionSnapshot] {
         knownTailMergeSnapshotCalls += 1
         return [:]
+    }
+}
+
+private struct MissingParseStateKnownLocatorSink: IndexingWriteSink {
+    let locator: String
+    let sizeBytes: Int64
+
+    func upsertBatch(
+        _ snapshots: [AuthoritativeSessionSnapshot],
+        reason: IndexingWriteReason
+    ) throws -> SessionBatchUpsertResult {
+        SessionBatchUpsertResult(
+            reason: reason,
+            results: snapshots.map {
+                SessionBatchItemResult(sessionId: $0.id, action: .merge, enqueuedJobs: [])
+            }
+        )
+    }
+
+    func knownIndexedFileStates(
+        source: SourceName,
+        locators: [String]
+    ) throws -> [String: KnownIndexedFileState] {
+        [locator: KnownIndexedFileState(sizeBytes: sizeBytes, indexedAt: "2999-01-01T00:00:00Z")]
     }
 }
 
@@ -1092,6 +1716,7 @@ private final class CountingTailAdapter: TailIndexingSessionAdapter {
     private(set) var scanForIndexingCalls = 0
     private(set) var scanTailForIndexingCalls = 0
     var forcedTailFailure: ParserFailure?
+    var forcedTailResult: IndexingTailScanResult?
 
     init(projectsRoot: String) {
         self.inner = ClaudeCodeAdapter(projectsRoot: projectsRoot)
@@ -1124,6 +1749,9 @@ private final class CountingTailAdapter: TailIndexingSessionAdapter {
         expectedBoundaryHash: String
     ) async throws -> IndexingTailScanResult {
         scanTailForIndexingCalls += 1
+        if let forcedTailResult {
+            return forcedTailResult
+        }
         if let forcedTailFailure {
             return .failure(forcedTailFailure)
         }
@@ -1156,13 +1784,19 @@ private final class ParseCountingSessionAdapter: SessionAdapter {
     let source: SourceName = .claudeCode
     private let locators: [String]
     private let outputSource: SourceName
+    private let parseFailure: ParserFailure?
     private(set) var parseSessionInfoCalls = 0
     private(set) var streamMessagesCalls = 0
     private(set) var scanForIndexingCalls = 0
 
-    init(locators: [String], outputSource: SourceName = .claudeCode) {
+    init(
+        locators: [String],
+        outputSource: SourceName = .claudeCode,
+        parseFailure: ParserFailure? = nil
+    ) {
         self.locators = locators
         self.outputSource = outputSource
+        self.parseFailure = parseFailure
     }
 
     func detect() async -> Bool { true }
@@ -1214,7 +1848,13 @@ private final class ParseCountingSessionAdapter: SessionAdapter {
 
     func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
         scanForIndexingCalls += 1
-        return .success(IndexingScan(info: info(for: locator), messages: messages))
+        return .success(
+            IndexingScan(
+                info: info(for: locator),
+                messages: messages,
+                parseFailure: parseFailure
+            )
+        )
     }
 }
 

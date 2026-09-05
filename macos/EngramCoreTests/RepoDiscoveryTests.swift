@@ -32,7 +32,7 @@ final class RepoDiscoveryTests: XCTestCase {
                 for _ in 0..<count {
                     n += 1
                     try db.execute(
-                        sql: "INSERT INTO sessions(id, source, start_time, cwd, file_path) VALUES (?, 'codex', '2026-05-08T09:00:00.000Z', ?, ?)",
+                        sql: "INSERT INTO sessions(id, source, start_time, cwd, file_path, instruction_count, human_turn_count) VALUES (?, 'codex', '2026-05-08T09:00:00.000Z', ?, ?, 2, 2)",
                         arguments: ["s\(n)", cwd, "/tmp/s\(n).jsonl"]
                     )
                 }
@@ -42,6 +42,25 @@ final class RepoDiscoveryTests: XCTestCase {
         let top2 = try writer.read { db in try RepoDiscovery.sessionCwdCounts(db, limit: 2) }
         XCTAssertEqual(top2.count, 2, "limit caps the candidate count")
         XCTAssertEqual(Set(top2.map(\.cwd)), ["/a", "/b"], "keeps the busiest cwds, drops the long tail")
+    }
+
+    func testSessionCwdCountsMatchesRepoBrowsePopulation_repro() throws {
+        try writer.write { db in
+            try insertSession(db, id: "human-root", cwd: "/work/r")
+            try insertSession(db, id: "confirmed-child", cwd: "/work/r")
+            try insertSession(db, id: "single-shot-root", cwd: "/work/r")
+            try db.execute(
+                sql: "UPDATE sessions SET parent_session_id = 'human-root' WHERE id = 'confirmed-child'"
+            )
+            try db.execute(
+                sql: "UPDATE sessions SET instruction_count = 0, human_turn_count = 1, user_message_count = 1 WHERE id = 'single-shot-root'"
+            )
+
+            XCTAssertEqual(
+                try RepoDiscovery.sessionCwdCounts(db),
+                [GitRepoCandidate(cwd: "/work/r", sessionCount: 1)]
+            )
+        }
     }
 
     // Injected-probe path: deterministic field assertions + session_count
@@ -103,6 +122,199 @@ final class RepoDiscoveryTests: XCTestCase {
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM git_repos"), 1)
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT dirty_count FROM git_repos WHERE path='/work/r'"), 5)
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT probed_at FROM git_repos WHERE path='/work/r'"), "t2")
+        }
+    }
+
+    // docs/invariants.md invariant 3: repo counts use the full list-visible
+    // population, not the throttled metadata-probe batch.
+    func testUpsertUsesFullVisibleSessionCountAndPrunesGhostRepos_repro() throws {
+        try writer.write { db in
+            try insertSession(db, id: "root", cwd: "/work/r")
+            try insertSession(db, id: "child-a", cwd: "/work/r/Sources")
+            try insertSession(db, id: "child-b", cwd: "/work/r/Tests")
+            try insertSession(db, id: "skip", cwd: "/work/r/Hidden")
+            try db.execute(sql: "UPDATE sessions SET tier = 'skip' WHERE id = 'skip'")
+            try db.execute(
+                sql: "INSERT INTO git_repos(path, name, session_count) VALUES ('/work/ghost', 'ghost', 9)"
+            )
+
+            let probe = GitRepoProbe(
+                path: "/work/r",
+                name: "r",
+                branch: "main",
+                dirtyCount: 0,
+                untrackedCount: 0,
+                unpushedCount: 0,
+                lastCommitHash: nil,
+                lastCommitMsg: nil,
+                lastCommitAt: nil
+            )
+            _ = try RepoDiscovery.upsert(
+                db,
+                entries: [GitRepoDiscoveryEntry(probe: probe, sessionCount: 1)],
+                cwdToRepoPath: [
+                    "/work/r": "/work/r",
+                    "/work/r/Sources": "/work/r",
+                    "/work/r/Tests": "/work/r",
+                ],
+                probedAt: "now"
+            )
+
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT session_count FROM git_repos WHERE path = '/work/r'"),
+                3
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM git_repos WHERE path = '/work/ghost'"),
+                0
+            )
+        }
+
+        let candidates = try writer.read { db in
+            try RepoDiscovery.sessionCwdCounts(db)
+        }
+        XCTAssertFalse(candidates.contains { $0.cwd == "/work/r/Hidden" })
+    }
+
+    // docs/invariants.md invariant 3: hidden/skip sessions do not contribute to
+    // visible KPIs, but their cwd still keeps repository identity and aliases alive.
+    func testRecountPreservesRepoReferencedOnlyByHiddenSkipSession_repro() throws {
+        try writer.write { db in
+            try insertSession(db, id: "hidden-skip", cwd: "/work/held/subdir")
+            try db.execute(
+                sql: "UPDATE sessions SET tier = 'skip', hidden_at = '2026-08-23T00:00:00Z' WHERE id = 'hidden-skip'"
+            )
+            try db.execute(
+                sql: "INSERT INTO git_repos(path, name, session_count) VALUES ('/work/held', 'held', 4)"
+            )
+            try db.execute(
+                sql: "INSERT INTO git_repo_cwd_aliases(cwd, real_cwd, repo_path) VALUES ('/work/held/subdir', '/work/held/subdir', '/work/held')"
+            )
+
+            try RepoDiscovery.recount(db)
+
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM git_repos WHERE path = '/work/held'"),
+                1
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT session_count FROM git_repos WHERE path = '/work/held'"),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM git_repo_cwd_aliases WHERE repo_path = '/work/held'"),
+                1
+            )
+        }
+    }
+
+    func testRepoRecountAvoidsNestedPrefixDoubleCountAndPreservesRealpathAlias_repro() throws {
+        let aliasedRepo = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("engram-repo-alias-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: aliasedRepo, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: aliasedRepo) }
+        let realRepoPath = aliasedRepo.resolvingSymlinksInPath().path
+
+        try writer.write { db in
+            try insertSession(db, id: "work-root", cwd: "/work")
+            try insertSession(db, id: "work-nested", cwd: "/work/engram")
+            try insertSession(db, id: "tmp-alias", cwd: aliasedRepo.path)
+            let probes = [
+                GitRepoProbe(
+                    path: "/work", name: "work", branch: nil,
+                    dirtyCount: 0, untrackedCount: 0, unpushedCount: 0,
+                    lastCommitHash: nil, lastCommitMsg: nil, lastCommitAt: nil
+                ),
+                GitRepoProbe(
+                    path: "/work/engram", name: "engram", branch: nil,
+                    dirtyCount: 0, untrackedCount: 0, unpushedCount: 0,
+                    lastCommitHash: nil, lastCommitMsg: nil, lastCommitAt: nil
+                ),
+                GitRepoProbe(
+                    path: realRepoPath, name: "alias", branch: nil,
+                    dirtyCount: 0, untrackedCount: 0, unpushedCount: 0,
+                    lastCommitHash: nil, lastCommitMsg: nil, lastCommitAt: nil
+                ),
+            ]
+            _ = try RepoDiscovery.upsert(
+                db,
+                entries: probes.map { GitRepoDiscoveryEntry(probe: $0, sessionCount: 1) },
+                probedAt: "now"
+            )
+
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT session_count FROM git_repos WHERE path = '/work'"),
+                1,
+                "a nested repository must not also count toward its path-prefix parent"
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT session_count FROM git_repos WHERE path = '/work/engram'"),
+                1
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT session_count FROM git_repos WHERE path = ?", arguments: [realRepoPath]),
+                1,
+                "/tmp and /private/tmp spellings must resolve to the same known repo"
+            )
+        }
+    }
+
+    func testRepoRecountPrefersLongestRepoOverStaleShortAlias_repro() throws {
+        try writer.write { db in
+            try insertSession(db, id: "work-root", cwd: "/work")
+            try insertSession(db, id: "work-nested", cwd: "/work/engram")
+            try db.execute(sql: """
+                INSERT INTO git_repos(path, name, session_count) VALUES
+                  ('/work', 'work', 0),
+                  ('/work/engram', 'engram', 0);
+                INSERT INTO git_repo_cwd_aliases(cwd, real_cwd, repo_path)
+                VALUES ('/work/engram', '/work/engram', '/work');
+                """)
+
+            try RepoDiscovery.recount(db)
+
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT session_count FROM git_repos WHERE path = '/work'"),
+                1
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT session_count FROM git_repos WHERE path = '/work/engram'"),
+                1
+            )
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT repo_path FROM git_repo_cwd_aliases WHERE cwd = '/work/engram'"
+                ),
+                "/work/engram"
+            )
+        }
+    }
+
+    func testRepoRecountKeepsMissingAliasSpellingAssignedToRealRepo_repro() throws {
+        let aliasPath = "/tmp/engram-repo-missing-\(UUID().uuidString)/deleted/leaf"
+        let realPath = "/private\(aliasPath)"
+        try writer.write { db in
+            try insertSession(db, id: "missing-alias", cwd: aliasPath)
+            try db.execute(
+                sql: "INSERT INTO git_repos(path, name, session_count) VALUES (?, 'missing', 0)",
+                arguments: [realPath]
+            )
+
+            try RepoDiscovery.recount(db)
+
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT session_count FROM git_repos WHERE path = ?", arguments: [realPath]),
+                1
+            )
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT real_cwd FROM git_repo_cwd_aliases WHERE cwd = ?",
+                    arguments: [aliasPath]
+                ),
+                realPath
+            )
         }
     }
 
@@ -242,8 +454,11 @@ final class RepoDiscoveryTests: XCTestCase {
     private func insertSession(_ db: Database, id: String, cwd: String) throws {
         try db.execute(
             sql: """
-            INSERT INTO sessions(id, source, start_time, end_time, cwd, file_path)
-            VALUES (?, 'codex', '2026-05-23T10:00:00.000Z', '2026-05-23T11:00:00.000Z', ?, ?)
+            INSERT INTO sessions(
+                id, source, start_time, end_time, cwd, file_path,
+                instruction_count, human_turn_count
+            )
+            VALUES (?, 'codex', '2026-05-23T10:00:00.000Z', '2026-05-23T11:00:00.000Z', ?, ?, 2, 2)
             """,
             arguments: [id, cwd, "/tmp/\(id).jsonl"]
         )

@@ -25,6 +25,28 @@ final class EngramCLIResumeCommandTests: XCTestCase {
         XCTAssertTrue(options.json)
     }
 
+    func testParseResumeSubcommandPrefersMCPServiceSocketEnvironment_repro() throws {
+        let options = try XCTUnwrap(EngramCLIResumeOptions.parse(
+            arguments: ["resume", "session-1"],
+            environment: [
+                "ENGRAM_MCP_SERVICE_SOCKET": "/tmp/mcp.sock",
+                "ENGRAM_SERVICE_SOCKET": "/tmp/service.sock",
+            ]
+        ))
+        XCTAssertEqual(options.socketPath, "/tmp/mcp.sock")
+    }
+
+    func testResumeRejectsRelativeOrBlankSocketFlag_repro() {
+        for value in ["relative.sock", "relative/service.sock", "   "] {
+            XCTAssertThrowsError(
+                try EngramCLIResumeOptions.parse(
+                    arguments: ["resume", "session-1", "--socket", value],
+                    environment: [:]
+                )
+            )
+        }
+    }
+
     func testParseLegacyResumeFlag() throws {
         let options = try XCTUnwrap(EngramCLIResumeOptions.parse(
             arguments: ["--resume", "session-2"],
@@ -186,6 +208,126 @@ final class EngramCLIResumeCommandTests: XCTestCase {
         )
     }
 
+    func testWarpConfigCleanupSurvivesCallerCancellationAfterOpen_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("warp-config-lifetime-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let file = root.appendingPathComponent("resume.toml")
+        try "tab config".write(to: file, atomically: true, encoding: .utf8)
+        let opened = expectation(description: "Warp accepted the tab configuration URL")
+
+        let task = Task {
+            try await TerminalLauncher.keepWarpTabConfigAlive(file, graceNanoseconds: 200_000_000) {
+                XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+                opened.fulfill()
+            }
+        }
+        await fulfillment(of: [opened], timeout: 1)
+        try await task.value
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: file.path),
+            "launch must return while Warp still has time to materialize the tab config"
+        )
+        task.cancel()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+        try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    func testWarpConfigKeepsGraceWhenSecondOpenFailsAfterLaunch_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("warp-config-second-open-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let file = root.appendingPathComponent("resume.toml")
+        try "tab config".write(to: file, atomically: true, encoding: .utf8)
+
+        do {
+            try await TerminalLauncher.keepWarpTabConfigAlive(file, graceNanoseconds: 200_000_000) {
+                // Models a successful openApplication followed by a failing or
+                // cancelled warp://tab_config open.
+                throw CancellationError()
+            }
+            XCTFail("expected second-step cancellation")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: file.path),
+            "Warp may still be reading the file after the first launch step"
+        )
+        try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    func testWarpConfigIsRemovedAfterSuccessfulOpen_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("warp-config-success-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let file = root.appendingPathComponent("resume.toml")
+        try "tab config".write(to: file, atomically: true, encoding: .utf8)
+
+        try await TerminalLauncher.keepWarpTabConfigAlive(file, graceNanoseconds: 0) {}
+        try await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    func testWarpConfigIsNotWrittenUntilWarpCanBeResolved_repro() throws {
+        let launcher = try source("macos/Engram/Views/Resume/TerminalLauncher.swift")
+        let write = try XCTUnwrap(launcher.range(of: "try writeWarpTabConfigFile(toml, to: configFile)"))
+        let resolveWarp = try XCTUnwrap(
+            launcher.range(of: "let runningWarp")
+        )
+        let resolveApp = try XCTUnwrap(launcher.range(of: "guard let appURL"))
+
+        XCTAssertLessThan(resolveWarp.lowerBound, write.lowerBound)
+        XCTAssertLessThan(resolveApp.lowerBound, write.lowerBound)
+        XCTAssertTrue(launcher.contains("graceNanoseconds: UInt64 = 30_000_000_000"))
+        XCTAssertTrue(launcher.contains("Task.detached"))
+        XCTAssertFalse(launcher.contains("defer { try? FileManager.default.removeItem(at: configFile) }"))
+    }
+
+    func testWarpSecureWriterCreatesOwnerOnlyFileBeforePublication_repro() throws {
+        let launcher = try source("macos/Engram/Views/Resume/TerminalLauncher.swift")
+        let writerStart = try XCTUnwrap(launcher.range(of: "static func writeWarpTabConfigFile"))
+        let writerEnd = try XCTUnwrap(
+            launcher.range(of: "static func keepWarpTabConfigAlive", range: writerStart.upperBound..<launcher.endIndex)
+        )
+        let writer = String(launcher[writerStart.lowerBound..<writerEnd.lowerBound])
+
+        XCTAssertTrue(writer.contains("SecureRegularFile.writeAtomically"))
+        XCTAssertFalse(writer.contains("toml.write(to: file, atomically:"))
+        XCTAssertFalse(writer.contains("setAttributes"))
+    }
+
+    func testWarpTabConfigDirectoryIsOwnerOnlyBeforeConfigPublication_repro() throws {
+        let launcher = try source("macos/Engram/Views/Resume/TerminalLauncher.swift")
+        let launchStart = try XCTUnwrap(launcher.range(of: "private static func launchInWarp"))
+        let configWrite = try XCTUnwrap(
+            launcher.range(of: "try writeWarpTabConfigFile", range: launchStart.upperBound..<launcher.endIndex)
+        )
+        let setup = String(launcher[launchStart.lowerBound..<configWrite.lowerBound])
+
+        XCTAssertTrue(setup.contains("attributes: [.posixPermissions: 0o700]"))
+        XCTAssertTrue(setup.contains("setAttributes([.posixPermissions: 0o700]"))
+    }
+
+    func testWarpColdLaunchTargetsWarp_repro() throws {
+        let launcher = try source("macos/Engram/Views/Resume/TerminalLauncher.swift")
+        XCTAssertTrue(launcher.contains("private static func launchInWarp(shellCommand: String, cwd: String) async throws"))
+        XCTAssertTrue(launcher.contains("try await NSWorkspace.shared.openApplication"))
+        XCTAssertTrue(launcher.contains("try await launchInWarp(shellCommand: shellCmd, cwd: cwd)"))
+        XCTAssertTrue(launcher.contains("keepWarpTabConfigAlive(configFile)"))
+        XCTAssertTrue(launcher.contains("withApplicationAt: appURL"))
+        XCTAssertTrue(launcher.contains("?new_window=true"))
+        XCTAssertTrue(launcher.contains("Task.detached"))
+        XCTAssertFalse(launcher.contains("NSWorkspace.shared.open(url)"))
+    }
+
     func testTerminalLauncherGhosttyExecsShellForCompositeCommand() {
         let args = TerminalLauncher.ghosttyArguments(for: "cd '/repo' && codex resume 'session-1'")
 
@@ -196,11 +338,81 @@ final class EngramCLIResumeCommandTests: XCTestCase {
         let launcher = try source("macos/Engram/Views/Resume/TerminalLauncher.swift")
 
         XCTAssertTrue(launcher.contains("enum LaunchError: LocalizedError"))
-        XCTAssertTrue(launcher.contains("static func launch(command: String, args: [String], cwd: String, terminal: TerminalType) -> Result<Void, LaunchError>"))
+        XCTAssertTrue(launcher.contains("static func launch(command: String, args: [String], cwd: String, terminal: TerminalType) async throws -> Result<Void, LaunchError>"))
         XCTAssertFalse(launcher.contains("try? process.run()"))
         XCTAssertTrue(launcher.contains("return .failure(.appleScriptError("))
         XCTAssertTrue(launcher.contains("return .failure(.processRunFailed("))
         XCTAssertTrue(launcher.contains("return .failure(.warpLaunchFailed("))
+    }
+
+    func testTerminalLauncherRethrowsCancellationAndDialogCancelsLaunchTask_repro() throws {
+        let launcher = try source("macos/Engram/Views/Resume/TerminalLauncher.swift")
+        let dialog = try source("macos/Engram/Views/Resume/ResumeDialog.swift")
+
+        XCTAssertTrue(launcher.contains("catch is CancellationError"))
+        XCTAssertTrue(launcher.contains("throw CancellationError()"))
+        XCTAssertTrue(dialog.contains("@State private var launchTask: Task<Void, Never>?"))
+        XCTAssertTrue(dialog.contains("launchTask?.cancel()"))
+        XCTAssertTrue(dialog.contains(".onDisappear"))
+    }
+
+    func testResumeInfoCancellationReturnsBeforePublishingViewState_repro() throws {
+        let dialog = try source("macos/Engram/Views/Resume/ResumeDialog.swift")
+        let fetchStart = try XCTUnwrap(dialog.range(of: "func fetchResumeInfo() async"))
+        let fetchEnd = try XCTUnwrap(
+            dialog.range(of: "private func copyContextPrimer", range: fetchStart.upperBound..<dialog.endIndex)
+        )
+        let fetch = String(dialog[fetchStart.lowerBound..<fetchEnd.lowerBound])
+        let response = try XCTUnwrap(fetch.range(of: "let response = try await serviceClient.resumeCommand"))
+        let cancellationCheck = try XCTUnwrap(fetch.range(of: "try Task.checkCancellation()"))
+        let firstStateWrite = try XCTUnwrap(fetch.range(of: "fallbackContextPrimer = response.contextPrimer"))
+        let cancellationCatch = try XCTUnwrap(fetch.range(of: "catch is CancellationError"))
+        let genericCatch = try XCTUnwrap(fetch.range(of: "catch {", range: cancellationCatch.upperBound..<fetch.endIndex))
+        let loadingWrite = try XCTUnwrap(fetch.range(of: "isLoading = false"))
+
+        XCTAssertLessThan(response.lowerBound, cancellationCheck.lowerBound)
+        XCTAssertLessThan(cancellationCheck.lowerBound, firstStateWrite.lowerBound)
+        XCTAssertLessThan(cancellationCatch.lowerBound, genericCatch.lowerBound)
+        XCTAssertLessThan(cancellationCatch.lowerBound, loadingWrite.lowerBound)
+        let cancellationBranch = String(fetch[cancellationCatch.lowerBound..<genericCatch.lowerBound])
+        XCTAssertTrue(cancellationBranch.contains("return"))
+        XCTAssertFalse(cancellationBranch.contains("errorMessage ="))
+        XCTAssertFalse(cancellationBranch.contains("resumeResult ="))
+        XCTAssertFalse(cancellationBranch.contains("isLoading ="))
+    }
+
+    func testTerminalLauncherChecksCancellationBeforeExternalSideEffects_repro() throws {
+        let launcher = try source("macos/Engram/Views/Resume/TerminalLauncher.swift")
+        let launchStart = try XCTUnwrap(launcher.range(of: "static func launch(command:"))
+        let launch = String(launcher[launchStart.lowerBound..<launcher.endIndex])
+
+        let terminalSwitch = try XCTUnwrap(launch.range(of: "switch terminal"))
+        let entryCheck = try XCTUnwrap(launch.range(of: "try Task.checkCancellation()"))
+        XCTAssertLessThan(entryCheck.lowerBound, terminalSwitch.lowerBound)
+
+        let ghostty = try XCTUnwrap(launch.range(of: "case .ghostty:"))
+        let processRun = try XCTUnwrap(launch.range(of: "try process.run()"))
+        let processCheck = try XCTUnwrap(
+            launch.range(of: "try Task.checkCancellation()", range: ghostty.upperBound..<processRun.lowerBound)
+        )
+        let processDo = try XCTUnwrap(
+            launch.range(of: "do {", range: processCheck.upperBound..<processRun.lowerBound)
+        )
+        XCTAssertLessThan(processCheck.lowerBound, processDo.lowerBound)
+
+        let appleScriptRun = try XCTUnwrap(launch.range(of: "appleScript.executeAndReturnError(&error)"))
+        let appleScriptCheck = try XCTUnwrap(
+            launch.range(
+                of: "try Task.checkCancellation()",
+                options: .backwards,
+                range: processRun.upperBound..<appleScriptRun.lowerBound
+            )
+        )
+        XCTAssertTrue(
+            launch[appleScriptCheck.upperBound..<appleScriptRun.lowerBound]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty
+        )
     }
 
     /// SEC-M1: resume must not dump shell/AppleScript command lines to a
@@ -220,7 +432,7 @@ final class EngramCLIResumeCommandTests: XCTestCase {
     func testResumeDialogKeepsDialogOpenWhenTerminalLaunchFails() throws {
         let dialog = try source("macos/Engram/Views/Resume/ResumeDialog.swift")
 
-        XCTAssertTrue(dialog.contains("switch TerminalLauncher.launch("))
+        XCTAssertTrue(dialog.contains("switch try await TerminalLauncher.launch("))
         XCTAssertTrue(dialog.contains("case .success:"))
         XCTAssertTrue(dialog.contains("dismiss()"))
         XCTAssertTrue(dialog.contains("case .failure(let error):"))

@@ -133,20 +133,20 @@ private struct RepoRow: View {
                         let total = repo.dirtyCount + repo.untrackedCount
                         Text("\(total) changed")
                             .font(.caption2)
-                            .foregroundStyle(Color.orange)
+                            .foregroundStyle(Theme.orange)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(Color.orange.opacity(0.12))
+                            .background(Theme.orange.opacity(0.12))
                             .clipShape(Capsule())
                     }
 
                     if repo.unpushedCount > 0 {
                         Text("\(repo.unpushedCount) unpushed")
                             .font(.caption2)
-                            .foregroundStyle(Color.blue)
+                            .foregroundStyle(Theme.accent)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(Color.blue.opacity(0.12))
+                            .background(Theme.accent.opacity(0.12))
                             .clipShape(Capsule())
                     }
                 }

@@ -36,7 +36,7 @@ private func humanizeHistoryTimestamp(_ raw: String) -> String {
 }
 
 struct MigrationHistoryView: View {
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
     @Environment(\.dismiss) var dismiss
 
     @State private var migrations: [EngramServiceMigrationLogEntry] = []
@@ -114,10 +114,10 @@ struct MigrationHistoryView: View {
                 if m.archived {
                     Text("archived")
                         .font(.caption2)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Theme.orange)
                         .padding(.horizontal, 4)
                         .padding(.vertical, 1)
-                        .background(Color.orange.opacity(0.1))
+                        .background(Theme.orange.opacity(0.1))
                         .clipShape(Capsule())
                 }
             }

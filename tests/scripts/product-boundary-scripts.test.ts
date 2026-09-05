@@ -27,7 +27,7 @@ function runScript(path: string): string {
 }
 
 describe.skipIf(!hasRg)('Swift product boundary scripts', () => {
-  it('keeps app, MCP, and CLI direct GRDB writes out of product surfaces', () => {
+  it('classifies shared connection PRAGMAs without allowing product row writes (repro)', () => {
     const script = resolve(
       repoRoot,
       'scripts/check-app-mcp-cli-direct-writes.sh',

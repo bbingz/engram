@@ -21,10 +21,12 @@ final class MemoryTests: XCTestCase {
         let memory = MemoryScreen(app: app)
         memory.waitForLoad()
 
-        let hasContent = memory.container.exists
-        let hasEmpty = memory.emptyState.waitForExistence(timeout: 3)
-        XCTAssertTrue(hasContent || hasEmpty,
-                      "Memory should show entries or empty state")
+        XCTAssertTrue(memory.failedState.waitForExistence(timeout: 5),
+                      "The unavailable mock service should render the memory failure state")
+        XCTAssertFalse(memory.emptyState.exists,
+                       "A failed memory read must not masquerade as an empty file list")
+        XCTAssertFalse(memory.insightsEmptyState.exists,
+                       "A failed insights read must not masquerade as an empty insights list")
         ScreenshotCapture.capture(name: "memory_entries", app: app, screen: "memory", test: #function)
     }
 
@@ -35,15 +37,10 @@ final class MemoryTests: XCTestCase {
         let memory = MemoryScreen(app: app)
         memory.waitForLoad()
 
-        if memory.searchField.waitForExistence(timeout: 5) {
-            memory.search(query: "test")
-            // After searching, the page should still be visible
-            XCTAssertTrue(memory.container.exists,
-                          "Memory container should remain visible after searching")
-        } else {
-            // No search field — verify page loaded
-            XCTAssertTrue(memory.container.exists || memory.emptyState.exists,
-                          "Memory page should show content or empty state")
-        }
+        XCTAssertTrue(memory.searchField.waitForExistence(timeout: 5),
+                      "Memory search should remain available while the service is unavailable")
+        memory.search(query: "test")
+        XCTAssertTrue(memory.failedState.exists,
+                      "Searching must not replace the service failure with an empty state")
     }
 }

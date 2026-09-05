@@ -1,7 +1,7 @@
 import Foundation
 
 final class MCPStdioServer {
-    private let config = MCPConfig.load()
+    private let config: MCPConfig
     private let inFlight = MCPInFlightRequests()
     private let outputLock = NSLock()
     // Legacy (initialize-handshake) protocol revisions this build speaks.
@@ -71,6 +71,10 @@ final class MCPStdioServer {
     3. Verify facts from memory before acting on them — memories can be stale
     4. Cite session IDs when referencing past work
     """
+
+    init(config: MCPConfig) {
+        self.config = config
+    }
 
     func run() async {
         do {
@@ -182,7 +186,9 @@ final class MCPStdioServer {
             emitError(id: request.id, code: -32602, message: "Invalid params")
             return
         }
-        let arguments = params["arguments"]?.objectValue ?? [:]
+        guard let arguments = argumentsObject(from: params["arguments"], id: request.id) else {
+            return
+        }
         let didStart = await inFlight.start(for: key) { [weak self] in
             guard let self else { return }
             let response = await handleToolCall(name: name, arguments: arguments)
@@ -273,7 +279,12 @@ final class MCPStdioServer {
                 emitError(id: request.id, code: -32602, message: "Missing prompt name")
                 return
             }
-            let arguments = request.params?["arguments"]?.objectValue ?? [:]
+            guard let arguments = argumentsObject(
+                from: request.params?["arguments"],
+                id: request.id
+            ) else {
+                return
+            }
             await emitRegistryResult(id: request.id, modern: modern) {
                 try await MCPToolRegistry.promptGet(name: name, arguments: arguments, config: config)
             }
@@ -306,9 +317,26 @@ final class MCPStdioServer {
             emitError(id: request.id, code: -32602, message: "Invalid params")
             return
         }
-        let arguments = params["arguments"]?.objectValue ?? [:]
+        guard let arguments = argumentsObject(from: params["arguments"], id: request.id) else {
+            return
+        }
         let response = await handleToolCall(name: name, arguments: arguments)
         emitResult(id: request.id, response, modern: modern)
+    }
+
+    private func argumentsObject(
+        from value: JSONValue?,
+        id: JSONRPCId?
+    ) -> [String: JSONValue]? {
+        switch value {
+        case nil, .some(.null):
+            return [:]
+        case .some(.object(let arguments)):
+            return arguments
+        default:
+            emitError(id: id, code: -32602, message: "arguments must be an object")
+            return nil
+        }
     }
 
     private func handleToolCall(

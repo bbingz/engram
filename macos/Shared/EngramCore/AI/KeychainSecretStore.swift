@@ -116,11 +116,25 @@ public enum EngramSettingsFileLock {
         defer { processLock.unlock() }
 
         let lockURL = settingsURL.appendingPathExtension("lock")
-        let descriptor = Darwin.open(lockURL.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        let descriptor = Darwin.open(
+            lockURL.path,
+            O_CREAT | O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC,
+            S_IRUSR | S_IWUSR
+        )
         guard descriptor >= 0 else {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
         defer { Darwin.close(descriptor) }
+
+        var info = stat()
+        guard fstat(descriptor, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_uid == geteuid(),
+              info.st_nlink == 1,
+              fchmod(descriptor, S_IRUSR | S_IWUSR) == 0
+        else {
+            throw POSIXError(.EPERM)
+        }
 
         guard flock(descriptor, LOCK_EX) == 0 else {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)

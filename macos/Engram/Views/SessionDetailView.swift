@@ -20,10 +20,11 @@ struct SessionDetailView: View {
     /// search (nil for every other entry point — find bar stays closed/empty).
     var searchTerm: String? = nil
     @Environment(DatabaseManager.self) var db
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isFavorite = false
-    @State private var favoriteLoadSessionId: String?
+    @State private var favoriteLoadGeneration: UUID?
+    @State private var displayedSessionId: String?
     @State private var handoffStatus: String? = nil
     @State private var showReplay = false
     @State private var showResume = false
@@ -43,13 +44,20 @@ struct SessionDetailView: View {
     @State private var suggestedChildrenSessions: [Session] = []
     @State private var suggestedChildrenSessionCount = 0
     @State private var showAgentSessions = false
+    @State private var isLoadingMoreChildSessions = false
     // Single tracked task for parent/child loading; cancelled before each reload
     // so the 3 entry points (initial load, confirm, dismiss) can't interleave writes.
     @State private var parentInfoTask: Task<Void, Never>? = nil
+    @State private var parentInfoLoadSessionId: String?
+    @State private var childLoadMoreTask: Task<Void, Never>? = nil
+    @State private var childLoadMoreToken: String?
+    @State private var isLoadingParentInfo = false
+    @State private var parentMutationTask: Task<Void, Never>? = nil
 
     // Related sessions (symmetric, untyped navigational links — see RelatedSessionPicker)
     @State private var relatedSessions: [Session] = []
     @State private var relatedTask: Task<Void, Never>? = nil
+    @State private var relatedLoadSessionId: String?
     @State private var showRelatedPicker = false
 
     @AppStorage("showSystemPrompts") var showSystemPrompts: Bool = false
@@ -68,6 +76,11 @@ struct SessionDetailView: View {
 
     @State private var displayIndexed: [IndexedMessage] = []
     @State private var matchIndices: [Int] = []
+    // Stable identity from the last committed scan. A filter rebuild replaces
+    // `displayIndexed` before the debounced scan runs, so deriving this UUID
+    // from old ordinals in the new array can jump to the wrong message.
+    @State private var committedFindMatchMessageID: UUID? = nil
+    @State private var committedFindQuery = ""
     /// Hidden-type find matches (row 10): buckets of query hits that the current
     /// type / system-category gates hide. Cleared when the query is empty.
     @State private var hiddenMatchBuckets: [HiddenMatchBucket] = []
@@ -77,6 +90,8 @@ struct SessionDetailView: View {
     // space (counts pre-filter messages, incl. tool rows the UI drops) so appended
     // pages don't drift at the seam.
     @State private var hasMoreToLoad = false
+    @State private var transcriptTruncated = false
+    @State private var transcriptParseFailed = false
     @State private var isLoadingMore = false
     @State private var loadedProducedCount = 0
     @State private var transcriptLoadTask: Task<Void, Never>? = nil
@@ -92,6 +107,46 @@ struct SessionDetailView: View {
             (type, type == .user || type == .assistant)
         }
     )
+
+    nonisolated static func shouldApplySessionLoad(
+        resultLoadToken: String,
+        currentLoadToken: String?,
+        isCancelled: Bool = false
+    ) -> Bool {
+        !isCancelled && resultLoadToken == currentLoadToken
+    }
+
+    nonisolated static func effectiveParentLinkIDs(
+        freshSession: Session?,
+        snapshotParentId: String?,
+        snapshotSuggestedId: String?
+    ) -> (parentId: String?, suggestedId: String?) {
+        guard let freshSession else { return (snapshotParentId, snapshotSuggestedId) }
+        return (freshSession.parentSessionId, freshSession.suggestedParentId)
+    }
+
+    nonisolated static func shouldApplySessionResult(
+        capturedSessionId: String,
+        displayedSessionId: String?,
+        resultLoadToken: String,
+        currentLoadToken: String?,
+        isCancelled: Bool = false
+    ) -> Bool {
+        capturedSessionId == displayedSessionId
+            && shouldApplySessionLoad(
+                resultLoadToken: resultLoadToken,
+                currentLoadToken: currentLoadToken,
+                isCancelled: isCancelled
+            )
+    }
+
+    nonisolated static func shouldApplySessionMutation(
+        capturedSessionId: String,
+        displayedSessionId: String?,
+        isCancelled: Bool = false
+    ) -> Bool {
+        !isCancelled && capturedSessionId == displayedSessionId
+    }
 
     /// Recompute the visible transcript rows.
     /// - Full path (`appendedSlice == nil`): filter-toggle / session rebuild —
@@ -188,6 +243,12 @@ struct SessionDetailView: View {
         }
     }
 
+    /// Session mode counts only matches its renderer can visibly highlight.
+    /// Text mode uses RawMessageRow and can highlight every message separately.
+    nonisolated static func canRenderSessionFindHighlight(_ idx: IndexedMessage) -> Bool {
+        true
+    }
+
     /// Gate that hid a matching message — system buckets key on
     /// `systemCategory`, type buckets on `MessageType` (never
     /// `MessageType.system`, which cannot reveal either system toggle).
@@ -220,7 +281,8 @@ struct SessionDetailView: View {
         guard !q.isEmpty else { return [] }
         var counts: [RevealKind: Int] = [:]
         for msg in all {
-            guard msg.message.content.range(of: q, options: .caseInsensitive) != nil else {
+            guard canRenderSessionFindHighlight(msg) else { continue }
+            guard findableContent(for: msg, query: q).range(of: q, options: .caseInsensitive) != nil else {
                 continue
             }
             let visible = isMessageVisible(
@@ -288,14 +350,72 @@ struct SessionDetailView: View {
     /// After a windowed load returns `returnedCount` messages for a `requestedLimit`,
     /// there may be more iff the page came back full. A nil limit means "load all",
     /// so never more. Pure so the pager state is unit-testable.
-    static func hasMoreAfterLoad(returnedCount: Int, requestedLimit: Int?) -> Bool {
+    static func hasMoreAfterLoad(
+        returnedCount: Int,
+        requestedLimit: Int?,
+        truncated: Bool = false
+    ) -> Bool {
+        if truncated { return true }
         guard let requestedLimit else { return false }
         return returnedCount >= requestedLimit
     }
 
+    static func shouldStopLoadAllPage(
+        producedCount: Int,
+        requestedLimit: Int,
+        truncated: Bool,
+        parseFailed: Bool
+    ) -> Bool {
+        parseFailed || truncated || producedCount < requestedLimit
+    }
+
     /// Re-runs the match scan whenever the query OR the displayed set changes.
     /// `\u{1}` separates the two so distinct (version, query) pairs can't collide.
-    private var matchScanToken: String { "\(displayVersion)\u{1}\(searchText)" }
+    private var findIndexedMessages: [IndexedMessage] {
+        viewMode == .text ? indexedMessages : displayIndexed
+    }
+
+    private var matchScanToken: String {
+        "\(session.id)\u{1}\(displayVersion)\u{1}\(viewMode.rawValue)\u{1}\(ColorBarMessageView.normalizedFindNeedle(searchText))"
+    }
+
+    private var currentFindMatchMessageID: UUID? {
+        committedFindMatchMessageID
+    }
+
+    nonisolated static func findableContent(for indexed: IndexedMessage, query: String = "") -> String {
+        let message = indexed.message
+        if (indexed.messageType == .toolResult || indexed.messageType == .error || indexed.messageType == .tool),
+           let result = ToolCallParser.parseToolResult(message.content) {
+            return [result.toolName, result.output].compactMap { $0 }.joined(separator: "\n")
+        }
+        if (indexed.messageType == .toolCall || indexed.messageType == .tool),
+           let call = ToolCallParser.parseToolCall(message.content) {
+            return ToolCallView.findableContent(parsed: call, searchText: query)
+        }
+        return message.content
+    }
+
+    nonisolated static func findContent(
+        for indexed: IndexedMessage,
+        viewMode: TranscriptViewMode,
+        query: String = ""
+    ) -> String {
+        viewMode == .text ? indexed.message.content : findableContent(for: indexed, query: query)
+    }
+
+    nonisolated static func reboundFindMatchIndex(
+        previousMessageID: UUID?,
+        indices: [Int],
+        snapshot: [IndexedMessage]
+    ) -> Int? {
+        previousMessageID.flatMap { previousMatchedMessageID in
+            indices.firstIndex { messageIndex in
+                snapshot.indices.contains(messageIndex)
+                    && snapshot[messageIndex].id == previousMatchedMessageID
+            }
+        }
+    }
 
     /// Sole match-index path: debounced, and the per-message content scan runs off
     /// the main actor so neither typing in the find bar nor a paged rebuild hitches
@@ -303,31 +423,44 @@ struct SessionDetailView: View {
     /// re-runs (cancelling the prior scan) whenever the query OR the displayed set
     /// changes — always reading live state, so it can't clobber a concurrent edit.
     private func updateMatchIndicesDebounced() async {
-        // Trim before lowercasing so the visible match scan and
-        // hiddenTypeMatchSummary share the same needle (SPEC R2 accepted
-        // count/highlight divergence for marker queries, not for whitespace).
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !query.isEmpty else {
+        // Trim once so visible, hidden, and highlighted matches share the same
+        // query and Foundation case-insensitive range semantics.
+        let needle = ColorBarMessageView.normalizedFindNeedle(searchText)
+        guard !needle.isEmpty else {
             matchIndices = []
             hiddenMatchBuckets = []
+            currentMatchIndex = -1
+            committedFindMatchMessageID = nil
+            committedFindQuery = ""
             return
         }
+        let scanToken = matchScanToken
+        let rawQuery = needle
+        let queryChanged = rawQuery != committedFindQuery
+        let previousMatchedMessageID = queryChanged ? nil : currentFindMatchMessageID
         try? await Task.sleep(nanoseconds: 200_000_000)
-        if Task.isCancelled { return }
-        let snapshot = displayIndexed
+        guard !Task.isCancelled, scanToken == matchScanToken else { return }
+        let snapshot = findIndexedMessages
         let allLoaded = indexedMessages
         let visibility = typeVisibility
         let systemPrompts = showSystemPrompts
         let agentComm = showAgentComm
-        let rawQuery = searchText
+        let isTextMode = viewMode == .text
         let (indices, hidden): ([Int], [HiddenMatchBucket]) = await Task.detached(priority: .userInitiated) {
-            let visibleMatches = snapshot.enumerated().compactMap { i, msg in
-                msg.message.content.lowercased().contains(query) ? i : nil
+            let visibleMatches = snapshot.enumerated().compactMap { i, msg -> Int? in
+                guard isTextMode || SessionDetailView.canRenderSessionFindHighlight(msg) else {
+                    return nil
+                }
+                return SessionDetailView.findContent(
+                    for: msg,
+                    viewMode: isTextMode ? .text : .session,
+                    query: rawQuery
+                ).range(of: rawQuery, options: .caseInsensitive) != nil ? i : nil
             }
             // Full-prefix hidden-type scan (row 10) — not page-incremental.
             // Must stay wholesale per query change; do not fold into a per-page
             // matchIndices slice or filter toggles leave stale bucket counts.
-            let hiddenBuckets = SessionDetailView.hiddenTypeMatchSummary(
+            let hiddenBuckets = isTextMode ? [] : SessionDetailView.hiddenTypeMatchSummary(
                 allLoaded,
                 query: rawQuery,
                 typeVisibility: visibility,
@@ -336,21 +469,41 @@ struct SessionDetailView: View {
             )
             return (visibleMatches, hiddenBuckets)
         }.value
-        if Task.isCancelled { return }
+        guard !Task.isCancelled, scanToken == matchScanToken else { return }
+        let reboundFindMatchIndex = Self.reboundFindMatchIndex(
+            previousMessageID: previousMatchedMessageID,
+            indices: indices,
+            snapshot: snapshot
+        )
         matchIndices = indices
         hiddenMatchBuckets = hidden
         // Auto-scroll to the first match when navigation hasn't started yet
         // (currentMatchIndex < 0). The guard keeps an in-progress Prev/Next from
         // being yanked back to the top by a filter/page re-scan.
-        if currentMatchIndex < 0, let first = indices.first {
+        if let reboundFindMatchIndex {
+            currentMatchIndex = reboundFindMatchIndex
+            scrollTarget = snapshot[indices[reboundFindMatchIndex]].id
+        } else if indices.isEmpty {
+            currentMatchIndex = -1
+        } else if queryChanged || currentMatchIndex < 0, let first = indices.first {
             currentMatchIndex = 0
             scrollTarget = snapshot[first].id
+        } else {
+            currentMatchIndex = min(currentMatchIndex, indices.count - 1)
+            scrollTarget = snapshot[indices[currentMatchIndex]].id
+        }
+        committedFindQuery = rawQuery
+        if indices.indices.contains(currentMatchIndex) {
+            committedFindMatchMessageID = snapshot[indices[currentMatchIndex]].id
+        } else {
+            committedFindMatchMessageID = nil
         }
     }
 
     // MARK: - Body
 
     var body: some View {
+        let findNeedle = ColorBarMessageView.normalizedFindNeedle(searchText)
         VStack(spacing: 0) {
             TranscriptToolbar(
                 session: session,
@@ -362,14 +515,26 @@ struct SessionDetailView: View {
                 partiallyLoaded: hasMoreToLoad,
                 onToggleFavorite: {
                     let sessionId = session.id
+                    let next = !isFavorite
                     Task {
-                        let next = !isFavorite
                         do {
                             try await serviceClient.setFavorite(sessionId: sessionId, favorite: next)
-                            if favoriteLoadSessionId == sessionId {
-                                isFavorite = next
-                            }
+                            guard Self.shouldApplySessionMutation(
+                                capturedSessionId: sessionId,
+                                displayedSessionId: displayedSessionId,
+                                isCancelled: Task.isCancelled
+                            ) else { return }
+                            isFavorite = next
+                            // session-detail-id-regress-1: invalidate any
+                            // in-flight initial favorite read, or the stale
+                            // read lands after this mutation and clobbers it.
+                            favoriteLoadGeneration = UUID()
                         } catch {
+                            guard Self.shouldApplySessionMutation(
+                                capturedSessionId: sessionId,
+                                displayedSessionId: displayedSessionId,
+                                isCancelled: Task.isCancelled
+                            ) else { return }
                             logger.error("Failed to toggle favorite: \(error.localizedDescription)")
                         }
                     }
@@ -383,6 +548,8 @@ struct SessionDetailView: View {
                 onHandoff: { performHandoff() },
                 onReplay: { showReplay = true },
                 onResume: { showResume = true },
+                resumeDisabledReason: session.isRemoteSnapshot
+                    ? "This session lives on HQ — resume it there" : nil,
                 viewMode: $viewMode
             )
             .accessibilityElement(children: .contain)
@@ -394,7 +561,7 @@ struct SessionDetailView: View {
                     Image(systemName: status.hasPrefix("Handoff copied") ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                         .foregroundStyle(status.hasPrefix("Handoff copied") ? .green : .red)
                     Text(status)
-                        .font(.system(size: 11))
+                        .scaledFont(11)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
@@ -420,13 +587,33 @@ struct SessionDetailView: View {
                 Divider()
             }
 
+            // HQ remote snapshot info bar — the in-band caption row stays (data
+            // contract, testRemoteLocatorRendersSnapshotNotFilesystem_repro);
+            // this bar gives the same fact persistent visual hierarchy above
+            // the scrolling transcript.
+            if session.isRemoteSnapshot {
+                HStack(spacing: 8) {
+                    Image(systemName: "info.circle").font(.caption2)
+                    Text("HQ index snapshot — not the source file. Resume stays on HQ.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    OriginBadge(origin: session.origin)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+                .background(Theme.surfaceHighlight.opacity(0.5))
+                .accessibilityIdentifier("detail_remoteSnapshotBar")
+                Divider()
+            }
+
             // Partial-load search disclosure. Search state (searchText, match
             // highlights, ⌘G navigation) outlives the find bar — ⌘F and the toolbar
             // Find button toggle the bar without clearing the query — so this hint
             // lives OUTSIDE `if showFind`: whenever a search is active on a partially
             // loaded transcript, matches can't silently confine to the loaded prefix
             // without the user being told.
-            if hasMoreToLoad && !searchText.isEmpty {
+            if hasMoreToLoad && !findNeedle.isEmpty {
                 HStack(spacing: 8) {
                     Image(systemName: "info.circle").font(.caption2)
                     Text("Search covers loaded messages only.")
@@ -436,6 +623,7 @@ struct SessionDetailView: View {
                         .font(.caption2)
                         .buttonStyle(.plain)
                         .foregroundStyle(Theme.accent)
+                        .disabled(transcriptTruncated || transcriptParseFailed)
                     Spacer()
                 }
                 .padding(.horizontal, 12)
@@ -448,7 +636,7 @@ struct SessionDetailView: View {
             // partial-load hint: default visibility hides 7 of 9 MessageType
             // cases, so a Tools/Thinking/System-only query must not report a
             // flat "No matches".
-            if !searchText.isEmpty && !hiddenMatchBuckets.isEmpty {
+            if !findNeedle.isEmpty && !hiddenMatchBuckets.isEmpty {
                 let total = hiddenMatchBuckets.reduce(0) { $0 + $1.count }
                 let typeList = hiddenMatchBuckets.map(\.label).joined(separator: ", ")
                 HStack(spacing: 8) {
@@ -497,7 +685,7 @@ struct SessionDetailView: View {
                 .padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
-                    (session.sizeCategory == .huge ? Color.red : Color.orange)
+                    (session.sizeCategory == .huge ? Theme.red : Theme.orange)
                         .opacity(0.08)
                 )
             }
@@ -601,12 +789,12 @@ struct SessionDetailView: View {
                             switch viewMode {
                             case .session:
                                 ForEach(displayIndexed) { indexed in
-                                    ColorBarMessageView(indexed: indexed, searchText: searchText, onCopyAll: { copyAllTranscript() })
+                                    ColorBarMessageView(indexed: indexed, searchText: findNeedle, onCopyAll: { copyAllTranscript() })
                                         .id(indexed.id)
                                 }
                             case .text:
                                 ForEach(messages) { msg in
-                                    RawMessageRow(message: msg, searchText: searchText)
+                                    RawMessageRow(message: msg, searchText: findNeedle)
                                         .id(msg.id)
                                     Divider().opacity(0.3)
                                 }
@@ -630,7 +818,7 @@ struct SessionDetailView: View {
                                 scrollTarget = displayIndexed.first?.id
                             } label: {
                                 Image(systemName: "chevron.up")
-                                    .font(.system(size: 12, weight: .semibold))
+                                    .scaledFont(12, weight: .semibold)
                                     .padding(8)
                                     .background(.regularMaterial, in: Circle())
                             }
@@ -668,6 +856,26 @@ struct SessionDetailView: View {
         // Single per-session load path (keyed by session.id) — favorite + messages +
         // parent info all run here so ordering is deterministic and re-runs on switch.
         .task(id: session.id) {
+            let sessionId = session.id
+            displayedSessionId = sessionId
+            parentInfoTask?.cancel()
+            parentInfoTask = nil
+            childLoadMoreTask?.cancel()
+            childLoadMoreTask = nil
+            childLoadMoreToken = nil
+            isLoadingMoreChildSessions = false
+            isLoadingParentInfo = false
+            relatedTask?.cancel()
+            relatedTask = nil
+            parentInfoLoadSessionId = "\(session.id):\(UUID().uuidString)"
+            relatedLoadSessionId = "\(session.id):\(UUID().uuidString)"
+            confirmedParent = nil
+            suggestedParent = nil
+            relatedSessions = []
+            showReplay = false
+            showResume = false
+            showRelatedPicker = false
+            hiddenMatchBuckets = []
             displayFilterTask?.cancel()
             displayFilterTask = nil
             displayFilterSessionId = session.id
@@ -677,6 +885,8 @@ struct SessionDetailView: View {
             typeCounts = [:]
             typeVisibility = Self.defaultTypeVisibility
             hasMoreToLoad = false
+            transcriptTruncated = false
+            transcriptParseFailed = false
             isLoadingMore = false
             loadedProducedCount = 0
             transcriptLoadTask?.cancel()
@@ -685,6 +895,8 @@ struct SessionDetailView: View {
             // from the previous session can index out of the new (shorter) one.
             displayIndexed = []
             matchIndices = []
+            committedFindMatchMessageID = nil
+            committedFindQuery = ""
             currentMatchIndex = -1
             // Prime the find bar from a search-driven open; closed/empty otherwise.
             searchText = searchTerm ?? ""
@@ -698,16 +910,17 @@ struct SessionDetailView: View {
             childrenSessionCount = 0
             suggestedChildrenSessions = []
             suggestedChildrenSessionCount = 0
+            isLoadingMoreChildSessions = false
             showAgentSessions = false
             isFavorite = false
-            favoriteLoadSessionId = session.id
+            let generation = UUID()
+            favoriteLoadGeneration = generation
             // Read favorite state off the main actor; assign back when it lands.
             let dbRef = db
-            let sessionId = session.id
             Task.detached {
                 let fav = (try? dbRef.isFavorite(sessionId: sessionId)) ?? false
                 await MainActor.run {
-                    if favoriteLoadSessionId == sessionId {
+                    if generation == favoriteLoadGeneration {
                         isFavorite = fav
                     }
                 }
@@ -715,17 +928,25 @@ struct SessionDetailView: View {
             await loadInitialTranscript()
             // The detached parse can outlive a session switch; don't let the
             // trailing assignments stomp the next session's reset state.
-            if Task.isCancelled { return }
+            guard !Task.isCancelled, displayedSessionId == sessionId else { return }
             isLoadingMessages = false
-            loadParentInfo()
-            loadRelated()
+            loadParentInfo(for: sessionId)
+            loadRelated(for: sessionId)
         }
         .onChange(of: typeVisibility) { _, _ in updateDisplayIndexed() }
         .onChange(of: showSystemPrompts) { _, _ in updateDisplayIndexed() }
         .onChange(of: showAgentComm) { _, _ in updateDisplayIndexed() }
-        // A new/edited query restarts find navigation from the top; the debounced
-        // scan then re-selects the first match (guarded by currentMatchIndex < 0).
-        .onChange(of: searchText) { _, _ in currentMatchIndex = -1; scrollTarget = nil }
+        .onChange(of: searchTerm) { _, newSearchTerm in
+            searchText = newSearchTerm ?? ""
+            showFind = (newSearchTerm?.isEmpty == false)
+        }
+        // Keep the committed count/ordinal visible while the replacement scan
+        // debounces. The current scan atomically restarts navigation on commit.
+        .onChange(of: searchText) { oldValue, newValue in
+            guard ColorBarMessageView.normalizedFindNeedle(oldValue)
+                != ColorBarMessageView.normalizedFindNeedle(newValue) else { return }
+            scrollTarget = nil
+        }
         .task(id: matchScanToken) { await updateMatchIndicesDebounced() }
         .sheet(isPresented: $showReplay) {
             SessionReplayView(sessionId: session.id)
@@ -737,16 +958,22 @@ struct SessionDetailView: View {
         .sheet(isPresented: $showRelatedPicker) {
             RelatedSessionPicker(
                 source: session,
-                existingRelatedIds: Set(relatedSessions.map(\.id)),
-                onLinked: { loadRelated() }
+                onLinked: { loadRelated(for: session.id) }
             )
         }
         .onDisappear {
             displayFilterTask?.cancel(); displayFilterTask = nil
             displayFilterSessionId = nil
             parentInfoTask?.cancel(); parentInfoTask = nil
+            childLoadMoreTask?.cancel(); childLoadMoreTask = nil
+            childLoadMoreToken = nil
+            // The service owns the write (docs/invariants.md #1). Dropping this
+            // view must not close the socket while that write is in flight.
+            parentMutationTask = nil
             relatedTask?.cancel(); relatedTask = nil
             transcriptLoadTask?.cancel(); transcriptLoadTask = nil
+            favoriteLoadGeneration = nil
+            displayedSessionId = nil
         }
     }
 
@@ -814,7 +1041,7 @@ struct SessionDetailView: View {
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: showAgentSessions ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
+                            .scaledFont(10, weight: .semibold)
                             .foregroundStyle(Theme.tertiaryText)
                             .frame(width: 12)
 
@@ -851,6 +1078,23 @@ struct SessionDetailView: View {
                                     onTap: { navigateToSession(child) }
                                 )
                                 .padding(.horizontal, 12)
+                            }
+                            if childrenSessions.count < childrenSessionCount {
+                                HStack {
+                                    Spacer()
+                                    if isLoadingMoreChildSessions {
+                                        ProgressView().controlSize(.small)
+                                    } else {
+                                        Button("Load more agent sessions") {
+                                            loadMoreChildSessions()
+                                        }
+                                        .font(.caption2)
+                                        .buttonStyle(.plain)
+                                        .foregroundStyle(Theme.accent)
+                                    }
+                                    Spacer()
+                                }
+                                .padding(.vertical, 4)
                             }
                             ForEach(suggestedChildrenSessions, id: \.id) { child in
                                 CompactChildRow(
@@ -931,7 +1175,7 @@ struct SessionDetailView: View {
             } else if let summaryError {
                 Text(summaryError)
                     .font(.caption2)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Theme.red)
             }
         }
         .padding(.horizontal, 16)
@@ -949,18 +1193,40 @@ struct SessionDetailView: View {
                 let response = try await serviceClient.generateSummary(
                     EngramServiceGenerateSummaryRequest(sessionId: sessionId)
                 )
-                guard favoriteLoadSessionId == sessionId else { return }
+                guard Self.shouldApplySessionMutation(
+                    capturedSessionId: sessionId,
+                    displayedSessionId: displayedSessionId,
+                    isCancelled: Task.isCancelled
+                ) else { return }
                 summaryText = response.summary
             } catch {
-                guard favoriteLoadSessionId == sessionId else { return }
+                guard Self.shouldApplySessionMutation(
+                    capturedSessionId: sessionId,
+                    displayedSessionId: displayedSessionId,
+                    isCancelled: Task.isCancelled
+                ) else { return }
                 summaryError = "Summary failed: \(ServiceErrorPresenter.displayMessage(for: error))"
             }
-            if favoriteLoadSessionId == sessionId { isSummarizing = false }
+            if Self.shouldApplySessionMutation(
+                capturedSessionId: sessionId,
+                displayedSessionId: displayedSessionId,
+                isCancelled: Task.isCancelled
+            ) {
+                isSummarizing = false
+            }
         }
     }
 
-    private func loadParentInfo() {
-        let sessionId = session.id
+    private func loadParentInfo(for expectedSessionId: String? = nil) {
+        let sessionId = expectedSessionId ?? session.id
+        guard displayedSessionId == sessionId, session.id == sessionId else { return }
+        isLoadingParentInfo = true
+        childLoadMoreTask?.cancel()
+        childLoadMoreTask = nil
+        childLoadMoreToken = nil
+        isLoadingMoreChildSessions = false
+        let loadToken = "\(sessionId):\(UUID().uuidString)"
+        parentInfoLoadSessionId = loadToken
         let parentId = session.parentSessionId
         let suggestedId = session.suggestedParentId
         let dbRef = db
@@ -971,8 +1237,13 @@ struct SessionDetailView: View {
         parentInfoTask = Task.detached {
             // Re-fetch session to get latest state (e.g. after confirm/dismiss)
             let freshSession = try? dbRef.getSession(id: sessionId)
-            let effectiveParentId = freshSession?.parentSessionId ?? parentId
-            let effectiveSuggestedId = freshSession?.suggestedParentId ?? suggestedId
+            let links = Self.effectiveParentLinkIDs(
+                freshSession: freshSession,
+                snapshotParentId: parentId,
+                snapshotSuggestedId: suggestedId
+            )
+            let effectiveParentId = links.parentId
+            let effectiveSuggestedId = links.suggestedId
 
             let confirmed = effectiveParentId.flatMap { try? dbRef.getSession(id: $0) }
             let suggested = effectiveParentId == nil
@@ -989,75 +1260,178 @@ struct SessionDetailView: View {
             let childCount = counts?[sessionId] ?? children?.count ?? 0
             let suggestedChildCount = suggestedCounts?[sessionId] ?? suggestedChildren?.count ?? 0
             if Task.isCancelled { return }
+            let wasCancelled = Task.isCancelled
             await MainActor.run {
+                guard Self.shouldApplySessionResult(
+                    capturedSessionId: sessionId,
+                    displayedSessionId: displayedSessionId,
+                    resultLoadToken: loadToken,
+                    currentLoadToken: parentInfoLoadSessionId,
+                    isCancelled: wasCancelled
+                ) else { return }
                 confirmedParent = confirmed
                 suggestedParent = suggested
                 childrenSessions = children ?? []
                 childrenSessionCount = childCount
                 suggestedChildrenSessions = suggestedChildren ?? []
                 suggestedChildrenSessionCount = suggestedChildCount
+                isLoadingParentInfo = false
             }
         }
     }
 
-    private func loadRelated() {
-        let sessionId = session.id
+    private func loadRelated(for expectedSessionId: String? = nil) {
+        let sessionId = expectedSessionId ?? session.id
+        guard displayedSessionId == sessionId, session.id == sessionId else { return }
+        let loadToken = "\(sessionId):\(UUID().uuidString)"
+        relatedLoadSessionId = loadToken
         let dbRef = db
         relatedTask?.cancel()
         relatedTask = Task.detached {
             let loaded = (try? dbRef.relatedSessions(sessionId: sessionId)) ?? []
             if Task.isCancelled { return }
-            await MainActor.run { relatedSessions = loaded }
+            let wasCancelled = Task.isCancelled
+            await MainActor.run {
+                guard Self.shouldApplySessionResult(
+                    capturedSessionId: sessionId,
+                    displayedSessionId: displayedSessionId,
+                    resultLoadToken: loadToken,
+                    currentLoadToken: relatedLoadSessionId,
+                    isCancelled: wasCancelled
+                ) else { return }
+                relatedSessions = loaded
+            }
+        }
+    }
+
+    private func loadMoreChildSessions() {
+        guard !isLoadingMoreChildSessions,
+              !isLoadingParentInfo,
+              childrenSessions.count < childrenSessionCount else { return }
+        let sessionId = session.id
+        guard displayedSessionId == sessionId else { return }
+        let loadToken = "\(sessionId):\(UUID().uuidString)"
+        childLoadMoreToken = loadToken
+        let offset = childrenSessions.count
+        let dbRef = db
+        isLoadingMoreChildSessions = true
+        childLoadMoreTask?.cancel()
+        childLoadMoreTask = Task.detached {
+            let page = (try? dbRef.childSessions(
+                parentId: sessionId,
+                limit: agentSessionPreviewLimit,
+                offset: offset
+            )) ?? []
+            if Task.isCancelled { return }
+            let wasCancelled = Task.isCancelled
+            await MainActor.run {
+                guard Self.shouldApplySessionResult(
+                    capturedSessionId: sessionId,
+                    displayedSessionId: displayedSessionId,
+                    resultLoadToken: loadToken,
+                    currentLoadToken: childLoadMoreToken,
+                    isCancelled: wasCancelled
+                ) else {
+                    if childLoadMoreToken == loadToken {
+                        isLoadingMoreChildSessions = false
+                    }
+                    return
+                }
+                let loadedIDs = Set(childrenSessions.map(\.id))
+                childrenSessions.append(contentsOf: page.filter { !loadedIDs.contains($0.id) })
+                isLoadingMoreChildSessions = false
+                childLoadMoreTask = nil
+                childLoadMoreToken = nil
+            }
         }
     }
 
     private func removeRelated(_ related: Session) {
-        Task {
-            _ = try? await serviceClient.removeSessionRelation(aId: session.id, bId: related.id)
-            loadRelated()
+        let sessionId = session.id
+        let relatedId = related.id
+        guard displayedSessionId == sessionId else { return }
+        parentMutationTask = Task {
+            _ = try? await serviceClient.removeSessionRelation(aId: sessionId, bId: relatedId)
+            guard Self.shouldApplySessionMutation(
+                capturedSessionId: sessionId,
+                displayedSessionId: displayedSessionId
+            ) else { return }
+            loadRelated(for: sessionId)
         }
     }
 
     private func confirmSuggestedChild(_ child: Session) {
-        Task {
-            _ = try? await serviceClient.confirmSuggestion(sessionId: child.id)
-            loadParentInfo()
+        let sessionId = session.id
+        let childId = child.id
+        guard displayedSessionId == sessionId else { return }
+        parentMutationTask = Task {
+            _ = try? await serviceClient.confirmSuggestion(sessionId: childId)
+            guard Self.shouldApplySessionMutation(
+                capturedSessionId: sessionId,
+                displayedSessionId: displayedSessionId
+            ) else { return }
+            loadParentInfo(for: sessionId)
         }
     }
 
     private func confirmSuggestedParent() {
-        Task {
-            _ = try? await serviceClient.confirmSuggestion(sessionId: session.id)
-            loadParentInfo()
+        let sessionId = session.id
+        guard displayedSessionId == sessionId else { return }
+        parentMutationTask = Task {
+            _ = try? await serviceClient.confirmSuggestion(sessionId: sessionId)
+            guard Self.shouldApplySessionMutation(
+                capturedSessionId: sessionId,
+                displayedSessionId: displayedSessionId
+            ) else { return }
+            loadParentInfo(for: sessionId)
         }
     }
 
     private func dismissSuggestedParent() {
         guard let suggestedId = suggestedParent?.id ?? session.suggestedParentId else { return }
-        Task {
+        let sessionId = session.id
+        guard displayedSessionId == sessionId else { return }
+        parentMutationTask = Task {
             try? await serviceClient.dismissSuggestion(
-                sessionId: session.id,
+                sessionId: sessionId,
                 suggestedParentId: suggestedId
             )
-            loadParentInfo()
+            guard Self.shouldApplySessionMutation(
+                capturedSessionId: sessionId,
+                displayedSessionId: displayedSessionId
+            ) else { return }
+            loadParentInfo(for: sessionId)
         }
     }
 
     private func unlinkParent() {
-        Task {
-            _ = try? await serviceClient.clearParentSession(sessionId: session.id)
-            loadParentInfo()
+        let sessionId = session.id
+        guard displayedSessionId == sessionId else { return }
+        parentMutationTask = Task {
+            _ = try? await serviceClient.clearParentSession(sessionId: sessionId)
+            guard Self.shouldApplySessionMutation(
+                capturedSessionId: sessionId,
+                displayedSessionId: displayedSessionId
+            ) else { return }
+            loadParentInfo(for: sessionId)
         }
     }
 
     private func dismissSuggestedChild(_ child: Session) {
         guard let suggestedId = child.suggestedParentId else { return }
-        Task {
+        let sessionId = session.id
+        let childId = child.id
+        guard displayedSessionId == sessionId else { return }
+        parentMutationTask = Task {
             try? await serviceClient.dismissSuggestion(
-                sessionId: child.id,
+                sessionId: childId,
                 suggestedParentId: suggestedId
             )
-            loadParentInfo()
+            guard Self.shouldApplySessionMutation(
+                capturedSessionId: sessionId,
+                displayedSessionId: displayedSessionId
+            ) else { return }
+            loadParentInfo(for: sessionId)
         }
     }
 
@@ -1080,12 +1454,7 @@ struct SessionDetailView: View {
     // MARK: - Helpers
 
     var unsupportedMessage: LocalizedStringKey {
-        switch session.source {
-        case "vscode":
-            return "This source (\(session.source)) uses a SQLite database — conversation preview is not yet supported."
-        default:
-            return "No messages found."
-        }
+        "No messages found."
     }
 
     func navigateType(_ type: MessageType, direction: Int) {
@@ -1125,30 +1494,49 @@ struct SessionDetailView: View {
         ) else { return }
         currentMatchIndex = next
         let msgIndex = matchIndices[currentMatchIndex]
-        let displayed = displayIndexed
+        let displayed = findIndexedMessages
         if msgIndex < displayed.count {
+            committedFindMatchMessageID = displayed[msgIndex].id
             scrollTarget = displayed[msgIndex].id
         }
     }
 
 
     func performHandoff() {
+        let sessionId = session.id
+        let cwd = session.cwd
         Task {
             do {
                 let response = try await serviceClient.handoff(
                     EngramServiceHandoffRequest(
-                        cwd: session.cwd,
-                        sessionId: session.id,
+                        cwd: cwd,
+                        sessionId: sessionId,
                         format: "markdown"
                     )
                 )
+                guard Self.shouldApplySessionMutation(
+                    capturedSessionId: sessionId,
+                    displayedSessionId: displayedSessionId,
+                    isCancelled: Task.isCancelled
+                ) else { return }
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(response.brief, forType: .string)
                 handoffStatus = "Handoff copied! (\(response.sessionCount) sessions)"
                 // Clear status after 3s
                 try? await Task.sleep(for: .seconds(3))
-                if handoffStatus?.hasPrefix("Handoff") == true { handoffStatus = nil }
+                if Self.shouldApplySessionMutation(
+                    capturedSessionId: sessionId,
+                    displayedSessionId: displayedSessionId,
+                    isCancelled: Task.isCancelled
+                ), handoffStatus?.hasPrefix("Handoff") == true {
+                    handoffStatus = nil
+                }
             } catch {
+                guard Self.shouldApplySessionMutation(
+                    capturedSessionId: sessionId,
+                    displayedSessionId: displayedSessionId,
+                    isCancelled: Task.isCancelled
+                ) else { return }
                 handoffStatus = "Handoff failed: \(ServiceErrorPresenter.displayMessage(for: error))"
             }
         }
@@ -1162,6 +1550,14 @@ struct SessionDetailView: View {
             copyLoadedTranscript()
             return
         }
+        guard !transcriptTruncated else {
+            showTranscriptStatus(String(localized: "The transcript is truncated and cannot be copied as complete"))
+            return
+        }
+        guard !transcriptParseFailed else {
+            showTranscriptStatus(String(localized: "Transcript parsing stopped before the conversation was complete"))
+            return
+        }
         guard !isLoadingMore else {
             // A load is already in flight; don't drop the copy silently.
             showTranscriptStatus(String(localized: "Still loading — try Copy again in a moment"))
@@ -1173,6 +1569,14 @@ struct SessionDetailView: View {
             defer { isLoadingMore = false }
             await appendMessages(all: true)
             if Task.isCancelled { return }
+            guard !transcriptParseFailed else {
+                showTranscriptStatus(String(localized: "Transcript parsing stopped before the conversation was complete"))
+                return
+            }
+            guard !transcriptTruncated, !hasMoreToLoad else {
+                showTranscriptStatus(String(localized: "The transcript is truncated and cannot be copied as complete"))
+                return
+            }
             copyLoadedTranscript()
         }
     }
@@ -1199,6 +1603,9 @@ struct SessionDetailView: View {
     /// the DB directory (matches the prior inline resolution).
     private func resolvedTranscriptPath() -> String {
         var path = session.effectiveFilePath
+        if Session.isRemoteSnapshotLocator(path) || session.isRemoteSnapshot {
+            return path
+        }
         if !path.isEmpty && !path.hasPrefix("/") {
             let dbDir = (db.path as NSString).deletingLastPathComponent
             let resolved = (dbDir as NSString).appendingPathComponent(path)
@@ -1210,17 +1617,31 @@ struct SessionDetailView: View {
     /// Off-main parse of one window. Returns the displayable messages plus the
     /// PRODUCED count (pre-filter) so the caller can advance its offset without
     /// seam drift. Touches no view state.
-    private func parseWindow(offset: Int, limit: Int?) async -> (messages: [ChatMessage], producedCount: Int) {
+    private func parseWindow(
+        offset: Int,
+        limit: Int?
+    ) async throws -> (messages: [ChatMessage], producedCount: Int, truncated: Bool, parseFailed: Bool) {
         let path = resolvedTranscriptPath()
         let source = session.source
+        let sessionId = session.id
+        let isRemote = Session.isRemoteSnapshotLocator(path) || session.isRemoteSnapshot
         // Capture loop-variant values before begin — detail evaluates at end().
         let capturedOffset = offset
         let capturedLimit = limit
         let messageCount = session.messageCount
         let span = Perf.begin("parseWindow", "offset=\(capturedOffset) limit=\(String(describing: capturedLimit)) messages=\(messageCount)")
         defer { Perf.end(span) }
-        return await Task.detached(priority: .userInitiated) {
-            await MessageParser.parseWindowed(filePath: path, source: source, offset: offset, limit: limit)
+        return try await Task.detached(priority: .userInitiated) { [db] in
+            if isRemote {
+                let snapshot = try db.remoteSnapshot(sessionId: sessionId)
+                return MessageParser.remoteSnapshotWindow(
+                    summary: snapshot?.summary,
+                    lines: snapshot?.lines ?? [],
+                    offset: offset,
+                    limit: limit
+                )
+            }
+            return try await MessageParser.parseWindowed(filePath: path, source: source, offset: offset, limit: limit)
         }.value
     }
 
@@ -1267,11 +1688,26 @@ struct SessionDetailView: View {
     /// first page for large ones (`hasMoreToLoad` then drives the footer).
     private func loadInitialTranscript() async {
         let limit = Self.initialTranscriptLimit(messageCount: session.messageCount)
-        let (parsed, produced) = await parseWindow(offset: 0, limit: limit)
+        let result: (messages: [ChatMessage], producedCount: Int, truncated: Bool, parseFailed: Bool)
+        do {
+            result = try await parseWindow(offset: 0, limit: limit)
+        } catch {
+            guard !Task.isCancelled else { return }
+            transcriptParseFailed = true
+            hasMoreToLoad = true
+            return
+        }
         if Task.isCancelled { return }
-        messages = parsed
-        loadedProducedCount = produced
-        hasMoreToLoad = Self.hasMoreAfterLoad(returnedCount: produced, requestedLimit: limit)
+        messages = result.messages
+        loadedProducedCount = result.producedCount
+        let reachedTruncation = result.truncated
+        transcriptTruncated = reachedTruncation
+        transcriptParseFailed = result.parseFailed
+        hasMoreToLoad = Self.hasMoreAfterLoad(
+            returnedCount: result.producedCount,
+            requestedLimit: limit,
+            truncated: reachedTruncation
+        ) || result.parseFailed
         await rebuildIndexed(appended: nil)
     }
 
@@ -1280,14 +1716,47 @@ struct SessionDetailView: View {
     /// earlier pages aren't re-materialized and the seam doesn't drift, then
     /// rebuilds the indexed view over the full prefix.
     private func appendMessages(all: Bool) async {
-        let offset = loadedProducedCount
-        let pageLimit: Int? = all ? nil : transcriptPageSize
-        let (parsed, produced) = await parseWindow(offset: offset, limit: pageLimit)
+        if all {
+            let result: (messages: [ChatMessage], producedCount: Int, truncated: Bool, parseFailed: Bool)
+            do {
+                result = try await parseWindow(offset: loadedProducedCount, limit: nil)
+            } catch {
+                guard !Task.isCancelled else { return }
+                transcriptParseFailed = true
+                hasMoreToLoad = true
+                return
+            }
+            if Task.isCancelled { return }
+            messages += result.messages
+            loadedProducedCount += result.producedCount
+            transcriptTruncated = result.truncated
+            transcriptParseFailed = result.parseFailed
+            hasMoreToLoad = result.truncated || result.parseFailed
+            await rebuildIndexed(appended: result.messages)
+            return
+        }
+
+        let result: (messages: [ChatMessage], producedCount: Int, truncated: Bool, parseFailed: Bool)
+        do {
+            result = try await parseWindow(offset: loadedProducedCount, limit: transcriptPageSize)
+        } catch {
+            guard !Task.isCancelled else { return }
+            transcriptParseFailed = true
+            hasMoreToLoad = true
+            return
+        }
         if Task.isCancelled { return }
-        messages += parsed
-        loadedProducedCount += produced
-        hasMoreToLoad = all ? false : Self.hasMoreAfterLoad(returnedCount: produced, requestedLimit: pageLimit)
-        await rebuildIndexed(appended: parsed)
+        messages += result.messages
+        loadedProducedCount += result.producedCount
+        let reachedTruncation = result.truncated
+        transcriptTruncated = reachedTruncation
+        transcriptParseFailed = result.parseFailed
+        hasMoreToLoad = Self.hasMoreAfterLoad(
+            returnedCount: result.producedCount,
+            requestedLimit: transcriptPageSize,
+            truncated: reachedTruncation
+        ) || result.parseFailed
+        await rebuildIndexed(appended: result.messages)
     }
 
     private func loadMoreMessages(all: Bool) {
@@ -1306,6 +1775,20 @@ struct SessionDetailView: View {
             Divider().opacity(0.3)
             if isLoadingMore {
                 ProgressView().controlSize(.small)
+            } else if transcriptParseFailed {
+                Label(
+                    "Transcript parsing stopped after the loaded prefix; the source file may be incomplete or malformed.",
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            } else if transcriptTruncated {
+                Label(
+                    "Transcript stopped at the parser safety limit; the loaded prefix is incomplete.",
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             } else {
                 HStack(spacing: 10) {
                     Text(transcriptPartialLabel)

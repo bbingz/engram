@@ -36,4 +36,14 @@ enum BrowseReloadCoalescer {
         let pages = (loadedCount + pageSize - 1) / pageSize
         return pages * pageSize
     }
+
+    /// Detached reads outlive cancellation of their surrounding SwiftUI task.
+    /// Only the newest generation may publish data or clear its spinner.
+    static func shouldApplyLoad(
+        resultGeneration: Int,
+        currentGeneration: Int,
+        isCancelled: Bool = false
+    ) -> Bool {
+        !isCancelled && resultGeneration == currentGeneration
+    }
 }

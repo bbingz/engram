@@ -1,7 +1,6 @@
 import Foundation
 import GRDB
 import EngramCoreRead
-import os
 
 /// Drains pending/retryable rows from `session_index_jobs`.
 ///
@@ -22,7 +21,9 @@ public final class IndexJobRunner: StartupIndexJobRunning {
 
     private let writer: EngramDatabaseWriter
     private let adaptersBySource: [SourceName: any SessionAdapter]
-    private let log = os.Logger(subsystem: "com.engram.service", category: "index-jobs")
+    private let log = CoreWriteLogger(category: "index-jobs")
+
+    private var enabledSources: Set<SourceName> { Set(adaptersBySource.keys) }
 
     public init(
         writer: EngramDatabaseWriter,
@@ -61,6 +62,19 @@ public final class IndexJobRunner: StartupIndexJobRunning {
             totalCompleted += result.completed
             totalNotApplicable += result.notApplicable
             if drained { break }
+            let stopCurrentWave = try shouldStopFtsDrainWave()
+            let retryDelay = try recommendedFtsRetryDelayNanoseconds()
+            if stopCurrentWave, let retryDelay {
+                // docs/invariants.md #5: a deferred retry remains part of this
+                // bounded recovery wave; wait, then retry without the 15m scan gap.
+                try await Task.sleep(nanoseconds: retryDelay)
+                continue
+            }
+            if stopCurrentWave { break }
+            if result.completed + result.notApplicable == 0,
+               let retryDelay {
+                try await Task.sleep(nanoseconds: retryDelay)
+            }
         }
 
         return StartupIndexJobRecoveryResult(completed: totalCompleted, notApplicable: totalNotApplicable)
@@ -73,34 +87,84 @@ public final class IndexJobRunner: StartupIndexJobRunning {
     /// single write gate between batches and user write commands can interleave.
     public func runRecoverableJobsOnce() async throws -> (result: StartupIndexJobRecoveryResult, drained: Bool) {
         let batch = try writer.read { db in
-            try Self.takeRecoverableJobs(db, limit: Self.drainBatchSize)
+            try Self.takeRecoverableJobs(
+                db,
+                limit: Self.drainBatchSize,
+                enabledSources: enabledSources
+            )
         }
         guard !batch.isEmpty else {
-            return (StartupIndexJobRecoveryResult(completed: 0, notApplicable: 0), true)
+            try writer.write { db in
+                try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources)
+            }
+            let drained = try writer.read { db in
+                try FTSRebuildPolicy.recoverableFtsBacklog(
+                    db,
+                    enabledSources: enabledSources
+                ).count == 0
+            }
+            return (StartupIndexJobRecoveryResult(completed: 0, notApplicable: 0), drained)
         }
 
         var completed = 0
         var notApplicable = 0
-        var batchProgress = 0
         for job in batch {
             try Task.checkCancellation()
             switch try await process(job) {
             case .completed:
                 completed += 1
-                batchProgress += 1
             case .notApplicable:
                 notApplicable += 1
-                batchProgress += 1
             case .retryable:
                 break
             }
         }
 
-        // A short batch means we drained everything currently pending. A full
-        // batch with zero terminal progress means every job is stuck retryable
-        // (e.g. transient I/O); stop to avoid spinning on the same rows.
-        let drained = batch.count < Self.drainBatchSize || batchProgress == 0
+        try writer.write { db in
+            try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources)
+        }
+        // docs/invariants.md #5: finalization remains due-only, but service
+        // scheduling must also see future debounce rows as a live backlog.
+        let drained = try writer.read { db in
+            try FTSRebuildPolicy.recoverableFtsBacklog(
+                db,
+                enabledSources: enabledSources
+            ).count == 0
+        }
         return (StartupIndexJobRecoveryResult(completed: completed, notApplicable: notApplicable), drained)
+    }
+
+    public func recommendedFtsRetryDelayNanoseconds() throws -> UInt64? {
+        try writer.read { db in
+            let backlog = try FTSRebuildPolicy.recoverableFtsBacklog(
+                db,
+                enabledSources: enabledSources
+            )
+            guard backlog.count > 0 else { return nil }
+            // docs/invariants.md #5: due work is an immediate FTS-only cycle,
+            // not nil (which the service interprets as its 15m file-scan delay).
+            return UInt64(max(backlog.nextDelaySeconds ?? 0, 0)) * 1_000_000_000
+        }
+    }
+
+    /// A newly retryable failure must yield to a later service cycle instead of
+    /// consuming every retry immediately. Future pending debounce rows remain
+    /// eligible for the current drain after their bounded wait.
+    public func shouldStopFtsDrainWave() throws -> Bool {
+        try writer.read { db in
+            let backlog = try FTSRebuildPolicy.recoverableFtsBacklog(
+                db,
+                enabledSources: enabledSources
+            )
+            guard backlog.hasDeferredRetryable else { return false }
+            // docs/invariants.md #5: a deferred retry stops this retry wave
+            // only after all other work that is due now has been drained.
+            return try Self.takeRecoverableJobs(
+                db,
+                limit: 1,
+                enabledSources: enabledSources
+            ).isEmpty
+        }
     }
 
     /// Insight embedding promotion is owned by the service runner so provider
@@ -115,7 +179,7 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         do {
             _ = try await runRecoverableJobs()
         } catch {
-            log.error("recoverable index job drain failed: \(String(describing: error), privacy: .private)")
+            log.error("recoverable index job drain failed: \(String(describing: error))")
         }
     }
 
@@ -131,7 +195,7 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         if job.jobKind != IndexJobKind.fts.rawValue {
             // Unknown non-FTS kinds cannot be recovered by the Swift runner.
             try writer.write { db in
-                try Self.markNotApplicable(db, id: job.id)
+                try Self.markNotApplicable(db, id: job.id, enabledSources: enabledSources)
             }
             return .notApplicable
         }
@@ -145,7 +209,15 @@ public final class IndexJobRunner: StartupIndexJobRunning {
             // No readable session row: FTS content cannot be produced. Mark
             // not_applicable to stop looping.
             try writer.write { db in
-                try Self.markNotApplicable(db, id: job.id)
+                try Self.markNotApplicable(db, id: job.id, enabledSources: enabledSources)
+            }
+            return .notApplicable
+        }
+
+        if contentSource.tier == SessionTier.skip.rawValue {
+            try writer.write { db in
+                try FTSRebuildPolicy.purgeFtsContent(db, sessionId: job.sessionId)
+                try Self.markNotApplicable(db, id: job.id, enabledSources: enabledSources)
             }
             return .notApplicable
         }
@@ -164,64 +236,80 @@ public final class IndexJobRunner: StartupIndexJobRunning {
                 summary: contentSource.summary,
                 sessionId: job.sessionId
             )
+            var becameSkip = false
             try writer.write { db in
-                try FTSRebuildPolicy.replaceFtsContent(db, sessionId: job.sessionId, contents: [shadow])
-                try Self.markCompleted(db, id: job.id)
-                try FTSRebuildPolicy.finalizeRebuildIfReady(db)
+                if try Self.sessionTier(db, sessionId: job.sessionId) == SessionTier.skip.rawValue {
+                    becameSkip = true
+                    try FTSRebuildPolicy.purgeFtsContent(db, sessionId: job.sessionId)
+                    try Self.markNotApplicable(db, id: job.id, enabledSources: enabledSources)
+                } else {
+                    let hadFtsContent = try Self.hasNonemptyFtsContent(db, sessionId: job.sessionId)
+                    try FTSRebuildPolicy.replaceFtsContent(db, sessionId: job.sessionId, contents: [shadow])
+                    if !hadFtsContent {
+                        try Self.reenqueueEmbeddingAfterFirstFtsFill(db, sessionId: job.sessionId)
+                    }
+                    try Self.markCompleted(db, id: job.id)
+                }
+                try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources)
             }
-            return .completed
-        }
-
-        if contentSource.tier == SessionTier.skip.rawValue {
-            try writer.write { db in
-                try Self.markNotApplicable(db, id: job.id)
-            }
-            return .notApplicable
+            return becameSkip ? .notApplicable : .completed
         }
 
         guard let sourceName = SourceName(rawValue: contentSource.source),
-              let adapter = adaptersBySource[sourceName],
               !contentSource.locator.isEmpty,
               !contentSource.locator.hasPrefix("sync://")
         else {
             // No readable source on disk (e.g. synced-only or unknown source):
             // FTS content cannot be produced. Mark not_applicable to stop looping.
             try writer.write { db in
-                try Self.markNotApplicable(db, id: job.id)
+                try Self.markNotApplicable(db, id: job.id, enabledSources: enabledSources)
             }
             return .notApplicable
         }
 
+        // A known source with no adapter in this drain may simply be disabled.
+        // Keep its FTS job recoverable so re-enabling the source can replay it;
+        // not_applicable is terminal and would silently strand stale search data.
+        guard let adapter = adaptersBySource[sourceName] else {
+            return .retryable
+        }
+
         do {
             let messages = try await buildSearchContent(adapter: adapter, source: contentSource)
+            var becameSkip = false
             try writer.write { db in
-                try FTSRebuildPolicy.replaceFtsContent(
-                    db,
-                    sessionId: job.sessionId,
-                    messages: messages,
-                    summary: contentSource.summary
-                )
-                try Self.markCompleted(db, id: job.id)
-                try FTSRebuildPolicy.finalizeRebuildIfReady(db)
+                if try Self.sessionTier(db, sessionId: job.sessionId) == SessionTier.skip.rawValue {
+                    becameSkip = true
+                    try FTSRebuildPolicy.purgeFtsContent(db, sessionId: job.sessionId)
+                    try Self.markNotApplicable(db, id: job.id, enabledSources: enabledSources)
+                } else {
+                    let hadFtsContent = try Self.hasNonemptyFtsContent(db, sessionId: job.sessionId)
+                    try FTSRebuildPolicy.replaceFtsContent(
+                        db,
+                        sessionId: job.sessionId,
+                        messages: messages,
+                        summary: contentSource.summary
+                    )
+                    if !hadFtsContent {
+                        try Self.reenqueueEmbeddingAfterFirstFtsFill(db, sessionId: job.sessionId)
+                    }
+                    try Self.markCompleted(db, id: job.id)
+                }
+                try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources)
             }
-            return .completed
+            return becameSkip ? .notApplicable : .completed
         } catch is CancellationError {
             throw CancellationError()
-        } catch let failure as ParserFailure where Self.isTerminalFtsFailure(failure) {
-            try writer.write { db in
-                try Self.markNotApplicable(db, id: job.id)
-                try FTSRebuildPolicy.finalizeRebuildIfReady(db)
-            }
-            return .notApplicable
         } catch {
-            // Transient failure (e.g. file changed during parse): leave the job
-            // retryable so the next pass picks it up.
+            // Parser failures remain retryable until the bounded retry policy
+            // records failed_permanent; not_applicable is reserved for jobs
+            // structurally outside this runner's responsibility.
             log.error(
-                "fts job failed: session=\(job.sessionId, privacy: .private) error=\(String(describing: error), privacy: .private)"
+                "fts job failed: session=\(job.sessionId) error=\(String(describing: error))"
             )
             try writer.write { db in
                 try Self.markRetryable(db, id: job.id, error: "\(error)")
-                try FTSRebuildPolicy.finalizeRebuildIfReady(db)
+                try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources)
             }
             return .retryable
         }
@@ -247,7 +335,10 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         )
         // Fail closed when the adapter already marked a whole-transcript cap so
         // FTS cannot complete on a silently truncated prefix (Wave 7A L05).
-        if result.truncated {
+        let isIntentionalCopilotPrefix = adapter.source == .copilot
+            && result.truncatedAt != nil
+            && result.parseFailure == nil
+        if result.truncated, !isIntentionalCopilotPrefix {
             throw ParserFailure.messageLimitExceeded
         }
         var visibleCount = 0
@@ -264,52 +355,107 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         return contents
     }
 
-    private static func isTerminalFtsFailure(_ failure: ParserFailure) -> Bool {
-        switch failure {
-        case .fileMissing, .fileTooLarge, .unsupportedVirtualLocator:
-            return true
-        case .invalidUtf8,
-             .malformedJSON,
-             .messageLimitExceeded,
-             .lineTooLarge,
-             .noVisibleMessages:
-            return true
-        case .truncatedJSON,
-             .truncatedJSONL,
-             .malformedToolCall,
-             .deeplyNestedRecord,
-             .fileModifiedDuringParse,
-             .sqliteUnreadable,
-             .grpcUnavailable:
-            return false
-        }
-    }
-
     // MARK: - SQL helpers (static so they run inside writer.read/write blocks)
 
-    private static func takeRecoverableJobs(_ db: Database, limit: Int) throws -> [PendingJob] {
+    private static func hasNonemptyFtsContent(_ db: Database, sessionId: String) throws -> Bool {
+        try Bool.fetchOne(
+            db,
+            sql: """
+            SELECT EXISTS(
+              SELECT 1 FROM sessions_fts
+              WHERE session_id = ? AND LENGTH(TRIM(content)) > 0
+            )
+            """,
+            arguments: [sessionId]
+        ) ?? false
+    }
+
+    private static func reenqueueEmbeddingAfterFirstFtsFill(
+        _ db: Database,
+        sessionId: String
+    ) throws {
+        let hasEmbeddingJob = try Bool.fetchOne(
+            db,
+            sql: """
+            SELECT EXISTS(
+              SELECT 1 FROM session_index_jobs
+              WHERE session_id = ? AND job_kind = 'embedding'
+            )
+            """,
+            arguments: [sessionId]
+        ) ?? false
+        guard hasEmbeddingJob else { return }
+
+        // A pre-FTS backfill could only have embedded the summary fallback.
+        // Remove that vector before making the authoritative FTS job selectable.
+        try db.execute(
+            sql: "DELETE FROM semantic_chunks WHERE session_id = ?",
+            arguments: [sessionId]
+        )
+        try db.execute(
+            sql: """
+            UPDATE session_index_jobs
+            SET status = 'pending',
+                retry_count = 0,
+                last_error = NULL,
+                not_before = NULL,
+                updated_at = datetime('now')
+            WHERE session_id = ? AND job_kind = 'embedding'
+            """,
+            arguments: [sessionId]
+        )
+    }
+
+    private static func takeRecoverableJobs(
+        _ db: Database,
+        limit: Int,
+        enabledSources: Set<SourceName>
+    ) throws -> [PendingJob] {
+        let knownSourcePlaceholders = Array(
+            repeating: "?",
+            count: SourceName.allCases.count
+        ).joined(separator: ", ")
+        let enabledSourceValues = enabledSources.map(\.rawValue).sorted()
+        let enabledSourcePredicate = enabledSourceValues.isEmpty
+            ? "0"
+            : "s.source IN (\(Array(repeating: "?", count: enabledSourceValues.count).joined(separator: ", ")))"
+        var arguments: StatementArguments = [
+            IndexJobStatus.pending.rawValue,
+            IndexJobStatus.failedRetryable.rawValue,
+            IndexJobKind.embedding.rawValue,
+        ]
+        for value in SourceName.allCases.map(\.rawValue) {
+            arguments += [value]
+        }
+        for value in enabledSourceValues {
+            arguments += [value]
+        }
+        arguments += [limit]
         let rows = try Row.fetchAll(
             db,
             sql: """
-            SELECT id, session_id, job_kind
-            FROM session_index_jobs
-            WHERE status IN (?, ?)
-              AND job_kind != ?
-              AND (not_before IS NULL OR not_before <= datetime('now'))
+            SELECT j.id, j.session_id, j.job_kind
+            FROM session_index_jobs AS j
+            LEFT JOIN sessions AS s ON s.id = j.session_id
+            WHERE j.status IN (?, ?)
+              AND j.job_kind != ?
+              AND (j.not_before IS NULL OR j.not_before <= datetime('now'))
+              AND (
+                j.job_kind != 'fts'
+                OR s.id IS NULL
+                OR s.tier = 'skip'
+                OR s.source NOT IN (\(knownSourcePlaceholders))
+                OR \(enabledSourcePredicate)
+              )
             ORDER BY
-              CASE status WHEN 'pending' THEN 0 ELSE 1 END,
-              CASE job_kind WHEN 'fts' THEN 0 ELSE 1 END,
-              retry_count,
-              created_at,
-              id
+              CASE j.status WHEN 'pending' THEN 0 ELSE 1 END,
+              CASE j.job_kind WHEN 'fts' THEN 0 ELSE 1 END,
+              j.retry_count,
+              j.created_at,
+              j.id
             LIMIT ?
             """,
-            arguments: [
-                IndexJobStatus.pending.rawValue,
-                IndexJobStatus.failedRetryable.rawValue,
-                IndexJobKind.embedding.rawValue,
-                limit
-            ]
+            arguments: arguments
         )
         return rows.map { row in
             PendingJob(id: row["id"], sessionId: row["session_id"], jobKind: row["job_kind"])
@@ -362,7 +508,15 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         )
     }
 
-    static func markNotApplicable(_ db: Database, id: String) throws {
+    private static func sessionTier(_ db: Database, sessionId: String) throws -> String? {
+        try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = ?", arguments: [sessionId])
+    }
+
+    static func markNotApplicable(
+        _ db: Database,
+        id: String,
+        enabledSources: Set<SourceName>? = nil
+    ) throws {
         try db.execute(
             sql: """
             UPDATE session_index_jobs
@@ -371,9 +525,14 @@ public final class IndexJobRunner: StartupIndexJobRunning {
             """,
             arguments: [IndexJobStatus.notApplicable.rawValue, id]
         )
+        // docs/invariants.md #5: every terminal FTS transition must get a
+        // chance to finish the versioned shadow-table rebuild.
+        try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources)
     }
 
     static func markRetryable(_ db: Database, id: String, error: String) throws {
+        // docs/invariants.md #5: a transient source failure must leave the
+        // versioned rebuild recoverable without exhausting all retries in one drain.
         try db.execute(
             sql: """
             UPDATE session_index_jobs
@@ -383,6 +542,10 @@ public final class IndexJobRunner: StartupIndexJobRunning {
                 END,
                 retry_count = retry_count + 1,
                 last_error = ?,
+                not_before = CASE
+                    WHEN retry_count + 1 >= ? THEN NULL
+                    ELSE datetime('now', '+30 seconds')
+                END,
                 updated_at = datetime('now')
             WHERE id = ?
             """,
@@ -391,6 +554,7 @@ public final class IndexJobRunner: StartupIndexJobRunning {
                 IndexJobStatus.failedPermanent.rawValue,
                 IndexJobStatus.failedRetryable.rawValue,
                 error,
+                Self.maxFtsRetryCount,
                 id
             ]
         )

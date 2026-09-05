@@ -1,7 +1,7 @@
 {
   "failure": null,
   "fileToolCounts": {},
-  "generatedAtCommit": "88f86631",
+  "generatedAtCommit": "d97d0257",
   "inputPath": "commandcode/input/-Users-test-my-project/commandcode-session.jsonl",
   "insightFields": {
     "firstUserSummary": "检查解析器",
@@ -32,7 +32,7 @@
       "timestamp": "2026-05-20T02:00:02.000Z"
     }
   ],
-  "nodeVersion": "v26.0.0",
+  "nodeVersion": "v26.7.0",
   "projectFields": {
     "cwd": "/Users/test/my-project",
     "project": null,

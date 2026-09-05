@@ -28,6 +28,10 @@ const xcodegenInstallerPath = resolve(
 const xcodegenInstaller = existsSync(xcodegenInstallerPath)
   ? readFileSync(xcodegenInstallerPath, 'utf8')
   : '';
+const xcodeprojDriftGate = readFileSync(
+  resolve(repoRoot, 'scripts/check-xcodeproj-drift.sh'),
+  'utf8',
+);
 const dependencyReviewPath = resolve(
   repoRoot,
   '.github/workflows/dependency-review.yml',
@@ -232,7 +236,21 @@ describe('CI workflow hardening', () => {
   });
 
   it('fails CI when generated Xcode project is stale', () => {
-    expect(testWorkflow).toContain('git diff --exit-code Engram.xcodeproj');
+    expect(testWorkflow).toContain('scripts/check-xcodeproj-drift.sh');
+    expect(xcodeprojDriftGate).toContain(
+      'generated_paths=(macos/Engram.xcodeproj macos/Engram/Info.plist)',
+    );
+    expect(xcodeprojDriftGate).toContain(
+      'git -C "$ROOT_DIR" diff --name-only -- "$' + '{generated_paths[@]}"',
+    );
+  });
+
+  it('fails CI when xcodegen creates untracked project files (repro)', () => {
+    expect(testWorkflow).toContain('scripts/check-xcodeproj-drift.sh');
+    expect(xcodeprojDriftGate).toContain(
+      'git -C "$ROOT_DIR" ls-files --others -- "$' + '{generated_paths[@]}"',
+    );
+    expect(xcodeprojDriftGate).not.toContain('--exclude-standard');
   });
 
   it('keeps pull-request code off persistent self-hosted runners', () => {
@@ -280,6 +298,7 @@ describe('CI workflow hardening', () => {
     expect(testWorkflow).toContain(
       'tests/scripts/swift-boundary-scripts.test.ts',
     );
+    expect(testWorkflow).toContain('tests/scripts/hq-live-hardening.test.ts');
     // pure-rg gates stay on ubuntu coverage; do not re-pin on macos-vitest
     expect(testWorkflow).not.toContain(
       'tests/scripts/product-boundary-scripts.test.ts',
@@ -411,6 +430,34 @@ describe('CI workflow hardening', () => {
     expect(hygieneExit).toBeGreaterThan(-1);
     expect(structureCheck).toBeGreaterThan(-1);
     expect(structureCheck).toBeLessThan(hygieneExit);
+  });
+
+  it('pins Hardened Runtime in the generated app target_repro', () => {
+    expect(macosProject).toContain('ENABLE_HARDENED_RUNTIME: YES');
+  });
+
+  it('rejects placeholder release build numbers before using one value for archive and verification_repro', () => {
+    const releaseGate = releaseWorkflow.slice(
+      releaseWorkflow.indexOf('  release-bundle-gate:'),
+    );
+    const validation = releaseGate.indexOf('Validate release build number');
+    const archive = releaseGate.indexOf('Archive (ad-hoc identity)');
+
+    expect(releaseGate).toContain(
+      'ENGRAM_RELEASE_BUILD_NUMBER: $' + '{{ github.run_number }}',
+    );
+    expect(releaseGate).toContain('[ "$ENGRAM_RELEASE_BUILD_NUMBER" -le 1 ]');
+    expect(validation).toBeGreaterThan(-1);
+    expect(validation).toBeLessThan(archive);
+    expect(releaseGate).toContain(
+      'CURRENT_PROJECT_VERSION="$ENGRAM_RELEASE_BUILD_NUMBER"',
+    );
+    expect(releaseGate).toContain(
+      '--expected-build "$ENGRAM_RELEASE_BUILD_NUMBER"',
+    );
+    expect(releaseGate).not.toContain(
+      'CURRENT_PROJECT_VERSION="$' + '{{ github.run_number }}"',
+    );
   });
 
   it('keys SPM cache on the real Package.resolved and scopes restore keys by runner lane', () => {

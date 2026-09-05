@@ -20,9 +20,13 @@ public enum BundleCodec {
         userMessageCount: Int,
         assistantMessageCount: Int,
         toolMessageCount: Int,
-        systemMessageCount: Int
+        systemMessageCount: Int,
+        tier: String?,
+        agentRole: String?,
+        parentSessionId: String?,
+        suggestedParentId: String?
     ) -> Data {
-        let fields: [String] = [
+        var fields: [String] = [
             "v\(RemoteSessionBundle.currentSchemaVersion)",
             sessionId,
             summary ?? "",
@@ -34,6 +38,11 @@ public enum BundleCodec {
             String(systemMessageCount),
             ftsContents.joined(separator: lineSeparator),
         ]
+        let visibility = [tier, agentRole, parentSessionId, suggestedParentId]
+        if visibility.contains(where: { $0 != nil }) {
+            fields.append("visibility-v1")
+            fields.append(contentsOf: visibility.map { $0 ?? "" })
+        }
         return Data(fields.joined(separator: recordSeparator).utf8)
     }
 
@@ -50,7 +59,11 @@ public enum BundleCodec {
         userMessageCount: Int,
         assistantMessageCount: Int,
         toolMessageCount: Int,
-        systemMessageCount: Int
+        systemMessageCount: Int,
+        tier: String? = nil,
+        agentRole: String? = nil,
+        parentSessionId: String? = nil,
+        suggestedParentId: String? = nil
     ) -> RemoteSessionBundle {
         let payload = canonicalPayload(
             sessionId: sessionId,
@@ -61,7 +74,11 @@ public enum BundleCodec {
             userMessageCount: userMessageCount,
             assistantMessageCount: assistantMessageCount,
             toolMessageCount: toolMessageCount,
-            systemMessageCount: systemMessageCount
+            systemMessageCount: systemMessageCount,
+            tier: tier,
+            agentRole: agentRole,
+            parentSessionId: parentSessionId,
+            suggestedParentId: suggestedParentId
         )
         return RemoteSessionBundle(
             sessionId: sessionId,
@@ -73,7 +90,11 @@ public enum BundleCodec {
             assistantMessageCount: assistantMessageCount,
             toolMessageCount: toolMessageCount,
             systemMessageCount: systemMessageCount,
-            contentHash: hash(payload)
+            contentHash: hash(payload),
+            tier: tier,
+            agentRole: agentRole,
+            parentSessionId: parentSessionId,
+            suggestedParentId: suggestedParentId
         )
     }
 
@@ -89,7 +110,11 @@ public enum BundleCodec {
             userMessageCount: bundle.userMessageCount,
             assistantMessageCount: bundle.assistantMessageCount,
             toolMessageCount: bundle.toolMessageCount,
-            systemMessageCount: bundle.systemMessageCount
+            systemMessageCount: bundle.systemMessageCount,
+            tier: bundle.tier,
+            agentRole: bundle.agentRole,
+            parentSessionId: bundle.parentSessionId,
+            suggestedParentId: bundle.suggestedParentId
         ))
     }
 

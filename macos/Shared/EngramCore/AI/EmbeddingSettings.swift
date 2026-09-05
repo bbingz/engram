@@ -49,12 +49,22 @@ public enum EmbeddingSettings {
         let model = envPick("ENGRAM_EMBEDDING_MODEL")
             ?? nonEmptyString(file["embeddingModel"])
             ?? "text-embedding-3-small"
-        let dimension = environment["ENGRAM_EMBEDDING_DIM"].flatMap { Int($0) }
+        let configuredDimension = environment["ENGRAM_EMBEDDING_DIM"].flatMap { Int($0) }
             ?? (file["embeddingDimension"] as? Int)
-            ?? 1536
+        let dimension = configuredDimension ?? 1536
+        let includeDimensions = ["1", "true", "yes"].contains(
+            (environment["ENGRAM_EMBEDDING_INCLUDE_DIMENSIONS"] ?? "").lowercased()
+        ) || (file["embeddingIncludeDimensions"] as? Bool == true)
 
         if let apiKey = envPick("ENGRAM_EMBEDDING_API_KEY") {
-            return EmbeddingConfig(baseURL: baseURL, apiKey: apiKey, model: model, dimension: dimension)
+            return EmbeddingConfig(
+                baseURL: baseURL,
+                apiKey: apiKey,
+                model: model,
+                dimension: dimension,
+                includeDimensions: includeDimensions,
+                dimensionWasExplicit: configuredDimension != nil
+            )
         }
 
         guard let apiKey = resolveAndMaybeMigrateApiKey(
@@ -62,12 +72,20 @@ public enum EmbeddingSettings {
             settingsPath: path,
             runtimeSecrets: runtimeSecrets,
             secretStore: secretStore,
+            allowSecretStoreRead: environment["ENGRAM_RUNTIME_AI_SECRETS_PATH"] == nil,
             persistSettings: persistSettings
         ) else {
             return nil
         }
 
-        return EmbeddingConfig(baseURL: baseURL, apiKey: apiKey, model: model, dimension: dimension)
+        return EmbeddingConfig(
+            baseURL: baseURL,
+            apiKey: apiKey,
+            model: model,
+            dimension: dimension,
+            includeDimensions: includeDimensions,
+            dimensionWasExplicit: configuredDimension != nil
+        )
     }
 
     /// Resolves embedding API key from settings, migrating plaintext once.
@@ -76,6 +94,7 @@ public enum EmbeddingSettings {
         settingsPath: String,
         runtimeSecrets: [String: String],
         secretStore: any KeychainSecretStoring,
+        allowSecretStoreRead: Bool,
         persistSettings: (([String: Any], String) throws -> Void)?
     ) -> String? {
         let embeddingRaw = nonEmptyString(settings["embeddingApiKey"])
@@ -84,7 +103,9 @@ public enum EmbeddingSettings {
         if let embeddingRaw {
             if embeddingRaw == keychainMarker {
                 return nonEmptyString(runtimeSecrets[KeychainSecretStore.Account.embeddingApiKey])
-                    ?? nonEmptyString(secretStore.get(KeychainSecretStore.Account.embeddingApiKey))
+                    ?? (allowSecretStoreRead
+                        ? nonEmptyString(secretStore.get(KeychainSecretStore.Account.embeddingApiKey))
+                        : nil)
             }
             return migratePlaintextIfPossible(
                 plaintext: embeddingRaw,
@@ -101,18 +122,40 @@ public enum EmbeddingSettings {
                 // Prefer embedding-account material; fall back to the shared aiApiKey account
                 // used by the app title/AI settings facade.
                 if let fromEmbedding = nonEmptyString(runtimeSecrets[KeychainSecretStore.Account.embeddingApiKey])
-                    ?? nonEmptyString(secretStore.get(KeychainSecretStore.Account.embeddingApiKey)) {
+                    ?? (allowSecretStoreRead
+                        ? nonEmptyString(secretStore.get(KeychainSecretStore.Account.embeddingApiKey))
+                        : nil) {
                     return fromEmbedding
                 }
                 return nonEmptyString(runtimeSecrets[KeychainSecretStore.Account.aiApiKey])
-                    ?? nonEmptyString(secretStore.get(KeychainSecretStore.Account.aiApiKey))
+                    ?? (allowSecretStoreRead
+                        ? nonEmptyString(secretStore.get(KeychainSecretStore.Account.aiApiKey))
+                        : nil)
             }
             // The app owns migration of the shared aiApiKey account. Do not create a
             // second marker from the embedding reader's snapshot.
-            return aiRaw
+            return nonEmptyString(runtimeSecrets[KeychainSecretStore.Account.embeddingApiKey])
+                ?? (allowSecretStoreRead
+                    ? nonEmptyString(secretStore.get(KeychainSecretStore.Account.embeddingApiKey))
+                    : nil)
+                ?? nonEmptyString(runtimeSecrets[KeychainSecretStore.Account.aiApiKey])
+                ?? (allowSecretStoreRead
+                    ? nonEmptyString(secretStore.get(KeychainSecretStore.Account.aiApiKey))
+                    : nil)
+                ?? aiRaw
         }
 
-        return nil
+        // Settings may be absent or rejected as an unsafe/unreadable node while
+        // the launcher bridge or Keychain still holds the live credential.
+        // Resolve accounts directly without materializing or repairing the file.
+        return nonEmptyString(runtimeSecrets[KeychainSecretStore.Account.embeddingApiKey])
+            ?? (allowSecretStoreRead
+                ? nonEmptyString(secretStore.get(KeychainSecretStore.Account.embeddingApiKey))
+                : nil)
+            ?? nonEmptyString(runtimeSecrets[KeychainSecretStore.Account.aiApiKey])
+            ?? (allowSecretStoreRead
+                ? nonEmptyString(secretStore.get(KeychainSecretStore.Account.aiApiKey))
+                : nil)
     }
 
     private static func migratePlaintextIfPossible(
@@ -216,26 +259,11 @@ public enum EmbeddingSettings {
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
-        // Best-effort secure write from the shared loader path.
-        let tempURL = directory.appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
-        guard fileManager.createFile(
-            atPath: tempURL.path,
-            contents: data,
-            attributes: [.posixPermissions: 0o600]
-        ) else {
-            throw CocoaError(.fileWriteUnknown)
-        }
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tempURL.path)
-        if fileManager.fileExists(atPath: url.path) {
-            _ = try fileManager.replaceItemAt(
-                url,
-                withItemAt: tempURL,
-                options: [.usingNewMetadataOnly]
-            )
-        } else {
-            try fileManager.moveItem(at: tempURL, to: url)
-        }
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        try SecureRegularFile.writeAtomically(
+            data,
+            toPath: path,
+            maximumExistingBytes: 1024 * 1024
+        )
     }
 
     private static func runtimeSecretValues(
@@ -248,7 +276,7 @@ public enum EmbeddingSettings {
                 .appendingPathComponent("run", isDirectory: true)
                 .appendingPathComponent("ai-secrets.json")
                 .path
-        guard let data = FileManager.default.contents(atPath: path),
+        guard let data = SecureRegularFile.read(atPath: path),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return [:] }
         return object.reduce(into: [:]) { result, pair in
@@ -264,7 +292,11 @@ public enum EmbeddingSettings {
     }
 
     private static func settingsFields(path: String) -> [String: Any] {
-        guard let data = FileManager.default.contents(atPath: path),
+        guard let data = SecureRegularFile.read(
+            atPath: path,
+            maximumBytes: 1024 * 1024,
+            repairPermissions: true
+        ),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return [:]
         }
@@ -272,6 +304,23 @@ public enum EmbeddingSettings {
     }
 
     private static func defaultSettingsPath(_ environment: [String: String]) -> String {
+        let processEnvironment = ProcessInfo.processInfo.environment
+        let isTestProcess = environment["XCTestConfigurationFilePath"] != nil
+            || processEnvironment["XCTestConfigurationFilePath"] != nil
+        if isTestProcess {
+            // docs/invariants.md #6: in-process tests never fall back to the
+            // passwd-backed production home when no settings path is supplied.
+            if let fixedHome = environment["CFFIXED_USER_HOME"], !fixedHome.isEmpty {
+                return fixedHome + "/.engram/settings.json"
+            }
+            return FileManager.default.temporaryDirectory
+                .appendingPathComponent(
+                    "engram-tests-\(ProcessInfo.processInfo.processIdentifier)",
+                    isDirectory: true
+                )
+                .appendingPathComponent(".engram/settings.json")
+                .path
+        }
         let home = environment["HOME"].flatMap { $0.isEmpty ? nil : $0 }
             ?? FileManager.default.homeDirectoryForCurrentUser.path
         return home + "/.engram/settings.json"

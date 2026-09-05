@@ -117,20 +117,25 @@ public enum StartupBackfills {
         }
     }
 
-    private struct StoredSuggestionCandidate: Encodable {
+    private struct StoredSuggestionCandidate: Codable {
         var id: String
         var score: Double
+    }
+
+    private enum CodexModelHeadRead {
+        case decoded(String?)
+        case unreadable
     }
 
     static let codexModelBackfillMetadataKey = "codex_model_backfill_version"
     static let codexModelBackfillVersion = "1"
     static let codexSpawnParentBackfillMetadataKey = "codex_spawn_parent_backfill_version"
-    static let codexSpawnParentBackfillVersion = "1"
+    static let codexSpawnParentBackfillVersion = "2"
     static let codexSpawnParentCursorMetadataKey = "codex_spawn_parent_scan_rowid"
     static let skipTierArtifactReconcileMetadataKey = "skip_tier_artifact_reconcile_version"
     static let skipTierArtifactReconcileVersion = "1"
     static let groupedDirReconcileMetadataKey = "grouped_dir_reconcile_version"
-    static let groupedDirReconcileVersion = "1"
+    static let groupedDirReconcileVersion = "2"
     // Codex rollout line 1 can include large base instructions; 256 KiB keeps
     // startup bounded while covering the early session_meta/turn_context lines.
     static let codexModelHeadScanBytes = 256 * 1024
@@ -419,8 +424,12 @@ public enum StartupBackfills {
         database: any StartupBackfillDatabase,
         adapters: [any SessionAdapter]
     ) async throws {
+        var shouldReconcilePathLinks = false
         do {
             let orphanScan = try await orphanScanner.detectOrphans(adapters: adapters)
+            shouldReconcilePathLinks = orphanScan.newlyFlagged > 0
+                || orphanScan.confirmed > 0
+                || orphanScan.recovered > 0
             if orphanScan.newlyFlagged > 0 || orphanScan.confirmed > 0 || orphanScan.recovered > 0 {
                 emit(
                     StartupBackfillEvent(
@@ -439,6 +448,16 @@ public enum StartupBackfills {
             throw CancellationError()
         } catch {
             log.warn("orphan scan failed", error: error)
+        }
+
+        if shouldReconcilePathLinks {
+            do {
+                // docs/invariants.md #2: revalidate path-derived edges after
+                // orphan transitions without upgrading any child out of skip.
+                _ = try database.backfillParentLinks()
+            } catch {
+                log.warn("path link reconcile after orphan scan failed", error: error)
+            }
         }
 
         do {
@@ -670,6 +689,38 @@ public enum StartupBackfills {
             WHERE suggested_parent_id IN (SELECT old_id FROM duplicates)
             """
         )
+        if try tableExists(db, "session_relations") {
+            try db.execute(
+                sql: """
+                \(duplicateMappingSQL),
+                remapped AS (
+                  SELECT
+                    COALESCE(a_map.keep_id, relation.a_id) AS mapped_a,
+                    COALESCE(b_map.keep_id, relation.b_id) AS mapped_b,
+                    relation.created_at AS created_at
+                  FROM session_relations relation
+                  LEFT JOIN duplicates a_map ON a_map.old_id = relation.a_id
+                  LEFT JOIN duplicates b_map ON b_map.old_id = relation.b_id
+                  WHERE a_map.old_id IS NOT NULL OR b_map.old_id IS NOT NULL
+                )
+                INSERT OR IGNORE INTO session_relations(a_id, b_id, created_at)
+                SELECT
+                  CASE WHEN mapped_a < mapped_b THEN mapped_a ELSE mapped_b END,
+                  CASE WHEN mapped_a < mapped_b THEN mapped_b ELSE mapped_a END,
+                  created_at
+                FROM remapped
+                WHERE mapped_a != mapped_b
+                """
+            )
+            try db.execute(
+                sql: """
+                \(duplicateMappingSQL)
+                DELETE FROM session_relations
+                WHERE a_id IN (SELECT old_id FROM duplicates)
+                   OR b_id IN (SELECT old_id FROM duplicates)
+                """
+            )
+        }
         let removed = try db.executeAndCountChanges(
             sql: """
             DELETE FROM sessions
@@ -692,6 +743,11 @@ public enum StartupBackfills {
             _ = try deleteRowsFromSessionArtifactTableIfPresent(
                 db,
                 table: "fts_map",
+                whereSQL: "session_id NOT IN (SELECT id FROM sessions)"
+            )
+            _ = try deleteRowsFromSessionArtifactTableIfPresent(
+                db,
+                table: "sessions_fts_rebuild",
                 whereSQL: "session_id NOT IN (SELECT id FROM sessions)"
             )
             _ = try deleteRowsFromSessionArtifactTableIfPresent(
@@ -919,6 +975,11 @@ public enum StartupBackfills {
         let deletedFts = try db.executeAndCountChanges(
             sql: "DELETE FROM sessions_fts WHERE session_id IN (\(skipSubquery))"
         )
+        let deletedRebuildFts = try deleteRowsFromSessionArtifactTableIfPresent(
+            db,
+            table: "sessions_fts_rebuild",
+            whereSQL: "session_id IN (\(skipSubquery))"
+        )
         var deletedFtsMap = 0
         if try tableExists(db, "fts_map") {
             deletedFtsMap = try db.executeAndCountChanges(
@@ -946,11 +1007,70 @@ public enum StartupBackfills {
         if shouldFullScanFts {
             try markSkipTierArtifactFullScanComplete(db)
         }
-        return deletedMessages + deletedFts + deletedFtsMap + deletedEmbeddings + deletedSemanticChunks
+        return deletedMessages + deletedFts + deletedRebuildFts + deletedFtsMap + deletedEmbeddings + deletedSemanticChunks
     }
 
     public static func reconcileInsights(_ db: Database) throws -> StartupInsightReconcileResult {
         do {
+            // Resolve every pointer against a frozen graph. Only a chain ending
+            // at an existing row with no successor is live; missing nodes and
+            // cycles have no successor and are reactivated for dedup below.
+            let linkRows = try Row.fetchAll(db, sql: "SELECT id, superseded_by FROM insights")
+            let links = Dictionary(uniqueKeysWithValues: linkRows.map { row in
+                (row["id"] as String, row["superseded_by"] as String?)
+            })
+            func liveTip(startingAt start: String) -> String? {
+                var current = start
+                var visited = Set<String>()
+                while let successor = links[current] {
+                    guard visited.insert(current).inserted else { return nil }
+                    guard let successor else { return current }
+                    current = successor
+                }
+                return nil
+            }
+            for row in linkRows {
+                let id: String = row["id"]
+                guard (row["superseded_by"] as String?) != nil else { continue }
+                if let tip = liveTip(startingAt: id), tip != id {
+                    try db.execute(
+                        sql: "UPDATE insights SET superseded_by = ? WHERE id = ?",
+                        arguments: [tip, id]
+                    )
+                } else {
+                    try db.execute(
+                        sql: "UPDATE insights SET superseded_by = NULL WHERE id = ?",
+                        arguments: [id]
+                    )
+                }
+            }
+            // Legacy/imported data can contain more than one active row for the
+            // same normalized fact. Keep the newest active tip and hide every
+            // older same-scope duplicate behind it.
+            let activeRows = try Row.fetchAll(db, sql: """
+                SELECT id, content, wing, room
+                FROM insights
+                WHERE superseded_by IS NULL
+                ORDER BY created_at DESC, id DESC
+                """)
+            struct Scope: Hashable {
+                let wing: String?
+                let room: String?
+            }
+            var newestByScopeAndContent: [Scope: [String: String]] = [:]
+            for row in activeRows {
+                let id: String = row["id"]
+                let scope = Scope(wing: row["wing"], room: row["room"])
+                let normalized = normalizedInsightContent((row["content"] as String?) ?? "")
+                if let newest = newestByScopeAndContent[scope]?[normalized] {
+                    try db.execute(
+                        sql: "UPDATE insights SET superseded_by = ? WHERE id = ? AND superseded_by IS NULL",
+                        arguments: [newest, id]
+                    )
+                } else {
+                    newestByScopeAndContent[scope, default: [:]][normalized] = id
+                }
+            }
             let resetEmbedding = try db.executeAndCountChanges(
                 sql: """
                 UPDATE insights
@@ -993,6 +1113,12 @@ public enum StartupBackfills {
             }
             throw error
         }
+    }
+
+    private static func normalizedInsightContent(_ content: String) -> String {
+        content.lowercased()
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
     }
 
     public static func backfillFilePaths(_ db: Database) throws -> Int {
@@ -1038,6 +1164,9 @@ public enum StartupBackfills {
     }
 
     public static func enqueueStaleFtsJobs(_ db: Database) throws -> Int {
+        // docs/invariants.md #5: a current completed/not-applicable job is not
+        // proof that its live FTS rows still exist; reopen it to heal the hole.
+        // A failed_permanent job has exhausted recovery and must stay drained.
         try db.executeAndCountChanges(
             sql: """
             INSERT INTO session_index_jobs (
@@ -1057,18 +1186,22 @@ public enum StartupBackfills {
             FROM sessions s
             WHERE COALESCE(s.tier, 'normal') != 'skip'
               AND COALESCE(s.snapshot_hash, '') != ''
-              AND EXISTS (
-                SELECT 1
-                FROM session_index_jobs old
-                WHERE old.session_id = s.id
-                  AND old.job_kind = 'fts'
-                  AND old.status = 'completed'
-              )
+              AND COALESCE(NULLIF(s.source_locator, ''), NULLIF(s.file_path, '')) IS NOT NULL
               AND NOT EXISTS (
                 SELECT 1
                 FROM session_index_jobs current
                 WHERE current.id = s.id || ':' || s.sync_version || ':' || s.snapshot_hash || ':fts'
+                  AND current.status IN ('pending', 'inflight')
               )
+              AND NOT EXISTS (
+                SELECT 1 FROM sessions_fts live WHERE live.session_id = s.id
+              )
+            ON CONFLICT(id) DO UPDATE SET
+              status = 'pending',
+              retry_count = 0,
+              last_error = NULL,
+              updated_at = datetime('now')
+            WHERE session_index_jobs.status IN ('completed', 'not_applicable')
             """
         )
     }
@@ -1093,6 +1226,14 @@ public enum StartupBackfills {
         )
         try db.execute(
             sql: "DELETE FROM sessions_fts WHERE session_id = ?",
+            arguments: [sessionId]
+        )
+        // docs/invariants.md #3: skip-tier rows must stay absent from every
+        // visibility corpus, including a pending FTS rebuild shadow table.
+        _ = try deleteRowsFromSessionArtifactTableIfPresent(
+            db,
+            table: "sessions_fts_rebuild",
+            whereSQL: "session_id = ?",
             arguments: [sessionId]
         )
         _ = try deleteRowsFromSessionArtifactTableIfPresent(
@@ -1137,6 +1278,11 @@ public enum StartupBackfills {
             DELETE FROM sessions_fts
             WHERE session_id IN (SELECT id FROM sessions WHERE \(whereClause))
             """
+        )
+        _ = try deleteRowsFromSessionArtifactTableIfPresent(
+            db,
+            table: "sessions_fts_rebuild",
+            whereSQL: "session_id IN (SELECT id FROM sessions WHERE \(whereClause))"
         )
         _ = try deleteRowsFromSessionArtifactTableIfPresent(
             db,
@@ -1211,7 +1357,7 @@ public enum StartupBackfills {
         ) ?? false
         if hasJobSignal { return true }
 
-        for table in ["messages", "fts_map", "session_embeddings", "semantic_chunks"] {
+        for table in ["messages", "sessions_fts_rebuild", "fts_map", "session_embeddings", "semantic_chunks"] {
             if try hasRowsInSessionArtifactTableIfPresent(
                 db,
                 table: table,
@@ -1267,14 +1413,25 @@ public enum StartupBackfills {
         }
     }
 
-    public static func backfillParentLinks(_ db: Database) throws -> ParentLinkResult {
+    public static func backfillParentLinks(
+        _ db: Database,
+        homeDirectory: URL = SessionAdapterFactory.resolvedHomeDirectory()
+    ) throws -> ParentLinkResult {
+        let qoderRoot = SessionAdapterFactory.qoderProjectsRoot(homeDirectory: homeDirectory)
+        let claudeRoots = ClaudeCodeProfileResolver(
+            homeDirectory: homeDirectory,
+            settingsURL: homeDirectory.appendingPathComponent(".engram/settings.json")
+        ).resolve().profiles.map(\.projectsRoot)
+
         // Reconcile legacy/path-derived links before attempting new inference.
         // Validate the whole pre-mutation graph first so cleanup order cannot
         // turn a depth>1 chain into a different, accidentally valid link.
         let existingPathLinks = try Row.fetchAll(
             db,
             sql: """
-            SELECT id, parent_session_id FROM sessions
+            SELECT id, source, parent_session_id,
+                   COALESCE(NULLIF(source_locator, ''), file_path) AS locator
+            FROM sessions
             WHERE link_source = 'path'
               AND parent_session_id IS NOT NULL
             """
@@ -1282,8 +1439,16 @@ public enum StartupBackfills {
         var invalidPathSessionIds: [String] = []
         for row in existingPathLinks {
             let sessionId: String = row["id"]
+            let source: String = row["source"]
             let parentId: String = row["parent_session_id"]
-            if try !validateExistingPathParent(db, sessionId: sessionId, parentId: parentId) {
+            let locator: String = row["locator"]
+            if try !validateExistingPathParent(
+                db,
+                sessionId: sessionId,
+                source: source,
+                locator: locator,
+                parentId: parentId
+            ) {
                 invalidPathSessionIds.append(sessionId)
             }
         }
@@ -1293,7 +1458,10 @@ public enum StartupBackfills {
                 UPDATE sessions
                 SET parent_session_id = NULL,
                     link_source = NULL,
-                    link_checked_at = NULL,
+                    link_checked_at = CASE
+                        WHEN agent_role IN ('dispatched', 'subagent') THEN link_checked_at
+                        ELSE NULL
+                    END,
                     suggested_parent_id = NULL,
                     suggestion_status = NULL,
                     suggestion_candidates = NULL
@@ -1307,13 +1475,12 @@ public enum StartupBackfills {
         // invalid legacy candidates cannot starve later valid children in the
         // same backfill call (PARENT-BACKFILL-STARVE-001).
         var linked = 0
-        let regex = try NSRegularExpression(pattern: #"/([^/]+)/subagents/[^/]+\.jsonl$"#)
         var lastRowID: Int64 = 0
         while true {
             let rows = try Row.fetchAll(
                 db,
                 sql: """
-                SELECT rowid, id, file_path FROM sessions
+                SELECT rowid, id, source, file_path FROM sessions
                 WHERE agent_role = 'subagent'
                   AND parent_session_id IS NULL
                   AND (link_source IS NULL OR link_source != 'manual')
@@ -1329,13 +1496,35 @@ public enum StartupBackfills {
             for row in rows {
                 lastRowID = row["rowid"]
                 let id: String = row["id"]
+                let source: String = row["source"]
                 let filePath: String = row["file_path"]
-                guard let match = regex.firstMatch(in: filePath, range: NSRange(filePath.startIndex..., in: filePath)),
-                      let range = Range(match.range(at: 1), in: filePath)
-                else {
-                    continue
+                // docs/invariants.md #2: Qoder's project-level subagent layout
+                // derives the real host from the transcript sessionId, not the
+                // encoded project directory immediately above `subagents`.
+                let parentId: String
+                if source == SourceName.qoder.rawValue {
+                    guard let qoderParent = qoderParentCandidate(
+                        locator: filePath,
+                        projectsRoot: qoderRoot
+                    ) else {
+                        continue
+                    }
+                    parentId = qoderParent
+                } else {
+                    guard let projectsRoot = confinedSubagentProjectsRoot(
+                              locator: filePath,
+                              source: source,
+                              claudeProjectsRoots: claudeRoots
+                          ),
+                          let layout = SubagentTranscriptPath.layout(
+                              locator: filePath,
+                              projectsRoot: projectsRoot
+                          )
+                    else {
+                        continue
+                    }
+                    parentId = layout.parentSessionId
                 }
-                let parentId = String(filePath[range])
                 guard try validateParentLink(db, sessionId: id, parentId: parentId) else {
                     continue
                 }
@@ -1344,7 +1533,257 @@ public enum StartupBackfills {
             }
         }
 
+        // OpenCode stores native parentage in its own SQLite session table.
+        // A child can be indexed before its host, so retry unresolved native
+        // links here after all adapters have completed. docs/invariants.md #2:
+        // setParentSession changes only the link and never upgrades skip tiers.
+        while true {
+            let openCodeRows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT id, agent_role,
+                       COALESCE(NULLIF(source_locator, ''), file_path) AS locator
+                FROM sessions
+                WHERE source = 'opencode'
+                  AND parent_session_id IS NULL
+                  AND (link_source IS NULL OR link_source != 'manual')
+                """
+            )
+            var linkedThisPass = 0
+            for row in openCodeRows {
+                let sessionId: String = row["id"]
+                let agentRole: String? = row["agent_role"]
+                let locator: String = row["locator"]
+                let externalParent = try openCodeResolvedParentCandidate(db, locator: locator)
+                guard externalParent.checked,
+                      let parentId = externalParent.parentId,
+                      try validateParentLink(db, sessionId: sessionId, parentId: parentId)
+                else { continue }
+                try setParentSession(
+                    db,
+                    sessionId: sessionId,
+                    parentId: parentId,
+                    linkSource: "path",
+                    stampCheckedAt: agentRole == "dispatched" || agentRole == "subagent"
+                )
+                linkedThisPass += 1
+            }
+            linked += linkedThisPass
+            if linkedThisPass == 0 { break }
+        }
+
+        // Gemini can be indexed before the host named by its adjacent sidecar.
+        // Retry those unresolved Layer-1c links without stamping link_checked_at;
+        // a later host arrival must remain eligible in the next periodic pass.
+        var geminiCursor: Int64 = 0
+        while true {
+            let geminiRows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT rowid, id,
+                       COALESCE(NULLIF(source_locator, ''), file_path) AS locator
+                FROM sessions
+                WHERE source = 'gemini-cli'
+                  AND parent_session_id IS NULL
+                  AND (link_source IS NULL OR link_source != 'manual')
+                  AND rowid > ?
+                ORDER BY rowid
+                LIMIT 500
+                """,
+                arguments: [geminiCursor]
+            )
+            guard !geminiRows.isEmpty else { break }
+            for row in geminiRows {
+                geminiCursor = row["rowid"]
+                let sessionId: String = row["id"]
+                let locator: String = row["locator"]
+                guard let parentId = geminiSidecarParentCandidate(
+                    locator: locator,
+                    sessionId: sessionId
+                ), try validateParentLink(db, sessionId: sessionId, parentId: parentId)
+                else { continue }
+                try setParentSession(
+                    db,
+                    sessionId: sessionId,
+                    parentId: parentId,
+                    linkSource: "path"
+                )
+                linked += 1
+            }
+        }
+
         return ParentLinkResult(linked: linked)
+    }
+
+    private static func geminiSidecarParentCandidate(locator: String, sessionId: String) -> String? {
+        guard !locator.isEmpty else { return nil }
+        let sidecar = URL(fileURLWithPath: locator)
+            .deletingLastPathComponent()
+            .appendingPathComponent("\(sessionId).engram.json")
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: sidecar.path),
+              attributes[.type] as? FileAttributeType == .typeRegular,
+              let size = attributes[.size] as? NSNumber,
+              size.int64Value <= 1_048_576,
+              let data = try? Data(contentsOf: sidecar),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = object["parentSessionId"] as? String
+        else { return nil }
+        let parentId = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !parentId.isEmpty, parentId != sessionId else { return nil }
+        return parentId
+    }
+
+    private static func openCodeParentCandidates(locator: String) -> (checked: Bool, parentIds: [String]) {
+        guard let separator = locator.range(of: "::", options: .backwards) else { return (false, []) }
+        let databasePath = String(locator[..<separator.lowerBound])
+        let sessionId = String(locator[separator.upperBound...])
+        guard !databasePath.isEmpty, !sessionId.isEmpty else { return (true, []) }
+        var configuration = Configuration()
+        configuration.readonly = true
+        configuration.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA busy_timeout = \(SQLiteConnectionPolicy.busyTimeoutMilliseconds)")
+        }
+        guard let queue = try? DatabaseQueue(path: databasePath, configuration: configuration) else {
+            return (false, [])
+        }
+        do {
+            let parentIds = try queue.read { external -> [String] in
+                guard let child = try Row.fetchOne(
+                    external,
+                    sql: "SELECT parent_id, time_archived FROM session WHERE id = ?",
+                    arguments: [sessionId]
+                ), child["time_archived"] as Int64? == nil
+                else { return [] }
+                var current: String? = child["parent_id"]
+                var visited: Set<String> = [sessionId]
+                var candidates: [String] = []
+                while let candidate = current, visited.insert(candidate).inserted {
+                    guard let row = try Row.fetchOne(
+                        external,
+                        sql: "SELECT parent_id, time_archived FROM session WHERE id = ?",
+                        arguments: [candidate]
+                    ) else {
+                        candidates.append(candidate)
+                        continue
+                    }
+                    current = row["parent_id"]
+                    guard row["time_archived"] as Int64? == nil else { continue }
+                    candidates.append(candidate)
+                }
+                return candidates
+            }
+            return (true, parentIds)
+        } catch {
+            return (false, [])
+        }
+    }
+
+    private static func openCodeResolvedParentCandidate(
+        _ db: Database,
+        locator: String
+    ) throws -> (checked: Bool, parentId: String?) {
+        let external = openCodeParentCandidates(locator: locator)
+        guard external.checked else { return (false, nil) }
+        for candidate in external.parentIds.reversed() {
+            guard try sessionExists(db, id: candidate) else { continue }
+            // docs/invariants.md #2: a present but hidden/orphan/skip ancestor
+            // blocks descent; otherwise its now-top-level fork could be exposed.
+            return (true, try openCodeTopLevelParentCandidate(db, candidate: candidate))
+        }
+        return (true, nil)
+    }
+
+    private static func openCodeTopLevelParentCandidate(
+        _ db: Database,
+        candidate: String
+    ) throws -> String? {
+        var current = candidate
+        var visited: Set<String> = []
+        while visited.insert(current).inserted {
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT parent_session_id, tier, hidden_at, orphan_status FROM sessions WHERE id = ?",
+                arguments: [current]
+            ) else { return nil }
+            let tier: String? = row["tier"]
+            let hiddenAt: String? = row["hidden_at"]
+            let orphanStatus: String? = row["orphan_status"]
+            guard tier != SessionTier.skip.rawValue, hiddenAt == nil, orphanStatus == nil else {
+                return nil
+            }
+            guard let parentId = row["parent_session_id"] as String? else { return current }
+            current = parentId
+        }
+        return nil
+    }
+
+    private static func qoderParentCandidate(locator: String, projectsRoot: String) -> String? {
+        if let nested = SubagentTranscriptPath.layout(
+            locator: locator,
+            projectsRoot: projectsRoot
+        ) {
+            return nested.parentSessionId
+        }
+
+        guard SubagentTranscriptPath.layout(
+            locator: locator,
+            projectsRoot: projectsRoot,
+            projectLevelParentSessionId: "layout-probe"
+        ) != nil else {
+            return nil
+        }
+        guard let parentSessionId = qoderTranscriptParentCandidate(locator: locator) else {
+            return nil
+        }
+        return SubagentTranscriptPath.layout(
+            locator: locator,
+            projectsRoot: projectsRoot,
+            projectLevelParentSessionId: parentSessionId
+        )?.parentSessionId
+    }
+
+    private static func confinedSubagentProjectsRoot(
+        locator: String,
+        source: String,
+        claudeProjectsRoots: [String]
+    ) -> String? {
+        switch source {
+        case SourceName.claudeCode.rawValue, "claude",
+             SourceName.minimax.rawValue, SourceName.lobsterai.rawValue:
+            // docs/invariants.md #2: only adapter-configured roots may infer a
+            // parent for a stored subagent locator; path-name sniffing is not proof.
+            return claudeProjectsRoots.first { projectsRoot in
+                SubagentTranscriptPath.layout(
+                    locator: locator,
+                    projectsRoot: projectsRoot
+                ) != nil
+            }
+        default:
+            return nil
+        }
+    }
+
+    private static func qoderTranscriptParentCandidate(locator: String) -> String? {
+        // Match Qoder's ParserLimits defaults without importing its internal
+        // adapter type into the write core: 100 MiB per file, 8 MiB per line.
+        let maxFileBytes = 100 * 1_024 * 1_024
+        let maxLineBytes = 8 * 1_024 * 1_024
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: locator),
+              let fileBytes = attributes[.size] as? NSNumber,
+              fileBytes.int64Value <= Int64(maxFileBytes),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: locator), options: .mappedIfSafe)
+        else { return nil }
+        for line in data.split(separator: 0x0A, omittingEmptySubsequences: true) {
+            guard line.count <= maxLineBytes else { continue }
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+                  let type = object["type"] as? String,
+                  type == "user" || type == "assistant",
+                  let sessionId = object["sessionId"] as? String
+            else { continue }
+            let normalized = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !normalized.isEmpty { return normalized }
+        }
+        return nil
     }
 
     public static func resetStaleDetections(_ db: Database) throws -> Int {
@@ -1445,9 +1884,12 @@ public enum StartupBackfills {
         let rows = try Row.fetchAll(
             db,
             sql: """
-            SELECT rowid, id, file_path, agent_role FROM sessions
+            SELECT rowid, id,
+                   COALESCE(NULLIF(source_locator, ''), file_path) AS locator,
+                   agent_role
+            FROM sessions
             WHERE source = 'codex'
-              AND file_path LIKE '%/.codex/%'
+              AND COALESCE(NULLIF(source_locator, ''), file_path) LIKE '%/.codex/%'
               AND parent_session_id IS NULL
               AND (link_source IS NULL OR link_source != 'manual')
               AND rowid > ?
@@ -1456,25 +1898,59 @@ public enum StartupBackfills {
             arguments: [cursor]
         )
 
-        var linked = 0
-        var maxRowID: Int64 = cursor
+        var readableRowIDs: Set<Int64> = []
+        var spawnByRowID: [Int64: (parentId: String, depth: Int?)] = [:]
+        var referencedParentIDs: Set<String> = []
         for row in rows {
             let rowID: Int64 = row["rowid"]
-            if rowID > maxRowID { maxRowID = rowID }
+            let locator: String = row["locator"]
+            guard let firstLine = readFirstLineBytes(
+                path: locator,
+                maxBytes: codexModelHeadScanBytes
+            ) else { continue }
+            readableRowIDs.insert(rowID)
+            if let spawn = codexSpawnParent(head: firstLine) {
+                spawnByRowID[rowID] = spawn
+                referencedParentIDs.insert(spawn.parentId)
+            }
+        }
+
+        var linked = 0
+        var maxRowID: Int64 = cursor
+        var retryBlockedCursor = false
+        for row in rows {
+            let rowID: Int64 = row["rowid"]
             let id: String = row["id"]
-            let filePath: String = row["file_path"]
             let existingRole: String? = row["agent_role"]
 
-            guard let firstLine = readFirstLineBytes(path: filePath, maxBytes: codexModelHeadScanBytes),
-                  let spawn = codexSpawnParent(head: firstLine)
-            else {
+            guard readableRowIDs.contains(rowID) else {
+                // A row referenced as a host is not itself an unresolved child.
+                // Its unreadable transcript must not pin the cursor ahead of a
+                // terminal child row that already supplied the native stamp.
+                if referencedParentIDs.contains(id), !retryBlockedCursor {
+                    maxRowID = rowID
+                } else {
+                    retryBlockedCursor = true
+                }
+                continue
+            }
+            guard let spawn = spawnByRowID[rowID] else {
+                if !retryBlockedCursor { maxRowID = rowID }
                 continue
             }
             // Vendor depth > 1 is order-dependent under validateParentLink; skip.
             if let depth = spawn.depth, depth > 1 {
+                if !retryBlockedCursor { maxRowID = rowID }
+                continue
+            }
+            // Parent rows may land after their child. Keep the first unresolved
+            // row below the high-water mark so a later periodic pass re-reads it.
+            guard try sessionExists(db, id: spawn.parentId) else {
+                retryBlockedCursor = true
                 continue
             }
             guard try validateParentLink(db, sessionId: id, parentId: spawn.parentId) else {
+                if !retryBlockedCursor { maxRowID = rowID }
                 continue
             }
             // Do not link under a skip-tier parent — child would be unreachable.
@@ -1484,6 +1960,7 @@ public enum StartupBackfills {
                 arguments: [spawn.parentId]
             )
             if parentTier == "skip" {
+                if !retryBlockedCursor { maxRowID = rowID }
                 continue
             }
 
@@ -1502,6 +1979,7 @@ public enum StartupBackfills {
             }
             try setParentSession(db, sessionId: id, parentId: spawn.parentId, linkSource: "path")
             linked += 1
+            if !retryBlockedCursor { maxRowID = rowID }
         }
 
         try db.execute(
@@ -1511,7 +1989,7 @@ public enum StartupBackfills {
             """,
             arguments: [codexSpawnParentBackfillMetadataKey, codexSpawnParentBackfillVersion]
         )
-        if !rows.isEmpty {
+        if maxRowID > cursor {
             try db.execute(
                 sql: """
                 INSERT INTO metadata(key, value) VALUES (?, ?)
@@ -1566,32 +2044,43 @@ public enum StartupBackfills {
 
     public static func backfillCodexOriginator(_ db: Database) throws -> Int {
         var updated = 0
+        var cursor: Int64 = 0
         while true {
             let rows = try Row.fetchAll(
                 db,
                 sql: """
-                SELECT id, file_path FROM sessions
+                SELECT rowid, id, file_path FROM sessions
                 WHERE source = 'codex'
                   AND agent_role IS NULL
                   AND parent_session_id IS NULL
                   AND suggested_parent_id IS NULL
                   AND (link_source IS NULL OR link_source != 'manual')
                   AND link_checked_at IS NULL
+                  AND rowid > ?
                 ORDER BY rowid
                 LIMIT 500
-                """
+                """,
+                arguments: [cursor]
             )
             guard !rows.isEmpty else { break }
 
             for row in rows {
+                let rowID: Int64 = row["rowid"]
+                cursor = rowID
                 let id: String = row["id"]
                 let filePath: String = row["file_path"]
-                guard let firstLine = readFirstLine(path: filePath, maxBytes: 16_384),
+                guard let firstLine = readFirstLineBytes(
+                          path: filePath,
+                          maxBytes: codexModelHeadScanBytes
+                      ),
                       let data = firstLine.data(using: .utf8),
                       let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let payload = object["payload"] as? [String: Any],
-                      payload["originator"] as? String == "Claude Code"
+                      object["type"] as? String == "session_meta",
+                      let payload = object["payload"] as? [String: Any]
                 else {
+                    continue
+                }
+                guard payload["originator"] as? String == "Claude Code" else {
                     try db.execute(
                         sql: "UPDATE sessions SET link_checked_at = datetime('now') WHERE id = ?",
                         arguments: [id]
@@ -1635,11 +2124,19 @@ public enum StartupBackfills {
         )
 
         var updated = 0
+        var completed = true
         for row in rows {
             let id: String = row["id"]
             let filePath: String = row["file_path"]
             let currentModel: String? = row["model"]
-            let model = codexModelLabelFromHead(path: filePath)
+            let model: String?
+            switch codexModelLabelFromHead(path: filePath) {
+            case .decoded(let decodedModel):
+                model = decodedModel
+            case .unreadable:
+                completed = false
+                continue
+            }
 
             if let model {
                 updated += try db.executeAndCountChanges(
@@ -1654,6 +2151,9 @@ public enum StartupBackfills {
             }
         }
 
+        // docs/invariants.md #9: an incomplete model-label sweep must remain
+        // eligible so cost backfill can price the corrected label on a retry.
+        guard completed else { return updated }
         try db.execute(
             sql: """
             INSERT INTO metadata(key, value) VALUES (?, ?)
@@ -1665,92 +2165,129 @@ public enum StartupBackfills {
     }
 
     public static func backfillPolycliProviderParents(_ db: Database) throws -> ProviderParentResult {
-        let candidates = try Row.fetchAll(
-            db,
-            sql: """
-            SELECT id, source, start_time, cwd, summary, agent_role
-            FROM sessions
-            WHERE parent_session_id IS NULL
-              AND (link_source IS NULL OR link_source != 'manual')
-              AND link_checked_at IS NULL
-              AND source IN ('claude-code', 'copilot', 'gemini-cli', 'kimi', 'opencode', 'pi', 'qwen')
-              AND (
-                summary LIKE 'You are acting as % inside polycli.%'
-                OR summary LIKE 'Reply with POLYCLI_HEALTH_OK only.%'
-                OR lower(trim(summary)) IN (
-                  'ping',
-                  'quick ping',
-                  'test ping',
-                  'quick ping check',
-                  'ping-pong test'
-                )
-                -- The bare review-content match is a PROVIDER probe behavior, so
-                -- exclude 'claude-code': otherwise a genuine claude-code session
-                -- whose summary merely mentions "review" was mis-classified as a
-                -- dispatched provider child and hidden.
-                OR (
-                  source != 'claude-code'
-                  AND (lower(summary) LIKE '%review%' OR lower(summary) LIKE '%re-review%')
-                )
-                OR lower(summary) LIKE 'no tools.%stage %'
-                -- Wave 7B M18: do NOT admit bare same-cwd provider sessions.
-                -- Concurrent timing alone is insufficient without probe/dispatch
-                -- summary evidence (false-skip of ordinary human sessions).
-              )
-            ORDER BY start_time DESC
-            LIMIT 1000
-            """
-        )
-
         var checked = 0
         var classified = 0
         var suggested = 0
+        var cursor: Int64 = 0
 
-        for candidate in candidates {
-            let summary: String? = candidate["summary"]
-            let summaryMatches = isPolycliProviderSummary(summary)
-
-            let id: String = candidate["id"]
-            let source: String = candidate["source"]
-            _ = source
-            let agentRole: String? = candidate["agent_role"]
-            let childCwd: String = candidate["cwd"]
-            let childStartTime: String = candidate["start_time"]
-            let scored = try scoredPolycliHosts(
+        while true {
+            let candidates = try Row.fetchAll(
                 db,
-                childId: id,
-                childStartTime: childStartTime,
-                childCwd: childCwd
-            )
-
-            // Require explicit probe/dispatch summary evidence before classifying.
-            if !summaryMatches {
-                try markChecked(db, sessionId: id)
-                continue
-            }
-
-            checked += 1
-            if agentRole == nil { classified += 1 }
-
-            try db.execute(
                 sql: """
-                UPDATE sessions
-                SET agent_role = COALESCE(agent_role, 'dispatched'),
-                    tier = 'skip',
-                    link_checked_at = datetime('now')
-                WHERE id = ?
+                SELECT rowid, id, source, start_time, cwd, summary, agent_role,
+                       user_message_count, assistant_message_count
+                FROM sessions AS candidate
+                WHERE parent_session_id IS NULL
+                  AND (link_source IS NULL OR link_source != 'manual')
+                  AND link_checked_at IS NULL
+                  AND rowid > ?
+                  AND source IN ('claude-code', 'copilot', 'gemini-cli', 'kimi', 'opencode', 'pi', 'qwen')
+                  AND (
+                    summary LIKE 'You are acting as % inside polycli.%'
+                    OR (
+                      source != 'claude-code'
+                      AND (user_message_count + assistant_message_count) <= 3
+                      AND (
+                        lower(trim(summary)) IN (
+                          'reply with polycli_health_ok only',
+                          'reply with polycli_health_ok only.',
+                          'ping',
+                          'quick ping',
+                          'test ping',
+                          'quick ping check',
+                          'ping-pong test'
+                        )
+                        OR (
+                          (lower(summary) LIKE '%review%' OR lower(summary) LIKE '%re-review%')
+                          AND (
+                            lower(summary) LIKE '%no tools%'
+                            OR lower(summary) LIKE '%use only%'
+                            OR lower(summary) LIKE '%snippets%'
+                            OR lower(summary) LIKE '%diff:%'
+                          )
+                          AND (
+                            lower(summary) LIKE '%blocking%'
+                            OR lower(summary) LIKE '%correctness%'
+                            OR lower(summary) LIKE '%report only%'
+                          )
+                        )
+                        OR (
+                          lower(summary) LIKE 'no tools.%stage %'
+                          AND (
+                            lower(summary) LIKE '%facts%'
+                            OR lower(summary) LIKE '%verified%'
+                            OR lower(summary) LIKE '%diff:%'
+                          )
+                        )
+                      )
+                    )
+                    -- Wave 7B M18: do NOT admit bare same-cwd provider sessions.
+                    -- Concurrent timing alone is insufficient without probe/dispatch
+                    -- summary evidence (false-skip of ordinary human sessions).
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM sessions AS child
+                    WHERE child.parent_session_id = candidate.id
+                  )
+                ORDER BY rowid
+                LIMIT 1000
                 """,
-                arguments: [id]
+                arguments: [cursor]
             )
-            try deleteRecoverableIndexArtifactsForSkippedSession(db, sessionId: id)
+            guard !candidates.isEmpty else { break }
 
-            guard let best = scored.first, best.score >= 4 else { continue }
-            guard try validateParentLink(db, sessionId: id, parentId: best.parentId) else {
-                continue
+            for candidate in candidates {
+                cursor = candidate["rowid"]
+                let summary: String? = candidate["summary"]
+                let id: String = candidate["id"]
+                let source: String = candidate["source"]
+                let summaryMatches = isPolycliProviderSummary(
+                    summary,
+                    source: source,
+                    userMessageCount: candidate["user_message_count"],
+                    assistantMessageCount: candidate["assistant_message_count"]
+                )
+                let agentRole: String? = candidate["agent_role"]
+                let childCwd: String = candidate["cwd"]
+                let childStartTime: String = candidate["start_time"]
+                let scored = try scoredPolycliHosts(
+                    db,
+                    childId: id,
+                    childStartTime: childStartTime,
+                    childCwd: childCwd
+                )
+
+                // docs/invariants.md #9: this pass runs before later parent-link
+                // layers. A SQL prefilter mismatch must remain unchecked so the
+                // later layer can still evaluate it. docs/invariants.md #2 also
+                // forbids false skip-demotion of ordinary sessions.
+                if !summaryMatches {
+                    continue
+                }
+
+                checked += 1
+                if agentRole == nil { classified += 1 }
+
+                try db.execute(
+                    sql: """
+                    UPDATE sessions
+                    SET agent_role = COALESCE(agent_role, 'dispatched'),
+                        tier = 'skip',
+                        link_checked_at = datetime('now')
+                    WHERE id = ?
+                    """,
+                    arguments: [id]
+                )
+                try deleteRecoverableIndexArtifactsForSkippedSession(db, sessionId: id)
+
+                guard let best = scored.first, best.score >= 4 else { continue }
+                guard try validateParentLink(db, sessionId: id, parentId: best.parentId) else {
+                    continue
+                }
+
+                try setSuggestedParent(db, sessionId: id, suggestedParentId: best.parentId)
+                suggested += 1
             }
-
-            try setSuggestedParent(db, sessionId: id, suggestedParentId: best.parentId)
-            suggested += 1
         }
 
         return ProviderParentResult(checked: checked, classified: classified, suggested: suggested)
@@ -1774,6 +2311,10 @@ public enum StartupBackfills {
               AND source IN ('codex', 'claude-code', 'claude')
               AND agent_role IS NULL
               AND parent_session_id IS NULL
+              AND suggested_parent_id IS NULL
+              AND hidden_at IS NULL
+              AND (tier IS NULL OR tier != 'skip')
+              AND orphan_status IS NULL
               AND rtrim(cwd, '/') = rtrim(?, '/')
               AND datetime(start_time) <= datetime(?)
               AND datetime(start_time) >= datetime(?, '-48 hours')
@@ -1796,103 +2337,187 @@ public enum StartupBackfills {
     }
 
     public static func backfillSuggestedParents(_ db: Database) throws -> SuggestedParentResult {
-        let candidates = try Row.fetchAll(
+        // Suggested links are heuristic. If their host later becomes hidden,
+        // skip-tier, orphaned, or disappears, clear the stale suggestion so the
+        // non-skip child can surface as a root without changing its tier.
+        try db.execute(sql: """
+            UPDATE sessions AS child
+            SET suggested_parent_id = NULL,
+                suggestion_status = NULL,
+                suggestion_candidates = NULL,
+                link_checked_at = NULL
+            WHERE child.suggested_parent_id IS NOT NULL
+              AND child.parent_session_id IS NULL
+              AND (child.link_source IS NULL OR child.link_source != 'manual')
+              AND NOT EXISTS (
+                SELECT 1
+                FROM sessions AS host
+                WHERE host.id = child.suggested_parent_id
+                  AND host.hidden_at IS NULL
+                  AND (host.tier IS NULL OR host.tier != 'skip')
+                  AND host.orphan_status IS NULL
+                  AND host.parent_session_id IS NULL
+                  AND host.suggested_parent_id IS NULL
+              )
+            """)
+
+        // Ambiguous candidates are stored ids, so host visibility can drift after
+        // capture. Prune them before the checked-row candidate loop: 0 becomes a
+        // checked root, 1 becomes a single suggestion, and 2+ stays ambiguous.
+        let ambiguousRows = try Row.fetchAll(
             db,
             sql: """
-            SELECT id, start_time, project, cwd, summary, agent_role FROM sessions
-            WHERE parent_session_id IS NULL
+            SELECT id, suggestion_candidates
+            FROM sessions
+            WHERE suggestion_status = 'ambiguous'
+              AND parent_session_id IS NULL
               AND suggested_parent_id IS NULL
-              AND link_checked_at IS NULL
-              AND link_source IS NULL
-              AND source IN ('gemini-cli', 'codex')
-            LIMIT 500
+              AND link_checked_at IS NOT NULL
+              AND (link_source IS NULL OR link_source != 'manual')
             """
         )
-
+        for row in ambiguousRows {
+            let sessionId: String = row["id"]
+            let encoded: String? = row["suggestion_candidates"]
+            let stored = encoded.flatMap { value in
+                try? JSONDecoder().decode([StoredSuggestionCandidate].self, from: Data(value.utf8))
+            } ?? []
+            var seen: Set<String> = []
+            var remaining: [ScoredParent] = []
+            for candidate in stored where seen.insert(candidate.id).inserted {
+                guard try isVisibleTopLevelSuggestionHost(db, id: candidate.id) else { continue }
+                remaining.append(ScoredParent(parentId: candidate.id, score: candidate.score))
+            }
+            switch remaining.count {
+            case 0:
+                try markChecked(db, sessionId: sessionId)
+            case 1:
+                try setSuggestedParent(
+                    db,
+                    sessionId: sessionId,
+                    suggestedParentId: remaining[0].parentId
+                )
+            default:
+                try setAmbiguousSuggestion(db, sessionId: sessionId, candidates: remaining)
+            }
+        }
         var checked = 0
         var suggested = 0
-        let eligibleCandidates = candidates.filter { candidate in
-            let agentRole: String? = candidate["agent_role"]
-            if agentRole != nil { return true }
-            let summary: String? = candidate["summary"]
-            return summary.map(ParentDetection.isDispatchPattern) ?? false
-        }
-        let parentRows: [Row]
-        if let earliestStart = eligibleCandidates.compactMap({ $0["start_time"] as String? }).min(),
-           let latestStart = eligibleCandidates.compactMap({ $0["start_time"] as String? }).max() {
-            parentRows = try Row.fetchAll(
+        var cursor: Int64 = 0
+
+        while true {
+            let candidates = try Row.fetchAll(
                 db,
                 sql: """
-                SELECT id, start_time, end_time, project, cwd FROM sessions
-                WHERE source IN ('claude-code', 'claude')
-                  AND datetime(start_time) BETWEEN datetime(?, '-24 hours') AND datetime(?)
-                  AND parent_session_id IS NULL
+                SELECT rowid, id, start_time, project, cwd, summary, agent_role FROM sessions
+                WHERE parent_session_id IS NULL
+                  AND suggested_parent_id IS NULL
+                  AND link_checked_at IS NULL
+                  AND link_source IS NULL
+                  AND source IN ('gemini-cli', 'codex')
+                  AND rowid > ?
+                ORDER BY rowid
+                LIMIT 500
                 """,
-                arguments: [earliestStart, latestStart]
+                arguments: [cursor]
             )
-        } else {
-            parentRows = []
-        }
+            guard !candidates.isEmpty else { break }
 
-        for candidate in candidates {
-            checked += 1
-            let id: String = candidate["id"]
-            let agentRole: String? = candidate["agent_role"]
-            let summary: String? = candidate["summary"]
-
-            if agentRole == nil {
-                guard let summary, ParentDetection.isDispatchPattern(summary) else {
-                    try markChecked(db, sessionId: id)
-                    continue
-                }
+            let eligibleCandidates = candidates.filter { candidate in
+                let agentRole: String? = candidate["agent_role"]
+                if agentRole != nil { return true }
+                let summary: String? = candidate["summary"]
+                return summary.map(ParentDetection.isDispatchPattern) ?? false
             }
-
-            let startTime: String = candidate["start_time"]
-            let candidateParentRows = parentRows.filter {
-                isParentWithinCandidateLookback(parentStartTime: $0["start_time"], candidateStartTime: startTime)
-            }
-            let scored = candidateParentRows.map { parent -> ScoredParent in
-                ScoredParent(
-                    parentId: parent["id"],
-                    score: ParentDetection.scoreCandidate(
-                        agentStartTime: startTime,
-                        parentStartTime: parent["start_time"],
-                        parentEndTime: parent["end_time"],
-                        agentProject: candidate["project"],
-                        parentProject: parent["project"],
-                        agentCwd: candidate["cwd"],
-                        parentCwd: parent["cwd"]
-                    )
+            let parentRows: [Row]
+            if let earliestStart = eligibleCandidates.compactMap({ $0["start_time"] as String? }).min(),
+               let latestStart = eligibleCandidates.compactMap({ $0["start_time"] as String? }).max() {
+                parentRows = try Row.fetchAll(
+                    db,
+                    sql: """
+                    SELECT id, start_time, end_time, project, cwd FROM sessions
+                    WHERE source IN ('claude-code', 'claude')
+                      AND datetime(start_time) BETWEEN datetime(?, '-24 hours') AND datetime(?)
+                      AND parent_session_id IS NULL
+                      AND suggested_parent_id IS NULL
+                      AND agent_role IS NULL
+                      AND hidden_at IS NULL
+                      AND (tier IS NULL OR tier != 'skip')
+                      AND orphan_status IS NULL
+                    """,
+                    arguments: [earliestStart, latestStart]
                 )
+            } else {
+                parentRows = []
             }
 
-            switch ParentDetection.pickBestCandidate(scored) {
-            case .suggest(let bestParent):
-                try setSuggestedParent(db, sessionId: id, suggestedParentId: bestParent)
-                suggested += 1
-            case .ambiguous(let candidates):
-                try setAmbiguousSuggestion(db, sessionId: id, candidates: candidates)
-            case .none:
-                // M8: skip-tier only with positive Layer-1 evidence (agent_role
-                // already dispatched/subagent, e.g. Codex originator).
-                let hasPositiveDispatchEvidence =
-                    agentRole == "dispatched" || agentRole == "subagent"
-                if hasPositiveDispatchEvidence {
-                    try db.execute(
-                        sql: """
-                        UPDATE sessions
-                        SET agent_role = COALESCE(agent_role, 'dispatched'),
-                            tier = 'skip',
-                            link_checked_at = datetime('now'),
-                            suggestion_status = NULL,
-                            suggestion_candidates = NULL
-                        WHERE id = ?
-                        """,
-                        arguments: [id]
+            for candidate in candidates {
+                cursor = candidate["rowid"]
+                checked += 1
+                let id: String = candidate["id"]
+                let agentRole: String? = candidate["agent_role"]
+                let summary: String? = candidate["summary"]
+
+                if agentRole == nil {
+                    guard let summary, ParentDetection.isDispatchPattern(summary) else {
+                        try markChecked(db, sessionId: id)
+                        continue
+                    }
+                }
+
+                let startTime: String = candidate["start_time"]
+                let candidateParentRows = parentRows.filter {
+                    isParentWithinCandidateLookback(parentStartTime: $0["start_time"], candidateStartTime: startTime)
+                }
+                // docs/invariants.md #2: skip/nested sessions cannot host a new
+                // suggested child, and parent-link validation must remain fail-closed.
+                let scored = try candidateParentRows.compactMap { parent -> ScoredParent? in
+                    let parentId: String = parent["id"]
+                    guard try validateParentLink(db, sessionId: id, parentId: parentId) else {
+                        return nil
+                    }
+                    return ScoredParent(
+                        parentId: parentId,
+                        score: ParentDetection.scoreCandidate(
+                            agentStartTime: startTime,
+                            parentStartTime: parent["start_time"],
+                            parentEndTime: parent["end_time"],
+                            agentProject: candidate["project"],
+                            parentProject: parent["project"],
+                            agentCwd: candidate["cwd"],
+                            parentCwd: parent["cwd"]
+                        )
                     )
-                    try deleteRecoverableIndexArtifactsForSkippedSession(db, sessionId: id)
-                } else {
-                    try markChecked(db, sessionId: id)
+                }
+
+                switch ParentDetection.pickBestCandidate(scored) {
+                case .suggest(let bestParent):
+                    try setSuggestedParent(db, sessionId: id, suggestedParentId: bestParent)
+                    suggested += 1
+                case .ambiguous(let candidates):
+                    try setAmbiguousSuggestion(db, sessionId: id, candidates: candidates)
+                case .none:
+                    // M8: skip-tier only with positive Layer-1 evidence (agent_role
+                    // already dispatched/subagent, e.g. Codex originator).
+                    let hasPositiveDispatchEvidence =
+                        agentRole == "dispatched" || agentRole == "subagent"
+                    if hasPositiveDispatchEvidence {
+                        try db.execute(
+                            sql: """
+                            UPDATE sessions
+                            SET agent_role = COALESCE(agent_role, 'dispatched'),
+                                tier = 'skip',
+                                link_checked_at = datetime('now'),
+                                suggestion_status = NULL,
+                                suggestion_candidates = NULL
+                            WHERE id = ?
+                            """,
+                            arguments: [id]
+                        )
+                        try deleteRecoverableIndexArtifactsForSkippedSession(db, sessionId: id)
+                    } else {
+                        try markChecked(db, sessionId: id)
+                    }
                 }
             }
         }
@@ -1900,18 +2525,44 @@ public enum StartupBackfills {
         return SuggestedParentResult(checked: checked, suggested: suggested)
     }
 
+    private static func isVisibleTopLevelSuggestionHost(_ db: Database, id: String) throws -> Bool {
+        try Bool.fetchOne(
+            db,
+            sql: """
+            SELECT EXISTS(
+              SELECT 1 FROM sessions
+              WHERE id = ?
+                AND hidden_at IS NULL
+                AND (tier IS NULL OR tier != 'skip')
+                AND orphan_status IS NULL
+                AND parent_session_id IS NULL
+                AND suggested_parent_id IS NULL
+            )
+            """,
+            arguments: [id]
+        ) ?? false
+    }
+
     private static func validateParentLink(_ db: Database, sessionId: String, parentId: String) throws -> Bool {
         if sessionId == parentId { return false }
         guard let row = try Row.fetchOne(
             db,
-            sql: "SELECT id, parent_session_id, tier FROM sessions WHERE id = ?",
+            sql: "SELECT id, parent_session_id, tier, hidden_at, orphan_status FROM sessions WHERE id = ?",
             arguments: [parentId]
         ) else {
             return false
         }
         let parentSessionId: String? = row["parent_session_id"]
         let parentTier: String? = row["tier"]
-        guard parentSessionId == nil, parentTier != SessionTier.skip.rawValue else { return false }
+        let hiddenAt: String? = row["hidden_at"]
+        let orphanStatus: String? = row["orphan_status"]
+        // docs/invariants.md #2: inferred links must not hide children behind
+        // a host that is itself hidden, orphaned, nested, or skip-tier.
+        guard parentSessionId == nil,
+              parentTier != SessionTier.skip.rawValue,
+              hiddenAt == nil,
+              orphanStatus == nil
+        else { return false }
         let childCount = try Int.fetchOne(
             db,
             sql: "SELECT COUNT(*) FROM sessions WHERE parent_session_id = ? LIMIT 1",
@@ -1926,19 +2577,34 @@ public enum StartupBackfills {
     private static func validateExistingPathParent(
         _ db: Database,
         sessionId: String,
+        source: String,
+        locator: String,
         parentId: String
     ) throws -> Bool {
         if sessionId == parentId { return false }
+        if source == SourceName.opencode.rawValue {
+            let externalParent = try openCodeResolvedParentCandidate(db, locator: locator)
+            if externalParent.checked {
+                guard externalParent.parentId == parentId
+                else { return false }
+            }
+        }
         guard let row = try Row.fetchOne(
             db,
-            sql: "SELECT parent_session_id, tier FROM sessions WHERE id = ?",
+            sql: "SELECT parent_session_id, tier, hidden_at, orphan_status FROM sessions WHERE id = ?",
             arguments: [parentId]
         ) else {
             return false
         }
         let parentSessionId: String? = row["parent_session_id"]
         let parentTier: String? = row["tier"]
-        guard parentSessionId == nil, parentTier != SessionTier.skip.rawValue else {
+        let hiddenAt: String? = row["hidden_at"]
+        let orphanStatus: String? = row["orphan_status"]
+        guard parentSessionId == nil,
+              parentTier != SessionTier.skip.rawValue,
+              hiddenAt == nil,
+              orphanStatus == nil
+        else {
             return false
         }
         let preservedChildCount = try Int.fetchOne(
@@ -1953,23 +2619,33 @@ public enum StartupBackfills {
         return preservedChildCount == 0
     }
 
+    private static func sessionExists(_ db: Database, id: String) throws -> Bool {
+        try Bool.fetchOne(
+            db,
+            sql: "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?)",
+            arguments: [id]
+        ) ?? false
+    }
+
     private static func setParentSession(
         _ db: Database,
         sessionId: String,
         parentId: String,
-        linkSource: String
+        linkSource: String,
+        stampCheckedAt: Bool = false
     ) throws {
         try db.execute(
             sql: """
             UPDATE sessions
             SET parent_session_id = ?,
                 link_source = ?,
+                link_checked_at = CASE WHEN ? THEN datetime('now') ELSE link_checked_at END,
                 suggested_parent_id = NULL,
                 suggestion_status = NULL,
                 suggestion_candidates = NULL
             WHERE id = ?
             """,
-            arguments: [parentId, linkSource, sessionId]
+            arguments: [parentId, linkSource, stampCheckedAt, sessionId]
         )
     }
 
@@ -2042,18 +2718,26 @@ public enum StartupBackfills {
         )
     }
 
-    private static func isPolycliProviderSummary(_ summary: String?) -> Bool {
+    private static func isPolycliProviderSummary(
+        _ summary: String?,
+        source: String,
+        userMessageCount: Int,
+        assistantMessageCount: Int
+    ) -> Bool {
         guard let summary else { return false }
         let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = trimmed.lowercased()
+        if trimmed.range(of: #"^You are acting as [a-z0-9_-]+ inside polycli\."#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return true
+        }
+        guard source != SourceName.claudeCode.rawValue,
+              userMessageCount + assistantMessageCount <= 3
+        else { return false }
         if lower == "ping"
             || lower == "quick ping"
             || lower == "test ping"
             || lower == "quick ping check"
             || lower == "ping-pong test" {
-            return true
-        }
-        if trimmed.range(of: #"^You are acting as [a-z0-9_-]+ inside polycli\."#, options: [.regularExpression, .caseInsensitive]) != nil {
             return true
         }
         if trimmed.range(of: #"^Reply with POLYCLI_HEALTH_OK only\.?$"#, options: [.regularExpression, .caseInsensitive]) != nil {
@@ -2070,11 +2754,7 @@ public enum StartupBackfills {
         let isScopedInput = lower.contains("no tools") ||
             lower.contains("use only") ||
             lower.contains("snippets") ||
-            lower.contains("diff:") ||
-            lower.contains("tests passed") ||
-            lower.contains("tests ") ||
-            lower.range(of: #"\bp\d+(\.\d+)?\b"#, options: .regularExpression) != nil ||
-            lower.contains("stage ")
+            lower.contains("diff:")
         let asksForOnlyFindings = lower.contains("blocking") ||
             lower.contains("correctness") ||
             lower.contains("report only") ||
@@ -2147,16 +2827,30 @@ public enum StartupBackfills {
         return text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init)
     }
 
-    private static func codexModelLabelFromHead(path: String) -> String? {
-        guard let head = readFileHead(path: path, maxBytes: codexModelHeadScanBytes) else {
-            return nil
+    private static func codexModelLabelFromHead(path: String) -> CodexModelHeadRead {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return .unreadable }
+        defer { try? handle.close() }
+        let read = handle.readData(ofLength: codexModelHeadScanBytes + 1)
+        let isTruncated = read.count > codexModelHeadScanBytes
+        let head = read.prefix(codexModelHeadScanBytes)
+        var lines = head.split(separator: 0x0A, omittingEmptySubsequences: false)
+        if isTruncated, head.last != 0x0A {
+            lines.removeLast()
         }
+        guard !lines.isEmpty else { return .unreadable }
 
         var turnContextModel: String?
         var metaModel: String?
-        for line in head.split(separator: "\n", omittingEmptySubsequences: false) {
+        var decodedLine = false
+        for line in lines {
             guard !line.isEmpty,
-                  let data = String(line).data(using: .utf8),
+                  let text = String(data: Data(line), encoding: .utf8)
+            else {
+                if !line.isEmpty { return .unreadable }
+                continue
+            }
+            decodedLine = true
+            guard let data = text.data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let type = object["type"] as? String,
                   let payload = object["payload"] as? [String: Any]
@@ -2165,7 +2859,7 @@ public enum StartupBackfills {
             }
 
             if type == "response_item", let model = payload["model"] as? String {
-                return model
+                return .decoded(model)
             }
             if type == "turn_context", turnContextModel == nil {
                 turnContextModel = payload["model"] as? String
@@ -2173,16 +2867,8 @@ public enum StartupBackfills {
                 metaModel = payload["model"] as? String
             }
         }
-        return turnContextModel ?? metaModel
-    }
-
-    private static func readFileHead(path: String, maxBytes: Int) -> String? {
-        guard let handle = FileHandle(forReadingAtPath: path) else {
-            return nil
-        }
-        defer { try? handle.close() }
-        let data = handle.readData(ofLength: maxBytes)
-        return String(data: data, encoding: .utf8)
+        guard decodedLine else { return .unreadable }
+        return .decoded(turnContextModel ?? metaModel)
     }
 
     private static func parseDate(_ value: String) -> Date? {

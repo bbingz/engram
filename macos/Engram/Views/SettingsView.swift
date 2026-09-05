@@ -35,7 +35,12 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
 }
 
 struct SettingsView: View {
+    let serviceSocketPath: String
     @State private var selectedCategory: SettingsCategory = .general
+
+    init(serviceSocketPath: String) {
+        self.serviceSocketPath = serviceSocketPath
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -57,7 +62,7 @@ struct SettingsView: View {
         }
         .accessibilityIdentifier("settings_container")
         .frame(minWidth: 760, minHeight: 540)
-        .font(.system(size: 12))
+        .scaledFont(12)
         .controlSize(.small)
         .groupBoxStyle(SettingsCardGroupBoxStyle())
     }
@@ -65,7 +70,7 @@ struct SettingsView: View {
     private var settingsSidebar: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Settings")
-                .font(.system(size: 16, weight: .semibold))
+                .scaledFont(16, weight: .semibold)
                 .padding(.horizontal, 12)
             .padding(.top, 16)
             .accessibilityIdentifier("settings_title")
@@ -98,7 +103,7 @@ struct SettingsView: View {
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("settings_section_general")
         case .ai:
-            AISettingsSection()
+            AISettingsSection(serviceSocketPath: serviceSocketPath)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("settings_section_ai")
         case .sources:
@@ -106,9 +111,12 @@ struct SettingsView: View {
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("settings_section_sources")
         case .archive:
-            ArchiveSettingsSection()
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("settings_section_archive")
+            VStack(alignment: .leading, spacing: 18) {
+                LiveIngestSettingsSection()
+                ArchiveSettingsSection()
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("settings_section_archive")
         case .advanced:
             AdvancedSettingsSection()
                 .accessibilityElement(children: .contain)
@@ -121,6 +129,220 @@ struct SettingsView: View {
     }
 }
 
+func persistLiveIngestEnabled(
+    requestedValue: Bool,
+    currentPersistedValue: Bool,
+    serviceIsRunning: Bool,
+    mutateSettings: (((inout [String: Any]) -> Void) -> Bool)
+) -> (enabled: Bool, restartNeeded: Bool, message: String?) {
+    let persisted = mutateSettings { settings in
+        settings["liveIngestEnabled"] = requestedValue
+        if requestedValue {
+            settings["liveIngestSources"] = ["hq"]
+            settings["liveIngestPeerId"] = "hq"
+        }
+    }
+    guard persisted else {
+        return (
+            currentPersistedValue,
+            false,
+            "Could not save HQ live ingest setting. The previous setting remains active."
+        )
+    }
+    return (requestedValue, serviceIsRunning, nil)
+}
+
+private struct LiveIngestSettingsSection: View {
+    @Environment(DatabaseManager.self) private var db
+    @Environment(\.engramServiceClient) private var serviceClient
+    @Environment(EngramServiceStatusStore.self) private var serviceStatusStore
+
+    @State private var enabled = false
+    @State private var status: LiveIngestStatus?
+    @State private var message: String?
+    @State private var busy = false
+    // live-ingest-arm-1 residual: toggling while the service is running does
+    // not arm/disarm the coordinator until the service restarts.
+    @State private var restartNeeded = false
+    @State private var showResetConfirm = false
+
+    private var serviceIsRunning: Bool {
+        switch serviceStatusStore.status {
+        case .running, .degraded: return true
+        default: return false
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(icon: "arrow.triangle.2.circlepath", title: "HQ Live Ingest")
+
+            GroupBox("Pull HQ sessions into this Mac") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle(
+                        "Enable HQ live ingest",
+                        isOn: Binding(
+                            get: { enabled },
+                            set: { newValue in
+                                Task { await persistEnabled(newValue) }
+                            }
+                        )
+                    )
+                    .accessibilityIdentifier("liveIngest_enabled")
+
+                    if restartNeeded && serviceIsRunning {
+                        Text("Restart the Engram service for this change to take effect.")
+                            .font(.caption)
+                            .foregroundStyle(Theme.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("liveIngest_restartHint")
+                    }
+
+                    Text("Imports HQ index snapshots into local search. Bundles are FTS and summary only — not raw transcripts. Resume stays on HQ.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if let status {
+                        LabeledContent("Last pull", value: status.lastPullAt ?? "—")
+                        LabeledContent("Last generation", value: status.lastGeneration ?? "—")
+                        LabeledContent("Imported HQ sessions", value: "\(status.importedCount)")
+                        // Cumulative counter: every pull that finds an HQ session
+                        // already present locally re-counts it, so this grows far
+                        // faster than the number of distinct imported sessions.
+                        LabeledContent("Occupancy skipped (cumulative)", value: "\(status.occupancySkipped)")
+                        if status.occupancySkipped > 0 {
+                            Text("Counts re-checks across pulls, not distinct sessions — duplicates are expected to inflate this total.")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        LabeledContent("Last error", value: status.lastError?.isEmpty == false ? status.lastError! : "—")
+                        LabeledContent("Shrink guard") {
+                            Text(status.shrinkGuardLatched ? "Latched" : "OK")
+                                .foregroundStyle(status.shrinkGuardLatched ? .orange : .secondary)
+                        }
+                        .accessibilityIdentifier("liveIngest_shrinkGuardStatus")
+                        if status.shrinkGuardLatched {
+                            Text("Shrink guard is latched. Imports still apply; retract is paused until a later in-cap complete generation or you reset the guard.")
+                                .font(.caption)
+                                .foregroundStyle(Theme.orange)
+                        }
+                    }
+
+                    Button("Reset shrink guard") {
+                        showResetConfirm = true
+                    }
+                    .disabled(busy || status?.shrinkGuardLatched != true)
+                    .help(status?.shrinkGuardLatched == true
+                        ? "Unlatch the shrink guard so retract can run again"
+                        : "Shrink guard is not latched")
+                    .accessibilityIdentifier("liveIngest_resetShrinkGuard")
+                    .confirmationDialog(
+                        "Reset shrink guard?",
+                        isPresented: $showResetConfirm,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Reset shrink guard", role: .destructive) {
+                            Task { await resetShrinkGuard() }
+                        }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("Retract of removed HQ sessions stays paused while the guard is latched. Reset only if the local HQ slice is known to be complete.")
+                    }
+
+                    if let message {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+        }
+        .task { await load() }
+        .onChange(of: serviceStatusStore.status) { _, newStatus in
+            // A service restart cleared the armed-state mismatch.
+            switch newStatus {
+            case .stopped, .starting: restartNeeded = false
+            default: break
+            }
+        }
+    }
+
+    private func load() async {
+        let db = self.db
+        let loaded = await LiveIngestSettingsIO.runOffMain {
+            let settings = readEngramSettings() ?? [:]
+            return LiveIngestSettingsLoadResult(
+                enabled: settings["liveIngestEnabled"] as? Bool ?? false,
+                status: try? db.liveIngestStatus(peer: "hq")
+            )
+        }
+        enabled = loaded.enabled
+        status = loaded.status
+    }
+
+    private func persistEnabled(_ value: Bool) async {
+        let db = self.db
+        let currentPersistedValue = enabled
+        let serviceIsRunning = serviceIsRunning
+        let persisted = await LiveIngestSettingsIO.runOffMain {
+            let result = persistLiveIngestEnabled(
+                requestedValue: value,
+                currentPersistedValue: currentPersistedValue,
+                serviceIsRunning: serviceIsRunning,
+                mutateSettings: mutateEngramSettings
+            )
+            return LiveIngestSettingsPersistResult(
+                enabled: result.enabled,
+                restartNeeded: result.restartNeeded,
+                message: result.message,
+                status: try? db.liveIngestStatus(peer: "hq")
+            )
+        }
+        enabled = persisted.enabled
+        restartNeeded = persisted.restartNeeded
+        message = persisted.message
+        status = persisted.status
+    }
+
+    private func resetShrinkGuard() async {
+        busy = true
+        defer { busy = false }
+        do {
+            _ = try await serviceClient.liveIngestResetShrinkGuard(peer: "hq")
+            message = "Shrink guard reset."
+            let db = self.db
+            status = await LiveIngestSettingsIO.runOffMain {
+                try? db.liveIngestStatus(peer: "hq")
+            }
+        } catch {
+            message = "Shrink guard reset failed: \(error.localizedDescription)"
+        }
+    }
+}
+
+private struct LiveIngestSettingsLoadResult: Sendable {
+    let enabled: Bool
+    let status: LiveIngestStatus?
+}
+
+private struct LiveIngestSettingsPersistResult: Sendable {
+    let enabled: Bool
+    let restartNeeded: Bool
+    let message: String?
+    let status: LiveIngestStatus?
+}
+
+enum LiveIngestSettingsIO {
+    static func runOffMain<Value: Sendable>(
+        _ operation: @escaping @Sendable () -> Value
+    ) async -> Value {
+        await Task.detached(priority: .userInitiated, operation: operation).value
+    }
+}
+
 private struct SettingsSidebarRow: View {
     let category: SettingsCategory
     let isSelected: Bool
@@ -130,10 +352,10 @@ private struct SettingsSidebarRow: View {
         Button(action: action) {
             HStack(spacing: 8) {
                 Image(systemName: category.icon)
-                    .font(.system(size: 12))
+                    .scaledFont(12)
                     .frame(width: 18)
                 Text(category.title)
-                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                    .scaledFont(12, weight: isSelected ? .semibold : .regular)
                 Spacer()
             }
             .accessibilityIdentifier("settings_nav_\(category.rawValue)")
@@ -156,11 +378,11 @@ private struct SettingsCardGroupBoxStyle: GroupBoxStyle {
     func makeBody(configuration: Configuration) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             configuration.label
-                .font(.system(size: 13, weight: .semibold))
+                .scaledFont(13, weight: .semibold)
                 .foregroundStyle(Theme.primaryText)
 
             configuration.content
-                .font(.system(size: 12))
+                .scaledFont(12)
                 .foregroundStyle(Theme.primaryText)
         }
         .padding(14)
@@ -175,7 +397,7 @@ private struct SettingsCardGroupBoxStyle: GroupBoxStyle {
 }
 
 private struct AdvancedSettingsSection: View {
-    @Environment(EngramServiceClient.self) private var serviceClient
+    @Environment(\.engramServiceClient) private var serviceClient
     @Environment(EngramServiceStatusStore.self) private var serviceStatusStore
 
     @AppStorage("showSystemPrompts") var showSystemPrompts: Bool = false
@@ -351,13 +573,17 @@ private struct AdvancedSettingsSection: View {
                 .padding(.vertical, 4)
             }
         }
-        .onAppear { loadAdvancedSettings() }
+        .task { await loadAdvancedSettings() }
     }
 
-    private func loadAdvancedSettings() {
+    private func loadAdvancedSettings() async {
         isLoadingSettings = true
         defer { clearLoadingSettingsAfterViewUpdate() }
-        guard let settings = readEngramSettings() else { return }
+        guard let data = await AdvancedSettingsIO.loadOffMain(),
+              !Task.isCancelled,
+              let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return
+        }
 
         if let costAlerts = settings["costAlerts"] as? [String: Any] {
             if let v = costAlerts["dailyBudget"] as? Double { dailyCostBudget = v }
@@ -399,51 +625,28 @@ private struct AdvancedSettingsSection: View {
 
     private func saveAdvancedSettings(refreshUsage: Bool = false) {
         guard !isLoadingSettings else { return }
-        mutateEngramSettings { settings in
-            // No Swift runtime reads these legacy HTTP/Web UI/security keys. Scrub
-            // any stale persisted values on next save.
-            settings.removeValue(forKey: "httpHost")
-            settings.removeValue(forKey: "httpAllowCIDR")
-            settings.removeValue(forKey: "httpBearerToken")
-            settings.removeValue(forKey: "webUIEnabled")
-
-            var costAlerts: [String: Any] = ["dailyBudget": dailyCostBudget]
-            if monthlyCostBudget > 0 { costAlerts["monthlyBudget"] = monthlyCostBudget }
-            settings["costAlerts"] = costAlerts
-            var monitor: [String: Any] = [
-                "enabled": monitorEnabled,
-                "dailyCostBudget": dailyCostBudget,
-                "longSessionMinutes": longSessionMinutes,
-                "notifyOnCostThreshold": notifyOnCostThreshold,
-                "notifyOnUsagePressure": notifyOnUsagePressure,
-                "notifyOnLongSession": notifyOnLongSession,
-            ]
-            if monthlyCostBudget > 0 { monitor["monthlyCostBudget"] = monthlyCostBudget }
-            settings["monitor"] = monitor
-            let usageTokenLimits = UsageTokenLimitEditableRow.settingsObject(
-                from: usageLimitRows,
-                preservingUnknownFrom: settings["usageTokenLimits"] as? [String: Any],
-                excludingSourceIDs: removedUsageLimitSourceIDs
-            )
-            if usageTokenLimits.isEmpty {
-                settings.removeValue(forKey: "usageTokenLimits")
-            } else {
-                settings["usageTokenLimits"] = usageTokenLimits
+        let snapshot = AdvancedSettingsPersistSnapshot(
+            monitorEnabled: monitorEnabled,
+            dailyCostBudget: dailyCostBudget,
+            monthlyCostBudget: monthlyCostBudget,
+            longSessionMinutes: longSessionMinutes,
+            notifyOnCostThreshold: notifyOnCostThreshold,
+            notifyOnUsagePressure: notifyOnUsagePressure,
+            notifyOnLongSession: notifyOnLongSession,
+            usageLimitRows: usageLimitRows,
+            removedUsageLimitSourceIDs: removedUsageLimitSourceIDs,
+            logLevel: logLevel,
+            logRetentionDays: logRetentionDays,
+            aiAuditEnabled: aiAuditEnabled,
+            aiAuditRetentionDays: aiAuditRetentionDays,
+            aiAuditMaxBodySize: aiAuditMaxBodySize,
+            aiAuditLogBodies: aiAuditLogBodies,
+            devMode: devMode
+        )
+        AdvancedSettingsIO.persistOffMain(snapshot) {
+            if refreshUsage {
+                scheduleUsageRefresh()
             }
-            settings["observability"] = [
-                "logLevel": logLevel,
-                "logRetentionDays": logRetentionDays,
-            ]
-            settings["aiAudit"] = [
-                "enabled": aiAuditEnabled,
-                "retentionDays": aiAuditRetentionDays,
-                "maxBodySize": aiAuditMaxBodySize,
-                "logBodies": aiAuditLogBodies,
-            ]
-            settings["devMode"] = devMode
-        }
-        if refreshUsage {
-            scheduleUsageRefresh()
         }
     }
 
@@ -483,7 +686,118 @@ private struct AdvancedSettingsSection: View {
     }
 }
 
-struct UsageTokenLimitEditableRow: Identifiable, Equatable {
+struct AdvancedSettingsPersistSnapshot: Sendable {
+    let monitorEnabled: Bool
+    let dailyCostBudget: Double
+    let monthlyCostBudget: Double
+    let longSessionMinutes: Int
+    let notifyOnCostThreshold: Bool
+    let notifyOnUsagePressure: Bool
+    let notifyOnLongSession: Bool
+    let usageLimitRows: [UsageTokenLimitEditableRow]
+    let removedUsageLimitSourceIDs: Set<String>
+    let logLevel: String
+    let logRetentionDays: Int
+    let aiAuditEnabled: Bool
+    let aiAuditRetentionDays: Int
+    let aiAuditMaxBodySize: Int
+    let aiAuditLogBodies: Bool
+    let devMode: Bool
+}
+
+struct AdvancedSettingsPersistenceHooks: Sendable {
+    let beforeMailbox: @Sendable (AdvancedSettingsPersistSnapshot) async -> Void
+    let persist: @Sendable (AdvancedSettingsPersistSnapshot) -> Void
+}
+
+enum AdvancedSettingsIO {
+    private static let mailbox = Mailbox()
+    @MainActor private static var persistenceTail: Task<Void, Never>?
+
+    static func loadOffMain() async -> Data? {
+        await Task.detached(priority: .userInitiated) {
+            readEngramSettingsData()
+        }.value
+    }
+
+    @MainActor
+    static func persistOffMain(
+        _ snapshot: AdvancedSettingsPersistSnapshot,
+        testHooks: AdvancedSettingsPersistenceHooks? = nil,
+        onPersisted: @escaping @MainActor @Sendable () -> Void
+    ) {
+        let previous = persistenceTail
+        let task = Task.detached(priority: .userInitiated) {
+            await previous?.value
+            if let testHooks {
+                await testHooks.beforeMailbox(snapshot)
+            }
+            await mailbox.persist(snapshot, override: testHooks?.persist)
+            await onPersisted()
+        }
+        persistenceTail = task
+    }
+
+    actor Mailbox {
+        func persist(
+            _ snapshot: AdvancedSettingsPersistSnapshot,
+            override: (@Sendable (AdvancedSettingsPersistSnapshot) -> Void)? = nil
+        ) {
+            if let override {
+                override(snapshot)
+                return
+            }
+            mutateEngramSettings { settings in
+                // No Swift runtime reads these legacy HTTP/Web UI/security keys.
+                settings.removeValue(forKey: "httpHost")
+                settings.removeValue(forKey: "httpAllowCIDR")
+                settings.removeValue(forKey: "httpBearerToken")
+                settings.removeValue(forKey: "webUIEnabled")
+
+                var costAlerts: [String: Any] = ["dailyBudget": snapshot.dailyCostBudget]
+                if snapshot.monthlyCostBudget > 0 {
+                    costAlerts["monthlyBudget"] = snapshot.monthlyCostBudget
+                }
+                settings["costAlerts"] = costAlerts
+                var monitor: [String: Any] = [
+                    "enabled": snapshot.monitorEnabled,
+                    "dailyCostBudget": snapshot.dailyCostBudget,
+                    "longSessionMinutes": snapshot.longSessionMinutes,
+                    "notifyOnCostThreshold": snapshot.notifyOnCostThreshold,
+                    "notifyOnUsagePressure": snapshot.notifyOnUsagePressure,
+                    "notifyOnLongSession": snapshot.notifyOnLongSession,
+                ]
+                if snapshot.monthlyCostBudget > 0 {
+                    monitor["monthlyCostBudget"] = snapshot.monthlyCostBudget
+                }
+                settings["monitor"] = monitor
+                let usageTokenLimits = UsageTokenLimitEditableRow.settingsObject(
+                    from: snapshot.usageLimitRows,
+                    preservingUnknownFrom: settings["usageTokenLimits"] as? [String: Any],
+                    excludingSourceIDs: snapshot.removedUsageLimitSourceIDs
+                )
+                if usageTokenLimits.isEmpty {
+                    settings.removeValue(forKey: "usageTokenLimits")
+                } else {
+                    settings["usageTokenLimits"] = usageTokenLimits
+                }
+                settings["observability"] = [
+                    "logLevel": snapshot.logLevel,
+                    "logRetentionDays": snapshot.logRetentionDays,
+                ]
+                settings["aiAudit"] = [
+                    "enabled": snapshot.aiAuditEnabled,
+                    "retentionDays": snapshot.aiAuditRetentionDays,
+                    "maxBodySize": snapshot.aiAuditMaxBodySize,
+                    "logBodies": snapshot.aiAuditLogBodies,
+                ]
+                settings["devMode"] = snapshot.devMode
+            }
+        }
+    }
+}
+
+struct UsageTokenLimitEditableRow: Identifiable, Equatable, Sendable {
     let id: String
     let name: String
     var fiveHourTokens: Double

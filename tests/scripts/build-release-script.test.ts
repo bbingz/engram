@@ -8,6 +8,7 @@
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -25,6 +26,7 @@ const repoRoot = resolve(import.meta.dirname, '../..');
 const verifyScript = resolve(repoRoot, 'macos/scripts/release-verify.sh');
 const releaseScript = resolve(repoRoot, 'macos/scripts/build-release.sh');
 const releaseWorkflow = resolve(repoRoot, '.github/workflows/release.yml');
+const deployLocalScript = resolve(repoRoot, 'macos/scripts/deploy-local.sh');
 
 let workdir: string;
 
@@ -39,6 +41,16 @@ function buildStubApp(opts?: {
   const contents = join(app, 'Contents');
   mkdirSync(join(contents, 'MacOS'), { recursive: true });
   mkdirSync(join(contents, 'Helpers'), { recursive: true });
+  for (const framework of [
+    'EngramServiceCore',
+    'EngramCoreRead',
+    'EngramCoreWrite',
+    'GRDB-dynamic',
+  ]) {
+    mkdirSync(join(contents, 'Frameworks', `${framework}.framework`), {
+      recursive: true,
+    });
+  }
   writeFileSync(join(contents, 'MacOS', 'Engram'), '#!/bin/sh\nexit 0\n');
   writeFileSync(join(contents, 'Helpers', 'EngramMCP'), 'stub');
   writeFileSync(join(contents, 'Helpers', 'EngramService'), 'stub');
@@ -96,6 +108,7 @@ function buildBareApp(opts?: { forbidden?: string }): string {
 function runVerify(
   app: string,
   extraArgs: string[],
+  env: Record<string, string> = {},
 ): { code: number; out: string } {
   try {
     const out = execFileSync(
@@ -103,6 +116,7 @@ function runVerify(
       [verifyScript, app, '--adhoc', ...extraArgs],
       {
         encoding: 'utf8',
+        env: { ...process.env, ...env },
         stdio: ['ignore', 'pipe', 'pipe'],
       },
     );
@@ -204,6 +218,21 @@ describe('macOS release-verify bundle hygiene', () => {
       expect(code).not.toBe(0);
       expect(out).toContain('forbidden');
     });
+
+    it('fails closed when the hygiene find walk errors_repro', () => {
+      const app = buildStubApp();
+      const bin = join(workdir, 'bin');
+      const find = join(bin, 'find');
+      mkdirSync(bin);
+      writeFileSync(find, '#!/bin/sh\nexit 73\n');
+      chmodSync(find, 0o755);
+
+      const { code } = runVerify(app, ['--hygiene-only'], {
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+      });
+
+      expect(code).not.toBe(0);
+    });
   });
 
   describe.skipIf(process.platform !== 'darwin')('macOS version checks', () => {
@@ -234,6 +263,28 @@ describe('macOS release-verify bundle hygiene', () => {
         "CFBundleShortVersionString '0.1.0' != expected '1.0.3'",
       );
     });
+  });
+});
+
+describe('deploy-local process gate', () => {
+  it('re-terminates app and service while treating MCP as best effort (repro)', () => {
+    const source = readFileSync(deployLocalScript, 'utf8');
+    expect(source).toContain('BLOCKING_PROCESS_NAMES=(Engram EngramService)');
+    const waitLoop = source.slice(
+      source.indexOf('for _ in 1 2 3'),
+      source.indexOf('# Remove the existing install'),
+    );
+    const afterInstall = source.slice(
+      source.indexOf('ditto "$SRC_APP" "$DEST_APP"'),
+    );
+    expect(waitLoop).toContain('pkill -TERM -x EngramMCP');
+    expect(afterInstall).toContain('pkill -TERM -x EngramMCP');
+    expect(source).toMatch(
+      /for _ in 1 2 3[\s\S]*for process_name in "\$\{BLOCKING_PROCESS_NAMES\[@\]\}"; do[\s\S]*pkill -TERM -x "\$process_name"/,
+    );
+    expect(source).not.toContain(
+      'PROCESS_NAMES=(Engram EngramService EngramMCP)',
+    );
   });
 });
 
@@ -480,6 +531,15 @@ describe('macOS release build script: no silent non-notarizable fallback', () =>
 
 describe('macOS release notarization verification', () => {
   const script = readFileSync(verifyScript, 'utf8');
+
+  it('requires Hardened Runtime before accepting an ad-hoc archive_repro', () => {
+    const runtimeCheck = script.indexOf("grep -Eq 'flags=.*runtime'");
+    const adhocSuccess = script.lastIndexOf('if [ "$ADHOC" -eq 1 ]; then');
+
+    expect(runtimeCheck).toBeGreaterThan(-1);
+    expect(adhocSuccess).toBeGreaterThan(-1);
+    expect(runtimeCheck).toBeLessThan(adhocSuccess);
+  });
 
   it('checks both the stapled ticket and Gatekeeper assessment', () => {
     expect(script).toContain('--require-notarization');

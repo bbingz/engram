@@ -2,8 +2,9 @@ import XCTest
 
 final class SigningVerificationTest: XCTestCase {
     func testAppLaunches() throws {
+        continueAfterFailure = false
         let app = XCUIApplication()
-        app.launchArguments = ["--test-mode"]
+        TestLaunchConfig.mainWindow.configure(app)
         app.launch()
         XCTAssertTrue(app.exists)
     }

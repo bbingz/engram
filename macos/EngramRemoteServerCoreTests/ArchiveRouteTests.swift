@@ -2103,6 +2103,352 @@ final class ArchiveRouteTests: XCTestCase {
         }
     }
 
+    func testMCPGetSessionRedactsCompleteTranscriptBeforePaging_repro() async throws {
+        let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
+        try await app.test(.router) { client in
+            let machineID = "00000000-0000-4000-8000-000000000012"
+            let privateKey = """
+            -----BEGIN PRIVATE KEY-----
+            \(String(repeating: "A", count: 2_048))
+            -----END PRIVATE KEY-----
+            """
+            let transcript = "before\n\(privateKey)\nafter"
+            let redacted = "before\n[REDACTED]\nafter"
+            let raw = Data(transcript.utf8)
+            let rawDigest = ArchiveV2Hash.sha256(raw)
+            let (manifestBytes, manifestDigest) = try Self.manifest(
+                raw: raw,
+                machineID: machineID,
+                seed: "mcp-redact-before-page"
+            )
+
+            var response = try await client.execute(
+                uri: "/v2/archive/objects/\(rawDigest)",
+                method: .put,
+                headers: Self.headers(contentType: "application/octet-stream"),
+                body: ByteBuffer(data: raw)
+            )
+            XCTAssertEqual(response.status.code, 201)
+            response = try await client.execute(
+                uri: "/v2/archive/manifests/\(manifestDigest)",
+                method: .put,
+                headers: Self.headers(contentType: "application/json"),
+                body: ByteBuffer(data: manifestBytes)
+            )
+            XCTAssertEqual(response.status.code, 201)
+
+            var pages: [String] = []
+            var offset = 0
+            while pages.count < 20 {
+                response = try await client.execute(
+                    uri: "/mcp",
+                    method: .post,
+                    headers: Self.mcpHeaders(method: "tools/call", name: "archive_get_session"),
+                    body: try Self.mcpToolCallBody(
+                        name: "archive_get_session",
+                        arguments: [
+                            "manifest_sha256": manifestDigest,
+                            "offset": offset,
+                            "max_bytes": 11,
+                        ]
+                    )
+                )
+                let structured = try Self.mcpStructuredContent(response)
+                let page = try XCTUnwrap(structured["text"] as? String)
+                XCTAssertFalse(page.contains("PRIVATE KEY"), page)
+                XCTAssertFalse(page.contains(String(repeating: "A", count: 32)), page)
+                XCTAssertEqual(
+                    structured["totalBytes"] as? Int,
+                    raw.count,
+                    "archive offsets and totals remain raw-byte cursors after atomic redaction"
+                )
+                pages.append(page)
+                guard let next = structured["nextOffset"] as? Int else { break }
+                XCTAssertGreaterThan(next, offset)
+                offset = next
+            }
+
+            XCTAssertEqual(pages.joined(), redacted)
+        }
+    }
+
+    // A small redacted MCP page must retain the archive window-read guarantee:
+    // a later non-overlapping chunk is neither fetched nor decrypted.
+    func testMCPGetSessionRedactionSkipsNonOverlappingChunks_repro() async throws {
+        let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
+        try await app.test(.router) { client in
+            let machineID = "00000000-0000-4000-8000-000000000013"
+            let head = Data(
+                repeating: UInt8(ascii: "a"),
+                count: Int(ArchiveSourceManifest.rawChunkSize)
+            )
+            let tail = Data("non-overlapping-tail".utf8)
+            let raw = head + tail
+            let (manifestBytes, manifestDigest) = try Self.manifest(
+                chunks: [head, tail],
+                machineID: machineID,
+                seed: "mcp-redact-window"
+            )
+
+            for chunk in [head, tail] {
+                let digest = ArchiveV2Hash.sha256(chunk)
+                let response = try await client.execute(
+                    uri: "/v2/archive/objects/\(digest)",
+                    method: .put,
+                    headers: Self.headers(contentType: "application/octet-stream"),
+                    body: ByteBuffer(data: chunk)
+                )
+                XCTAssertEqual(response.status.code, 201)
+            }
+            var response = try await client.execute(
+                uri: "/v2/archive/manifests/\(manifestDigest)",
+                method: .put,
+                headers: Self.headers(contentType: "application/json"),
+                body: ByteBuffer(data: manifestBytes)
+            )
+            XCTAssertEqual(response.status.code, 201)
+
+            try FileManager.default.removeItem(
+                at: archiveObjectURL(digest: ArchiveV2Hash.sha256(tail))
+            )
+            response = try await client.execute(
+                uri: "/mcp",
+                method: .post,
+                headers: Self.mcpHeaders(method: "tools/call", name: "archive_get_session"),
+                body: try Self.mcpToolCallBody(
+                    name: "archive_get_session",
+                    arguments: [
+                        "manifest_sha256": manifestDigest,
+                        "offset": 0,
+                        "max_bytes": 4_096,
+                    ]
+                )
+            )
+
+            XCTAssertEqual(response.status.code, 200)
+            let structured = try Self.mcpStructuredContent(response)
+            XCTAssertEqual(structured["text"] as? String, String(repeating: "a", count: 4_096))
+            XCTAssertEqual(structured["totalBytes"] as? Int, raw.count)
+        }
+    }
+
+    func testMCPGetSessionRedactsPEMSpanningArchiveChunks_repro() async throws {
+        let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
+        try await app.test(.router) { client in
+            let machineID = "00000000-0000-4000-8000-000000000014"
+            let begin = Data("\n-----BEGIN PRIVATE KEY-----\n".utf8)
+            var head = Data(
+                repeating: UInt8(ascii: "a"),
+                count: Int(ArchiveSourceManifest.rawChunkSize) - begin.count
+            )
+            head.append(begin)
+            let tail = Data(
+                "\(String(repeating: "B", count: 2_048))\n-----END PRIVATE KEY-----\nafter".utf8
+            )
+            let (manifestBytes, manifestDigest) = try Self.manifest(
+                chunks: [head, tail],
+                machineID: machineID,
+                seed: "mcp-redact-chunk-boundary"
+            )
+
+            for chunk in [head, tail] {
+                let digest = ArchiveV2Hash.sha256(chunk)
+                let response = try await client.execute(
+                    uri: "/v2/archive/objects/\(digest)",
+                    method: .put,
+                    headers: Self.headers(contentType: "application/octet-stream"),
+                    body: ByteBuffer(data: chunk)
+                )
+                XCTAssertEqual(response.status.code, 201)
+            }
+            var response = try await client.execute(
+                uri: "/v2/archive/manifests/\(manifestDigest)",
+                method: .put,
+                headers: Self.headers(contentType: "application/json"),
+                body: ByteBuffer(data: manifestBytes)
+            )
+            XCTAssertEqual(response.status.code, 201)
+
+            response = try await client.execute(
+                uri: "/mcp",
+                method: .post,
+                headers: Self.mcpHeaders(method: "tools/call", name: "archive_get_session"),
+                body: try Self.mcpToolCallBody(
+                    name: "archive_get_session",
+                    arguments: [
+                        "manifest_sha256": manifestDigest,
+                        "offset": head.count - 40,
+                        "max_bytes": 64,
+                    ]
+                )
+            )
+
+            let structured = try Self.mcpStructuredContent(response)
+            let text = try XCTUnwrap(structured["text"] as? String)
+            XCTAssertTrue(text.contains("[REDACTED]"), text)
+            XCTAssertFalse(text.contains("PRIVATE KEY"), text)
+            XCTAssertFalse(text.contains(String(repeating: "B", count: 32)), text)
+            XCTAssertGreaterThan(structured["nextOffset"] as? Int ?? 0, head.count)
+        }
+    }
+
+    func testMCPGetSessionSearchesBackwardForLongPEMBeforeRequestedOffset_repro() async throws {
+        let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
+        try await app.test(.router) { client in
+            let machineID = "00000000-0000-4000-8000-000000000015"
+            let raw = Data(
+                ("before\n-----BEGIN PRIVATE KEY-----\n"
+                    + String(repeating: "B", count: 160 * 1_024)
+                    + "\n-----END PRIVATE KEY-----\nafter").utf8
+            )
+            let rawDigest = ArchiveV2Hash.sha256(raw)
+            let (manifestBytes, manifestDigest) = try Self.manifest(
+                raw: raw,
+                machineID: machineID,
+                seed: "mcp-redact-long-pem"
+            )
+
+            var response = try await client.execute(
+                uri: "/v2/archive/objects/\(rawDigest)",
+                method: .put,
+                headers: Self.headers(contentType: "application/octet-stream"),
+                body: ByteBuffer(data: raw)
+            )
+            XCTAssertEqual(response.status.code, 201)
+            response = try await client.execute(
+                uri: "/v2/archive/manifests/\(manifestDigest)",
+                method: .put,
+                headers: Self.headers(contentType: "application/json"),
+                body: ByteBuffer(data: manifestBytes)
+            )
+            XCTAssertEqual(response.status.code, 201)
+
+            response = try await client.execute(
+                uri: "/mcp",
+                method: .post,
+                headers: Self.mcpHeaders(method: "tools/call", name: "archive_get_session"),
+                body: try Self.mcpToolCallBody(
+                    name: "archive_get_session",
+                    arguments: [
+                        "manifest_sha256": manifestDigest,
+                        "offset": 80_000,
+                        "max_bytes": 64,
+                    ]
+                )
+            )
+
+            let structured = try Self.mcpStructuredContent(response)
+            let text = try XCTUnwrap(structured["text"] as? String)
+            XCTAssertEqual(text, TranscriptRedactionPolicy.redactionToken)
+            XCTAssertFalse(text.contains(String(repeating: "B", count: 32)), text)
+            XCTAssertGreaterThan(structured["nextOffset"] as? Int ?? 0, 160 * 1_024)
+        }
+    }
+
+    func testMCPGetSessionSearchesBackwardForLongTokenBeforeRequestedOffset_repro() async throws {
+        let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
+        try await app.test(.router) { client in
+            let machineID = "00000000-0000-4000-8000-000000000017"
+            let secret = String(repeating: "T", count: 160 * 1_024)
+            let raw = Data("before\ntoken=\(secret)\nafter".utf8)
+            let rawDigest = ArchiveV2Hash.sha256(raw)
+            let (manifestBytes, manifestDigest) = try Self.manifest(
+                raw: raw,
+                machineID: machineID,
+                seed: "mcp-redact-long-token"
+            )
+
+            var response = try await client.execute(
+                uri: "/v2/archive/objects/\(rawDigest)",
+                method: .put,
+                headers: Self.headers(contentType: "application/octet-stream"),
+                body: ByteBuffer(data: raw)
+            )
+            XCTAssertEqual(response.status.code, 201)
+            response = try await client.execute(
+                uri: "/v2/archive/manifests/\(manifestDigest)",
+                method: .put,
+                headers: Self.headers(contentType: "application/json"),
+                body: ByteBuffer(data: manifestBytes)
+            )
+            XCTAssertEqual(response.status.code, 201)
+
+            response = try await client.execute(
+                uri: "/mcp",
+                method: .post,
+                headers: Self.mcpHeaders(method: "tools/call", name: "archive_get_session"),
+                body: try Self.mcpToolCallBody(
+                    name: "archive_get_session",
+                    arguments: [
+                        "manifest_sha256": manifestDigest,
+                        "offset": 80_000,
+                        "max_bytes": 64,
+                    ]
+                )
+            )
+
+            let structured = try Self.mcpStructuredContent(response)
+            let text = try XCTUnwrap(structured["text"] as? String)
+            XCTAssertEqual(text, TranscriptRedactionPolicy.redactionToken)
+            XCTAssertFalse(text.contains(String(repeating: "T", count: 32)), text)
+            XCTAssertGreaterThan(structured["nextOffset"] as? Int ?? 0, secret.utf8.count)
+        }
+    }
+
+    func testMCPGetSessionKeepsRedactionRangesAlignedWithInvalidUTF8_repro() async throws {
+        let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
+        try await app.test(.router) { client in
+            let machineID = "00000000-0000-4000-8000-000000000016"
+            var raw = Data(repeating: 0xFF, count: 64)
+            raw.append(Data(
+                ("-----BEGIN PRIVATE KEY-----\n"
+                    + String(repeating: "S", count: 2_048)
+                    + "\n-----END PRIVATE KEY-----").utf8
+            ))
+            let rawDigest = ArchiveV2Hash.sha256(raw)
+            let (manifestBytes, manifestDigest) = try Self.manifest(
+                raw: raw,
+                machineID: machineID,
+                seed: "mcp-redact-invalid-utf8"
+            )
+
+            var response = try await client.execute(
+                uri: "/v2/archive/objects/\(rawDigest)",
+                method: .put,
+                headers: Self.headers(contentType: "application/octet-stream"),
+                body: ByteBuffer(data: raw)
+            )
+            XCTAssertEqual(response.status.code, 201)
+            response = try await client.execute(
+                uri: "/v2/archive/manifests/\(manifestDigest)",
+                method: .put,
+                headers: Self.headers(contentType: "application/json"),
+                body: ByteBuffer(data: manifestBytes)
+            )
+            XCTAssertEqual(response.status.code, 201)
+
+            response = try await client.execute(
+                uri: "/mcp",
+                method: .post,
+                headers: Self.mcpHeaders(method: "tools/call", name: "archive_get_session"),
+                body: try Self.mcpToolCallBody(
+                    name: "archive_get_session",
+                    arguments: [
+                        "manifest_sha256": manifestDigest,
+                        "offset": 0,
+                        "max_bytes": raw.count,
+                    ]
+                )
+            )
+
+            let structured = try Self.mcpStructuredContent(response)
+            let text = try XCTUnwrap(structured["text"] as? String)
+            XCTAssertTrue(text.contains(TranscriptRedactionPolicy.redactionToken), text)
+            XCTAssertFalse(text.contains("PRIVATE KEY"), text)
+            XCTAssertFalse(text.contains(String(repeating: "S", count: 32)), text)
+        }
+    }
+
     private func archiveObjectURL(digest: String) -> URL {
         tempDir
             .appendingPathComponent("archive/objects/sha256", isDirectory: true)
@@ -2342,6 +2688,47 @@ final class ArchiveRouteTests: XCTestCase {
                     rawByteCount: Int64(raw.count)
                 )
             ]
+        }
+        let manifest = try ArchiveSourceManifest(
+            captureID: ArchiveV2Hash.sha256(Data("capture-\(seed)".utf8)),
+            machineID: machineID,
+            source: "codex",
+            locator: "/private/route-test/\(seed).jsonl",
+            sessionID: sessionID,
+            capturedAt: "2026-07-11T00:00:00.000Z",
+            generation: try ArchiveSourceGeneration(
+                device: 1,
+                inode: Int64(seed.utf8.reduce(UInt64(0)) { $0 + UInt64($1) }),
+                size: Int64(raw.count),
+                mtimeNs: 1,
+                ctimeNs: 1,
+                mode: 0o100600
+            ),
+            wholeSourceSHA256: ArchiveV2Hash.sha256(raw),
+            rawByteCount: Int64(raw.count),
+            chunks: chunks,
+            replayLayout: try ArchiveReplayLayout(
+                strategy: .singleFile,
+                relativePaths: ["route-test/\(seed).jsonl"]
+            )
+        )
+        let bytes = try ArchiveCanonicalJSON.encode(manifest)
+        return (bytes, ArchiveV2Hash.sha256(bytes))
+    }
+
+    private static func manifest(
+        chunks rawChunks: [Data],
+        machineID: String,
+        seed: String,
+        sessionID: String? = "route-session"
+    ) throws -> (Data, String) {
+        let raw = rawChunks.reduce(into: Data()) { $0.append($1) }
+        let chunks = try rawChunks.enumerated().map { ordinal, chunk in
+            try ArchiveChunkReference(
+                ordinal: ordinal,
+                rawSHA256: ArchiveV2Hash.sha256(chunk),
+                rawByteCount: Int64(chunk.count)
+            )
         }
         let manifest = try ArchiveSourceManifest(
             captureID: ArchiveV2Hash.sha256(Data("capture-\(seed)".utf8)),

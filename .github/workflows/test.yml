@@ -157,7 +157,7 @@ jobs:
         run: bash scripts/check-archive-v2-safety.sh
       # Pure-rg text gates (swift-conventions, product-boundary-scripts) already run on
       # ubuntu via `npm run test:coverage`; keep macos-vitest for macOS-only scripts.
-      - run: npm test -- tests/scripts/build-release-script.test.ts tests/scripts/remote-server-package.test.ts tests/scripts/swift-boundary-scripts.test.ts tests/scripts/archive-v2-safety-gate.test.ts tests/scripts/plist-gate.test.ts tests/scripts/invariants-ledger.test.ts tests/scripts/version-guard.test.ts
+      - run: npm test -- tests/scripts/build-release-script.test.ts tests/scripts/remote-server-package.test.ts tests/scripts/swift-boundary-scripts.test.ts tests/scripts/archive-v2-safety-gate.test.ts tests/scripts/plist-gate.test.ts tests/scripts/invariants-ledger.test.ts tests/scripts/version-guard.test.ts tests/scripts/hq-live-hardening.test.ts
       - name: Check test fixture schema and freshness
         run: npm run check:fixtures
       - name: Check MCP contract fixture freshness
@@ -191,10 +191,7 @@ jobs:
           restore-keys: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-
 
       - name: Generate Xcode project
-        run: |
-          cd macos
-          xcodegen generate
-          git diff --exit-code Engram.xcodeproj
+        run: scripts/check-xcodeproj-drift.sh
 
       - name: Generate test fixtures
         run: |
@@ -256,7 +253,7 @@ jobs:
         run: bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
 
       - name: Generate Xcode project
-        run: cd macos && xcodegen generate
+        run: scripts/check-xcodeproj-drift.sh
 
       - name: Run remote server unit tests
         run: |
@@ -343,7 +340,7 @@ jobs:
           restore-keys: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-
       - name: Install xcodegen
         run: bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
-      - run: cd macos && xcodegen generate
+      - run: scripts/check-xcodeproj-drift.sh
       - run: npm run generate:fixtures
       - name: Dismiss macOS setup assistant
         run: |
@@ -419,7 +416,7 @@ jobs:
           restore-keys: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-
       - name: Install xcodegen
         run: bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
-      - run: cd macos && xcodegen generate
+      - run: scripts/check-xcodeproj-drift.sh
       - run: npm run generate:fixtures
       - name: Dismiss macOS setup assistant
         run: |

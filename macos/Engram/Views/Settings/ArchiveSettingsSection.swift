@@ -298,7 +298,7 @@ enum ArchiveRemoteTelemetryPresentation {
 }
 
 struct ArchiveSettingsSection: View {
-    @Environment(EngramServiceClient.self) private var serviceClient
+    @Environment(\.engramServiceClient) private var serviceClient
 
     @State private var archiveStatus: EngramServiceArchiveV2StatusResponse?
     @State private var status: EngramServiceArchiveReclamationStatusResponse?

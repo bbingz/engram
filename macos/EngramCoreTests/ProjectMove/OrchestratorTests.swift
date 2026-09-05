@@ -6,6 +6,8 @@
 import Foundation
 import GRDB
 import XCTest
+import Darwin
+@testable import EngramCoreRead
 @testable import EngramCoreWrite
 
 final class OrchestratorTests: XCTestCase {
@@ -33,6 +35,29 @@ final class OrchestratorTests: XCTestCase {
     }
 
     // MARK: - validation
+
+    func testDefaultProjectMoveLockUsesInjectedHomeDirectory_repro() {
+        let options = RunProjectMoveOptions(
+            src: "/missing/source",
+            dst: "/missing/destination",
+            homeDirectory: tempRoot,
+            lockPath: nil
+        )
+        let expected = tempRoot
+            .appendingPathComponent(".engram", isDirectory: true)
+            .appendingPathComponent(".project-move.lock")
+            .path
+
+        // docs/invariants.md #6: hermetic tests must never fall through to ~/.engram.
+        XCTAssertEqual(ProjectMoveOrchestrator.resolvedLockPath(for: options), expected)
+        XCTAssertEqual(
+            ProjectMoveOrchestrator.resolvedLockPath(
+                homeDirectory: tempRoot,
+                requestedLockPath: nil
+            ),
+            expected
+        )
+    }
 
     func testValidationRejectsEmptyPaths() async {
         do {
@@ -76,6 +101,37 @@ final class OrchestratorTests: XCTestCase {
         } catch {
             XCTFail("expected dstInsideSrc, got \(error)")
         }
+    }
+
+    func testRunExpandsTildeUsingConfiguredHomeBeforeCanonicalization_repro() async throws {
+        let (src, _) = try makeProjectFixture(name: "tilde-src")
+        let dst = tempRoot.appendingPathComponent("Code/tilde-dst").path
+
+        let result = try await ProjectMoveOrchestrator.run(
+            writer: writer,
+            options: makeOptions(src: "~/Code/tilde-src", dst: "~/Code/tilde-dst")
+        )
+
+        XCTAssertEqual(result.state, .committed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: src))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dst))
+    }
+
+    func testRunTrimsPathBeforeTildeExpansion_repro() async throws {
+        let (src, _) = try makeProjectFixture(name: "tilde-spaced-src")
+        let dst = tempRoot.appendingPathComponent("Code/tilde-spaced-dst").path
+
+        let result = try await ProjectMoveOrchestrator.run(
+            writer: writer,
+            options: makeOptions(
+                src: "  ~/Code/tilde-spaced-src\n",
+                dst: " ~/Code/tilde-spaced-dst "
+            )
+        )
+
+        XCTAssertEqual(result.state, .committed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: src))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dst))
     }
 
     func testValidationCanonicalizesParentSegments() async throws {
@@ -269,6 +325,48 @@ final class OrchestratorTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: lockPath))
     }
 
+    func testHappyPathPatchesCopilotWorkspaceAndReparseKeepsNewCwd_repro() async throws {
+        let (src, _) = try makeProjectFixture(name: "copilot-source")
+        let dst = tempRoot.appendingPathComponent("copilot-renamed").path
+        let sessionDir = tempRoot
+            .appendingPathComponent(".copilot/session-state/copilot-move", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        let workspace = sessionDir.appendingPathComponent("workspace.yaml")
+        try """
+        id: copilot-move
+        cwd: \(src)
+        created_at: 2026-06-01T10:00:00.000Z
+        updated_at: 2026-06-01T10:02:00.000Z
+        """.write(to: workspace, atomically: true, encoding: .utf8)
+        let events = sessionDir.appendingPathComponent("events.jsonl")
+        try """
+        {"type":"user.message","timestamp":"2026-06-01T10:01:00.000Z","data":{"content":"Move this project"}}
+        {"type":"assistant.message","timestamp":"2026-06-01T10:02:00.000Z","data":{"content":"Moving it"}}
+        """.appending("\n").write(to: events, atomically: true, encoding: .utf8)
+
+        let result = try await ProjectMoveOrchestrator.run(
+            writer: writer,
+            options: makeOptions(src: src, dst: dst)
+        )
+
+        XCTAssertEqual(result.state, .committed)
+        let patchedWorkspace = try String(contentsOf: workspace, encoding: .utf8)
+        XCTAssertTrue(patchedWorkspace.contains(dst), patchedWorkspace)
+        XCTAssertFalse(patchedWorkspace.contains(src), patchedWorkspace)
+        let reparsed = try await CopilotAdapter(
+            sessionRoot: tempRoot.appendingPathComponent(".copilot").path
+        ).parseSessionInfo(locator: events.path)
+        guard case .success(let info) = reparsed else {
+            return XCTFail("Copilot session must remain parseable after project move")
+        }
+        XCTAssertEqual(info.cwd, dst)
+        XCTAssertFalse(
+            ReviewScan.run(oldPath: src, newPath: dst, homeDirectory: tempRoot)
+                .own.contains(workspace.path),
+            "post-move review must not leave workspace.yaml pointing at the old cwd"
+        )
+    }
+
     func testAllCodexStoresArePatchedAndCommitted() async throws {
         let (src, _) = try makeProjectFixture(name: "codex-proj")
         let codexActive = tempRoot.appendingPathComponent(
@@ -376,6 +474,83 @@ final class OrchestratorTests: XCTestCase {
             )
         }
         XCTAssertEqual(result.review.own, [])
+    }
+
+    func testOpenCodeSqliteCountsAndPatchesCanonicalDarwinAlias_repro() async throws {
+        let token = UUID().uuidString
+        let src = "/tmp/engram-opencode-alias-src-\(token)"
+        let dst = "/tmp/engram-opencode-alias-dst-\(token)"
+        try FileManager.default.createDirectory(atPath: src, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: src) }
+        let resolved = try XCTUnwrap(Darwin.realpath(src, nil))
+        defer { free(resolved) }
+        let canonicalSrc = String(cString: resolved)
+        XCTAssertNotEqual(src, canonicalSrc)
+
+        let openCodeRoot = tempRoot
+            .appendingPathComponent(".local/share/opencode", isDirectory: true)
+        let openCodeDb = openCodeRoot.appendingPathComponent("opencode.db")
+        try makeOpenCodeDatabase(
+            at: openCodeDb,
+            rows: [
+                ("open-canonical", canonicalSrc + "/nested"),
+                ("open-lookalike", canonicalSrc + "-lookalike"),
+            ]
+        )
+
+        let oldPaths = projectMovePatchSourcePaths(src)
+        let counted = try OpenCodeSQLiteProjectMove.countReferences(
+            root: openCodeRoot.path,
+            oldPaths: oldPaths
+        )
+        XCTAssertEqual(counted.sessionIds, ["open-canonical"])
+        let patched = try OpenCodeSQLiteProjectMove.patch(
+            root: openCodeRoot.path,
+            oldPaths: oldPaths,
+            newPath: dst
+        )
+        XCTAssertEqual(patched.sessionIds, ["open-canonical"])
+
+        let queue = try DatabaseQueue(path: openCodeDb.path)
+        try await queue.write { db in
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT directory FROM session WHERE id = 'open-canonical'"
+                ),
+                dst + "/nested"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT directory FROM session WHERE id = 'open-lookalike'"
+                ),
+                canonicalSrc + "-lookalike"
+            )
+            let canonicalDst = try XCTUnwrap(
+                projectMovePatchSourcePaths(dst).first(where: { $0 != dst })
+            )
+            try db.execute(
+                sql: "UPDATE session SET directory = ? WHERE id = 'open-canonical'",
+                arguments: [canonicalDst + "/nested"]
+            )
+        }
+
+        try OpenCodeSQLiteProjectMove.reverse(
+            databasePath: openCodeDb.path,
+            sessionIds: patched.sessionIds,
+            oldPaths: projectMovePatchSourcePaths(dst),
+            newPath: src
+        )
+        try await queue.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT directory FROM session WHERE id = 'open-canonical'"
+                ),
+                src + "/nested"
+            )
+        }
     }
 
     func testOpenCodeSqliteRowsRollBackWhenLaterSourcePatchFails() async throws {
@@ -697,6 +872,386 @@ final class OrchestratorTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: lockPath))
     }
 
+    func testClaudeSharedEncodedDirectoryRejectsForeignStructuredCwd_repro() async throws {
+        let (src, claudeDir) = try makeProjectFixture(name: "foo_bar")
+        let sibling = tempRoot.appendingPathComponent("Code/foo-bar").path
+        let dst = tempRoot.appendingPathComponent("Code/renamed").path
+        XCTAssertEqual(ClaudeCodeProjectDir.encode(src), ClaudeCodeProjectDir.encode(sibling))
+        try """
+        {"sessionId":"src","cwd":"\(src)","type":"summary"}
+        {"sessionId":"sibling","cwd":"\(sibling)","type":"summary"}
+        """.write(
+            to: claudeDir.appendingPathComponent("shared.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        do {
+            _ = try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: makeOptions(src: src, dst: dst)
+            )
+            XCTFail("expected SharedEncodingCollisionError")
+        } catch let error as SharedEncodingCollisionError {
+            XCTAssertEqual(error.sourceId, .claudeCode)
+            XCTAssertEqual(error.sharingCwds, [sibling])
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: src))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dst))
+    }
+
+    func testClaudeNoopEncodedDirectoryRejectsForeignDestinationCwd_repro() async throws {
+        let (src, claudeDir) = try makeProjectFixture(name: "foo_bar")
+        let dst = tempRoot.appendingPathComponent("Code/foo-bar").path
+        XCTAssertEqual(ClaudeCodeProjectDir.encode(src), ClaudeCodeProjectDir.encode(dst))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dst))
+        try """
+        {"sessionId":"src","cwd":"\(src)","type":"summary"}
+        {"sessionId":"dst-owner","cwd":"\(dst)","type":"summary"}
+        """.write(
+            to: claudeDir.appendingPathComponent("shared-noop.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        do {
+            _ = try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: makeOptions(src: src, dst: dst)
+            )
+            XCTFail("expected SharedEncodingCollisionError")
+        } catch let error as SharedEncodingCollisionError {
+            XCTAssertEqual(error.sourceId, .claudeCode)
+            XCTAssertEqual(error.sharingCwds, [dst])
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: src))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dst))
+    }
+
+    func testCommandCodeLiveSlugDirectoryWithoutCwdIsNotRenamed_repro() async throws {
+        let (src, _) = try makeProjectFixture(name: "commandcode-src")
+        let dst = tempRoot.appendingPathComponent("Code/commandcode-dst").path
+        let commandCodeRoot = tempRoot.appendingPathComponent(".commandcode/projects", isDirectory: true)
+        let liveOldSlug = src
+            .lowercased()
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .joined(separator: "-")
+        let liveNewSlug = dst
+            .lowercased()
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .joined(separator: "-")
+        let plantedDirectory = commandCodeRoot.appendingPathComponent(liveOldSlug, isDirectory: true)
+        let newDirectory = commandCodeRoot.appendingPathComponent(liveNewSlug, isDirectory: true)
+        try FileManager.default.createDirectory(at: plantedDirectory, withIntermediateDirectories: true)
+        try #"{"sessionId":"commandcode-session","role":"user"}"#
+            .appending("\n")
+            .write(
+                to: plantedDirectory.appendingPathComponent("commandcode-session.jsonl"),
+                atomically: true,
+                encoding: .utf8
+            )
+
+        _ = try await ProjectMoveOrchestrator.run(
+            writer: writer,
+            options: makeOptions(src: src, dst: dst)
+        )
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: plantedDirectory.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: newDirectory.path))
+    }
+
+    func testDarwinTmpAliasKeepsQwenDirectoryAndPatchedCwdLexical_repro() async throws {
+        let token = UUID().uuidString
+        let src = "/tmp/engram-project-move-src-\(token)"
+        let dst = "/tmp/engram-project-move-dst-\(token)"
+        try FileManager.default.createDirectory(atPath: src, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(atPath: src)
+            try? FileManager.default.removeItem(atPath: dst)
+        }
+        let pointer = try XCTUnwrap(Darwin.realpath(src, nil))
+        defer { free(pointer) }
+        let canonicalSrc = String(cString: pointer)
+        let canonicalDst = dst.replacingOccurrences(of: "/tmp/", with: "/private/tmp/")
+        XCTAssertNotEqual(src, canonicalSrc)
+
+        let qwenRoot = tempRoot.appendingPathComponent(".qwen/projects", isDirectory: true)
+        let oldDir = qwenRoot.appendingPathComponent(SessionSources.encodeQwen(canonicalSrc), isDirectory: true)
+        let lexicalNewDir = qwenRoot.appendingPathComponent(
+            SessionSources.encodeQwen(dst),
+            isDirectory: true
+        )
+        let canonicalNewDir = qwenRoot.appendingPathComponent(
+            SessionSources.encodeQwen(canonicalDst),
+            isDirectory: true
+        )
+        XCTAssertNotEqual(lexicalNewDir.path, canonicalNewDir.path)
+        try FileManager.default.createDirectory(at: oldDir, withIntermediateDirectories: true)
+        try #"{"type":"user","sessionId":"darwin-alias","cwd":"\#(canonicalSrc)","message":{"parts":[{"text":"move"}]}}"#
+            .appending("\n")
+            .write(to: oldDir.appendingPathComponent("session.jsonl"), atomically: true, encoding: .utf8)
+
+        _ = try await ProjectMoveOrchestrator.run(
+            writer: writer,
+            options: makeOptions(src: src, dst: dst)
+        )
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: oldDir.path))
+        let movedSession = lexicalNewDir.appendingPathComponent("session.jsonl")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: movedSession.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: canonicalNewDir.path))
+        let patched = try String(contentsOf: movedSession, encoding: .utf8)
+        XCTAssertTrue(patched.contains(#""cwd":"\#(dst)""#), patched)
+        XCTAssertFalse(patched.contains(canonicalSrc), patched)
+    }
+
+    func testKimiRegistryAndLocalAndKaosWorkspaceDirectoriesMove_repro() async throws {
+        let (src, _) = try makeProjectFixture(name: "kimi-project")
+        let dst = tempRoot.appendingPathComponent("kimi-project-renamed").path
+        let kimiHome = tempRoot.appendingPathComponent(".kimi", isDirectory: true)
+        let kimiRoot = kimiHome.appendingPathComponent("sessions", isDirectory: true)
+        let config = kimiHome.appendingPathComponent("kimi.json")
+        try FileManager.default.createDirectory(at: kimiRoot, withIntermediateDirectories: true)
+        let configObject: [String: Any] = [
+            "theme": "dark",
+            "work_dirs": [
+                ["path": src, "kaos": "local", "last_session_id": "kimi-local", "extra": "keep"],
+                ["path": src, "kaos": "remote", "last_session_id": "kimi-remote"],
+            ],
+        ]
+        try JSONSerialization.data(withJSONObject: configObject, options: [.sortedKeys])
+            .write(to: config)
+
+        let oldLocal = kimiRoot.appendingPathComponent(SessionSources.encodeKimi(src))
+        let oldRemote = kimiRoot.appendingPathComponent(
+            SessionSources.encodeKimi(src, kaos: "remote")
+        )
+        try FileManager.default.createDirectory(at: oldLocal, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: oldRemote, withIntermediateDirectories: true)
+        try "{}\n".write(
+            to: oldLocal.appendingPathComponent("context.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "{}\n".write(
+            to: oldRemote.appendingPathComponent("context.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let result = try await ProjectMoveOrchestrator.run(
+            writer: writer,
+            options: makeOptions(src: src, dst: dst)
+        )
+
+        XCTAssertEqual(result.state, .committed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: oldLocal.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: oldRemote.path))
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: kimiRoot.appendingPathComponent(SessionSources.encodeKimi(dst)).path
+            )
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: kimiRoot.appendingPathComponent(
+                    SessionSources.encodeKimi(dst, kaos: "remote")
+                ).path
+            )
+        )
+
+        let updated = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: config)) as? [String: Any]
+        )
+        XCTAssertEqual(updated["theme"] as? String, "dark")
+        let workDirs = try XCTUnwrap(updated["work_dirs"] as? [[String: Any]])
+        XCTAssertEqual(workDirs.compactMap { $0["path"] as? String }, [dst, dst])
+        XCTAssertEqual(workDirs.first?["extra"] as? String, "keep")
+    }
+
+    func testKimiRegistryAndKaosWorkspaceRollBackAfterLaterPatchFailure_repro() async throws {
+        let (src, _) = try makeProjectFixture(name: "kimi-rollback")
+        let dst = tempRoot.appendingPathComponent("kimi-rollback-renamed").path
+        let kimiHome = tempRoot.appendingPathComponent(".kimi", isDirectory: true)
+        let kimiRoot = kimiHome.appendingPathComponent("sessions", isDirectory: true)
+        let config = kimiHome.appendingPathComponent("kimi.json")
+        try FileManager.default.createDirectory(at: kimiRoot, withIntermediateDirectories: true)
+        let original = #"{"theme":"dark","work_dirs":[{"path":"\#(src)","kaos":"remote","last_session_id":"s"}]}"#
+        try original.write(to: config, atomically: true, encoding: .utf8)
+
+        let oldWorkspace = kimiRoot.appendingPathComponent(
+            SessionSources.encodeKimi(src, kaos: "remote")
+        )
+        let newWorkspace = kimiRoot.appendingPathComponent(
+            SessionSources.encodeKimi(dst, kaos: "remote")
+        )
+        try FileManager.default.createDirectory(at: oldWorkspace, withIntermediateDirectories: true)
+        try "{}\n".write(
+            to: oldWorkspace.appendingPathComponent("context.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let badFile = tempRoot.appendingPathComponent(".gemini/antigravity-cli/brain/bad.jsonl")
+        try FileManager.default.createDirectory(
+            at: badFile.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        var badData = Data("{\"cwd\":\"\(src)\"}".utf8)
+        badData.append(0xff)
+        try badData.write(to: badFile)
+
+        do {
+            _ = try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: makeOptions(src: src, dst: dst)
+            )
+            XCTFail("expected InvalidUtf8Error")
+        } catch is InvalidUtf8Error {
+            // expected
+        } catch {
+            XCTFail("expected InvalidUtf8Error, got \(error)")
+        }
+
+        XCTAssertEqual(try String(contentsOf: config, encoding: .utf8), original)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: oldWorkspace.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: newWorkspace.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: src))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dst))
+    }
+
+    func testKimiRegistryDestinationOwnershipRejectsSharedEncodingBeforeMutation_repro() async throws {
+        let (src, _) = try makeProjectFixture(name: "kimi-collision")
+        let dst = tempRoot.appendingPathComponent("kimi-destination-owner").path
+        let kimiHome = tempRoot.appendingPathComponent(".kimi", isDirectory: true)
+        let kimiRoot = kimiHome.appendingPathComponent("sessions", isDirectory: true)
+        let config = kimiHome.appendingPathComponent("kimi.json")
+        try FileManager.default.createDirectory(at: kimiRoot, withIntermediateDirectories: true)
+        let original = #"{"work_dirs":[{"path":"\#(src)","kaos":"local"},{"path":"\#(dst)","kaos":"local"}]}"#
+        try original.write(to: config, atomically: true, encoding: .utf8)
+
+        let oldWorkspace = kimiRoot.appendingPathComponent(SessionSources.encodeKimi(src))
+        try FileManager.default.createDirectory(at: oldWorkspace, withIntermediateDirectories: true)
+
+        do {
+            _ = try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: makeOptions(src: src, dst: dst)
+            )
+            XCTFail("expected SharedEncodingCollisionError")
+        } catch let error as SharedEncodingCollisionError {
+            XCTAssertEqual(error.sourceId, .kimi)
+            XCTAssertEqual(error.sharingCwds, [dst])
+        } catch {
+            XCTFail("expected SharedEncodingCollisionError, got \(error)")
+        }
+
+        XCTAssertEqual(try String(contentsOf: config, encoding: .utf8), original)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: oldWorkspace.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: src))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dst))
+    }
+
+    func testCommandCodeSharedLiveSlugRejectsSiblingCwd_repro() async throws {
+        let (src, _) = try makeProjectFixture(name: "foo_bar")
+        let sibling = tempRoot.appendingPathComponent("Code/foo-bar").path
+        let dst = tempRoot.appendingPathComponent("Code/renamed").path
+        let encoded = SessionSources.encodeCommandCode(src)
+        XCTAssertEqual(encoded, SessionSources.encodeCommandCode(sibling))
+        let sharedDirectory = tempRoot.appendingPathComponent(
+            ".commandcode/projects/\(encoded)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: sharedDirectory, withIntermediateDirectories: true)
+        try """
+        {"sessionId":"src","cwd":"\(src)"}
+        {"sessionId":"sibling","cwd":"\(sibling)"}
+        """.write(
+            to: sharedDirectory.appendingPathComponent("shared.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        do {
+            _ = try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: makeOptions(src: src, dst: dst)
+            )
+            XCTFail("expected SharedEncodingCollisionError")
+        } catch let error as SharedEncodingCollisionError {
+            XCTAssertEqual(error.sourceId, .commandcode)
+            XCTAssertEqual(error.sharingCwds, [sibling])
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: src))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dst))
+    }
+
+    func testCommandCodeStructuredCwdAcceptsCanonicalFilesystemAlias_repro() async throws {
+        let (src, _) = try makeProjectFixture(name: "commandcode-alias-src")
+        let dst = tempRoot.appendingPathComponent("Code/commandcode-alias-dst").path
+        let alias = tempRoot.appendingPathComponent("commandcode-project-alias")
+        try FileManager.default.createSymbolicLink(atPath: alias.path, withDestinationPath: src)
+        let encoded = SessionSources.encodeCommandCode(src)
+        let sharedDirectory = tempRoot.appendingPathComponent(
+            ".commandcode/projects/\(encoded)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: sharedDirectory, withIntermediateDirectories: true)
+        try #"{"sessionId":"same-project","cwd":"\#(alias.path)"}"#
+            .appending("\n")
+            .write(
+                to: sharedDirectory.appendingPathComponent("same-project.jsonl"),
+                atomically: true,
+                encoding: .utf8
+            )
+
+        let result = try await ProjectMoveOrchestrator.run(
+            writer: writer,
+            options: makeOptions(src: src, dst: dst, dryRun: true)
+        )
+        XCTAssertEqual(result.state, .dryRun)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: src))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dst))
+    }
+
+    func testClaudeExtraProfileRejectsCanonicalizedMixedCaseSharedEncoding_repro() async throws {
+        let (src, _) = try makeProjectFixture(name: "foo_bar")
+        let dst = tempRoot.appendingPathComponent("Code/renamed").path
+        let sibling = tempRoot.appendingPathComponent("Code/Foo-Bar").path + "/"
+        let extraProjectsRoot = tempRoot
+            .appendingPathComponent(".claude-work/projects", isDirectory: true)
+        let sharedDir = extraProjectsRoot.appendingPathComponent(
+            ClaudeCodeProjectDir.encode(src),
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: sharedDir, withIntermediateDirectories: true)
+        try #"{"sessionId":"sibling","cwd":"\#(sibling)","type":"summary"}"#
+            .appending("\n")
+            .write(
+                to: sharedDir.appendingPathComponent("shared.jsonl"),
+                atomically: true,
+                encoding: .utf8
+            )
+
+        do {
+            _ = try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: makeOptions(src: src, dst: dst, dryRun: true)
+            )
+            XCTFail("expected SharedEncodingCollisionError")
+        } catch let error as SharedEncodingCollisionError {
+            XCTAssertEqual(error.sourceId, .claudeCode)
+            XCTAssertEqual(error.dir, sharedDir.path)
+            XCTAssertEqual(error.sharingCwds, [sibling])
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: src))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dst))
+    }
+
     /// dry_run must surface the same Step 0.6 DirCollision as live, without
     /// writing migration_log or touching the lock. (repro for dry_run preflight gap)
     func testDryRunDirCollisionRejectedWithoutSideEffects_repro() async throws {
@@ -774,6 +1329,52 @@ final class OrchestratorTests: XCTestCase {
             XCTAssertEqual(row?["state"], "failed")
             XCTAssertNotNil(row?["error"])
         }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: srcURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dst))
+    }
+
+    func testIflowSharedEncodingCanonicalizesTrailingSlashCwd_repro() async throws {
+        let srcURL = tempRoot
+            .appendingPathComponent("a", isDirectory: true)
+            .appendingPathComponent("-foo-", isDirectory: true)
+            .appendingPathComponent("p-slash", isDirectory: true)
+        let dst = tempRoot
+            .appendingPathComponent("a", isDirectory: true)
+            .appendingPathComponent("foo", isDirectory: true)
+            .appendingPathComponent("p-slash", isDirectory: true)
+            .path
+        try FileManager.default.createDirectory(at: srcURL, withIntermediateDirectories: true)
+        try makeRealGitRepo(atPath: srcURL.path)
+
+        let encoded = SessionSources.encodeIflow(dst)
+        XCTAssertEqual(encoded, SessionSources.encodeIflow(srcURL.path))
+        let iflowDir = tempRoot.appendingPathComponent(".iflow/projects/\(encoded)", isDirectory: true)
+        try FileManager.default.createDirectory(at: iflowDir, withIntermediateDirectories: true)
+        let recordedDestination = dst + "/"
+        try """
+        {"sessionId":"src","cwd":"\(srcURL.path)","type":"summary"}
+        {"sessionId":"other","cwd":"\(recordedDestination)","type":"summary"}
+        """.write(to: iflowDir.appendingPathComponent("session-slash.jsonl"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(
+            SessionSources.collectOtherIflowCwdsSharingEncodedDir(
+                root: tempRoot.appendingPathComponent(".iflow/projects").path,
+                targetEncodedDir: encoded,
+                srcCwd: srcURL.path
+            ),
+            [recordedDestination]
+        )
+
+        do {
+            _ = try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: makeOptions(src: srcURL.path, dst: dst)
+            )
+            XCTFail("expected SharedEncodingCollisionError")
+        } catch let error as SharedEncodingCollisionError {
+            XCTAssertEqual(error.sourceId, .iflow)
+            XCTAssertEqual(error.sharingCwds, [recordedDestination])
+        }
+
         XCTAssertTrue(FileManager.default.fileExists(atPath: srcURL.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: dst))
     }

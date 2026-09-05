@@ -109,7 +109,7 @@ struct CostSummarySection: View {
         let maxValue = recent.map(\.costUsd).max() ?? 0
         VStack(alignment: .leading, spacing: 6) {
             Text("Last 30 days")
-                .font(.system(size: 10, weight: .semibold))
+                .scaledFont(10, weight: .semibold)
                 .foregroundStyle(Theme.tertiaryText)
             HStack(alignment: .bottom, spacing: 3) {
                 ForEach(recent) { day in

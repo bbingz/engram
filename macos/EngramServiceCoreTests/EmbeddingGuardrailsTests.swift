@@ -65,18 +65,21 @@ final class EmbeddingGuardrailsTests: XCTestCase {
         )
         let failing = AlwaysFailEmbeddingProvider(status: 400)
 
-        // M3: provider HTTP errors are isolated per session — the batch records
-        // failed_retryable + arms maintenance backoff without aborting the gate
-        // write path with a thrown EmbeddingError.http.
-        let first = try await EngramServiceRunner.backfillSessionEmbeddingsOnce(
-            gate: gate,
-            environment: Self.testEnvironment,
-            providerFactory: { _ in failing },
-            backoff: backoff,
-            limit: 4,
-            phaseName: "http400Backoff"
-        )
-        XCTAssertEqual(first, 0)
+        // R4: only inputRejected is isolated per session. Provider HTTP errors
+        // escape to arm maintenance backoff without burning the job retry budget.
+        do {
+            _ = try await EngramServiceRunner.backfillSessionEmbeddingsOnce(
+                gate: gate,
+                environment: Self.testEnvironment,
+                providerFactory: { _ in failing },
+                backoff: backoff,
+                limit: 4,
+                phaseName: "http400Backoff"
+            )
+            XCTFail("expected provider HTTP failure")
+        } catch EmbeddingError.http(let status) {
+            XCTAssertEqual(status, 400)
+        }
         _ = try await gate.performReadCommand(name: "assertRetry") { writer in
             try writer.read { db in
                 let status = try String.fetchOne(
@@ -87,8 +90,8 @@ final class EmbeddingGuardrailsTests: XCTestCase {
                     db,
                     sql: "SELECT retry_count FROM session_index_jobs WHERE id = 'job-backoff'"
                 )
-                XCTAssertEqual(status, "failed_retryable")
-                XCTAssertEqual(retries, 1)
+                XCTAssertEqual(status, "pending")
+                XCTAssertEqual(retries, 0)
             }
         }
 
@@ -103,6 +106,217 @@ final class EmbeddingGuardrailsTests: XCTestCase {
         XCTAssertEqual(skipped, 0)
         let calls = await failing.callCount()
         XCTAssertEqual(calls, 1, "maintenance backoff must skip repeated provider work")
+    }
+
+    func testAllInputFailuresDoNotDelayGoodSessionNextCycle_repro() async throws {
+        let paths = try makeGuardrailServicePaths()
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            queueTimeoutNanoseconds: 20_000_000
+        )
+        _ = try await gate.performWriteCommand(name: "seedInputIsolationJobs") { writer in
+            try writer.migrate()
+            try writer.write { db in
+                try db.execute(sql: """
+                    INSERT INTO sessions (id, source, start_time, file_path, tier) VALUES
+                      ('sess-poison', 'codex', '2026-06-26T10:00:00Z', '/tmp/poison.jsonl', 'normal'),
+                      ('sess-good-next', 'codex', '2026-06-26T10:01:00Z', '/tmp/good.jsonl', 'normal');
+                    INSERT INTO sessions_fts(session_id, content) VALUES
+                      ('sess-poison', 'BAD rejected content'),
+                      ('sess-good-next', 'good content for the following cycle');
+                    INSERT INTO session_index_jobs
+                      (id, session_id, job_kind, target_sync_version, status, retry_count, created_at)
+                    VALUES
+                      ('01-poison', 'sess-poison', 'embedding', 1, 'pending', 0, '2026-06-26T10:00:00Z'),
+                      ('02-good', 'sess-good-next', 'embedding', 1, 'pending', 0, '2026-06-26T10:01:00Z');
+                    """)
+            }
+        }
+        let backoff = EmbeddingMaintenanceBackoff()
+        let provider = PoisonInputEmbeddingProvider()
+        let providerKey = EmbeddingCircuitBreaker.providerKey(for: Self.testConfig)
+
+        let first = try await EngramServiceRunner.backfillSessionEmbeddingsOnce(
+            gate: gate,
+            environment: Self.testEnvironment,
+            providerFactory: { _ in provider },
+            backoff: backoff,
+            limit: 1,
+            phaseName: "inputIsolationNoBackoff"
+        )
+        XCTAssertEqual(first, 0)
+        XCTAssertTrue(
+            backoff.shouldAttempt(providerKey: providerKey),
+            "item-local input failures must not arm provider maintenance backoff"
+        )
+
+        let second = try await EngramServiceRunner.backfillSessionEmbeddingsOnce(
+            gate: gate,
+            environment: Self.testEnvironment,
+            providerFactory: { _ in provider },
+            backoff: backoff,
+            limit: 4,
+            phaseName: "inputIsolationNoBackoff"
+        )
+        XCTAssertEqual(second, 1, "the good session must run on the next maintenance cycle")
+        _ = try await gate.performReadCommand(name: "assertGoodEmbedded") { writer in
+            try writer.read { db in
+                XCTAssertEqual(
+                    try String.fetchOne(db, sql: "SELECT status FROM session_index_jobs WHERE id = '02-good'"),
+                    "completed"
+                )
+            }
+        }
+    }
+
+    func testGuardedNativeDimensionAdoptsPersistsAndDoesNotReconcileImplicitDefault_repro() async throws {
+        let paths = try makeGuardrailServicePaths()
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            queueTimeoutNanoseconds: 20_000_000
+        )
+        _ = try await gate.performWriteCommand(name: "seedNativeDimensionJob") { writer in
+            try writer.migrate()
+            try writer.write { db in
+                try db.execute(sql: """
+                    INSERT INTO sessions (id, source, start_time, file_path, tier)
+                    VALUES ('sess-native-dim', 'codex', '2026-06-26T10:00:00Z', '/tmp/native.jsonl', 'normal');
+                    INSERT INTO sessions_fts(session_id, content)
+                    VALUES ('sess-native-dim', 'native dimension chunk text');
+                    INSERT INTO session_index_jobs
+                      (id, session_id, job_kind, target_sync_version, status, retry_count)
+                    VALUES ('job-native-dim', 'sess-native-dim', 'embedding', 1, 'pending', 0);
+                    """)
+            }
+        }
+
+        let environment = [
+            "ENGRAM_EMBEDDING_API_KEY": "test",
+            "ENGRAM_EMBEDDING_MODEL": "BAAI/bge-m3",
+            "ENGRAM_EMBEDDING_BASE_URL": "https://api.example.com/v1",
+            "ENGRAM_EMBEDDING_DIM": "1536",
+            // docs/invariants.md #6: tests never consult production ~/.engram settings.
+            "ENGRAM_SETTINGS_PATH": paths.runtime.appendingPathComponent("settings.json").path,
+        ]
+        let breaker = EmbeddingCircuitBreaker()
+        let providerKey = "native-dimension-repro"
+        let factory: @Sendable (EmbeddingConfig) -> any EmbeddingProvider = { _ in
+            GuardedEmbeddingProvider(
+                inner: NativeDimensionEmbeddingProvider(adoptedDimension: 1_024),
+                breaker: breaker,
+                providerKey: providerKey
+            )
+        }
+
+        let first = try await EngramServiceRunner.backfillSessionEmbeddingsOnce(
+            gate: gate,
+            environment: environment,
+            providerFactory: factory,
+            backoff: EmbeddingMaintenanceBackoff(),
+            limit: 4,
+            phaseName: "nativeDimensionAdoption"
+        )
+        XCTAssertEqual(first, 1)
+        _ = try await gate.performReadCommand(name: "assertNativeDimensionPersisted") { writer in
+            try writer.read { db in
+                XCTAssertEqual(
+                    try Int.fetchOne(db, sql: "SELECT dimension FROM embedding_meta WHERE id = 1"),
+                    1_024
+                )
+                XCTAssertEqual(
+                    try Int.fetchOne(db, sql: "SELECT dim FROM semantic_chunks WHERE session_id = 'sess-native-dim'"),
+                    1_024
+                )
+            }
+        }
+
+        let second = try await EngramServiceRunner.backfillSessionEmbeddingsOnce(
+            gate: gate,
+            environment: environment,
+            providerFactory: factory,
+            backoff: EmbeddingMaintenanceBackoff(),
+            limit: 4,
+            phaseName: "nativeDimensionAdoption"
+        )
+        XCTAssertEqual(second, 0, "a BGE dimension omitted on the wire must not purge a native 1024 corpus")
+        _ = try await gate.performReadCommand(name: "assertNativeCorpusStable") { writer in
+            try writer.read { db in
+                XCTAssertEqual(
+                    try String.fetchOne(db, sql: "SELECT status FROM session_index_jobs WHERE id = 'job-native-dim'"),
+                    "completed"
+                )
+                XCTAssertEqual(
+                    try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM semantic_chunks WHERE session_id = 'sess-native-dim'"),
+                    1
+                )
+                XCTAssertEqual(
+                    try Int.fetchOne(db, sql: "SELECT dimension FROM embedding_meta WHERE id = 1"),
+                    1_024
+                )
+            }
+        }
+    }
+
+    func testProviderFailureDoesNotPurgeExistingCorpusBeforeEmbedding_repro() async throws {
+        let paths = try makeGuardrailServicePaths()
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            queueTimeoutNanoseconds: 20_000_000
+        )
+        _ = try await gate.performWriteCommand(name: "seedExistingEmbeddingCorpus") { writer in
+            try writer.migrate()
+            try writer.write { db in
+                try db.execute(sql: """
+                    INSERT INTO sessions (id, source, start_time, file_path, tier)
+                    VALUES ('existing-corpus', 'codex', '2026-06-26T10:00:00Z', '/tmp/existing.jsonl', 'normal');
+                    INSERT INTO sessions_fts(session_id, content)
+                    VALUES ('existing-corpus', 'existing corpus text');
+                    INSERT INTO session_index_jobs
+                      (id, session_id, job_kind, target_sync_version, status, retry_count)
+                    VALUES ('existing-job', 'existing-corpus', 'embedding', 1, 'pending', 0);
+                    INSERT INTO embedding_meta (id, provider, model, dimension)
+                    VALUES (1, 'openai-compatible', 'native-model', 1024);
+                    INSERT INTO semantic_chunks(id, session_id, chunk_index, text, embedding, model, dim)
+                    VALUES ('existing-chunk', 'existing-corpus', 0, 'existing corpus text', X'0000', 'native-model', 1024);
+                    """)
+            }
+        }
+        let environment = [
+            "ENGRAM_EMBEDDING_API_KEY": "test",
+            "ENGRAM_EMBEDDING_MODEL": "new-model",
+            "ENGRAM_EMBEDDING_DIM": "1536",
+            // docs/invariants.md #6: tests never consult production ~/.engram settings.
+            "ENGRAM_SETTINGS_PATH": paths.runtime.appendingPathComponent("settings.json").path,
+        ]
+
+        do {
+            _ = try await EngramServiceRunner.backfillSessionEmbeddingsOnce(
+                gate: gate,
+                environment: environment,
+                providerFactory: { _ in AlwaysFailEmbeddingProvider() },
+                backoff: EmbeddingMaintenanceBackoff(),
+                phaseName: "noPreEmbedPurge"
+            )
+            XCTFail("expected provider failure")
+        } catch {
+            XCTAssertEqual(error as? EmbeddingError, .http(503))
+        }
+
+        _ = try await gate.performReadCommand(name: "assertExistingCorpusPreserved") { writer in
+            try writer.read { db in
+                XCTAssertEqual(
+                    try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM semantic_chunks WHERE id = 'existing-chunk'"),
+                    1
+                )
+                XCTAssertEqual(
+                    try Int.fetchOne(db, sql: "SELECT dimension FROM embedding_meta WHERE id = 1"),
+                    1_024
+                )
+            }
+        }
     }
 
     func testOpenBreakerLeavesSessionJobsPendingAndRetryable() async throws {
@@ -294,5 +508,41 @@ private actor AlwaysFailEmbeddingProvider: EmbeddingProvider {
     func embed(_ texts: [String]) async throws -> [[Float]] {
         calls += 1
         throw EmbeddingError.http(status)
+    }
+}
+
+private struct PoisonInputEmbeddingProvider: EmbeddingProvider {
+    let model = "probe"
+    let dimension = 3
+
+    func embed(_ texts: [String]) async throws -> [[Float]] {
+        if texts.contains(where: { $0.contains("BAD") }) {
+            throw EmbeddingError.inputRejected("content rejected")
+        }
+        return texts.map { _ in [1, 0, 0] }
+    }
+}
+
+private final class NativeDimensionEmbeddingProvider: EmbeddingProvider, @unchecked Sendable {
+    let model = "native-probe"
+    private let lock = NSLock()
+    private let adoptedDimension: Int
+    private var currentDimension = 1_536
+
+    init(adoptedDimension: Int) {
+        self.adoptedDimension = adoptedDimension
+    }
+
+    var dimension: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return currentDimension
+    }
+
+    func embed(_ texts: [String]) async throws -> [[Float]] {
+        lock.withLock {
+            currentDimension = adoptedDimension
+        }
+        return texts.map { _ in Array(repeating: 0.5, count: adoptedDimension) }
     }
 }

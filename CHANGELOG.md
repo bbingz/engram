@@ -7,6 +7,1003 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Complete confirmed-review remediation (2026-09-02; revalidated 2026-09-04)
+
+Reconciled the current review inventories against the base revision
+`33b6f8c95faaa7b2df25afe3037dd613e2085bde` and completed all 115 confirmed
+tracking IDs (109 implementation clusters): 44 IDs from the 2026-08-31
+verified review, 55 from the 2026-09-01 residual verification, 14 still-valid
+Round-12 residuals, and two watchdog additions. Rejected, duplicate-only, and
+stale rows remain excluded. The implementation used focused RED-to-GREEN
+regressions and independent final-source gates across app/service transport,
+MCP/search, adapters and stream caps, indexing/backfills, project move, Archive
+V2, remote sync/RemoteServer, sessions/timeline/transcript/settings UI logic,
+runtime-secret handling, CLI/release boundaries, and watchdog scripts. The
+frozen negative contracts for Copilot prefix retention, read-command writer
+classification, skip-child preservation, live-ingest inventory semantics, and
+OpenCode continued forks remain intact. The complete catalog and package gates
+are recorded in `.grok/all-confirmed-remediation-ledger-2026-09-02.md`.
+
+Fresh final gates passed: Node build, test typecheck, knip, and coverage (130
+files / 1,561 tests); lint exited zero with one warning and one schema-version
+info. The Engram scheme passed 2,588 tests (2,587 passed, one skipped), split
+into EngramCoreTests 1,449 (one skipped) and EngramTests 1,139. The 2026-09-02
+final-source results also passed EngramCoreTests 1,449 (one skipped),
+EngramMCPTests 265, EngramServiceCore 833 (one skipped), and
+EngramRemoteServerCore 161. A fresh Debug link of the EngramRemoteServer
+executable succeeded. Adapter parity,
+fixture schema, a temporary-output fixture regeneration with byte-for-byte DB
+comparison, MCP stats-golden consistency, and `git diff --check` also passed.
+No Xcode project, `project.yml`, Info.plist, build-cache, or generated product
+surface was added to the tracked diff.
+
+Fresh pre-commit revalidation on 2026-09-04 exposed one integration-only race
+in `EngramServiceLauncher`: a helper that wrote the expected writer-lock busy
+message to stderr and immediately exited zero could reach its termination
+handler before the asynchronous stderr reader recorded the message. The
+existing repro failed in the full Engram gate. The launcher now serializes the
+two read paths, closes its retained pipe writer after child termination, drains
+stderr to EOF, and only then classifies the exit. No arbitrary delay or new
+abstraction was added. The focused test, 20 consecutive executions, all 54
+launcher tests, and the complete Engram gate then passed; the final full count
+remained 2,588 (2,587 passed, one skipped).
+
+The first commit attempt then correctly stopped at the Xcode project drift
+hook. XcodeGen derived the parent group for two `../test-fixtures` UI resources
+from the checkout directory name, so generation in a worktree rewrote otherwise
+equivalent project identifiers and paths. `project.yml` now pins both resources
+to the explicit `UITestFixtures` group. The regression failed on the absent
+groups before the change; afterward, pinned XcodeGen 2.45.4 produced the same
+pbxproj bytes from two differently named checkouts, the focused gate passed 7
+tests with two skipped, test typecheck and Biome passed, and the real project
+drift gate returned `xcodeproj drift ok`. A real commit hook also exports an
+absolute linked-worktree `GIT_DIR`; after the script changed into `macos`, its
+unanchored Git queries therefore treated generated files as untracked. Those
+queries now use root-relative paths with `git -C "$ROOT_DIR"`. The linked-
+worktree hook regression failed before that change and passed afterward; the
+focused suite now passes 8 tests with two skipped, and both ordinary and
+explicit-`GIT_DIR` pre-commit runs pass.
+
+Focused final-source UI automation was attempted for Session Detail Find,
+SourcePulse status, and localized Archive Settings. XCUITest failed before any
+test body or screenshot ran. The 2026-09-04 fresh retry reported that the test
+runner hung before establishing its connection; its spindump remained in
+`AppleSystemPolicy` evaluation before normal test startup, and the unsigned
+App, Runner, and test bundle failed strict signature verification. The
+xcresult contains only the runner initialization failure.
+A comparison against a stale 2026-08-22 screenshot manifest is not current
+product evidence and is intentionally not treated as either a remediation
+failure or a visual pass. The deployed-server integration test remains the one
+Service skip, and no current signed release-package, remote CI, deployment, or
+machine-runtime verification was performed. Xcode 27 beta also reports existing
+Swift 6 migration warnings and one Service-test QoS runtime warning; none was
+introduced as a new tracked review item or promoted into a completion claim.
+
+This entry records source remediation and pre-deployment validation. Integration
+and production deployment require their own dated closeout. No tag, public
+release, notarization, Docker operation, or production-data mutation is part of
+this remediation pass.
+
+### Commit and three-host deployment closeout (production, 2026-08-31)
+
+Committed the integrated source tree as
+`40218c0bee5fa333e3f61299bf9db4d3f7a8e5c7` (`feat: integrate HQ live ingest
+and product hardening`) after the complete local gate matrix passed: App 1,097,
+Core 1,387 with one skip, MCP 254, Service 799 with one skip, Remote 158, and
+Vitest 1,549 with two skips, plus the Node build, lint, knip, test typecheck,
+fixture/parity, boundary, and diff checks. The commit was not pushed.
+
+Built Engram 1.0.5 (1554) from that exact revision with the available
+Developer ID identity. Full bundle hygiene, structure, version, deep strict
+code signing, Hardened Runtime, and signing timestamp verification passed. The
+daily Mac now runs the installed build-1554 App and Service as one launchd-owned
+instance each. The retained deployment receipt returned `status` in 0.551
+seconds with 52,519 sessions and `liveSessions` in 17.425 seconds with 100
+entries. The
+installed MCP initialized and listed 27 tools. The menu-bar rendering itself
+could not be rechecked because the console session was locked.
+
+Built the arm64 RemoteServer package from the same revision and passed its
+manifest, architecture, dependency-closure, and strict ad-hoc-signature
+verifier before and after transfer. M1 now runs release `40218c0b` as PID 36227;
+HQ runs the same RemoteServer release as PID 5156. Both have one exact launchd
+instance, one Tailscale-bound listener, the expected binary SHA-256
+`a03e38795c7c7663699538537de91f9e5298e3954428d61b68f1722295de8e7c`,
+and a successful `/v1/health` response. HQ's T9 `flock-exec`,
+`ensure-hq-live`, and daily-Mac watchdog bytes now match the repository. The
+unchanged watchdog plist produced four natural successful runs, including a
+scheduled run, with no degraded sentinel.
+
+HQ EngramService now runs `releases/40218c0b-build1554` as the single system
+job PID 42994. The helper SHA-256 is
+`8a42289eed3e8c2e493681468953a3109deb0bd6bb9ceff3f61d874552895e1f`;
+the Unix socket is owned by that PID with mode 0600 and uid 501. A final probe
+returned `status` in 0.029 seconds with 56,022 sessions and `liveSessions` in
+1.297 seconds with 100 entries. The first readiness attempt rolled back safely.
+On the second attempt, old PID 28608 removed its socket but continued its
+startup scan after TERM; it was allowed to exit naturally at 07:08:40 UTC,
+without SIGKILL or `kickstart -k`, before one ordinary kickstart started the
+target helper. Both root LaunchDaemon plists remained byte-identical.
+
+Rollback snapshots remain at
+`~/.engram/rollback/20260831T053128Z-pre-40218c0b` on the daily Mac,
+`~/.engram-remote/rollback/20260831T055627Z-pre-40218c0b` on M1,
+`~/.engram-remote/rollback/20260831T061600Z-pre-40218c0b` on HQ, and
+`~/.engram-service/rollback/20260831T064244Z-pre-40218c0b-build1554` on HQ.
+Evidence is under `/tmp/engram-precommit-*`,
+`/tmp/engram-daily-deploy-20260831`, `/tmp/engram-m1-deploy-20260831`,
+`/tmp/engram-hq-remote-t9-deploy-20260831`, and
+`/tmp/engram-hq-service-deploy-20260831`.
+
+Two residuals remain explicit. At the retained deployment receipts,
+`lastScanAt` was absent on both Services, so `remoteSyncStatus` was not called
+while the startup writer gate could still be occupied. HQ subsequently
+completed its initial scan: a fresh `status` returned `running` with 56,022
+sessions and `lastScanAt` present, followed by the single owed bounded
+`remoteSyncStatus` call in 0.010 seconds (`enabled=false`, 56,049 local, six
+offloaded, and both pending queues zero). The daily Mac still had no startup
+marker after two hours; its process and IPC health remained live, but `status`
+honestly reported `degraded` because the last successful scan was stale. The
+420-second mixed-version observation produced no natural non-status traffic,
+so the real unique-keyword, post-reboot 16-minute HQ-to-Mac SLA remains
+unverified. No push, tag, GitHub release, notarization, Sparkle/Homebrew update,
+Docker operation, or production-data rewrite was performed.
+
+### Live-session scan remediation (local, unreleased, 2026-08-31)
+
+Remediated the source-level `liveSessions` scan path behind the daily-Mac
+timeout. Each configured transcript root is now canonicalized once. Claude
+profiles use a bounded two-level layout (direct project directories and their
+direct regular transcript files), reject symbolic-link projects/files, and no
+longer recurse into `subagents` trees or call `SubagentTranscriptPath.layout`
+for every top-level transcript. Codex keeps its recursive traversal and
+symbolic-link rejection. Global newest-100 ordering, deterministic path
+tie-breaking, inclusive 24-hour freshness, custom Claude roots, post-cap
+metadata parsing, and the 30-second cache contract remain intact.
+
+Cancellation is now checked before cache hits, before cache publication,
+through source traversal, immediately before and after the global sort, before
+each capped metadata parse, and before return. A default-noop finalization test
+checkpoint made the cache-tail defect deterministic: before the corrective
+production change, `testLiveSessionsCancellationDuringFinalizationThrowsAndDoesNotCache_repro`
+failed because the cancelled request returned normally and its result was
+cached; after the change, the request throws `CancellationError` and a retry
+performs a fresh scan. A separate pre-cancelled cache-hit regression also
+passes without sleeps or wall-clock performance assertions.
+
+Evidence is in `/tmp/engram-live-scan-finalization-red.log`,
+`/tmp/engram-live-scan-finalization-green.log`,
+`/tmp/engram-live-scan-all-new-green.log`,
+`/tmp/engram-live-scan-focused-plus-cancellation-green.log`, and
+`/tmp/engram-service-ipc-class-green-live-scan-fix.log`. The new regressions
+passed 5/5, the focused invariant set passed 14/14, and the full
+`EngramServiceIPCTests` class passed 259/259. The coordinator independently
+reran the five new regressions, two independent final reviewers reran the
+focused/full class gates, and both returned `SPEC_COMPLIANCE: PASS` plus
+`CODE_QUALITY: APPROVED`. Scoped `git diff --check` is clean. Relative to the
+pre-task copies in `/tmp/engram-live-scan-baseline.ZXzgYN/`, the provider is
+`+124/-34` and its test file is `+179/-0`; final SHA-256 values are
+`8b1d03ab2783d50a272de872145d9f32af12acb119f54a514326b187a3a01202` and
+`bb66f107788ff6435ace567e0a1009af4b36c1e994301d9959bf8be001044b2d`.
+
+At this remediation checkpoint, the change was still local: the installed
+v1.0.5 app/service and inspected remote packages did not contain it, and the
+real 95,280-file corpus, installed menu-bar UI, and production request-
+cancellation path had not been retested. No file was staged or committed; no
+app bundle was built or installed; and no deployment, service restart/probe,
+remote mutation, Docker operation, or production-data access occurred during
+that pass. The later commit/deployment closeout is recorded above.
+
+### Local service restart and deployed-runtime audit (production, 2026-08-31)
+
+Investigated the daily-Mac menu-bar symptom `Live sessions unavailable` and
+restarted only the explicitly authorized local `com.engram.service` job. Before
+the restart, the launchd job, process, and Unix socket existed, but framed
+`status`, `health`, and `liveSessions` requests all timed out. Two bounded
+`launchctl kickstart -k` operations moved the service from PID 25143 to 93400
+and then to PID 96776; the second restart cleared diagnostic requests that kept
+scanning after their clients timed out. Launchd now reports `runs = 3`,
+`last exit code = 0`, and a valid socket. `status` and `health` returned in
+roughly 8-12 ms after restart, but `liveSessions` still exceeded both 12- and
+35-second probes, so the user-visible Live surface is not recovered.
+
+Process sampling identified the persistent hotspot rather than a launchd or
+socket failure. `FileSystemEngramServiceReadProvider.scanLiveSessions` was
+recursively walking `~/.claude/projects` through `enumerateLiveFiles`, calling
+`realpath` and `SubagentTranscriptPath.layout` throughout a corpus containing
+95,280 files. More than three hours after the final restart, PID 96776 still
+used about 64% CPU and a fresh sample showed the same live-session traversal.
+The service is therefore running but degraded; another restart is not a fix.
+
+The deployed-version audit also found that no inspected host is running the
+uncommitted 2026-08-31 source tree. The daily Mac has the signed v1.0.5 app and
+service built on 2026-08-25 (`EngramService` SHA-256
+`0e41b5fbbeb9fa06794d14984c345cae8a2e298ac9b9ddc24b56860fa131f28c`). HQ
+uses release `20260825T061240Z` with the same service binary; its local service
+socket and RemoteServer `/v1/health` are currently healthy. Fresh read-only
+rechecks at 10:32-10:35 CST confirmed that HQ and M1 both still run
+RemoteServer revision `986e7fb02c299a9471953f4bb556097650c61127`; M1 does
+not have an EngramService installation or job. Repository `HEAD` and
+`origin/main` remain
+`d97d02575e1b6362b628c649a7e3337193942323`, while the newer work was still a
+shared dirty tree and had not yet been built or deployed at that audit point.
+
+Evidence includes `/tmp/engram-live-sample.E1ELVn`,
+`/tmp/engram-post-restart-sample.vDU2Xw`, and
+`/tmp/engram-current-runtime-sample.XXXXXX.txt`. No build, install, remote
+restart, deployment, commit, push, tag, Docker operation, or production-data
+write was performed. The only runtime mutation was the authorized daily-Mac
+service restart.
+
+### Final HQ cadence, search-origin, installer, and UI closeout (local, unreleased, 2026-08-31)
+
+Closed the final local HQ live-ingest scheduling and authority gaps without
+adding a second publisher. `runLiveIngestLoop` remains the single consumer for
+network publish/pull work: idle HQ wakes use the configured 300–900 second
+interval, while an actual publishable index delta receives one trailing
+60-second debounce. The delta identity is the deterministic ordered set of
+ready `(id, syncVersion, snapshotHash)` tuples plus ordered retraction IDs, so
+identical level probes and unrelated/no-op writer generations coalesce, but a
+real ready-row or eligibility change restarts the trailing debounce. A steady
+wave larger than the publish batch drains all pages in the same wake, the
+post-FTS probes run before later maintenance, and `markPublished` is followed
+by an actual-delta re-probe so a mutation in the final network window cannot be
+stranded. Mac pull can start as soon as the service is ready; HQ's first
+complete publish still waits for the initial scan and its trailing debounce.
+
+Complete-head finalization is shared by normal success and complete-equivalent
+recovery. One idempotent writer transaction aligns generation,
+current/previous-complete keys, and the desired incomplete cursor, then
+reconciles that peer's outbound ledger to the retained manifest IDs. Failed
+head or metadata work preserves the delta, while successful authority clears
+only retractions actually absent from that manifest; both eligibility-change
+network-window races remain visible for the next complete publish. This closes
+the periodic soft-retract loop without adding a schema migration.
+
+The reassigned Settings and mock work is also present and covered: live-ingest
+enablement now states that a service restart is required, occupancy copy is
+cumulative rather than instantaneous, failed persistence restores the stored
+toggle state, and `MockEngramServiceClient` can inject shrink-guard reset
+failures. Machine-origin filtering is pushed down before `LIMIT` in offline SQL
+and the service keyword, semantic, and hybrid paths; local includes legacy
+`NULL` and arbitrary non-HQ origins, while nil retains all machines. MCP v1's
+search input remains unchanged with no required machine filter.
+
+The root LaunchDaemon installer now accepts only its two packaged,
+script-adjacent plist sources, verifies their exact Labels and expected
+content, and keeps validation tests inside temporary directories without
+invoking `sudo`, `launchctl`, or installation. The four final UI residuals were
+closed: Command Palette suppresses local-only Resume/Export actions for HQ
+rows; focused search rows activate with Enter/Space through the same query-
+carrying open path as a click; the popover Settings gear has an explicit
+accessibility label/help; and onboarding keeps its primary CTA in a fixed
+footer outside the scrollable step content. The reconstructed 74-path UI merge
+audit found 68 byte-identical paths and six expected, semantically preserved
+divergences, with no missing path or unexpected overwrite.
+
+Fresh local gates on the final bytes passed: Engram App 1,097/1,097;
+EngramCoreTests 1,386 passed plus one skipped (1,387 total);
+EngramServiceCore 793 passed plus one skipped (794 total); the complete runner
+class 31/31; Vitest 1,549 passed plus two skipped; SettingsHonestyTests 14/14;
+CommandPaletteTests 15/15; and the combined UIUXPolishWiringTests plus
+MCPActivationOnboardingTests 47/47. The unsigned Debug build completed after
+the onboarding hunk. A hermetic default-layout `OnboardingTests` UI smoke was
+attempted; the runner was canceled before any Onboarding test method ran. Zero
+Onboarding test cases ran, and the xcresult records one canceled runner failure.
+Key local evidence is in
+`/tmp/engram-final-delta-token-runner-class2.xcresult`,
+`/tmp/engram-final-delta-token-core-full2.xcresult`,
+`/tmp/engram-final-delta-token-service-full2.xcresult`,
+`/tmp/engram-final-vitest.log`,
+`/tmp/engram-command-palette-gate.2sJCiP/`, and
+`/tmp/engram-final-ui-gate.46thiI/`.
+
+This is local, uncommitted verification, not deployment or release evidence.
+The real two-machine 16-minute SLA, remote CI, real Dynamic Type interaction,
+and a signed real-device deployment remain unverified. No Docker, commit,
+push, tag, production `~/.engram` access, launchd mutation, service restart, or
+production change was performed.
+
+### HQ remediation and UI worktree integration closeout (local, unreleased, 2026-08-30)
+
+Integrated the frozen T0–T9 remediation tree with the frozen UI iteration
+worktree directly in the existing dirty `d97d0257` tree. The bounded merge
+copied 68 UI-owned tracked files byte-for-byte, retained the main-side result
+for 45 paths, and manually combined the required semantics in
+`Database.swift`, `DatabaseManagerTests.swift`, and
+`TodayWorkbenchScopeTests.swift`. The hybrid files preserve the main-side
+blank-query, human-driven timeline, and generation-invalidation fixes while
+adding the UI-side HQ-origin filtering and favorite-read invalidation coverage.
+No helper abstraction, project entry, or `AsyncEntryGate.swift` was added, and
+the existing `Engram.xcodeproj` and `project.yml` blobs remained unchanged.
+
+The integrated UI work spans the completed Wave 1–8 and merge-gate scope: HQ
+badges and origin filters, honest remote-snapshot Resume/Replay/Export actions,
+live-ingest restart and status messaging, retry/error presentation, keyboard
+navigation and focus rings, Dynamic Type and theme-token cleanup, VoiceOver
+labels and announcements, and synchronous double-entry guards for Alias and
+Batch Move mutations. The merge-gate correction keeps remote Replay available,
+disables remote Export and local Resume with truthful help, and visibly disables
+Retry while either sheet mutation is executing.
+
+Fresh combined-tree verification used isolated `HOME`,
+`CFFIXED_USER_HOME`, and DerivedData. The focused App gate passed 298 tests,
+then the complete App suite passed 1,088; EngramCoreTests passed 1,382 with one
+skip, EngramServiceCore passed 769 with one skip, EngramMCP passed 254, and
+EngramRemoteServerCore passed 158. The unsigned Debug app build succeeded.
+Vitest coverage passed 1,548 tests with two skips; TypeScript build and test
+typechecking, Biome, knip, adapter parity, the app/MCP/CLI direct-writer scan,
+and `git diff --check` also exited 0. Biome retained the pre-existing optional-
+chain warning and schema-version information. `check:fixtures` validated the
+schema and regenerated the exact pre-gate dirty fixture blob
+`f8324130ce0b07fef13571ab28e389d5063ebd86`, but its final comparison to HEAD
+correctly exited 1 because that fixture was already intentionally modified in
+the uncommitted tree; the gate-created SQLite sidecar cleanup was restored to
+the frozen untracked hashes.
+
+This is a local integration closeout, not a release or production validation.
+Foreground UI automation, remote CI, and the real cross-machine 16-minute
+ingest SLA were not run. No Docker, commit, push, tag, release, deployment,
+installation, SSH operation, launchd mutation, service restart, production
+`~/.engram` access, or production-data change was performed.
+
+### HQ live ingest post-review remediation (local, unreleased, 2026-08-30)
+
+Executed the ordered T0–T9 repair plan directly on the existing dirty
+`d97d0257` tree, with a named `_repro` failure recorded before each production
+change. No worktree or database-writer bypass was introduced.
+
+Independent spec gates subsequently reopened nine blockers. Each follow-up used
+behavior-first RED evidence before the narrow production changes: steady-state
+tail starvation, a network-window reindex ledger race, same-generation/lower-
+sequence head replay, cross-process stale-lock breaking, the runner's two-phase
+session/FTS update window, concurrent release of a replaced lock inode, same-
+version snapshot replacement, unready-prefix publish-page starvation, and a
+superseded same-version FTS job left permanently failed after its replacement
+completed.
+
+The ingest and synchronization fixes now:
+
+- exclude remote-origin rows from startup orphan probing and idempotently
+  repair remote rows marked by the old scan;
+- exclude every non-null `agent_role` from publish and pull visibility, rather
+  than only the literal `subagent` role;
+- complete the bootstrap publish walk, then select only rows whose peer ledger
+  version or snapshot hash is absent or stale so a newly indexed tail is
+  eligible in the next steady-state cycle; persist `source_sync_version` plus
+  nullable `source_snapshot_hash`, and require both at currentness and commit-
+  time rechecks, so production's real `1→1` content changes cannot confirm an
+  old network result; a legacy ledger with no source hash republishes once;
+  short-circuit truly unchanged content before FTS/HEAD/write work, retain raw
+  non-null `start_time` ordering, add the peer/direction/session ledger index,
+  and avoid rewriting an unchanged manifest; candidate reads and commit-time
+  confirmation also require the current session version's FTS job to be
+  completed, while rows with no FTS job history retain the legacy first-publish
+  path; unready rows no longer consume a changed-row page, but their separate
+  presence keeps the manifest incomplete; when a same-version snapshot hash
+  changes, a `failed_permanent` job for the superseded job ID is removed while
+  an identical current job remains terminal and is not retried;
+- reject stale `(generation, seq)` heads and peer/key identity mismatches,
+  recheck native-ID occupancy inside the commit transaction, and scope publish-
+  ledger dedupe by peer;
+- isolate a missing or hash-mismatched bundle without retracting from a partial
+  pull, tolerate a missing previous-complete manifest, reject publish/pull
+  self-loops, and retain incomplete generations through two head advances.
+
+The adjacent product fixes align Darwin project-move lexical/canonical paths;
+separate Claude render-visible system injections from indexing noise; restore
+blank-query browsing and `humanDriven=false` timeline behavior; add honest HQ
+origin/schema, snapshot replay/export, deduplicated snippets, and generic
+publish/pull error persistence; and keep the existing HQ badges covered. The
+Settings restart-required/occupancy wording and injectable mock failure result
+were reassigned by the plan's 17:45 revision and are not claimed by this pass.
+They were subsequently confirmed present and covered by the 2026-08-31 UI
+integration closeout above; this does not change their T0–T9 ownership history.
+
+The T8 current-tree sweep passed EngramCoreTests 1,379 tests (one skipped),
+Engram app tests 1,056, EngramServiceCore 763 (one skipped), EngramMCP 254,
+EngramRemoteServerCore 158, and Vitest 1,541 (two skipped), followed by Biome
+exit 0. Three former source-text checks were replaced with runtime behavior
+coverage for runner independence, remote snapshot RPC, and MCP hybrid-search
+BUSY recovery. T8 made the TypeScript project-move lock publish a fully written
+candidate inode atomically after a 32-way repro produced two lock winners; the
+later spec gate showed that stale breaking still needed an atomic claim.
+CI-pinned XcodeGen 2.45.4 generated the same project hash twice and all current
+untracked Swift sources are referenced; the dirty-tree drift gate itself is not
+claimed green because it compares against the unstaged project.
+
+T9 hardened only repository artifacts. `ensure-hq-live` now runs under the
+same-directory advisory-lock helper, whose fd is deliberately inherited across
+`exec`; the remote wrapper exits 0 when `/v1/health` confirms an existing
+listener; LaunchDaemon plists are installed from a fixed `O_NOFOLLOW` source fd
+through validated, same-directory atomic replacement; and degraded recovery
+writes an atomic sentinel plus a machine-readable line consumed by the Mac
+watchdog. The four T9 repros failed before the changes and the combined HQ
+hardening/remote-package run then passed 43/43. The final current-tree Vitest
+rerun after all spec-gate follow-ups passed 1,548 tests with two skipped. The
+stale-break RED produced seven winners across 48 processes; an inode-linked
+exclusive claim reduced the same test to exactly one, and ten repeated
+48-process rounds stayed green. A later 96-way owner-release RED deleted a live
+hard-link replacement; release now uses the same exclusive inode claim,
+preserved the replacement in 12 repeated rounds, and leaves an abandoned claim
+fail-closed. The runner-order RED proved that a session version could advance
+while FTS remained old; the exact-target FTS completion fence now defers that
+publish and sends the new FTS in the next steady-state cycle. The tail-SLA,
+network-window reindex, compound replay, FTS completion, and release repros all
+turned green while preserving the unchanged-cycle contract of zero HEAD, zero
+upload, and zero writer generation. The final same-version network-window RED
+recorded genuine stale-ledger confirmation, no next-cycle upload, old FTS, and
+missing source-hash failures. The unready-prefix RED put three pending rows in
+front of a ready tail: the tail was not uploaded and the manifest omitted it.
+After the minimal fence and ready-only paging changes, the focused and related
+suites passed, followed under isolated `HOME` and
+`CFFIXED_USER_HOME` by EngramCoreTests 1,381 (one skipped), EngramServiceCore
+769 (one skipped), and Vitest 1,548 (two skipped). Production TypeScript build,
+test typechecking, the direct-writer scan, and Biome also exited 0; Biome still
+reports the pre-existing optional-chain warning and schema-version information.
+A 95-file UI and xcodeproj hash boundary remained byte-identical throughout
+this follow-up.
+
+The fourth spec-gate follow-up exercised the real `SessionSnapshotWriter` path
+with version 1 at both snapshots. Before the fix, an old-hash
+`failed_permanent` FTS job survived beside the new-hash job; even after the new
+job completed, `livePublishCandidates` returned no row. The minimum production
+change adds `failed_permanent` to the existing stale-job delete set, which is
+already constrained by `id != jobId`; the behavior test also proves an
+identical current permanent job keeps its terminal status, retry count, and
+error. The focused repro, all 72 IndexerParity tests, all 43 SessionSync tests,
+and all 40 RemoteSyncCoordinator tests passed (one credential-gated live test
+skipped). A stale source-text assertion exposed by the first complete Core run
+was updated to the same status set; the fresh isolated-home reruns then passed
+EngramCoreTests 1,382 (one skipped) and EngramServiceCore 769 (one skipped).
+Production TypeScript build, test typechecking, the direct-writer scan, and
+Biome exited 0; Biome retained the same pre-existing optional-chain warning and
+schema-version information. Turn-start hashes for 159 UI Swift files and the
+`Engram.xcodeproj`/`project.yml` pair remained unchanged. This Swift-only
+follow-up did not rerun Vitest; the 1,548-test result above remains evidence
+from the preceding follow-up, not this one.
+
+At that checkpoint this remained local unreleased work. No Docker, commit,
+push, tag, deployment,
+installation, SSH operation, launchd mutation, service restart, production
+`~/.engram` access, or production-data change was performed. Owner-authorized
+deployment of the paired HQ scripts/package, a no-console-login reboot test,
+the cross-machine ingest SLA, foreground UI automation, and remote CI remain
+outside this pass and are tracked in `docs/followups.md`.
+
+### HQ live ingest boot recovery (local, unreleased, 2026-08-29)
+
+HQ reboot at 02:45 CST left `EngramService` and `EngramRemoteServer` down
+until console login at 08:22 (LaunchAgents only). FileVault is on, auto-login
+is off, `sudo` needs a password, and `com.vix.cron` is not running, so neither
+a LaunchDaemon nor `@reboot` cron was available.
+
+Installed a daily-Mac watchdog instead: LaunchAgent
+`com.engram.hq-live-ensure` (`RunAtLoad`, `StartInterval=120`) runs
+`~/.engram/run/ensure-hq-live-from-mac`, which SSHs `macmini-hq` and executes
+`~/.engram/run/ensure-hq-live`. That script starts the hub and helper if they
+are down, waits for the Tailscale bind address, and is a no-op when both are
+up. HQ remote wrapper now exits 0 if `:8787` is already listening; the remote
+LaunchAgent KeepAlive is unsuccessful-exit only so a lost race does not spin.
+Repo copies live under `scripts/hq-live/`.
+
+Verified: ensure dry-run logged `ok remote=listen service=up` without
+duplicating pids 5669/5682; daily-Mac agent `runs=1` last exit 0; `GET
+/v1/bundles/live.hq.head` still 200 gen 114. Did not SIGTERM/SIGKILL HQ
+helpers and did not claim the 16-minute SLA.
+
+Same day, after an HQ Aqua admin prompt: installed
+`/Library/LaunchDaemons/com.engram.remote-server.boot.plist` and
+`com.engram.service.boot.plist` (`UserName=bing`, `RunAtLoad`, KeepAlive
+only on unsuccessful exit, no token in the plist). System jobs registered
+and immediately exited 0 because the gui-domain helpers already hold
+`:8787` and the writer lock (pids 5669/5682 unchanged). Next-boot start
+without console login is not yet exercised. Daily-Mac SSH watchdog remains
+as a second path. FileVault unlock is still required before any of this
+runs.
+
+### HQ live session ingest (local, unreleased, 2026-08-24)
+
+Implemented unidirectional HQ → daily-Mac live ingest on the dirty
+Round-12 tree, not on `origin/main` (`d97d02575e1b6362b628c649a7e3337193942323`).
+The live coordinator is built by `makeLiveIfEnabled` even when
+`remoteOffloadEnabled` is false, and the runner loop never calls `runOnce` /
+`drainOffload`. Publish identity is fail-closed (`ENGRAM_LIVE_INGEST_PEER` →
+`liveIngestPeerId` → `ENGRAM_REMOTE_OFFLOAD_PEER`; no hostname fallback). Mac
+pull sources are `liveIngestSources` only; a diverging `liveIngestPeerId` fails
+closed. Live blobs use `live.<peer>.head` and
+`live.<peer>.<generation>.<seq>.manifest` (16 MiB cap). Assembly is a
+ledger-join of latest `out` rows that are still local-origin and publishable.
+Incomplete manifests import only; retract requires a complete generation plus
+the shrink guard (`max(50, 10%)`, latch `live_ingest.hq.shrink_guard_latched`).
+Imported rows are `remote:<peer>:<id>` with `origin` / `file_path`
+`remote://<peer>/<id>` and FTS+summary only.
+
+App `Session` now decodes `origin` and shows an `HQ` badge only when
+`origin == "hq"`. `remote://` is a virtual snapshot locator in App and MCP
+(caption `HQ 索引快照，不是源文件`) and is handled before the adapter
+registry. Resume returns an honest error instead of synthesizing a CLI.
+Settings > Archive & Storage has an opt-in `liveIngestEnabled` toggle writing
+`~/.engram/settings.json`, plus shrink-guard reset via IPC
+`liveIngestResetShrinkGuard`.
+
+Focused `_repro`s that passed this pass:
+
+- `EngramServiceCoreTests/RemoteSyncCoordinatorTests`:
+  `testLiveCoordinatorExistsWhenOffloadDisabled_repro`,
+  `testLivePeerIdFailsClosedWithoutExplicitPeer_repro`,
+  `testLiveMacSourcesDivergeFromPeerIdFailsClosed_repro`,
+  `testLivePullImportsPublishableRowIntoFtsWithHqOrigin_repro`,
+  `testLiveListingDoesNotUseOffloadCatalog_repro`,
+  `testLivePullDoesNotRetractFromIncompleteManifest_repro`,
+  `testLivePullSkipsOccupancyAtCoordinator_repro`,
+  `testLivePullShrinkGuardFailsClosedAndRecovers_repro`,
+  `testLiveGenerationBlobRetentionKeepsCurrentAndPrevious_repro`
+- `EngramServiceCoreTests/ArchiveV2RunnerIntegrationTests`:
+  `testLiveCoordinatorIsIndependentOfOffloadRunOnce_repro`
+- `EngramTests/SessionModelTests/testAppSessionDecodesOriginBadge_repro`
+- `EngramTests/MessageParserTests/testRemoteLocatorRendersSnapshotNotFilesystem_repro`
+- `EngramMCPTests/EngramMCPExecutableTests/testRemoteLocatorRendersSnapshotNotFilesystem_repro`
+- `EngramServiceCoreTests/EngramServiceIPCTests/testRemoteHqSessionResumeIsHonestError_repro`
+
+Not verified on 2026-08-24: full Swift/Vitest suites, live XcodeGen, HQ
+launchd install, or the 16-minute HQ→Mac SLA on real machines. Enabling the
+Settings toggle after the service has already started with ingest off does
+not construct the live coordinator until the next service start. No dedicated
+Settings/IPC reset `_repro` was added.
+
+### HQ live ingest enablement (local, unreleased, 2026-08-25)
+
+Operator enablement on the dirty-tree Release build (still marketed as
+1.0.5, `CURRENT_PROJECT_VERSION` 1; replaced daily-Mac `/Applications`
+1.0.5 build 1403). No commit, tag, v1.0.6, notarize, Homebrew, or Sparkle.
+
+HQ (`macmini-hq` / `Bing-HuaQiao`):
+
+- Installed relocatable helper at `~/.engram-service/current` (Helpers +
+  Frameworks) and LaunchAgent `com.engram.service` (`RunAtLoad`, KeepAlive
+  only on unsuccessful exit).
+- Settings: `livePublishEnabled=true`, `liveIngestPeerId=hq`,
+  `remoteOffloadEnabled=false`. Existing HTTP URL kept. Token is mapped
+  from `~/.engram-remote/env` `ENGRAM_REMOTE_TOKEN` to
+  `ENGRAM_REMOTE_OFFLOAD_TOKEN` by the wrapper; never written to
+  `settings.json`.
+- Sanitized service log: `live ingest armed; publish/pull loop only (no
+  offload runOnce)`. Process remains pid-stable and `state=running`.
+- First live publish had not written `live.hq.*` blobs by 14:26 CST. The
+  helper is still in `runInitialArchiveV2IndexPhase` (HQ has
+  `exactArchiveEnabled=true` and dual-replica archive v2). The live loop
+  waits for that initial scan, then a 60s publish debounce.
+
+Daily Mac (`Mo-Mo-MacBook-Pro`):
+
+- Settings: `liveIngestEnabled=true`, `liveIngestSources=["hq"]`,
+  `liveIngestPeerId=hq`. Offload left enabled. `ENGRAM_REMOTE_OFFLOAD_PEER`
+  was not set.
+- Ad-hoc helper cannot read the existing Keychain offload item; live
+  coordinator stayed nil until the App was started via
+  `~/.engram/run/start-engram-app`, which sources
+  `~/.engram/run/remote-offload.env` (0600). After that, sanitized log
+  showed both `remote offload enabled` and `live ingest armed`.
+- Spotlight/`open -a Engram` without that wrapper will start the App
+  without the token and live pull will not arm. A `com.engram.app`
+  LaunchAgent exists with `RunAtLoad=false` (definition only).
+- Imported `origin=hq` / `remote:hq:%` count was still 0 at enablement
+  close. The 16-minute SLA was not exercised.
+
+Residuals remain in `docs/followups.md`. This is not a public release.
+
+This is local unreleased product work on the dirty tree, not a public release.
+The public baseline remains v1.0.5. No v1.0.6, commit, push, tag, notarize,
+or Homebrew/Sparkle update was performed.
+
+### Final Round-twelve remediation and honest stop (2026-08-24)
+
+Retracted the Round-eleven claim that all report packages, including JSONL
+identity/prefix recovery, were complete. The independent Round-twelve review
+still found 12 carried items and 59 new confirmed findings on the unchanged
+`d97d02575e1b6362b628c649a7e3337193942323` baseline. In particular, OpenCode
+parent walking, subagent-root recovery, the dual-constructor parser fallback,
+MCP BUSY keep-hits, helper tilde normalization, catalog leftovers, Darwin
+project moves, human-driven promotion, insight reconciliation, embedding
+omit-retry, Copilot cap recovery, mixed-token search, and FTS drain scheduling
+were not closed by the earlier wording.
+
+Implemented the thirteen deduplicated merge-blocking packages with focused
+`*_repro` coverage while preserving skip tiers, service-owned writes, FTS
+versioning, and the existing do-not-fix contracts. The resulting paths retain
+JSONL prefixes and sticky parse failures, keep semantic hits across BUSY
+hydration, expand tilde overrides before requiring POSIX paths, treat fully
+skippable catalogs as empty, reconcile Darwin aliases without stealing lossy
+CommandCode siblings, promote only eligible human-driven children, splice and
+pre-listen-reconcile insight chains, adopt native embedding dimensions after
+an omitted-dim retry, terminalize Copilot capped prefixes, omit one-character
+Latin search terms without broad LIKE fallback, and leave permanently failed
+FTS holes drained while preserving the due file scan and heartbeat schedule.
+
+Also landed the bounded adjacent high-severity fixes for structured Transcript
+Find tool rendering and wrapper stripping, Cursor empty summaries and mechanical
+titles, uncapped timeline daily counts, live-locator fault isolation and all
+three Antigravity brain roots, SearchPage debounce/cancellation state, and
+OpenPGP private-key redaction. Remaining Round-twelve medium/low work, plus the
+untouched runtime-secrets and session-detail concurrency clusters, is recorded
+as **not claimed fixed** in `docs/followups.md`.
+
+Hermetic focused Swift tests passed across EngramCoreTests,
+EngramServiceCoreTests, EngramMCPTests, and EngramTests, including the
+dual-constructor prefix regression and the final FTS, search, timeline,
+Transcript Find, Cursor, live-locator, and redaction checks. Full Swift/Vitest
+suites, foreground UI automation, remote CI, and live XcodeGen regeneration of
+the shared dirty project were not run in this final stop pass.
+
+This is an honest local stop point toward a future merge, not an inventory-wide
+zero-bug claim and not a public release. The public baseline remains v1.0.5; no
+v1.0.6 version, Docker action, commit, push, deployment, installation, service
+restart, production-data mutation, tag, GitHub Release, notarization, Homebrew,
+or Sparkle operation was performed.
+
+### Round-eleven remediation correction and local implementation (2026-08-24)
+
+Retracted the Round-ten statement that its four named residuals were closed.
+The Round-eleven review found three still-open items and 67 additional
+confirmed findings on disk. In particular, Unicode and Darwin-path
+CommandCode slugs were still wrong, growing JSONL readers still lost prefixes
+in CommandCode/Qoder/Kimi and the adapter fallback, MCP keep-hits behavior was
+still keyword-only, and `adapterMessages` could still collapse a dual throw to
+an empty parse-failed result.
+
+Implemented the deduplicated Round-eleven report packages 1 through 13 on the
+unchanged `d97d02575e1b6362b628c649a7e3337193942323` baseline, preserving the
+existing do-not-fix contracts. The changes cover JSONL identity/prefix
+recovery; live CommandCode slug and canonical collision handling; strict
+socket override normalization; MCP BUSY keep-hits behavior; FTS and embedding
+recovery; archive/catalog bounds; session-parent and skip-tier fences; live
+locator symlinks; activity-time and observability reads; transcript Find;
+generation and pagination fences; runtime-secret ownership; and hermetic
+XCTest homes. Within the Round-eleven report scope, all named packages now
+have a local implementation and focused regression coverage, subject to Grok
+independent re-review.
+
+Focused hermetic Swift regression tests passed across EngramCoreTests,
+EngramServiceCore, EngramMCPTests, and Engram app tests. A full unsigned
+`build-for-testing` of the Engram scheme, including the UI test target, also
+passed. Repository boundary scripts and `git diff --check` were run during
+closeout. Full Swift/Vitest suites, foreground UI automation, remote CI, and a
+live XcodeGen regeneration of the shared dirty project remain unverified.
+
+This is Round-eleven report-scope local implementation evidence, not an
+inventory-wide zero-bug claim or a public-release declaration. No Docker,
+commit, push, deployment, installation, service restart, production-data
+mutation, tag, GitHub Release, notarization, or Homebrew/Sparkle operation was
+performed.
+
+### Round-ten remediation correction and local implementation (2026-08-24)
+
+Retracted the Round-nine closeout statements that no report cluster was
+deferred, that all five carried leftovers were fixed, and that parser-prefix
+recovery and live semantic probes were complete. The Round-ten review found two
+still-open items and 60 additional confirmed defects while preserving 61 prior
+fixes. The independently named residuals were the inverted CommandCode live
+slug, default-scan prefix loss in Qwen/Gemini/Cursor, MCP semantic/hybrid BUSY
+misclassified as `searchModeUnavailable`, and the dual-throw empty
+`parseFailed` path. The Round-nine/eight/seven retractions, the 2026-08-22
+hermetic-home correction, and the narrow Qoder 0/0/0 qualification remain in
+force.
+
+Implemented the deduplicated Wave CN through DI report clusters on the
+unchanged `d97d02575e1b6362b628c649a7e3337193942323` baseline, retaining the
+existing do-not-fix contracts. The changes cover the live CommandCode slug and
+collision reconciliation; keep-prefix parser/Load-all behavior; honest MCP
+BUSY taxonomy; FileIndex v3 recovery; navigation and OpenCode parent fences;
+produced-message caps; Warp launch cleanup; API-key persistence; embedding
+isolation; activity-time reads; rendered transcript Find; catalog budgets;
+absolute CLI/MCP paths; FTS recovery; insight chains; Cursor titles; Gregorian
+timeline grouping; fractional observability merging; pinned secret cleanup;
+human-driven child promotion; related-session cancellation; confined Qoder
+layout; XcodeGen routing; mixed-token highlighting; Antigravity identity; and
+custom-socket hermetic startup. Within the Round-ten report scope, the named
+CN-through-DI clusters now have current implementations and focused regression
+coverage; this is still subject to independent review.
+
+Hermetic non-UI Swift verification passed the full EngramServiceCore suite
+(720 tests, one skipped) and the complete EngramCoreTests, EngramMCPTests,
+Engram, and EngramRemoteServerCore schemes. Vitest passed 129 files with 1,539
+tests passed and two skipped. Node build, test typechecking, Biome, knip, adapter
+parity, and the focused XcodeGen-routing tests passed. Fixture schema validation
+passed, and consecutive generation produced stable SHA-256 values for both
+fixture databases. The fixture freshness wrappers still report differences
+from HEAD because the corresponding generated databases and goldens are
+intentional dirty-tree updates; adapter-format drift remains fail-closed because
+the local Claude/Codex corpus versions exceed the verified baselines.
+
+This is Round-ten report-scope local implementation evidence, not an
+inventory-wide zero-bug claim or a public-release declaration. Independent
+Grok re-review, remote CI, live XcodeGen regeneration, and foreground UI
+automation remain outstanding. No Docker, commit, push, deployment,
+installation, service restart, production-data mutation, tag, GitHub Release,
+notarization, or Homebrew/Sparkle operation was performed.
+
+### Round-nine remediation correction and local implementation (2026-08-24)
+
+Retracted the Round-eight completion wording that all carried leftovers were
+fixed and that activity-time usage was already complete at that checkpoint.
+The Round-nine review found three still-open items and 60 additional confirmed
+defects while preserving 73 prior fixes. In particular, the earlier statement
+prematurely closed `loadall-cap-5`, Copilot `parseSessionInfo`,
+`workitem-localtime-1`, `observability-ring-1`, and the local-catalog
+remaining-budget overflow, while MCP/service cost and ready-count readers still
+contained `start_time` queries. The Round-seven and earlier retractions, the
+2026-08-22 hermetic-home correction, and the narrow Qoder 0/0/0 qualification
+remain in force.
+
+Implemented the deduplicated Wave CA through CL report clusters on the
+unchanged `d97d02575e1b6362b628c649a7e3337193942323` baseline, with failing
+`_repro` coverage before production corrections. That pass addressed
+activity-time cost/day/ready queries; namespaced runtime-secret cleanup;
+semantic probes; stale session navigation and mutations; parser prefixes and
+load-all caps;
+repair Copilot cadence and OpenCode parent validation; isolate embedding
+dimensions; serialize API-key/settings retries; align Transcript Find with
+painted content; repair insight chains and detail generations; improve Cursor
+title ingestion, FTS recovery, catalog budgets, Qoder layout, project moves,
+and observability merging; harden CLI/MCP/deploy hermetic paths; and route every
+CI project generation through the tracked/untracked XcodeGen drift gate. The
+claim that the five carried leftovers were all fixed and that no Wave
+CA-through-CL cluster was deferred is retracted by the Round-ten correction
+above; the four independently named residuals remained at this checkpoint.
+
+Current non-UI verification passed EngramCoreTests (1,313 tests, one skipped),
+App tests (1,000), EngramServiceCore (712 tests, one skipped), EngramMCPTests
+(245), and EngramRemoteServerCore (155). Vitest passed 129 files with 1,538
+tests passed and two dirty-tree skips. Node build, test typechecking, Biome,
+knip, the app/MCP/CLI direct-write gate, Swift module boundaries, archive-v2
+safety, and `git diff --check` passed. The XcodeGen gate's fixture tests proved
+tracked and untracked drift rejection and all four workflows call the shared
+gate; live regeneration was not run on this shared dirty project because it
+would rewrite pre-existing generated-project changes.
+
+This is report-scope local implementation evidence, not an inventory-wide
+zero-bug claim or a public-release declaration. Independent Grok re-review,
+remote CI, live XcodeGen regeneration, and foreground UI automation remain
+outstanding. No Docker, commit, push, deployment, installation, service
+restart, production-data mutation, tag, GitHub Release, notarization, or
+Homebrew/Sparkle operation was performed.
+
+### Round-eight remediation correction and implementation (2026-08-23)
+
+Retracted the Round-7 statement that no report ID was intentionally deferred.
+The Round-8 review found six still-open items and 73 additional confirmed
+defects while preserving 68 previous fixes. The carried leftovers included
+`loadall-cap-5`, `copilot-composite-2`, `workitem-localtime-1`,
+`observability-ring-1`, and `remote-catalog-1`; the last item remained open
+until both local and HTTP catalogs skipped a 65 MiB malformed object and still
+returned a later valid peer. The Round-6 and AB-through-AJ retractions, the
+2026-08-22 hermetic-home correction, and the narrow Qoder 0/0/0 qualification
+remain in force.
+
+Implemented the deduplicated Wave BI through BY clusters on the unchanged
+`d97d02575e1b6362b628c649a7e3337193942323` baseline with `_repro` coverage.
+The changes cover parser prefix preservation and load-all caps; Copilot event
+and checkpoint behavior; live export snapshots; hidden/orphan parent fences;
+embedding dimension isolation; bounded remote/archive processing; FTS
+recovery; activity-time usage and work-item grouping; stable UI task identity,
+find, and observability state; cooperative service adoption; Warp handoff;
+Claude subagent layout; and session-relation migration safety. The adjudicated
+do-not-fix set remains unchanged, including cooperative helper shutdown,
+unfiltered by-ID reads, manual unlink semantics, and skip-tier preservation.
+
+Current command-line verification passed EngramCoreTests (1,295 tests, one
+skipped), App tests (979 tests), EngramServiceCore (705 tests, one skipped),
+EngramMCPTests (241 tests), and EngramRemoteServerCore (155 tests). Vitest
+passed 129 files with 1,537 tests passed and two skipped; Node build, test
+typechecking, Biome, knip, adapter parity, and the focused Cursor adapter suite
+passed. Direct-write and Swift module-boundary gates, `git diff --check`, and a
+temporary-index generated-project drift gate passed; the actual Git index
+remained untouched. CI-pinned XcodeGen output was byte-stable at SHA-256
+`ad144b3a7adfe6e81c565cb2c4f906cd21520f7c1928b4b85544c9294e40dcf2`.
+
+This is a local, report-scope implementation and verification statement, not
+an inventory-wide zero-bug claim or a public-release declaration. Independent
+Grok re-review, remote CI, and foreground UI automation remain outstanding.
+No Docker, commit, push, deployment, installation, tag, GitHub Release,
+notarization, Homebrew/Sparkle update, service restart, or production-data
+operation was performed.
+
+### Round-seven remediation correction and report-scope closeout (2026-08-23)
+
+Retracted the Round-6 statements that no report ID was deferred and that all
+five carried IDs had passing focused repros. The Round-7 review found two
+still-open items and 73 additional confirmed defects while preserving 72
+previous fixes. This correction supersedes those completion sentences without
+changing the earlier AB-through-AJ retraction, the 2026-08-22 hermetic-home
+correction, or the narrow Qoder 0/0/0 qualification.
+
+Implemented the deduplicated Wave AT through BG report clusters on the
+unchanged `d97d02575e1b6362b628c649a7e3337193942323` baseline. The changes cover
+load-all prefix and cap recovery; hidden/orphan parent validation; embedding
+request isolation; bounded FTS drain and busy handling; catalog classification
+before response limits; archive redaction paging; human-driven browse
+catalogs; work-item and timeline project consistency; subagent identity and
+skip preservation; CLI/helper path resolution; no-follow settings and
+hermetic test homes/preferences; UI state and live-session identity; and
+observability, shutdown, and fixture honesty. The adjudicated do-not-fix set
+remains unchanged, including cooperative helper shutdown, unfiltered by-ID
+reads, manual unlink semantics, and skip-tier preservation.
+
+The sentence previously placed here claiming that no Round-7 report ID was
+intentionally deferred is retracted by the Round-eight correction above. At
+that checkpoint, confirmed leftovers still included `loadall-cap-5`,
+`copilot-composite-2`, `workitem-localtime-1`, `observability-ring-1`, and
+`remote-catalog-1`; the passing notes below were suite evidence, not inventory
+closeout.
+
+Local non-UI verification passed the complete EngramCore, App,
+EngramServiceCore, EngramMCP, and EngramRemoteServerCore Swift suites. Vitest
+passed 129 files with 1,537 tests passed and two skipped; Node build, test
+typecheck, Biome, knip, adapter parity, the fixture-generator suite, direct
+write/module/archive boundary gates, and `git diff --check` passed. The
+CI-pinned XcodeGen 2.45.4 produced the same project twice at SHA-256
+`ad144b3a7adfe6e81c565cb2c4f906cd21520f7c1928b4b85544c9294e40dcf2`.
+
+Unsigned UI automation ran 61 tests before the last isolation/locator
+refinement: 52 passed, seven failed, and two skipped. Later focused runs proved
+the search hit/miss and Timeline data assertions before failing in the macOS
+27 screenshot service; the Sessions failures were narrowed to the old
+accessibility locator. The final isolated-defaults and locator changes compile
+and have passing unit repros, but the complete UI suite was not rerun after the
+user left the Mac. The first signed attempt also remained blocked by the
+machine's missing configured Mac Development certificate. No Docker, commit,
+push, deployment, installation, tag, GitHub Release, notarization,
+Homebrew/Sparkle update, service restart, or production-data operation was
+performed.
+
+### Round-six remediation correction and implementation (2026-08-23)
+
+Retracted the preceding Round-5 sentence claiming that every Wave AB through
+AJ cluster had an implementation. The Round-6 review proved that claim false:
+five items remained open and 70 additional defects were confirmed while 68
+prior fixes remained closed. The five carried items were `embed-isolate-2`,
+`invariant-6-prod-5`, `subagent-layout-regress-1`, `project-move-encode-2`, and
+`remote-catalog-1`. The earlier Qoder/live-scan 0/0/0 result remains a narrow
+follow-up result, not evidence that the repository is defect-free. The
+2026-08-22 hermetic-home correction below also remains in force.
+
+Implemented the deduplicated Wave AK through AR work on the unchanged
+`d97d02575e1b6362b628c649a7e3337193942323` baseline, with failing `_repro`
+coverage before each production correction. The changes cover native embedding
+dimension adoption; XCTest-safe settings homes; versioned subagent healing;
+project-review path parity; bounded remote catalogs; no-follow secrets and
+ordered API-key persistence; Qoder/OpenCode identity and skip preservation;
+produced-message caps; parser-prefix/load-all recovery; terminal export
+semantics; mixed-token search and bounded busy handling; deferred FTS recovery;
+session/window/timeline/find UI state; live-session locator parity; repository
+attribution; observability and cooperative shutdown; canonical CLI/socket
+resolution; hermetic MCP/TypeScript/service tests; iFlow path encoding; and
+redaction before archive paging, embedding, and MCP insight egress. The
+adjudicated do-not-fix set is unchanged; service-owned writes and `skip`-tier
+preservation remain enforced.
+
+The Round-6 checkpoint claimed that no report ID was intentionally deferred and
+that all five carried IDs had passing focused repros. That claim is retracted by
+the Round-7 correction above and must not be used as current closeout evidence.
+
+Final generated-project verification passed `EngramCoreTests` (1,245 passed,
+one skipped), App tests (933 passed), `EngramServiceCore` (684 passed, one
+skipped), `EngramMCPTests` (232 passed), and `EngramRemoteServerCore` (151
+passed). Vitest passed 129 files with 1,537 passed and two skipped; Node build,
+test typecheck, Biome, knip, adapter parity, fixture schema, generation
+idempotence, and `git diff --check` passed. Two consecutive XcodeGen runs
+stabilized at project hash
+`f9721f75896ea86b66499b0fa62fd28f37ab52c982a0ba724fdb7177f7212e0d`, and
+all Swift suites above were rerun against that final generated project.
+
+The selected UI automation suite compiled but executed no test body because
+the macOS runner timed out while enabling automation mode. The MCP fixture
+HEAD-diff gate correctly remains non-green on this authorized dirty fixture
+update, although a second generation was byte-identical. Adapter format drift
+also remains blocked because the installed Claude/Codex corpus versions exceed
+the approved baselines; no vendor baseline was accepted implicitly. No Docker,
+commit, push, deployment, installation, tag, GitHub Release, notarization,
+Homebrew/Sparkle update, service restart, or production-data operation was
+performed.
+
+### Round-four remediation correction (2026-08-22)
+
+Retracted the Wave L through R closeout claim that no confirmed IDs were
+deferred and that all test homes were hermetic. The Round-4 audit found three
+incomplete patches and 72 additional confirmed defects on the unchanged
+`d97d02575e1b6362b628c649a7e3337193942323` baseline. In particular, several
+App/MCP subprocess tests still inherited the host environment, UI tests set
+only `HOME`, and in-process adapter/bootstrap factories could still resolve
+the production home. The earlier suite counts remain valid only for the tree
+that was tested; they did not prove the Round-3 inventory was complete.
+
+Wave S through X and the Wave Y/Z corrections were implemented on the dirty
+tree with RED/GREEN repros: produced-message caps and parser-prefix recovery;
+Antigravity/OpenCode live identity; FTS, backfill, subagent, and hermetic-home
+corrections; no-follow settings/token handling; mixed-token and embedding
+provider behavior; composite Copilot/Kimi/Codex reads; OpenCode live clocks;
+safe settings/API-key persistence; Warp config lifetime; and one canonical
+service-socket resolver. Wave AA work completed here covers repository identity,
+log coverage honesty, dangling-insight repair, MCP orphan/catalog visibility,
+and the retained TypeScript subagent-layout mirror.
+
+Current-tree verification includes a successful unsigned Debug build of the
+full `Engram` scheme, the focused repository realpath/alias regression, the
+focused OpenCode live-session locator regression, 73 focused retained-TS tests,
+`npm run typecheck:test`, Biome, and `git diff --check`. Full Swift suites, UI
+tests, and remote CI were not rerun for this still-partial Round-4 tree.
+
+At that 2026-08-22 checkpoint, the still-deferred Wave AA clusters were
+`cursor-title-1/2/3`, `timeline-project-1/2`,
+`transcript-find-tools-1/2`, `r3-dropped-64-2`,
+`redact-archive-1/2`, `shutdown-truncate-2/3`, and
+`uitest-home-search-2/3`. Subsequent reviews superseded that historical list; it
+must not be read as the current remaining inventory. The repository remained
+dirty and no commit, push, deployment, release, or Docker operation was
+performed at that checkpoint.
+
+### Round-three remediation correction (2026-08-22)
+
+Retracted the earlier claim that Wave G through K was fully closed. The
+`engram-review-round3-2026-08-22.md` audit confirmed seven incomplete patches
+and 76 new defects on the unchanged
+`d97d02575e1b6362b628c649a7e3337193942323` baseline. The previously recorded
+G–K suite counts were evidence for that earlier tree, not proof that the
+round-two inventory was complete.
+
+Implemented the deduplicated Wave L through R corrections on the existing dirty
+tree. The work covers relative subagent identity and skip preservation; FTS
+shadow cleanup and recoverable-job draining; hermetic test homes and no-follow
+secret reads; mixed-token App/MCP/insight search; parser caps and live-export
+failure semantics; settings/API-key safety; archive, indexing, usage, repository,
+project-move, timeline, transcript-find, UI race, remote-catalog, shutdown, local
+deploy, and Warp launch correctness; plus truthful search/runtime documentation.
+Every behavior cluster added or strengthened a failing `_repro` before the
+minimal production change. The adjudicated do-not-fix set remains unchanged.
+
+Current-tree verification passed Node build, lint, typecheck, knip, adapter
+parity, invariant gates, and Vitest coverage (129 files; 1,528 passed, 2
+skipped), plus `EngramCoreTests` (1,179; 1 skipped), `EngramServiceCore` (655;
+1 skipped), `EngramMCPTests` (222), `EngramRemoteServerCore` (149), App unit
+tests (881), and an unsigned Debug app build. Two consecutive `xcodegen`
+generations produced the same project hash. The targeted signed UI search
+hit/miss run remains unverified because this Mac lacks the configured Mac
+Development certificate; disabling signing built the runner but it was killed
+before bootstrapping. Fresh remote CI was not run. No confirmed Wave L–R
+product ID was intentionally deferred. No Docker, deployment, installation,
+push, commit, release, service restart, or production data operation was
+performed.
+
+### Multi-review confirmed defect closeout (2026-08-21)
+
+Closed all 55 defects confirmed by the 98-agent `engram-multi-review`
+adjudication, in the requested Wave A through F order. The work covered strict
+private-host parsing for remote sync; provider-level embedding failure
+propagation; Timeline favorites; project-move dry-run/probe/Copilot metadata
+correctness; mixed-token search; long writer operations and UI timeouts;
+startup/index/FTS recovery ordering; bounded Swift adapter replay and explicit
+truncation; MCP completeness, visibility, operation-id, and output contracts;
+archive recovery/policy re-evaluation; parent/tier invariants; UUID search;
+App browse/detail/lifecycle races; remote catalog limits; hermetic tests; and
+the App read-pool WAL/busy-timeout policy.
+
+Each behavior cluster was introduced with a failing `*_repro` test before the
+minimal production change. The nine adjudicated false positives were left
+unchanged, including cooperative helper shutdown, manual unlink semantics,
+unfiltered by-id hidden-session access, retry-count indexing behavior, and the
+retained TypeScript database constructors. Swift product paths remain
+authoritative; App and MCP writes still route through the service writer gate,
+skip-tier children are never upgraded, and tests use temporary homes/databases.
+
+Full `EngramCoreTests`, `EngramServiceCore`, `Engram` unit tests (excluding
+`EngramUITests`), `EngramMCPTests`, and `EngramRemoteServerCore` passed on the
+unchanged source baseline `d97d02575e1b6362b628c649a7e3337193942323` after
+the fixes. `xcodegen generate` synchronized the generated project after adding
+the App's `EngramCoreRead` dependency, and `git diff --check` passed. No Docker,
+deployment, installation, service restart, push, release, or production data
+operation was performed.
+
 ### Atomic CodeQL action pin closeout (2026-08-19)
 
 Completed Dependabot #431's grouped CodeQL action update by keeping all three

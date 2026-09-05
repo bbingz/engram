@@ -317,6 +317,34 @@ final class ClaudeCodeProfileService: @unchecked Sendable {
                         byteCount: try sourceByteCount(subagent, cancellation: cancellation)
                     )
                 }
+
+                // docs/invariants.md #2: profile accounting follows the same
+                // vendor-stamped workflow-subagent layout as session tiering.
+                let workflows = subagents.appendingPathComponent("workflows", isDirectory: true)
+                guard (try? isDirectory(workflows, cancellation: cancellation)) == true else {
+                    try cancellation.check()
+                    continue
+                }
+                for workflow in try directChildren(
+                    of: workflows,
+                    includingHidden: false,
+                    cancellation: cancellation
+                ) where (try? isDirectory(workflow, cancellation: cancellation)) == true
+                    && workflow.lastPathComponent.hasPrefix("wf_")
+                {
+                    for subagent in try directChildren(
+                        of: workflow,
+                        includingHidden: false,
+                        cancellation: cancellation
+                    ) where subagent.pathExtension == "jsonl"
+                        && subagent.deletingPathExtension().lastPathComponent.hasPrefix("agent-")
+                    {
+                        try visitBoundary(subagent, cancellation: cancellation, testHooks: testHooks)
+                        counts.addFile(
+                            byteCount: try sourceByteCount(subagent, cancellation: cancellation)
+                        )
+                    }
+                }
             }
         }
         return counts

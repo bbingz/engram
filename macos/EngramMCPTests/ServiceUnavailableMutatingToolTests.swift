@@ -3,6 +3,36 @@ import Darwin
 import XCTest
 
 final class ServiceUnavailableMutatingToolTests: XCTestCase {
+    func testCallToolWithEmptyEnvironmentUsesHermeticDefaults_repro() throws {
+        var inspected = false
+        _ = try callTool(
+            name: "live_sessions",
+            arguments: ["unexpected": true],
+            environment: [:],
+            inspectEnvironment: { environment, root in
+                inspected = true
+                let databasePath = try XCTUnwrap(environment["ENGRAM_MCP_DB_PATH"])
+                let settingsPath = try XCTUnwrap(environment["ENGRAM_SETTINGS_PATH"])
+                let runtimeSecretsPath = try XCTUnwrap(environment["ENGRAM_RUNTIME_AI_SECRETS_PATH"])
+                XCTAssertEqual(environment["HOME"], root.path)
+                XCTAssertEqual(environment["CFFIXED_USER_HOME"], root.path)
+                XCTAssertTrue(databasePath.hasPrefix(root.path + "/"))
+                XCTAssertTrue(settingsPath.hasPrefix(root.path + "/"))
+                XCTAssertTrue(runtimeSecretsPath.hasPrefix(root.path + "/"))
+                XCTAssertEqual(
+                    environment["ENGRAM_MCP_SERVICE_SOCKET"],
+                    root.appendingPathComponent("no-service.sock").path
+                )
+                XCTAssertNotEqual(
+                    databasePath,
+                    FileManager.default.homeDirectoryForCurrentUser
+                        .appendingPathComponent(".engram/index.sqlite").path
+                )
+            }
+        )
+        XCTAssertTrue(inspected)
+    }
+
     func testSaveInsightFailsClosedWithoutServiceSocket() throws {
         let temp = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }
@@ -351,13 +381,16 @@ final class ServiceUnavailableMutatingToolTests: XCTestCase {
     private func callTool(
         name: String,
         arguments: [String: Any],
-        environment: [String: String]
+        environment: [String: String],
+        inspectEnvironment: (([String: String], URL) throws -> Void)? = nil
     ) throws -> [String: Any] {
+        let sandbox = try makeHermeticRPCEnvironment(overrides: environment)
+        defer { try? FileManager.default.removeItem(at: sandbox.root) }
+        defer { try? sandbox.databaseKeeper?.close() }
         let process = Process()
         process.executableURL = executableURL()
-        process.environment = ProcessInfo.processInfo.environment
-            .merging(["TZ": "UTC"]) { _, new in new }
-            .merging(environment) { _, new in new }
+        process.environment = sandbox.environment
+        try inspectEnvironment?(process.environment ?? [:], sandbox.root)
 
         let requestObject: [String: Any] = [
             "jsonrpc": "2.0",

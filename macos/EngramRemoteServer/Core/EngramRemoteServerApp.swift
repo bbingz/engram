@@ -19,6 +19,8 @@ public final class EngramRemoteServerApp: Sendable {
     /// independently limits JSON object fan-out for very small manifests.
     static let maximumCatalogBytes = 4 * 1024 * 1024
     static let maximumCatalogPeers = 1_024
+    private static let catalogEnvelopeBytes = Data(#"{"schemaVersion":1,"manifests":[]}"#.utf8).count
+    static let maximumCatalogManifestBytes = maximumCatalogBytes - catalogEnvelopeBytes
 
     private let config: EngramRemoteServerConfig
     private let store: BlobStore
@@ -99,7 +101,7 @@ public final class EngramRemoteServerApp: Sendable {
         // the manifest schema. Undecryptable / unparseable manifests are skipped.
         router.get("/v1/catalog") { request, _ in
             guard Self.authorized(request, token: token) else { return Self.unauthorized() }
-            var manifests: [Any] = []
+            var manifests: [[String: Any]] = []
             // Manifests are keyed `catalog.<peer>.manifest`; require the suffix too so
             // this selects the same blobs as LocalDirectoryBackend.catalog() (a stray
             // `catalog.*` non-manifest blob is selected by neither producer).
@@ -113,21 +115,28 @@ public final class EngramRemoteServerApp: Sendable {
             } catch BlobStoreError.limitExceeded {
                 return Self.payloadTooLarge()
             } catch {
-                // Preserve the legacy empty-catalog fallback for directory I/O errors.
-                keys = []
+                return Response(status: .internalServerError)
             }
-            var remainingDecodedBytes = Self.maximumCatalogBytes
+            var remainingDecodedBytes = Self.maximumCatalogManifestBytes
             for k in keys {
                 let data: Data
                 do {
-                    data = try store.get(k, maximumPlaintextBytes: remainingDecodedBytes)
+                    data = try store.get(k, maximumPlaintextBytes: Self.maximumCatalogBytes)
                 } catch BlobStoreError.limitExceeded {
-                    return Self.payloadTooLarge()
+                    // One legacy/directly-written blob must not starve later
+                    // peers. It cannot fit in the bounded response, so skip it
+                    // without charging the aggregate catalog budget.
+                    continue
                 } catch {
                     continue
                 }
-                remainingDecodedBytes -= data.count
-                guard let obj = try? JSONSerialization.jsonObject(with: data) else { continue }
+                guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    continue
+                }
+                guard data.count <= Self.maximumCatalogManifestBytes else { continue }
+                let requiredBytes = data.count + (manifests.isEmpty ? 0 : 1)
+                guard requiredBytes <= remainingDecodedBytes else { return Self.payloadTooLarge() }
+                remainingDecodedBytes -= requiredBytes
                 manifests.append(obj)
             }
             let payload: [String: Any] = ["schemaVersion": 1, "manifests": manifests]
@@ -156,12 +165,14 @@ public final class EngramRemoteServerApp: Sendable {
             guard Self.authorized(request, token: token) else { return Self.unauthorized() }
             guard let key = context.parameters.get("key") else { return Self.badRequest("missing key") }
             do {
-                let data = try store.get(key)
+                let data = try store.get(key, maximumPlaintextBytes: maxBytes)
                 return Self.octetStream(data)
             } catch BlobStoreError.notFound {
                 return Response(status: .notFound)
             } catch BlobStoreError.invalidKey {
                 return Self.badRequest("invalid key")
+            } catch BlobStoreError.limitExceeded {
+                return Self.payloadTooLarge()
             } catch {
                 // Decrypt/auth-tag failure or I/O error.
                 return Response(status: .internalServerError)
@@ -173,12 +184,20 @@ public final class EngramRemoteServerApp: Sendable {
             guard let key = context.parameters.get("key") else { return Self.badRequest("missing key") }
             var request = request
             let buffer: ByteBuffer
+            let uploadLimit = Self.isCatalogManifestKey(key)
+                ? min(maxBytes, Self.maximumCatalogManifestBytes)
+                : maxBytes
             do {
-                buffer = try await request.collectBody(upTo: maxBytes)
+                buffer = try await request.collectBody(upTo: uploadLimit)
+            } catch is NIOTooManyBytesError {
+                return Self.payloadTooLarge()
             } catch {
-                return Response(status: .init(code: 413, reasonPhrase: "Payload Too Large"))
+                return Response(status: .serviceUnavailable)
             }
             let data = Data(buffer.readableBytesView)
+            guard !Self.isCatalogManifestKey(key) || data.count <= Self.maximumCatalogManifestBytes else {
+                return Self.payloadTooLarge()
+            }
             do {
                 try store.put(key, plaintext: data)
                 return Response(status: .created)
@@ -216,6 +235,10 @@ public final class EngramRemoteServerApp: Sendable {
         }
 
         return router
+    }
+
+    private static func isCatalogManifestKey(_ key: String) -> Bool {
+        key.hasPrefix("catalog.") && key.hasSuffix(".manifest") && !key.contains("..")
     }
 
     /// Run until cancelled. `onBound` reports the actual listening port (useful
@@ -697,6 +720,11 @@ enum MCPRemoteEndpoint {
     static let maxRequestBytes = 1_048_576
     static let maxTranscriptWindowBytes = 1_048_576
     static let defaultTranscriptWindowBytes = 262_144
+    static let transcriptRedactionOverlapBytes = 64 * 1_024
+    static let maxTranscriptRedactionDecodedBytes =
+        maxTranscriptWindowBytes
+        + Int(ArchiveSourceManifest.rawChunkSize)
+        + 2 * transcriptRedactionOverlapBytes
     static let discoverTTLMs = 3_600_000
     static let toolsListTTLMs = 3_600_000
     static let cacheScope = "private"
@@ -748,12 +776,19 @@ enum MCPRemoteEndpoint {
         do {
             let buffer = try await request.collectBody(upTo: maxRequestBytes)
             body = Data(buffer.readableBytesView)
-        } catch {
+        } catch is NIOTooManyBytesError {
             return errorResponse(
                 status: .init(code: 413, reasonPhrase: "Payload Too Large"),
                 id: nil,
                 code: -32600,
                 message: "Request body too large"
+            )
+        } catch {
+            return errorResponse(
+                status: .serviceUnavailable,
+                id: nil,
+                code: -32603,
+                message: "Request body unavailable"
             )
         }
         guard let parsed = try? JSONSerialization.jsonObject(with: body),
@@ -1027,7 +1062,7 @@ enum MCPRemoteEndpoint {
         toolDefinition(
             name: "archive_get_session",
             title: "Read Archived Session",
-            description: "Read an archived session transcript by manifest digest. Returns the raw source bytes decoded as UTF-8, windowed by offset/max_bytes.",
+            description: "Read an archived session transcript by manifest digest. Returns redacted UTF-8 text, windowed by offset/max_bytes.",
             properties: [
                 ("manifest_sha256", .object([("type", .string("string"))])),
                 ("offset", .object([
@@ -1173,14 +1208,108 @@ enum MCPRemoteEndpoint {
             arguments, "max_bytes", minimum: 1, maximum: maxTranscriptWindowBytes
         ) ?? defaultTranscriptWindowBytes
 
-        // Windowed reassembly lives in the store: only chunks overlapping the
-        // requested window are fetched and decrypted (retro PR-2, F01).
-        let source = try store.readSourceWindow(
+        // Decode only the requested raw window plus enough overlap to recognize
+        // a secret beginning on either side of a page boundary. Search backward
+        // and extend a trailing match in bounded increments so every supported
+        // credential is replaced atomically; fail closed at the decode ceiling.
+        var readStart = max(0, offset - transcriptRedactionOverlapBytes)
+        let targetEnd = offset > Int.max - maxBytes ? Int.max : offset + maxBytes
+        let initialReadEnd = targetEnd > Int.max - transcriptRedactionOverlapBytes
+            ? Int.max
+            : targetEnd + transcriptRedactionOverlapBytes
+        var decodedLimit = max(1, initialReadEnd - readStart)
+        var source = try store.readSourceWindow(
             manifestDigest: digest,
-            offset: offset,
-            maxBytes: maxBytes
+            offset: readStart,
+            maxBytes: decodedLimit
         )
+        let initialTargetStart = min(source.bytes.count, max(0, offset - readStart))
+        var redactionStart = sensitiveRangeStart(
+            in: source.bytes,
+            crossing: initialTargetStart
+        ).map { readStart + $0 }
+        var searchEnd = readStart
+        var searchedBackwardBytes = initialTargetStart
+        while redactionStart == nil, searchEnd > 0 {
+            let remainingBudget = maxTranscriptRedactionDecodedBytes - searchedBackwardBytes
+            guard remainingBudget > 0 else {
+                throw transcriptRedactionLimitError()
+            }
+            let probeStart = max(0, searchEnd - min(maxTranscriptWindowBytes, remainingBudget))
+            let probeLength = searchEnd - probeStart + transcriptRedactionOverlapBytes
+            let probe = try store.readSourceWindow(
+                manifestDigest: digest,
+                offset: probeStart,
+                maxBytes: probeLength
+            )
+            redactionStart = sensitiveRangeStart(
+                in: probe.bytes,
+                crossing: searchEnd - probeStart
+            ).map { probeStart + $0 }
+            searchedBackwardBytes += searchEnd - probeStart
+            searchEnd = probeStart
+        }
+        if let redactionStart {
+            readStart = redactionStart
+            decodedLimit = max(1, initialReadEnd - readStart)
+            guard decodedLimit <= maxTranscriptRedactionDecodedBytes else {
+                throw transcriptRedactionLimitError()
+            }
+            source = try store.readSourceWindow(
+                manifestDigest: digest,
+                offset: readStart,
+                maxBytes: decodedLimit
+            )
+        }
+        while hasTrailingSensitiveRange(
+            in: source.bytes,
+            before: min(source.bytes.count, max(0, targetEnd - readStart))
+        ),
+              Int64(readStart + source.bytes.count) < source.totalBytes {
+            guard decodedLimit < maxTranscriptRedactionDecodedBytes else {
+                throw transcriptRedactionLimitError()
+            }
+            decodedLimit = min(
+                maxTranscriptRedactionDecodedBytes,
+                decodedLimit + maxTranscriptWindowBytes
+            )
+            source = try store.readSourceWindow(
+                manifestDigest: digest,
+                offset: readStart,
+                maxBytes: decodedLimit
+            )
+        }
+        if hasTrailingSensitiveRange(
+            in: source.bytes,
+            before: min(source.bytes.count, max(0, targetEnd - readStart))
+        ),
+           Int64(readStart + source.bytes.count) < source.totalBytes {
+            throw transcriptRedactionLimitError()
+        }
         let manifest = source.manifest
+        let targetStart = min(source.bytes.count, max(0, offset - readStart))
+        let targetUpper = min(source.bytes.count, max(targetStart, targetEnd - readStart))
+        let targetRange = targetStart..<targetUpper
+        var requestedWindow = Data()
+        var rawCursor = targetRange.lowerBound
+        var consumedUpper = targetRange.upperBound
+        for secret in TranscriptRedactionPolicy.sensitiveUTF8Ranges(inUTF8: source.bytes) {
+            guard secret.upperBound > targetRange.lowerBound,
+                  secret.lowerBound < targetRange.upperBound
+            else {
+                continue
+            }
+            let plainEnd = min(targetRange.upperBound, max(rawCursor, secret.lowerBound))
+            if rawCursor < plainEnd {
+                requestedWindow.append(source.bytes.subdata(in: rawCursor..<plainEnd))
+            }
+            requestedWindow.append(Data(TranscriptRedactionPolicy.redactionToken.utf8))
+            rawCursor = max(rawCursor, secret.upperBound)
+            consumedUpper = max(consumedUpper, secret.upperBound)
+        }
+        if rawCursor < targetRange.upperBound {
+            requestedWindow.append(source.bytes.subdata(in: rawCursor..<targetRange.upperBound))
+        }
         let totalBytes = Int(source.totalBytes)
 
         // A page boundary must not split a multibyte character: the repairing
@@ -1189,13 +1318,15 @@ enum MCPRemoteEndpoint {
         // the window to scalar boundaries and deriving `nextOffset` from the
         // snapped end keeps paging byte-exact.
         let bounds = utf8ScalarBounds(
-            of: source.bytes,
+            of: requestedWindow,
             snapStart: offset > 0,
-            snapEnd: offset + source.bytes.count < totalBytes
+            snapEnd: offset + requestedWindow.count < totalBytes
         )
-        let window = source.bytes.subdata(in: bounds)
-        let windowOffset = offset + (bounds.lowerBound - source.bytes.startIndex)
-        let nextOffset = offset + (bounds.upperBound - source.bytes.startIndex)
+        let window = requestedWindow.subdata(in: bounds)
+        let leadingSnap = bounds.lowerBound - requestedWindow.startIndex
+        let trailingSnap = requestedWindow.endIndex - bounds.upperBound
+        let windowOffset = offset + leadingSnap
+        let nextOffset = readStart + consumedUpper - trailingSnap
         var structured: [(String, MCPRemoteWireValue)] = [
             ("sessionID", manifest.sessionID.map { .string($0) } ?? .null),
             ("source", .string(manifest.source)),
@@ -1224,6 +1355,32 @@ enum MCPRemoteEndpoint {
             ])),
             ("structuredContent", .object(structured)),
         ]
+    }
+
+    private static func sensitiveRangeStart(
+        in data: Data,
+        crossing position: Int
+    ) -> Int? {
+        let cursor = min(max(position, 0), data.count)
+        return TranscriptRedactionPolicy.sensitiveUTF8Ranges(inUTF8: data)
+            .last(where: { $0.lowerBound < cursor && $0.upperBound >= cursor })?
+            .lowerBound
+    }
+
+    private static func hasTrailingSensitiveRange(
+        in data: Data,
+        before targetUpper: Int
+    ) -> Bool {
+        TranscriptRedactionPolicy.sensitiveUTF8Ranges(inUTF8: data).contains {
+            $0.lowerBound < targetUpper && $0.upperBound == data.count
+        }
+    }
+
+    private static func transcriptRedactionLimitError() -> MCPRemoteToolError {
+        MCPRemoteToolError(
+            message: "Transcript redaction window exceeds the safety limit",
+            code: "archiveStoreError"
+        )
     }
 
     /// Byte range of `window` that holds only whole UTF-8 scalars.

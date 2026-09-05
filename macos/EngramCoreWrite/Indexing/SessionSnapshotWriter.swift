@@ -15,17 +15,43 @@ public final class SessionSnapshotWriter {
     }
 
     public func writeAuthoritativeSnapshot(_ snapshot: AuthoritativeSessionSnapshot) throws -> SessionWriteResult {
+        // docs/invariants.md #1: sanitize inside the service-owned writer path;
+        // app and MCP readers must not introduce a competing SQLite writer.
+        var snapshot = snapshot
+        snapshot.summary = snapshot.summary.map(TranscriptRedactionPolicy.redactedSummary)
+        snapshot.displayTitle = snapshot.displayTitle.map(TranscriptRedactionPolicy.redactedTitle)
+        let suppliedPathParent = snapshot.parentSessionId != nil
+        // Validate the adapter hint before merge/noop classification. OpenCode
+        // virtual locators have no file stat, so a same-hash reparse must still
+        // be able to clear a host that became hidden or orphaned.
+        snapshot = try normalizedOpenCodeMissingParentSnapshot(
+            incoming: snapshot,
+            merged: snapshot
+        )
         let current = try currentSnapshot(id: snapshot.id)
+        let validatedIncomingPathParent = try validatedPathParentSessionId(
+            sessionId: snapshot.id,
+            candidate: snapshot.parentSessionId
+        )
+        let replacesPathLink = snapshot.source == .opencode
+            ? try storedPathParentSessionId(sessionId: snapshot.id) != validatedIncomingPathParent
+            : suppliedPathParent
         let merge = try mergeSessionSnapshot(current: current, incoming: snapshot)
         guard merge.action == .merge else {
-            try upsertCostRowIfNeededForNoop(snapshot)
-            if !snapshot.toolCallCounts.isEmpty {
-                try replaceSessionToolsIfDifferent(snapshot)
+            // Noop sidecars are still one snapshot write. Keep the DELETE+INSERT
+            // replacements in a savepoint so a later sidecar failure cannot
+            // commit an empty or partially replaced tool/work-beat set.
+            try db.inSavepoint {
+                try upsertCostRowIfNeededForNoop(snapshot)
+                if !snapshot.toolCallCounts.isEmpty {
+                    try replaceSessionToolsIfDifferent(snapshot)
+                }
+                if shouldReplaceSessionWorkBeats(snapshot) {
+                    try replaceSessionWorkBeatsIfDifferent(snapshot)
+                }
+                try clearRecoveredOrphanStatus(sessionId: snapshot.id)
+                return .commit
             }
-            if shouldReplaceSessionWorkBeats(snapshot) {
-                try replaceSessionWorkBeatsIfDifferent(snapshot)
-            }
-            try clearRecoveredOrphanStatus(sessionId: snapshot.id)
             return SessionWriteResult(action: .noop, changeSet: merge.changeSet)
         }
 
@@ -38,7 +64,14 @@ public final class SessionSnapshotWriter {
         // content silently stays stale. The savepoint rolls back the partial
         // snapshot while the rest of the batch still commits.
         try db.inSavepoint {
-            try upsert(merge.snapshot)
+            try upsert(
+                merge.snapshot,
+                replacesPathLink: replacesPathLink,
+                replaceMechanicalGeneratedTitle: try shouldReplaceMechanicalGeneratedTitle(
+                    current: current,
+                    incoming: merge.snapshot
+                )
+            )
             try clearRecoveredOrphanStatus(sessionId: snapshot.id)
             try upsertCostRow(merge.snapshot)
             try replaceSessionTools(merge.snapshot)
@@ -109,17 +142,26 @@ public final class SessionSnapshotWriter {
            incoming.snapshotHash == current.snapshotHash,
            incoming.sizeBytes == current.sizeBytes,
            incoming.sourceLocator == current.sourceLocator {
-            let (preservedRole, preservedTier) = preservedClassification(current: current, incoming: incoming)
+            let (preservedRole, preservedTier) = try preservedClassification(current: current, incoming: incoming)
             let currentTier = current.tier ?? .normal
             let incomingTier = preservedTier ?? .normal
             let instructionSignalsChanged = shouldApplyInstructionSignals(current: current, incoming: incoming)
-            guard currentTier != incomingTier || current.agentRole != preservedRole || instructionSignalsChanged else {
+            let pathParentChanged = incoming.source == .opencode
+                && current.parentSessionId != incoming.parentSessionId
+            guard currentTier != incomingTier
+                || current.agentRole != preservedRole
+                || instructionSignalsChanged
+                || pathParentChanged
+            else {
                 return (.noop, current, SessionChangeSet(flags: []))
             }
 
             var merged = current
             merged.tier = preservedTier
             merged.agentRole = preservedRole
+            if pathParentChanged {
+                merged.parentSessionId = incoming.parentSessionId
+            }
             merged.indexedAt = incoming.indexedAt
             merged.tokenUsage = incoming.tokenUsage
             if instructionSignalsChanged {
@@ -154,12 +196,13 @@ public final class SessionSnapshotWriter {
         merged.model = incoming.model ?? current.model
         preserveCountsIfIncomingEmpty(current: current, merged: &merged)
         merged.summary = incoming.summary ?? current.summary
+        merged.displayTitle = incoming.displayTitle ?? current.displayTitle
         merged.summaryMessageCount = incoming.summaryMessageCount ?? current.summaryMessageCount
         merged.origin = incoming.origin ?? current.origin
         // Re-index must not revert a Layer-2 dispatched/skip classification (see
         // upsert's ON CONFLICT CASE). Keep merge.snapshot consistent with the
         // row the DB will persist so change flags / index jobs agree with it.
-        let (preservedRole, preservedTier) = preservedClassification(current: current, incoming: incoming)
+        let (preservedRole, preservedTier) = try preservedClassification(current: current, incoming: incoming)
         merged.agentRole = preservedRole
         merged.tier = preservedTier
 
@@ -205,10 +248,180 @@ public final class SessionSnapshotWriter {
     private func preservedClassification(
         current: AuthoritativeSessionSnapshot,
         incoming: AuthoritativeSessionSnapshot
-    ) -> (role: String?, tier: SessionTier?) {
-        let role = incoming.agentRole ?? current.agentRole
-        let tier = (current.tier == .skip && current.agentRole != nil) ? current.tier : incoming.tier
+    ) throws -> (role: String?, tier: SessionTier?) {
+        // docs/invariants.md #2: only a currently validated adapter role pins
+        // skip. A nil authoritative role clears an old path-derived `subagent`
+        // stamp. A Layer-2 OpenCode probe that Polycli already checked must stay
+        // dispatched/skip; otherwise a later virtual-locator reparse makes it
+        // visible before the backfill can classify it again.
+        let clearsStalePathRole = current.agentRole == "subagent" && incoming.agentRole == nil
+        let checkedAt = try String.fetchOne(
+            db,
+            sql: "SELECT link_checked_at FROM sessions WHERE id = ?",
+            arguments: [incoming.id]
+        )
+        let openCodeOrdinaryFork = incoming.source == .opencode && incoming.agentRole == nil
+            ? openCodeOrdinaryForkClassification(locator: incoming.sourceLocator)
+            : nil
+        let clearsOpenCodeRole = incoming.source == .opencode
+            && incoming.agentRole == nil
+            && checkedAt == nil
+            && (openCodeOrdinaryFork == true || openCodeOrdinaryFork == nil)
+        let role = clearsStalePathRole || clearsOpenCodeRole
+            ? nil
+            : (incoming.agentRole ?? current.agentRole)
+        // docs/invariants.md #2: only an authoritative subagent/dispatched role
+        // pins skip. A generic parent-probe timestamp is not a tier signal.
+        let pinsSkip = role == "dispatched" || role == "subagent"
+        let tier = current.tier == .skip && pinsSkip ? current.tier : incoming.tier
         return (role, tier)
+    }
+
+    private func openCodeOrdinaryForkClassification(locator: String) -> Bool? {
+        guard let separator = locator.range(of: "::", options: .backwards) else { return nil }
+        let databasePath = String(locator[..<separator.lowerBound])
+        let sessionId = String(locator[separator.upperBound...])
+        guard !databasePath.isEmpty, !sessionId.isEmpty else { return nil }
+        var configuration = Configuration()
+        configuration.readonly = true
+        configuration.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA busy_timeout = \(SQLiteConnectionPolicy.busyTimeoutMilliseconds)")
+        }
+        guard let queue = try? DatabaseQueue(path: databasePath, configuration: configuration) else {
+            return nil
+        }
+        return try? queue.read { external -> Bool? in
+            let columns = Set(
+                try Row.fetchAll(external, sql: "PRAGMA table_info(session)")
+                    .compactMap { $0["name"] as String? }
+            )
+            guard columns.contains("parent_id") else { return nil }
+            let agentSQL = columns.contains("agent") ? "agent" : "NULL AS agent"
+            let slugSQL = columns.contains("slug") ? "slug" : "NULL AS slug"
+            guard let row = try Row.fetchOne(
+                external,
+                sql: "SELECT parent_id, title, \(agentSQL), \(slugSQL) FROM session WHERE id = ? AND time_archived IS NULL",
+                arguments: [sessionId]
+            ) else {
+                return nil
+            }
+            let parentSessionId: String? = row["parent_id"]
+            guard parentSessionId != nil else { return false }
+            return !OpenCodeSessionRoleClassifier.isDispatchedChild(
+                parentSessionId: parentSessionId,
+                title: row["title"] ?? "",
+                agent: row["agent"],
+                slug: row["slug"]
+            )
+        } ?? nil
+    }
+
+    private func normalizedOpenCodeMissingParentSnapshot(
+        incoming: AuthoritativeSessionSnapshot,
+        merged: AuthoritativeSessionSnapshot
+    ) throws -> AuthoritativeSessionSnapshot {
+        guard incoming.source == .opencode else { return merged }
+        let externalParents = openCodeListedParents(locator: incoming.sourceLocator)
+        let storedParent = try storedPathParentSessionId(sessionId: incoming.id)
+        let incomingParent = try validatedOpenCodeParentSessionId(
+            sessionId: incoming.id,
+            candidate: incoming.parentSessionId
+        )
+        let internallyValidated: String?
+        if let incomingParent {
+            internallyValidated = incomingParent
+        } else {
+            internallyValidated = try validatedOpenCodeParentSessionId(
+                sessionId: incoming.id,
+                candidate: storedParent
+            )
+        }
+        let validatedParent = if externalParents.checked {
+            // docs/invariants.md #2: retain the first visible host that the
+            // vendor ancestry and Engram both validate without lifting the child.
+            try externalParents.parentIds.reversed().compactMap { candidate in
+                try validatedOpenCodeParentSessionId(
+                    sessionId: incoming.id,
+                    candidate: candidate
+                )
+            }.first
+        } else {
+            internallyValidated
+        }
+        guard incoming.parentSessionId != validatedParent else { return merged }
+        var normalized = merged
+        normalized.parentSessionId = validatedParent
+        if incoming.agentRole == nil {
+            // docs/invariants.md #2: only an ordinary continued fork may become
+            // visible while its host is absent. TaskTool children stay skip.
+            normalized.agentRole = nil
+            normalized.tier = incoming.tier
+        } else {
+            normalized.agentRole = incoming.agentRole
+            normalized.tier = .skip
+        }
+        return normalized
+    }
+
+    private func storedPathParentSessionId(sessionId: String) throws -> String? {
+        guard let row = try Row.fetchOne(
+            db,
+            sql: "SELECT parent_session_id, link_source FROM sessions WHERE id = ?",
+            arguments: [sessionId]
+        ) else {
+            return nil
+        }
+        let linkSource: String? = row["link_source"]
+        return linkSource == "path" ? row["parent_session_id"] : nil
+    }
+
+    private func openCodeListedParents(locator: String) -> (checked: Bool, parentIds: [String]) {
+        guard !locator.hasPrefix("sync://"),
+              let separator = locator.range(of: "::", options: .backwards)
+        else {
+            return (false, [])
+        }
+        let databasePath = String(locator[..<separator.lowerBound])
+        let sessionId = String(locator[separator.upperBound...])
+        guard !databasePath.isEmpty, !sessionId.isEmpty else { return (true, []) }
+        var configuration = Configuration()
+        configuration.readonly = true
+        configuration.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA busy_timeout = \(SQLiteConnectionPolicy.busyTimeoutMilliseconds)")
+        }
+        guard let queue = try? DatabaseQueue(path: databasePath, configuration: configuration) else {
+            return (false, [])
+        }
+        do {
+            let parentIds = try queue.read { external -> [String] in
+                guard let child = try Row.fetchOne(
+                    external,
+                    sql: "SELECT parent_id, time_archived FROM session WHERE id = ?",
+                    arguments: [sessionId]
+                ), child["time_archived"] as Int64? == nil
+                else { return [] }
+                var current: String? = child["parent_id"]
+                var visited: Set<String> = [sessionId]
+                var candidates: [String] = []
+                while let candidate = current, visited.insert(candidate).inserted {
+                    guard let row = try Row.fetchOne(
+                        external,
+                        sql: "SELECT parent_id, time_archived FROM session WHERE id = ?",
+                        arguments: [candidate]
+                    ) else {
+                        candidates.append(candidate)
+                        continue
+                    }
+                    current = row["parent_id"]
+                    guard row["time_archived"] as Int64? == nil else { continue }
+                    candidates.append(candidate)
+                }
+                return candidates
+            }
+            return (true, parentIds)
+        } catch {
+            return (false, [])
+        }
     }
 
     private func shouldApplyInstructionSignals(
@@ -266,17 +479,23 @@ public final class SessionSnapshotWriter {
             origin: row["origin"],
             tier: (row["tier"] as String?).flatMap(SessionTier.init(rawValue:)),
             agentRole: row["agent_role"],
+            parentSessionId: row["parent_session_id"],
             contentFingerprint: row["content_fingerprint"]
         )
     }
 
-    private func upsert(_ snapshot: AuthoritativeSessionSnapshot) throws {
+    private func upsert(
+        _ snapshot: AuthoritativeSessionSnapshot,
+        replacesPathLink: Bool,
+        replaceMechanicalGeneratedTitle: Bool
+    ) throws {
         let filePath = snapshot.sourceLocator.hasPrefix("sync://") ? "" : snapshot.sourceLocator
-        let hasPathParentCandidate = snapshot.parentSessionId != nil
         let pathParentSessionId = try validatedPathParentSessionId(
             sessionId: snapshot.id,
             candidate: snapshot.parentSessionId
         )
+        let persistedTier = snapshot.tier ?? .normal
+        let persistedAgentRole = snapshot.agentRole
         try db.execute(
             sql: """
             INSERT INTO sessions (
@@ -328,6 +547,8 @@ public final class SessionSnapshotWriter {
                 ELSE excluded.system_message_count
               END,
               summary = CASE
+                WHEN excluded.source = 'cursor'
+                  THEN COALESCE(excluded.summary, sessions.summary)
                 WHEN sessions.summary_message_count IS NOT NULL
                      AND excluded.summary_message_count IS NOT NULL
                      AND sessions.summary_message_count >= excluded.summary_message_count
@@ -337,6 +558,7 @@ public final class SessionSnapshotWriter {
                 ELSE COALESCE(excluded.summary, sessions.summary)
               END,
               summary_message_count = CASE
+                WHEN excluded.source = 'cursor' THEN NULL
                 WHEN sessions.summary_message_count IS NOT NULL
                      AND excluded.summary_message_count IS NOT NULL
                      AND sessions.summary_message_count >= excluded.summary_message_count
@@ -385,12 +607,22 @@ public final class SessionSnapshotWriter {
               -- preserve a stored agent_role when the incoming snapshot has none,
               -- and never downgrade a 'skip' tier that a non-null agent_role pins.
               tier = CASE
-                WHEN sessions.tier = 'skip' AND sessions.agent_role IS NOT NULL THEN sessions.tier
+                WHEN ? THEN excluded.tier
+                WHEN sessions.tier = 'skip'
+                     AND sessions.agent_role IS NOT NULL
+                     AND excluded.agent_role IS NOT NULL THEN sessions.tier
                 ELSE excluded.tier
               END,
-              agent_role = COALESCE(excluded.agent_role, sessions.agent_role),
+              agent_role = CASE
+                WHEN ? THEN excluded.agent_role
+                WHEN sessions.agent_role = 'subagent' AND excluded.agent_role IS NULL THEN NULL
+                ELSE COALESCE(excluded.agent_role, sessions.agent_role)
+              END,
               quality_score = excluded.quality_score,
-              generated_title = COALESCE(NULLIF(TRIM(sessions.generated_title), ''), excluded.generated_title),
+              generated_title = CASE
+                WHEN ? THEN excluded.generated_title
+                ELSE COALESCE(NULLIF(TRIM(sessions.generated_title), ''), excluded.generated_title)
+              END,
               -- Persist a sidecar-derived parent (Layer 1c) but never clobber a
               -- user-confirmed ('manual') link.
               parent_session_id = CASE
@@ -434,17 +666,54 @@ public final class SessionSnapshotWriter {
                 snapshot.sourceLocator,
                 snapshot.syncVersion,
                 snapshot.snapshotHash,
-                (snapshot.tier ?? .normal).rawValue,
-                snapshot.agentRole,
+                persistedTier.rawValue,
+                persistedAgentRole,
                 computeQualityScore(snapshot),
                 generatedTitle(for: snapshot),
                 pathParentSessionId,
                 pathParentSessionId,
                 snapshot.contentFingerprint,
-                hasPathParentCandidate,
-                hasPathParentCandidate
+                false,
+                snapshot.source == .opencode && snapshot.agentRole == nil,
+                replaceMechanicalGeneratedTitle,
+                replacesPathLink,
+                replacesPathLink
             ]
         )
+    }
+
+    private func shouldReplaceMechanicalGeneratedTitle(
+        current: AuthoritativeSessionSnapshot?,
+        incoming: AuthoritativeSessionSnapshot
+    ) throws -> Bool {
+        guard let current,
+              let row = try Row.fetchOne(
+                db,
+                sql: "SELECT generated_title, custom_name FROM sessions WHERE id = ?",
+                arguments: [incoming.id]
+              )
+        else { return false }
+        let customName: String? = row["custom_name"]
+        guard customName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false else {
+            return false
+        }
+        let storedTitle: String? = row["generated_title"]
+        let candidate = generatedTitle(for: incoming)
+        if let officialTitle = incoming.displayTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !officialTitle.isEmpty {
+            return storedTitle != String(officialTitle.prefix(120))
+        }
+        if let storedTitle,
+           storedTitle == generatedTitle(for: current),
+           storedTitle != candidate {
+            return true
+        }
+        if incoming.source == .cursor,
+           current.summary != incoming.summary,
+           storedTitle != candidate {
+            return true
+        }
+        return storedTitle.map { mechanicalGeneratedTitles(for: current).contains($0) } ?? false
     }
 
     /// Adapter/path-derived parent ids are hints, not authoritative links. Keep
@@ -453,21 +722,27 @@ public final class SessionSnapshotWriter {
     /// upsert SQL above and are intentionally outside this validator.
     private func validatedPathParentSessionId(
         sessionId: String,
-        candidate: String?
+        candidate: String?,
     ) throws -> String? {
         guard let candidate, !candidate.isEmpty, candidate != sessionId else {
             return nil
         }
         guard let parent = try Row.fetchOne(
             db,
-            sql: "SELECT parent_session_id, tier FROM sessions WHERE id = ?",
+            sql: "SELECT parent_session_id, tier, hidden_at, orphan_status FROM sessions WHERE id = ?",
             arguments: [candidate]
         ) else {
             return nil
         }
         let parentSessionId: String? = parent["parent_session_id"]
         let parentTier: String? = parent["tier"]
-        guard parentSessionId == nil, parentTier != SessionTier.skip.rawValue else {
+        let hiddenAt: String? = parent["hidden_at"]
+        let orphanStatus: String? = parent["orphan_status"]
+        guard parentSessionId == nil,
+              parentTier != SessionTier.skip.rawValue,
+              hiddenAt == nil,
+              orphanStatus == nil
+        else {
             return nil
         }
         let childCount = try Int.fetchOne(
@@ -478,13 +753,49 @@ public final class SessionSnapshotWriter {
         return childCount == 0 ? candidate : nil
     }
 
+    private func validatedOpenCodeParentSessionId(
+        sessionId: String,
+        candidate: String?
+    ) throws -> String? {
+        guard var current = candidate, !current.isEmpty, current != sessionId else { return nil }
+        var visited: Set<String> = [sessionId]
+        while visited.insert(current).inserted {
+            guard let parent = try Row.fetchOne(
+                db,
+                sql: "SELECT parent_session_id, tier, hidden_at, orphan_status FROM sessions WHERE id = ?",
+                arguments: [current]
+            ) else { return nil }
+            let tier: String? = parent["tier"]
+            let hiddenAt: String? = parent["hidden_at"]
+            let orphanStatus: String? = parent["orphan_status"]
+            guard tier != SessionTier.skip.rawValue, hiddenAt == nil, orphanStatus == nil else {
+                return nil
+            }
+            guard let next = parent["parent_session_id"] as String? else {
+                let childCount = try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM sessions WHERE parent_session_id = ?",
+                    arguments: [sessionId]
+                ) ?? 0
+                return childCount == 0 ? current : nil
+            }
+            current = next
+        }
+        return nil
+    }
+
     /// Derive a display title at index time so freshly indexed sessions are not
     /// left with a NULL `generated_title` (only filled later by the on-demand
-    /// regenerate command). Prefers the summary's first line, then
+    /// regenerate command). Prefers an adapter-supplied official display title,
+    /// then the summary's first line, then
     /// project/cwd + start date, then the id. Never includes a user custom
     /// name (that lives in `custom_name`); the ON CONFLICT COALESCE preserves
     /// any existing generated/custom title.
     private func generatedTitle(for snapshot: AuthoritativeSessionSnapshot) -> String {
+        if let displayTitle = snapshot.displayTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !displayTitle.isEmpty {
+            return String(displayTitle.prefix(120))
+        }
         if let summary = snapshot.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
            !summary.isEmpty {
             let firstLine = summary.components(separatedBy: .newlines).first ?? summary
@@ -500,6 +811,21 @@ public final class SessionSnapshotWriter {
         }
         return base.isEmpty ? snapshot.id : base
     }
+
+    private func mechanicalGeneratedTitles(for snapshot: AuthoritativeSessionSnapshot) -> Set<String> {
+        var titles = Set([snapshot.id])
+        let day = snapshot.startTime.count >= 10 ? String(snapshot.startTime.prefix(10)) : nil
+        if let day { titles.insert(day) }
+        let project = snapshot.project?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let cwdBase = (snapshot.cwd as NSString).lastPathComponent
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        for base in Set([project, cwdBase]) where !base.isEmpty {
+            titles.insert(base)
+            if let day { titles.insert("\(base) \(day)") }
+        }
+        return titles
+    }
+
 
     private func upsertCostRow(_ snapshot: AuthoritativeSessionSnapshot) throws {
         if let usage = snapshot.tokenUsage {
@@ -756,7 +1082,7 @@ public final class SessionSnapshotWriter {
                 WHERE session_id = ?
                   AND job_kind = ?
                   AND id != ?
-                  AND status IN ('pending', 'failed_retryable', 'completed', 'not_applicable')
+                  AND status IN ('pending', 'failed_retryable', 'failed_permanent', 'completed', 'not_applicable')
                 """,
                 arguments: [sessionId, jobKind.rawValue, jobId]
             )
@@ -814,6 +1140,14 @@ public final class SessionSnapshotWriter {
             arguments: [sessionId]
         )
         try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = ?", arguments: [sessionId])
+        // Invariant 5: a pending versioned rebuild dual-writes search content;
+        // purge the shadow row too so a later table swap cannot restore skip.
+        if try tableExists("sessions_fts_rebuild") {
+            try db.execute(
+                sql: "DELETE FROM sessions_fts_rebuild WHERE session_id = ?",
+                arguments: [sessionId]
+            )
+        }
         if try tableExists("fts_map") {
             try db.execute(sql: "DELETE FROM fts_map WHERE session_id = ?", arguments: [sessionId])
         }

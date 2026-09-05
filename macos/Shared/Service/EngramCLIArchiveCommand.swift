@@ -194,8 +194,19 @@ enum EngramCLIArchiveTokenInput {
 }
 
 enum EngramCLIArchiveRunner {
-    static func run(_ command: EngramCLIArchiveCommand) async throws -> String {
-        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport())
+    static func socketPath(environment: [String: String]) throws -> String {
+        try UnixSocketEngramServiceTransport.resolvedSocketPath(environment: environment)
+    }
+
+    static func run(
+        _ command: EngramCLIArchiveCommand,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) async throws -> String {
+        let client = EngramServiceClient(
+            transport: UnixSocketEngramServiceTransport(
+                socketPath: try socketPath(environment: environment)
+            )
+        )
         defer { client.close() }
         let value: any Encodable
         let json: Bool
@@ -207,7 +218,7 @@ enum EngramCLIArchiveRunner {
             value = try await client.archiveV2Retry(try EngramServiceArchiveV2RetryRequest(replicaID: replicaID))
             json = wantsJSON
         case .storeToken(let replicaID, let wantsJSON):
-            let token = try EngramCLIArchiveTokenInput.readFromStandardInput()
+            let token = try EngramCLIArchiveTokenInput.readFromStandardInput(environment: environment)
             value = try await client.archiveV2StoreToken(.init(replicaID: replicaID, token: token))
             json = wantsJSON
         case .probeRemote(let sessionID, let wantsJSON):

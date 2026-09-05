@@ -1,6 +1,11 @@
 import XCTest
 
 final class AppSearchServiceCutoverScanTests: XCTestCase {
+    func testUITestLaunchForcesPreferencesOffTheHostDaemon_repro() throws {
+        let launchConfig = try source("macos/EngramUITests/Helpers/TestLaunchConfig.swift")
+        XCTAssertTrue(launchConfig.contains("\"CFPREFERENCES_AVOID_DAEMON\": \"1\""))
+    }
+
     private var repoRoot: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -411,7 +416,7 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
             "Saving visible Usage Limits should preserve valid custom source limits already present in settings.json"
         )
         XCTAssertTrue(
-            settingsView.contains("excludingSourceIDs: removedUsageLimitSourceIDs"),
+            settingsView.contains("excludingSourceIDs: snapshot.removedUsageLimitSourceIDs"),
             "Saving Usage Limits should also be able to exclude custom sources the user explicitly removed"
         )
     }
@@ -437,7 +442,7 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         )
     }
 
-    func testUsageCollectorAggregatesAllSourcesWithUsageData() throws {
+    func testUsageCollectorAggregatesAllSourcesWithUsageData_repro() throws {
         let collector = try source("macos/EngramCoreWrite/Indexing/StartupUsageCollector.swift")
 
         XCTAssertFalse(
@@ -452,13 +457,18 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
             collector.contains("AND TRIM(s.source) <> ''"),
             "Usage collector should still reject empty source keys while aggregating all real sources"
         )
+        XCTAssertTrue(collector.contains("let activityTime = SearchFilterPredicates.activityTimeSQL(alias: \"s\")"))
         XCTAssertTrue(
-            collector.contains("COALESCE(NULLIF(s.end_time, ''), NULLIF(s.indexed_at, ''), s.start_time) >= ?"),
-            "Usage pressure should include long-running sessions that overlap the window instead of filtering only by start_time"
+            collector.contains("WHERE \\(activityTime) >= ?"),
+            "Usage pressure should use the shared session-activity expression, never the indexer's observation time"
+        )
+        XCTAssertFalse(
+            collector.contains("NULLIF(s.indexed_at, '')"),
+            "A freshly indexed historical session must not be attributed to the current usage window"
         )
         XCTAssertTrue(
-            collector.contains("MIN(CASE WHEN s.start_time < ? THEN ? ELSE s.start_time END) AS earliest_start_time"),
-            "Reset labels should be based on the window-clamped start for overlapping long-running sessions"
+            collector.contains("MIN(CASE WHEN \\(activityTime) < ? THEN ? ELSE \\(activityTime) END) AS earliest_start_time"),
+            "Reset labels should be based on the window-clamped activity time for overlapping long-running sessions"
         )
         XCTAssertFalse(
             collector.contains("WHERE s.start_time >= ?"),
@@ -613,6 +623,26 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
             mcpSwift.contains("Unix socket"),
             "Swift MCP docs should describe the current EngramService Unix socket runtime"
         )
+    }
+
+    func testProjectGuidesDescribeEachShippedSearchSurface_repro() throws {
+        let guide = try source("AGENTS.md")
+        XCTAssertTrue(guide.contains("App UI is intentionally keyword-only"))
+        XCTAssertTrue(guide.contains("Service semantic/hybrid requests soft-fallback to keyword with a warning when unavailable"))
+        XCTAssertTrue(guide.contains("MCP advertises semantic/hybrid modes only when usable and otherwise returns `searchModeUnavailable`"))
+        XCTAssertFalse(guide.contains("Product keyword search with unsupported semantic-mode downgrade"))
+
+        let claude = try source("CLAUDE.md")
+        XCTAssertTrue(claude.contains("`insights` table and its FTS index"))
+        XCTAssertTrue(claude.contains("`insight_embeddings` stores little-endian Float32 BLOBs"))
+        XCTAssertTrue(claude.contains("sqlite-vec is retained TypeScript reference tooling only"))
+        XCTAssertFalse(claude.contains("`memory_insights` (vector, requires sqlite-vec)"))
+        XCTAssertFalse(claude.contains("Use local sqlite-vec + FTS5 instead"))
+
+        let appSearch = try source("macos/Engram/Views/SearchSupport.swift")
+        XCTAssertTrue(appSearch.contains("return [.keyword]"))
+        let mcpSearch = try source("macos/EngramMCP/Core/MCPDatabase.swift")
+        XCTAssertTrue(mcpSearch.contains(#"return "searchModeUnavailable""#))
     }
 
     func testVerifiedDeadScaffoldingBundleIsRemovedButRetainedPathsRemain() throws {
@@ -903,7 +933,7 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
             "Settings load should read notifyOnUsagePressure from settings.json"
         )
         XCTAssertTrue(
-            settingsView.contains("\"notifyOnUsagePressure\": notifyOnUsagePressure"),
+            settingsView.contains("\"notifyOnUsagePressure\": snapshot.notifyOnUsagePressure"),
             "Settings save should persist notifyOnUsagePressure into the monitor settings object"
         )
     }

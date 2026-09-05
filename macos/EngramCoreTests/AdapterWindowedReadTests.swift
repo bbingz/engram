@@ -222,13 +222,13 @@ final class AdapterWindowedReadTests: XCTestCase {
             contents.append(message.content)
         }
 
-        XCTAssertEqual(contents, ["m0", "m1", "m2"])
+        XCTAssertEqual(contents, ["m0", "m1", "m2", "m3"])
         XCTAssertTrue(result.truncated)
         XCTAssertFalse(result.totalKnownComplete)
         XCTAssertEqual(result.truncatedAt, 4)
     }
 
-    func testClaudeCodeWindowedMetadataReadStopsBeforeTruncationProbe() async throws {
+    func testClaudeCodeWindowedMetadataReadDefersGlobalCapUntilCapPage_repro() async throws {
         let dir = makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let file = dir.appendingPathComponent("session.jsonl")
@@ -252,7 +252,7 @@ final class AdapterWindowedReadTests: XCTestCase {
         }
 
         XCTAssertEqual(contents, ["m0", "m1"])
-        XCTAssertFalse(result.truncated, "windowed page reads must stop at the page window, not scan forward to maxMessages")
+        XCTAssertTrue(result.truncated, "a filled page is incomplete even though it has not reached the hard cap")
         XCTAssertNil(result.truncatedAt)
     }
 
@@ -279,6 +279,414 @@ final class AdapterWindowedReadTests: XCTestCase {
         XCTAssertEqual(contents, ["m0", "m1"])
         XCTAssertFalse(result.truncated, "windowed page reads must stop at the page window, not scan forward to maxMessages")
         XCTAssertNil(result.truncatedAt)
+    }
+
+    func testUnlimitedJSONLMetadataKeepsPrefixWhenFileChanges_repro() throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("growing.jsonl")
+        try #"{"type":"user","message":{"content":"prefix"}}"#
+            .appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+        var mutated = false
+
+        let result = try JSONLAdapterSupport.windowedMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions(),
+            limits: .default,
+            transform: { object in
+                if !mutated {
+                    mutated = true
+                    if let handle = try? FileHandle(forWritingTo: file) {
+                        try? handle.seekToEnd()
+                        try? handle.write(contentsOf: Data("{}\n".utf8))
+                        try? handle.close()
+                    }
+                }
+                guard let content = JSONLAdapterSupport.string(
+                    JSONLAdapterSupport.object(object["message"])?["content"]
+                ) else { return nil }
+                return NormalizedMessage(
+                    role: .user,
+                    content: content,
+                    timestamp: nil,
+                    toolCalls: nil,
+                    usage: nil
+                )
+            }
+        )
+
+        XCTAssertEqual(result.messages.map(\.content), ["prefix"])
+        XCTAssertEqual(result.parseFailure, .fileModifiedDuringParse)
+        XCTAssertFalse(result.totalKnownComplete)
+    }
+
+    func testUnlimitedJSONLMetadataKeepsPrefixWhenFinalIdentityLookupThrows_repro() throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("deleted-after-prefix.jsonl")
+        try #"{"text":"prefix"}"#
+            .appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let result = try JSONLAdapterSupport.windowedMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions(),
+            limits: .default,
+            transform: { object in
+                try? FileManager.default.removeItem(at: file)
+                guard let text = JSONLAdapterSupport.string(object["text"]) else { return nil }
+                return NormalizedMessage(role: .user, content: text, timestamp: nil, toolCalls: nil, usage: nil)
+            }
+        )
+
+        XCTAssertEqual(result.messages.map(\.content), ["prefix"])
+        XCTAssertEqual(result.parseFailure, .fileModifiedDuringParse)
+        XCTAssertFalse(result.totalKnownComplete)
+    }
+
+    func testLimitedJSONLMetadataKeepsPrefixWhenFinalIdentityLookupThrows_repro() throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("deleted-after-window-prefix.jsonl")
+        try #"{"text":"prefix"}"#
+            .appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let result = try JSONLAdapterSupport.windowedMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions(offset: 0, limit: 1),
+            limits: .default,
+            transform: { object in
+                try? FileManager.default.removeItem(at: file)
+                guard let text = JSONLAdapterSupport.string(object["text"]) else { return nil }
+                return NormalizedMessage(role: .user, content: text, timestamp: nil, toolCalls: nil, usage: nil)
+            }
+        )
+
+        XCTAssertEqual(result.messages.map(\.content), ["prefix"])
+        XCTAssertEqual(result.parseFailure, .fileModifiedDuringParse)
+        XCTAssertFalse(result.totalKnownComplete)
+    }
+
+    func testPlainJSONLAdaptersKeepProducedPrefixBeforeLineFailure_repro() async throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let limits = ParserLimits(maxLineBytes: 256)
+
+        let iflow = dir.appendingPathComponent("iflow.jsonl")
+        try [
+            #"{"type":"user","message":{"content":"iflow prefix"}}"#,
+            String(repeating: "x", count: 300),
+        ].joined(separator: "\n").appending("\n")
+            .write(to: iflow, atomically: true, encoding: .utf8)
+
+        let qoder = dir.appendingPathComponent("qoder.jsonl")
+        try [
+            #"{"type":"user","message":{"content":"qoder prefix"}}"#,
+            String(repeating: "x", count: 300),
+        ].joined(separator: "\n").appending("\n")
+            .write(to: qoder, atomically: true, encoding: .utf8)
+
+        let commandCode = dir.appendingPathComponent("commandcode.jsonl")
+        try [
+            #"{"role":"user","content":"commandcode prefix"}"#,
+            String(repeating: "x", count: 300),
+        ].joined(separator: "\n").appending("\n")
+            .write(to: commandCode, atomically: true, encoding: .utf8)
+
+        let cases: [(any SessionAdapter, URL, String)] = [
+            (IflowAdapter(projectsRoot: dir.path, limits: limits), iflow, "iflow prefix"),
+            (QoderAdapter(projectsRoot: dir.path, limits: limits), qoder, "qoder prefix"),
+            (CommandCodeAdapter(projectsRoot: dir.path, limits: limits), commandCode, "commandcode prefix"),
+        ]
+        for (adapter, locator, expected) in cases {
+            var messages: [NormalizedMessage] = []
+            for try await message in try await adapter.streamMessages(
+                locator: locator.path,
+                options: StreamMessagesOptions()
+            ) {
+                messages.append(message)
+            }
+            XCTAssertEqual(messages.map(\.content), [expected])
+        }
+    }
+
+    func testLimitedJSONLExactBillableCapIsCompleteWithoutTruncation_repro() throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("exact-cap.jsonl")
+        try (0..<3).map { #"{"text":"m\#($0)"}"# }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let result = try JSONLAdapterSupport.windowedMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions(offset: 2, limit: 500),
+            limits: ParserLimits(maxMessages: 3),
+            transform: { object in
+                guard let text = JSONLAdapterSupport.string(object["text"]) else { return nil }
+                return NormalizedMessage(role: .user, content: text, timestamp: nil, toolCalls: nil, usage: nil)
+            }
+        )
+
+        XCTAssertEqual(result.messages.map(\.content), ["m2"])
+        XCTAssertNil(result.truncatedAt)
+        XCTAssertTrue(result.totalKnownComplete)
+    }
+
+    func testLimitedJSONLDetectsTruncationOnlyAfterOneMoreBillableMessage_repro() throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("over-cap.jsonl")
+        try (0..<4).map { #"{"text":"m\#($0)"}"# }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let result = try JSONLAdapterSupport.windowedMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions(offset: 2, limit: 500),
+            limits: ParserLimits(maxMessages: 3),
+            transform: { object in
+                guard let text = JSONLAdapterSupport.string(object["text"]) else { return nil }
+                return NormalizedMessage(role: .user, content: text, timestamp: nil, toolCalls: nil, usage: nil)
+            }
+        )
+
+        XCTAssertEqual(result.messages.map(\.content), ["m2"])
+        XCTAssertEqual(result.truncatedAt, 3)
+        XCTAssertFalse(result.totalKnownComplete)
+    }
+
+    func testLimitedJSONLUsesProducedBoundaryForBillableCap_repro() throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("billable-produced-boundary.jsonl")
+        let rows = ["system", "m0", "m1", "m2", "m3"]
+        try rows.map { #"{"text":"\#($0)"}"# }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+        let limits = ParserLimits(maxMessages: 3)
+        let transform: (JSONLAdapterSupport.JSONObject) -> NormalizedMessage? = { object in
+            guard let text = JSONLAdapterSupport.string(object["text"]) else { return nil }
+            return NormalizedMessage(role: .user, content: text, timestamp: nil, toolCalls: nil, usage: nil)
+        }
+
+        let first = try JSONLAdapterSupport.windowedMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions(offset: 0, limit: 3),
+            limits: limits,
+            countsTowardMessageLimit: { $0.content != "system" },
+            transform: transform
+        )
+        let second = try JSONLAdapterSupport.windowedMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions(offset: 3, limit: 500),
+            limits: limits,
+            countsTowardMessageLimit: { $0.content != "system" },
+            transform: transform
+        )
+
+        XCTAssertEqual(first.messages.map(\.content), ["system", "m0", "m1"])
+        XCTAssertNil(first.truncatedAt, "a filled produced page before the billable boundary is not terminal")
+        XCTAssertEqual(second.messages.map(\.content), ["m2"])
+        XCTAssertEqual(second.truncatedAt, 3)
+    }
+
+    func testLimitedJSONLStopsTransformingWhenProducedWindowFills_repro() throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("filled-window.jsonl")
+        try (0..<50)
+            .map { #"{"text":"m\#($0)"}"# }
+            .joined(separator: "\n")
+            .appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        var transformed: [String] = []
+        let result = try JSONLAdapterSupport.windowedMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions(offset: 2, limit: 3),
+            limits: ParserLimits(maxMessages: 100),
+            transform: { object in
+                guard let text = JSONLAdapterSupport.string(object["text"]) else { return nil }
+                transformed.append(text)
+                return NormalizedMessage(role: .user, content: text, timestamp: nil, toolCalls: nil, usage: nil)
+            }
+        )
+
+        XCTAssertEqual(result.messages.map(\.content), ["m2", "m3", "m4"])
+        XCTAssertEqual(
+            transformed,
+            ["m0", "m1", "m2", "m3", "m4"],
+            "a filled produced window must not keep transforming the remainder of the file"
+        )
+        XCTAssertFalse(
+            result.totalKnownComplete,
+            "stopping at a filled window cannot claim the unread remainder is complete"
+        )
+    }
+
+    func testWholeDocumentReportsRawCoordinateAtBillableCap_repro() throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("whole-document-raw-cap.jsonl")
+        let rows = ["system-0", "system-1", "m0", "m1", "m2", "m3"]
+        try rows.map { #"{"text":"\#($0)"}"# }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+        let result = try JSONLAdapterSupport.wholeDocumentMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions(),
+            limits: ParserLimits(maxMessages: 3),
+            transform: { objects in
+                objects.compactMap { object in
+                    guard let text = JSONLAdapterSupport.string(object["text"]) else { return nil }
+                    return NormalizedMessage(
+                        role: text.hasPrefix("system") ? .system : .user,
+                        content: text
+                    )
+                }
+            },
+            countsTowardMessageLimit: { object in
+                !(JSONLAdapterSupport.string(object["text"]) ?? "").hasPrefix("system")
+            },
+            countsProducedMessageTowardLimit: { $0.role != .system }
+        )
+
+        XCTAssertEqual(result.messages.map(\.content), ["system-0", "system-1", "m0", "m1", "m2"])
+        XCTAssertEqual(result.truncatedAt, 3)
+        XCTAssertEqual(result.maxRawMessages, 5)
+    }
+
+    func testCodexOffsetAtCapPeeksForActualOverflow_repro() async throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let exact = dir.appendingPathComponent("codex-exact-cap.jsonl")
+        let over = dir.appendingPathComponent("codex-over-cap.jsonl")
+        func row(_ index: Int) -> String {
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"text\":\"m\(index)\"}]}}"
+        }
+        try (0..<3).map(row).joined(separator: "\n").appending("\n")
+            .write(to: exact, atomically: true, encoding: .utf8)
+        try (0..<4).map(row).joined(separator: "\n").appending("\n")
+            .write(to: over, atomically: true, encoding: .utf8)
+        let adapter = CodexAdapter(limits: ParserLimits(maxMessages: 3))
+
+        let exactResult = try await adapter.streamMessagesWithMetadata(
+            locator: exact.path,
+            options: StreamMessagesOptions(offset: 3, limit: 500)
+        )
+        let overResult = try await adapter.streamMessagesWithMetadata(
+            locator: over.path,
+            options: StreamMessagesOptions(offset: 3, limit: 500)
+        )
+
+        XCTAssertNil(exactResult.truncatedAt)
+        XCTAssertEqual(overResult.truncatedAt, 3)
+    }
+
+    func testQwenWindowedMetadataReadDoesNotThrowOnWholeTranscriptCap_repro() async throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("qwen.jsonl")
+        let lines = (0..<4).map { index -> String in
+            let role = index % 2 == 0 ? "user" : "assistant"
+            return "{\"type\":\"\(role)\",\"sessionId\":\"s1\",\"cwd\":\"/tmp\",\"timestamp\":\"2026-01-01T00:00:0\(index)Z\",\"message\":{\"parts\":[{\"text\":\"m\(index)\"}]}}"
+        }
+        try lines.joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let result = try await QwenAdapter(limits: ParserLimits(maxMessages: 3))
+            .streamMessagesWithMetadata(
+                locator: file.path,
+                options: StreamMessagesOptions(offset: 0, limit: 2)
+            )
+
+        var contents: [String] = []
+        for try await message in result.messages { contents.append(message.content) }
+        XCTAssertEqual(contents, ["m0", "m1"])
+    }
+
+    func testWindsurfWindowedMetadataReadDoesNotThrowOnWholeTranscriptCap_repro() async throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("windsurf.jsonl")
+        var lines = [
+            #"{"id":"w1","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}"#
+        ]
+        lines += (0..<4).map { index -> String in
+            let role = index % 2 == 0 ? "user" : "assistant"
+            return "{\"role\":\"\(role)\",\"content\":\"m\(index)\"}"
+        }
+        try lines.joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let result = try await WindsurfAdapter(limits: ParserLimits(maxMessages: 3))
+            .streamMessagesWithMetadata(
+                locator: file.path,
+                options: StreamMessagesOptions(offset: 0, limit: 2)
+            )
+
+        var contents: [String] = []
+        for try await message in result.messages { contents.append(message.content) }
+        XCTAssertEqual(contents, ["m0", "m1"])
+    }
+
+    func testAntigravityCacheWindowedMetadataReadDoesNotThrowOnWholeTranscriptCap_repro() async throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cacheDir = dir.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        let file = cacheDir.appendingPathComponent("antigravity.jsonl")
+        var lines = [
+            #"{"id":"a1","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}"#
+        ]
+        lines += (0..<4).map { index -> String in
+            let role = index % 2 == 0 ? "user" : "assistant"
+            return "{\"role\":\"\(role)\",\"content\":\"m\(index)\"}"
+        }
+        try lines.joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = AntigravityAdapter(
+            cacheDir: cacheDir.path,
+            conversationsDir: dir.appendingPathComponent("conversations").path,
+            cliBrainDir: dir.appendingPathComponent("brain").path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions(offset: 0, limit: 2)
+        )
+
+        var contents: [String] = []
+        for try await message in result.messages { contents.append(message.content) }
+        XCTAssertEqual(contents, ["m0", "m1"])
+    }
+
+    func testAntigravityCLIWindowedMetadataReadUsesProducedMessageWindow_repro() async throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let brainDir = dir.appendingPathComponent("brain", isDirectory: true)
+        let logsDir = brainDir
+            .appendingPathComponent("a1", isDirectory: true)
+            .appendingPathComponent(".system_generated/logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
+        let file = logsDir.appendingPathComponent("transcript.jsonl")
+        let lines = (0..<4).map { index -> String in
+            let type = index % 2 == 0 ? "USER_INPUT" : "PLANNER_RESPONSE"
+            return "{\"type\":\"\(type)\",\"created_at\":\"2026-01-01T00:00:0\(index)Z\",\"content\":\"m\(index)\"}"
+        }
+        try lines.joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = AntigravityAdapter(
+            cacheDir: dir.appendingPathComponent("cache").path,
+            conversationsDir: dir.appendingPathComponent("conversations").path,
+            cliBrainDir: brainDir.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions(offset: 1, limit: 2)
+        )
+
+        var contents: [String] = []
+        for try await message in result.messages { contents.append(message.content) }
+        XCTAssertEqual(contents, ["m1", "m2"])
     }
 
     // MARK: - #29 parse cache

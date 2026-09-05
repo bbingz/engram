@@ -2,6 +2,7 @@
 // Tests for the GRDB-backed migration_log writer (Stage 4.1).
 // Mirrors the contract of tests/core/db/migration-log-repo.test.ts +
 // applyMigrationDb covered in tests/core/db/maintenance.test.ts.
+import Darwin
 import Foundation
 import EngramCoreRead
 import GRDB
@@ -307,6 +308,89 @@ final class MigrationLogStoreTests: XCTestCase {
             ) as? [String: Any]
             let affected = (parsed?["affectedSessionIds"] as? [String])?.sorted() ?? []
             XCTAssertEqual(affected, ["exact", "subtree"])
+        }
+    }
+
+    func testApplyMigrationRewritesCanonicalDarwinAliasAcrossAllPathColumns_repro() throws {
+        let fixtureRoot = URL(fileURLWithPath: "/tmp")
+            .appendingPathComponent("engram-phase-c-alias-\(UUID().uuidString)")
+        let lexicalOld = fixtureRoot.appendingPathComponent("old").path
+        let lexicalNew = fixtureRoot.appendingPathComponent("new").path
+        try FileManager.default.createDirectory(
+            atPath: lexicalOld,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: fixtureRoot) }
+
+        let resolved = try XCTUnwrap(Darwin.realpath(lexicalOld, nil))
+        defer { free(resolved) }
+        let canonicalOld = String(cString: resolved)
+        XCTAssertNotEqual(canonicalOld, lexicalOld, "Darwin /tmp must exercise the /private/tmp alias")
+
+        try writer.write { db in
+            try insertSession(db, id: "canonical-alias", cwd: canonicalOld + "/cwd")
+            try db.execute(
+                sql: """
+                UPDATE sessions
+                   SET file_path = ?, source_locator = ?
+                 WHERE id = 'canonical-alias'
+                """,
+                arguments: [canonicalOld + "/session.jsonl", canonicalOld + "/source"]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO session_local_state(session_id, local_readable_path)
+                VALUES ('canonical-alias', ?)
+                """,
+                arguments: [canonicalOld + "/readable"]
+            )
+            try MigrationLogStore.startMigration(
+                db,
+                input: StartMigrationInput(
+                    id: "canonical-alias-move",
+                    oldPath: lexicalOld,
+                    newPath: lexicalNew,
+                    oldBasename: "old",
+                    newBasename: "new"
+                )
+            )
+            try MigrationLogStore.markFsDone(
+                db,
+                input: MarkFsDoneInput(
+                    id: "canonical-alias-move",
+                    filesPatched: 0,
+                    occurrences: 0,
+                    ccDirRenamed: false
+                )
+            )
+
+            let result = try MigrationLogStore.applyMigrationDb(
+                db,
+                input: ApplyMigrationInput(
+                    migrationId: "canonical-alias-move",
+                    oldPath: lexicalOld,
+                    newPath: lexicalNew,
+                    oldBasename: "old",
+                    newBasename: "new"
+                )
+            )
+
+            XCTAssertEqual(result.sessionsUpdated, 1)
+            XCTAssertEqual(result.localStateUpdated, 1)
+            let row = try Row.fetchOne(
+                db,
+                sql: "SELECT cwd, file_path, source_locator FROM sessions WHERE id = 'canonical-alias'"
+            )
+            XCTAssertEqual(row?["cwd"], lexicalNew + "/cwd")
+            XCTAssertEqual(row?["file_path"], lexicalNew + "/session.jsonl")
+            XCTAssertEqual(row?["source_locator"], lexicalNew + "/source")
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT local_readable_path FROM session_local_state WHERE session_id = 'canonical-alias'"
+                ),
+                lexicalNew + "/readable"
+            )
         }
     }
 

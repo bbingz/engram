@@ -89,9 +89,15 @@ public enum JsonlPatch {
         _ data: Data,
         oldPath: String,
         newPath: String,
+        additionalOldPaths: [String] = [],
         treatEndAsTerminator: Bool = true
     ) throws -> PatchResult {
-        if oldPath.isEmpty || oldPath == newPath {
+        let oldVariants = patchingVariants(
+            oldPath: oldPath,
+            additionalOldPaths: additionalOldPaths,
+            newPath: newPath
+        )
+        if oldVariants.isEmpty {
             return PatchResult(data: data, count: 0)
         }
         guard let text = String(data: data, encoding: .utf8) else {
@@ -99,7 +105,7 @@ public enum JsonlPatch {
         }
         var totalCount = 0
         var working = text
-        for variant in ProjectPathVariants.variants(oldPath) where variant != newPath {
+        for variant in oldVariants {
             working = replaceWithTerminator(
                 in: working,
                 needle: variant,
@@ -121,12 +127,17 @@ public enum JsonlPatch {
     public static func autoFixDotQuote(
         _ data: Data,
         oldPath: String,
-        newPath: String
+        newPath: String,
+        additionalOldPaths: [String] = []
     ) -> PatchResult {
         let replacement = Data((newPath + ".\"").utf8)
         var output = data
         var count = 0
-        for variant in ProjectPathVariants.variants(oldPath) where variant != newPath {
+        for variant in patchingVariants(
+            oldPath: oldPath,
+            additionalOldPaths: additionalOldPaths,
+            newPath: newPath
+        ) {
             let needle = Data((variant + ".\"").utf8)
             guard needle != replacement else { continue }
             let result = replaceLiteral(output, needle: needle, replacement: replacement)
@@ -145,15 +156,22 @@ public enum JsonlPatch {
         _ data: Data,
         oldPath: String,
         newPath: String,
+        additionalOldPaths: [String] = [],
         treatEndAsTerminator: Bool = true
     ) throws -> PatchResult {
         let first = try patchBuffer(
             data,
             oldPath: oldPath,
             newPath: newPath,
+            additionalOldPaths: additionalOldPaths,
             treatEndAsTerminator: treatEndAsTerminator
         )
-        let second = autoFixDotQuote(first.data, oldPath: oldPath, newPath: newPath)
+        let second = autoFixDotQuote(
+            first.data,
+            oldPath: oldPath,
+            newPath: newPath,
+            additionalOldPaths: additionalOldPaths
+        )
         return PatchResult(data: second.data, count: first.count + second.count)
     }
 
@@ -164,7 +182,8 @@ public enum JsonlPatch {
     public static func patchFile(
         at filePath: String,
         oldPath: String,
-        newPath: String
+        newPath: String,
+        additionalOldPaths: [String] = []
     ) throws -> Int {
         try rejectSymlinkSource(filePath)
         let attrsBefore = try FileManager.default.attributesOfItem(atPath: filePath)
@@ -174,13 +193,19 @@ public enum JsonlPatch {
                 at: filePath,
                 oldPath: oldPath,
                 newPath: newPath,
+                additionalOldPaths: additionalOldPaths,
                 attrsBefore: attrsBefore
             )
         }
         let before = try snapshot(path: filePath)
 
         let buf = try Data(contentsOf: URL(fileURLWithPath: filePath))
-        let res = try patchBufferWithDotQuote(buf, oldPath: oldPath, newPath: newPath)
+        let res = try patchBufferWithDotQuote(
+            buf,
+            oldPath: oldPath,
+            newPath: newPath,
+            additionalOldPaths: additionalOldPaths
+        )
         if res.count == 0 { return 0 }
 
         // First CAS: file must not have moved between read and now.
@@ -284,6 +309,7 @@ public enum JsonlPatch {
         at filePath: String,
         oldPath: String,
         newPath: String,
+        additionalOldPaths: [String],
         attrsBefore: [FileAttributeKey: Any]
     ) throws -> Int {
         let before = try snapshot(path: filePath)
@@ -301,14 +327,13 @@ public enum JsonlPatch {
         let output = try FileHandle(forWritingTo: URL(fileURLWithPath: tmpPath))
         var total = 0
         var carry = Data()
-        let carryLimit = max(
-            oldPath.lengthOfBytes(using: .utf8),
-            oldPath.decomposedStringWithCanonicalMapping.lengthOfBytes(using: .utf8)
-        ) + 8
-
-        let needleUTF8Variants: [Data] = ProjectPathVariants.variants(oldPath)
-            .filter { $0 != newPath }
-            .map { Data($0.utf8) }
+        let oldVariants = patchingVariants(
+            oldPath: oldPath,
+            additionalOldPaths: additionalOldPaths,
+            newPath: newPath
+        )
+        let carryLimit = (oldVariants.map { $0.lengthOfBytes(using: .utf8) }.max() ?? 0) + 8
+        let needleUTF8Variants = oldVariants.map { Data($0.utf8) }
 
         do {
             while true {
@@ -351,6 +376,7 @@ public enum JsonlPatch {
                     Data(decoded.utf8),
                     oldPath: oldPath,
                     newPath: newPath,
+                    additionalOldPaths: additionalOldPaths,
                     treatEndAsTerminator: false
                 )
                 total += patched.count
@@ -363,6 +389,7 @@ public enum JsonlPatch {
                 carry,
                 oldPath: oldPath,
                 newPath: newPath,
+                additionalOldPaths: additionalOldPaths,
                 treatEndAsTerminator: true
             )
             total += tail.count
@@ -471,7 +498,10 @@ public enum JsonlPatch {
         let lookahead = treatEndAsTerminator
             ? pathTerminatorLookahead
             : pathTerminatorLookaheadMidStream
-        let pattern = escaped + lookahead
+        // A lexical alias such as /tmp/X can occur inside /private/tmp/X.
+        // Require a real leading path boundary so only the intended path token
+        // is rewritten; the trailing boundary remains independently enforced.
+        let pattern = #"(?<![\p{L}\p{N}._-])"# + escaped + lookahead
         guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
             return text
         }
@@ -488,6 +518,22 @@ public enum JsonlPatch {
             }
         }
         count += matches.count
+        return result
+    }
+
+    private static func patchingVariants(
+        oldPath: String,
+        additionalOldPaths: [String],
+        newPath: String
+    ) -> [String] {
+        var result: [String] = []
+        for path in [oldPath] + additionalOldPaths where !path.isEmpty {
+            for variant in ProjectPathVariants.variants(path)
+                where variant != newPath
+                    && !result.contains(where: { $0.utf8.elementsEqual(variant.utf8) }) {
+                result.append(variant)
+            }
+        }
         return result
     }
 

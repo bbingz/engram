@@ -28,4 +28,16 @@ final class SessionVisibilityFilterTests: XCTestCase {
         XCTAssertTrue(SessionSemanticSearchPolicy.searchableTierSQL.contains("'lite'"))
         XCTAssertFalse(SessionVisibilityFilter.nonSkipTierSQL.contains("lite"))
     }
+
+    func testSuggestedHostVisibilityCanIncludeHiddenWithoutIncludingSkip_repro() {
+        let defaultSQL = SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL(alias: "s")
+        XCTAssertTrue(defaultSQL.contains("engram_suggested_host.hidden_at IS NULL"))
+
+        let includeHiddenSQL = SessionVisibilityFilter.topLevelOrPromotedSuggestedSQL(
+            alias: "s",
+            includeHiddenHosts: true
+        )
+        XCTAssertFalse(includeHiddenSQL.contains("engram_suggested_host.hidden_at IS NULL"))
+        XCTAssertTrue(includeHiddenSQL.contains("engram_suggested_host.tier != 'skip'"))
+    }
 }

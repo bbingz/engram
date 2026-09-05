@@ -105,15 +105,11 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
-        let signature = ParsedTranscriptCache.Signature.forFile(locator)
-        let messages: [NormalizedMessage]
-        if let cached = await messageCache.cached(locator: locator, signature: signature) {
-            messages = cached
-        } else {
-            messages = try Self.buildMessages(locator: locator, limits: limits)
-            await messageCache.store(locator: locator, signature: signature, messages: messages)
+        let result = try await streamMessagesWithMetadata(locator: locator, options: options)
+        if options.limit == nil, result.truncatedAt != nil {
+            throw ParserFailure.messageLimitExceeded
         }
-        return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
+        return result.messages
     }
 
     func streamMessagesWithMetadata(
@@ -122,31 +118,53 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
     ) async throws -> StreamMessagesResult {
         let signature = ParsedTranscriptCache.Signature.forFile(locator)
         let messages: [NormalizedMessage]
+        var parseFailure: ParserFailure? = nil
         if let cached = await messageCache.cached(locator: locator, signature: signature) {
             messages = cached
         } else {
-            messages = try Self.buildMessages(locator: locator, limits: limits)
-            await messageCache.store(locator: locator, signature: signature, messages: messages)
+            let prefix = try Self.buildMessagesWithMetadata(
+                locator: locator,
+                limits: limits
+            )
+            messages = prefix.messages
+            parseFailure = prefix.parseFailure
+            if parseFailure == nil, messages.count <= limits.maxMessages {
+                await messageCache.store(locator: locator, signature: signature, messages: messages)
+            }
         }
-        let truncatedAt = options.limit == nil && messages.count > limits.maxMessages
-            ? limits.maxMessages
-            : nil
-        let bounded = truncatedAt == nil
-            ? JSONLAdapterSupport.applyWindow(messages, options: options)
-            : Array(messages.prefix(limits.maxMessages))
-        return StreamMessagesResult(
-            messages: JSONLAdapterSupport.stream(bounded),
-            totalKnownComplete: truncatedAt == nil,
-            truncatedAt: truncatedAt
+        return JSONLAdapterSupport.stream(
+            JSONLAdapterSupport.boundedWindowWithMetadata(
+                messages,
+                options: options,
+                maxMessages: limits.maxMessages,
+                parseFailure: parseFailure
+            )
         )
     }
 
-    private static func buildMessages(locator: String, limits: ParserLimits) throws -> [NormalizedMessage] {
-        guard let session = try readSession(locator: locator, limits: limits),
-              let requests = JSONLAdapterSupport.array(session["requests"])
-        else {
-            return []
-        }
+    private static func buildMessagesWithMetadata(
+        locator: String,
+        limits: ParserLimits
+    ) throws -> (messages: [NormalizedMessage], parseFailure: ParserFailure?) {
+        let prefix = try readSessionPrefix(locator: locator, limits: limits)
+        return (buildMessages(from: prefix.session), prefix.parseFailure)
+    }
+
+    private static func buildMessages(
+        locator: String,
+        limits: ParserLimits,
+        meterMutationObjects: Bool = true
+    ) throws -> [NormalizedMessage] {
+        let session = try readSession(
+            locator: locator,
+            limits: limits,
+            meterMutationObjects: meterMutationObjects
+        )
+        return buildMessages(from: session)
+    }
+
+    private static func buildMessages(from session: Phase4AdapterSupport.JSONObject?) -> [NormalizedMessage] {
+        guard let session, let requests = JSONLAdapterSupport.array(session["requests"]) else { return [] }
 
         var messages: [NormalizedMessage] = []
         for request in requests.compactMap({ JSONLAdapterSupport.object($0) }) {
@@ -186,17 +204,28 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
 
     private static func readSession(
         locator: String,
-        limits: ParserLimits
+        limits: ParserLimits,
+        meterMutationObjects: Bool = true
     ) throws -> Phase4AdapterSupport.JSONObject? {
-        // Mutation logs are state machines: a truncated prefix is not a valid
-        // complete snapshot, so surface the object cap instead of succeeding.
         let (objects, failure) = try JSONLAdapterSupport.readObjects(
-            locator: locator,
-            limits: limits,
-            reportFailures: true
+            locator: locator, limits: limits, reportFailures: true,
+            countsTowardMessageLimit: meterMutationObjects ? nil : { _ in false }
         )
         if let failure { throw failure }
         return try replayMutationLog(objects)
+    }
+
+    private static func readSessionPrefix(
+        locator: String,
+        limits: ParserLimits
+    ) throws -> (session: Phase4AdapterSupport.JSONObject?, parseFailure: ParserFailure?) {
+        let (objects, failure) = try JSONLAdapterSupport.readObjects(
+            locator: locator,
+            limits: limits,
+            reportFailures: true,
+            countsTowardMessageLimit: { _ in false }
+        )
+        return (try replayMutationLog(objects), failure)
     }
 
     private static func replayMutationLog(_ objects: [Phase4AdapterSupport.JSONObject]) throws -> Phase4AdapterSupport.JSONObject? {

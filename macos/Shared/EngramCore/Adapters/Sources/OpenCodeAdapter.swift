@@ -1,6 +1,35 @@
 import Foundation
 import SQLite3
 
+public enum OpenCodeSessionRoleClassifier {
+    public static func isDispatchedChild(
+        parentSessionId: String?,
+        title: String,
+        agent: String?,
+        slug: String?
+    ) -> Bool {
+        guard parentSessionId != nil else { return false }
+        let normalizedAgent = agent?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let isNonPrimaryAgent = normalizedAgent.map {
+            !$0.isEmpty && $0 != "build" && $0 != "plan"
+        } ?? false
+        let normalizedSlug = slug?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        return isNonPrimaryAgent
+            || normalizedSlug.hasPrefix("task-")
+            || isTaskToolTitle(title)
+    }
+
+    private static func isTaskToolTitle(_ title: String) -> Bool {
+        let normalized = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard normalized.hasSuffix(" subagent)"),
+              let marker = normalized.range(of: " (@", options: .backwards)
+        else {
+            return false
+        }
+        return marker.upperBound < normalized.index(normalized.endIndex, offsetBy: -" subagent)".count)
+    }
+}
+
 final class Phase4SQLiteDatabase {
     private var database: OpaquePointer?
 
@@ -121,14 +150,17 @@ final class OpenCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapter,
     private func listSessionLocators(modifiedSinceMilliseconds: Int64?) throws -> [String] {
         guard JSONLAdapterSupport.fileExists(dbPath) else { return [] }
         let database = try Phase4SQLiteDatabase(path: dbPath)
+        let hasParentID = try database.query("PRAGMA table_info(session)")
+            .contains { ($0["name"] ?? nil) == "parent_id" }
         let modificationClause = modifiedSinceMilliseconds.map { _ in " AND time_updated >= ?" } ?? ""
         let bindings = modifiedSinceMilliseconds.map { [String($0)] } ?? []
+        let parentOrder = hasParentID ? "CASE WHEN parent_id IS NULL THEN 0 ELSE 1 END," : ""
         return try database.query(
             """
             SELECT id
             FROM session
             WHERE time_archived IS NULL\(modificationClause)
-            ORDER BY time_updated DESC
+            ORDER BY \(parentOrder) time_updated DESC
             """,
             bindings: bindings
         )
@@ -143,9 +175,17 @@ final class OpenCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapter,
 
         do {
             let database = try Phase4SQLiteDatabase(path: locatorParts.dbPath)
+            let sessionColumns = Set(
+                try database.query("PRAGMA table_info(session)")
+                    .compactMap { $0["name"] ?? nil }
+            )
+            let optionalColumns = ["parent_id", "slug", "agent"]
+                .filter(sessionColumns.contains)
+                .map { ", \($0)" }
+                .joined()
             guard let session = try database.query(
                 """
-                SELECT id, directory, title, time_created, time_updated
+                SELECT id, directory, title, time_created, time_updated\(optionalColumns)
                 FROM session
                 WHERE id = ? AND time_archived IS NULL
                 """,
@@ -154,63 +194,49 @@ final class OpenCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapter,
                 return .failure(.malformedJSON)
             }
 
-            let messages = try database.query(
-                """
-                SELECT id, session_id, time_created, data
-                FROM message
-                WHERE session_id = ?
-                ORDER BY time_created ASC
-                """,
-                bindings: [locatorParts.sessionId]
+            let boundedMessages = try Self.boundedMessages(
+                database: database,
+                sessionId: locatorParts.sessionId,
+                maxMessages: limits.maxMessages
             )
-
-            // Count only messages that contribute a non-empty text part, mirroring
-            // the streamMessages predicate so counts match the streamed transcript.
-            let countRows = try database.query(
-                """
-                SELECT m.id AS mid, m.data AS mdata, p.data AS pdata
-                FROM message m
-                JOIN part p ON p.message_id = m.id
-                WHERE m.session_id = ?
-                """,
-                bindings: [locatorParts.sessionId]
-            )
-            var userMessageIds = Set<String>()
-            var assistantMessageIds = Set<String>()
-            for row in countRows {
-                guard let messageId = row["mid"] ?? nil,
-                      let role = Self.contentfulRole(from: row)
-                else {
-                    continue
-                }
-                if role == "user" {
-                    userMessageIds.insert(messageId)
-                } else if role == "assistant" {
-                    assistantMessageIds.insert(messageId)
-                }
-            }
-            let userCount = userMessageIds.count
-            let assistantCount = assistantMessageIds.count
+            let userCount = boundedMessages.messages.lazy.filter { $0.role == .user }.count
+            let assistantCount = boundedMessages.messages.lazy.filter { $0.role == .assistant }.count
             // R184-3: a live session row with no contentful user/assistant
             // text must not become a zero-count browsable session.
             guard userCount + assistantCount > 0 else {
                 return .failure(.noVisibleMessages)
             }
-            if userCount + assistantCount > limits.maxMessages {
+            if boundedMessages.hasMoreMessages {
                 return .failure(.messageLimitExceeded)
             }
 
             let sessionCreated = Phase4AdapterSupport.double(session["time_created"] ?? nil) ?? 0
-            let firstMessageTime = Phase4AdapterSupport.double(messages.first?["time_created"] ?? nil)
-            let lastMessageTime = Phase4AdapterSupport.double(messages.last?["time_created"] ?? nil)
+            let firstMessageTime = try Self.messageTime(
+                database: database,
+                sessionId: locatorParts.sessionId,
+                descending: false
+            )
+            let lastMessageTime = try Self.messageTime(
+                database: database,
+                sessionId: locatorParts.sessionId,
+                descending: true
+            )
             let startTime = Phase4AdapterSupport.isoFromMilliseconds(firstMessageTime ?? sessionCreated)
+            let parentSessionID = session["parent_id"] ?? nil
+            let title = (session["title"] ?? nil) ?? ""
+            let isTaskChild = OpenCodeSessionRoleClassifier.isDispatchedChild(
+                parentSessionId: parentSessionID,
+                title: title,
+                agent: session["agent"] ?? nil,
+                slug: session["slug"] ?? nil
+            )
 
             return .success(
                 NormalizedSessionInfo(
                     id: (session["id"] ?? nil) ?? locatorParts.sessionId,
                     source: .opencode,
                     startTime: startTime,
-                    endTime: messages.count > 1 && lastMessageTime != nil
+                    endTime: userCount + assistantCount > 1 && lastMessageTime != nil
                         ? Phase4AdapterSupport.isoFromMilliseconds(lastMessageTime!)
                         : nil,
                     cwd: (session["directory"] ?? nil) ?? "",
@@ -222,19 +248,21 @@ final class OpenCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapter,
                     toolMessageCount: 0,
                     systemMessageCount: 0,
                     summary: {
-                        let title = (session["title"] ?? nil) ?? ""
                         return title.isEmpty ? nil : title
                     }(),
                     filePath: locator,
                     sizeBytes: try Self.sessionPayloadSize(database: database, sessionId: locatorParts.sessionId),
                     indexedAt: nil,
-                    agentRole: nil,
+                    // docs/invariants.md #2: only true task/subagent children
+                    // enter dispatched/skip; a continued fork keeps its parent
+                    // link without being hidden.
+                    agentRole: isTaskChild ? "dispatched" : nil,
                     originator: nil,
                     origin: nil,
                     summaryMessageCount: nil,
                     tier: nil,
                     qualityScore: nil,
-                    parentSessionId: nil,
+                    parentSessionId: parentSessionID,
                     suggestedParentId: nil
                 )
             )
@@ -250,6 +278,9 @@ final class OpenCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapter,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
         let result = try Self.messages(locator: locator, options: options, maxMessages: limits.maxMessages)
+        if options.limit == nil, result.truncatedAt != nil {
+            throw ParserFailure.messageLimitExceeded
+        }
         return JSONLAdapterSupport.stream(result.messages)
     }
 
@@ -287,29 +318,100 @@ final class OpenCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapter,
 
         do {
             let database = try Phase4SQLiteDatabase(path: locatorParts.dbPath)
-            let rows = try database.query(
-                """
-                SELECT m.id AS mid, m.data AS mdata, p.data AS pdata, m.time_created
-                FROM message m
-                JOIN part p ON p.message_id = m.id
-                WHERE m.session_id = ?
-                ORDER BY m.time_created ASC, p.time_created ASC
-                """,
-                bindings: [locatorParts.sessionId]
+            let result = try boundedMessages(
+                database: database,
+                sessionId: locatorParts.sessionId,
+                maxMessages: maxMessages
             )
-            let messages = Self.messages(from: rows)
-            let truncatedAt = options.limit == nil && messages.count > maxMessages ? maxMessages : nil
-            let boundedMessages = truncatedAt == nil ? messages : Array(messages.prefix(maxMessages))
-            return JSONLAdapterSupport.WindowedMessagesResult(
-                messages: JSONLAdapterSupport.applyWindow(boundedMessages, options: options),
-                totalKnownComplete: truncatedAt == nil,
-                truncatedAt: truncatedAt
+            return JSONLAdapterSupport.boundedWindowWithMetadata(
+                result.messages,
+                options: options,
+                maxMessages: maxMessages,
+                hasMoreMessages: result.hasMoreMessages
             )
         } catch let failure as ParserFailure {
             throw failure
         } catch {
             throw ParserFailure.sqliteUnreadable
         }
+    }
+
+    private struct BoundedMessagesResult {
+        let messages: [NormalizedMessage]
+        let hasMoreMessages: Bool
+    }
+
+    private static func boundedMessages(
+        database: Phase4SQLiteDatabase,
+        sessionId: String,
+        maxMessages: Int
+    ) throws -> BoundedMessagesResult {
+        let cap = max(maxMessages, 0)
+        let pageSize = min(max(cap == Int.max ? Int.max : cap + 1, 1), 512)
+        var offset = 0
+        var messages: [NormalizedMessage] = []
+        var indexByMessageId: [String: Int] = [:]
+
+        while true {
+            let rows = try database.query(
+                """
+                SELECT m.id AS mid, m.data AS mdata, p.data AS pdata, m.time_created
+                FROM message m
+                JOIN part p ON p.message_id = m.id
+                WHERE m.session_id = ?
+                ORDER BY m.time_created ASC, m.id ASC, p.time_created ASC, p.id ASC
+                LIMIT \(pageSize) OFFSET \(offset)
+                """,
+                bindings: [sessionId]
+            )
+            guard !rows.isEmpty else {
+                return BoundedMessagesResult(messages: messages, hasMoreMessages: false)
+            }
+
+            for row in rows {
+                guard let part = messagePart(from: row) else { continue }
+                if let index = indexByMessageId[part.messageId] {
+                    messages[index].content += "\n\(part.content)"
+                    continue
+                }
+                guard messages.count < cap else {
+                    return BoundedMessagesResult(messages: messages, hasMoreMessages: true)
+                }
+                indexByMessageId[part.messageId] = messages.count
+                messages.append(
+                    NormalizedMessage(
+                        role: part.role,
+                        content: part.content,
+                        timestamp: part.timestamp,
+                        toolCalls: nil,
+                        usage: part.usage
+                    )
+                )
+            }
+
+            guard rows.count == pageSize else {
+                return BoundedMessagesResult(messages: messages, hasMoreMessages: false)
+            }
+            offset += rows.count
+        }
+    }
+
+    private static func messageTime(
+        database: Phase4SQLiteDatabase,
+        sessionId: String,
+        descending: Bool
+    ) throws -> Double? {
+        let row = try database.query(
+            """
+            SELECT time_created
+            FROM message
+            WHERE session_id = ?
+            ORDER BY time_created \(descending ? "DESC" : "ASC")
+            LIMIT 1
+            """,
+            bindings: [sessionId]
+        ).first
+        return Phase4AdapterSupport.double(row?["time_created"] ?? nil)
     }
 
     private static func splitVirtualLocator(_ locator: String) -> (dbPath: String, sessionId: String)? {
@@ -359,53 +461,6 @@ final class OpenCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapter,
         let content: String
         let timestamp: String?
         let usage: TokenUsage?
-    }
-
-    // Returns the role of a message+part row only when it yields a non-empty
-    // text part, matching messagePart(from:) so parseSessionInfo counts agree with
-    // the streamed transcript.
-    private static func contentfulRole(from row: [String: String?]) -> String? {
-        guard let rawMessage = row["mdata"] ?? nil,
-              let rawPart = row["pdata"] ?? nil,
-              let messageData = Phase4AdapterSupport.jsonObject(from: rawMessage),
-              let partData = Phase4AdapterSupport.jsonObject(from: rawPart),
-              let role = JSONLAdapterSupport.string(messageData["role"]),
-              role == "user" || role == "assistant",
-              isTextPart(partData)
-        else {
-            return nil
-        }
-        let content = JSONLAdapterSupport.string(partData["text"]) ??
-            JSONLAdapterSupport.string(partData["value"]) ?? ""
-        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return nil
-        }
-        return role
-    }
-
-    private static func messages(from rows: [[String: String?]]) -> [NormalizedMessage] {
-        var messages: [NormalizedMessage] = []
-        var indexByMessageId: [String: Int] = [:]
-
-        for row in rows {
-            guard let part = messagePart(from: row) else { continue }
-            if let index = indexByMessageId[part.messageId] {
-                messages[index].content += "\n\(part.content)"
-            } else {
-                indexByMessageId[part.messageId] = messages.count
-                messages.append(
-                    NormalizedMessage(
-                        role: part.role,
-                        content: part.content,
-                        timestamp: part.timestamp,
-                        toolCalls: nil,
-                        usage: part.usage
-                    )
-                )
-            }
-        }
-
-        return messages
     }
 
     private static func messagePart(from row: [String: String?]) -> MessagePart? {

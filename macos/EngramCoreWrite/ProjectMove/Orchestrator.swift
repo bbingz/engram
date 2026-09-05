@@ -307,6 +307,7 @@ public enum ProjectMoveOrchestrator {
         migrationId: String,
         force: Bool,
         actor: MigrationLogActor,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         lockPath requestedLockPath: String? = nil,
         shouldCancel: @escaping @Sendable () -> Bool = { false },
         beginCommitIfNotCancelled: (@Sendable () -> Bool)? = nil,
@@ -315,7 +316,10 @@ public enum ProjectMoveOrchestrator {
         if shouldCancel() {
             throw ProjectMoveCancelledError()
         }
-        let lockPath = requestedLockPath ?? MigrationLock.defaultLockPath()
+        let lockPath = resolvedLockPath(
+            homeDirectory: homeDirectory,
+            requestedLockPath: requestedLockPath
+        )
         try MigrationLock.acquire(migrationId: "undo-\(migrationId)", lockPath: lockPath)
         defer { MigrationLock.release(lockPath: lockPath) }
 
@@ -337,6 +341,7 @@ public enum ProjectMoveOrchestrator {
                 archived: false,
                 auditNote: "undo of \(migrationId)",
                 actor: actor,
+                homeDirectory: homeDirectory,
                 lockPath: lockPath,
                 rolledBackOf: reverse.originalMigrationId,
                 lockAlreadyHeld: true,
@@ -361,8 +366,12 @@ public enum ProjectMoveOrchestrator {
         guard !options.src.isEmpty, !options.dst.isEmpty else {
             throw OrchestratorError.missingPaths(src: options.src, dst: options.dst)
         }
-        let src = canonicalizeExistingSource(options.src)
-        let dst = canonicalize(options.dst)
+        let src = canonicalizeExistingSource(
+            ProjectPath.expandHome(options.src, homeDirectory: options.homeDirectory)
+        )
+        let dst = canonicalize(
+            ProjectPath.expandHome(options.dst, homeDirectory: options.homeDirectory)
+        )
         if src == dst {
             throw OrchestratorError.sameSourceAndDest(path: src)
         }
@@ -400,7 +409,7 @@ public enum ProjectMoveOrchestrator {
         let migrationId = UUID().uuidString
         let oldBasename = basename(src)
         let newBasename = basename(dst)
-        let lockPath = options.lockPath ?? MigrationLock.defaultLockPath()
+        let lockPath = resolvedLockPath(for: options)
 
         // Lock BEFORE startMigration: a LockBusyError must not leave a stale
         // fs_pending row. Undo may pre-acquire the same lock so its migration-log
@@ -454,6 +463,8 @@ public enum ProjectMoveOrchestrator {
         var destinationParentToken: DestinationParentToken?
         var geminiProjectsPlan: GeminiProjectsJsonUpdatePlan?
         var geminiProjectsApplied = false
+        var kimiProjectsPlan: KimiProjectsJsonUpdatePlan?
+        var kimiProjectsApplied = false
         var sqlitePatches: [OpenCodeSQLitePatchResult] = []
         let patchBackupRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("engram-project-move-\(migrationId)-patch-backups", isDirectory: true)
@@ -476,7 +487,7 @@ public enum ProjectMoveOrchestrator {
             var dirRenamePlans: [DirRenamePlan] = []
             for root in roots {
                 guard let encode = root.encodeProjectDir else { continue }
-                var oldName = encode(src)
+                var oldNames = projectDirEncodingNames(for: src, encode: encode)
                 let newName = encode(dst)
                 if root.id == .geminiCli {
                     let projectsFile = ((root.path as NSString)
@@ -487,11 +498,45 @@ public enum ProjectMoveOrchestrator {
                         oldCwd: src,
                         newCwd: dst
                     )
-                    oldName = geminiProjectsPlan?.oldEntry?.name ?? oldName
+                    if let observedName = geminiProjectsPlan?.oldEntry?.name {
+                        oldNames = [observedName]
+                    }
+                }
+                if root.id == .kimi {
+                    let configFile = ((root.path as NSString)
+                        .deletingLastPathComponent as NSString)
+                        .appendingPathComponent("kimi.json")
+                    kimiProjectsPlan = try KimiProjectsJSON.plan(
+                        filePath: configFile,
+                        oldPaths: projectMovePatchSourcePaths(src),
+                        newPath: dst
+                    )
+                    if let plan = kimiProjectsPlan, !plan.updates.isEmpty {
+                        dirRenamePlans.append(contentsOf: kimiDirectoryPlans(
+                            rootPath: root.path,
+                            plan: plan
+                        ))
+                        continue
+                    }
                 }
                 let observedOldDirs = findGroupedDirsWithCwd(rootPath: root.path, cwd: src)
+                if root.id == .commandcode, observedOldDirs.isEmpty {
+                    // CommandCode's live slug is lossy and its JSONL commonly
+                    // has no structured cwd. Content may still be patched, but
+                    // the slug alone is not ownership evidence for a rename.
+                    skippedDirs.append(SkippedDirEntry(sourceId: root.id, reason: .noop))
+                    continue
+                }
+                let theoreticalOldDirs = oldNames.map {
+                    (root.path as NSString).appendingPathComponent($0)
+                }
+                let existingTheoreticalOldDirs = theoreticalOldDirs.filter {
+                    FileManager.default.fileExists(atPath: $0)
+                }
                 let oldDirs = observedOldDirs.isEmpty
-                    ? [(root.path as NSString).appendingPathComponent(oldName)]
+                    ? (existingTheoreticalOldDirs.isEmpty
+                        ? Array(theoreticalOldDirs.prefix(1))
+                        : existingTheoreticalOldDirs)
                     : observedOldDirs
                 for oldDir in oldDirs {
                     if basename(oldDir) == newName {
@@ -512,7 +557,8 @@ public enum ProjectMoveOrchestrator {
                 plans: dirRenamePlans,
                 roots: roots,
                 src: src,
-                dst: dst
+                dst: dst,
+                kimiProjectsPlan: kimiProjectsPlan
             )
 
             // Step 0.9: archive destinations live under `_archive/<category>/…`
@@ -562,15 +608,23 @@ public enum ProjectMoveOrchestrator {
                 try GeminiProjectsJSON.apply(plan: plan)
                 geminiProjectsApplied = true
             }
+            if let plan = kimiProjectsPlan, !plan.updates.isEmpty {
+                try KimiProjectsJSON.apply(plan: plan)
+                kimiProjectsApplied = true
+            }
 
             // Step 3: patch JSONL across all sources. Bounded concurrency to
             // avoid file-descriptor cliffs on very large session stores.
             let patchConcurrency = 50
+            let patchSourcePaths = projectMovePatchSourcePaths(src)
+            let additionalPatchSourcePaths = Array(patchSourcePaths.dropFirst())
             var totalFilesPatched = 0
             var totalOccurrences = 0
             for root in roots {
                 var issues: [WalkIssue] = []
-                let hits = SessionSources.findReferencingFiles(root: root.path, needle: src)
+                let hits = Array(Set(patchSourcePaths.flatMap {
+                    SessionSources.findReferencingFiles(root: root.path, needle: $0)
+                })).sorted()
                 let remapped = hits.map { file -> String in
                     for d in renamedDirs where file.hasPrefix(d.oldDir + "/") {
                         return d.newDir + String(file.dropFirst(d.oldDir.count))
@@ -580,7 +634,12 @@ public enum ProjectMoveOrchestrator {
                 let perFile = await runWithConcurrency(items: remapped, limit: patchConcurrency) { file in
                     do {
                         let backupPath = try backupPatchInput(file: file, backupRoot: patchBackupRoot)
-                        let count = try JsonlPatch.patchFile(at: file, oldPath: src, newPath: dst)
+                        let count = try JsonlPatch.patchFile(
+                            at: file,
+                            oldPath: src,
+                            newPath: dst,
+                            additionalOldPaths: additionalPatchSourcePaths
+                        )
                         if count == 0 {
                             try? FileManager.default.removeItem(atPath: backupPath)
                         }
@@ -621,7 +680,7 @@ public enum ProjectMoveOrchestrator {
                     do {
                         let sqlitePatch = try OpenCodeSQLiteProjectMove.patch(
                             root: root.path,
-                            oldPath: src,
+                            oldPaths: patchSourcePaths,
                             newPath: dst
                         )
                         if sqlitePatch.occurrences > 0 {
@@ -657,6 +716,7 @@ public enum ProjectMoveOrchestrator {
                 renamedDirs: renamedDirs,
                 skippedDirs: skippedDirs,
                 geminiProjectsApplied: geminiProjectsApplied,
+                kimiProjectsApplied: kimiProjectsApplied,
                 manifest: manifest
             )
             try writer.write { db in
@@ -741,7 +801,7 @@ public enum ProjectMoveOrchestrator {
             // Compensation: pre-flight failures haven't touched the FS.
             // Cancel-before-FS also has nothing to reverse when physicalMoveApplied
             // is still false; cancel-after-FS runs full compensation.
-            let wasCancel = primaryError is ProjectMoveCancelledError
+            let wasCancel = primaryError is ProjectMoveCancelledError || primaryError is CancellationError
             let preflightFailure = primaryError is DirCollisionError
                 || primaryError is SharedEncodingCollisionError
                 || (wasCancel && !physicalMoveApplied && manifest.isEmpty)
@@ -755,6 +815,7 @@ public enum ProjectMoveOrchestrator {
                     attemptedDst: dst,
                     renamedDirs: renamedDirs,
                     geminiProjectsPlan: geminiProjectsApplied ? geminiProjectsPlan : nil,
+                    kimiProjectsPlan: kimiProjectsApplied ? kimiProjectsPlan : nil,
                     sqlitePatches: sqlitePatches,
                     physicalMoveApplied: physicalMoveApplied
                 )
@@ -796,6 +857,22 @@ public enum ProjectMoveOrchestrator {
         }
     }
 
+    static func resolvedLockPath(for options: RunProjectMoveOptions) -> String {
+        resolvedLockPath(
+            homeDirectory: options.homeDirectory,
+            requestedLockPath: options.lockPath
+        )
+    }
+
+    static func resolvedLockPath(
+        homeDirectory: URL,
+        requestedLockPath: String?
+    ) -> String {
+        // docs/invariants.md #6: an injected home must own every test artifact,
+        // including the project-move lock.
+        requestedLockPath ?? MigrationLock.defaultLockPath(homeDirectory: homeDirectory)
+    }
+
     // MARK: - dry run
 
     public static func buildDryRunPlan(
@@ -809,10 +886,11 @@ public enum ProjectMoveOrchestrator {
         // then run the same 0.5–0.8 preflight before classifying renamed vs skipped.
         var dirRenamePlans: [DirRenamePlan] = []
         var skippedDirs: [SkippedDirEntry] = []
+        var kimiProjectsPlan: KimiProjectsJsonUpdatePlan?
 
         for root in roots {
             guard let encode = root.encodeProjectDir else { continue }
-            var oldName = encode(src)
+            var oldNames = projectDirEncodingNames(for: src, encode: encode)
             let newName = encode(dst)
             if root.id == .geminiCli {
                 let projectsFile = ((root.path as NSString)
@@ -823,11 +901,42 @@ public enum ProjectMoveOrchestrator {
                     oldCwd: src,
                     newCwd: dst
                 )
-                oldName = plan.oldEntry?.name ?? oldName
+                if let observedName = plan.oldEntry?.name {
+                    oldNames = [observedName]
+                }
+            }
+            if root.id == .kimi {
+                let configFile = ((root.path as NSString)
+                    .deletingLastPathComponent as NSString)
+                    .appendingPathComponent("kimi.json")
+                kimiProjectsPlan = try KimiProjectsJSON.plan(
+                    filePath: configFile,
+                    oldPaths: projectMovePatchSourcePaths(src),
+                    newPath: dst
+                )
+                if let plan = kimiProjectsPlan, !plan.updates.isEmpty {
+                    dirRenamePlans.append(contentsOf: kimiDirectoryPlans(
+                        rootPath: root.path,
+                        plan: plan
+                    ))
+                    continue
+                }
             }
             let observedOldDirs = findGroupedDirsWithCwd(rootPath: root.path, cwd: src)
+            if root.id == .commandcode, observedOldDirs.isEmpty {
+                skippedDirs.append(SkippedDirEntry(sourceId: root.id, reason: .noop))
+                continue
+            }
+            let theoreticalOldDirs = oldNames.map {
+                (root.path as NSString).appendingPathComponent($0)
+            }
+            let existingTheoreticalOldDirs = theoreticalOldDirs.filter {
+                FileManager.default.fileExists(atPath: $0)
+            }
             let oldDirs = observedOldDirs.isEmpty
-                ? [(root.path as NSString).appendingPathComponent(oldName)]
+                ? (existingTheoreticalOldDirs.isEmpty
+                    ? Array(theoreticalOldDirs.prefix(1))
+                    : existingTheoreticalOldDirs)
                 : observedOldDirs
             for oldDir in oldDirs {
                 if basename(oldDir) == newName {
@@ -846,7 +955,8 @@ public enum ProjectMoveOrchestrator {
             plans: dirRenamePlans,
             roots: roots,
             src: src,
-            dst: dst
+            dst: dst,
+            kimiProjectsPlan: kimiProjectsPlan
         )
 
         var renamedDirs: [DirRenamePlan] = []
@@ -863,12 +973,16 @@ public enum ProjectMoveOrchestrator {
         var totalFilesPatched = 0
         var totalOccurrences = 0
         let dryRunReadCap: Int64 = 50 * 1024 * 1024
+        let patchSourcePaths = projectMovePatchSourcePaths(src)
+        let additionalPatchSourcePaths = Array(patchSourcePaths.dropFirst())
 
         for root in roots {
             var issues: [WalkIssue] = []
             var filesPatched = 0
             var occurrences = 0
-            let hits = SessionSources.findReferencingFiles(root: root.path, needle: src)
+            let hits = Array(Set(patchSourcePaths.flatMap {
+                SessionSources.findReferencingFiles(root: root.path, needle: $0)
+            })).sorted()
             for file in hits {
                 do {
                     let attrs = try FileManager.default.attributesOfItem(atPath: file)
@@ -885,7 +999,8 @@ public enum ProjectMoveOrchestrator {
                     let patchResult = try JsonlPatch.patchBufferWithDotQuote(
                         buf,
                         oldPath: src,
-                        newPath: dst
+                        newPath: dst,
+                        additionalOldPaths: additionalPatchSourcePaths
                     )
                     let fileOccurrences = patchResult.count
                     if fileOccurrences > 0 {
@@ -905,7 +1020,7 @@ public enum ProjectMoveOrchestrator {
                 do {
                     let sqliteRefs = try OpenCodeSQLiteProjectMove.countReferences(
                         root: root.path,
-                        oldPath: src
+                        oldPaths: patchSourcePaths
                     )
                     if sqliteRefs.occurrences > 0 {
                         manifest.append(ManifestEntry(
@@ -968,9 +1083,10 @@ struct CompensationReport: Equatable {
     var dirRestoreErrors: [(sourceId: SourceId, error: String)]
     var moveReverted: Bool
     var moveRevertError: String?
-    var geminiProjectsJsonRestored: GeminiRestoreOutcome
+    var geminiProjectsJsonRestored: RegistryRestoreOutcome
+    var kimiProjectsJsonRestored: RegistryRestoreOutcome
 
-    enum GeminiRestoreOutcome: String, Equatable { case skipped, restored, failed }
+    enum RegistryRestoreOutcome: String, Equatable { case skipped, restored, failed }
 
     static let empty = CompensationReport(
         patchReverted: 0,
@@ -981,7 +1097,8 @@ struct CompensationReport: Equatable {
         dirRestoreErrors: [],
         moveReverted: false,
         moveRevertError: nil,
-        geminiProjectsJsonRestored: .skipped
+        geminiProjectsJsonRestored: .skipped,
+        kimiProjectsJsonRestored: .skipped
     )
 
     static func == (lhs: CompensationReport, rhs: CompensationReport) -> Bool {
@@ -997,6 +1114,7 @@ struct CompensationReport: Equatable {
             && lhs.moveReverted == rhs.moveReverted
             && lhs.moveRevertError == rhs.moveRevertError
             && lhs.geminiProjectsJsonRestored == rhs.geminiProjectsJsonRestored
+            && lhs.kimiProjectsJsonRestored == rhs.kimiProjectsJsonRestored
     }
 }
 
@@ -1006,6 +1124,7 @@ private func compensate(
     attemptedDst: String,
     renamedDirs: [DirRenamePlan],
     geminiProjectsPlan: GeminiProjectsJsonUpdatePlan?,
+    kimiProjectsPlan: KimiProjectsJsonUpdatePlan?,
     sqlitePatches: [OpenCodeSQLitePatchResult],
     physicalMoveApplied: Bool
 ) -> CompensationReport {
@@ -1019,7 +1138,7 @@ private func compensate(
             try OpenCodeSQLiteProjectMove.reverse(
                 databasePath: entry.databasePath,
                 sessionIds: entry.sessionIds,
-                oldPath: attemptedDst,
+                oldPaths: projectMovePatchSourcePaths(attemptedDst),
                 newPath: originalSrc
             )
             report.sqliteReverted += entry.occurrences
@@ -1060,6 +1179,18 @@ private func compensate(
             ))
         }
     }
+    if let plan = kimiProjectsPlan {
+        do {
+            try KimiProjectsJSON.reverse(plan: plan)
+            report.kimiProjectsJsonRestored = .restored
+        } catch {
+            report.kimiProjectsJsonRestored = .failed
+            report.dirRestoreErrors.append((
+                .kimi,
+                "kimi.json reverse: \(errorMessage(error))"
+            ))
+        }
+    }
 
     // 4. Reverse per-source dir renames LIFO.
     for d in renamedDirs.reversed() {
@@ -1092,6 +1223,7 @@ private func compensationFullySucceeded(_ report: CompensationReport) -> Bool {
         && report.dirRestoreErrors.isEmpty
         && report.moveRevertError == nil
         && report.geminiProjectsJsonRestored != .failed
+        && report.kimiProjectsJsonRestored != .failed
 }
 
 private func formatCompensationFailuresOnly(_ report: CompensationReport) -> String {
@@ -1120,6 +1252,9 @@ private func formatFailureWithCompensation(
     if report.geminiProjectsJsonRestored == .failed {
         parts.append("rollback: ~/.gemini/projects.json reverse failed — inspect manually")
     }
+    if report.kimiProjectsJsonRestored == .failed {
+        parts.append("rollback: ~/.kimi/kimi.json reverse failed — inspect manually")
+    }
     if !report.sqliteFailed.isEmpty, let first = report.sqliteFailed.first {
         parts.append(
             "rollback: \(report.sqliteFailed.count) sqlite source(s) could NOT be reverted " +
@@ -1141,14 +1276,68 @@ private func assertDirRenamePreflight(
     plans: [DirRenamePlan],
     roots: [SourceRoot],
     src: String,
-    dst: String
+    dst: String,
+    kimiProjectsPlan: KimiProjectsJsonUpdatePlan?
 ) throws {
+    // Lossy encoders can make a move look like a directory no-op. Probe both
+    // theoretical source and destination slots even when no rename plan exists,
+    // and only accept cwd evidence that maps back to that exact encoded slot.
+    for root in roots where [.claudeCode, .qoder, .qwen, .commandcode].contains(root.id) {
+        guard let encode = root.encodeProjectDir else { continue }
+        let encodedNames = Set(
+            projectDirEncodingNames(for: src, encode: encode)
+                + projectDirEncodingNames(for: dst, encode: encode)
+        )
+        for encodedName in encodedNames {
+            let dir = (root.path as NSString).appendingPathComponent(encodedName)
+            let sharingCwds = structuredCwds(inGroupedDir: dir).filter { cwd in
+                let canonicalCwd = ProjectPathVariants.canonicalEncodingPath(cwd)
+                return !ProjectPathVariants.equivalentIgnoringFilesystemCase(
+                    canonicalCwd,
+                    ProjectPathVariants.canonicalEncodingPath(src)
+                )
+                    && groupedDirEncodingMatches(
+                        cwd: cwd,
+                        encodedName: encodedName,
+                        encode: encode
+                    )
+            }
+            if !sharingCwds.isEmpty {
+                throw SharedEncodingCollisionError(
+                    sourceId: root.id,
+                    dir: dir,
+                    sharingCwds: sharingCwds
+                )
+            }
+        }
+    }
+
     var plannedTargets: [String: DirRenamePlan] = [:]
     for plan in plans {
         if let prev = plannedTargets[plan.newDir], prev.oldDir != plan.oldDir {
             throw DirCollisionError(sourceId: plan.sourceId, oldDir: prev.oldDir, newDir: plan.newDir)
         }
         plannedTargets[plan.newDir] = plan
+    }
+
+    // Lossy project-dir encoders are not unique to Gemini/iFlow. Before moving
+    // any planned oldDir, reject structured ownership by another cwd so Claude
+    // Code/Qoder punctuation collisions cannot steal a sibling's history.
+    for plan in plans {
+        let sharingCwds = structuredCwds(inGroupedDir: plan.oldDir)
+            .filter {
+                !ProjectPathVariants.equivalentIgnoringFilesystemCase(
+                    ProjectPathVariants.canonicalEncodingPath($0),
+                    ProjectPathVariants.canonicalEncodingPath(src)
+                )
+            }
+        if !sharingCwds.isEmpty {
+            throw SharedEncodingCollisionError(
+                sourceId: plan.sourceId,
+                dir: plan.oldDir,
+                sharingCwds: sharingCwds
+            )
+        }
     }
 
     // Step 0.6: pre-flight collision detection. APFS case-insensitive
@@ -1191,6 +1380,24 @@ private func assertDirRenamePreflight(
         }
     }
 
+    if let kimiProjectsPlan {
+        let conflicts = try KimiProjectsJSON.collectOtherPathsSharingWorkspace(
+            plan: kimiProjectsPlan
+        )
+        if !conflicts.isEmpty {
+            let directory = plans.first(where: { $0.sourceId == .kimi })?.newDir
+                ?? ((roots.first(where: { $0.id == .kimi })?.path ?? "") as NSString)
+                    .appendingPathComponent(
+                        kimiProjectsPlan.updates.first?.newWorkspaceName ?? ""
+                    )
+            throw SharedEncodingCollisionError(
+                sourceId: .kimi,
+                dir: directory,
+                sharingCwds: conflicts
+            )
+        }
+    }
+
     // Step 0.8: iFlow-specific lossy encoder probe. encodeIflow strips
     // leading/trailing dashes per segment, so src/dst can share the
     // same project dir name and skip the generic dir-collision check.
@@ -1209,6 +1416,41 @@ private func assertDirRenamePreflight(
             )
         }
     }
+}
+
+private func groupedDirEncodingMatches(
+    cwd: String,
+    encodedName: String,
+    encode: (String) -> String
+) -> Bool {
+    let lexical = URL(fileURLWithPath: cwd).standardizedFileURL.path
+    let canonical = ProjectPathVariants.canonicalEncodingPath(cwd)
+    return (
+        ProjectPathVariants.variants(cwd)
+            + ProjectPathVariants.variants(lexical)
+            + ProjectPathVariants.variants(canonical)
+    )
+        .contains { encode($0) == encodedName }
+}
+
+private func kimiDirectoryPlans(
+    rootPath: String,
+    plan: KimiProjectsJsonUpdatePlan
+) -> [DirRenamePlan] {
+    var seen = Set<String>()
+    var plans: [DirRenamePlan] = []
+    for update in plan.updates {
+        let oldDir = (rootPath as NSString).appendingPathComponent(update.oldWorkspaceName)
+        let newDir = (rootPath as NSString).appendingPathComponent(update.newWorkspaceName)
+        let key = oldDir + "\u{0}" + newDir
+        guard seen.insert(key).inserted else { continue }
+        plans.append(DirRenamePlan(
+            sourceId: .kimi,
+            oldDir: oldDir,
+            newDir: newDir
+        ))
+    }
+    return plans
 }
 
 private struct PatchOutcome: Sendable {
@@ -1297,22 +1539,63 @@ private func basename(_ p: String) -> String {
 
 private let structuredCwdReadCapBytes: Int64 = 50 * 1024 * 1024
 
+private func structuredCwds(inGroupedDir dir: String) -> [String] {
+    var cwds = Set<String>()
+    SessionSources.walkSessionFiles(
+        root: dir,
+        maxFileBytes: structuredCwdReadCapBytes,
+        onFile: { file in
+            guard let text = try? String(contentsOfFile: file, encoding: .utf8) else { return }
+            let isProjectRoot = (file as NSString).lastPathComponent == ".project_root"
+            for line in text.components(separatedBy: .newlines) {
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { continue }
+                if isProjectRoot {
+                    cwds.insert(trimmed)
+                    continue
+                }
+                guard let data = trimmed.data(using: .utf8),
+                      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else { continue }
+                if let cwd = object["cwd"] as? String, !cwd.isEmpty {
+                    cwds.insert(cwd)
+                }
+                if let payload = object["payload"] as? [String: Any],
+                   let cwd = payload["cwd"] as? String,
+                   !cwd.isEmpty {
+                    cwds.insert(cwd)
+                }
+            }
+        }
+    )
+    return cwds.sorted()
+}
+
 private func findGroupedDirsWithCwd(rootPath: String, cwd: String) -> [String] {
     let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
     var dirs = Set<String>()
-    for file in SessionSources.findReferencingFiles(root: rootPath, needle: cwd) {
-        guard file.hasPrefix(prefix) else { continue }
-        guard fileHasStructuredCwd(file, cwd: cwd) else { continue }
-        let rest = String(file.dropFirst(prefix.count))
-        guard let first = rest.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false).first,
-              !first.isEmpty
-        else { continue }
-        dirs.insert((rootPath as NSString).appendingPathComponent(String(first)))
+    let needles = [cwd, ProjectPathVariants.canonicalEncodingPath(cwd)]
+    for needle in Set(needles) {
+        for file in SessionSources.findReferencingFiles(root: rootPath, needle: needle) {
+            guard file.hasPrefix(prefix) else { continue }
+            guard fileHasStructuredCwd(file, cwd: cwd) else { continue }
+            let rest = String(file.dropFirst(prefix.count))
+            guard let first = rest.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false).first,
+                  !first.isEmpty
+            else { continue }
+            dirs.insert((rootPath as NSString).appendingPathComponent(String(first)))
+        }
     }
     return dirs.sorted()
 }
 
 private func fileHasStructuredCwd(_ file: String, cwd: String) -> Bool {
+    func matches(_ value: String) -> Bool {
+        ProjectPathVariants.equivalentIgnoringFilesystemCase(
+            ProjectPathVariants.canonicalEncodingPath(value),
+            ProjectPathVariants.canonicalEncodingPath(cwd)
+        )
+    }
     do {
         let attrs = try FileManager.default.attributesOfItem(atPath: file)
         let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
@@ -1321,17 +1604,18 @@ private func fileHasStructuredCwd(_ file: String, cwd: String) -> Bool {
         for line in text.components(separatedBy: .newlines) {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty { continue }
-            if (file as NSString).lastPathComponent == ".project_root", trimmed == cwd {
+            if (file as NSString).lastPathComponent == ".project_root", matches(trimmed) {
                 return true
             }
             guard let data = trimmed.data(using: .utf8) else { continue }
             guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { continue }
-            if object["cwd"] as? String == cwd {
+            if let value = object["cwd"] as? String, matches(value) {
                 return true
             }
             if let payload = object["payload"] as? [String: Any],
-               payload["cwd"] as? String == cwd {
+               let value = payload["cwd"] as? String,
+               matches(value) {
                 return true
             }
         }
@@ -1385,6 +1669,7 @@ private func buildFsDoneDetail(
     renamedDirs: [DirRenamePlan],
     skippedDirs: [SkippedDirEntry],
     geminiProjectsApplied: Bool,
+    kimiProjectsApplied: Bool,
     manifest: [ManifestEntry]
 ) -> [String: JSONValue] {
     let perSourceJson = perSource.map { stats -> JSONValue in
@@ -1415,6 +1700,7 @@ private func buildFsDoneDetail(
         "renamed_dirs": .array(renamedJson),
         "skipped_dirs": .array(skippedJson),
         "gemini_projects_json_updated": .bool(geminiProjectsApplied),
+        "kimi_projects_json_updated": .bool(kimiProjectsApplied),
         "manifest_paths": .array(manifest.map { .string($0.path) }),
     ]
 }

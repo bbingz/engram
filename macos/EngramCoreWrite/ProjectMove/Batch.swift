@@ -268,7 +268,7 @@ public enum Batch {
                 do {
                     let suggestion = try Archive.suggestTarget(
                         src: src,
-                        options: ArchiveOptions(skipProbe: doc.defaults.dryRun, forceCategory: op.archiveTo)
+                        options: ArchiveOptions(skipProbe: false, forceCategory: op.archiveTo)
                     )
                     dst = suggestion.dst
                     // Destination-parent creation is owned by the orchestrator

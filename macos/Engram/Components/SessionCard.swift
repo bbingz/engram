@@ -9,6 +9,7 @@ struct SessionCard: View {
         Button(action: { onTap?() }) {
             HStack(spacing: 10) {
                 SourcePill(source: session.source)
+                OriginBadge(origin: session.origin)
 
                 Text(session.displayTitle)
                     .font(.callout)
@@ -45,13 +46,13 @@ struct SessionCard: View {
                     .foregroundStyle(Theme.tertiaryText.opacity(0.5))
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            .padding(.vertical, Theme.listRowVerticalPadding)
             .background(Theme.surface)
             .overlay(
-                RoundedRectangle(cornerRadius: 8)
+                RoundedRectangle(cornerRadius: Theme.cornerRadius)
                     .stroke(Theme.border, lineWidth: 1)
             )
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadius))
         }
         .buttonStyle(.plain)
     }

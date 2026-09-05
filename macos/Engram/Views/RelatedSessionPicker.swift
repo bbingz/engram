@@ -9,12 +9,10 @@ import SwiftUI
 /// current session plus already-related ones from candidates.
 struct RelatedSessionPicker: View {
     let source: Session
-    /// Ids already related to `source`, excluded from candidates.
-    let existingRelatedIds: Set<String>
     let onLinked: () -> Void
 
     @Environment(DatabaseManager.self) private var db
-    @Environment(EngramServiceClient.self) private var serviceClient
+    @Environment(\.engramServiceClient) private var serviceClient
     @Environment(\.dismiss) private var dismiss
 
     @State private var candidates: [Session] = []
@@ -23,14 +21,10 @@ struct RelatedSessionPicker: View {
     @State private var isLoading = true
     @State private var isLinking = false
     @State private var errorText: String? = nil
+    @State private var loadGeneration = UUID()
 
     private var filtered: [Session] {
-        guard !query.isEmpty else { return candidates }
-        let q = query.lowercased()
-        return candidates.filter {
-            $0.displayTitle.lowercased().contains(q)
-                || ($0.project?.lowercased().contains(q) ?? false)
-        }
+        candidates
     }
 
     var body: some View {
@@ -91,7 +85,7 @@ struct RelatedSessionPicker: View {
             if let errorText {
                 Text(errorText)
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Theme.red)
             }
 
             HStack {
@@ -107,22 +101,44 @@ struct RelatedSessionPicker: View {
         }
         .padding(24)
         .frame(width: 360)
-        .task { await loadCandidates() }
+        .task(id: query) { await loadCandidates(query: query) }
     }
 
-    private func loadCandidates() async {
+    private func loadCandidates(query: String) async {
+        let generation = UUID()
+        loadGeneration = generation
         isLoading = true
-        defer { isLoading = false }
+        if !query.isEmpty {
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled else { return }
+        }
         let db = self.db
         let sourceId = source.id
-        let excluded = existingRelatedIds
         // Read candidates off the main thread (UI-C1/C2). Any session can be a
         // candidate, so unlike LinkParentPicker we do not restrict to top-level.
-        let loaded = try? await Task.detached {
-            try db.listSessions(subAgent: false, limit: 200)
-                .filter { $0.id != sourceId && !excluded.contains($0.id) }
-        }.value
-        candidates = loaded ?? []
+        do {
+            let relatedIds = try await serviceClient.relatedSessions(sessionId: sourceId)
+            guard !Task.isCancelled, generation == loadGeneration else { return }
+            let excluded = Set(relatedIds).union([sourceId])
+            let loaded = try await Task.detached {
+                try db.sessionPickerCandidates(
+                    query: query,
+                    topLevelOnly: false,
+                    excluding: excluded,
+                    limit: 200
+                )
+            }.value
+            guard !Task.isCancelled, generation == loadGeneration else { return }
+            candidates = loaded
+            errorText = nil
+        } catch {
+            guard !Task.isCancelled, generation == loadGeneration else { return }
+            candidates = []
+            errorText = ServiceErrorPresenter.displayMessage(for: error)
+        }
+        if generation == loadGeneration {
+            isLoading = false
+        }
     }
 
     private func link() {

@@ -7,6 +7,7 @@
 // orchestrator and the post-move review.
 import Darwin
 import CryptoKit
+import EngramCoreRead
 import Foundation
 import GRDB
 
@@ -17,19 +18,66 @@ enum ProjectPathVariants {
             path,
             path.precomposedStringWithCanonicalMapping,
             path.decomposedStringWithCanonicalMapping,
-        ] {
-            let alreadySeen = variants.contains { existing in
-                existing.utf8.elementsEqual(value.utf8)
-            }
-            if !alreadySeen {
-                variants.append(value)
-            }
-        }
-        while variants.count < 3 {
-            variants.append(variants[0])
+        ] where !variants.contains(where: { $0.utf8.elementsEqual(value.utf8) }) {
+            variants.append(value)
         }
         return variants
     }
+
+    static func filesystemAliases(_ path: String) -> [String] {
+        var aliases: [String] = []
+        let canonical = canonicalEncodingPath(path)
+        for value in variants(path) + variants(canonical) {
+            if !aliases.contains(where: { $0.utf8.elementsEqual(value.utf8) }) {
+                aliases.append(value)
+            }
+        }
+        return aliases
+    }
+
+    static func equivalentIgnoringFilesystemCase(_ lhs: String, _ rhs: String) -> Bool {
+        filesystemAliases(lhs).contains { left in
+            filesystemAliases(rhs).contains { right in
+                left.caseInsensitiveCompare(right) == .orderedSame
+            }
+        }
+    }
+
+    static func canonicalEncodingPath(_ path: String) -> String {
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        var existingPrefix = standardized
+        var missingSuffix: [String] = []
+
+        while true {
+            if let resolved = Darwin.realpath(existingPrefix, nil) {
+                defer { free(resolved) }
+                return missingSuffix.reduce(String(cString: resolved)) { result, component in
+                    (result as NSString).appendingPathComponent(component)
+                }
+            }
+            let prefix = existingPrefix as NSString
+            let parent = prefix.deletingLastPathComponent
+            guard parent != existingPrefix else { return standardized }
+            missingSuffix.insert(prefix.lastPathComponent, at: 0)
+            existingPrefix = parent
+        }
+    }
+}
+
+func projectMovePatchSourcePaths(_ path: String) -> [String] {
+    ProjectPathVariants.filesystemAliases(path)
+}
+
+func projectDirEncodingNames(
+    for path: String,
+    encode: (String) -> String
+) -> [String] {
+    var names: [String] = []
+    for value in projectMovePatchSourcePaths(path) {
+        let name = encode(value)
+        if !names.contains(name) { names.append(name) }
+    }
+    return names
 }
 
 public enum SourceId: String, CaseIterable, Sendable, Equatable {
@@ -38,6 +86,7 @@ public enum SourceId: String, CaseIterable, Sendable, Equatable {
     case codexArchived = "codex-archived"
     case codexRolloutSummaries = "codex-rollout-summaries"
     case geminiCli = "gemini-cli"
+    case kimi
     case iflow
     case qwen
     case qoder
@@ -67,7 +116,7 @@ public enum OpenCodeSQLiteProjectMove {
 
     public static func countReferences(
         root: String,
-        oldPath: String
+        oldPaths: [String]
     ) throws -> OpenCodeSQLitePatchResult {
         let dbPath = databasePath(root: root)
         guard FileManager.default.fileExists(atPath: dbPath) else {
@@ -78,14 +127,14 @@ public enum OpenCodeSQLiteProjectMove {
         let queue = try DatabaseQueue(path: dbPath, configuration: configuration)
         let ids = try queue.read { db -> [String] in
             guard try hasSessionDirectory(db) else { return [] }
-            return try matchingSessions(db, oldPath: oldPath).map(\.id)
+            return try matchingSessions(db, oldPaths: oldPaths).map(\.id)
         }
         return OpenCodeSQLitePatchResult(databasePath: dbPath, sessionIds: ids)
     }
 
     public static func patch(
         root: String,
-        oldPath: String,
+        oldPaths: [String],
         newPath: String
     ) throws -> OpenCodeSQLitePatchResult {
         let dbPath = databasePath(root: root)
@@ -95,7 +144,7 @@ public enum OpenCodeSQLiteProjectMove {
         let queue = try DatabaseQueue(path: dbPath)
         let ids = try queue.write { db -> [String] in
             guard try hasSessionDirectory(db) else { return [] }
-            let rows = try matchingSessions(db, oldPath: oldPath)
+            let rows = try matchingSessions(db, oldPaths: oldPaths)
             for row in rows {
                 let suffix = String(row.directory.dropFirst(row.matchedPath.count))
                 try db.execute(
@@ -111,7 +160,7 @@ public enum OpenCodeSQLiteProjectMove {
     public static func reverse(
         databasePath: String,
         sessionIds: [String],
-        oldPath: String,
+        oldPaths: [String],
         newPath: String
     ) throws {
         guard !sessionIds.isEmpty,
@@ -120,7 +169,7 @@ public enum OpenCodeSQLiteProjectMove {
         let queue = try DatabaseQueue(path: databasePath)
         try queue.write { db in
             guard try hasSessionDirectory(db) else { return }
-            let variants = pathVariants(oldPath)
+            let variants = pathVariants(oldPaths)
             for id in sessionIds {
                 guard
                     let directory = try String.fetchOne(
@@ -139,8 +188,8 @@ public enum OpenCodeSQLiteProjectMove {
         }
     }
 
-    public static func residualReferenceLocators(root: String, oldPath: String) -> [String] {
-        guard let result = try? countReferences(root: root, oldPath: oldPath) else {
+    public static func residualReferenceLocators(root: String, oldPaths: [String]) -> [String] {
+        guard let result = try? countReferences(root: root, oldPaths: oldPaths) else {
             return []
         }
         return result.sessionIds.map { "\(result.databasePath)::session:\($0):directory" }
@@ -170,24 +219,28 @@ public enum OpenCodeSQLiteProjectMove {
         let matchedPath: String
     }
 
-    private static func matchingSessions(_ db: GRDB.Database, oldPath: String) throws -> [MatchingSession] {
-        let variants = pathVariants(oldPath)
+    private static func matchingSessions(
+        _ db: GRDB.Database,
+        oldPaths: [String]
+    ) throws -> [MatchingSession] {
+        let variants = pathVariants(oldPaths)
+        guard !variants.isEmpty else { return [] }
+        let predicates = Array(
+            repeating: "(directory = ? OR substr(directory, 1, length(?)) = ?)",
+            count: variants.count
+        ).joined(separator: " OR ")
+        var arguments = StatementArguments()
+        for variant in variants {
+            arguments += [variant, variant + "/", variant + "/"]
+        }
         let rows = try Row.fetchAll(
             db,
             sql: """
             SELECT id, directory FROM session
-            WHERE directory IN (?, ?, ?)
-               OR substr(directory, 1, length(?)) = ?
-               OR substr(directory, 1, length(?)) = ?
-               OR substr(directory, 1, length(?)) = ?
+            WHERE \(predicates)
             ORDER BY id
             """,
-            arguments: [
-                variants[0], variants[1], variants[2],
-                variants[0] + "/", variants[0] + "/",
-                variants[1] + "/", variants[1] + "/",
-                variants[2] + "/", variants[2] + "/",
-            ]
+            arguments: arguments
         )
         return rows.compactMap { row in
             let directory: String = row["directory"]
@@ -198,8 +251,14 @@ public enum OpenCodeSQLiteProjectMove {
         }
     }
 
-    private static func pathVariants(_ path: String) -> [String] {
-        ProjectPathVariants.variants(path)
+    private static func pathVariants(_ paths: [String]) -> [String] {
+        var result: [String] = []
+        for value in paths.flatMap(ProjectPathVariants.variants) {
+            if !result.contains(where: { $0.utf8.elementsEqual(value.utf8) }) {
+                result.append(value)
+            }
+        }
+        return result
     }
 
     private static func matchingPrefix(directory: String, variants: [String]) -> String? {
@@ -314,7 +373,7 @@ public enum GroupedDirReconcile {
     }
 
     private static func shouldReconcile(_ root: SourceRoot) -> Bool {
-        root.id == .claudeCode || root.id == .qoder
+        root.id == .claudeCode || root.id == .qoder || root.id == .commandcode
     }
 
     private enum ApplyResult {
@@ -419,7 +478,7 @@ public struct WalkIssue: Equatable, Sendable {
 
 public enum SessionSources {
     public static let defaultSessionExtensions: Set<String> = [".jsonl", ".json"]
-    public static let defaultSessionFilenames: Set<String> = [".project_root"]
+    public static let defaultSessionFilenames: Set<String> = [".project_root", "workspace.yaml"]
 
     /// The session roots a project move must consider. Ordering matches
     /// Node parity: known-active first (claude-code → Codex stores →
@@ -428,71 +487,90 @@ public enum SessionSources {
     public static func roots(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> [SourceRoot] {
-        let home = homeDirectory.path
-        return [
+        let paths = Dictionary(
+            uniqueKeysWithValues: SessionStorageRootCatalog.paths(homeDirectory: homeDirectory)
+                .map { ($0.id, $0.path) }
+        )
+        func path(_ id: SourceId) -> String {
+            guard let value = paths[id.rawValue] else {
+                preconditionFailure("Missing canonical session root for \(id.rawValue)")
+            }
+            return value
+        }
+        let claudePaths = ProjectReviewPathSupport.sourceRoots(homeDirectory: homeDirectory)
+            .filter { $0.id == SourceId.claudeCode.rawValue }
+            .map(\.path)
+        let claudeRoots = claudePaths.map { projectsRoot in
             SourceRoot(
                 id: .claudeCode,
-                path: (home as NSString).appendingPathComponent(".claude/projects"),
+                path: projectsRoot,
                 encodeProjectDir: { cwd in ClaudeCodeProjectDir.encode(cwd) }
-            ),
+            )
+        }
+        return claudeRoots + [
             SourceRoot(
                 id: .codex,
-                path: (home as NSString).appendingPathComponent(".codex/sessions"),
+                path: path(.codex),
                 encodeProjectDir: nil
             ),
             SourceRoot(
                 id: .codexArchived,
-                path: (home as NSString).appendingPathComponent(".codex/archived_sessions"),
+                path: path(.codexArchived),
                 encodeProjectDir: nil
             ),
             SourceRoot(
                 id: .codexRolloutSummaries,
-                path: (home as NSString).appendingPathComponent(".codex/memories/rollout_summaries"),
+                path: path(.codexRolloutSummaries),
                 encodeProjectDir: nil
             ),
             SourceRoot(
                 id: .geminiCli,
-                path: (home as NSString).appendingPathComponent(".gemini/tmp"),
+                path: path(.geminiCli),
                 encodeProjectDir: { cwd in encodeGemini(cwd) }
             ),
             SourceRoot(
+                id: .kimi,
+                path: path(.kimi),
+                encodeProjectDir: { cwd in encodeKimi(cwd) }
+            ),
+            SourceRoot(
                 id: .iflow,
-                path: (home as NSString).appendingPathComponent(".iflow/projects"),
+                path: path(.iflow),
                 encodeProjectDir: { cwd in encodeIflow(cwd) }
             ),
             SourceRoot(
                 id: .qwen,
-                path: (home as NSString).appendingPathComponent(".qwen/projects"),
+                path: path(.qwen),
                 encodeProjectDir: { cwd in encodeQwen(cwd) }
             ),
             SourceRoot(
                 id: .qoder,
-                path: (home as NSString).appendingPathComponent(".qoder/projects"),
+                path: path(.qoder),
                 encodeProjectDir: { cwd in ClaudeCodeProjectDir.encode(cwd) }
             ),
             SourceRoot(
                 id: .opencode,
-                path: (home as NSString).appendingPathComponent(".local/share/opencode"),
+                path: path(.opencode),
                 encodeProjectDir: nil
             ),
             SourceRoot(
                 id: .antigravity,
-                path: (home as NSString).appendingPathComponent(".gemini/antigravity-cli/brain"),
+                path: path(.antigravity),
                 encodeProjectDir: nil
             ),
             SourceRoot(
                 id: .antigravityLegacy,
-                path: (home as NSString).appendingPathComponent(".gemini/antigravity"),
+                path: path(.antigravityLegacy),
                 encodeProjectDir: nil
             ),
             SourceRoot(
                 id: .commandcode,
-                path: (home as NSString).appendingPathComponent(".commandcode/projects"),
-                encodeProjectDir: nil
+                path: path(.commandcode),
+                encodeProjectDir: { cwd in encodeCommandCode(cwd) }
             ),
             SourceRoot(
                 id: .copilot,
-                path: (home as NSString).appendingPathComponent(".copilot"),
+                path: path(.copilot),
                 encodeProjectDir: nil
             ),
         ]
@@ -528,20 +606,53 @@ public enum SessionSources {
         return String(utf16CodeUnits: units, count: units.count)
     }
 
+    /// CommandCode's live writer lowercases cwd, drops the leading separator,
+    /// and collapses each run of non-alphanumeric characters to one dash.
+    /// The adapter's fallback decoder is intentionally lossy and is not the
+    /// inverse of this slug.
+    public static func encodeCommandCode(_ absolutePath: String) -> String {
+        var slug = ""
+        var pendingDash = false
+        for byte in absolutePath.utf8 {
+            switch byte {
+            case UInt8(ascii: "0") ... UInt8(ascii: "9"):
+                if pendingDash, !slug.isEmpty { slug.append("-") }
+                slug.append(Character(UnicodeScalar(byte)))
+                pendingDash = false
+            case UInt8(ascii: "A") ... UInt8(ascii: "Z"):
+                if pendingDash, !slug.isEmpty { slug.append("-") }
+                slug.append(Character(UnicodeScalar(byte + 32)))
+                pendingDash = false
+            case UInt8(ascii: "a") ... UInt8(ascii: "z"):
+                if pendingDash, !slug.isEmpty { slug.append("-") }
+                slug.append(Character(UnicodeScalar(byte)))
+                pendingDash = false
+            default:
+                pendingDash = !slug.isEmpty
+            }
+        }
+        return slug
+    }
+
     public static func collectOtherIflowCwdsSharingEncodedDir(
         root: String,
         targetEncodedDir: String,
         srcCwd: String
     ) -> [String] {
         var conflicts = Set<String>()
+        let canonicalSource = ProjectPathVariants.canonicalEncodingPath(srcCwd)
         walkSessionFiles(root: root) { filePath in
             guard filePath.contains("/\(targetEncodedDir)/"),
                   let content = try? String(contentsOfFile: filePath, encoding: .utf8)
             else { return }
             for line in content.split(whereSeparator: \.isNewline) {
-                guard let cwd = extractJSONLineCwd(String(line)),
-                      cwd != srcCwd,
-                      encodeIflow(cwd) == targetEncodedDir
+                guard let cwd = extractJSONLineCwd(String(line)) else { continue }
+                let lexicalCwd = URL(fileURLWithPath: cwd).standardizedFileURL.path
+                let canonicalCwd = ProjectPathVariants.canonicalEncodingPath(cwd)
+                guard canonicalCwd != canonicalSource,
+                      [cwd, lexicalCwd, canonicalCwd].contains(where: {
+                          encodeIflow($0) == targetEncodedDir
+                      })
                 else { continue }
                 conflicts.insert(cwd)
             }
@@ -555,6 +666,16 @@ public enum SessionSources {
         SHA256.hash(data: Data(absolutePath.utf8))
             .map { String(format: "%02x", $0) }
             .joined()
+    }
+
+    /// Kimi stores each workspace under MD5(cwd), optionally prefixed by the
+    /// non-local `kaos` name recorded in ~/.kimi/kimi.json.
+    public static func encodeKimi(_ absolutePath: String, kaos: String? = nil) -> String {
+        let digest = Insecure.MD5.hash(data: Data(absolutePath.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        guard let kaos, !kaos.isEmpty, kaos != "local" else { return digest }
+        return "\(kaos)_\(digest)"
     }
 
     /// Recursively walk `root` invoking `onFile` for each session file
@@ -682,6 +803,7 @@ public enum SessionSources {
                 "--include=*.jsonl",
                 "--include=*.json",
                 "--include=.project_root",
+                "--include=workspace.yaml",
                 "--",
                 needle, root,
             ]

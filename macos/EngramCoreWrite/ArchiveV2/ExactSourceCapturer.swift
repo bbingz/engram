@@ -91,6 +91,11 @@ public struct ExactSourceCapturer: Sendable {
         }
 
         let streamed = try streamStableSource(sourceURL)
+        defer {
+            for staged in streamed.stagedChunks {
+                try? cas.discardStaged(staged)
+            }
+        }
         try Task.checkCancellation()
         let normalizedLocator = sourceURL.standardizedFileURL.path
         let captureID = try Self.captureID(
@@ -124,10 +129,15 @@ public struct ExactSourceCapturer: Sendable {
                 throw ExactSourceCapturerError.existingCaptureConflict(captureID)
             }
             try Task.checkCancellation()
-            _ = try cas.publishManifest(
+            let stagedManifest = try cas.stageManifest(
                 existing.unboundManifestBytes,
                 expectedSHA256: existing.unboundManifestSHA256
             )
+            defer { try? cas.discardStaged(stagedManifest) }
+            for staged in streamed.stagedChunks {
+                _ = try cas.publishStaged(staged)
+            }
+            _ = try cas.publishStaged(stagedManifest)
             return ArchiveCaptureResult(capture: existing, manifest: manifest)
         }
 
@@ -147,7 +157,15 @@ public struct ExactSourceCapturer: Sendable {
         let canonicalBytes = try ArchiveCanonicalJSON.encode(manifest)
         let manifestSHA256 = ArchiveV2Hash.sha256(canonicalBytes)
         try Task.checkCancellation()
-        _ = try cas.publishManifest(canonicalBytes, expectedSHA256: manifestSHA256)
+        let stagedManifest = try cas.stageManifest(
+            canonicalBytes,
+            expectedSHA256: manifestSHA256
+        )
+        defer { try? cas.discardStaged(stagedManifest) }
+        let stagedContent = streamed.stagedChunks + [stagedManifest]
+        for staged in stagedContent {
+            _ = try cas.publishStaged(staged)
+        }
         let capture = try catalog.recordCapture(canonicalManifestBytes: canonicalBytes)
         return ArchiveCaptureResult(capture: capture, manifest: manifest)
     }
@@ -156,6 +174,7 @@ public struct ExactSourceCapturer: Sendable {
         let generation: ArchiveSourceGeneration
         let wholeSourceSHA256: String
         let chunks: [ArchiveChunkReference]
+        let stagedChunks: [ImmutableArchiveCAS.StagedContent]
     }
 
     func streamStableSource(_ sourceURL: URL) throws -> StableSourceRead {
@@ -183,6 +202,15 @@ public struct ExactSourceCapturer: Sendable {
         var remaining = before.size
         var wholeHasher = SHA256()
         var chunks: [ArchiveChunkReference] = []
+        var stagedChunks: [ImmutableArchiveCAS.StagedContent] = []
+        var completed = false
+        defer {
+            if !completed {
+                for staged in stagedChunks {
+                    try? cas.discardStaged(staged)
+                }
+            }
+        }
         var ordinal = 0
 
         while remaining > 0 {
@@ -214,7 +242,9 @@ public struct ExactSourceCapturer: Sendable {
 
             wholeHasher.update(data: chunk)
             let rawSHA256 = ArchiveV2Hash.sha256(chunk)
-            _ = try cas.publishObject(raw: chunk, expectedSHA256: rawSHA256)
+            stagedChunks.append(
+                try cas.stageObject(raw: chunk, expectedSHA256: rawSHA256)
+            )
             chunks.append(
                 try ArchiveChunkReference(
                     ordinal: ordinal,
@@ -239,11 +269,14 @@ public struct ExactSourceCapturer: Sendable {
             throw ExactSourceCapturerError.generationChanged
         }
 
-        return StableSourceRead(
+        let result = StableSourceRead(
             generation: before,
             wholeSourceSHA256: Self.hexDigest(wholeHasher.finalize()),
-            chunks: chunks
+            chunks: chunks,
+            stagedChunks: stagedChunks
         )
+        completed = true
+        return result
     }
 
     static func verify(

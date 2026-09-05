@@ -44,7 +44,8 @@ struct EngramCLIContextOptions: Equatable {
     static func parse(
         arguments: [String],
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        defaultCwd: String = FileManager.default.currentDirectoryPath
+        defaultCwd: String = FileManager.default.currentDirectoryPath,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) throws -> EngramCLIContextOptions? {
         guard let first = arguments.first else { return nil }
         guard first == "context" || first == "--context" else { return nil }
@@ -58,7 +59,8 @@ struct EngramCLIContextOptions: Equatable {
         var timeoutMs = defaultTimeoutMs
         var maxBytes = defaultMaxBytes
         var maxTokens = defaultMaxTokens
-        var mcpHelperPath = environment["ENGRAM_CLI_MCP_HELPER"]
+        var mcpHelperPath = environment["ENGRAM_CLI_MCP_HELPER"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         var jsonRpcOnly = false
 
         while !rest.isEmpty {
@@ -95,7 +97,7 @@ struct EngramCLIContextOptions: Equatable {
                 rest.removeFirst()
             case "--mcp-helper":
                 guard let next = rest.first else { throw EngramCLIContextError.missingOptionValue(value) }
-                mcpHelperPath = next
+                mcpHelperPath = next.trimmingCharacters(in: .whitespacesAndNewlines)
                 rest.removeFirst()
             case "--json-rpc-only":
                 jsonRpcOnly = true
@@ -108,9 +110,14 @@ struct EngramCLIContextOptions: Equatable {
         }
 
         let resolvedCwd = (cwd ?? defaultCwd).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !resolvedCwd.isEmpty else { throw EngramCLIContextError.usage }
+        guard let normalizedCwd = UnixSocketEngramServiceTransport.normalizedAbsolutePath(
+            resolvedCwd,
+            homeDirectory: homeDirectory
+        ) else {
+            throw EngramCLIContextError.invalidOptionValue("--cwd")
+        }
         return EngramCLIContextOptions(
-            cwd: resolvedCwd,
+            cwd: normalizedCwd,
             task: task,
             timeoutMs: timeoutMs,
             maxBytes: maxBytes,
@@ -129,35 +136,75 @@ enum EngramCLIContextCommand {
     static func mcpHelperCandidates(
         explicit: String?,
         executablePath: String,
-        environment: [String: String]
+        environment: [String: String],
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> [String] {
         // Explicit / env overrides are exclusive so a mis-set path fails open
         // instead of silently falling through to a different helper.
-        if let explicit, !explicit.isEmpty {
-            return [explicit]
+        if let explicit = explicit?.trimmingCharacters(in: .whitespacesAndNewlines), !explicit.isEmpty {
+            return helperOverridePath(explicit, environment: environment, homeDirectory: homeDirectory).map { [$0] } ?? []
         }
-        if let override = environment["ENGRAM_CLI_MCP_HELPER"], !override.isEmpty {
-            return [override]
+        if let override = environment["ENGRAM_CLI_MCP_HELPER"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !override.isEmpty {
+            return helperOverridePath(override, environment: environment, homeDirectory: homeDirectory).map { [$0] } ?? []
         }
-        if let override = environment["ENGRAM_MCP_PATH"], !override.isEmpty {
-            return [override]
+        if let override = environment["ENGRAM_MCP_PATH"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !override.isEmpty {
+            return helperOverridePath(override, environment: environment, homeDirectory: homeDirectory).map { [$0] } ?? []
         }
 
         var candidates: [String] = []
-        let executableURL = URL(fileURLWithPath: executablePath).resolvingSymlinksInPath()
-        let executableDirectory = executableURL.deletingLastPathComponent()
-        candidates.append(executableDirectory.appendingPathComponent("EngramMCP").path)
-        candidates.append(
-            executableDirectory
-                .deletingLastPathComponent()
-                .appendingPathComponent("Helpers", isDirectory: true)
-                .appendingPathComponent("EngramMCP")
-                .path
-        )
+        if NSString(string: executablePath).isAbsolutePath {
+            let executableURL = URL(fileURLWithPath: executablePath).resolvingSymlinksInPath()
+            let executableDirectory = executableURL.deletingLastPathComponent()
+            candidates.append(executableDirectory.appendingPathComponent("EngramMCP").path)
+            candidates.append(
+                executableDirectory
+                    .deletingLastPathComponent()
+                    .appendingPathComponent("Helpers", isDirectory: true)
+                    .appendingPathComponent("EngramMCP")
+                    .path
+            )
+        }
         candidates.append("/Applications/Engram.app/Contents/Helpers/EngramMCP")
 
         var seen = Set<String>()
         return candidates.filter { seen.insert($0).inserted }
+    }
+
+    private static func helperOverridePath(
+        _ path: String,
+        environment: [String: String],
+        homeDirectory: URL
+    ) -> String? {
+        let path = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let absolute = UnixSocketEngramServiceTransport.normalizedAbsolutePath(
+            path,
+            homeDirectory: homeDirectory
+        ) {
+            return URL(fileURLWithPath: absolute).resolvingSymlinksInPath().standardizedFileURL.path
+        }
+        guard !path.contains("/") else { return nil }
+        for directory in (environment["PATH"] ?? "").split(separator: ":") {
+            guard directory.hasPrefix("/") else { continue }
+            let candidate = URL(fileURLWithPath: String(directory), isDirectory: true)
+                .appendingPathComponent(path)
+            if isExecutableFile(candidate.path) {
+                return candidate.resolvingSymlinksInPath().standardizedFileURL.path
+            }
+        }
+        return nil
+    }
+
+    static func resolvedExecutablePath(
+        argv0: String,
+        processExecutablePath: String? = Bundle.main.executableURL?.path
+    ) -> String? {
+        for candidate in [processExecutablePath, argv0] {
+            guard let candidate, NSString(string: candidate).isAbsolutePath else { continue }
+            return URL(fileURLWithPath: candidate).resolvingSymlinksInPath().standardizedFileURL.path
+        }
+        return nil
     }
 
     static func isExecutableFile(_ path: String) -> Bool {
@@ -276,13 +323,16 @@ enum EngramCLIContextCommand {
 
     static func run(
         options: EngramCLIContextOptions,
-        executablePath: String = CommandLine.arguments.first ?? "",
+        executablePath: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         invoker: MCPInvoker? = nil
     ) -> (stdout: String, exitCode: Int32) {
+        let resolvedCLIPath = executablePath
+            ?? resolvedExecutablePath(argv0: CommandLine.arguments.first ?? "")
+            ?? ""
         let candidates = mcpHelperCandidates(
             explicit: options.mcpHelperPath,
-            executablePath: executablePath,
+            executablePath: resolvedCLIPath,
             environment: environment
         )
         guard let helper = candidates.first(where: isExecutableFile) else {

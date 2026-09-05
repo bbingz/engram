@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ActivityView: View {
     @Environment(DatabaseManager.self) var db
+    @Environment(\.engramFixedDate) var fixedDate
     @Environment(EngramServiceStatusStore.self) var serviceStatusStore
     // Coalesce background index-tick reloads so indexing churn doesn't refetch
     // the activity charts on every count bump (#3).
@@ -14,13 +15,15 @@ struct ActivityView: View {
     @State private var todayCount = 0
     @State private var weekCount = 0
     @State private var isLoading = true
+    @State private var loadGeneration = 0
     @State private var loadError: String? = nil
+    @State private var openRequestId: UUID?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 if let loadError {
-                    AlertBanner(message: "Failed to load activity: \(loadError)")
+                    AlertBanner(message: "Failed to load activity: \(loadError)", action: ("Retry", { Task { await loadData() } }))
                 }
                 if isLoading && dailySourceActivity.isEmpty {
                     ProgressView()
@@ -77,6 +80,8 @@ struct ActivityView: View {
                 .padding(.vertical, 4)
             }
             .buttonStyle(.plain)
+            // One VoiceOver stop: pill + count read as a single button.
+            .accessibilityElement(children: .combine)
             .accessibilityIdentifier("activity_sourceRow")
         }
         if !topFiles.isEmpty {
@@ -105,28 +110,56 @@ struct ActivityView: View {
     }
 
     private func openMostRecent(source: String) {
+        let requestId = UUID()
+        openRequestId = requestId
+        let token = SessionNavigationGate.begin()
         let db = self.db
         Task {
-            let session = try? await Task.detached {
-                try db.listSessions(sources: [source], sort: .updatedDesc, limit: 1).first
-            }.value
-            if let session {
-                NotificationCenter.default.post(name: .openSession, object: SessionBox(session))
+            do {
+                let session = try await Task.detached {
+                    try db.listSessions(
+                        sources: [source],
+                        topLevelOnly: true,
+                        humanDriven: true,
+                        sort: .updatedDesc,
+                        limit: 1
+                    ).first
+                }.value
+                guard openRequestId == requestId,
+                      SessionNavigationGate.isCurrent(token) else { return }
+                guard let session else {
+                    SessionNavigationGate.complete(token)
+                    return
+                }
+                NotificationCenter.default.post(
+                    name: .openSession,
+                    object: SessionBox(session, navigationId: token)
+                )
+            } catch {
+                if openRequestId == requestId {
+                    SessionNavigationGate.complete(token)
+                }
+                EngramLogger.error("ActivityView source drill-in failed", module: .ui, error: error)
             }
         }
     }
 
     private func loadData() async {
+        loadGeneration += 1
+        let generation = loadGeneration
         isLoading = true
-        defer { isLoading = false }
+        defer {
+            if generation == loadGeneration { isLoading = false }
+        }
         // UI-C1/C2: run the GRDB reads off the main thread.
         let db = self.db
-        let today = ISO8601DateFormatter().string(from: Calendar.current.startOfDay(for: Date()))
-        let weekAgo = ISO8601DateFormatter().string(from: Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date())
-        let thirtyDaysAgo = ISO8601DateFormatter().string(from: Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date())
+        let now = fixedDate ?? Date()
+        let today = ISO8601DateFormatter().string(from: Calendar.current.startOfDay(for: now))
+        let weekAgo = ISO8601DateFormatter().string(from: Calendar.current.date(byAdding: .day, value: -7, to: now) ?? now)
+        let thirtyDaysAgo = ISO8601DateFormatter().string(from: Calendar.current.date(byAdding: .day, value: -30, to: now) ?? now)
         do {
             let loaded = try await Task.detached {
-                let dailySource = try db.dailySourceActivity(days: 30)
+                let dailySource = try db.dailySourceActivity(days: 30, now: now)
                 let hourly = try db.hourlyActivity()
                 let dist = try db.sourceDistribution()
                 let todayN = try db.countSessionsSince(today)
@@ -134,6 +167,11 @@ struct ActivityView: View {
                 let files = try db.fileActivity(project: nil, since: thirtyDaysAgo, limit: 8)
                 return (dailySource, hourly, dist, todayN, weekN, files)
             }.value
+            guard BrowseReloadCoalescer.shouldApplyLoad(
+                resultGeneration: generation,
+                currentGeneration: loadGeneration,
+                isCancelled: Task.isCancelled
+            ) else { return }
             dailySourceActivity = loaded.0
             hourlyActivity = loaded.1
             sourceDist = loaded.2
@@ -142,8 +180,13 @@ struct ActivityView: View {
             topFiles = loaded.5
             loadError = nil
         } catch {
+            guard BrowseReloadCoalescer.shouldApplyLoad(
+                resultGeneration: generation,
+                currentGeneration: loadGeneration,
+                isCancelled: Task.isCancelled
+            ) else { return }
             EngramLogger.error("ActivityView load failed", module: .ui, error: error)
-            loadError = error.localizedDescription
+            loadError = ServiceErrorPresenter.displayMessage(for: error)
         }
     }
 }

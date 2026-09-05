@@ -117,6 +117,22 @@ final class ServiceSecurityHardeningTests: XCTestCase {
         }
     }
 
+    func testProjectPathConfinementExpandsTildeAgainstConfiguredHome_repro() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-confined-home-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let originalHome = ProcessInfo.processInfo.environment["HOME"]
+        setenv("HOME", home.path, 1)
+        defer {
+            if let originalHome { setenv("HOME", originalHome, 1) } else { unsetenv("HOME") }
+        }
+
+        XCTAssertNoThrow(
+            try EngramServiceCommandHandler.validateProjectPathConfined("~/project", label: "source")
+        )
+    }
+
     func testProjectMoveAcceptsInRootPaths(
     ) async throws {
         try await withTemporaryHome { home in
@@ -402,14 +418,185 @@ final class ServiceSecurityHardeningTests: XCTestCase {
         XCTAssertEqual(perms, 0o600)
     }
 
+    func testCapabilityTokenRecoversSymlinkDestinationWithoutTouchingReferent_repro() throws {
+        let paths = try makePaths()
+        let outside = paths.runtime.deletingLastPathComponent().appendingPathComponent("outside-token")
+        try Data("sentinel".utf8).write(to: outside)
+        let tokenPath = ServiceCapabilityToken.path(forSocketPath: paths.socket.path)
+        try FileManager.default.createSymbolicLink(atPath: tokenPath, withDestinationPath: outside.path)
+
+        let token = try ServiceCapabilityToken.generateAndWrite(toPath: tokenPath)
+        XCTAssertEqual(ServiceCapabilityToken.load(fromPath: tokenPath), token)
+        XCTAssertEqual(try Data(contentsOf: outside), Data("sentinel".utf8))
+        var info = stat()
+        XCTAssertEqual(lstat(tokenPath, &info), 0)
+        XCTAssertEqual(info.st_mode & S_IFMT, S_IFREG)
+    }
+
+    func testCapabilityTokenRecoversOwnedHardlinkLeftover_repro() throws {
+        let paths = try makePaths()
+        let peer = paths.runtime.deletingLastPathComponent().appendingPathComponent("peer-token")
+        let original = Data("shared-token".utf8)
+        try original.write(to: peer)
+        let tokenPath = ServiceCapabilityToken.path(forSocketPath: paths.socket.path)
+        XCTAssertEqual(link(peer.path, tokenPath), 0)
+
+        let token = try ServiceCapabilityToken.generateAndWrite(toPath: tokenPath)
+
+        XCTAssertEqual(ServiceCapabilityToken.load(fromPath: tokenPath), token)
+        XCTAssertEqual(try Data(contentsOf: peer), original)
+        var info = stat()
+        XCTAssertEqual(lstat(tokenPath, &info), 0)
+        XCTAssertEqual(info.st_nlink, 1)
+        XCTAssertEqual(info.st_mode & 0o777, 0o600)
+    }
+
+    func testCapabilityTokenUsesDirfdPinnedAtomicWriter_repro() throws {
+        let source = try serviceCoreSource("Shared/Service/ServiceCapabilityToken.swift")
+        let start = try XCTUnwrap(source.range(of: "static func generateAndWrite")?.lowerBound)
+        let end = try XCTUnwrap(source.range(of: "static func load", range: start..<source.endIndex)?.lowerBound)
+        let body = source[start..<end]
+
+        XCTAssertTrue(body.contains("SecureRegularFile.writeAtomically"))
+        XCTAssertFalse(body.contains("lstat(path"))
+        XCTAssertFalse(body.contains("open(path"))
+    }
+
+    func testCapabilityTokenReaderPinsParentDirectoryBeforeOpeningLeaf_repro() throws {
+        let source = try serviceCoreSource("Shared/Security/SecureRegularFile.swift")
+        let start = try XCTUnwrap(source.range(of: "public static func read")?.lowerBound)
+        let end = try XCTUnwrap(source.range(of: "public static func writeAtomically", range: start..<source.endIndex)?.lowerBound)
+        let body = source[start..<end]
+
+        XCTAssertTrue(source.contains("O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC"))
+        XCTAssertTrue(body.contains("openat(directoryFD"))
+        XCTAssertFalse(body.contains("lstat(path"))
+        XCTAssertFalse(body.contains("open($0, O_RDONLY"))
+    }
+
+    func testCapabilityTokenStopUsesPinnedDirectoryUnlink_repro() throws {
+        let source = try serviceCoreSource("EngramService/IPC/UnixSocketServiceServer.swift")
+        let start = try XCTUnwrap(source.range(of: "func stop()")?.lowerBound)
+        let end = try XCTUnwrap(source.range(of: "func drainClientHandlers", range: start..<source.endIndex)?.lowerBound)
+        let body = source[start..<end]
+
+        XCTAssertTrue(body.contains("ServiceCapabilityToken.remove"))
+        XCTAssertFalse(body.contains("unlink(ServiceCapabilityToken.path"))
+    }
+
+    func testCapabilityTokenLoadRejectsUnsafeFiles_repro() throws {
+        let paths = try makePaths()
+        let tokenPath = ServiceCapabilityToken.path(forSocketPath: paths.socket.path)
+        let tokenURL = URL(fileURLWithPath: tokenPath)
+        try Data("secret-token".utf8).write(to: tokenURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: tokenPath)
+        XCTAssertNil(ServiceCapabilityToken.load(fromPath: tokenPath))
+
+        try FileManager.default.removeItem(at: tokenURL)
+        let outside = paths.runtime.deletingLastPathComponent().appendingPathComponent("outside-load-token")
+        try Data("linked-token".utf8).write(to: outside)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outside.path)
+        try FileManager.default.createSymbolicLink(atPath: tokenPath, withDestinationPath: outside.path)
+        XCTAssertNil(ServiceCapabilityToken.load(fromPath: tokenPath))
+    }
+
+    func testCapabilityTokenLoadRejectsFIFOPromptly_repro() throws {
+        let paths = try makePaths()
+        let tokenPath = ServiceCapabilityToken.path(forSocketPath: paths.socket.path)
+        XCTAssertEqual(mkfifo(tokenPath, S_IRUSR | S_IWUSR), 0)
+        let returned = expectation(description: "FIFO token read returned")
+        DispatchQueue.global().async {
+            XCTAssertNil(ServiceCapabilityToken.load(fromPath: tokenPath))
+            returned.fulfill()
+        }
+
+        let result = XCTWaiter.wait(for: [returned], timeout: 0.2)
+        XCTAssertEqual(result, .completed, "secret readers must not block opening a FIFO")
+        if result != .completed {
+            let writer = open(tokenPath, O_WRONLY | O_NONBLOCK)
+            if writer >= 0 { close(writer) }
+        }
+    }
+
+    func testWriterLockRejectsSymlinkDestination_repro() throws {
+        let paths = try makePaths()
+        let outside = paths.runtime.deletingLastPathComponent().appendingPathComponent("outside-lock")
+        try Data("sentinel".utf8).write(to: outside)
+        let lockPath = paths.runtime.appendingPathComponent("engram-service.lock")
+        try FileManager.default.createSymbolicLink(atPath: lockPath.path, withDestinationPath: outside.path)
+
+        XCTAssertThrowsError(
+            try ServiceWriterGate(
+                databasePath: paths.database.path,
+                runtimeDirectory: paths.runtime
+            )
+        )
+        XCTAssertEqual(try Data(contentsOf: outside), Data("sentinel".utf8))
+    }
+
     func testRunnerRemovesLegacyWebUIToken() throws {
+        let root = try makePaths().runtime.deletingLastPathComponent()
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let runtime = home.appendingPathComponent(".engram/run", isDirectory: true)
+        try FileManager.default.createDirectory(at: runtime, withIntermediateDirectories: true)
+        let tokenURL = runtime.appendingPathComponent("webui.token")
+        try "legacy-secret".write(to: tokenURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tokenURL.path)
+
+        try EngramServiceRunner.removeLegacyWebUIToken(
+            runtimeDirectory: runtime,
+            homeDirectory: home
+        )
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tokenURL.path))
+    }
+
+    func testRunnerDoesNotRemoveLegacyTokenFromCustomSocketDirectory_repro() throws {
         let paths = try makePaths()
         let tokenURL = paths.runtime.appendingPathComponent("webui.token")
-        try "legacy-secret".write(to: tokenURL, atomically: true, encoding: .utf8)
+        try Data("unrelated-token".utf8).write(to: tokenURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tokenURL.path)
 
         try EngramServiceRunner.removeLegacyWebUIToken(runtimeDirectory: paths.runtime)
 
-        XCTAssertFalse(FileManager.default.fileExists(atPath: tokenURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tokenURL.path))
+        XCTAssertEqual(try Data(contentsOf: tokenURL), Data("unrelated-token".utf8))
+    }
+
+    func testRunnerLegacyTokenCleanupUnlinksSymlinkWithoutFollowingIt_repro() throws {
+        let root = try makePaths().runtime.deletingLastPathComponent()
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let runtime = home.appendingPathComponent(".engram/run", isDirectory: true)
+        try FileManager.default.createDirectory(at: runtime, withIntermediateDirectories: true)
+        let victim = root.appendingPathComponent("victim")
+        try Data("preserve".utf8).write(to: victim)
+        let tokenURL = runtime.appendingPathComponent("webui.token")
+        try FileManager.default.createSymbolicLink(atPath: tokenURL.path, withDestinationPath: victim.path)
+
+        try EngramServiceRunner.removeLegacyWebUIToken(
+            runtimeDirectory: runtime,
+            homeDirectory: home
+        )
+        XCTAssertEqual(try Data(contentsOf: victim), Data("preserve".utf8))
+        var info = stat()
+        XCTAssertEqual(lstat(tokenURL.path, &info), -1)
+        XCTAssertEqual(errno, ENOENT)
+    }
+
+    func testRunnerLegacyTokenCleanupUsesPinnedParentWalk_repro() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("EngramService/Core/EngramServiceRunner.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(source.range(of: "static func removeLegacyWebUIToken")?.lowerBound)
+        let end = try XCTUnwrap(source.range(of: "private static func parseUsageTokenLimitsJSON", range: start..<source.endIndex)?.lowerBound)
+        let body = source[start..<end]
+
+        XCTAssertTrue(body.contains("SecureRegularFile.removeOwnerNonDirectory"))
+        XCTAssertFalse(body.contains("open(\n            dedicatedRuntimeDirectory.path"))
     }
 
     func testClientAutoAttachedTokenAuthorizesDestructiveCommand() async throws {
@@ -682,22 +869,39 @@ final class ServiceSecurityHardeningTests: XCTestCase {
 
 final class ServiceCoreTestHomeScope {
     private static let lock = NSLock()
-    private let oldHome: String?
+    private let oldValues: [String: String?]
     private var restored = false
 
     init(home: URL) {
         Self.lock.lock()
-        oldHome = getenv("HOME").map { String(cString: $0) }
-        setenv("HOME", home.path, 1)
+        do {
+            try FileManager.default.createDirectory(
+                at: home,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+        } catch {
+            XCTFail("Failed to create hermetic test home at \(home.path): \(error)")
+        }
+        let keys = ["HOME", "CFFIXED_USER_HOME", "TMPDIR"]
+        oldValues = Dictionary(uniqueKeysWithValues: keys.map { key in
+            (key, getenv(key).map { String(cString: $0) })
+        })
+        // docs/invariants.md #6: Darwin's FileManager ignores HOME-only changes.
+        for key in keys {
+            setenv(key, home.path, 1)
+        }
     }
 
     func restore() {
         guard !restored else { return }
         restored = true
-        if let oldHome {
-            setenv("HOME", oldHome, 1)
-        } else {
-            unsetenv("HOME")
+        for (key, oldValue) in oldValues {
+            if let oldValue {
+                setenv(key, oldValue, 1)
+            } else {
+                unsetenv(key)
+            }
         }
         Self.lock.unlock()
     }

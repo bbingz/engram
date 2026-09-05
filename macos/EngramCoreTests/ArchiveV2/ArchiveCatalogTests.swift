@@ -446,6 +446,58 @@ final class ArchiveCatalogTests: XCTestCase {
         )
     }
 
+    func testUpsertResumesPausedIntentAndClearsPriorFailureState_repro() throws {
+        let result = try boundCatalog()
+        let manifest = try ArchiveCanonicalJSON.decode(
+            ArchiveSourceManifest.self,
+            from: result.manifestBytes
+        )
+        let initial = try result.0.upsertReclamationIntent(
+            manifestSHA256: result.binding.manifestSHA256,
+            captureID: result.binding.captureID,
+            sessionID: result.binding.sessionID,
+            locator: manifest.locator,
+            updatedAt: "2026-07-11T00:07:00.000Z"
+        )
+        let quarantinePath = manifest.locator + ".engram-reclaim"
+        XCTAssertTrue(try result.0.transitionReclamationIntent(
+            manifestSHA256: initial.manifestSHA256,
+            from: .eligible,
+            to: .quarantinePlanned,
+            expectedClaimGeneration: initial.claimGeneration,
+            quarantinePath: quarantinePath,
+            updatedAt: "2026-07-11T00:08:00.000Z"
+        ))
+        let planned = try XCTUnwrap(
+            try result.0.reclamationIntent(manifestSHA256: initial.manifestSHA256)
+        )
+        XCTAssertTrue(try result.0.transitionReclamationIntent(
+            manifestSHA256: planned.manifestSHA256,
+            from: .quarantinePlanned,
+            to: .paused,
+            expectedClaimGeneration: planned.claimGeneration,
+            quarantinePath: quarantinePath,
+            updatedAt: "2026-07-11T00:09:00.000Z",
+            lastError: "injected_failure"
+        ))
+        let paused = try XCTUnwrap(
+            try result.0.reclamationIntent(manifestSHA256: initial.manifestSHA256)
+        )
+
+        let resumed = try result.0.upsertReclamationIntent(
+            manifestSHA256: result.binding.manifestSHA256,
+            captureID: result.binding.captureID,
+            sessionID: result.binding.sessionID,
+            locator: manifest.locator,
+            updatedAt: "2026-07-11T00:10:00.000Z"
+        )
+
+        XCTAssertEqual(resumed.phase, .eligible)
+        XCTAssertEqual(resumed.claimGeneration, paused.claimGeneration + 1)
+        XCTAssertNil(resumed.quarantinePath)
+        XCTAssertNil(resumed.lastError)
+    }
+
     func testRecoveryDrillCandidateRotatesPerReplicaAndRespectsByteLimit() throws {
         let catalog = try migratedCatalog()
         let first = try addBinding(to: catalog, captureSeed: "drill-a", sessionID: "drill-a")

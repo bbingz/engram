@@ -2,20 +2,39 @@
 import SwiftUI
 
 struct MainWindowView: View {
+    let initialSession: SessionBox?
+    let appStorage: UserDefaults
+    let serviceSocketPath: String
     @State private var selectedScreen: Screen = .home
     @State private var selectedSession: Session? = nil
     @State private var showPalette: Bool = false
-    @State private var pendingNavigationId: String? = nil
+    @State private var pendingNavigationId: UUID? = nil
     @State private var pendingSearchTerm: String? = nil
     @Environment(DatabaseManager.self) var db
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
+
+    init(
+        initialSession: SessionBox? = nil,
+        appStorage: UserDefaults,
+        serviceSocketPath: String
+    ) {
+        self.initialSession = initialSession
+        self.appStorage = appStorage
+        self.serviceSocketPath = serviceSocketPath
+    }
 
     var body: some View {
         NavigationSplitView {
             SidebarView(selectedScreen: $selectedScreen)
         } detail: {
             if let session = selectedSession {
-                SessionDetailView(session: session, onBack: { selectedSession = nil }, searchTerm: pendingSearchTerm)
+                SessionDetailView(session: session, onBack: {
+                    pendingNavigationId = nil
+                    SessionNavigationGate.cancelAll()
+                    pendingSearchTerm = nil
+                    selectedSession = nil
+                }, searchTerm: pendingSearchTerm)
+                    .id(session.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 detailView
@@ -40,14 +59,18 @@ struct MainWindowView: View {
         .onChange(of: selectedScreen) { _, _ in
             // Clear session detail when navigating to a different page
             pendingNavigationId = nil
+            SessionNavigationGate.cancelAll()
             selectedSession = nil
             pendingSearchTerm = nil
         }
+        .onAppear {
+            if let initialSession {
+                applyOpenSession(initialSession)
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .openSession)) { notification in
             if let box = notification.object as? SessionBox {
-                pendingNavigationId = nil
-                pendingSearchTerm = box.searchTerm
-                selectedSession = box.session
+                applyOpenSession(box)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .navigateToScreen)) { notification in
@@ -78,7 +101,7 @@ struct MainWindowView: View {
                 }
             )
             .environment(db)
-            .environment(serviceClient)
+            .environment(\.engramServiceClient, serviceClient)
             .frame(width: 480, height: 360)
         }
     }
@@ -93,7 +116,7 @@ struct MainWindowView: View {
     private func pageView(for screen: Screen) -> some View {
         switch screen {
         case .home:
-            HomeView()
+            HomeView(appStorage: appStorage)
         case .search:
             SearchPageView()
         case .sessions:
@@ -119,7 +142,7 @@ struct MainWindowView: View {
         case .memory:
             MemoryView()
         case .settings:
-            SettingsView()
+            SettingsView(serviceSocketPath: serviceSocketPath)
         }
     }
 
@@ -127,27 +150,51 @@ struct MainWindowView: View {
         showPalette = true
     }
 
+    private func applyOpenSession(_ box: SessionBox) {
+        guard let token = box.navigationId else {
+            // Synchronous rows carry no async click token. They still cancel a
+            // live resolution so its later notification cannot reopen detail.
+            SessionNavigationGate.cancelAll()
+            pendingNavigationId = nil
+            pendingSearchTerm = box.searchTerm
+            selectedSession = box.session
+            return
+        }
+        guard SessionNavigationGate.isCurrent(token) else { return }
+        pendingNavigationId = nil
+        pendingSearchTerm = box.searchTerm
+        selectedSession = box.session
+        SessionNavigationGate.complete(token)
+    }
+
     private func navigateToSession(id: String) {
         // Detached so the SQLite lookup runs off the main thread (an unstructured
         // Task started here inherits the MainActor executor).
-        pendingNavigationId = id
-        // Palette-driven opens carry no search query; don't leak a stale term
-        // from a prior search-driven open into the find bar.
-        pendingSearchTerm = nil
+        let token = SessionNavigationGate.begin()
+        pendingNavigationId = token
         let db = self.db
         Task.detached {
             guard let session = try? db.getSession(id: id) else {
                 await MainActor.run {
-                    if pendingNavigationId == id {
+                    if pendingNavigationId == token {
                         pendingNavigationId = nil
+                        SessionNavigationGate.complete(token)
                     }
                 }
                 return
             }
             await MainActor.run {
-                guard pendingNavigationId == id else { return }
+                guard pendingNavigationId == token else { return }
+                guard SessionNavigationGate.isCurrent(token) else {
+                    pendingNavigationId = nil
+                    return
+                }
+                // Clear a prior search query only after the replacement session
+                // exists; a failed palette lookup must leave current detail intact.
+                pendingSearchTerm = nil
                 selectedSession = session
                 pendingNavigationId = nil
+                SessionNavigationGate.complete(token)
             }
         }
     }

@@ -21,25 +21,102 @@ struct OnboardingView: View {
                 }
             }
             .padding(.top, 20)
+            // Decorative capsules: expose progress as one spoken element.
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Step \(step + 1) of 5")
 
             Spacer()
 
-            Group {
-                switch step {
-                case 0: welcomeStep
-                case 1: sourcesStep
-                case 2: fullDiskAccessStep
-                case 3: mcpStep
-                case 4: readyStep
-                default: readyStep
+            // Scroll guard: at large Dynamic Type sizes step content exceeds the
+            // fixed 380pt window; scroll instead of clipping (layout unchanged at
+            // default size — content fits, so no scroller appears).
+            ScrollView {
+                Group {
+                    switch step {
+                    case 0: welcomeStep
+                    case 1: sourcesStep
+                    case 2: fullDiskAccessStep
+                    case 3: mcpStep
+                    case 4: readyStep
+                    default: readyStep
+                    }
                 }
+                .transition(.opacity.combined(with: .move(edge: .trailing)))
+                .frame(maxWidth: .infinity)
             }
-            .transition(.opacity.combined(with: .move(edge: .trailing)))
 
             Spacer()
+
+            primaryCTA
+                .padding(.bottom, 20)
         }
         .frame(width: 460, height: 380)
         .background(Theme.background)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("onboarding_container")
+    }
+
+    // MARK: - Fixed primary CTA
+
+    /// ui-residual-onboarding-cta-1: the primary CTA lives in a fixed footer
+    /// below the step ScrollView, so it stays visible at large Dynamic Type
+    /// while step content scrolls. Actions, sizes, and identifiers are moved
+    /// verbatim from the step views; step announcements are unchanged.
+    @ViewBuilder
+    private var primaryCTA: some View {
+        switch step {
+        case 0:
+            Button(action: {
+                detectedSources = scanSources()
+                advance(to: 1)
+            }) {
+                Text("Get Started")
+                    .scaledFont(13, weight: .medium)
+                    .frame(minWidth: 140, minHeight: 32)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.accent)
+            .accessibilityIdentifier("onboarding_getStarted")
+        case 1:
+            Button(action: { advance(to: 2) }) {
+                Text("Continue")
+                    .scaledFont(13, weight: .medium)
+                    .frame(minWidth: 140, minHeight: 32)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.accent)
+            .accessibilityIdentifier("onboarding_sourcesContinue")
+        case 2:
+            Button(action: {
+                detectedSources = scanSources()
+                advance(to: 3)
+            }) {
+                Text("Continue")
+                    .scaledFont(13, weight: .medium)
+                    .frame(minWidth: 140, minHeight: 32)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.accent)
+            .accessibilityIdentifier("onboarding_fdaContinue")
+        case 3:
+            Button(action: { advance(to: 4) }) {
+                Text("Continue")
+                    .scaledFont(13, weight: .medium)
+                    .frame(minWidth: 140, minHeight: 32)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.accent)
+            .accessibilityIdentifier("onboarding_mcpContinue")
+        default:
+            Button(action: onComplete) {
+                Text("Open Engram")
+                    .scaledFont(13, weight: .medium)
+                    .frame(minWidth: 140, minHeight: 32)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.accent)
+            .accessibilityIdentifier("onboarding_finish")
+        }
     }
 
     // MARK: - Step 1: Welcome
@@ -51,24 +128,12 @@ struct OnboardingView: View {
                 .foregroundStyle(Theme.accent)
 
             Text("Welcome to Engram")
-                .font(.system(size: 22, weight: .semibold))
+                .scaledFont(22, weight: .semibold)
                 .foregroundStyle(Theme.primaryText)
 
             Text("Cross-tool AI session aggregator")
-                .font(.system(size: 14))
+                .scaledFont(14)
                 .foregroundStyle(Theme.secondaryText)
-
-            Button(action: {
-                detectedSources = scanSources()
-                advance(to: 1)
-            }) {
-                Text("Get Started")
-                    .font(.system(size: 13, weight: .medium))
-                    .frame(width: 140, height: 32)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(Theme.accent)
-            .padding(.top, 8)
         }
     }
 
@@ -77,11 +142,11 @@ struct OnboardingView: View {
     private var sourcesStep: some View {
         VStack(spacing: 16) {
             Text("Sources Detected")
-                .font(.system(size: 18, weight: .semibold))
+                .scaledFont(18, weight: .semibold)
                 .foregroundStyle(Theme.primaryText)
 
             Text("Engram found session data from these AI tools:")
-                .font(.system(size: 13))
+                .scaledFont(13)
                 .foregroundStyle(Theme.secondaryText)
 
             ScrollView {
@@ -90,21 +155,21 @@ struct OnboardingView: View {
                         HStack(spacing: 10) {
                             Image(systemName: source.found ? "checkmark.circle.fill" : "minus.circle")
                                 .foregroundStyle(source.found ? Theme.green : Theme.gray)
-                                .font(.system(size: 14))
+                                .scaledFont(14)
 
                             Circle()
                                 .fill(SourceColors.color(for: source.id))
                                 .frame(width: 8, height: 8)
 
                             Text(source.label)
-                                .font(.system(size: 13))
+                                .scaledFont(13)
                                 .foregroundStyle(source.found ? Theme.primaryText : Theme.tertiaryText)
 
                             Spacer()
 
                             if source.found {
                                 Text("found")
-                                    .font(.system(size: 11))
+                                    .scaledFont(11)
                                     .foregroundStyle(Theme.green)
                             }
                         }
@@ -115,15 +180,6 @@ struct OnboardingView: View {
             }
             .frame(maxHeight: 180)
             .padding(.horizontal, 40)
-
-            Button(action: { advance(to: 2) }) {
-                Text("Continue")
-                    .font(.system(size: 13, weight: .medium))
-                    .frame(width: 140, height: 32)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(Theme.accent)
-            .padding(.top, 4)
         }
     }
 
@@ -136,33 +192,22 @@ struct OnboardingView: View {
                 .foregroundStyle(Theme.accent)
 
             Text("Full Disk Access")
-                .font(.system(size: 18, weight: .semibold))
+                .scaledFont(18, weight: .semibold)
                 .foregroundStyle(Theme.primaryText)
 
             Text("Some tools (Cursor, VS Code) store data in ~/Library. If those sources are missing later, grant Engram Full Disk Access in System Settings.")
-                .font(.system(size: 13))
+                .scaledFont(13)
                 .foregroundStyle(Theme.secondaryText)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
 
             Button(action: openFullDiskAccessSettings) {
                 Text("Open System Settings")
-                    .font(.system(size: 13, weight: .medium))
+                    .scaledFont(13, weight: .medium)
                     .frame(width: 180, height: 32)
             }
             .buttonStyle(.bordered)
             .padding(.top, 4)
-
-            Button(action: {
-                detectedSources = scanSources()
-                advance(to: 3)
-            }) {
-                Text("Continue")
-                    .font(.system(size: 13, weight: .medium))
-                    .frame(width: 140, height: 32)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(Theme.accent)
         }
     }
 
@@ -172,10 +217,28 @@ struct OnboardingView: View {
         }
     }
 
+    /// Spoken step titles for the advance announcement; mirrors the headline of
+    /// each step so VoiceOver lands on the new context, not just "Step N of 5".
+    private static let stepAnnouncementTitles = [
+        "Welcome",
+        "Sources Detected",
+        "Full Disk Access",
+        "Connect your AI tools",
+        "Ready",
+    ]
+
     private func advance(to nextStep: Int) {
         MotionAware.animate(.default, reduceMotion: reduceMotion) {
             step = nextStep
         }
+        // The step capsule's accessibilityLabel updates silently; announce the
+        // transition so VoiceOver users know the page changed.
+        let title = Self.stepAnnouncementTitles.indices.contains(nextStep)
+            ? Self.stepAnnouncementTitles[nextStep]
+            : ""
+        AccessibilityNotification.Announcement(
+            "Step \(nextStep + 1) of 5\(title.isEmpty ? "" : ", \(title)")"
+        ).post()
     }
 
     // MARK: - Step 4: MCP (row 24)
@@ -187,23 +250,14 @@ struct OnboardingView: View {
                 .foregroundStyle(Theme.accent)
 
             Text("Connect your AI tools")
-                .font(.system(size: 18, weight: .semibold))
+                .scaledFont(18, weight: .semibold)
                 .foregroundStyle(Theme.primaryText)
 
             Text("Engram is a memory layer for AI coding tools. Connect it over MCP so agents can call get_context, search, and save_insight across your past sessions.")
-                .font(.system(size: 13))
+                .scaledFont(13)
                 .foregroundStyle(Theme.secondaryText)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
-
-            Button(action: { advance(to: 4) }) {
-                Text("Continue")
-                    .font(.system(size: 13, weight: .medium))
-                    .frame(width: 140, height: 32)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(Theme.accent)
-            .padding(.top, 4)
         }
     }
 
@@ -217,23 +271,14 @@ struct OnboardingView: View {
                 .foregroundStyle(Theme.green)
 
             Text("\(count) source\(count == 1 ? "" : "s") detected, ready to index")
-                .font(.system(size: 16, weight: .medium))
+                .scaledFont(16, weight: .medium)
                 .foregroundStyle(Theme.primaryText)
 
             Text("Engram will index your sessions in the background.")
-                .font(.system(size: 13))
+                .scaledFont(13)
                 .foregroundStyle(Theme.secondaryText)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
-
-            Button(action: onComplete) {
-                Text("Open Engram")
-                    .font(.system(size: 13, weight: .medium))
-                    .frame(width: 140, height: 32)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(Theme.accent)
-            .padding(.top, 8)
         }
     }
 }

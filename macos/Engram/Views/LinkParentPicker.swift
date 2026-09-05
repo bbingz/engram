@@ -10,7 +10,7 @@ struct LinkParentPicker: View {
     let onLinked: () -> Void
 
     @Environment(DatabaseManager.self) private var db
-    @Environment(EngramServiceClient.self) private var serviceClient
+    @Environment(\.engramServiceClient) private var serviceClient
     @Environment(\.dismiss) private var dismiss
 
     @State private var candidates: [Session] = []
@@ -19,14 +19,10 @@ struct LinkParentPicker: View {
     @State private var isLoading = true
     @State private var isLinking = false
     @State private var errorText: String? = nil
+    @State private var loadGeneration = UUID()
 
     private var filtered: [Session] {
-        guard !query.isEmpty else { return candidates }
-        let q = query.lowercased()
-        return candidates.filter {
-            $0.displayTitle.lowercased().contains(q)
-                || ($0.project?.lowercased().contains(q) ?? false)
-        }
+        candidates
     }
 
     var body: some View {
@@ -87,7 +83,7 @@ struct LinkParentPicker: View {
             if let errorText {
                 Text(errorText)
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Theme.red)
             }
 
             HStack {
@@ -103,20 +99,40 @@ struct LinkParentPicker: View {
         }
         .padding(24)
         .frame(width: 360)
-        .task { await loadCandidates() }
+        .task(id: query) { await loadCandidates(query: query) }
     }
 
-    private func loadCandidates() async {
+    private func loadCandidates(query: String) async {
+        let generation = UUID()
+        loadGeneration = generation
         isLoading = true
-        defer { isLoading = false }
+        if !query.isEmpty {
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled, generation == loadGeneration else { return }
+        }
         let db = self.db
         let childId = child.id
         // Read candidate parents off the main thread (UI-C1/C2).
-        let loaded = try? await Task.detached {
-            try db.listSessions(subAgent: false, topLevelOnly: true, limit: 200)
-                .filter { $0.id != childId }
-        }.value
-        candidates = loaded ?? []
+        do {
+            let loaded = try await Task.detached {
+                try db.sessionPickerCandidates(
+                    query: query,
+                    topLevelOnly: true,
+                    excluding: [childId],
+                    limit: 200
+                )
+            }.value
+            guard !Task.isCancelled, generation == loadGeneration else { return }
+            candidates = loaded
+            errorText = nil
+        } catch {
+            guard !Task.isCancelled, generation == loadGeneration else { return }
+            candidates = []
+            errorText = ServiceErrorPresenter.displayMessage(for: error)
+        }
+        if generation == loadGeneration {
+            isLoading = false
+        }
     }
 
     private func link() {

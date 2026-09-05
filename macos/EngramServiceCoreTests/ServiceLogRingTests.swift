@@ -1,7 +1,57 @@
 import XCTest
+import EngramCoreWrite
 @testable import EngramServiceCore
 
 final class ServiceLogRingTests: XCTestCase {
+    func testInfoFloodCannotEvictErrorHistory_repro() async {
+        let ring = ServiceLogRing(capacity: 10)
+        await ring.record(level: "error", category: "ai", message: "provider failed")
+        for i in 0..<100 {
+            await ring.record(level: "info", category: "runner", message: "noise \(i)")
+        }
+
+        let errors = await ring.snapshot(level: "error")
+        XCTAssertEqual(errors.lines.map(\.message), ["provider failed"])
+    }
+
+    func testAllLevelSnapshotReservesRetainedErrorsBeforeLimit_repro() async {
+        let ring = ServiceLogRing(capacity: 10)
+        await ring.record(level: "error", category: "ai", message: "provider failed")
+        for index in 0..<100 {
+            await ring.record(level: "info", category: "runner", message: "noise \(index)")
+        }
+
+        let snapshot = await ring.snapshot(limit: 5)
+
+        XCTAssertEqual(snapshot.lines.count, 5)
+        XCTAssertTrue(snapshot.lines.contains { $0.message == "provider failed" })
+    }
+
+    func testErrorRingReportsWhenItsOldestHistoryWasEvicted_repro() async {
+        let ring = ServiceLogRing(capacity: 2)
+        await ring.record(level: "error", category: "indexer", message: "first")
+        await ring.record(level: "error", category: "indexer", message: "second")
+        await ring.record(level: "error", category: "indexer", message: "third")
+
+        let errors = await ring.snapshot(level: "error")
+
+        XCTAssertTrue(errors.isTruncated)
+        XCTAssertEqual(errors.lines.map(\.message), ["third", "second"])
+    }
+
+    func testCoreWriteTeePreservesCategory_repro() async {
+        let ring = ServiceLogRing(capacity: 10)
+        let previous = ServiceLogger.replaceRingForTests(ring)
+        defer { ServiceLogger.replaceRingForTests(previous) }
+        ServiceLogger.installRing(ring)
+
+        CoreWriteLogger(category: "indexer").error("parse failed")
+        let errors = await ring.snapshot(level: "error")
+
+        XCTAssertEqual(errors.lines.first?.category, "indexer")
+        XCTAssertEqual(errors.lines.first?.message, "parse failed")
+    }
+
     func testBoundedCapacityRetainsNewestNewestFirst() async {
         let ring = ServiceLogRing(capacity: 10)
         for i in 0..<25 {
@@ -58,6 +108,17 @@ final class ServiceLogRingTests: XCTestCase {
         XCTAssertFalse(stored.contains("/Users/bing/.engram/index.sqlite"))
         XCTAssertTrue(stored.contains("<path>"))
         XCTAssertTrue(stored.contains("indexing"))
+    }
+
+    func testSanitizedDuplicateMessagesCarryASequence_repro() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("EngramService/Core/ServiceLogRing.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("sequence:"))
     }
 
     func testConcurrentRecordsDoNotExceedCapacity() async {

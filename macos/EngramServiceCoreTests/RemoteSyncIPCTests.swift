@@ -4,18 +4,34 @@ import EngramCoreWrite
 import GRDB
 
 final class RemoteSyncIPCTests: XCTestCase {
+    private var homeScope: ServiceCoreTestHomeScope?
     // Hermetic: these tests assert the offload-DISABLED behavior, but
     // RemoteSyncConfig.read falls back to the developer's real ~/.engram/settings.json
     // (which may have remoteOffloadEnabled:true on a machine where offload is in use).
     // Force the env override so the suite is independent of the host's settings.
     override func setUp() {
         super.setUp()
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-rsipc-home-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        homeScope = ServiceCoreTestHomeScope(home: home)
         setenv("ENGRAM_REMOTE_OFFLOAD_ENABLED", "0", 1)
     }
 
     override func tearDown() {
         unsetenv("ENGRAM_REMOTE_OFFLOAD_ENABLED")
+        let home = getenv("CFFIXED_USER_HOME").map { URL(fileURLWithPath: String(cString: $0)) }
+        homeScope?.restore()
+        homeScope = nil
+        if let home { try? FileManager.default.removeItem(at: home) }
         super.tearDown()
+    }
+
+    func testRemoteSyncIPCTestsUseFixedTemporaryHome_repro() {
+        let fixedHome = getenv("CFFIXED_USER_HOME").map { String(cString: $0) }
+        XCTAssertNotNil(fixedHome)
+        XCTAssertTrue(fixedHome?.contains("engram-rsipc-home-") == true)
+        XCTAssertEqual(getenv("HOME").map { String(cString: $0) }, fixedHome)
     }
 
     private func makePaths() throws -> (runtime: URL, database: URL) {

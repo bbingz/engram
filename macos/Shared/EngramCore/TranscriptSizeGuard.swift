@@ -37,11 +37,8 @@ public enum TranscriptSizeGuard {
         source: String,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws {
-        guard
-            let size = (try? FileManager.default.attributesOfItem(atPath: filePath)[.size]) as? NSNumber
-        else {
-            return
-        }
+        let attributes = try FileManager.default.attributesOfItem(atPath: filePath)
+        guard let size = attributes[.size] as? NSNumber else { throw ParserFailure.fileMissing }
 
         let maxBytes = maxFullJSONTranscriptBytes(environment: environment)
         let sizeBytes = size.int64Value

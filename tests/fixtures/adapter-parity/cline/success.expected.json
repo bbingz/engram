@@ -1,7 +1,7 @@
 {
   "failure": null,
   "fileToolCounts": {},
-  "generatedAtCommit": "88f86631",
+  "generatedAtCommit": "d97d0257",
   "inputPath": "cline/input/tasks/1770000000000/ui_messages.json",
   "insightFields": {
     "firstUserSummary": "帮我写单元测试",
@@ -32,7 +32,7 @@
       "timestamp": "2026-02-02T02:41:00.000Z"
     }
   ],
-  "nodeVersion": "v26.0.0",
+  "nodeVersion": "v26.7.0",
   "projectFields": {
     "cwd": "/Users/test/my-project",
     "project": null,

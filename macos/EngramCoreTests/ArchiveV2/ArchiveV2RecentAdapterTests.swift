@@ -115,6 +115,121 @@ final class ArchiveV2RecentAdapterTests: XCTestCase {
         XCTAssertFalse(wrapped is any ExactArchiveSourceAdapter)
     }
 
+    func testCursorModernRecentWrapperUsesCompositeModificationDate_repro() async throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let fixture = try await makeModernCursorFixture(
+            sessionID: "cursor-recent-composite",
+            modifiedAt: now.addingTimeInterval(-3 * 86_400)
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: now.addingTimeInterval(-60)],
+            ofItemAtPath: fixture.meta.path
+        )
+        let wrapped = RecentlyModifiedSessionAdapter(
+            base: fixture.adapter,
+            modifiedSince: now.addingTimeInterval(-2 * 86_400)
+        )
+
+        let recentLocators = try await wrapped.listSessionLocators()
+        XCTAssertEqual(recentLocators.count, 1)
+        let recentPayload = try modernCursorPayload(try XCTUnwrap(recentLocators.first))
+        let fixturePayload = try modernCursorPayload(fixture.locator)
+        XCTAssertEqual(recentPayload["sessionId"], fixturePayload["sessionId"])
+        XCTAssertEqual(recentPayload["storeDBPath"], fixturePayload["storeDBPath"])
+        XCTAssertEqual(recentPayload["transcriptPath"], fixturePayload["transcriptPath"])
+    }
+
+    func testCursorModernIndexingIdentityIncludesLiveMetadata_repro() async throws {
+        let fixture = try await makeModernCursorFixture(
+            sessionID: "cursor-indexing-identity",
+            modifiedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        let before = try XCTUnwrap(fixture.adapter.indexingInputIdentity(locator: fixture.locator))
+
+        try Data(#"{"name":"changed cursor title"}"#.utf8).write(to: fixture.meta)
+        let after = try XCTUnwrap(fixture.adapter.indexingInputIdentity(locator: fixture.locator))
+
+        XCTAssertNotEqual(after, before)
+    }
+
+    func testCursorModernLocatorRejectsAbsolutePathOutsideCursorRoot_repro() async throws {
+        let cursorRoot = root.appendingPathComponent(".cursor", isDirectory: true)
+        try FileManager.default.createDirectory(at: cursorRoot, withIntermediateDirectories: true)
+        let outsideStore = try makeFile("outside-store.db", modifiedAt: Date())
+        let adapter = CursorAdapter(
+            dbPath: root.appendingPathComponent("missing-state.vscdb").path,
+            cursorDataRoot: cursorRoot
+        )
+        let locator = try modernCursorLocator(
+            sessionID: "outside-store",
+            storeDBPath: outsideStore.path
+        )
+
+        XCTAssertNil(adapter.indexingInputIdentity(locator: locator))
+        guard case .failure(let failure) = try await adapter.parseSessionInfo(locator: locator) else {
+            return XCTFail("an absolute path outside cursorDataRoot must fail closed")
+        }
+        XCTAssertEqual(failure, .unsupportedVirtualLocator)
+        let accessible = await adapter.isAccessible(locator: locator)
+        XCTAssertFalse(accessible)
+    }
+
+    func testCursorModernLocatorRejectsDotDotPathEvenWhenItNormalizesInsideRoot_repro() async throws {
+        let cursorRoot = root.appendingPathComponent(".cursor", isDirectory: true)
+        let sessionID = "dot-dot-store"
+        let sessionRoot = cursorRoot
+            .appendingPathComponent("chats/workspace", isDirectory: true)
+            .appendingPathComponent(sessionID, isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionRoot, withIntermediateDirectories: true)
+        try Data("fixture".utf8).write(to: sessionRoot.appendingPathComponent("store.db"))
+        let adapter = CursorAdapter(
+            dbPath: root.appendingPathComponent("missing-state.vscdb").path,
+            cursorDataRoot: cursorRoot
+        )
+        let dotDotPath = cursorRoot.path
+            + "/chats/workspace/../workspace/\(sessionID)/store.db"
+        let locator = try modernCursorLocator(
+            sessionID: sessionID,
+            storeDBPath: dotDotPath
+        )
+
+        XCTAssertNil(adapter.indexingInputIdentity(locator: locator))
+        guard case .failure(let failure) = try await adapter.parseSessionInfo(locator: locator) else {
+            return XCTFail("a modern locator containing .. must fail closed")
+        }
+        XCTAssertEqual(failure, .unsupportedVirtualLocator)
+    }
+
+    func testCursorModernDiscoveryRejectsSymlinkEscapeFromChatsRoot_repro() async throws {
+        let cursorRoot = root.appendingPathComponent(".cursor", isDirectory: true)
+        let sessionID = "symlink-store"
+        let outsideSession = root
+            .appendingPathComponent("outside-cursor-session", isDirectory: true)
+        try FileManager.default.createDirectory(at: outsideSession, withIntermediateDirectories: true)
+        try Data("fixture".utf8).write(to: outsideSession.appendingPathComponent("store.db"))
+        let workspace = cursorRoot.appendingPathComponent("chats/workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: workspace.appendingPathComponent(sessionID, isDirectory: true),
+            withDestinationURL: outsideSession
+        )
+        let adapter = CursorAdapter(
+            dbPath: root.appendingPathComponent("missing-state.vscdb").path,
+            cursorDataRoot: cursorRoot
+        )
+
+        let listed = try await adapter.listSessionLocators()
+        XCTAssertEqual(listed, [])
+        let escapedLocator = try modernCursorLocator(
+            sessionID: sessionID,
+            storeDBPath: workspace
+                .appendingPathComponent(sessionID, isDirectory: true)
+                .appendingPathComponent("store.db")
+                .path
+        )
+        XCTAssertNil(adapter.indexingInputIdentity(locator: escapedLocator))
+    }
+
     func testExactLocatorSubsetFailsClosedForLocatorOutsideItsAllowlist() async throws {
         let allowed = try makeFile("allowed.jsonl", modifiedAt: .distantPast)
         let disallowed = try makeFile("disallowed.jsonl", modifiedAt: .distantPast)
@@ -209,6 +324,60 @@ final class ArchiveV2RecentAdapterTests: XCTestCase {
             ofItemAtPath: url.path
         )
         return url
+    }
+
+    private func makeModernCursorFixture(
+        sessionID: String,
+        modifiedAt: Date
+    ) async throws -> (adapter: CursorAdapter, locator: String, meta: URL) {
+        let cursorRoot = root.appendingPathComponent(".cursor", isDirectory: true)
+        let chatRoot = cursorRoot
+            .appendingPathComponent("chats/workspace", isDirectory: true)
+            .appendingPathComponent(sessionID, isDirectory: true)
+        let transcriptRoot = cursorRoot
+            .appendingPathComponent("projects/project/agent-transcripts", isDirectory: true)
+            .appendingPathComponent(sessionID, isDirectory: true)
+        try FileManager.default.createDirectory(at: chatRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: transcriptRoot, withIntermediateDirectories: true)
+        let store = chatRoot.appendingPathComponent("store.db")
+        let transcript = transcriptRoot.appendingPathComponent("\(sessionID).jsonl")
+        let meta = chatRoot.appendingPathComponent("meta.json")
+        for file in [store, transcript, meta] {
+            try Data("fixture".utf8).write(to: file)
+            try FileManager.default.setAttributes(
+                [.modificationDate: modifiedAt],
+                ofItemAtPath: file.path
+            )
+        }
+        let adapter = CursorAdapter(
+            dbPath: root.appendingPathComponent("missing-state.vscdb").path,
+            cursorDataRoot: cursorRoot
+        )
+        let locators = try await adapter.listSessionLocators()
+        let locator = try XCTUnwrap(locators.first)
+        return (adapter, locator, meta)
+    }
+
+    private func modernCursorLocator(
+        sessionID: String,
+        storeDBPath: String? = nil,
+        transcriptPath: String? = nil
+    ) throws -> String {
+        var payload: [String: Any] = ["sessionId": sessionID]
+        if let storeDBPath { payload["storeDBPath"] = storeDBPath }
+        if let transcriptPath { payload["transcriptPath"] = transcriptPath }
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        return "cursor-modern:\(data.base64EncodedString())"
+    }
+
+    private func modernCursorPayload(_ locator: String) throws -> [String: String] {
+        let prefix = "cursor-modern:"
+        let prefixRange = try XCTUnwrap(locator.range(of: prefix, options: .anchored))
+        let encodedPayload = String(locator[prefixRange.upperBound...])
+        let data = try XCTUnwrap(Data(base64Encoded: encodedPayload))
+        return try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: String]
+        )
     }
 }
 

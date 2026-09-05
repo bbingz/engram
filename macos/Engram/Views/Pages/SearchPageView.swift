@@ -39,6 +39,36 @@ private enum SearchTimeFilter: String, CaseIterable, Identifiable {
     }
 }
 
+/// Machine-origin filter for HQ live-ingested rows. The optional origin value
+/// is applied before the search limit; nil preserves the all-machines default.
+enum SearchOriginFilter: String, CaseIterable, Identifiable {
+    case all
+    case hq
+    case local
+
+    var id: String { rawValue }
+
+    var requestOrigin: String? {
+        self == .all ? nil : rawValue
+    }
+
+    var label: String {
+        switch self {
+        case .all: return "All machines"
+        case .hq: return "HQ"
+        case .local: return "This Mac"
+        }
+    }
+
+    func matches(_ origin: String?) -> Bool {
+        switch self {
+        case .all: return true
+        case .hq: return origin == "hq"
+        case .local: return origin != "hq"
+        }
+    }
+}
+
 /// Result-state of a keyword search. `failed` distinguishes a real backend
 /// fault (service AND local FTS both threw) from a genuine no-match so the UI
 /// doesn't read a down index as "your data is missing".
@@ -63,7 +93,8 @@ enum SearchOutcome: Equatable {
 
 struct SearchPageView: View {
     @Environment(DatabaseManager.self) var db
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
+    @Environment(\.engramFixedDate) var fixedDate
 
     private let lockedProject: String?
     private let embeddedInParentScroll: Bool
@@ -73,6 +104,10 @@ struct SearchPageView: View {
     @State private var selectedProjectFilter: String?
     @State private var selectedSourceFilter: String?
     @State private var selectedTimeFilter: SearchTimeFilter = .all
+    @State private var selectedOriginFilter: SearchOriginFilter = .all
+    /// Keyboard focus on result rows: `.plain` card buttons draw no focus ring,
+    /// so the row overlay below renders one explicitly (accent, 2pt).
+    @FocusState private var focusedResultId: String?
     @State private var projectFilters: [(name: String, count: Int)] = []
     @State private var sourceFilters: [(name: String, count: Int)] = []
     @State private var results: [SearchResult] = []
@@ -91,8 +126,13 @@ struct SearchPageView: View {
         SearchOutcome.classify(query: query, results: results, didFail: searchFailed)
     }
 
+    private var queryReadiness: SearchQueryReadiness {
+        SearchQueryReadiness.classify(query: query)
+    }
+
     private var hasClearableFilters: Bool {
-        selectedSourceFilter != nil || selectedTimeFilter != .all || (lockedProject == nil && selectedProjectFilter != nil)
+        selectedSourceFilter != nil || selectedTimeFilter != .all || selectedOriginFilter != .all
+            || (lockedProject == nil && selectedProjectFilter != nil)
     }
 
     init(
@@ -125,6 +165,13 @@ struct SearchPageView: View {
         }
         .onChange(of: query) { _, _ in
             searchTask?.cancel()
+            results = []
+            searchModes = []
+            warning = nil
+            searchFailed = false
+            if queryReadiness != .ready {
+                isSearching = false
+            }
             searchTask = Task {
                 try? await Task.sleep(nanoseconds: 300_000_000)
                 guard !Task.isCancelled else { return }
@@ -134,6 +181,7 @@ struct SearchPageView: View {
         .onChange(of: selectedProjectFilter) { _, _ in triggerSearchIfReady() }
         .onChange(of: selectedSourceFilter) { _, _ in triggerSearchIfReady() }
         .onChange(of: selectedTimeFilter) { _, _ in triggerSearchIfReady() }
+        .onChange(of: selectedOriginFilter) { _, _ in triggerSearchIfReady() }
         .onDisappear { searchTask?.cancel(); searchTask = nil }
     }
 
@@ -145,21 +193,23 @@ struct SearchPageView: View {
                     TextField("Search sessions...", text: $query)
                         .textFieldStyle(.plain)
                         .onSubmit { triggerSearch() }
+                        .accessibilityIdentifier("search_input")
                     if !query.isEmpty {
                         Button(action: { query = ""; results = []; searchModes = []; warning = nil; searchFailed = false }) {
                             Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.tertiaryText)
-                        }.buttonStyle(.plain)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Clear search")
                     }
                 }
                 .padding(12)
                 .background(Theme.inputBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
-                .accessibilityIdentifier("search_input")
 
                 advancedFilterDisclosure
 
                 // Active search modes
-                if !searchModes.isEmpty {
+                if queryReadiness == .ready && !searchModes.isEmpty {
                     HStack(spacing: 6) {
                         ForEach(searchModes, id: \.self) { mode in
                             Text(mode)
@@ -186,14 +236,22 @@ struct SearchPageView: View {
                         Text("Searching...").font(.caption).foregroundStyle(Theme.secondaryText)
                     }
                 } else if searchOutcome == .failed {
-                    EmptyState(icon: "exclamationmark.triangle", title: "Search unavailable", message: "Could not reach the index. Try again.")
-                        .accessibilityIdentifier("search_emptyState")
-                } else if searchOutcome == .empty && !query.isEmpty {
+                    EmptyState(
+                        icon: "exclamationmark.triangle",
+                        title: "Search unavailable",
+                        message: "Could not reach the index. Try again.",
+                        action: ("Retry", { triggerSearch() })
+                    )
+                    .accessibilityIdentifier("search_failed")
+                } else if queryReadiness == .tooShort {
+                    EmptyState(icon: "magnifyingglass", title: "Keep typing", message: "Type at least 2 characters")
+                        .accessibilityIdentifier("search_tooShort")
+                } else if searchOutcome == .empty && queryReadiness == .ready {
                     EmptyState(icon: "magnifyingglass", title: "No results", message: "Try a different search term")
-                        .accessibilityIdentifier("search_emptyState")
+                        .accessibilityIdentifier("search_noResults")
                 } else if searchOutcome == .empty {
                     EmptyState(icon: "magnifyingglass", title: "Search sessions", message: emptySearchMessage)
-                        .accessibilityIdentifier("search_emptyState")
+                        .accessibilityIdentifier("search_idle")
                 } else {
                     Text("\(results.count) results")
                         .font(.caption).foregroundStyle(Theme.tertiaryText)
@@ -211,7 +269,7 @@ struct SearchPageView: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     if let session = result.session {
                                         SessionCard(session: session) {
-                                            NotificationCenter.default.post(name: .openSession, object: SessionBox(session, searchTerm: query))
+                                            NotificationCenter.default.post(Self.openNotification(for: session, searchTerm: query))
                                         }
                                     }
                                     if !result.snippet.isEmpty {
@@ -227,6 +285,21 @@ struct SearchPageView: View {
                                     }
                                 }
                             }
+                            .focusable()
+                            .focused($focusedResultId, equals: result.id)
+                            // Merge-gate residual 3b: Enter/Space on the focused
+                            // row shares the tap's open path (7-1 pattern).
+                            .onKeyPress(keys: [.return, .space]) { _ in
+                                guard focusedResultId == result.id, let session = result.session else { return .ignored }
+                                NotificationCenter.default.post(Self.openNotification(for: session, searchTerm: query))
+                                return .handled
+                            }
+                            .overlay(
+                                RoundedRectangle(cornerRadius: Theme.cornerRadius)
+                                    .stroke(Theme.accent, lineWidth: 2)
+                                    .opacity(focusedResultId == result.id ? 1 : 0)
+                                    .allowsHitTesting(false)
+                            )
                         }
                     }
                     .accessibilityIdentifier("search_results")
@@ -273,6 +346,7 @@ struct SearchPageView: View {
             projectFilterControl
             sourceFilterControl
             timeFilterControl
+            originFilterControl
             Spacer()
         }
         .controlSize(.small)
@@ -290,6 +364,9 @@ struct SearchPageView: View {
         if selectedTimeFilter != .all {
             parts.append(selectedTimeFilter.label)
         }
+        if selectedOriginFilter != .all {
+            parts.append(selectedOriginFilter.label)
+        }
         return parts.joined(separator: " · ")
     }
 
@@ -299,6 +376,14 @@ struct SearchPageView: View {
         }
         selectedSourceFilter = nil
         selectedTimeFilter = .all
+        selectedOriginFilter = .all
+    }
+
+    /// The navigation notification shared by result tap and keyboard Enter/Space.
+    /// Static and pure so tests can verify the contract without a service client
+    /// (same pattern as TimelinePageView.openNotification).
+    static func openNotification(for session: Session, searchTerm: String) -> Notification {
+        Notification(name: .openSession, object: SessionBox(session, searchTerm: searchTerm))
     }
 
     @ViewBuilder
@@ -379,6 +464,27 @@ struct SearchPageView: View {
         .accessibilityIdentifier("search_timeFilter")
     }
 
+    private var originFilterControl: some View {
+        Menu {
+            ForEach(SearchOriginFilter.allCases) { option in
+                Button {
+                    selectedOriginFilter = option
+                } label: {
+                    if selectedOriginFilter == option {
+                        Label(option.label, systemImage: "checkmark")
+                    } else {
+                        Text(option.label)
+                    }
+                }
+            }
+        } label: {
+            Label(selectedOriginFilter.label, systemImage: "desktopcomputer")
+                .lineLimit(1)
+        }
+        .help("Filter by the machine a session lives on")
+        .accessibilityIdentifier("search_originFilter")
+    }
+
     // MARK: - Search
 
     private func triggerSearch() {
@@ -392,20 +498,33 @@ struct SearchPageView: View {
     }
 
     private func performSearch() async {
-        guard query.count >= 2 else { results = []; searchFailed = false; return }
+        let requestedQuery = query
+        let requestedProject = selectedProjectFilter
+        let requestedSource = selectedSourceFilter
+        let requestedTime = selectedTimeFilter
+        let requestedOrigin = selectedOriginFilter
+        guard SearchQueryReadiness.classify(query: requestedQuery) == .ready else {
+            results = []
+            searchModes = []
+            warning = nil
+            searchFailed = false
+            return
+        }
         isSearching = true
         searchFailed = false
         defer { isSearching = false }
+        let since = requestedTime.sinceString(now: fixedDate ?? Date())
 
         do {
             let response = try await serviceClient.search(
                 EngramServiceSearchRequest(
-                    query: query,
+                    query: requestedQuery,
                     mode: "keyword",
                     limit: 30,
-                    project: selectedProjectFilter,
-                    source: selectedSourceFilter,
-                    since: selectedTimeFilter.sinceString()
+                    project: requestedProject,
+                    source: requestedSource,
+                    since: since,
+                    origin: requestedOrigin.requestOrigin
                 )
             )
 
@@ -416,29 +535,34 @@ struct SearchPageView: View {
             searchModes = response.searchModes ?? []
             warning = response.warning
             results = response.items.map(\.searchResult)
+            announceResults(count: results.count, query: requestedQuery)
         } catch {
+            guard !Task.isCancelled else { return }
             // Fallback to local FTS
             do {
                 let db = self.db
-                let fallbackQuery = query
-                let fallbackSources = selectedSourceFilter.map { Set([$0]) } ?? []
-                let fallbackProjects = selectedProjectFilter.map { Set([$0]) } ?? []
-                let fallbackSince = selectedTimeFilter.sinceString()
+                let fallbackQuery = requestedQuery
+                let fallbackSources = requestedSource.map { Set([$0]) } ?? []
+                let fallbackProjects = requestedProject.map { Set([$0]) } ?? []
+                let fallbackSince = since
                 let localResults = try await Task.detached {
                     try db.searchWithSnippets(
                         query: fallbackQuery,
                         limit: 30,
                         sources: fallbackSources,
                         projects: fallbackProjects,
-                        since: fallbackSince
+                        since: fallbackSince,
+                        origin: requestedOrigin.requestOrigin
                     )
                 }.value
                 guard !Task.isCancelled else { return }
                 searchModes = ["keyword (offline)"]
                 warning = nil
-                results = localResults.map { r in
-                    SearchResult(id: r.session.id, session: r.session, snippet: r.snippet, matchType: "keyword", score: 0)
-                }
+                results = localResults
+                    .map { r in
+                        SearchResult(id: r.session.id, session: r.session, snippet: r.snippet, matchType: "keyword", score: 0)
+                    }
+                announceResults(count: results.count, query: requestedQuery)
             } catch {
                 // Double-fault: service AND local FTS both threw. Surface a real
                 // failure state instead of a misleading "No results".
@@ -448,6 +572,16 @@ struct SearchPageView: View {
                 results = []
             }
         }
+    }
+
+    /// VoiceOver: result rows appear without any focus change, so a screen-reader
+    /// user otherwise can't tell a search completed. Announce the outcome count.
+    private func announceResults(count: Int, query: String) {
+        AccessibilityNotification.Announcement(
+            count == 1
+                ? "1 result for \(query)"
+                : "\(count) results for \(query)"
+        ).post()
     }
 
     private func loadFilterOptions() async {

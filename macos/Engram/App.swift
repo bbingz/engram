@@ -1,6 +1,21 @@
 // macos/Engram/App.swift
 import SwiftUI
 
+private struct EngramServiceClientEnvironmentKey: EnvironmentKey {
+    static let defaultValue: any EngramServiceClientProtocol = EngramServiceClient(
+        transport: UnixSocketEngramServiceTransport(
+            socketPath: UnixSocketEngramServiceTransport.defaultSocketPath()
+        )
+    )
+}
+
+extension EnvironmentValues {
+    var engramServiceClient: any EngramServiceClientProtocol {
+        get { self[EngramServiceClientEnvironmentKey.self] }
+        set { self[EngramServiceClientEnvironmentKey.self] = newValue }
+    }
+}
+
 enum AppLanguage: String, CaseIterable, Identifiable {
     case system
     case english
@@ -56,11 +71,12 @@ struct EngramApp: App {
     var body: some Scene {
         Settings {
             LocalizedRoot {
-                SettingsView()
+                SettingsView(serviceSocketPath: appDelegate.environment.serviceSocketPath)
                     .environment(appDelegate.db)
                     .environment(appDelegate.serviceStatusStore)
-                    .environment(appDelegate.serviceClient)
+                    .environment(\.engramServiceClient, appDelegate.serviceClient)
             }
+            .defaultAppStorage(appDelegate.appStorage)
         }
     }
 }
@@ -70,8 +86,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let environment: AppEnvironment
     let db: DatabaseManager
     let serviceStatusStore: EngramServiceStatusStore
-    let serviceClient: EngramServiceClient
+    let serviceClient: any EngramServiceClientProtocol
     let serviceLauncher: EngramServiceLauncher
+    let appStorage: UserDefaults
     private var restartObserverToken: NSObjectProtocol?
     private var showOnboardingObserverToken: NSObjectProtocol?
     private var menuBarController: MenuBarController?
@@ -80,20 +97,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     override init() {
         self.environment = AppEnvironment.fromCommandLine()
+        self.appStorage = Self.makeAppStorage(
+            isTestMode: environment.isTestMode,
+            environment: ProcessInfo.processInfo.environment
+        )
         self.db = DatabaseManager(path: environment.dbPath)
         self.serviceStatusStore = EngramServiceStatusStore()
-        self.serviceClient = EngramServiceClient(
-            transport: UnixSocketEngramServiceTransport(socketPath: environment.serviceSocketPath)
-        )
+        self.serviceClient = Self.makeServiceClient(for: environment)
         self.serviceLauncher = EngramServiceLauncher()
         super.init()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // One-time: migrate plaintext API keys from settings.json to Keychain
-        migrateKeysToKeychainIfNeeded()
-        // One-time: scrub settings + Keychain entries for removed features (e.g. Viking)
-        removeDeprecatedSettingsKeysIfNeeded()
+        if !environment.isTestMode {
+            // Invariant 6: UI tests must not mutate production settings or Keychain state.
+            // One-time: migrate plaintext API keys from settings.json to Keychain
+            migrateKeysToKeychainIfNeeded()
+            // One-time: scrub settings + Keychain entries for removed features (e.g. Viking)
+            removeDeprecatedSettingsKeysIfNeeded()
+        }
 
         // Row 16: opt-in main-thread stall monitor (DEBUG only; no-ops without
         // ENGRAM_PERF_MONITOR). Release has no MainThreadStallMonitor type.
@@ -116,7 +138,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             NSApp.appearance = NSAppearance(named: name)
         } else {
             // Restore saved theme preference on launch
-            let savedTheme = UserDefaults.standard.string(forKey: "appTheme") ?? "system"
+            let savedTheme = appStorage.string(forKey: "appTheme") ?? "system"
             switch savedTheme {
             case "light": NSApp.appearance = NSAppearance(named: .aqua)
             case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
@@ -124,35 +146,31 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
 
-        // Open SQLite
-        do {
-            try db.open()
-        } catch {
-            EngramLogger.error("Database open failed", module: .database, error: error)
+        // Pool creation can wait for SQLite's busy timeout during an exclusive
+        // maintenance window, so do not block menu-bar setup on the main actor.
+        Task.detached(priority: .userInitiated) { [db] in
+            do {
+                try db.open()
+            } catch {
+                EngramLogger.error("Database open failed", module: .database, error: error)
+            }
         }
 
         if environment.autoStartService {
-            serviceStatusStore.apply(.starting)
-            do {
+            Task { @MainActor in
                 let serviceConfiguration = environment.serviceLaunchConfiguration()
-                try serviceLauncher.start(
-                    configuration: serviceConfiguration,
-                    onEvent: { [serviceStatusStore] event in
-                        Self.applyServiceEvent(event, to: serviceStatusStore)
-                    }
-                )
-                serviceLauncher.startHealthMonitor(
+                await serviceLauncher.startOrAdopt(
                     configuration: serviceConfiguration,
                     statusProbe: { [serviceClient] in
                         try await serviceClient.status()
                     },
                     onStatus: { [serviceStatusStore] status in
                         serviceStatusStore.apply(status)
+                    },
+                    onEvent: { [serviceStatusStore] event in
+                        Self.applyServiceEvent(event, to: serviceStatusStore)
                     }
                 )
-            } catch {
-                serviceStatusStore.apply(.error(message: error.localizedDescription))
-                EngramLogger.error("EngramService launch failed", module: .daemon, error: error)
             }
 
             // One-click recovery: the HomeView Service State panel and the
@@ -178,8 +196,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 PopoverView()
                     .environment(db)
                     .environment(serviceStatusStore)
-                    .environment(serviceClient)
-            })
+                    .environment(\.engramServiceClient, serviceClient)
+            }.defaultAppStorage(appStorage))
             window.title = String(localized: "Popover Preview")
             window.center()
             window.makeKeyAndOrderFront(nil)
@@ -191,7 +209,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 db: db,
                 serviceStatusStore: serviceStatusStore,
                 serviceClient: serviceClient,
-                windowSize: environment.windowSize
+                serviceSocketPath: environment.serviceSocketPath,
+                fixedDate: environment.fixedDate,
+                windowSize: environment.windowSize,
+                appStorage: appStorage,
+                isTestMode: environment.isTestMode,
+                hasOnboardingWindow: { [weak self] in self?.onboardingWindow != nil }
             )
 
             // In test mode with a window size, auto-open the main window so UI tests can find the sidebar
@@ -207,14 +230,67 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             Task { @MainActor in self?.showOnboarding() }
         }
 
-        // First-run onboarding (skip in test mode)
+        // First-run onboarding (skip in test mode unless explicitly forced by UI tests)
         let isTestMode = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
             || !environment.autoStartService
-        if !isTestMode {
-            if !UserDefaults.standard.bool(forKey: "hasCompletedOnboarding") {
+        if environment.showOnboarding {
+            showOnboarding()
+        } else if !isTestMode {
+            if !appStorage.bool(forKey: "hasCompletedOnboarding") {
                 showOnboarding()
             }
         }
+    }
+
+    static func makeAppStorage(
+        isTestMode: Bool,
+        environment: [String: String],
+        standard: UserDefaults = .standard
+    ) -> UserDefaults {
+        // Invariant 6: UI tests use a throwaway defaults suite so @AppStorage
+        // interactions never mutate the installed app's preference domain.
+        guard isTestMode,
+              let suite = environment["ENGRAM_UI_TEST_DEFAULTS_SUITE"],
+              !suite.isEmpty,
+              let isolated = UserDefaults(suiteName: suite) else {
+            return standard
+        }
+        return isolated
+    }
+
+    static func makeServiceClient(for environment: AppEnvironment) -> any EngramServiceClientProtocol {
+        if environment.mockDaemon {
+            return MockEngramServiceClient(
+                searchResult: .failure(
+                    EngramServiceError.serviceUnavailable(
+                        message: "UI test mock search unavailable"
+                    )
+                ),
+                liveSessionsResult: .failure(
+                    EngramServiceError.serviceUnavailable(
+                        message: "UI test mock live sessions unavailable"
+                    )
+                ),
+                sourcesResult: .failure(
+                    EngramServiceError.serviceUnavailable(
+                        message: "UI test mock sources unavailable"
+                    )
+                ),
+                memoryFilesResult: .failure(
+                    EngramServiceError.serviceUnavailable(
+                        message: "UI test mock memory files unavailable"
+                    )
+                ),
+                insightsResult: .failure(
+                    EngramServiceError.serviceUnavailable(
+                        message: "UI test mock insights unavailable"
+                    )
+                )
+            )
+        }
+        return EngramServiceClient(
+            transport: UnixSocketEngramServiceTransport(socketPath: environment.serviceSocketPath)
+        )
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -278,11 +354,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // MARK: - Onboarding
 
     private func showOnboarding() {
+        if let onboardingWindow {
+            NSApp.setActivationPolicy(.regular)
+            onboardingWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
         let onboardingView = LocalizedRoot {
             OnboardingView {
                 self.completeOnboarding()
             }
         }
+        .defaultAppStorage(appStorage)
         let hostingController = NSHostingController(rootView: onboardingView)
 
         let win = NSWindow(contentViewController: hostingController)
@@ -308,7 +391,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func completeOnboarding() {
         // Nil delegate before close so close→windowWillClose cannot re-enter.
         onboardingWindow?.delegate = nil
-        UserDefaults.standard.set(true, forKey: "hasCompletedOnboarding")
+        appStorage.set(true, forKey: "hasCompletedOnboarding")
         onboardingWindow?.close()
         onboardingWindow = nil
 

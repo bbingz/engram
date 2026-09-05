@@ -9,7 +9,8 @@ let todayPanelRowLimit = 5
 
 struct HomeView: View {
     @Environment(DatabaseManager.self) var db
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
+    @Environment(\.engramFixedDate) var fixedDate
     @Environment(EngramServiceStatusStore.self) var serviceStatusStore
     // Shared global escape hatch (see SessionsPageView). When off (default), the
     // Continue list shows only human-driven sessions.
@@ -24,14 +25,22 @@ struct HomeView: View {
     @State private var projectWarnings: [String: String] = [:]
     @State private var confirmedCounts: [String: Int] = [:]
     @State private var suggestedCounts: [String: Int] = [:]
-    @State private var handledFollowUps = TodayHandledFollowUps()
+    @State private var handledFollowUps: TodayHandledFollowUps
     @State private var isLoading = true
+    @State private var loadGeneration = 0
     @State private var alertMessage: String? = nil
+    /// Load failures offer Retry (Sessions/Timeline parity); action-status
+    /// messages (copy resume feedback) do not.
+    @State private var alertIsRetryableLoadError = false
     @State private var resumeSession: Session?
     @State private var copyingSessionId: String?
     /// Row 24: MCP activation card — computed off-main in loadData, not in body.
     @State private var mcpConfigured = false
     @AppStorage("mcp.activationCardDismissed") private var mcpActivationCardDismissed = false
+
+    init(appStorage: UserDefaults) {
+        _handledFollowUps = State(initialValue: TodayHandledFollowUps(defaults: appStorage))
+    }
 
     var body: some View {
         ScrollView {
@@ -46,7 +55,12 @@ struct HomeView: View {
                     mcpActivationCard
                 }
                 if let alertMessage {
-                    AlertBanner(message: alertMessage)
+                    AlertBanner(
+                        message: alertMessage,
+                        action: alertIsRetryableLoadError
+                            ? ("Retry", { Task { await loadData() } })
+                            : nil
+                    )
                 }
                 workbenchGrid
             }
@@ -71,7 +85,7 @@ struct HomeView: View {
 
     @ViewBuilder
     private var headerSection: some View {
-        let freshness = serviceStatusStore.dataFreshness(now: Date())
+        let freshness = serviceStatusStore.dataFreshness(now: fixedDate ?? Date())
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Today")
@@ -95,7 +109,7 @@ struct HomeView: View {
     @ViewBuilder
     private var kpiSection: some View {
         if let kpi {
-            let freshness = serviceStatusStore.dataFreshness(now: Date())
+            let freshness = serviceStatusStore.dataFreshness(now: fixedDate ?? Date())
             HStack(spacing: 12) {
                 KPICard(
                     value: serviceCountValue(serviceStatusStore.todayParentSessions, freshness: freshness),
@@ -168,7 +182,7 @@ struct HomeView: View {
                 NotificationCenter.default.post(name: .openSettings, object: nil)
             } label: {
                 Text("Set up MCP")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.callout.weight(.medium))
             }
             .buttonStyle(.borderedProminent)
             .tint(Theme.accent)
@@ -227,6 +241,7 @@ struct HomeView: View {
                 }
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("home_recentSessions")
     }
 
@@ -310,7 +325,7 @@ struct HomeView: View {
 
     @ViewBuilder
     private var serviceStateSection: some View {
-        let freshness = serviceStatusStore.dataFreshness(now: Date())
+        let freshness = serviceStatusStore.dataFreshness(now: fixedDate ?? Date())
         WorkbenchPanel(icon: "checkmark.shield", title: "Service State") {
             VStack(spacing: 10) {
                 ServiceStateRow(
@@ -418,21 +433,43 @@ struct HomeView: View {
     }()
 
     private func loadData() async {
+        loadGeneration += 1
+        let generation = loadGeneration
         isLoading = true
-        defer { isLoading = false }
+        defer {
+            if generation == loadGeneration { isLoading = false }
+        }
 
         let db = self.db
         let serviceClient = self.serviceClient
+        let now = fixedDate ?? Date()
         let handledIds = handledFollowUps.handledIds
         let humanDriven = !showAllSessions
         // Row 24: only re-read ~/.claude.json while the card could still show.
         let shouldProbeMCP = !mcpConfigured
         do {
             let data = try await Task.detached {
-                let kpi = try db.kpiStats()
+                let aggregateKpi = try db.kpiStats()
+                let sessionStats = try db.sessionListStats(
+                    subAgent: false,
+                    topLevelOnly: true,
+                    humanDriven: humanDriven
+                )
+                let kpi = DatabaseManager.KPIStats(
+                    sessions: sessionStats.totalSessions,
+                    sources: aggregateKpi.sources,
+                    messages: aggregateKpi.messages,
+                    projects: aggregateKpi.projects
+                )
                 let rawRecent = try db.recentSessions(limit: 12, humanDriven: humanDriven)
-                let followUps = try loadTodayFollowUps(from: db, limit: 8, excluding: handledIds)
-                let projects = try db.listSessionsByProject(limit: 5)
+                let followUps = try loadTodayFollowUps(
+                    from: db,
+                    limit: 8,
+                    excluding: handledIds,
+                    humanDriven: humanDriven,
+                    now: now
+                )
+                let projects = try db.listSessionsByProject(limit: 5, humanDriven: humanDriven)
                 let repos = try db.listGitRepos()
                 let countIds = Array(Set((rawRecent + followUps).map(\.id)))
                 let confirmed = try db.childCount(parentIds: countIds)
@@ -449,6 +486,11 @@ struct HomeView: View {
             let migrations = (try? await serviceClient.projectMigrations(
                 EngramServiceProjectMigrationsRequest(state: "committed", limit: 25)
             ).migrations) ?? []
+            guard BrowseReloadCoalescer.shouldApplyLoad(
+                resultGeneration: generation,
+                currentGeneration: loadGeneration,
+                isCancelled: Task.isCancelled
+            ) else { return }
             kpi = data.0
             recentSessions = data.1
             followUpSessions = data.2
@@ -469,12 +511,19 @@ struct HomeView: View {
                 mcpConfigured = data.7
             }
             alertMessage = nil
+            alertIsRetryableLoadError = false
         } catch {
+            guard BrowseReloadCoalescer.shouldApplyLoad(
+                resultGeneration: generation,
+                currentGeneration: loadGeneration,
+                isCancelled: Task.isCancelled
+            ) else { return }
             EngramLogger.error("HomeView load failed", module: .ui, error: error)
             alertMessage = String.localizedStringWithFormat(
                 String(localized: "Failed to load Today: %@"),
                 error.localizedDescription
             )
+            alertIsRetryableLoadError = true
         }
     }
 
@@ -500,9 +549,11 @@ struct HomeView: View {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(item.text, forType: .string)
                 alertMessage = item.message
+                alertIsRetryableLoadError = false
             } catch {
                 EngramLogger.error("HomeView copy resume command failed", module: .ui, error: error)
                 alertMessage = String(localized: "Failed to copy resume command")
+                alertIsRetryableLoadError = false
             }
         }
     }
@@ -566,11 +617,14 @@ private struct TodaySessionRow: View {
     var body: some View {
         HStack(spacing: 10) {
             SourcePill(source: session.source)
+            OriginBadge(origin: session.origin)
             VStack(alignment: .leading, spacing: 3) {
                 Text(session.displayTitle)
                     .font(.callout)
                     .lineLimit(1)
                     .foregroundStyle(Theme.primaryText)
+                    .accessibilityIdentifier("home_sessionTitle_\(session.id)")
+                    .accessibilityLabel(session.displayTitle)
                 HStack(spacing: 6) {
                     Text(detail)
                     Text(relativeTime(session.startTime))
@@ -616,6 +670,7 @@ private struct TodaySessionRow: View {
         .background(Theme.surface)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .contain)
     }
 
     private func relativeTime(_ iso: String) -> String {
@@ -684,28 +739,20 @@ private func loadTodayFollowUps(
     from db: DatabaseManager,
     limit: Int,
     excluding handledIds: Set<String>,
+    humanDriven: Bool,
     now: Date = Date()
 ) throws -> [Session] {
-    var seen = Set<String>()
-    var matches: [Session] = []
     let since = ISO8601DateFormatter().string(from: now.addingTimeInterval(-TodayFollowUps.recencyWindow))
-    for query in TodayFollowUps.queries {
-        let results = try db.searchWithSnippets(query: query, limit: limit, since: since)
-        for result in results
-        where TodayFollowUps.isEligible(result.session, handledIds: handledIds, now: now)
-            && seen.insert(result.session.id).inserted {
-            matches.append(result.session)
-            if matches.count >= limit {
-                return matches
-            }
-        }
-    }
-    return matches
+    return try db.todayFollowUpSessions(
+        queries: TodayFollowUps.queries,
+        startedSince: since,
+        excluding: handledIds,
+        limit: limit,
+        humanDriven: humanDriven
+    )
 }
 
-/// Scoping rules for the Today "Follow-ups" panel. `searchWithSnippets` is
-/// history-wide and owned by another module, so the view narrows its keyword
-/// set and post-filters hits to a recent, top-level, unhandled window here.
+/// Scoping rules for the Today "Follow-ups" panel.
 enum TodayFollowUps {
     /// Recent window for follow-ups, in seconds (72h).
     static let recencyWindow: TimeInterval = 72 * 3600

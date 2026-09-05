@@ -41,7 +41,7 @@ describe('QoderAdapter', () => {
     expect(messages[3].content).toBe('file contents omitted');
   });
 
-  it('lists nested subagents with parent session ids', async () => {
+  it('lists nested subagents with collision-safe ids (repro)', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qoder-subagents-'));
     try {
       const sessionDir = join(
@@ -63,6 +63,7 @@ describe('QoderAdapter', () => {
       expect(files).toEqual([join(subagentDir, 'subagent.jsonl')]);
       const info = await nestedAdapter.parseSessionInfo(files[0]);
       expect(info?.parentSessionId).toBe('parent-session');
+      expect(info?.id).toBe('sub:qoder-session-001:subagent.jsonl');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -11,12 +11,13 @@ public enum SearchFilterPredicates {
         public let bindings: [String]
     }
 
-    /// Builds the common source/project/activity-time clauses in binding order.
+    /// Builds the common source/project/origin/activity-time clauses in binding order.
     /// Empty or whitespace-only values are ignored and exact values are
     /// de-duplicated deterministically.
     public static func clauses(
         sources: [String] = [],
         projects: [String] = [],
+        origin: String? = nil,
         since: String? = nil,
         alias: String = "s"
     ) -> [Clause] {
@@ -34,18 +35,33 @@ public enum SearchFilterPredicates {
         ) {
             clauses.append(project)
         }
+        if let origin = normalized(origin) {
+            let originColumn = column("origin", alias: alias)
+            clauses.append(
+                origin == "local"
+                    ? Clause(
+                        sql: "(\(originColumn) IS NULL OR \(originColumn) != ?)",
+                        bindings: ["hq"]
+                    )
+                    : Clause(sql: "\(originColumn) = ?", bindings: [origin])
+            )
+        }
         if let since = normalized(since) {
-            let endTime = column("end_time", alias: alias)
-            let startTime = column("start_time", alias: alias)
             clauses.append(
                 Clause(
-                    sql: "COALESCE(\(endTime), \(startTime)) >= ?",
+                    sql: "\(activityTimeSQL(alias: alias)) >= ?",
                     bindings: [since]
                 )
             )
         }
 
         return clauses
+    }
+
+    public static func activityTimeSQL(alias: String = "s") -> String {
+        let endTime = column("end_time", alias: alias)
+        let startTime = column("start_time", alias: alias)
+        return "COALESCE(NULLIF(\(endTime), ''), \(startTime))"
     }
 
     private static func exactClause(column: String, values: [String]) -> Clause? {

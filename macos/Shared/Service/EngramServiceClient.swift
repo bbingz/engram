@@ -7,6 +7,7 @@ import Observation
 final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
     private static let migrationCommandTimeout: TimeInterval = 10 * 60
     private static let bulkAICommandTimeout: TimeInterval = 10 * 60
+    private static let mutatingCommandTimeout: TimeInterval = 10 * 60
     /// IPC budget for AI-bound RPCs. Must exceed provider HTTP timeout so the
     /// client does not fail while the service still persists results (Wave 7C H03).
     private static let frameBoundCommandTimeout: TimeInterval = 45
@@ -97,7 +98,7 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
     }
 
     func generateSummary(_ request: EngramServiceGenerateSummaryRequest) async throws -> EngramServiceGenerateSummaryResponse {
-        try await command("generateSummary", payload: request, timeout: Self.frameBoundCommandTimeout)
+        try await command("generateSummary", payload: request, timeout: Self.mutatingCommandTimeout)
     }
 
     func generateProjectWorkTitles(_ request: EngramServiceGenerateProjectWorkTitlesRequest) async throws -> EngramServiceGenerateProjectWorkTitlesResponse {
@@ -118,6 +119,13 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
 
     func resumeCommand(sessionId: String) async throws -> EngramServiceResumeCommandResponse {
         try await command("resumeCommand", payload: EngramServiceResumeCommandRequest(sessionId: sessionId))
+    }
+
+    func liveIngestResetShrinkGuard(peer: String) async throws -> EngramServiceLiveIngestResetShrinkGuardResponse {
+        try await command(
+            "liveIngestResetShrinkGuard",
+            payload: EngramServiceLiveIngestResetShrinkGuardRequest(peer: peer)
+        )
     }
 
     func setParentSession(sessionId: String, parentId: String) async throws -> EngramServiceLinkResponse {
@@ -396,7 +404,13 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
             command: name,
             payload: payload
         )
-        let response = try await transport.send(request, timeout: timeout ?? defaultTimeout)
+        // docs/invariants.md #1: UI mutations remain service-routed and may
+        // legitimately wait behind the service's single-writer maintenance.
+        let effectiveTimeout = timeout
+            ?? (ServiceCapabilityToken.requiresToken(name)
+                ? Self.mutatingCommandTimeout
+                : defaultTimeout)
+        let response = try await transport.send(request, timeout: effectiveTimeout)
         guard response.requestId == request.requestId else {
             throw EngramServiceError.invalidRequest(
                 message: "Response request id \(response.requestId) did not match \(request.requestId)"

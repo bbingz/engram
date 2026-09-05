@@ -18,8 +18,8 @@ struct RepoDetailView: View {
                         Image(systemName: "chevron.left")
                         Text("Repos")
                     }
-                    .font(.system(size: 12))
-                    .foregroundStyle(.blue)
+                    .scaledFont(12)
+                    .foregroundStyle(Theme.accent)
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("repos_detail_back")
@@ -32,8 +32,8 @@ struct RepoDetailView: View {
                             .font(.caption)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 2)
-                            .background(Color.green.opacity(0.15))
-                            .foregroundStyle(.green)
+                            .background(Theme.green.opacity(0.15))
+                            .foregroundStyle(Theme.green)
                             .clipShape(RoundedRectangle(cornerRadius: 4))
                     }
                 }
@@ -82,14 +82,14 @@ struct RepoDetailView: View {
                             HStack {
                                 Image(systemName: "doc.text")
                                     .font(.caption)
-                                    .foregroundStyle(.blue)
+                                    .foregroundStyle(Theme.accent)
                                 Text("CLAUDE.md")
                                     .font(.caption.bold())
-                                    .foregroundStyle(.blue)
+                                    .foregroundStyle(Theme.accent)
                             }
                             Divider()
                             Text(content)
-                                .font(.system(size: 11, design: .monospaced))
+                                .scaledFont(11, design: .monospaced)
                                 .foregroundStyle(.secondary)
                                 .textSelection(.enabled)
                                 .lineLimit(60)
@@ -162,7 +162,7 @@ struct RepoDetailView: View {
         Button(action: action) {
             VStack(spacing: 4) {
                 Image(systemName: icon)
-                    .font(.system(size: 14))
+                    .scaledFont(14)
                 Text(title)
                     .font(.caption2)
             }

@@ -19,6 +19,18 @@ enum MCPTranscriptTools {
 
         let pageSize = 50
         let messagePage: MCPTranscriptPage
+        if MCPTranscriptReader.isRemoteSnapshotLocator(session.filePath) {
+            guard let snapshot = try database.remoteSnapshot(sessionId: id) else {
+                throw MCPTranscriptReadError.remoteSnapshotUnavailable
+            }
+            messagePage = MCPTranscriptReader.remoteSnapshotPage(
+                summary: snapshot.summary,
+                lines: snapshot.lines,
+                page: page,
+                pageSize: pageSize,
+                roles: roles
+            )
+        } else {
         do {
             messagePage = try await MCPTranscriptReader.readMessagePage(
                 filePath: session.filePath,
@@ -68,6 +80,7 @@ enum MCPTranscriptTools {
             }
         } catch let error as TranscriptSizeGuardError {
             throw MCPToolError.transcriptTooLarge(error.localizedDescription)
+        }
         }
 
         // M16: default redaction matches export; raw requires explicit include_raw.
@@ -406,9 +419,12 @@ private let localDateTime: DateFormatter = {
 }()
 
 private func messageJSON(_ message: MCPTranscriptMessage, redact: Bool) -> OrderedJSONValue {
-    let content = redact
+    // Redact the complete body before applying the output cap. Capping first
+    // can split a PEM or credential match and expose its unredacted prefix.
+    let processed = redact
         ? TranscriptRedactionPolicy.redact(message.content)
         : message.content
+    let content = cappedMessageContent(processed)
     var entries: [(String, OrderedJSONValue)] = [
         ("role", .string(message.role)),
         ("content", .string(content)),
@@ -417,4 +433,12 @@ private func messageJSON(_ message: MCPTranscriptMessage, redact: Bool) -> Order
         entries.append(("timestamp", .string(timestamp)))
     }
     return .object(entries)
+}
+
+private func cappedMessageContent(_ content: String) -> String {
+    let maximumCharacters = 8_192
+    guard content.count > maximumCharacters else { return content }
+    let omitted = content.count - maximumCharacters
+    return String(content.prefix(maximumCharacters))
+        + "\n[truncated \(omitted) characters]"
 }

@@ -1,7 +1,6 @@
 import Foundation
 import GRDB
 import EngramCoreRead
-import os
 
 public enum UsageParserBackfillPolicy {
     public static let metadataKey = "usage_parser_version"
@@ -38,12 +37,12 @@ public enum UsageParserBackfillPolicy {
 // MARK: - Logging
 
 public final class OSLogStartupBackfillLogging: StartupBackfillLogging {
-    private let log = os.Logger(subsystem: "com.engram.service", category: "startup-backfill")
+    private let log = CoreWriteLogger(category: "startup-backfill")
 
     public init() {}
 
     public func warn(_ message: String, error: Error) {
-        log.warning("\(message, privacy: .private): \(String(describing: error), privacy: .private)")
+        log.warning("\(message): \(String(describing: error))")
     }
 }
 
@@ -53,22 +52,26 @@ public final class WriterStartupIndexing: StartupIndexing {
     private let writer: EngramDatabaseWriter
     private let adapters: [any SessionAdapter]
     private let excludedSnapshotSources: Set<SourceName>
+    private let forceReparseKnownFiles: Bool
     public let usesInlineCountAndCostBackfills = true
 
     public init(
         writer: EngramDatabaseWriter,
         adapters: [any SessionAdapter],
-        excludedSnapshotSources: Set<SourceName> = []
+        excludedSnapshotSources: Set<SourceName> = [],
+        forceReparseKnownFiles: Bool = false
     ) {
         self.writer = writer
         self.adapters = adapters
         self.excludedSnapshotSources = excludedSnapshotSources
+        self.forceReparseKnownFiles = forceReparseKnownFiles
     }
 
     public func indexAll() async throws -> Int {
         let result = try await writer.indexAllSessions(
             adapters: adapters,
-            excludedSnapshotSources: excludedSnapshotSources
+            excludedSnapshotSources: excludedSnapshotSources,
+            forceReparseKnownFiles: forceReparseKnownFiles
         )
         return result.indexed
     }
@@ -151,16 +154,17 @@ public final class WriterStartupBackfillDatabase: StartupBackfillDatabase {
     public func countTodayParentSessions() throws -> Int {
         let startOfToday = Calendar.current.startOfDay(for: Date())
         let since = ISO8601DateFormatter().string(from: startOfToday)
+        let activityTime = SearchFilterPredicates.activityTimeSQL(alias: "s")
         return try writer.read { db in
             try Int.fetchOne(
                 db,
                 sql: """
-                SELECT COUNT(*) FROM sessions
-                WHERE hidden_at IS NULL
-                  AND parent_session_id IS NULL
-                  AND suggested_parent_id IS NULL
-                  AND (tier IS NULL OR tier != 'skip')
-                  AND start_time >= ?
+                SELECT COUNT(*) FROM sessions s
+                WHERE s.hidden_at IS NULL
+                  AND s.parent_session_id IS NULL
+                  AND s.suggested_parent_id IS NULL
+                  AND (s.tier IS NULL OR s.tier != 'skip')
+                  AND \(activityTime) >= ?
                 """,
                 arguments: [since]
             ) ?? 0
@@ -269,6 +273,8 @@ public final class WriterStartupBackfillDatabase: StartupBackfillDatabase {
 /// `detectOrphans`. Recovers (clears) flags when a file reappears.
 public final class WriterStartupOrphanScanning: StartupOrphanScanning {
     static let lastScanMetadataKey = "last_orphan_scan"
+    static let remoteOrphanReconcileMetadataKey = "remote_orphan_reconcile_version"
+    static let remoteOrphanReconcileVersion = "1"
 
     private let writer: EngramDatabaseWriter
     private let gracePeriodDays: Int
@@ -293,12 +299,19 @@ public final class WriterStartupOrphanScanning: StartupOrphanScanning {
     }
 
     public func detectOrphans(adapters: [any SessionAdapter]) async throws -> StartupOrphanScanResult {
+        let repairedRemoteRows = try reconcileRemoteImportedOrphans()
         // The scan loads every session row and stats every locator on disk. Its
         // result is unchanged since the previous launch on a corpus that has not
         // moved, so skip it within a bounded interval (files that disappear are
         // detected on the next scan or the per-session recovery path).
         if try scanIsWithinMinimumInterval() {
-            return StartupOrphanScanResult(scanned: 0, newlyFlagged: 0, confirmed: 0, recovered: 0, skipped: 0)
+            return StartupOrphanScanResult(
+                scanned: 0,
+                newlyFlagged: 0,
+                confirmed: 0,
+                recovered: repairedRemoteRows,
+                skipped: 0
+            )
         }
 
         let adaptersBySource = Dictionary(adapters.map { ($0.source, $0) }, uniquingKeysWith: { first, _ in first })
@@ -310,8 +323,13 @@ public final class WriterStartupOrphanScanning: StartupOrphanScanning {
                 SELECT id, source, orphan_status, orphan_since,
                   COALESCE(NULLIF(file_path, ''), source_locator) AS locator
                 FROM sessions
-                WHERE (source_locator IS NOT NULL AND source_locator != '')
-                   OR (file_path IS NOT NULL AND file_path != '')
+                WHERE (
+                  (source_locator IS NOT NULL AND source_locator != '')
+                  OR (file_path IS NOT NULL AND file_path != '')
+                )
+                AND COALESCE(NULLIF(TRIM(origin), ''), 'local') = 'local'
+                AND COALESCE(file_path, '') NOT LIKE 'remote://%'
+                AND COALESCE(source_locator, '') NOT LIKE 'remote://%'
                 """
             ).map { row in
                 OrphanRow(
@@ -384,9 +402,42 @@ public final class WriterStartupOrphanScanning: StartupOrphanScanning {
             scanned: scanned,
             newlyFlagged: flagSuspect.count,
             confirmed: confirmOrphan.count,
-            recovered: recover.count,
+            recovered: repairedRemoteRows + recover.count,
             skipped: skipped
         )
+    }
+
+    private func reconcileRemoteImportedOrphans() throws -> Int {
+        try writer.write { db in
+            let storedVersion = try String.fetchOne(
+                db,
+                sql: "SELECT value FROM metadata WHERE key = ?",
+                arguments: [Self.remoteOrphanReconcileMetadataKey]
+            )
+            guard storedVersion != Self.remoteOrphanReconcileVersion else { return 0 }
+
+            try db.execute(
+                sql: """
+                UPDATE sessions
+                SET orphan_status = NULL, orphan_since = NULL, orphan_reason = NULL
+                WHERE orphan_status IS NOT NULL
+                  AND (
+                    COALESCE(NULLIF(TRIM(origin), ''), 'local') != 'local'
+                    OR COALESCE(file_path, '') LIKE 'remote://%'
+                    OR COALESCE(source_locator, '') LIKE 'remote://%'
+                  )
+                """
+            )
+            let repaired = db.changesCount
+            try db.execute(
+                sql: """
+                INSERT INTO metadata(key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                arguments: [Self.remoteOrphanReconcileMetadataKey, Self.remoteOrphanReconcileVersion]
+            )
+            return repaired
+        }
     }
 
     /// Batch-applies orphan-state transitions in short gated writes. Each call to

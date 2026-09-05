@@ -53,6 +53,37 @@ final class SourcesSyncTests: XCTestCase {
         XCTAssertFalse(info.liveSyncDisabled)
     }
 
+    func testSourceInfoRoundTripsListVisibleSessionCount_repro() throws {
+        let info = EngramServiceSourceInfo(
+            name: "codex",
+            sessionCount: 7,
+            latestIndexed: nil,
+            listVisibleSessionCount: 3
+        )
+
+        let decoded = try JSONDecoder().decode(
+            EngramServiceSourceInfo.self,
+            from: JSONEncoder().encode(info)
+        )
+
+        XCTAssertEqual(decoded.listVisibleSessionCount, 3)
+    }
+
+    func testSourceInfoLegacyPayloadDefaultsListVisibleCountToRawCount_repro() throws {
+        let json = #"{"name":"codex","sessionCount":7,"healthStatus":"healthy"}"#
+        let decoded = try JSONDecoder().decode(
+            EngramServiceSourceInfo.self,
+            from: Data(json.utf8)
+        )
+
+        XCTAssertEqual(decoded.listVisibleSessionCount, 7)
+    }
+
+    func testSourceInfoInitializerDefaultsListVisibleCountToRawCount_repro() {
+        let info = EngramServiceSourceInfo(name: "codex", sessionCount: 7, latestIndexed: nil)
+        XCTAssertEqual(info.listVisibleSessionCount, 7)
+    }
+
     // MARK: - healthReason DTO
 
     func testSourceInfoEncodesHealthReason() throws {
@@ -88,6 +119,51 @@ final class SourcesSyncTests: XCTestCase {
         let text = try source("macos/Engram/Views/Pages/SourcePulseView.swift")
         XCTAssertTrue(text.contains("Cache only"))
         XCTAssertTrue(text.contains("source.liveSyncDisabled"))
+    }
+
+    func testSourcePulseTimerCoalescesWithoutCancellingInflightPoll_repro() throws {
+        let text = try source("macos/Engram/Views/Pages/SourcePulseView.swift")
+        let taskStart = try XCTUnwrap(text.range(of: ".task {"))
+        let disappear = try XCTUnwrap(
+            text.range(of: ".onDisappear", range: taskStart.upperBound..<text.endIndex)
+        )
+        let timerSlice = String(text[taskStart.lowerBound..<disappear.lowerBound])
+        XCTAssertTrue(timerSlice.contains("requestLiveRefresh()"), timerSlice)
+        XCTAssertFalse(
+            timerSlice.contains("liveRefreshTask?.cancel()"),
+            "a cadence tick must not cancel the producer request it needs to populate the cache"
+        )
+
+        let coalescerStart = try XCTUnwrap(text.range(of: "private func requestLiveRefresh()"))
+        let loaderStart = try XCTUnwrap(
+            text.range(of: "private func loadLiveSessions()", range: coalescerStart.upperBound..<text.endIndex)
+        )
+        let coalescer = String(text[coalescerStart.lowerBound..<loaderStart.lowerBound])
+        XCTAssertTrue(coalescer.contains("guard liveRefreshTask == nil else { return }"), coalescer)
+        XCTAssertTrue(coalescer.contains("liveRefreshTask = nil"), coalescer)
+    }
+
+    func testSourcePulseDisabledSourcesFailClosedUntilAuthoritativeLoad_repro() throws {
+        let text = try source("macos/Engram/Views/Pages/SourcePulseView.swift")
+
+        XCTAssertTrue(
+            text.contains("@State private var disabledSources = ArchivedDefaultOffSources.ids"),
+            "archived adapters must render disabled before the service responds"
+        )
+        XCTAssertTrue(
+            text.contains("@State private var disabledSourcesLoaded = false"),
+            "toggle interaction must have an explicit authoritative-load gate"
+        )
+        XCTAssertTrue(
+            text.contains(".disabled(!disabledSourcesLoaded)"),
+            "ingest toggles must stay unavailable until disabledSources succeeds"
+        )
+        XCTAssertTrue(text.contains("disabledSourcesLoaded = true"))
+        XCTAssertTrue(text.contains("disabledSourcesLoaded = false"))
+        XCTAssertFalse(
+            text.contains("if let disabled = try? await serviceClient.disabledSources()"),
+            "a failed fetch must be distinguishable from an authoritative empty set"
+        )
     }
 
     func testSourceHealthPredicatesUseListVisibleSQL() throws {

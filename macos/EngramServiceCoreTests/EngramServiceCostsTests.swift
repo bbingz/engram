@@ -90,6 +90,44 @@ final class EngramServiceCostsTests: XCTestCase {
         XCTAssertEqual(todayRow.costUsd, 3.0, accuracy: 0.001)
     }
 
+    func testCostsBucketsOvernightSessionByEndActivityDay_repro() async throws {
+        let todayInstant = Calendar.current.date(
+            bySettingHour: 12, minute: 0, second: 0, of: Date()
+        ) ?? Date()
+        let oldStart = todayInstant.addingTimeInterval(-8 * 86_400)
+        let today = localDay(todayInstant)
+        let path = try seedCostsFixture { db in
+            try insertSession(
+                db,
+                id: "overnight",
+                source: "codex",
+                startTime: isoInstant(oldStart),
+                endTime: isoInstant(todayInstant)
+            )
+            try insertCost(db, sessionId: "overnight", costUsd: 2.75)
+        }
+
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: path)
+        let costs = try await provider.costs()
+
+        XCTAssertEqual(costs.todayUsd, 2.75, accuracy: 0.001)
+        XCTAssertEqual(costs.monthToDateUsd, 2.75, accuracy: 0.001)
+        XCTAssertEqual(costs.perDay.first(where: { $0.day == today })?.costUsd, 2.75)
+    }
+
+    func testCostsAppliesLocaltimeBeforeCalendarWindowBoundaries_repro() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("EngramService/Core/EngramServiceReadProvider.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("date(\\(activityTime), 'localtime') >= date('now', 'localtime', '-30 days')"))
+        XCTAssertTrue(source.contains("date(\\(activityTime), 'localtime') >= date('now', 'localtime', 'start of month')"))
+        XCTAssertFalse(source.contains("s.start_time >= date('now', '-30 days', 'localtime')"))
+        XCTAssertFalse(source.contains("date('now', 'start of month', 'localtime')"))
+    }
+
     func testCostsExcludesHiddenSessions() async throws {
         let path = try seedCostsFixture { db in
             try insertSession(db, id: "visible", source: "codex", startTime: "2026-06-02T10:00:00Z")
@@ -269,6 +307,7 @@ final class EngramServiceCostsTests: XCTestCase {
                   id TEXT PRIMARY KEY,
                   source TEXT NOT NULL,
                   start_time TEXT NOT NULL,
+                  end_time TEXT,
                   cwd TEXT NOT NULL DEFAULT '',
                   file_path TEXT NOT NULL DEFAULT '',
                   message_count INTEGER NOT NULL DEFAULT 0,
@@ -302,15 +341,16 @@ final class EngramServiceCostsTests: XCTestCase {
         id: String,
         source: String,
         startTime: String,
+        endTime: String? = nil,
         hiddenAt: String? = nil,
         tier: String? = "normal"
     ) throws {
         try db.execute(
             sql: """
-                INSERT INTO sessions (id, source, start_time, hidden_at, tier)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO sessions (id, source, start_time, end_time, hidden_at, tier)
+                VALUES (?, ?, ?, ?, ?, ?)
             """,
-            arguments: [id, source, startTime, hiddenAt, tier]
+            arguments: [id, source, startTime, endTime, hiddenAt, tier]
         )
     }
 

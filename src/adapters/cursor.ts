@@ -1,8 +1,9 @@
 // src/adapters/cursor.ts
 
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 import type {
   Message,
@@ -15,7 +16,8 @@ interface ComposerData {
   composerId: string;
   createdAt: number;
   lastUpdatedAt: number;
-  latestConversationSummary?: { summary?: string };
+  latestConversationSummary?: { summary?: unknown };
+  name?: unknown;
   context?: {
     fileSelections?: { uri?: { fsPath?: string } }[];
     folderSelections?: { uri?: { fsPath?: string } }[];
@@ -120,6 +122,7 @@ export class CursorAdapter implements SessionAdapter {
         }
         let userMessageCount = 0;
         let assistantMessageCount = 0;
+        let firstUserText: string | undefined;
         for (const b of bubbles) {
           const role =
             b.type === 1 ? 'user' : b.type === 2 ? 'assistant' : null;
@@ -129,10 +132,16 @@ export class CursorAdapter implements SessionAdapter {
           const content =
             [b.text, b.rawText].find((c) => (c ?? '').trim()) ?? '';
           if (!content.trim()) continue;
-          if (role === 'user') userMessageCount++;
-          else assistantMessageCount++;
+          if (role === 'user') {
+            userMessageCount++;
+            firstUserText ??= content.trim();
+          } else assistantMessageCount++;
         }
 
+        const cwd = this.inferCwd(db, composerId);
+        const summary =
+          conversationSummary(data.latestConversationSummary?.summary) ??
+          firstUserText;
         return {
           id: data.composerId,
           source: 'cursor',
@@ -141,13 +150,15 @@ export class CursorAdapter implements SessionAdapter {
             data.lastUpdatedAt !== data.createdAt
               ? new Date(data.lastUpdatedAt).toISOString()
               : undefined,
-          cwd: this.inferCwd(data),
+          cwd,
+          project: cwd ? basename(cwd) : undefined,
           messageCount: userMessageCount + assistantMessageCount,
           userMessageCount,
           assistantMessageCount,
           toolMessageCount: 0,
           systemMessageCount: 0,
-          summary: data.latestConversationSummary?.summary?.slice(0, 200),
+          summary: summary ? truncateGraphemes(summary, 200) : undefined,
+          displayTitle: officialTitle(data.name),
           filePath,
           sizeBytes: perSessionBytes,
         };
@@ -234,15 +245,81 @@ export class CursorAdapter implements SessionAdapter {
     }
   }
 
-  // Cursor doesn't bind composers to a workspace. Best signal is the first
-  // attached folder, or the parent of the first selected file. Heuristic;
-  // returns '' when nothing usable is present.
-  private inferCwd(data: ComposerData): string {
-    const folder = data.context?.folderSelections?.[0]?.uri?.fsPath;
-    if (folder) return folder;
-    const file = data.context?.fileSelections?.[0]?.uri?.fsPath;
-    if (file) return dirname(file);
-    return '';
+  private inferCwd(db: BetterSqlite3.Database, composerId: string): string {
+    const globalStorage = dirname(this.dbPath);
+    if (basename(globalStorage) !== 'globalStorage') return '';
+    const workspaceStorage = join(dirname(globalStorage), 'workspaceStorage');
+    if (!existsSync(workspaceStorage)) return '';
+    const workspaceCwds = new Map<string, string>();
+    const paths = new Set<string>();
+    for (const workspaceName of readdirSync(workspaceStorage)) {
+      const workspace = join(workspaceStorage, workspaceName);
+      const metadataPath = join(workspace, 'workspace.json');
+      try {
+        const metadata = JSON.parse(
+          readFileSync(metadataPath, 'utf8'),
+        ) as Record<string, unknown>;
+        if (metadata.configuration || typeof metadata.folder !== 'string')
+          continue;
+        const folder = new URL(metadata.folder);
+        if (
+          folder.protocol !== 'file:' ||
+          (folder.hostname && folder.hostname !== 'localhost')
+        )
+          continue;
+        const cwd = decodeURIComponent(folder.pathname);
+        if (!cwd.startsWith('/') || cwd === '/') continue;
+        workspaceCwds.set(workspaceName, cwd);
+        const workspaceDb = new BetterSqlite3(join(workspace, 'state.vscdb'), {
+          readonly: true,
+        });
+        try {
+          const row = workspaceDb
+            .prepare('SELECT value FROM ItemTable WHERE key = ?')
+            .get('composer.composerData') as { value: string } | undefined;
+          const composers =
+            row && (JSON.parse(row.value) as { allComposers?: unknown });
+          if (
+            Array.isArray(composers?.allComposers) &&
+            composers.allComposers.some(
+              (item) =>
+                typeof item === 'object' &&
+                item !== null &&
+                (item as { composerId?: unknown }).composerId === composerId,
+            )
+          )
+            paths.add(cwd);
+        } finally {
+          workspaceDb.close();
+        }
+      } catch {}
+    }
+    try {
+      const row = db
+        .prepare('SELECT value FROM ItemTable WHERE key = ?')
+        .get('composer.composerHeaders') as { value: string } | undefined;
+      const headers =
+        row && (JSON.parse(row.value) as { allComposers?: unknown });
+      if (Array.isArray(headers?.allComposers)) {
+        for (const header of headers.allComposers) {
+          if (!header || typeof header !== 'object') continue;
+          const value = header as {
+            composerId?: unknown;
+            workspaceIdentifier?: { id?: unknown };
+          };
+          if (
+            value.composerId !== composerId ||
+            typeof value.workspaceIdentifier?.id !== 'string'
+          )
+            continue;
+          const cwd = workspaceCwds.get(value.workspaceIdentifier.id);
+          if (cwd) paths.add(cwd);
+        }
+      }
+    } catch {
+      return '';
+    }
+    return paths.size === 1 ? [...paths][0] : '';
   }
 
   private parsePath(filePath: string): {
@@ -278,4 +355,38 @@ export class CursorAdapter implements SessionAdapter {
       db?.close();
     }
   }
+}
+
+function conversationSummary(value: unknown): string | undefined {
+  let current = value;
+  for (let depth = 0; depth < 4; depth++) {
+    if (typeof current === 'string') {
+      const trimmed = current.trim();
+      return trimmed || undefined;
+    }
+    if (!current || typeof current !== 'object' || Array.isArray(current))
+      return undefined;
+    current = (current as Record<string, unknown>).summary;
+  }
+  return undefined;
+}
+
+function officialTitle(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed ? truncateGraphemes(trimmed, 120) : undefined;
+}
+
+function truncateGraphemes(value: string, maximum: number): string {
+  const segments = new Intl.Segmenter(undefined, {
+    granularity: 'grapheme',
+  }).segment(value);
+  let result = '';
+  let count = 0;
+  for (const { segment } of segments) {
+    if (count === maximum) break;
+    result += segment;
+    count++;
+  }
+  return result;
 }

@@ -5,7 +5,7 @@
       "read": 1
     }
   },
-  "generatedAtCommit": "88f86631",
+  "generatedAtCommit": "d97d0257",
   "inputPath": "qoder/input/-Users-test-my-project/qoder-session.jsonl",
   "insightFields": {
     "firstUserSummary": "Review the parser",
@@ -47,7 +47,7 @@
       "timestamp": "2026-05-20T01:00:05.000Z"
     }
   ],
-  "nodeVersion": "v26.0.0",
+  "nodeVersion": "v26.7.0",
   "projectFields": {
     "cwd": "/Users/test/my-project",
     "project": null,

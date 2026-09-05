@@ -1,4 +1,5 @@
 import XCTest
+import GRDB
 @testable import Engram
 
 /// Locks the Today Workbench / SessionDetail / AISettings review fixes:
@@ -7,6 +8,132 @@ import XCTest
 /// - System-prompt / agent-comm visibility gating in the transcript
 /// - Off-main transcript build + AISettings persistence decoupled from disclosure
 final class TodayWorkbenchScopeTests: XCTestCase {
+    func testSessionDetailRejectsStaleParentAndRelatedLoads_repro() {
+        XCTAssertTrue(
+            SessionDetailView.shouldApplySessionLoad(
+                resultLoadToken: "current",
+                currentLoadToken: "current"
+            )
+        )
+        XCTAssertFalse(
+            SessionDetailView.shouldApplySessionLoad(
+                resultLoadToken: "previous",
+                currentLoadToken: "current"
+            )
+        )
+        XCTAssertFalse(
+            SessionDetailView.shouldApplySessionLoad(
+                resultLoadToken: "current",
+                currentLoadToken: "current",
+                isCancelled: true
+            )
+        )
+    }
+
+    // session-detail-id-regress-1 (docs/followups.md Round-12 parked): the
+    // favorite toggle's success branch must bump `favoriteLoadGeneration` so a
+    // slower in-flight initial favorite read cannot land after the mutation and
+    // clobber it with the pre-toggle value.
+    func testFavoriteToggleInvalidatesPendingRead_repro() throws {
+        let detail = try source("macos/Engram/Views/SessionDetailView.swift")
+        let toggleStart = try XCTUnwrap(detail.range(of: "onToggleFavorite: {"))
+        let toggleEnd = try XCTUnwrap(
+            detail.range(of: "onCopyAll:", range: toggleStart.upperBound..<detail.endIndex)
+        )
+        let toggle = detail[toggleStart.lowerBound..<toggleEnd.lowerBound]
+        let apply = try XCTUnwrap(toggle.range(of: "isFavorite = next"))
+        let invalidate = try XCTUnwrap(
+            toggle.range(of: "favoriteLoadGeneration = UUID()"),
+            "toggle must invalidate the pending favorite-read generation"
+        )
+        XCTAssertLessThan(apply.lowerBound, invalidate.lowerBound)
+    }
+
+    func testSessionDetailAResultCannotApplyAfterSwitchToB_repro() {
+        let capturedSessionId = "A"
+        var displayedSessionId: String? = "A"
+        XCTAssertTrue(
+            SessionDetailView.shouldApplySessionResult(
+                capturedSessionId: capturedSessionId,
+                displayedSessionId: displayedSessionId,
+                resultLoadToken: "A:load",
+                currentLoadToken: "A:load"
+            )
+        )
+
+        displayedSessionId = "B"
+        XCTAssertFalse(
+            SessionDetailView.shouldApplySessionResult(
+                capturedSessionId: capturedSessionId,
+                displayedSessionId: displayedSessionId,
+                resultLoadToken: "A:load",
+                currentLoadToken: "A:load"
+            )
+        )
+        XCTAssertFalse(
+            SessionDetailView.shouldApplySessionMutation(
+                capturedSessionId: capturedSessionId,
+                displayedSessionId: displayedSessionId
+            )
+        )
+    }
+
+    func testSessionDetailTrustsFreshNilParentLinks_repro() {
+        let fresh = makeSession(id: "child", startTime: "2026-08-23T00:00:00Z")
+        let links = SessionDetailView.effectiveParentLinkIDs(
+            freshSession: fresh,
+            snapshotParentId: "stale-parent",
+            snapshotSuggestedId: "stale-suggestion"
+        )
+
+        XCTAssertNil(links.parentId)
+        XCTAssertNil(links.suggestedId)
+    }
+
+    func testMainWindowKeepsDetailIdentityStableForSameSessionOpen_repro() throws {
+        let source = try source("macos/Engram/Views/MainWindowView.swift")
+        XCTAssertFalse(source.contains("@State private var sessionPresentationId"))
+        XCTAssertTrue(source.contains(".id(session.id)"))
+        XCTAssertTrue(source.contains("private func applyOpenSession(_ box: SessionBox)"))
+    }
+
+    func testSessionDetailTracksMutationsWithoutCancellingInFlightRPCs_repro() throws {
+        let source = try source("macos/Engram/Views/SessionDetailView.swift")
+        XCTAssertTrue(source.contains("@State private var parentMutationTask: Task<Void, Never>?"))
+        XCTAssertFalse(
+            source.contains("parentMutationTask?.cancel()"),
+            "session switches must not close the Unix-socket RPC before the service applies the write"
+        )
+        for function in [
+            "private func removeRelated(",
+            "private func confirmSuggestedChild(",
+            "private func confirmSuggestedParent(",
+            "private func dismissSuggestedParent(",
+            "private func unlinkParent(",
+            "private func dismissSuggestedChild(",
+        ] {
+            let start = try XCTUnwrap(source.range(of: function))
+            let tail = source[start.lowerBound...]
+            let end = tail.dropFirst().range(of: "\n    private func ")?.lowerBound ?? tail.endIndex
+            XCTAssertTrue(
+                tail[..<end].contains("parentMutationTask = Task"),
+                "\(function) must keep its write task alive independently of follow-up loads"
+            )
+        }
+    }
+
+    func testProjectWorkTimelineUsesInjectedClockForReadsTitlesAndLabels_repro() throws {
+        let timeline = try source("macos/Engram/Components/ProjectWorkTimeline.swift")
+        XCTAssertTrue(timeline.contains("@Environment(\\.engramFixedDate)"))
+        XCTAssertTrue(timeline.contains("now: now"))
+        XCTAssertTrue(timeline.contains("project: project, now: now"))
+        XCTAssertTrue(timeline.contains("dateRange(item, now: now)"))
+
+        let projects = try source("macos/Engram/Views/Pages/ProjectsView.swift")
+        XCTAssertTrue(projects.contains("@Environment(\\.engramFixedDate)"))
+        XCTAssertTrue(projects.contains("let now = fixedDate ?? Date()"))
+    }
+
 
     // MARK: - Fixtures
 
@@ -104,10 +231,168 @@ final class TodayWorkbenchScopeTests: XCTestCase {
         let loader = String(s[start.lowerBound..<end.lowerBound])
 
         XCTAssertTrue(loader.contains("now.addingTimeInterval(-TodayFollowUps.recencyWindow)"))
+        XCTAssertTrue(loader.contains("db.todayFollowUpSessions("))
+        XCTAssertTrue(loader.contains("startedSince: since"))
+    }
+
+    func testFollowUpLoaderUsesSQLScopedReadBeforeLimit_repro() throws {
+        let s = try source("macos/Engram/Views/Pages/HomeView.swift")
+        let start = try XCTUnwrap(s.range(of: "private func loadTodayFollowUps"))
+        let end = try XCTUnwrap(s.range(of: "/// Scoping rules for the Today \"Follow-ups\" panel."))
+        let loader = String(s[start.lowerBound..<end.lowerBound])
+
         XCTAssertTrue(
-            loader.contains("db.searchWithSnippets(query: query, limit: limit, since: since"),
-            "Today follow-up search must push the 72h window into SQL instead of scanning history-wide FTS"
+            loader.contains("db.todayFollowUpSessions("),
+            "top-level, recent, unhandled eligibility must be applied in SQL before LIMIT"
         )
+        XCTAssertFalse(
+            loader.contains("db.searchWithSnippets"),
+            "a small per-query FTS page can be exhausted by children before post-filtering"
+        )
+    }
+
+    func testFollowUpLoaderThreadsShowAllHumanDrivenScope_repro() throws {
+        let home = try source("macos/Engram/Views/Pages/HomeView.swift")
+        let loaderStart = try XCTUnwrap(home.range(of: "private func loadTodayFollowUps"))
+        let loaderEnd = try XCTUnwrap(home.range(of: "/// Scoping rules for the Today \"Follow-ups\" panel."))
+        let loader = home[loaderStart.lowerBound..<loaderEnd.lowerBound]
+        let database = try source("macos/Engram/Core/Database.swift")
+        let queryStart = try XCTUnwrap(database.range(of: "nonisolated func todayFollowUpSessions("))
+        let queryTail = database[queryStart.lowerBound...]
+        let queryEnd = try XCTUnwrap(queryTail.range(of: "// MARK: - project_timeline"))
+        let query = queryTail[..<queryEnd.lowerBound]
+
+        XCTAssertTrue(loader.contains("humanDriven: Bool"))
+        XCTAssertTrue(loader.contains("humanDriven: humanDriven"))
+        XCTAssertTrue(query.contains("humanDriven: Bool"))
+        XCTAssertTrue(query.contains("applyHumanDrivenOnHost: humanDriven"))
+        XCTAssertTrue(query.contains("applyHumanDrivenOnChild: humanDriven"))
+    }
+
+    func testFollowUpSQLScopePreventsChildStarvation() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("followups-\(UUID().uuidString).sqlite").path
+        try createSessionsTable(at: path)
+        var manager: DatabaseManager? = DatabaseManager(path: path)
+        defer {
+            manager = nil
+            cleanupTempDatabase(at: path)
+        }
+        try manager?.open()
+        let now = ISO8601DateFormatter().date(from: "2026-08-22T10:00:00Z")!
+        let queue = try DatabaseQueue(path: path)
+
+        for index in 0..<8 {
+            let id = "child-\(index)"
+            try insertTestSession(
+                at: path,
+                id: id,
+                startTime: "2026-08-22T09:\(String(format: "%02d", index)):00Z"
+            )
+            try insertFTSContent(at: path, sessionId: id, content: "follow-up child")
+            try queue.write { db in
+                try db.execute(
+                    sql: "UPDATE sessions SET parent_session_id = 'parent' WHERE id = ?",
+                    arguments: [id]
+                )
+            }
+        }
+        try insertTestSession(
+            at: path,
+            id: "eligible",
+            startTime: "2026-08-22T08:00:00Z",
+            endTime: "2026-08-22T08:30:00Z"
+        )
+        try insertFTSContent(at: path, sessionId: "eligible", content: "follow-up root")
+
+        let since = ISO8601DateFormatter().string(
+            from: now.addingTimeInterval(-TodayFollowUps.recencyWindow)
+        )
+        XCTAssertEqual(
+            try manager?.todayFollowUpSessions(
+                queries: ["follow-up"],
+                startedSince: since,
+                excluding: [],
+                limit: 1
+            ).map(\.id),
+            ["eligible"]
+        )
+    }
+
+    func testFollowUpSQLScopeUsesSessionActivityTime_repro() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("followups-activity-\(UUID().uuidString).sqlite").path
+        try createSessionsTable(at: path)
+        var manager: DatabaseManager? = DatabaseManager(path: path)
+        defer {
+            manager = nil
+            cleanupTempDatabase(at: path)
+        }
+        try manager?.open()
+        try insertTestSession(at: path, id: "overnight-follow-up", startTime: "2026-08-18T08:00:00Z")
+        try insertFTSContent(at: path, sessionId: "overnight-follow-up", content: "remaining follow-up")
+        try DatabaseQueue(path: path).write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET end_time = '2026-08-23T09:00:00Z' WHERE id = 'overnight-follow-up'"
+            )
+        }
+
+        let sessions = try manager?.todayFollowUpSessions(
+            queries: ["follow-up"],
+            startedSince: "2026-08-23T00:00:00Z",
+            excluding: [],
+            limit: 5
+        )
+        XCTAssertEqual(sessions?.map(\.id), ["overnight-follow-up"])
+    }
+
+    func testFollowUpSQLScopeHonorsHumanDrivenToggle_repro() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("followups-human-\(UUID().uuidString).sqlite").path
+        try createSessionsTable(at: path)
+        var manager: DatabaseManager? = DatabaseManager(path: path)
+        defer {
+            manager = nil
+            cleanupTempDatabase(at: path)
+        }
+        try manager?.open()
+        try insertTestSession(
+            at: path,
+            id: "human-follow-up",
+            startTime: "2026-08-23T09:00:00Z",
+            endTime: "2026-08-23T09:30:00Z"
+        )
+        try insertTestSession(
+            at: path,
+            id: "single-shot-follow-up",
+            startTime: "2026-08-23T10:00:00Z",
+            endTime: "2026-08-23T10:30:00Z"
+        )
+        try insertFTSContent(at: path, sessionId: "human-follow-up", content: "follow-up")
+        try insertFTSContent(at: path, sessionId: "single-shot-follow-up", content: "follow-up")
+        try DatabaseQueue(path: path).write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET instruction_count = 0, human_turn_count = 1, user_message_count = 1 WHERE id = 'single-shot-follow-up'"
+            )
+        }
+
+        let scoped = try manager?.todayFollowUpSessions(
+            queries: ["follow-up"],
+            startedSince: "2026-08-23T00:00:00Z",
+            excluding: [],
+            limit: 5,
+            humanDriven: true
+        )
+        XCTAssertEqual(scoped?.map(\.id), ["human-follow-up"])
+
+        let showAll = try manager?.todayFollowUpSessions(
+            queries: ["follow-up"],
+            startedSince: "2026-08-23T00:00:00Z",
+            excluding: [],
+            limit: 5,
+            humanDriven: false
+        )
+        XCTAssertEqual(showAll?.map(\.id), ["single-shot-follow-up", "human-follow-up"])
     }
 
     // MARK: - Relative time dual parsing (finding #3)
@@ -218,11 +503,11 @@ final class TodayWorkbenchScopeTests: XCTestCase {
             "isFavorite must not be read synchronously on the main actor"
         )
         XCTAssertTrue(
-            s.contains("favoriteLoadSessionId = session.id"),
-            "favorite state must reset and tag each per-session load"
+            s.contains("favoriteLoadGeneration = generation"),
+            "favorite state must reset and tag each per-session load with a unique generation"
         )
         XCTAssertTrue(
-            s.contains("if favoriteLoadSessionId == sessionId"),
+            s.contains("if generation == favoriteLoadGeneration"),
             "stale favorite loads from a previous session must not overwrite the current detail view"
         )
     }
@@ -282,8 +567,13 @@ final class TodayWorkbenchScopeTests: XCTestCase {
         // Preserve A3: Load more still filters only its newly indexed slice.
         XCTAssertTrue(functionSource.contains("appendedSlice.filter"))
         XCTAssertTrue(functionSource.contains("displayIndexed.append(contentsOf: visibleNew)"))
+        let sessionTaskStart = try XCTUnwrap(s.range(of: ".task(id: session.id) {"))
+        let sessionTaskEnd = try XCTUnwrap(
+            s.range(of: ".onChange(of: typeVisibility)", range: sessionTaskStart.upperBound..<s.endIndex)
+        )
+        let sessionTask = String(s[sessionTaskStart.lowerBound..<sessionTaskEnd.lowerBound])
         XCTAssertTrue(
-            s.contains(".task(id: session.id) {\n            displayFilterTask?.cancel()"),
+            sessionTask.contains("displayFilterTask?.cancel()"),
             "switching sessions must cancel the prior full transcript filter"
         )
         XCTAssertTrue(
@@ -340,6 +630,35 @@ final class TodayWorkbenchScopeTests: XCTestCase {
         // A short page is the last one.
         XCTAssertFalse(SessionDetailView.hasMoreAfterLoad(returnedCount: 480, requestedLimit: 500))
         XCTAssertFalse(SessionDetailView.hasMoreAfterLoad(returnedCount: 0, requestedLimit: 500))
+    }
+
+    func testHasMoreAfterLoadPreservesTruncatedWholeRead_repro() {
+        XCTAssertTrue(
+            SessionDetailView.hasMoreAfterLoad(
+                returnedCount: ParserLimits.default.maxMessages,
+                requestedLimit: nil,
+                truncated: true
+            )
+        )
+    }
+
+    func testLoadAllStopsOnFailureMetadataForFilledPage_repro() {
+        XCTAssertTrue(
+            SessionDetailView.shouldStopLoadAllPage(
+                producedCount: 500,
+                requestedLimit: 500,
+                truncated: false,
+                parseFailed: true
+            )
+        )
+        XCTAssertTrue(
+            SessionDetailView.shouldStopLoadAllPage(
+                producedCount: 499,
+                requestedLimit: 500,
+                truncated: false,
+                parseFailed: true
+            )
+        )
     }
 
     func testAISettingsPersistGenerationConfigUnconditionally() throws {

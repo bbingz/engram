@@ -14,32 +14,6 @@ final class SearchTests: XCTestCase {
         app.terminate()
     }
 
-    func testResultClickNavigation() {
-        let sidebar = SidebarScreen(app: app)
-        sidebar.navigateTo("search")
-
-        let search = SearchScreen(app: app)
-        search.waitForLoad()
-        search.search(query: "test")
-        search.waitForResults(timeout: 10)
-
-        if search.results.exists {
-            // Click the first result
-            let firstResult = search.results.otherElements.firstMatch
-            if firstResult.waitForExistence(timeout: 3) {
-                firstResult.click()
-                // Verify we navigated somewhere — either detail or sessions
-                let detail = SessionDetailScreen(app: app)
-                let detailLoaded = detail.container.waitForExistence(timeout: 5)
-                XCTAssertTrue(detailLoaded || search.results.exists,
-                              "Clicking a result should navigate to detail or stay on search")
-            }
-        } else {
-            // No results — pass the test as there's no fixture data to click
-            XCTAssertTrue(true, "No search results to click in fixture data")
-        }
-    }
-
     func testNoResultsState() {
         let sidebar = SidebarScreen(app: app)
         sidebar.navigateTo("search")
@@ -50,12 +24,18 @@ final class SearchTests: XCTestCase {
         // Search for something that should not match any fixture data
         search.search(query: "zzz_nonexistent_query_xyz_12345")
 
-        // Wait for either results or empty state
-        let emptyAppeared = search.emptyState.waitForExistence(timeout: 10)
+        // A guaranteed miss must render the empty state, never silently pass
+        // because the fixture happened to contain no clickable result.
+        let emptyAppeared = search.noResultsState.waitForExistence(timeout: 10)
         let resultsAppeared = search.results.waitForExistence(timeout: 2)
 
-        XCTAssertTrue(emptyAppeared || resultsAppeared,
-                      "Empty state or results should appear after searching for nonexistent term")
+        XCTAssertTrue(
+            emptyAppeared,
+            "Empty state should appear for a nonexistent term; failed=\(search.failedState.exists), "
+                + "results=\(search.results.exists)"
+        )
+        XCTAssertTrue(app.text("No results").exists, "A miss must show the No results title")
+        XCTAssertFalse(resultsAppeared, "Nonexistent term must not render result rows")
         ScreenshotCapture.capture(name: "search_empty", app: app, screen: "search", test: #function)
     }
 }

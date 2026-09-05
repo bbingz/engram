@@ -1,7 +1,7 @@
 {
   "failure": null,
   "fileToolCounts": {},
-  "generatedAtCommit": "88f86631",
+  "generatedAtCommit": "d97d0257",
   "inputPath": "copilot/input/session-1/events.jsonl",
   "insightFields": {
     "firstUserSummary": "Help me fix the bug",
@@ -21,7 +21,7 @@
       "timestamp": "2026-01-01T00:02:00Z"
     }
   ],
-  "nodeVersion": "v26.0.0",
+  "nodeVersion": "v26.7.0",
   "projectFields": {
     "cwd": "/tmp/test-project",
     "project": null,

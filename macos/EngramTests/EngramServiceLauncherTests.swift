@@ -3,6 +3,99 @@ import XCTest
 @testable import Engram
 
 final class EngramServiceLauncherTests: XCTestCase {
+    func testAppOpensDatabaseOffMainActor_repro() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let app = try String(
+            contentsOf: repoRoot.appendingPathComponent("macos/Engram/App.swift"),
+            encoding: .utf8
+        )
+        let openCall = try XCTUnwrap(app.range(of: "try db.open()"))
+        let prefix = app[..<openCall.lowerBound]
+        let localContext = prefix.suffix(400)
+
+        XCTAssertTrue(
+            localContext.contains("Task.detached"),
+            "database pool creation must not wait for SQLite's busy timeout on the main actor"
+        )
+    }
+
+    func testAppAdoptsServingSocketAndMonitorsWriterBusyStartup_repro() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let app = try String(
+            contentsOf: repoRoot.appendingPathComponent("macos/Engram/App.swift"),
+            encoding: .utf8
+        )
+        let launcher = try String(
+            contentsOf: repoRoot.appendingPathComponent("macos/Engram/Core/EngramServiceLauncher.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(app.contains("startOrAdopt"))
+        XCTAssertTrue(launcher.contains("if let status = try? await statusProbe()"))
+        XCTAssertTrue(launcher.contains("engramServiceWriterBusyMessage(error) != nil"))
+        XCTAssertTrue(launcher.contains("startHealthMonitor("))
+    }
+
+    @MainActor
+    func testAdoptedServiceIsTrackedAsRunning_repro() async {
+        let launcher = EngramServiceLauncher(
+            healthIntervalNanoseconds: 60_000_000_000,
+            maximumRestartAttempts: 0,
+            startupGraceNanoseconds: 0
+        )
+        let config = EngramServiceLaunchConfiguration(
+            executablePath: "/tmp/unused-adopted-helper",
+            socketPath: "/tmp/engram-adopted.sock",
+            databasePath: "/tmp/engram-adopted.sqlite",
+            foreground: false
+        )
+
+        await launcher.startOrAdopt(
+            configuration: config,
+            statusProbe: { .running(total: 1, todayParents: 0) },
+            onStatus: { _ in }
+        )
+
+        XCTAssertTrue(launcher.isRunning, "a serving socket adopted at app launch must remain launcher-owned state")
+        launcher.stopIfOwned()
+    }
+
+    func testAdoptedServiceHasAuthenticatedShutdownAndEventRetention_repro() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let launcher = try String(
+            contentsOf: repoRoot.appendingPathComponent("macos/Engram/Core/EngramServiceLauncher.swift"),
+            encoding: .utf8
+        )
+        let capability = try String(
+            contentsOf: repoRoot.appendingPathComponent("macos/Shared/Service/ServiceCapabilityToken.swift"),
+            encoding: .utf8
+        )
+        let handler = try String(
+            contentsOf: repoRoot.appendingPathComponent("macos/EngramService/Core/EngramServiceCommandHandler.swift"),
+            encoding: .utf8
+        )
+        let server = try String(
+            contentsOf: repoRoot.appendingPathComponent("macos/EngramService/IPC/UnixSocketServiceServer.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(capability.contains(#""shutdown""#))
+        XCTAssertTrue(handler.contains(#"case "shutdown":"#))
+        XCTAssertTrue(server.contains("onShutdown"))
+        XCTAssertTrue(launcher.contains("requestShutdown"))
+        XCTAssertTrue(launcher.contains("adoptedConfiguration"))
+        XCTAssertTrue(launcher.contains("onEvent: onEvent"))
+    }
+
     func testProductionEnvironmentStartsServiceHelperWithoutNodeDaemonArguments() {
         let environment = AppEnvironment.production
 
@@ -28,7 +121,7 @@ final class EngramServiceLauncherTests: XCTestCase {
         })
     }
 
-    func testDataDirEnvironmentKeepsProductionServiceStartupWithoutNodeDaemon() {
+    func testDataDirEnvironmentKeepsIsolatedServiceStartupWithoutNodeDaemon() {
         let environment = AppEnvironment.fromCommandLine(
             arguments: ["Engram", "--data-dir", "/tmp/engram-data"],
             environment: [:]
@@ -37,10 +130,70 @@ final class EngramServiceLauncherTests: XCTestCase {
         XCTAssertEqual(environment.dbPath, "/tmp/engram-data/index.sqlite")
         XCTAssertFalse(environment.autoStartDaemon)
         XCTAssertTrue(environment.autoStartService)
-        XCTAssertEqual(
-            environment.serviceSocketPath,
-            AppEnvironment.production.serviceSocketPath
+        XCTAssertEqual(environment.serviceSocketPath, "/tmp/engram-data/run/engram-service.sock")
+    }
+
+    func testDataDirUsesNormalizedIsolatedServiceSocket_repro() {
+        let home = URL(fileURLWithPath: "/tmp/engram-data-home", isDirectory: true)
+        let absolute = AppEnvironment.fromCommandLine(
+            arguments: ["Engram", "--data-dir", "/tmp/engram-data/../isolated"],
+            environment: ["HOME": home.path]
         )
+        XCTAssertEqual(absolute.dbPath, "/tmp/isolated/index.sqlite")
+        XCTAssertEqual(absolute.serviceSocketPath, "/tmp/isolated/run/engram-service.sock")
+        XCTAssertTrue(absolute.autoStartService)
+
+        let expanded = AppEnvironment.fromCommandLine(
+            arguments: ["Engram", "--data-dir", "~/.engram-preview"],
+            environment: ["HOME": home.path]
+        )
+        XCTAssertEqual(expanded.dbPath, home.appendingPathComponent(".engram-preview/index.sqlite").path)
+        XCTAssertEqual(
+            expanded.serviceSocketPath,
+            home.appendingPathComponent(".engram-preview/run/engram-service.sock").path
+        )
+
+        let relative = AppEnvironment.fromCommandLine(
+            arguments: ["Engram", "--data-dir", "relative-data"],
+            environment: ["HOME": home.path]
+        )
+        XCTAssertFalse(relative.autoStartService, "relative data directories must fail closed")
+    }
+
+    func testMissingDataDirValueFailsClosed_repro() {
+        let environment = AppEnvironment.fromCommandLine(
+            arguments: ["Engram", "--data-dir"],
+            environment: [:]
+        )
+
+        XCTAssertEqual(environment.dbPath, "")
+        XCTAssertEqual(environment.serviceSocketPath, "")
+        XCTAssertFalse(environment.autoStartDaemon)
+        XCTAssertFalse(environment.autoStartService)
+        XCTAssertFalse(environment.networkEnabled)
+    }
+
+    @MainActor
+    func testStartCreatesPrivateDataDirRuntimeDirectory_repro() throws {
+        let dataDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-data-dir-start-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dataDirectory) }
+        let launcher = EngramServiceLauncher()
+        let configuration = EngramServiceLaunchConfiguration(
+            executablePath: "/usr/bin/true",
+            socketPath: dataDirectory.appendingPathComponent("run/engram-service.sock").path,
+            databasePath: dataDirectory.appendingPathComponent("index.sqlite").path,
+            foreground: false
+        )
+
+        try launcher.start(configuration: configuration)
+        launcher.stopIfOwned()
+
+        var info = stat()
+        let runtimeDirectory = dataDirectory.appendingPathComponent("run").path
+        XCTAssertEqual(lstat(runtimeDirectory, &info), 0)
+        XCTAssertEqual(info.st_mode & S_IFMT, S_IFDIR)
+        XCTAssertEqual(info.st_mode & 0o777, 0o700)
     }
 
     func testTestEnvironmentDoesNotStartAnyOwnedRuntimeProcess() {
@@ -48,6 +201,155 @@ final class EngramServiceLauncherTests: XCTestCase {
 
         XCTAssertFalse(environment.autoStartDaemon)
         XCTAssertFalse(environment.autoStartService)
+    }
+
+    func testUITestEnvironmentParsesMockAndForcedOnboarding_repro() {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-ui-env-\(UUID().uuidString)", isDirectory: true)
+        let environment = AppEnvironment.fromCommandLine(
+            arguments: [
+                "Engram", "--test-mode", "--fixture-db", root.appendingPathComponent("index.sqlite").path,
+                "--mock-daemon", "--show-onboarding",
+            ],
+            environment: [:]
+        )
+
+        XCTAssertTrue(environment.mockDaemon)
+        XCTAssertTrue(environment.showOnboarding)
+        XCTAssertFalse(environment.autoStartService)
+    }
+
+    func testSettingsIOUsesHermeticResolutionOrderInXCTest_repro() {
+        let explicit = URL(fileURLWithPath: "/tmp/engram-explicit-settings.json")
+        XCTAssertEqual(
+            resolveEngramSettingsURL(environment: ["ENGRAM_SETTINGS_PATH": explicit.path]),
+            explicit
+        )
+
+        let fixedHome = "/tmp/engram-fixed-home-\(UUID().uuidString)"
+        XCTAssertEqual(
+            resolveEngramSettingsURL(environment: ["CFFIXED_USER_HOME": fixedHome]),
+            URL(fileURLWithPath: fixedHome).appendingPathComponent(".engram/settings.json")
+        )
+
+        let resolved = resolveEngramSettingsURL(environment: [
+            "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
+            "XCTestConfigurationFilePath": "/tmp/EngramTests.xctestconfiguration",
+        ])
+        XCTAssertTrue(resolved.path.hasPrefix(FileManager.default.temporaryDirectory.path))
+        XCTAssertFalse(
+            resolved.path.hasPrefix(FileManager.default.homeDirectoryForCurrentUser.path + "/.engram/")
+        )
+    }
+
+    func testAppPreferenceAndSettingsViewsUseInjectedState_repro() throws {
+        let app = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Engram/App.swift"),
+            encoding: .utf8
+        )
+        let menu = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Engram/MenuBarController.swift"),
+            encoding: .utf8
+        )
+        let about = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Engram/Views/Settings/AboutSettingsSection.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertFalse(app.contains("UserDefaults.standard"))
+        XCTAssertFalse(menu.contains("UserDefaults.standard"))
+        XCTAssertTrue(menu.contains("guard !isTestMode else { return }"))
+        XCTAssertTrue(about.contains("db.path"))
+        XCTAssertFalse(about.contains(".appendingPathComponent(\".engram/index.sqlite\")"))
+    }
+
+    @MainActor
+    func testUITestAppStorageUsesIsolatedDefaultsSuite_repro() throws {
+        let hostSuite = "com.engram.tests.host.\(UUID().uuidString)"
+        let isolatedSuite = "com.engram.tests.ui.\(UUID().uuidString)"
+        let hostDefaults = try XCTUnwrap(UserDefaults(suiteName: hostSuite))
+        defer {
+            hostDefaults.removePersistentDomain(forName: hostSuite)
+            UserDefaults(suiteName: isolatedSuite)?.removePersistentDomain(forName: isolatedSuite)
+        }
+        hostDefaults.set("host", forKey: "sessions.sourceFilter")
+
+        let uiDefaults = AppDelegate.makeAppStorage(
+            isTestMode: true,
+            environment: ["ENGRAM_UI_TEST_DEFAULTS_SUITE": isolatedSuite],
+            standard: hostDefaults
+        )
+        uiDefaults.set("Codex", forKey: "sessions.sourceFilter")
+
+        XCTAssertEqual(uiDefaults.string(forKey: "sessions.sourceFilter"), "Codex")
+        XCTAssertEqual(hostDefaults.string(forKey: "sessions.sourceFilter"), "host")
+    }
+
+    @MainActor
+    func testMockDaemonEnvironmentBuildsMockServiceClient_repro() {
+        let environment = AppEnvironment.fromCommandLine(
+            arguments: ["Engram", "--test-mode", "--fixture-db", "/tmp/unused", "--mock-daemon"],
+            environment: [:]
+        )
+
+        XCTAssertTrue(AppDelegate.makeServiceClient(for: environment) is MockEngramServiceClient)
+    }
+
+    @MainActor
+    func testMockDaemonLivePollIsDeterministicallyUnavailable_repro() async {
+        let environment = AppEnvironment.fromCommandLine(
+            arguments: ["Engram", "--test-mode", "--fixture-db", "/tmp/unused", "--mock-daemon"],
+            environment: [:]
+        )
+        let client = AppDelegate.makeServiceClient(for: environment)
+
+        do {
+            _ = try await client.liveSessions()
+            XCTFail("the UI-test mock must complete the unavailable-state poll deterministically")
+        } catch {
+            XCTAssertEqual(
+                error as? EngramServiceError,
+                .serviceUnavailable(message: "UI test mock live sessions unavailable")
+            )
+        }
+    }
+
+    @MainActor
+    func testMockDaemonMemoryReadsFailInsteadOfMasqueradingAsEmpty_repro() async {
+        let environment = AppEnvironment.fromCommandLine(
+            arguments: ["Engram", "--test-mode", "--fixture-db", "/tmp/unused", "--mock-daemon"],
+            environment: [:]
+        )
+        let client = AppDelegate.makeServiceClient(for: environment)
+
+        do {
+            _ = try await client.memoryFiles()
+            XCTFail("the UI-test mock must not present a service failure as empty memory files")
+        } catch {
+            XCTAssertEqual(
+                error as? EngramServiceError,
+                .serviceUnavailable(message: "UI test mock memory files unavailable")
+            )
+        }
+
+        do {
+            _ = try await client.insights()
+            XCTFail("the UI-test mock must not present a service failure as empty insights")
+        } catch {
+            XCTAssertEqual(
+                error as? EngramServiceError,
+                .serviceUnavailable(message: "UI test mock insights unavailable")
+            )
+        }
     }
 
     func testBuildArgumentsContainServiceSocketAndDatabasePathOnly() {
@@ -68,10 +370,11 @@ final class EngramServiceLauncherTests: XCTestCase {
         XCTAssertFalse(arguments.contains { $0.contains("node") || $0.contains("daemon.js") })
     }
 
-    func testLaunchEnvironmentBridgesKeychainSecretsThroughRuntimeFileOnly() throws {
+    func testLaunchEnvironmentBridgesKeychainSecretsThroughRuntimeFileOnly_repro() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("engram-service-secrets-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        chmod(root.path, 0o700)
         defer { try? FileManager.default.removeItem(at: root) }
         let secretsPath = root.appendingPathComponent("ai-secrets.json").path
 
@@ -113,12 +416,259 @@ final class EngramServiceLauncherTests: XCTestCase {
         XCTAssertEqual(attrs[.posixPermissions] as? Int, 0o600)
     }
 
+    func testLaunchEnvironmentOmitsRuntimeSecretsPathWhenWriteFails_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-service-secrets-failure-\(UUID().uuidString)", isDirectory: true)
+        try Data("not-a-directory".utf8).write(to: root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let secretsPath = root.appendingPathComponent("ai-secrets.json").path
+
+        let environment = EngramServiceLauncher.environment(
+            baseEnvironment: ["ENGRAM_RUNTIME_AI_SECRETS_PATH": "/tmp/inherited-secret-path"],
+            runtimeAISecretsPath: secretsPath,
+            keychainReader: { _ in "secret" }
+        )
+
+        XCTAssertNil(environment["ENGRAM_RUNTIME_AI_SECRETS_PATH"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: secretsPath))
+    }
+
+    func testRuntimeSecretsWriteDoesNotScanOrRemoveSocketSiblings_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-secret-siblings-\(UUID().uuidString)", isDirectory: true)
+        let run = root.appendingPathComponent("caller/.engram/run", isDirectory: true)
+        try FileManager.default.createDirectory(at: run, withIntermediateDirectories: true)
+        chmod(run.path, 0o700)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let referent = root.appendingPathComponent("caller-owned")
+        try Data("keep".utf8).write(to: referent)
+        let unknown = run.appendingPathComponent("unknown-link")
+        let serviceLock = run.appendingPathComponent("engram-service.lock")
+        try FileManager.default.createSymbolicLink(at: unknown, withDestinationURL: referent)
+        try FileManager.default.createSymbolicLink(at: serviceLock, withDestinationURL: referent)
+
+        XCTAssertTrue(
+            EngramServiceLauncher.writeRuntimeAISecrets(
+                toPath: run.appendingPathComponent("ai-secrets.json").path,
+                keychainReader: { $0 == "aiApiKey" ? "secret" : nil }
+            )
+        )
+        for sibling in [unknown, serviceLock] {
+            var info = stat()
+            XCTAssertEqual(lstat(sibling.path, &info), 0)
+            XCTAssertEqual(info.st_mode & S_IFMT, S_IFLNK)
+        }
+    }
+
+    func testRuntimeSecretsRefreshTreatsOwnedEmptyBridgeRemovalAsSuccess_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-secret-empty-refresh-\(UUID().uuidString)", isDirectory: true)
+        let run = root.appendingPathComponent("run", isDirectory: true)
+        try FileManager.default.createDirectory(at: run, withIntermediateDirectories: true)
+        chmod(root.path, 0o700)
+        chmod(run.path, 0o700)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let socketPath = run.appendingPathComponent("isolated.sock").path
+        let secretsPath = EngramServiceLauncher.runtimeAISecretsPath(forSocketPath: socketPath)
+        try Data("stale".utf8).write(to: URL(fileURLWithPath: secretsPath))
+
+        XCTAssertTrue(
+            EngramServiceLauncher.refreshRuntimeAISecrets(
+                toPath: secretsPath,
+                keychainReader: { _ in nil }
+            )
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: secretsPath))
+
+        let absentBridge = root
+            .appendingPathComponent("not-created/run/isolated.sock.ai-secrets.json")
+            .path
+        XCTAssertTrue(
+            EngramServiceLauncher.refreshRuntimeAISecrets(
+                toPath: absentBridge,
+                keychainReader: { _ in nil }
+            ),
+            "clearing the last key is already refreshed when no runtime bridge or parent exists"
+        )
+    }
+
+    @MainActor
+    func testCustomDotEngramRunSocketDoesNotClaimDedicatedRuntime_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-custom-run-\(UUID().uuidString)", isDirectory: true)
+        let run = root.appendingPathComponent("caller/.engram/run", isDirectory: true)
+        try FileManager.default.createDirectory(at: run, withIntermediateDirectories: true)
+        chmod(run.path, 0o700)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let referent = root.appendingPathComponent("caller-owned")
+        try Data("keep".utf8).write(to: referent)
+        let planted = run.appendingPathComponent("unknown-link")
+        try FileManager.default.createSymbolicLink(at: planted, withDestinationURL: referent)
+
+        let launcher = EngramServiceLauncher()
+        try launcher.start(configuration: EngramServiceLaunchConfiguration(
+            executablePath: "/usr/bin/true",
+            socketPath: run.appendingPathComponent("custom.sock").path,
+            databasePath: root.appendingPathComponent("index.sqlite").path,
+            foreground: false
+        ))
+        launcher.stopIfOwned()
+
+        var info = stat()
+        XCTAssertEqual(lstat(planted.path, &info), 0)
+        XCTAssertEqual(info.st_mode & S_IFMT, S_IFLNK)
+    }
+
+    func testRuntimeSecretsCleanupDoesNotClaimForeignEngramRunDirectory_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-foreign-runtime-\(UUID().uuidString)", isDirectory: true)
+        let foreignRun = root.appendingPathComponent("caller/.engram/run", isDirectory: true)
+        try FileManager.default.createDirectory(at: foreignRun, withIntermediateDirectories: true)
+        chmod(foreignRun.path, 0o700)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let foreignSecrets = foreignRun.appendingPathComponent("ai-secrets.json")
+        let sentinel = Data("caller-owned".utf8)
+        try sentinel.write(to: foreignSecrets)
+
+        _ = EngramServiceLauncher.environment(
+            baseEnvironment: [:],
+            runtimeAISecretsPath: foreignSecrets.path,
+            keychainReader: { _ in nil }
+        )
+
+        XCTAssertEqual(try Data(contentsOf: foreignSecrets), sentinel)
+    }
+
+    @MainActor
+    func testCustomSocketSecretsAreNamespacedAndPreserveGenericSibling_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-custom-secrets-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        chmod(root.path, 0o700)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let socketPath = root.appendingPathComponent("custom.sock").path
+        let genericSibling = root.appendingPathComponent("ai-secrets.json")
+        try Data("caller-owned".utf8).write(to: genericSibling)
+
+        let secretsPath = EngramServiceLauncher.runtimeAISecretsPath(forSocketPath: socketPath)
+        XCTAssertEqual(secretsPath, socketPath + ".ai-secrets.json")
+        try Data("stale-owned-secret".utf8).write(to: URL(fileURLWithPath: secretsPath))
+        _ = EngramServiceLauncher.environment(
+            baseEnvironment: [:],
+            runtimeAISecretsPath: secretsPath,
+            keychainReader: { _ in nil }
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: secretsPath))
+        EngramServiceLauncher().scrubRuntimeAISecrets(forSocketPath: socketPath)
+
+        XCTAssertEqual(try Data(contentsOf: genericSibling), Data("caller-owned".utf8))
+    }
+
+    func testSecureRegularFileRejectsIntermediateEngramSymlink_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-intermediate-link-\(UUID().uuidString)", isDirectory: true)
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let outsideRun = root.appendingPathComponent("outside/run", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outsideRun, withIntermediateDirectories: true)
+        chmod(home.path, 0o700)
+        chmod(outsideRun.deletingLastPathComponent().path, 0o700)
+        chmod(outsideRun.path, 0o700)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createSymbolicLink(
+            at: home.appendingPathComponent(".engram"),
+            withDestinationURL: outsideRun.deletingLastPathComponent()
+        )
+        let target = home.appendingPathComponent(".engram/run/secret")
+
+        XCTAssertThrowsError(try SecureRegularFile.writeAtomically(Data("secret".utf8), toPath: target.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outsideRun.appendingPathComponent("secret").path))
+    }
+
+    func testRuntimeAISecretsRefusesCustomParentSymlinkWithoutTouchingTarget_repro() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("engram-secrets-symlink-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        chmod(root.path, 0o700)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let outside = root.appendingPathComponent("outside")
+        try Data("sentinel".utf8).write(to: outside)
+        let secretsPath = root.appendingPathComponent("ai-secrets.json")
+        try FileManager.default.createSymbolicLink(atPath: secretsPath.path, withDestinationPath: outside.path)
+
+        XCTAssertFalse(
+            EngramServiceLauncher.writeRuntimeAISecrets(
+                toPath: secretsPath.path,
+                keychainReader: { _ in "secret" }
+            )
+        )
+        XCTAssertEqual(try Data(contentsOf: outside), Data("sentinel".utf8))
+        var info = stat()
+        XCTAssertEqual(lstat(secretsPath.path, &info), 0)
+        XCTAssertEqual(info.st_mode & S_IFMT, S_IFLNK)
+    }
+
+    func testRuntimeAISecretsRejectsSymlinkParentAndPreservesUnrelatedLeftovers_repro() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("engram-secrets-parent-\(UUID().uuidString)", isDirectory: true)
+        let outside = root.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let linkedParent = root.appendingPathComponent("linked-run", isDirectory: true)
+        try FileManager.default.createSymbolicLink(atPath: linkedParent.path, withDestinationPath: outside.path)
+        XCTAssertFalse(
+            EngramServiceLauncher.writeRuntimeAISecrets(
+                toPath: linkedParent.appendingPathComponent("ai-secrets.json").path,
+                keychainReader: { _ in "secret" }
+            )
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outside.appendingPathComponent("ai-secrets.json").path))
+
+        let runDirectory = root.appendingPathComponent("run", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: runDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let planted = runDirectory.appendingPathComponent("planted")
+        try FileManager.default.createSymbolicLink(atPath: planted.path, withDestinationPath: outside.path)
+        XCTAssertTrue(
+            EngramServiceLauncher.writeRuntimeAISecrets(
+                toPath: runDirectory.appendingPathComponent("ai-secrets.json").path,
+                keychainReader: { _ in "secret" }
+            )
+        )
+        var plantedInfo = stat()
+        XCTAssertEqual(lstat(planted.path, &plantedInfo), 0)
+        XCTAssertEqual(plantedInfo.st_mode & S_IFMT, S_IFLNK)
+    }
+
+    func testRuntimeAISecretsUsesDirfdPinnedAtomicWriter_repro() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Engram/Core/EngramServiceLauncher.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(source.range(of: "static func writeRuntimeAISecrets")?.lowerBound)
+        let end = try XCTUnwrap(source.range(of: "static func refreshRuntimeAISecrets", range: start..<source.endIndex)?.lowerBound)
+        let body = source[start..<end]
+
+        XCTAssertTrue(body.contains("SecureRegularFile.writeAtomically"))
+        XCTAssertFalse(body.contains("lstat(path"))
+        XCTAssertFalse(body.contains("open(path"))
+    }
+
     /// SEC-H2: ai-secrets.json must be removed on service stop so a leftover
     /// plaintext Keychain bridge is not left in ~/.engram/run/.
     func testRemoveRuntimeAISecretsDeletesBridgeFile_repro() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("engram-secrets-cleanup-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        chmod(root.path, 0o700)
         defer { try? FileManager.default.removeItem(at: root) }
         let secretsPath = root.appendingPathComponent("ai-secrets.json").path
 
@@ -139,6 +689,68 @@ final class EngramServiceLauncherTests: XCTestCase {
         )
     }
 
+    func testRemoveRuntimeAISecretsNeverRecursivelyDeletesDirectory_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-secrets-directory-\(UUID().uuidString)", isDirectory: true)
+        let secretsDirectory = root.appendingPathComponent("ai-secrets.json", isDirectory: true)
+        try FileManager.default.createDirectory(at: secretsDirectory, withIntermediateDirectories: true)
+        let marker = secretsDirectory.appendingPathComponent("marker")
+        try Data("keep".utf8).write(to: marker)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        EngramServiceLauncher.removeRuntimeAISecrets(atPath: secretsDirectory.path)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func testRemoveRuntimeAISecretsUnlinksHardlinkWithoutOverwritingPeer_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-secrets-hardlink-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        chmod(root.path, 0o700)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let peer = root.appendingPathComponent("peer")
+        let secrets = root.appendingPathComponent("ai-secrets.json")
+        let original = Data("shared-secret".utf8)
+        try original.write(to: peer)
+        try FileManager.default.linkItem(at: peer, to: secrets)
+
+        EngramServiceLauncher.removeRuntimeAISecrets(atPath: secrets.path)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: secrets.path))
+        XCTAssertEqual(try Data(contentsOf: peer), original)
+    }
+
+    func testWriteRuntimeAISecretsRecoversFromHardlinkedLeftover_repro() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-secrets-write-hardlink-\(UUID().uuidString)", isDirectory: true)
+        let runtime = home.appendingPathComponent(".engram/run", isDirectory: true)
+        try FileManager.default.createDirectory(at: runtime, withIntermediateDirectories: true)
+        chmod(home.appendingPathComponent(".engram").path, 0o700)
+        chmod(runtime.path, 0o700)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let peer = home.appendingPathComponent("peer")
+        // A non-default service owns its socket-namespaced sidecar. A bare
+        // `ai-secrets.json` outside the real default runtime must stay foreign.
+        let secrets = runtime.appendingPathComponent("engram-service.sock.ai-secrets.json")
+        let original = Data("shared-secret".utf8)
+        try original.write(to: peer)
+        XCTAssertEqual(link(peer.path, secrets.path), 0)
+
+        XCTAssertTrue(
+            EngramServiceLauncher.writeRuntimeAISecrets(
+                toPath: secrets.path,
+                keychainReader: { $0 == "aiApiKey" ? "fresh-secret" : nil }
+            )
+        )
+        XCTAssertEqual(try Data(contentsOf: peer), original)
+        XCTAssertNotEqual(try Data(contentsOf: secrets), original)
+        var info = stat()
+        XCTAssertEqual(lstat(secrets.path, &info), 0)
+        XCTAssertEqual(info.st_nlink, 1)
+        XCTAssertEqual(info.st_mode & 0o777, 0o600)
+    }
+
     /// SEC-H2: stopIfOwned / stopProcessOnly must clean the runtime secrets path
     /// derived from the socket (same path writeRuntimeAISecrets uses).
     @MainActor
@@ -146,6 +758,7 @@ final class EngramServiceLauncherTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("engram-stop-secrets-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        chmod(root.path, 0o700)
         defer { try? FileManager.default.removeItem(at: root) }
         let socketPath = root.appendingPathComponent("engram-service.sock").path
         let secretsPath = EngramServiceLauncher.runtimeAISecretsPath(forSocketPath: socketPath)
@@ -168,6 +781,22 @@ final class EngramServiceLauncherTests: XCTestCase {
             FileManager.default.fileExists(atPath: secretsPath),
             "SEC-H2: stop/scrub must remove ai-secrets.json next to the service socket"
         )
+    }
+
+    @MainActor
+    func testStartScrubsRuntimeSecretsWhenProcessRunThrows_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-start-failure-secrets-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let secretsPath = root.appendingPathComponent("ai-secrets.json").path
+        try Data("secret".utf8).write(to: URL(fileURLWithPath: secretsPath))
+        let process = Process()
+        process.executableURL = root.appendingPathComponent("missing-helper")
+        let launcher = EngramServiceLauncher()
+
+        XCTAssertThrowsError(try launcher.runProcess(process, runtimeAISecretsPath: secretsPath))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: secretsPath))
     }
 
     func testServiceOutputLineBufferWaitsForCompleteJSONLines() throws {
@@ -361,6 +990,47 @@ final class EngramServiceLauncherTests: XCTestCase {
     }
 
     @MainActor
+    func testExitedHelperSurfacesFailureDuringGraceAndKeepsRespawning_repro() async throws {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-exited-helper-\(UUID().uuidString)")
+        let executable = try makeCountingExitExecutable(marker: marker)
+        let launcher = EngramServiceLauncher(
+            healthIntervalNanoseconds: 5_000_000,
+            maximumRestartAttempts: 0,
+            startupGraceNanoseconds: 1_000_000_000
+        )
+        let config = EngramServiceLaunchConfiguration(
+            executablePath: executable.path,
+            socketPath: "/tmp/engram-exited-helper.sock",
+            databasePath: "/tmp/engram-exited-helper.sqlite",
+            foreground: false
+        )
+        let recorder = ServiceStatusRecorder()
+
+        try launcher.start(configuration: config)
+        launcher.startHealthMonitor(
+            configuration: config,
+            statusProbe: {
+                throw EngramServiceError.serviceUnavailable(message: "socket not ready")
+            },
+            onStatus: { status in recorder.append(status) }
+        )
+
+        let sawFailure = await recorder.waitUntil(timeoutNanoseconds: 800_000_000) { statuses in
+            statuses.contains { status in
+                if case .error = status { return true }
+                if case .degraded = status { return true }
+                return false
+            }
+        }
+        let respawned = await waitForMarkerLineCount(marker, count: 2, timeoutNanoseconds: 500_000_000)
+        launcher.stopIfOwned()
+
+        XCTAssertTrue(sawFailure, "a helper that exited must not remain Starting for the full grace period")
+        XCTAssertTrue(respawned, "a dead helper must keep receiving spawn attempts after the restart budget")
+    }
+
+    @MainActor
     func testLauncherDrainsServiceOutputPipes() async throws {
         let marker = FileManager.default.temporaryDirectory
             .appendingPathComponent("engram-service-output-\(UUID().uuidString)")
@@ -383,9 +1053,16 @@ final class EngramServiceLauncherTests: XCTestCase {
         let markerExists = FileManager.default.fileExists(atPath: marker.path)
         launcher.stopIfOwned()
 
-        if !markerExists {
-            throw XCTSkip("Noisy helper did not finish under xctest (pipe/OSLog drain timing)")
-        }
+        XCTAssertTrue(markerExists, "Noisy helper must finish when stdout/stderr are drained")
+    }
+
+    func testPipeDrainTestCannotSkipMissingMarker_repro() throws {
+        let source = try String(contentsOfFile: #filePath, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "func testLauncherDrainsServiceOutputPipes")?.lowerBound)
+        let end = try XCTUnwrap(source.range(of: "func testPipeDrainTestCannotSkipMissingMarker_repro", range: start..<source.endIndex)?.lowerBound)
+        let testBody = source[start..<end]
+        XCTAssertTrue(testBody.contains("XCTAssertTrue(markerExists"))
+        XCTAssertFalse(testBody.contains("XCTSkip"))
     }
 
     @MainActor
@@ -412,8 +1089,9 @@ final class EngramServiceLauncherTests: XCTestCase {
 
         // Must be near-instant, well under the 2s exit-wait budget.
         XCTAssertLessThan(elapsed, 0.5)
-        // The launcher releases its reference immediately on shutdown.
-        XCTAssertFalse(launcher.isRunning)
+        // The launcher retains a helper that is still shutting down so no
+        // replacement can be mistaken as safe to spawn during that window.
+        XCTAssertTrue(launcher.isRunning)
     }
 
     @MainActor
@@ -489,6 +1167,177 @@ final class EngramServiceLauncherTests: XCTestCase {
     }
 
     @MainActor
+    func testRestartWaitsForTerminatingHelperBeforeSpawningReplacement_repro() async throws {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-delayed-shutdown-\(UUID().uuidString)")
+        let executable = try makeDelayedTerminationExecutable(marker: marker)
+        let launcher = EngramServiceLauncher()
+        let config = EngramServiceLaunchConfiguration(
+            executablePath: executable.path,
+            socketPath: "/tmp/engram-delayed-shutdown.sock",
+            databasePath: "/tmp/engram-delayed-shutdown.sqlite",
+            foreground: false
+        )
+
+        try launcher.start(configuration: config)
+        let initialSpawned = await waitForMarkerLineCount(
+            marker,
+            count: 1,
+            timeoutNanoseconds: 500_000_000
+        )
+        XCTAssertTrue(initialSpawned)
+
+        let restartStartedAt = Date()
+        await launcher.restart(
+            configuration: config,
+            statusProbe: { .running(total: 0, todayParents: 0) },
+            onStatus: { _ in }
+        )
+        let restartElapsed = Date().timeIntervalSince(restartStartedAt)
+        let spawnedReplacement = await waitForMarkerLineCount(
+            marker,
+            count: 2,
+            timeoutNanoseconds: 250_000_000
+        )
+
+        // docs/invariants.md #1: a replacement must not race the still-live
+        // helper for the service's single-writer lock.
+        XCTAssertTrue(spawnedReplacement)
+        XCTAssertGreaterThanOrEqual(
+            restartElapsed,
+            2.5,
+            "restart must await the delayed helper's exit before returning with a replacement"
+        )
+        XCTAssertTrue(launcher.isRunning, "the replacement helper must remain owned")
+        launcher.stopIfOwned()
+    }
+
+    @MainActor
+    func testRestartWaitsThroughCooperativeShutdownBeforeReplacing_repro() async throws {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-cooperative-shutdown-\(UUID().uuidString)")
+        let executable = try makeDelayedTerminationExecutable(marker: marker)
+        let launcher = EngramServiceLauncher(
+            healthIntervalNanoseconds: 5_000_000,
+            maximumRestartAttempts: 1,
+            startupGraceNanoseconds: 0
+        )
+        let config = EngramServiceLaunchConfiguration(
+            executablePath: executable.path,
+            socketPath: "/tmp/engram-cooperative-shutdown.sock",
+            databasePath: "/tmp/engram-cooperative-shutdown.sqlite",
+            foreground: false
+        )
+        let recorder = ServiceStatusRecorder()
+
+        try launcher.start(configuration: config)
+        let initialStarted = await waitForMarkerLineCount(
+            marker,
+            count: 1,
+            timeoutNanoseconds: 500_000_000
+        )
+        XCTAssertTrue(initialStarted)
+        await launcher.restart(
+            configuration: config,
+            statusProbe: { .running(total: 1, todayParents: 0) },
+            onStatus: { recorder.append($0) }
+        )
+        let replacementStarted = await waitForMarkerLineCount(
+            marker,
+            count: 2,
+            timeoutNanoseconds: 500_000_000
+        )
+        launcher.stopIfOwned()
+
+        // docs/invariants.md #1: wait for the cooperative owner to release the
+        // writer lock, then recover; a fixed 2s degrade must not strand restart.
+        XCTAssertTrue(replacementStarted)
+        XCTAssertTrue(recorder.statuses.contains(.starting))
+    }
+
+    @MainActor
+    func testStartRefusesToSpawnWhileServiceProcessLockIsHeld_repro() async throws {
+        let runtimeDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-launch-lock-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: runtimeDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let lockPath = runtimeDirectory.appendingPathComponent("engram-service.lock").path
+        let lockFD = open(lockPath, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
+        XCTAssertGreaterThanOrEqual(lockFD, 0)
+        XCTAssertEqual(flock(lockFD, LOCK_EX | LOCK_NB), 0)
+        defer {
+            flock(lockFD, LOCK_UN)
+            close(lockFD)
+            try? FileManager.default.removeItem(at: runtimeDirectory)
+        }
+
+        let marker = runtimeDirectory.appendingPathComponent("spawned")
+        let executable = try makeCountingSleeperExecutable(marker: marker)
+        let launcher = EngramServiceLauncher()
+        let config = EngramServiceLaunchConfiguration(
+            executablePath: executable.path,
+            socketPath: runtimeDirectory.appendingPathComponent("engram.sock").path,
+            databasePath: runtimeDirectory.appendingPathComponent("index.sqlite").path,
+            foreground: false
+        )
+
+        XCTAssertThrowsError(try launcher.start(configuration: config)) { error in
+            XCTAssertNotNil(engramServiceWriterBusyMessage(error))
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    @MainActor
+    func testWriterBusyExitZeroReportsStillShuttingDown_repro() async throws {
+        let runtimeDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-writer-busy-exit-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: runtimeDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: runtimeDirectory) }
+        let launcher = EngramServiceLauncher(
+            healthIntervalNanoseconds: 1_000_000_000,
+            maximumRestartAttempts: 0,
+            startupGraceNanoseconds: 0
+        )
+        let recorder = ServiceStatusRecorder()
+        let config = EngramServiceLaunchConfiguration(
+            executablePath: try makeWriterBusyExitExecutable().path,
+            socketPath: runtimeDirectory.appendingPathComponent("engram.sock").path,
+            databasePath: runtimeDirectory.appendingPathComponent("index.sqlite").path,
+            foreground: false
+        )
+
+        launcher.startHealthMonitor(
+            configuration: config,
+            statusProbe: { .running(total: 0, todayParents: 0) },
+            onStatus: { recorder.append($0) }
+        )
+        try launcher.start(configuration: config)
+        let reported = await recorder.waitUntil(timeoutNanoseconds: 500_000_000) { statuses in
+            statuses.contains { status in
+                if case .degraded(let message) = status {
+                    return message.contains("still shutting down")
+                }
+                return false
+            }
+        }
+        launcher.stopIfOwned()
+
+        XCTAssertTrue(reported)
+        XCTAssertFalse(recorder.statuses.contains { status in
+            if case .error(let message) = status { return message.contains("status 0") }
+            return false
+        })
+    }
+
+    @MainActor
     func testRestartWithMissingHelperSurfacesError() async throws {
         let launcher = EngramServiceLauncher()
         let config = EngramServiceLaunchConfiguration(
@@ -511,6 +1360,97 @@ final class EngramServiceLauncherTests: XCTestCase {
             return false
         })
         XCTAssertFalse(launcher.isRunning)
+    }
+
+    @MainActor
+    func testRestartAdoptedServiceRequestsShutdownBeforeReplacement_repro() async {
+        let state = AdoptedServiceState()
+        let launcher = EngramServiceLauncher(
+            healthIntervalNanoseconds: 60_000_000_000,
+            maximumRestartAttempts: 0,
+            startupGraceNanoseconds: 0,
+            shutdownRequester: { socketPath in
+                await state.shutdown(socketPath: socketPath)
+                return true
+            }
+        )
+        let configuration = EngramServiceLaunchConfiguration(
+            executablePath: "/tmp/engram-missing-adopted-replacement-\(UUID().uuidString)",
+            socketPath: "/tmp/engram-adopted-restart.sock",
+            databasePath: "/tmp/engram-adopted-restart.sqlite",
+            foreground: false
+        )
+        let recorder = ServiceStatusRecorder()
+
+        await launcher.startOrAdopt(
+            configuration: configuration,
+            statusProbe: { try await state.status() },
+            onStatus: { recorder.append($0) }
+        )
+        await launcher.restart(
+            configuration: configuration,
+            statusProbe: { try await state.status() },
+            onStatus: { recorder.append($0) }
+        )
+
+        let requestedSockets = await state.requestedSockets()
+        XCTAssertEqual(requestedSockets, [configuration.socketPath])
+        XCTAssertFalse(launcher.isRunning)
+        XCTAssertTrue(recorder.statuses.contains { status in
+            if case .error = status { return true }
+            return false
+        })
+        launcher.stopIfOwned()
+    }
+
+    @MainActor
+    func testRestartReplacesDeadAdoptedServiceWhenShutdownRequestFails_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-dead-adopted-\(UUID().uuidString)", isDirectory: true)
+        let runtime = root.appendingPathComponent("run", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: runtime,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let marker = root.appendingPathComponent("replacement-started")
+        let executable = try makeCountingSleeperExecutable(marker: marker)
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: executable.deletingLastPathComponent())
+        }
+        let state = AdoptedServiceState()
+        let launcher = EngramServiceLauncher(
+            healthIntervalNanoseconds: 60_000_000_000,
+            maximumRestartAttempts: 0,
+            startupGraceNanoseconds: 0,
+            shutdownRequester: { _ in false }
+        )
+        let configuration = EngramServiceLaunchConfiguration(
+            executablePath: executable.path,
+            socketPath: runtime.appendingPathComponent("engram-service.sock").path,
+            databasePath: root.appendingPathComponent("index.sqlite").path,
+            foreground: false
+        )
+        let recorder = ServiceStatusRecorder()
+
+        await launcher.startOrAdopt(
+            configuration: configuration,
+            statusProbe: { try await state.status() },
+            onStatus: { recorder.append($0) }
+        )
+        await state.markStopped()
+        await launcher.restart(
+            configuration: configuration,
+            statusProbe: { try await state.status() },
+            onStatus: { recorder.append($0) }
+        )
+
+        let replacementStarted = await waitForFile(at: marker, timeoutNanoseconds: 500_000_000)
+        XCTAssertTrue(replacementStarted)
+        XCTAssertTrue(launcher.isRunning)
+        XCTAssertTrue(recorder.statuses.contains(.starting))
+        launcher.stopIfOwned()
     }
 }
 
@@ -549,6 +1489,29 @@ private actor ProbeFailureGate {
         remainingFailures -= 1
         return true
     }
+}
+
+private actor AdoptedServiceState {
+    private var serving = true
+    private var sockets: [String] = []
+
+    func status() throws -> EngramServiceStatus {
+        guard serving else {
+            throw EngramServiceError.serviceUnavailable(message: "adopted service stopped")
+        }
+        return .running(total: 1, todayParents: 0)
+    }
+
+    func shutdown(socketPath: String) {
+        sockets.append(socketPath)
+        serving = false
+    }
+
+    func markStopped() {
+        serving = false
+    }
+
+    func requestedSockets() -> [String] { sockets }
 }
 
 private func waitForFile(at url: URL, timeoutNanoseconds: UInt64) async -> Bool {
@@ -607,6 +1570,55 @@ private func makeCountingSleeperExecutable(marker: URL) throws -> URL {
     printf 'start\\n' >> "\(marker.path)"
     sleep 5
     """.write(to: executable, atomically: true, encoding: .utf8)
+    chmod(executable.path, 0o700)
+    return executable
+}
+
+private func makeDelayedTerminationExecutable(marker: URL) throws -> URL {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("engram-service-delayed-stop-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+    )
+    let executable = directory.appendingPathComponent("delayed-stop.sh")
+    try """
+    #!/bin/sh
+    trap '' TERM
+    printf 'start\\n' >> "\(marker.path)"
+    sleep 3
+    """.write(to: executable, atomically: true, encoding: .utf8)
+    chmod(executable.path, 0o700)
+    return executable
+}
+
+private func makeCountingExitExecutable(marker: URL) throws -> URL {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("engram-service-exit-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+    )
+    let executable = directory.appendingPathComponent("counting-exit.sh")
+    try "#!/bin/sh\nprintf 'start\\n' >> \"\(marker.path)\"\nexit 0\n"
+        .write(to: executable, atomically: true, encoding: .utf8)
+    chmod(executable.path, 0o700)
+    return executable
+}
+
+private func makeWriterBusyExitExecutable() throws -> URL {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("engram-service-writer-busy-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+    )
+    let executable = directory.appendingPathComponent("writer-busy.sh")
+    try "#!/bin/sh\necho 'EngramService: another instance owns the writer lock; exiting.' >&2\nexit 0\n"
+        .write(to: executable, atomically: true, encoding: .utf8)
     chmod(executable.path, 0o700)
     return executable
 }

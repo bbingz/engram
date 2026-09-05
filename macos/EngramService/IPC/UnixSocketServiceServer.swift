@@ -15,11 +15,17 @@ final class UnixSocketServiceServer: Sendable {
 
     private let socketPath: String
     private let handler: Handler
+    private let onShutdown: (@Sendable () -> Void)?
     private let connectionLimiter = ServiceConnectionLimiter(value: maximumConcurrentClients)
     private let state = OSAllocatedUnfairLock(initialState: UnixSocketServerState())
 
-    init(socketPath: String, handler: @escaping Handler) {
+    init(
+        socketPath: String,
+        onShutdown: (@Sendable () -> Void)? = nil,
+        handler: @escaping Handler
+    ) {
         self.socketPath = socketPath
+        self.onShutdown = onShutdown
         self.handler = handler
     }
 
@@ -53,6 +59,7 @@ final class UnixSocketServiceServer: Sendable {
         }
 
         let handler = handler
+        let onShutdown = onShutdown
         let connectionLimiter = connectionLimiter
         let state = state
         let serviceEuid = geteuid()
@@ -159,6 +166,9 @@ final class UnixSocketServiceServer: Sendable {
                             handler: handler
                         )
                         try await Self.writeFrameOffCooperativePool(try JSONEncoder().encode(response), to: client)
+                        if request.command == "shutdown", case .success = response {
+                            onShutdown?()
+                        }
                     } catch {
                         let response = Self.errorResponse(for: error, requestId: decodedRequestId)
                         try? await Self.writeFrameOffCooperativePool(try JSONEncoder().encode(response), to: client)
@@ -199,7 +209,6 @@ final class UnixSocketServiceServer: Sendable {
             )
             state.descriptor = -1
             state.acceptTask = nil
-            state.clientTasks.removeAll()
             return snapshot
         }
 
@@ -214,7 +223,23 @@ final class UnixSocketServiceServer: Sendable {
         _ = unlink(socketPath)
         // SEC-H1: remove the per-launch capability token so a stale token from
         // a previous launch cannot be reused against a future one.
-        _ = unlink(ServiceCapabilityToken.path(forSocketPath: socketPath))
+        ServiceCapabilityToken.remove(
+            atPath: ServiceCapabilityToken.path(forSocketPath: socketPath)
+        )
+    }
+
+    /// Waits for cancelled client handlers to unwind without blocking forever.
+    /// `stop()` must be called first so no new handler can be registered while
+    /// this bounded drain is in progress.
+    func drainClientHandlers(timeoutNanoseconds: UInt64) async -> Bool {
+        let deadline = ContinuousClock.now + .nanoseconds(Int(timeoutNanoseconds))
+        while activeClientTaskCountForTesting() > 0 {
+            guard ContinuousClock.now < deadline else { return false }
+            await Task.detached {
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }.value
+        }
+        return true
     }
 
     deinit {
@@ -292,9 +317,11 @@ final class UnixSocketServiceServer: Sendable {
         request: EngramServiceRequestEnvelope,
         handler: @escaping Handler
     ) async -> EngramServiceResponseEnvelope {
-        await withTaskGroup(of: HandlerRaceOutcome.self) { group in
+        return await withTaskGroup(of: HandlerRaceOutcome.self) { group in
             group.addTask {
-                let response = await handler(request)
+                let response = await ServiceWriterGate.$preserveAcceptedWriteProducer.withValue(true) {
+                    await handler(request)
+                }
                 return .completed(response)
             }
             group.addTask {

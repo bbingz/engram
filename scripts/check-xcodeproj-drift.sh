@@ -18,6 +18,7 @@ fi
 find_pinned() {
   if [ -n "${XCODEGEN_BIN:-}" ]; then
     [ -x "${XCODEGEN_BIN}" ] || return 1
+    [ "$("${XCODEGEN_BIN}" --version 2>/dev/null)" = "Version: $version" ] || return 1
     echo "${XCODEGEN_BIN}"
     return 0
   fi
@@ -53,11 +54,14 @@ fi
 
 cd "$ROOT_DIR/macos"
 "$bin" generate >/dev/null
-if ! git diff --quiet -- Engram.xcodeproj; then
-  echo "check-xcodeproj-drift: Engram.xcodeproj was stale and has been regenerated." >&2
+generated_paths=(macos/Engram.xcodeproj macos/Engram/Info.plist)
+unstaged="$(git -C "$ROOT_DIR" diff --name-only -- "${generated_paths[@]}")"
+untracked="$(git -C "$ROOT_DIR" ls-files --others -- "${generated_paths[@]}")"
+if [ -n "$unstaged" ] || [ -n "$untracked" ]; then
+  echo "check-xcodeproj-drift: generated project files were stale and have been regenerated." >&2
   echo "  New or renamed Swift files are not in the build until this is committed," >&2
   echo "  so their tests never compile and never run. Stage it:" >&2
-  echo "    git add macos/Engram.xcodeproj/project.pbxproj" >&2
+  echo "    git add macos/Engram.xcodeproj macos/Engram/Info.plist" >&2
   exit 1
 fi
 

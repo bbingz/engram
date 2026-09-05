@@ -17,14 +17,164 @@ final class OSLogReaderTests: XCTestCase {
         try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
     }
 
-    func testOSLogReaderUsesSystemScopeAndCountsErrorLevelEntries() throws {
-        let source = try source("macos/Engram/Core/OSLogReader.swift")
+    func testOSLogReaderTargetsOnlyCurrentAppSubsystem_repro() {
+        XCTAssertEqual(OSLogReader.engramSubsystems, ["com.engram.app"])
+    }
 
-        XCTAssertTrue(source.contains("OSLogStore(scope: .system)"))
-        XCTAssertTrue(source.contains("OSLogStore(scope: .currentProcessIdentifier)"))
-        XCTAssertTrue(source.contains("case .error: return \"error\""))
-        XCTAssertTrue(source.contains("case .fault: return \"error\""))
-        XCTAssertFalse(source.contains("case .error: return \"warn\""))
+    func testServiceErrorUnionFiltersFractionalTimestampsAndKeepsUncappedKPIInput_repro() throws {
+        let now = Date()
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let old = fractional.string(from: now.addingTimeInterval(-25 * 3_600))
+        let recent = fractional.string(from: now.addingTimeInterval(-60))
+        let lines = [
+            ServiceLogLineDTO(timestamp: old, level: "error", category: "ai", message: "old"),
+        ] + (0..<250).map {
+            ServiceLogLineDTO(timestamp: recent, level: "error", category: "ai", message: "recent \($0)")
+        }
+        let snapshot = ServiceLogSnapshot(
+            lines: lines,
+            coverageStartedAt: fractional.string(from: now.addingTimeInterval(-25 * 3_600))
+        )
+
+        let serviceErrors = ObservabilityLogUnion.serviceEntries(snapshot, hours: 24)
+        XCTAssertEqual(serviceErrors.count, 250)
+        XCTAssertFalse(serviceErrors.contains { $0.message == "old" })
+        XCTAssertEqual(ObservabilityLogUnion.merge([], serviceErrors, limit: 20).count, 20)
+        XCTAssertTrue(ObservabilityLogUnion.covers(snapshot, hours: 24, now: now))
+
+        let recentCoverage = ServiceLogSnapshot(lines: [], coverageStartedAt: recent)
+        XCTAssertFalse(ObservabilityLogUnion.covers(recentCoverage, hours: 24, now: now))
+    }
+
+    func testServiceErrorCoverageRejectsAnOverflowedRingWhoseOldestRowIsTooNew_repro() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let snapshot = ServiceLogSnapshot(
+            lines: [
+                ServiceLogLineDTO(
+                    timestamp: formatter.string(from: now.addingTimeInterval(-60)),
+                    level: "error",
+                    category: "indexer",
+                    message: "retained"
+                ),
+            ],
+            coverageStartedAt: formatter.string(from: now.addingTimeInterval(-48 * 3_600)),
+            isTruncated: true
+        )
+
+        XCTAssertFalse(ObservabilityLogUnion.covers(snapshot, hours: 24, now: now))
+    }
+
+    func testLogStreamAllReservesOlderErrorsBeforeClientCap_repro() throws {
+        let error = LogEntry(
+            id: 1,
+            ts: "2026-08-24T00:00:00Z",
+            level: "error",
+            module: "parser",
+            message: "older parse failure",
+            traceId: nil,
+            source: "com.engram.app",
+            errorName: nil,
+            errorMessage: nil
+        )
+        let chatter: [LogEntry] = (0..<250).map { index -> LogEntry in
+            let minute = (index / 60) % 60
+            let second = index % 60
+            let timestamp = String(format: "2026-08-24T01:%02d:%02dZ", minute, second)
+            return LogEntry(
+                id: Int64(index + 2),
+                ts: timestamp,
+                level: "info",
+                module: "indexer",
+                message: "notice \(index)",
+                traceId: nil,
+                source: "com.engram.app",
+                errorName: nil,
+                errorMessage: nil
+            )
+        }
+
+        let merged = ObservabilityLogUnion.merge(
+            chatter + [error],
+            [],
+            limit: 200,
+            reserveErrors: true
+        )
+
+        XCTAssertEqual(merged.count, 200)
+        XCTAssertTrue(merged.contains { $0.message == "older parse failure" })
+        let source = try source("macos/Engram/Views/Observability/LogStreamView.swift")
+        XCTAssertTrue(source.contains("ObservabilityLogUnion.merge("))
+        XCTAssertTrue(source.contains("reserveErrors: level == \"All\""))
+        XCTAssertTrue(source.contains("let errors = level == \"All\""))
+        XCTAssertTrue(source.contains("level: \"error\","))
+        XCTAssertTrue(source.contains("limit: 200"))
+    }
+
+    func testObservabilityMergeUsesParsedTimeAndDropsUnparseableWindowRows_repro() {
+        let appErrors = (0..<20).map { index in
+            LogEntry(
+                id: Int64(index),
+                ts: "2026-08-24T00:00:00Z",
+                level: "error",
+                module: "app",
+                message: "app \(index)",
+                traceId: nil,
+                source: "com.engram.app",
+                errorName: nil,
+                errorMessage: nil
+            )
+        }
+        let laterServiceError = LogEntry(
+            id: 1_000_000,
+            ts: "2026-08-24T00:00:00.900Z",
+            level: "error",
+            module: "indexer",
+            message: "later service error",
+            traceId: nil,
+            source: "com.engram.service",
+            errorName: nil,
+            errorMessage: nil
+        )
+
+        let merged = ObservabilityLogUnion.merge(appErrors, [laterServiceError], limit: 20)
+        XCTAssertTrue(merged.contains { $0.message == "later service error" })
+
+        let snapshot = ServiceLogSnapshot(lines: [
+            ServiceLogLineDTO(timestamp: "not-a-time", level: "error", category: "indexer", message: "invalid"),
+        ])
+        XCTAssertTrue(ObservabilityLogUnion.serviceEntries(snapshot, hours: 24).isEmpty)
+    }
+
+    func testLogStreamAllLoadsUncappedServiceErrorsInsideTheWindow_repro() throws {
+        let source = try source("macos/Engram/Views/Observability/LogStreamView.swift")
+
+        XCTAssertTrue(source.contains("let retainedErrors = level == \"All\""))
+        XCTAssertTrue(source.contains("level: \"error\","))
+        XCTAssertTrue(source.contains("limit: nil"))
+        XCTAssertTrue(source.contains("serviceEntries(snapshot, hours: 24)"))
+    }
+
+    func testObservabilityMergeUsesServiceSequenceInsteadOfSanitizedIdentity_repro() {
+        let line = ServiceLogLineDTO(
+            timestamp: "2026-08-24T00:00:00Z",
+            level: "error",
+            category: "indexer",
+            message: "failed <path>"
+        )
+        let lines = [line, line]
+        let entries = ObservabilityLogUnion.serviceEntries(ServiceLogSnapshot(lines: lines))
+
+        XCTAssertEqual(ObservabilityLogUnion.merge(entries, [], limit: 20).count, 2)
+    }
+
+    func testLogStreamKeepsPrimaryPageWhenUncappedErrorFetchFails_repro() throws {
+        let source = try source("macos/Engram/Views/Observability/LogStreamView.swift")
+        XCTAssertTrue(source.contains("? (try? OSLogReader.recentLogs("))
+        XCTAssertTrue(source.contains("? (try? await serviceClient.serviceLogs("))
+        XCTAssertTrue(source.contains("level: \"error\""))
     }
 
     func testOSLogReaderKeepsRecentLogMemoryBounded() throws {

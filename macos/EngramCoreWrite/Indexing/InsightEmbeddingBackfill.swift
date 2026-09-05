@@ -64,7 +64,9 @@ public enum InsightEmbeddingBackfill {
 
         for item in pending {
             do {
-                let vectors = try await provider.embed([item.content])
+                let vectors = try await provider.embed([
+                    TranscriptRedactionPolicy.redact(item.content),
+                ])
                 guard vectors.count == 1, let vector = vectors.first else {
                     throw EmbeddingError.malformedResponse
                 }
@@ -122,6 +124,7 @@ public enum InsightEmbeddingBackfill {
                 LEFT JOIN insight_embeddings e ON e.insight_id = i.id
                 LEFT JOIN insight_embedding_failures f ON f.insight_id = i.id
                 WHERE e.insight_id IS NULL
+                  AND i.superseded_by IS NULL
                   AND (f.insight_id IS NULL OR f.status != 'failed_permanent')
                 ORDER BY i.created_at DESC
                 LIMIT ?
@@ -146,9 +149,18 @@ public enum InsightEmbeddingBackfill {
             return Result(embedded: 0, failed: 0)
         }
         try validateUniformNativeDimension(embeddings.map(\.vector), configured: dimension)
-        try reconcileModelChangeIfNeeded(writer: writer, model: model, dimension: dimension)
-        try writer.write { db in
+        if !embeddings.isEmpty {
+            try reconcileModelChangeIfNeeded(writer: writer, model: model, dimension: dimension)
+        }
+        let written = try writer.write { db -> (embedded: Int, failed: Int) in
+            var embeddedCount = 0
             for item in embeddings {
+                let isLive = try Bool.fetchOne(
+                    db,
+                    sql: "SELECT EXISTS(SELECT 1 FROM insights WHERE id = ? AND superseded_by IS NULL)",
+                    arguments: [item.id]
+                ) ?? false
+                guard isLive else { continue }
                 let nativeDim = item.vector.count
                 try db.execute(
                     sql: """
@@ -170,9 +182,10 @@ public enum InsightEmbeddingBackfill {
                     sql: "UPDATE insights SET has_embedding = 1 WHERE id = ?",
                     arguments: [item.id]
                 )
+                embeddedCount += 1
             }
-            try recordFailures(db, failures: failures)
-            if !embeddings.isEmpty {
+            let failedCount = try recordFailures(db, failures: failures)
+            if embeddedCount > 0 {
                 try db.execute(
                     sql: """
                         INSERT INTO embedding_meta (id, provider, model, dimension, updated_at)
@@ -185,8 +198,9 @@ public enum InsightEmbeddingBackfill {
                     arguments: [model, dimension]
                 )
             }
+            return (embeddedCount, failedCount)
         }
-        return Result(embedded: embeddings.count, failed: failures.count)
+        return Result(embedded: written.embedded, failed: written.failed)
     }
 
     public static func recordFailures(
@@ -195,15 +209,22 @@ public enum InsightEmbeddingBackfill {
     ) throws {
         guard !failures.isEmpty else { return }
         try writer.write { db in
-            try recordFailures(db, failures: failures)
+            _ = try recordFailures(db, failures: failures)
         }
     }
 
     private static func recordFailures(
         _ db: Database,
         failures: [InsightFailure]
-    ) throws {
+    ) throws -> Int {
+        var recorded = 0
         for failure in failures {
+            let isLive = try Bool.fetchOne(
+                db,
+                sql: "SELECT EXISTS(SELECT 1 FROM insights WHERE id = ? AND superseded_by IS NULL)",
+                arguments: [failure.id]
+            ) ?? false
+            guard isLive else { continue }
             try db.execute(
                 sql: """
                 INSERT INTO insight_embedding_failures (
@@ -225,7 +246,9 @@ public enum InsightEmbeddingBackfill {
                     maxInsightEmbedRetryCount,
                 ]
             )
+            recorded += 1
         }
+        return recorded
     }
 
     /// M17: when configured (model, dimension) differs from `embedding_meta`,
@@ -405,25 +428,27 @@ public enum SessionEmbeddingBackfill {
                 SELECT
                   j.id AS job_id,
                   j.session_id AS session_id,
-                  COALESCE(
-                    NULLIF((
-                      SELECT GROUP_CONCAT(content, char(10))
-                      FROM (
-                        SELECT content
-                        FROM sessions_fts
-                        WHERE session_id = j.session_id
-                        ORDER BY rowid
-                      )
-                    ), ''),
-                    s.summary,
-                    ''
-                  ) AS content
+                  NULLIF((
+                    SELECT GROUP_CONCAT(content, char(10))
+                    FROM (
+                      SELECT content
+                      FROM sessions_fts
+                      WHERE session_id = j.session_id
+                      ORDER BY rowid
+                    )
+                  ), '') AS content
                 FROM session_index_jobs j
                 JOIN sessions s ON s.id = j.session_id
                 WHERE j.job_kind = ?
                   AND j.status IN ('pending', 'failed_retryable')
                   AND s.hidden_at IS NULL
                   AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
+                  AND EXISTS (
+                    SELECT 1
+                    FROM sessions_fts ready
+                    WHERE ready.session_id = j.session_id
+                      AND LENGTH(TRIM(ready.content)) > 0
+                  )
                 ORDER BY
                   CASE j.status WHEN 'pending' THEN 0 ELSE 1 END,
                   j.retry_count,
@@ -435,13 +460,15 @@ public enum SessionEmbeddingBackfill {
             )
             return rows.compactMap { row in
                 guard let jobId = row["job_id"] as String?,
-                      let sessionId = row["session_id"] as String? else {
+                      let sessionId = row["session_id"] as String?,
+                      let content = row["content"] as String?,
+                      !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     return nil
                 }
                 return PendingSession(
                     jobId: jobId,
                     sessionId: sessionId,
-                    content: (row["content"] as String?) ?? ""
+                    content: content
                 )
             }
         }
@@ -450,7 +477,7 @@ public enum SessionEmbeddingBackfill {
     public static func embedPendingSessions(
         _ pending: [PendingSession],
         provider: any EmbeddingProvider,
-        maxTextsPerRequest: Int = 16
+        maxTextsPerRequest: Int = 8
     ) async throws -> [EmbeddedSession] {
         let outcome = try await embedPendingSessionsIsolated(
             pending,
@@ -470,7 +497,7 @@ public enum SessionEmbeddingBackfill {
     public static func embedPendingSessionsIsolated(
         _ pending: [PendingSession],
         provider: any EmbeddingProvider,
-        maxTextsPerRequest: Int = 16
+        maxTextsPerRequest: Int = 8
     ) async throws -> EmbedBatchOutcome {
         guard !pending.isEmpty else {
             return EmbedBatchOutcome(embedded: [], failures: [])
@@ -482,7 +509,7 @@ public enum SessionEmbeddingBackfill {
 
         for session in pending {
             do {
-                let messages = session.content
+                let messages = TranscriptRedactionPolicy.redact(session.content)
                     .split(separator: "\n", omittingEmptySubsequences: true)
                     .map { (role: "assistant", content: String($0)) }
                 let requests = SessionChunker.chunk(messages: messages).map { chunk in
@@ -490,7 +517,7 @@ public enum SessionEmbeddingBackfill {
                         jobId: session.jobId,
                         sessionId: session.sessionId,
                         index: chunk.index,
-                        text: chunk.text
+                        text: TranscriptRedactionPolicy.redact(chunk.text)
                     )
                 }
                 var embeddedChunks: [EmbeddedChunk] = []
@@ -525,16 +552,21 @@ public enum SessionEmbeddingBackfill {
                 )
             } catch is CancellationError {
                 throw CancellationError()
-            } catch EmbeddingError.circuitOpen {
-                throw EmbeddingError.circuitOpen
-            } catch {
-                failures.append(
-                    SessionFailure(
-                        jobId: session.jobId,
-                        sessionId: session.sessionId,
-                        error: "\(error)"
+            } catch let error as EmbeddingError {
+                switch error {
+                case .inputRejected(let message):
+                    failures.append(
+                        SessionFailure(
+                            jobId: session.jobId,
+                            sessionId: session.sessionId,
+                            error: message
+                        )
                     )
-                )
+                case .notConfigured, .http, .malformedResponse, .dimensionMismatch, .circuitOpen:
+                    throw error
+                }
+            } catch {
+                throw error
             }
         }
         return EmbedBatchOutcome(embedded: embeddedSessions, failures: failures)
@@ -556,11 +588,13 @@ public enum SessionEmbeddingBackfill {
                 configured: dimension
             )
         }
-        try InsightEmbeddingBackfill.reconcileModelChangeIfNeeded(
-            writer: writer,
-            model: model,
-            dimension: dimension
-        )
+        if sessions.contains(where: { !$0.chunks.isEmpty }) {
+            try InsightEmbeddingBackfill.reconcileModelChangeIfNeeded(
+                writer: writer,
+                model: model,
+                dimension: dimension
+            )
+        }
         var completed = 0
         var notApplicable = 0
         var failed = 0

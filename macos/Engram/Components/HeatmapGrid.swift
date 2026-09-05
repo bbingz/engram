@@ -24,7 +24,7 @@ struct HeatmapGrid: View {
                             Group {
                                 if data[hour] > 0 {
                                     Text("\(data[hour])")
-                                        .font(.system(size: 9))
+                                        .scaledFont(9)
                                         .foregroundStyle(.white.opacity(0.7))
                                 }
                             }
@@ -34,7 +34,7 @@ struct HeatmapGrid: View {
             HStack(spacing: 0) {
                 ForEach([0, 3, 6, 9, 12, 15, 18, 21], id: \.self) { hour in
                     Text(hourLabels[hour])
-                        .font(.system(size: 9))
+                        .scaledFont(9)
                         .foregroundStyle(Theme.tertiaryText)
                         .frame(maxWidth: .infinity)
                 }

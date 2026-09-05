@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import Darwin
 
 /// Per-launch capability token used to authorize destructive service commands
 /// (project moves, insight deletes, hide/rename) over the Unix socket.
@@ -19,6 +20,7 @@ enum ServiceCapabilityToken {
         "generateSummary",
         "saveInsight",
         "refreshUsage",
+        "shutdown",
         "test.write_intent",
         "projectMove",
         "projectArchive",
@@ -49,6 +51,7 @@ enum ServiceCapabilityToken {
         "remoteRehydrate",
         "remotePushProject",
         "remotePullProject",
+        "liveIngestResetShrinkGuard",
         "archiveV2Retry",
         "archiveV2StoreToken",
         "archiveV2RemoteRecoveryProbe",
@@ -89,13 +92,20 @@ enum ServiceCapabilityToken {
             .path
     }
 
-    /// Resolve the token path that pairs with a given socket path. The token
-    /// always lives next to the socket so per-test sockets get their own token.
+    /// Resolve the token path that pairs with a given socket path. The default
+    /// service retains `cmd.token`; custom sockets use a socket-namespaced
+    /// sidecar so Engram never claims or overwrites a caller-owned `cmd.token`.
     static func path(forSocketPath socketPath: String) -> String {
-        URL(fileURLWithPath: socketPath)
-            .deletingLastPathComponent()
-            .appendingPathComponent("cmd.token")
-            .path
+        let standardized = URL(fileURLWithPath: socketPath).standardizedFileURL.path
+        if standardized == URL(
+            fileURLWithPath: UnixSocketEngramServiceTransport.defaultSocketPath()
+        ).standardizedFileURL.path {
+            return URL(fileURLWithPath: standardized)
+                .deletingLastPathComponent()
+                .appendingPathComponent("cmd.token")
+                .path
+        }
+        return standardized + ".cmd.token"
     }
 
     /// Generate a fresh random token and write it atomically with mode 0600.
@@ -103,31 +113,35 @@ enum ServiceCapabilityToken {
     @discardableResult
     static func generateAndWrite(toPath path: String) throws -> String {
         let token = makeRandomToken()
-        let data = Data(token.utf8)
-        let fileManager = FileManager.default
-        // Remove any stale token so we never inherit looser permissions.
-        if fileManager.fileExists(atPath: path) {
-            try? fileManager.removeItem(atPath: path)
+        do {
+            try SecureRegularFile.writeAtomically(Data(token.utf8), toPath: path)
+        } catch {
+            // The path is always derived from the service socket and owned by
+            // Engram. Recover an unsafe same-user leaf without touching its
+            // referent, then publish a fresh single-link token.
+            guard SecureRegularFile.removeOwnerNonDirectory(atPath: path) else {
+                throw EngramServiceError.serviceUnavailable(message: "Cannot write capability token")
+            }
+            do {
+                try SecureRegularFile.writeAtomically(Data(token.utf8), toPath: path)
+            } catch {
+                throw EngramServiceError.serviceUnavailable(message: "Cannot write capability token")
+            }
         }
-        let created = fileManager.createFile(
-            atPath: path,
-            contents: data,
-            attributes: [.posixPermissions: 0o600]
-        )
-        guard created else {
-            throw EngramServiceError.serviceUnavailable(message: "Cannot write capability token")
-        }
-        // Enforce 0600 even if the umask / createFile attributes were ignored.
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
         return token
     }
 
     /// Load the current token written by the service, or nil if unreadable.
     static func load(fromPath path: String) -> String? {
-        guard let data = FileManager.default.contents(atPath: path) else { return nil }
+        guard let data = SecureRegularFile.read(atPath: path) else { return nil }
         let value = String(decoding: data, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty ? nil : value
+    }
+
+    /// Remove the socket-adjacent token through a pinned directory descriptor.
+    static func remove(atPath path: String) {
+        _ = SecureRegularFile.removeOwnerNonDirectory(atPath: path)
     }
 
     private static func makeRandomToken(byteCount: Int = 32) -> String {

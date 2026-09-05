@@ -2,6 +2,62 @@ import XCTest
 @testable import Engram
 
 final class MemoryViewTests: XCTestCase {
+    func testReloadDropsSelectionMissingFromActiveInsights_repro() {
+        let selected = EngramServiceInsightInfo(
+            id: "deleted", content: "deleted insight", wing: nil, room: nil,
+            importance: 3, createdAt: "2026-08-22T00:00:00Z"
+        )
+
+        XCTAssertNil(MemoryView.retainedSelection(selected, in: []))
+    }
+
+    func testReloadRetainsTheFreshlyLoadedInsightRow_repro() throws {
+        let stale = EngramServiceInsightInfo(
+            id: "active", content: "stale preview", wing: nil, room: nil,
+            importance: 3, createdAt: "2026-08-22T00:00:00Z"
+        )
+        let loaded = EngramServiceInsightInfo(
+            id: "active", content: "fresh preview", wing: "engram", room: nil,
+            importance: 5, createdAt: "2026-08-24T00:00:00Z"
+        )
+
+        let retained = try XCTUnwrap(MemoryView.retainedSelection(stale, in: [loaded]))
+
+        XCTAssertEqual(retained.content, "fresh preview")
+        XCTAssertEqual(retained.importance, 5)
+    }
+
+    func testInsightLoadsAreGenerationGatedAndNeverFallbackToListPreview_repro() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("macos/Engram/Views/Pages/MemoryView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("@State private var loadGeneration"))
+        XCTAssertTrue(source.contains("guard generation == loadGeneration else { return }"))
+        XCTAssertFalse(source.contains("selectedInsightDetail ?? selected"))
+        XCTAssertFalse(source.contains("detail ?? insight"))
+        XCTAssertFalse(source.contains("selectedInsightDetail = insight"))
+    }
+
+    func testInsightReloadAndDeleteInvalidateDetailAndDropDeletedRowImmediately_repro() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("macos/Engram/Views/Pages/MemoryView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("insights.removeAll { $0.id == insight.id }"))
+        XCTAssertTrue(source.contains("if let retainedInsight"))
+        XCTAssertTrue(source.contains("insightDetailGeneration &+= 1"))
+    }
+
     func testInsightsCommandRoundTrips() async throws {
         let transport = RecordingMemoryTransport { request in
             XCTAssertEqual(request.command, "insights")

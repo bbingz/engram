@@ -11,8 +11,9 @@
 # --hygiene-only runs hygiene + structural helper checks, then exits before
 # version/codesign (per-PR CI gate; M11).
 #
-# Distribution-only (skipped under --adhoc): requires a notarizable Developer ID build:
+# Archive identity-independent:
 #   - Hardened Runtime flag present  (codesign -dvvv | flags=...runtime)
+# Distribution-only (skipped under --adhoc): requires a notarizable Developer ID build:
 #   - Developer ID Application authority
 #   - Secure timestamp present
 #
@@ -77,7 +78,9 @@ echo "======================================"
 FORBIDDEN_NAMES=(node node_modules dist daemon.js index.js web.js)
 hygiene_failed=0
 for name in "${FORBIDDEN_NAMES[@]}"; do
-  matches="$(find "$APP" -name "$name" 2>/dev/null || true)"
+  if ! matches="$(find "$APP" -name "$name")"; then
+    fail "bundle hygiene scan failed for '$name'"
+  fi
   if [ -n "$matches" ]; then
     echo "release-verify: FAIL: forbidden bundle artifact '$name' found:" >&2
     echo "$matches" >&2
@@ -99,7 +102,11 @@ ok "bundle hygiene clean (no node/node_modules/dist/daemon.js/index.js/web.js)"
 [ -f "$APP/Contents/Helpers/EngramMCP" ] || fail "missing Contents/Helpers/EngramMCP"
 [ -f "$APP/Contents/Helpers/EngramCLI" ] || fail "missing Contents/Helpers/EngramCLI"
 [ -f "$APP/Contents/Helpers/EngramService" ] || fail "missing Contents/Helpers/EngramService"
-ok "structure present (Engram + EngramCLI + EngramMCP + EngramService)"
+for framework in EngramServiceCore EngramCoreRead EngramCoreWrite GRDB-dynamic; do
+  [ -d "$APP/Contents/Frameworks/${framework}.framework" ] \
+    || fail "missing Contents/Frameworks/${framework}.framework"
+done
+ok "structure present (Engram + helpers + runtime frameworks)"
 
 if [ "$HYGIENE_ONLY" -eq 1 ]; then
   echo "release-verify: PASS (hygiene + structure only)"
@@ -129,19 +136,20 @@ fi
 codesign --verify --deep --strict --verbose=2 "$APP" || fail "codesign --verify --deep --strict failed"
 ok "codesign --verify --deep --strict passed"
 
-if [ "$ADHOC" -eq 1 ]; then
-  echo "release-verify: ad-hoc mode — skipping Hardened Runtime / Developer ID / timestamp assertions"
-  echo "release-verify: PASS (hygiene + structure + version + deep verify)"
-  exit 0
-fi
-
-# --- 5. Distribution-only signature assertions ---
+# Hardened Runtime is an archive property, not a Developer ID identity check.
+# Verify it for the ad-hoc tag gate before that mode can return success.
 SIGN_INFO="$(codesign -dvvv "$APP" 2>&1)"
-
 echo "$SIGN_INFO" | grep -Eq 'flags=.*runtime' \
   || fail "Hardened Runtime flag absent (expected codesign flags to contain 'runtime')"
 ok "Hardened Runtime flag present"
 
+if [ "$ADHOC" -eq 1 ]; then
+  echo "release-verify: ad-hoc mode — skipping Developer ID / timestamp assertions"
+  echo "release-verify: PASS (hygiene + structure + version + deep verify + Hardened Runtime)"
+  exit 0
+fi
+
+# --- 5. Distribution-only signature assertions ---
 echo "$SIGN_INFO" | grep -Eq 'Authority=Developer ID Application' \
   || fail "Developer ID Application authority absent (found: $(echo "$SIGN_INFO" | grep -m1 '^Authority=' || echo none))"
 ok "Developer ID Application authority present"

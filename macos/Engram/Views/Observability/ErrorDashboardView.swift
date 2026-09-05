@@ -2,32 +2,35 @@
 import SwiftUI
 import GRDB
 import Combine
+import AppKit
 
 struct ErrorDashboardView: View {
     @Environment(DatabaseManager.self) var db
-    @State private var totalErrors24h = 0
+    @Environment(\.engramServiceClient) var serviceClient
+    @State private var totalErrors24h: Int? = nil
     @State private var errorsByModule: [(module: String, count: Int)] = []
     @State private var recentErrors: [LogEntry] = []
     @State private var isLoading = true
-    @State private var logsUnavailable = false
-    @State private var loadError: String? = nil
+    @State private var coverageHoles: [ErrorDashboardCoverageHole] = []
 
     private let timer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                if logsUnavailable {
-                    // OBS-C1: do not render a false "all clear" when the unified
-                    // log is not accessible — say so explicitly.
-                    AlertBanner(message: "System log not available under current permissions — error data cannot be shown.")
-                } else if let loadError {
-                    AlertBanner(message: "Failed to load errors: \(loadError)")
+                if !coverageHoles.isEmpty {
+                    AlertBanner(message: coverageHoles.map(\.message).joined(separator: " "))
                 }
                 // KPI
                 HStack(spacing: 12) {
-                    KPICard(value: "\(totalErrors24h)", label: "Errors (24h)")
-                    KPICard(value: "\(errorsByModule.count)", label: "Affected Modules")
+                    KPICard(
+                        value: totalErrors24h.map(String.init) ?? "—",
+                        label: "Errors (24h)"
+                    )
+                    KPICard(
+                        value: coverageHoles.isEmpty ? "\(errorsByModule.count)" : "—",
+                        label: "Affected Modules"
+                    )
                 }
                 // observability-4: the unified log stores warnings at the error
                 // type, so this count includes warning-level entries.
@@ -38,7 +41,7 @@ struct ErrorDashboardView: View {
                 // Errors by module
                 SectionHeader(icon: "exclamationmark.triangle", title: "Errors by Module", badge: "24h")
                 if errorsByModule.isEmpty {
-                    Text("No errors in the last 24 hours")
+                    Text(totalErrors24h == nil ? "24-hour coverage is incomplete" : "No errors in the last 24 hours")
                         .font(.caption)
                         .foregroundStyle(Theme.secondaryText)
                         .padding(.vertical, 8)
@@ -46,11 +49,11 @@ struct ErrorDashboardView: View {
                     ForEach(errorsByModule, id: \.module) { item in
                         HStack {
                             Text(item.module)
-                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                .scaledFont(12, weight: .medium, design: .monospaced)
                             Spacer()
                             Text("\(item.count)")
-                                .font(.system(size: 12, weight: .bold))
-                                .foregroundStyle(.red)
+                                .scaledFont(12, weight: .bold)
+                                .foregroundStyle(Theme.red)
                         }
                         .padding(.vertical, 2)
                     }
@@ -59,7 +62,7 @@ struct ErrorDashboardView: View {
                 // Recent errors
                 SectionHeader(icon: "exclamationmark.circle", title: "Recent Errors", badge: "last 20")
                 if recentErrors.isEmpty {
-                    Text("No recent errors")
+                    Text(coverageHoles.isEmpty ? "No recent errors" : "Recent error coverage is incomplete")
                         .font(.caption)
                         .foregroundStyle(Theme.secondaryText)
                         .padding(.vertical, 8)
@@ -69,25 +72,25 @@ struct ErrorDashboardView: View {
                             HStack {
                                 LevelBadge(level: entry.level)
                                 Text(entry.module)
-                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                    .scaledFont(10, weight: .medium, design: .monospaced)
                                     .foregroundStyle(Theme.secondaryText)
                                 Spacer()
                                 Text(formatTimestamp(entry.ts))
-                                    .font(.system(size: 10, design: .monospaced))
+                                    .scaledFont(10, design: .monospaced)
                                     .foregroundStyle(Theme.tertiaryText)
                             }
                             Text(entry.message)
-                                .font(.system(size: 11))
+                                .scaledFont(11)
                                 .foregroundStyle(Theme.primaryText)
                                 .lineLimit(3)
                             if let errorName = entry.errorName {
                                 Text(errorName)
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(.red)
+                                    .scaledFont(10, design: .monospaced)
+                                    .foregroundStyle(Theme.red)
                             }
                         }
                         .padding(8)
-                        .background(Color.red.opacity(0.05))
+                        .background(Theme.red.opacity(0.05))
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                     }
                 }
@@ -103,26 +106,146 @@ struct ErrorDashboardView: View {
     private func loadData() async {
         isLoading = true
         defer { isLoading = false }
-        // OBS-C1: read real signal from the unified log (com.engram.*), not the
-        // never-written `logs` table. Runs off the main thread (UI-C1/C2).
-        do {
-            let loaded = try await Task.detached { () -> (Int, [(module: String, count: Int)], [LogEntry]) in
-                let total = try OSLogReader.countErrors(hours: 24)
-                let byModule = try OSLogReader.errorsByModule(hours: 24)
-                let recent = try OSLogReader.recentLogs(level: "error", hours: 24, limit: 20).entries.reversed()
-                return (total, byModule, Array(recent))
-            }.value
-            totalErrors24h = loaded.0
-            errorsByModule = loaded.1
-            recentErrors = loaded.2
-            logsUnavailable = false
-            loadError = nil
-        } catch is OSLogReaderError {
-            logsUnavailable = true
-        } catch {
-            EngramLogger.error("ErrorDashboardView load failed", module: .ui, error: error)
-            loadError = error.localizedDescription
+        let loaded = await ErrorDashboardLoader.load(
+            appLoad: {
+                try await Task.detached {
+                    ErrorDashboardAppLogData(
+                        entries: try OSLogReader.recentLogs(level: "error", hours: 24, limit: 20).entries,
+                        errorCount24h: try OSLogReader.countErrors(hours: 24),
+                        errorsByModule: try OSLogReader.errorsByModule(hours: 24),
+                        coverageStartedAt: NSRunningApplication.current.launchDate ?? Date()
+                    )
+                }.value
+            },
+            serviceLoad: {
+                try await serviceClient.serviceLogs(level: "error", category: nil, limit: nil)
+            }
+        )
+        totalErrors24h = loaded.totalErrors24h
+        errorsByModule = loaded.errorsByModule
+        recentErrors = loaded.recentErrors
+        coverageHoles = loaded.coverageHoles
+    }
+}
+
+struct ErrorDashboardAppLogData {
+    let entries: [LogEntry]
+    let errorCount24h: Int
+    let errorsByModule: [(module: String, count: Int)]
+    let coverageStartedAt: Date
+
+    init(
+        entries: [LogEntry],
+        errorCount24h: Int,
+        errorsByModule: [(module: String, count: Int)],
+        coverageStartedAt: Date = .distantPast
+    ) {
+        self.entries = entries
+        self.errorCount24h = errorCount24h
+        self.errorsByModule = errorsByModule
+        self.coverageStartedAt = coverageStartedAt
+    }
+}
+
+enum ErrorDashboardCoverageHole: Equatable {
+    case appLogUnavailable
+    case appLogTooYoung
+    case serviceIPCFailed
+    case serviceRingTooYoung
+
+    var message: String {
+        switch self {
+        case .appLogUnavailable:
+            return "App system log is unavailable, so 24-hour coverage is incomplete."
+        case .appLogTooYoung:
+            return "The app has been running for less than 24 hours, so app log coverage is incomplete."
+        case .serviceIPCFailed:
+            return "Service log IPC failed, so service errors are unavailable."
+        case .serviceRingTooYoung:
+            return "Service log history covers less than 24 hours."
         }
     }
+}
 
+struct ErrorDashboardLoadResult {
+    let totalErrors24h: Int?
+    let errorsByModule: [(module: String, count: Int)]
+    let recentErrors: [LogEntry]
+    let coverageHoles: [ErrorDashboardCoverageHole]
+}
+
+enum ErrorDashboardLoader {
+    static func load(
+        now: Date = Date(),
+        appLoad: () async throws -> ErrorDashboardAppLogData,
+        serviceLoad: () async throws -> ServiceLogSnapshot
+    ) async -> ErrorDashboardLoadResult {
+        let appData: ErrorDashboardAppLogData?
+        do {
+            appData = try await appLoad()
+        } catch {
+            EngramLogger.error("ErrorDashboardView app log load failed", module: .ui, error: error)
+            appData = nil
+        }
+
+        let serviceSnapshot: ServiceLogSnapshot?
+        let serviceIPCFailed: Bool
+        do {
+            serviceSnapshot = try await serviceLoad()
+            serviceIPCFailed = false
+        } catch {
+            serviceSnapshot = nil
+            serviceIPCFailed = true
+        }
+
+        let cutoff = now.addingTimeInterval(-24 * 60 * 60)
+        let appCovered = appData.map { $0.coverageStartedAt <= cutoff } == true
+        let serviceCovered = serviceSnapshot.map {
+            ObservabilityLogUnion.covers($0, hours: 24, now: now)
+        } == true
+        var holes: [ErrorDashboardCoverageHole] = []
+        if appData == nil { holes.append(.appLogUnavailable) }
+        else if !appCovered { holes.append(.appLogTooYoung) }
+        if serviceIPCFailed {
+            holes.append(.serviceIPCFailed)
+        } else if !serviceCovered {
+            holes.append(.serviceRingTooYoung)
+        }
+
+        let serviceEntries = serviceSnapshot.map {
+            ObservabilityLogUnion.serviceEntries($0, hours: 24, now: now)
+        } ?? []
+        let recentEntries = ObservabilityLogUnion.merge(
+            appData?.entries ?? [],
+            serviceEntries,
+            limit: 20
+        )
+
+        var errorsByModule: [(module: String, count: Int)] = []
+        if holes.isEmpty {
+            var moduleCounts = Dictionary(
+                uniqueKeysWithValues: (appData?.errorsByModule ?? []).map { ($0.module, $0.count) }
+            )
+            for entry in serviceEntries {
+                moduleCounts[entry.module, default: 0] += 1
+            }
+            errorsByModule = moduleCounts.map { entry in
+                (module: entry.key, count: entry.value)
+            }
+            errorsByModule.sort { left, right in
+                if left.count != right.count { return left.count > right.count }
+                return left.module < right.module
+            }
+        }
+        let total = holes.isEmpty
+            ? (appData?.errorCount24h ?? 0) + serviceEntries.count
+            : nil
+
+        return ErrorDashboardLoadResult(
+            totalErrors24h: total,
+            errorsByModule: errorsByModule,
+            recentErrors: recentEntries,
+            coverageHoles: holes
+        )
+    }
 }

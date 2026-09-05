@@ -222,7 +222,8 @@ for (const path of process.argv.slice(3)) {
     if (
       name === 'Darwin.unlink' &&
       path === immutableArchiveCAS &&
-      argument === 'temporaryURL.path'
+      (argument === 'temporaryURL.path' ||
+        argument === 'staged.temporaryURL.path')
     ) {
       continue;
     }

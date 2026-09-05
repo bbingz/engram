@@ -244,3 +244,257 @@ public enum GeminiProjectsJSON {
         }
     }
 }
+
+// MARK: - Kimi work-dir registry
+
+public struct KimiWorkDirUpdate: Equatable, Sendable {
+    public let index: Int
+    public let oldPath: String
+    public let newPath: String
+    public let kaos: String?
+    public let oldWorkspaceName: String
+    public let newWorkspaceName: String
+
+    public init(
+        index: Int,
+        oldPath: String,
+        newPath: String,
+        kaos: String?,
+        oldWorkspaceName: String,
+        newWorkspaceName: String
+    ) {
+        self.index = index
+        self.oldPath = oldPath
+        self.newPath = newPath
+        self.kaos = kaos
+        self.oldWorkspaceName = oldWorkspaceName
+        self.newWorkspaceName = newWorkspaceName
+    }
+}
+
+public struct KimiProjectsJsonUpdatePlan: Equatable, Sendable {
+    public let filePath: String
+    public let updates: [KimiWorkDirUpdate]
+    public let originalText: String?
+
+    public init(
+        filePath: String,
+        updates: [KimiWorkDirUpdate],
+        originalText: String?
+    ) {
+        self.filePath = filePath
+        self.updates = updates
+        self.originalText = originalText
+    }
+}
+
+public enum KimiProjectsJSONError: Error, Equatable {
+    case invalidJson(path: String, message: String)
+    case concurrentModification(path: String, index: Int)
+    case writeFailed(path: String, errno: Int32, message: String)
+}
+
+private struct KimiJsonShape {
+    var object: [String: Any]
+    var workDirs: [[String: Any]]
+}
+
+public enum KimiProjectsJSON {
+    public static func plan(
+        filePath: String,
+        oldPaths: [String],
+        newPath: String
+    ) throws -> KimiProjectsJsonUpdatePlan {
+        let (shape, originalText) = try load(filePath)
+        let aliases = uniqueAliases(oldPaths)
+        let updates = shape.workDirs.enumerated().compactMap { index, workDir -> KimiWorkDirUpdate? in
+            guard let path = workDir["path"] as? String,
+                  let matched = matchingPrefix(path, aliases: aliases)
+            else { return nil }
+            let suffix = String(path.dropFirst(matched.count))
+            let rewritten = newPath + suffix
+            let kaos = workDir["kaos"] as? String
+            return KimiWorkDirUpdate(
+                index: index,
+                oldPath: path,
+                newPath: rewritten,
+                kaos: kaos,
+                oldWorkspaceName: SessionSources.encodeKimi(path, kaos: kaos),
+                newWorkspaceName: SessionSources.encodeKimi(rewritten, kaos: kaos)
+            )
+        }
+        return KimiProjectsJsonUpdatePlan(
+            filePath: filePath,
+            updates: updates,
+            originalText: originalText
+        )
+    }
+
+    public static func apply(plan: KimiProjectsJsonUpdatePlan) throws {
+        guard !plan.updates.isEmpty else { return }
+        var (shape, _) = try load(plan.filePath)
+        for update in plan.updates {
+            guard shape.workDirs.indices.contains(update.index),
+                  shape.workDirs[update.index]["path"] as? String == update.oldPath
+            else {
+                throw KimiProjectsJSONError.concurrentModification(
+                    path: plan.filePath,
+                    index: update.index
+                )
+            }
+            shape.workDirs[update.index]["path"] = update.newPath
+        }
+        shape.object["work_dirs"] = shape.workDirs
+        try writeAtomic(plan.filePath, content: try serialize(shape.object))
+    }
+
+    public static func reverse(plan: KimiProjectsJsonUpdatePlan) throws {
+        guard !plan.updates.isEmpty else { return }
+        if let originalText = plan.originalText {
+            try writeAtomic(plan.filePath, content: originalText)
+        } else {
+            _ = try? FileManager.default.removeItem(atPath: plan.filePath)
+        }
+    }
+
+    public static func collectOtherPathsSharingWorkspace(
+        plan: KimiProjectsJsonUpdatePlan
+    ) throws -> [String] {
+        guard !plan.updates.isEmpty else { return [] }
+        let (shape, _) = try load(plan.filePath)
+        let updatedIndices = Set(plan.updates.map(\.index))
+        let plannedNames = Set(plan.updates.flatMap {
+            [$0.oldWorkspaceName, $0.newWorkspaceName]
+        })
+        var conflicts = Set<String>()
+        for (index, workDir) in shape.workDirs.enumerated() where !updatedIndices.contains(index) {
+            guard let path = workDir["path"] as? String else { continue }
+            let name = SessionSources.encodeKimi(path, kaos: workDir["kaos"] as? String)
+            if plannedNames.contains(name) { conflicts.insert(path) }
+        }
+        return conflicts.sorted()
+    }
+
+    private static func uniqueAliases(_ paths: [String]) -> [String] {
+        var aliases: [String] = []
+        for value in paths.flatMap(ProjectPathVariants.variants) {
+            if !aliases.contains(where: { $0.utf8.elementsEqual(value.utf8) }) {
+                aliases.append(value)
+            }
+        }
+        return aliases
+    }
+
+    private static func matchingPrefix(_ path: String, aliases: [String]) -> String? {
+        aliases.first { alias in
+            path.utf8.elementsEqual(alias.utf8)
+                || path.utf8.starts(with: (alias + "/").utf8)
+        }
+    }
+
+    private static func load(_ filePath: String) throws -> (KimiJsonShape, String?) {
+        let data: Data
+        do {
+            data = try Data(contentsOf: URL(fileURLWithPath: filePath))
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return (KimiJsonShape(object: [:], workDirs: []), nil)
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain
+            && error.code == NSFileReadNoSuchFileError {
+            return (KimiJsonShape(object: [:], workDirs: []), nil)
+        }
+        let object: Any
+        do {
+            object = try JSONSerialization.jsonObject(with: data)
+        } catch {
+            throw KimiProjectsJSONError.invalidJson(
+                path: filePath,
+                message: "kimi-projects-json: invalid JSON — \(error.localizedDescription)"
+            )
+        }
+        guard let dictionary = object as? [String: Any] else {
+            throw KimiProjectsJSONError.invalidJson(
+                path: filePath,
+                message: "kimi-projects-json: top-level value must be an object"
+            )
+        }
+        let rawWorkDirs = dictionary["work_dirs"] ?? []
+        guard let workDirs = rawWorkDirs as? [[String: Any]] else {
+            throw KimiProjectsJSONError.invalidJson(
+                path: filePath,
+                message: "kimi-projects-json: work_dirs must be an array of objects"
+            )
+        }
+        guard let originalText = String(data: data, encoding: .utf8) else {
+            throw KimiProjectsJSONError.invalidJson(
+                path: filePath,
+                message: "kimi-projects-json: file must be UTF-8"
+            )
+        }
+        return (KimiJsonShape(object: dictionary, workDirs: workDirs), originalText)
+    }
+
+    private static func serialize(_ object: [String: Any]) throws -> String {
+        let data = try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.prettyPrinted, .sortedKeys]
+        )
+        return (String(data: data, encoding: .utf8) ?? "{}") + "\n"
+    }
+
+    private static func writeAtomic(_ filePath: String, content: String) throws {
+        let directory = (filePath as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(
+            atPath: directory,
+            withIntermediateDirectories: true
+        )
+        let tmp = "\(filePath).engram-tmp-\(getpid())-\(UUID().uuidString)"
+        let permissions = (
+            (try? FileManager.default.attributesOfItem(atPath: filePath)[.posixPermissions]) as? NSNumber
+        )?.intValue ?? 0o600
+        guard FileManager.default.createFile(
+            atPath: tmp,
+            contents: Data(content.utf8),
+            attributes: [.posixPermissions: permissions]
+        ) else {
+            throw KimiProjectsJSONError.writeFailed(
+                path: tmp,
+                errno: EIO,
+                message: "create temp file failed"
+            )
+        }
+        let fd = Darwin.open(tmp, O_RDONLY)
+        guard fd >= 0 else {
+            _ = try? FileManager.default.removeItem(atPath: tmp)
+            throw KimiProjectsJSONError.writeFailed(
+                path: tmp,
+                errno: errno,
+                message: String(cString: strerror(errno))
+            )
+        }
+        let syncResult = Darwin.fsync(fd)
+        let syncErrno = errno
+        Darwin.close(fd)
+        guard syncResult == 0 else {
+            _ = try? FileManager.default.removeItem(atPath: tmp)
+            throw KimiProjectsJSONError.writeFailed(
+                path: tmp,
+                errno: syncErrno,
+                message: String(cString: strerror(syncErrno))
+            )
+        }
+        guard Darwin.rename(tmp, filePath) == 0 else {
+            let code = errno
+            _ = try? FileManager.default.removeItem(atPath: tmp)
+            throw KimiProjectsJSONError.writeFailed(
+                path: filePath,
+                errno: code,
+                message: String(cString: strerror(code))
+            )
+        }
+        let directoryFD = Darwin.open(directory, O_RDONLY)
+        if directoryFD >= 0 {
+            _ = Darwin.fsync(directoryFD)
+            Darwin.close(directoryFD)
+        }
+    }
+}

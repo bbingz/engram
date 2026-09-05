@@ -34,6 +34,23 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testDowngradeSubagentTiersRemovesShadowFTSRows_repro() throws {
+        try writer.write { db in
+            try insertSession(db, id: "subagent-shadow", source: "codex", agentRole: "subagent", tier: "lite")
+            try insertSession(db, id: "normal-shadow", source: "codex", tier: "normal")
+            try db.execute(sql: "CREATE TABLE sessions_fts_rebuild(session_id TEXT NOT NULL, content TEXT NOT NULL)")
+            try db.execute(
+                sql: "INSERT INTO sessions_fts_rebuild(session_id, content) VALUES ('subagent-shadow', 'hidden'), ('normal-shadow', 'visible')"
+            )
+
+            XCTAssertEqual(try StartupBackfills.downgradeSubagentTiers(db), 1)
+            XCTAssertEqual(
+                try String.fetchAll(db, sql: "SELECT session_id FROM sessions_fts_rebuild ORDER BY session_id"),
+                ["normal-shadow"]
+            )
+        }
+    }
+
     func testDowngradeSubagentTiersPurgesFtsMapArtifacts_repro() throws {
         try writer.write { db in
             let leaked = "purge-leak-subagent-downgrade"
@@ -88,13 +105,18 @@ final class StartupBackfillTests: XCTestCase {
     }
 
     func testBackfillParentLinksUsesPathAndPreservesManualLinks() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("claude-parent-backfill-\(UUID().uuidString)", isDirectory: true)
+        let projectsRoot = home.appendingPathComponent(".claude/projects", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
         try writer.write { db in
-            try insertSession(db, id: "parent-1", source: "codex", tier: "normal")
+            try insertSession(db, id: "parent-1", source: "claude-code", tier: "normal")
             try insertSession(
                 db,
                 id: "child-1",
-                source: "codex",
-                filePath: "/tmp/parent-1/subagents/worker.jsonl",
+                source: "claude-code",
+                filePath: projectsRoot.appendingPathComponent("encoded/parent-1/subagents/worker.jsonl").path,
                 agentRole: "subagent",
                 tier: "skip",
                 suggestionStatus: "ambiguous",
@@ -103,14 +125,14 @@ final class StartupBackfillTests: XCTestCase {
             try insertSession(
                 db,
                 id: "manual-child",
-                source: "codex",
-                filePath: "/tmp/parent-1/subagents/manual.jsonl",
+                source: "claude-code",
+                filePath: projectsRoot.appendingPathComponent("encoded/parent-1/subagents/manual.jsonl").path,
                 agentRole: "subagent",
                 tier: "skip",
                 linkSource: "manual"
             )
 
-            let result = try StartupBackfills.backfillParentLinks(db)
+            let result = try StartupBackfills.backfillParentLinks(db, homeDirectory: home)
             XCTAssertEqual(result.linked, 1)
             XCTAssertEqual(
                 try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'child-1'"),
@@ -119,6 +141,267 @@ final class StartupBackfillTests: XCTestCase {
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT suggestion_status FROM sessions WHERE id = 'child-1'"))
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT suggestion_candidates FROM sessions WHERE id = 'child-1'"))
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'manual-child'"))
+        }
+    }
+
+    func testQoderBackfillScansPastSidecarFirstLineAndNeverUsesEncodedProjectAsParent_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qoder-backfill-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectsRoot = root.appendingPathComponent(".qoder/projects", isDirectory: true)
+        let childFile = projectsRoot.appendingPathComponent("encoded-project/subagents/agent.jsonl")
+        try FileManager.default.createDirectory(
+            at: childFile.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let rows = [
+            #"{"type":"file-history-snapshot","snapshot":""#
+                + String(repeating: "x", count: 300 * 1_024)
+                + #""}"#,
+            #"{"type":"user","sessionId":"qoder-parent","message":{"role":"user","content":"work"}}"#,
+        ]
+        try rows.joined(separator: "\n").appending("\n")
+            .write(to: childFile, atomically: true, encoding: .utf8)
+
+        try writer.write { db in
+            try insertSession(db, id: "qoder-parent", source: "qoder", filePath: projectsRoot.appendingPathComponent("encoded-project/qoder-parent.jsonl").path)
+            try insertSession(
+                db,
+                id: "sub:qoder-parent:subagents/agent.jsonl",
+                source: "qoder",
+                filePath: childFile.path,
+                agentRole: "subagent",
+                tier: "skip"
+            )
+
+            XCTAssertEqual(
+                try StartupBackfills.backfillParentLinks(db, homeDirectory: root).linked,
+                1
+            )
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT parent_session_id FROM sessions WHERE id = 'sub:qoder-parent:subagents/agent.jsonl'"
+                ),
+                "qoder-parent"
+            )
+        }
+    }
+
+    func testParentBackfillDoesNotInventHostFromUnconfinedSubagentsName_repro() throws {
+        let locator = "/tmp/home/.claude/projects/subagents/session.jsonl"
+        try writer.write { db in
+            try insertSession(db, id: "projects", source: "claude-code", tier: "normal")
+            try insertSession(
+                db,
+                id: "unconfined-child",
+                source: "claude-code",
+                filePath: locator,
+                agentRole: "subagent",
+                tier: "skip"
+            )
+
+            XCTAssertEqual(try StartupBackfills.backfillParentLinks(db).linked, 0)
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'unconfined-child'")
+            )
+        }
+    }
+
+    func testQoderBackfillUsesDeclaredSymlinkProjectsRoot_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qoder-symlink-root-\(UUID().uuidString)", isDirectory: true)
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let store = root.appendingPathComponent("store", isDirectory: true)
+        let realProjects = store.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: home.appendingPathComponent(".qoder", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(at: realProjects, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: home.appendingPathComponent(".qoder/projects"),
+            withDestinationURL: realProjects
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectsRoot = home.appendingPathComponent(".qoder/projects", isDirectory: true)
+        let child = projectsRoot.appendingPathComponent("encoded/subagents/worker.jsonl")
+        try FileManager.default.createDirectory(at: child.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try #"{"type":"user","sessionId":"qoder-symlink-parent"}"#
+            .appending("\n")
+            .write(to: child, atomically: true, encoding: .utf8)
+
+        try writer.write { db in
+            try insertSession(db, id: "qoder-symlink-parent", source: "qoder", tier: "normal")
+            try insertSession(
+                db,
+                id: "qoder-symlink-child",
+                source: "qoder",
+                filePath: child.resolvingSymlinksInPath().path,
+                agentRole: "subagent",
+                tier: "skip"
+            )
+
+            XCTAssertFalse(child.resolvingSymlinksInPath().path.contains(".qoder"))
+            XCTAssertFalse(child.resolvingSymlinksInPath().path.contains("projects"))
+            XCTAssertEqual(
+                try StartupBackfills.backfillParentLinks(db, homeDirectory: home).linked,
+                1
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'qoder-symlink-child'"),
+                "qoder-symlink-parent"
+            )
+        }
+    }
+
+    func testDerivedClaudeSourceBackfillUsesCustomProjectsRoot_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("minimax-custom-projects-\(UUID().uuidString)", isDirectory: true)
+        let projectsRoot = root.appendingPathComponent("profiles/team/projects", isDirectory: true)
+        let child = projectsRoot.appendingPathComponent("encoded/parent-id/subagents/worker.jsonl")
+        try FileManager.default.createDirectory(at: child.deletingLastPathComponent(), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data().write(to: child)
+        let settingsURL = root.appendingPathComponent(".engram/settings.json")
+        try FileManager.default.createDirectory(
+            at: settingsURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try """
+            {"claudeCodeProfiles":{"autoDiscover":false,"customProjectsRoots":["\(projectsRoot.path)"]}}
+            """.write(to: settingsURL, atomically: true, encoding: .utf8)
+
+        try writer.write { db in
+            try insertSession(db, id: "parent-id", source: "minimax", tier: "normal")
+            try insertSession(
+                db,
+                id: "minimax-child",
+                source: "minimax",
+                filePath: child.path,
+                agentRole: "subagent",
+                tier: "skip"
+            )
+
+            XCTAssertEqual(
+                try StartupBackfills.backfillParentLinks(db, homeDirectory: root).linked,
+                1
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'minimax-child'"),
+                "parent-id"
+            )
+        }
+    }
+
+    func testQoderBackfillSkipsOversizedSniffLineAndFindsLaterSessionID_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qoder-oversized-sniff-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let child = root.appendingPathComponent(".qoder/projects/encoded/subagents/worker.jsonl")
+        try FileManager.default.createDirectory(at: child.deletingLastPathComponent(), withIntermediateDirectories: true)
+        var data = Data(repeating: 0x78, count: 8 * 1_024 * 1_024 + 1)
+        data.append(0x0A)
+        data.append(Data(#"{"type":"user","sessionId":"qoder-after-oversized"}"#.utf8))
+        data.append(0x0A)
+        try data.write(to: child)
+
+        try writer.write { db in
+            try insertSession(db, id: "qoder-after-oversized", source: "qoder", tier: "normal")
+            try insertSession(
+                db,
+                id: "qoder-oversized-child",
+                source: "qoder",
+                filePath: child.path,
+                agentRole: "subagent",
+                tier: "skip"
+            )
+
+            XCTAssertEqual(
+                try StartupBackfills.backfillParentLinks(db, homeDirectory: root).linked,
+                1
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'qoder-oversized-child'"),
+                "qoder-after-oversized"
+            )
+        }
+    }
+
+    func testQoderBackfillPrefersConfinedNestedPathParentOverTranscriptSessionId_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qoder-nested-parent-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectsRoot = root.appendingPathComponent(".qoder/projects", isDirectory: true)
+        let childFile = projectsRoot.appendingPathComponent(
+            "encoded-project/path-parent/subagents/agent.jsonl"
+        )
+        try FileManager.default.createDirectory(
+            at: childFile.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try #"{"type":"user","sessionId":"different-session","message":{"role":"user","content":"work"}}"#
+            .appending("\n")
+            .write(to: childFile, atomically: true, encoding: .utf8)
+
+        try writer.write { db in
+            try insertSession(db, id: "path-parent", source: "qoder", tier: "normal")
+            try insertSession(db, id: "different-session", source: "qoder", tier: "normal")
+            try insertSession(
+                db,
+                id: "qoder-nested-child",
+                source: "qoder",
+                filePath: childFile.path,
+                sourceLocator: childFile.path,
+                agentRole: "subagent",
+                tier: "skip"
+            )
+
+            XCTAssertEqual(
+                try StartupBackfills.backfillParentLinks(db, homeDirectory: root).linked,
+                1
+            )
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT parent_session_id FROM sessions WHERE id = 'qoder-nested-child'"
+                ),
+                "path-parent"
+            )
+        }
+    }
+
+    func testBackfillParentLinksUsesQoderProjectLevelJSONParent_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qoder-project-parent-\(UUID().uuidString)", isDirectory: true)
+        let project = root.appendingPathComponent(".qoder/projects/encoded-project", isDirectory: true)
+        let subagents = project.appendingPathComponent("subagents", isDirectory: true)
+        try FileManager.default.createDirectory(at: subagents, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parentId = "11111111-2222-3333-4444-555555555555"
+        let child = subagents.appendingPathComponent("agent-worker.jsonl")
+        try "{\"type\":\"user\",\"sessionId\":\"\(parentId)\"}\n"
+            .write(to: child, atomically: true, encoding: .utf8)
+
+        try writer.write { db in
+            try insertSession(db, id: parentId, source: "qoder", tier: "normal")
+            try insertSession(
+                db,
+                id: "qoder-child",
+                source: "qoder",
+                filePath: child.path,
+                sourceLocator: child.path,
+                agentRole: "subagent",
+                tier: "skip"
+            )
+
+            let result = try StartupBackfills.backfillParentLinks(db, homeDirectory: root)
+
+            XCTAssertEqual(result.linked, 1)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'qoder-child'"),
+                parentId
+            )
         }
     }
 
@@ -188,6 +471,7 @@ final class StartupBackfillTests: XCTestCase {
                     agentRole: "subagent",
                     tier: "skip",
                     linkSource: "path",
+                    linkCheckedAt: "2026-08-23T12:00:00Z",
                     parentSessionId: parent
                 )
             }
@@ -209,6 +493,15 @@ final class StartupBackfillTests: XCTestCase {
                         sql: "SELECT link_source FROM sessions WHERE id = ?",
                         arguments: [child]
                     )
+                )
+                XCTAssertEqual(
+                    try String.fetchOne(
+                        db,
+                        sql: "SELECT link_checked_at FROM sessions WHERE id = ?",
+                        arguments: [child]
+                    ),
+                    "2026-08-23T12:00:00Z",
+                    "invalid path unlink must preserve a subagent classification stamp"
                 )
             }
             XCTAssertEqual(
@@ -241,8 +534,13 @@ final class StartupBackfillTests: XCTestCase {
     // Audit PARENT-BACKFILL-STARVE-001: a single LIMIT 500 batch of unparseable
     // legacy subagent rows must not starve a later valid child in the same call.
     func testBackfillParentLinksDoesNotStarveValidChildBehindInvalidBatch_repro() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("claude-parent-pagination-\(UUID().uuidString)", isDirectory: true)
+        let projectsRoot = home.appendingPathComponent(".claude/projects", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
         try writer.write { db in
-            try insertSession(db, id: "real-parent", source: "codex", tier: "normal")
+            try insertSession(db, id: "real-parent", source: "claude-code", tier: "normal")
             for index in 0..<500 {
                 try insertSession(
                     db,
@@ -256,13 +554,13 @@ final class StartupBackfillTests: XCTestCase {
             try insertSession(
                 db,
                 id: "real-child",
-                source: "codex",
-                filePath: "/tmp/real-parent/subagents/worker.jsonl",
+                source: "claude-code",
+                filePath: projectsRoot.appendingPathComponent("encoded/real-parent/subagents/worker.jsonl").path,
                 agentRole: "subagent",
                 tier: "skip"
             )
 
-            let result = try StartupBackfills.backfillParentLinks(db)
+            let result = try StartupBackfills.backfillParentLinks(db, homeDirectory: home)
             XCTAssertEqual(result.linked, 1, "must paginate past 500 invalid candidates in one call")
             XCTAssertEqual(
                 try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'real-child'"),
@@ -282,13 +580,20 @@ final class StartupBackfillTests: XCTestCase {
     }
 
     func testRunPeriodicParentBackfillsLinksAgentChildren() throws {
+        let home = SessionAdapterFactory.resolvedHomeDirectory()
+        let projectRoot = home
+            .appendingPathComponent(".claude/projects", isDirectory: true)
+            .appendingPathComponent("periodic-\(UUID().uuidString)", isDirectory: true)
+        let childPath = projectRoot.appendingPathComponent("parent-1/subagents/worker.jsonl").path
+        try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: projectRoot) }
         try writer.write { db in
-            try insertSession(db, id: "parent-1", source: "codex", tier: "normal")
+            try insertSession(db, id: "parent-1", source: "claude-code", tier: "normal")
             try insertSession(
                 db,
                 id: "child-1",
-                source: "codex",
-                filePath: "/tmp/parent-1/subagents/worker.jsonl",
+                source: "claude-code",
+                filePath: childPath,
                 agentRole: "subagent",
                 tier: "skip"
             )
@@ -303,6 +608,49 @@ final class StartupBackfillTests: XCTestCase {
             XCTAssertEqual(
                 try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'child-1'"),
                 "parent-1"
+            )
+        }
+    }
+
+    func testBackfillParentLinksRetriesGeminiSidecarAfterHostArrives_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gemini-parent-backfill-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transcript = root.appendingPathComponent("transcript.json")
+        let sidecar = root.appendingPathComponent("gemini-child.engram.json")
+        try "{}".write(to: transcript, atomically: true, encoding: .utf8)
+        try #"{"parentSessionId":"gemini-host"}"#.write(to: sidecar, atomically: true, encoding: .utf8)
+
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "gemini-child",
+                source: "gemini-cli",
+                filePath: transcript.path,
+                agentRole: "dispatched",
+                tier: "skip"
+            )
+
+            XCTAssertEqual(try StartupBackfills.backfillParentLinks(db).linked, 0)
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'gemini-child'")
+            )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'gemini-child'"),
+                "a sidecar whose host is not indexed yet must remain retryable"
+            )
+
+            try insertSession(db, id: "gemini-host", source: "claude-code", tier: "normal")
+
+            XCTAssertEqual(try StartupBackfills.backfillParentLinks(db).linked, 1)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'gemini-child'"),
+                "gemini-host"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT link_source FROM sessions WHERE id = 'gemini-child'"),
+                "path"
             )
         }
     }
@@ -600,6 +948,38 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testBackfillCodexOriginatorUsesCompleteSessionMetaBeforeMarkingChecked_repro() throws {
+        let longClaudeFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-long-originator-\(UUID().uuidString).jsonl")
+        let malformedFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-malformed-originator-\(UUID().uuidString).jsonl")
+        let longMeta = """
+        {"type":"session_meta","payload":{"id":"codex-long","padding":"\(String(repeating: "界", count: 8_000))","originator":"Claude Code"}}
+        """
+        try (longMeta + "\n").write(to: longClaudeFile, atomically: true, encoding: .utf8)
+        try #"{"type":"session_meta","payload":{"id":"broken""#
+            .write(to: malformedFile, atomically: true, encoding: .utf8)
+        defer {
+            try? FileManager.default.removeItem(at: longClaudeFile)
+            try? FileManager.default.removeItem(at: malformedFile)
+        }
+
+        try writer.write { db in
+            try insertSession(db, id: "codex-long", source: "codex", filePath: longClaudeFile.path)
+            try insertSession(db, id: "codex-malformed", source: "codex", filePath: malformedFile.path)
+
+            XCTAssertEqual(try StartupBackfills.backfillCodexOriginator(db), 1)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = 'codex-long'"),
+                "dispatched"
+            )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'codex-malformed'"),
+                "An incomplete session_meta must remain eligible for a later complete read."
+            )
+        }
+    }
+
     func testBackfillCodexOriginatorPurgesLegacyMessageArtifacts_repro() throws {
         let codexFile = FileManager.default.temporaryDirectory
             .appendingPathComponent("codex-originator-purge-\(UUID().uuidString).jsonl")
@@ -727,6 +1107,67 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testBackfillCodexModelLabelsDecodesCompleteLinesBeforeUTF8Boundary_repro() throws {
+        let rollout = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-model-boundary-\(UUID().uuidString).jsonl")
+        defer { try? FileManager.default.removeItem(at: rollout) }
+
+        let meta = #"{"type":"session_meta","payload":{"id":"boundary-model"}}"#
+        let turn = #"{"type":"turn_context","payload":{"model":"gpt-5.5"}}"#
+        var data = Data("\(meta)\n\(turn)\n".utf8)
+        let boundary = StartupBackfills.codexModelHeadScanBytes
+        data.append(contentsOf: Array(repeating: UInt8(ascii: "x"), count: boundary - 2 - data.count))
+        data.append(contentsOf: [0xE2, 0x9C, 0x93])
+        try data.write(to: rollout)
+        XCTAssertNil(String(data: data.prefix(boundary), encoding: .utf8))
+
+        try writer.write { db in
+            try insertSession(db, id: "boundary-model", source: "codex", filePath: rollout.path, model: "openai")
+
+            XCTAssertEqual(try StartupBackfills.backfillCodexModelLabels(db), 1)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT model FROM sessions WHERE id = 'boundary-model'"),
+                "gpt-5.5"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'codex_model_backfill_version'"),
+                StartupBackfills.codexModelBackfillVersion
+            )
+        }
+    }
+
+    func testBackfillCodexModelLabelsRetriesUnreadableHeadsBeforeStampingVersion_repro() throws {
+        let rollout = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-model-retry-\(UUID().uuidString).jsonl")
+        defer { try? FileManager.default.removeItem(at: rollout) }
+
+        try writer.write { db in
+            try insertSession(db, id: "retry-model", source: "codex", filePath: rollout.path, model: "openai")
+
+            XCTAssertEqual(try StartupBackfills.backfillCodexModelLabels(db), 0)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT model FROM sessions WHERE id = 'retry-model'"),
+                "openai"
+            )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'codex_model_backfill_version'")
+            )
+
+            let line = #"{"type":"turn_context","payload":{"model":"gpt-5.5"}}"# + "\n"
+            try line.write(to: rollout, atomically: true, encoding: .utf8)
+
+            XCTAssertEqual(try StartupBackfills.backfillCodexModelLabels(db), 1)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT model FROM sessions WHERE id = 'retry-model'"),
+                "gpt-5.5"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'codex_model_backfill_version'"),
+                StartupBackfills.codexModelBackfillVersion
+            )
+        }
+    }
+
     func testCodexModelBackfillRunsBeforeCostBackfillAndRecomputesRelabeledCost() throws {
         let rollout = try writeCodexRollout(id: "cost-relabel", turnContextModel: "gpt-5.5")
         defer { try? FileManager.default.removeItem(at: rollout) }
@@ -794,6 +1235,36 @@ final class StartupBackfillTests: XCTestCase {
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT link_source FROM sessions WHERE id = 'qwen-ping'"))
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = 'qwen-ping'"), "dispatched")
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'opencode-ping'"), "skip")
+        }
+    }
+
+    func testBackfillPolycliProviderParentsDrainsAllCandidatePages_repro() throws {
+        try writer.write { db in
+            try db.execute(sql: """
+                WITH RECURSIVE seq(n) AS (
+                  VALUES(0)
+                  UNION ALL
+                  SELECT n + 1 FROM seq WHERE n < 1000
+                )
+                INSERT INTO sessions(id, source, start_time, end_time, cwd, summary, file_path)
+                SELECT printf('qwen-probe-%04d', n),
+                       'qwen',
+                       '2026-05-08T10:00:00.000Z',
+                       '2026-05-08T10:01:00.000Z',
+                       '',
+                       'ping',
+                       printf('/tmp/qwen-probe-%04d.jsonl', n)
+                FROM seq
+                """)
+
+            let result = try StartupBackfills.backfillPolycliProviderParents(db)
+
+            XCTAssertEqual(result.checked, 1001)
+            XCTAssertEqual(result.classified, 1001)
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions WHERE tier = 'skip'"),
+                1001
+            )
         }
     }
 
@@ -904,6 +1375,113 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testBackfillPolycliDoesNotStealNonProbeReviewFromLaterParentDetection_repro() throws {
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "gemini-review-task",
+                source: "gemini-cli",
+                startTime: "2026-08-21T00:00:00.000Z",
+                cwd: "/repo",
+                summary: "Review the adapter behavior and explain the current implementation."
+            )
+
+            let result = try StartupBackfills.backfillPolycliProviderParents(db)
+
+            XCTAssertEqual(result.classified, 0)
+            XCTAssertNil(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT link_checked_at FROM sessions WHERE id = 'gemini-review-task'"
+                ),
+                "a non-probe review must remain eligible for the later parent-detection layer"
+            )
+        }
+    }
+
+    func testBackfillPolycliRequiresStrongReviewProbeMarker_repro() throws {
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "qwen-weak-review",
+                source: "qwen",
+                startTime: "2026-08-21T00:00:00.000Z",
+                cwd: "/repo",
+                summary: "Review P2 tests for correctness and summarize the result."
+            )
+
+            let result = try StartupBackfills.backfillPolycliProviderParents(db)
+
+            XCTAssertEqual(result.classified, 0)
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = 'qwen-weak-review'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'qwen-weak-review'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'qwen-weak-review'"))
+        }
+    }
+
+    func testBackfillPolycliRejectsClaudeProbesGrownSessionsAndRowsWithChildren_repro() throws {
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "claude-ping",
+                source: "claude-code",
+                summary: "ping",
+                userMessageCount: 1,
+                assistantMessageCount: 1
+            )
+            try insertSession(
+                db,
+                id: "qwen-grown-ping",
+                source: "qwen",
+                summary: "ping",
+                userMessageCount: 2,
+                assistantMessageCount: 2
+            )
+            try insertSession(
+                db,
+                id: "qwen-parent-ping",
+                source: "qwen",
+                summary: "ping",
+                userMessageCount: 1,
+                assistantMessageCount: 1
+            )
+            try insertSession(
+                db,
+                id: "existing-child",
+                source: "codex",
+                parentSessionId: "qwen-parent-ping"
+            )
+            try insertSession(
+                db,
+                id: "claude-polycli",
+                source: "claude-code",
+                summary: "You are acting as reviewer_1 inside polycli. Report findings.",
+                userMessageCount: 10,
+                assistantMessageCount: 10
+            )
+
+            let result = try StartupBackfills.backfillPolycliProviderParents(db)
+
+            XCTAssertEqual(result.classified, 1)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = 'claude-polycli'"),
+                "dispatched"
+            )
+            for id in ["claude-ping", "qwen-grown-ping", "qwen-parent-ping"] {
+                XCTAssertNil(
+                    try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = ?", arguments: [id]),
+                    "\(id) must remain a human/root session"
+                )
+                XCTAssertNil(
+                    try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = ?", arguments: [id])
+                )
+                XCTAssertNil(
+                    try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = ?", arguments: [id])
+                )
+            }
+        }
+    }
+
     func testBackfillPolycliProviderParentsSkipsAlreadyCheckedCandidates() throws {
         try writer.write { db in
             try insertSession(
@@ -1001,6 +1579,160 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testBackfillSuggestedParentsRejectsSkipAndNestedHostCandidates_repro() throws {
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "valid-parent",
+                source: "claude-code",
+                startTime: "2026-04-23T10:00:00.000Z",
+                cwd: "/repo",
+                project: "engram"
+            )
+            try insertSession(
+                db,
+                id: "agent",
+                source: "gemini-cli",
+                startTime: "2026-04-23T10:10:00.000Z",
+                cwd: "/repo",
+                project: "engram",
+                summary: "Your task is to audit the repo"
+            )
+            try insertSession(
+                db,
+                id: "nested-host",
+                source: "gemini-cli",
+                parentSessionId: "agent"
+            )
+
+            let result = try StartupBackfills.backfillSuggestedParents(db)
+
+            XCTAssertEqual(result.suggested, 0)
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT suggested_parent_id FROM sessions WHERE id = 'agent'"),
+                "A session that already owns children must not become a suggested child."
+            )
+            XCTAssertNotNil(
+                try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'agent'")
+            )
+        }
+
+        try writer.write { db in
+            try db.execute(sql: "DELETE FROM sessions")
+            try insertSession(
+                db,
+                id: "skip-parent",
+                source: "claude-code",
+                startTime: "2026-04-23T10:09:00.000Z",
+                cwd: "/repo",
+                project: "engram",
+                tier: "skip"
+            )
+            try insertSession(
+                db,
+                id: "valid-parent",
+                source: "claude-code",
+                startTime: "2026-04-23T10:00:00.000Z",
+                cwd: "/repo",
+                project: "engram"
+            )
+            try insertSession(
+                db,
+                id: "agent",
+                source: "gemini-cli",
+                startTime: "2026-04-23T10:10:00.000Z",
+                cwd: "/repo",
+                project: "engram",
+                summary: "Your task is to audit the repo"
+            )
+
+            XCTAssertEqual(try StartupBackfills.backfillSuggestedParents(db).suggested, 1)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT suggested_parent_id FROM sessions WHERE id = 'agent'"),
+                "valid-parent"
+            )
+        }
+    }
+
+    func testBackfillSuggestedParentsClearsSuggestionsToHiddenSkipOrOrphanHosts_repro() throws {
+        try writer.write { db in
+            for suffix in ["hidden", "skip", "orphan"] {
+                try insertSession(db, id: "host-\(suffix)", source: "claude-code")
+                try insertSession(db, id: "child-\(suffix)", source: "gemini-cli", tier: "normal")
+                try db.execute(
+                    sql: "UPDATE sessions SET suggested_parent_id = ?, link_checked_at = 'checked' WHERE id = ?",
+                    arguments: ["host-\(suffix)", "child-\(suffix)"]
+                )
+            }
+            try db.execute(sql: "UPDATE sessions SET hidden_at = '2026-08-24T00:00:00Z' WHERE id = 'host-hidden'")
+            try db.execute(sql: "UPDATE sessions SET tier = 'skip' WHERE id = 'host-skip'")
+            try db.execute(sql: "UPDATE sessions SET orphan_status = 'suspect' WHERE id = 'host-orphan'")
+
+            _ = try StartupBackfills.backfillSuggestedParents(db)
+
+            for suffix in ["hidden", "skip", "orphan"] {
+                XCTAssertNil(
+                    try String.fetchOne(
+                        db,
+                        sql: "SELECT suggested_parent_id FROM sessions WHERE id = ?",
+                        arguments: ["child-\(suffix)"]
+                    )
+                )
+                XCTAssertEqual(
+                    try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = ?", arguments: ["child-\(suffix)"]),
+                    "normal"
+                )
+            }
+        }
+    }
+
+    func testBackfillSuggestedParentsRescoresAfterDeadSuggestedHostCleanup_repro() throws {
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "dead-host",
+                source: "claude-code",
+                startTime: "2026-04-23T09:00:00.000Z",
+                cwd: "/repo",
+                project: "engram"
+            )
+            try insertSession(
+                db,
+                id: "live-host",
+                source: "claude-code",
+                startTime: "2026-04-23T10:00:00.000Z",
+                cwd: "/repo",
+                project: "engram"
+            )
+            try insertSession(
+                db,
+                id: "stale-child",
+                source: "gemini-cli",
+                startTime: "2026-04-23T10:10:00.000Z",
+                cwd: "/repo",
+                project: "engram",
+                summary: "Your task is to review the implementation",
+                tier: "normal",
+                linkCheckedAt: "2026-04-23T10:11:00.000Z",
+                suggestedParentId: "dead-host"
+            )
+            try db.execute(
+                sql: "UPDATE sessions SET hidden_at = '2026-04-23T10:12:00.000Z' WHERE id = 'dead-host'"
+            )
+
+            let result = try StartupBackfills.backfillSuggestedParents(db)
+
+            XCTAssertEqual(result.suggested, 1)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT suggested_parent_id FROM sessions WHERE id = 'stale-child'"),
+                "live-host"
+            )
+            XCTAssertNotNil(
+                try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'stale-child'")
+            )
+        }
+    }
+
     func testBackfillSuggestedParentsWritesAmbiguousCandidatesWithoutSkipping() throws {
         try writer.write { db in
             try insertSession(
@@ -1054,6 +1786,78 @@ final class StartupBackfillTests: XCTestCase {
             let candidates = try JSONDecoder().decode([StoredAmbiguousCandidate].self, from: Data(encoded.utf8))
             XCTAssertEqual(candidates.map(\.id), ["parent-b", "parent-a"])
             XCTAssertEqual(candidates.count, 2)
+        }
+    }
+
+    func testBackfillSuggestedParentsPrunesDeadAmbiguousCandidates_repro() throws {
+        try writer.write { db in
+            for id in ["live-a", "live-b"] {
+                try insertSession(db, id: id, source: "claude-code", tier: "normal")
+            }
+            try insertSession(db, id: "hidden-host", source: "claude-code", tier: "normal")
+            try db.execute(
+                sql: "UPDATE sessions SET hidden_at = '2026-04-23T10:00:00.000Z' WHERE id = 'hidden-host'"
+            )
+
+            try insertSession(
+                db,
+                id: "ambiguous-zero",
+                source: "codex",
+                tier: "normal",
+                linkCheckedAt: "2026-04-23T10:01:00.000Z",
+                suggestionStatus: "ambiguous",
+                suggestionCandidates: "[{\"id\":\"missing-host\",\"score\":9},{\"id\":\"hidden-host\",\"score\":8}]"
+            )
+            try insertSession(
+                db,
+                id: "ambiguous-one",
+                source: "codex",
+                tier: "normal",
+                linkCheckedAt: "2026-04-23T10:01:00.000Z",
+                suggestionStatus: "ambiguous",
+                suggestionCandidates: "[{\"id\":\"live-a\",\"score\":9},{\"id\":\"hidden-host\",\"score\":8}]"
+            )
+            try insertSession(
+                db,
+                id: "ambiguous-two",
+                source: "codex",
+                tier: "normal",
+                linkCheckedAt: "2026-04-23T10:01:00.000Z",
+                suggestionStatus: "ambiguous",
+                suggestionCandidates: "[{\"id\":\"live-a\",\"score\":9},{\"id\":\"hidden-host\",\"score\":8},{\"id\":\"live-b\",\"score\":7}]"
+            )
+
+            _ = try StartupBackfills.backfillSuggestedParents(db)
+
+            let zero = try XCTUnwrap(Row.fetchOne(
+                db,
+                sql: "SELECT suggested_parent_id, suggestion_status, suggestion_candidates, link_checked_at FROM sessions WHERE id = 'ambiguous-zero'"
+            ))
+            XCTAssertNil(zero["suggested_parent_id"] as String?)
+            XCTAssertNil(zero["suggestion_status"] as String?)
+            XCTAssertNil(zero["suggestion_candidates"] as String?)
+            XCTAssertNotNil(zero["link_checked_at"] as String?)
+
+            let one = try XCTUnwrap(Row.fetchOne(
+                db,
+                sql: "SELECT suggested_parent_id, suggestion_status, suggestion_candidates FROM sessions WHERE id = 'ambiguous-one'"
+            ))
+            XCTAssertEqual(one["suggested_parent_id"] as String?, "live-a")
+            XCTAssertNil(one["suggestion_status"] as String?)
+            XCTAssertNil(one["suggestion_candidates"] as String?)
+
+            let two = try XCTUnwrap(Row.fetchOne(
+                db,
+                sql: "SELECT suggested_parent_id, suggestion_status, suggestion_candidates FROM sessions WHERE id = 'ambiguous-two'"
+            ))
+            XCTAssertNil(two["suggested_parent_id"] as String?)
+            XCTAssertEqual(two["suggestion_status"] as String?, "ambiguous")
+            let encoded = try XCTUnwrap(two["suggestion_candidates"] as String?)
+            let candidates = try JSONDecoder().decode(
+                [StoredAmbiguousCandidate].self,
+                from: Data(encoded.utf8)
+            )
+            XCTAssertEqual(candidates.map(\.id), ["live-a", "live-b"])
         }
     }
 
@@ -1178,6 +1982,45 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testBackfillSuggestedParentsDrainsAllCandidatePages_repro() throws {
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "drain-parent",
+                source: "claude-code",
+                startTime: "2026-04-23T09:00:00.000Z",
+                cwd: "/repo",
+                project: "engram"
+            )
+            for index in 0..<500 {
+                try insertSession(
+                    db,
+                    id: String(format: "ordinary-%03d", index),
+                    source: "gemini-cli",
+                    startTime: "2026-04-23T10:00:00.000Z"
+                )
+            }
+            try insertSession(
+                db,
+                id: "drain-child",
+                source: "gemini-cli",
+                startTime: "2026-04-23T10:00:00.000Z",
+                cwd: "/repo",
+                project: "engram",
+                summary: "Your task is to audit the repository"
+            )
+
+            let result = try StartupBackfills.backfillSuggestedParents(db)
+
+            XCTAssertEqual(result.checked, 501)
+            XCTAssertEqual(result.suggested, 1)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT suggested_parent_id FROM sessions WHERE id = 'drain-child'"),
+                "drain-parent"
+            )
+        }
+    }
+
     func testRunInitialScanEmitsNodeCompatibleStartupEventsInOrder() async throws {
         let indexer = RecordingStartupIndexer(indexed: 7, countBackfilled: 2, costBackfilled: 3)
         let database = RecordingStartupDatabase()
@@ -1216,6 +2059,7 @@ final class StartupBackfillTests: XCTestCase {
                 "cleanupStaleMigrations",
                 "countSessions",
                 "countTodayParentSessions",
+                "backfillParentLinks",
                 "enqueueStaleFtsJobs",
                 "reconcileSkipTierIndexArtifacts",
                 "pruneIndexJobs"
@@ -1419,6 +2263,34 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testStartupOrphanScanReconcilesPathLinksAfterTransitions_repro() async throws {
+        let database = RecordingStartupDatabase()
+
+        try await StartupBackfills.runStartupOrphanScan(
+            emit: { _ in },
+            log: RecordingStartupLogger(),
+            orphanScanner: RecordingStartupOrphanScanner(
+                scanned: 1,
+                newlyFlagged: 1,
+                confirmed: 0,
+                recovered: 0,
+                skipped: 0
+            ),
+            database: database,
+            adapters: []
+        )
+
+        XCTAssertEqual(
+            database.callOrder.filter { $0 == "backfillParentLinks" },
+            ["backfillParentLinks"],
+            "path-link cleanup must run after orphan state changes"
+        )
+        XCTAssertLessThan(
+            try XCTUnwrap(database.callOrder.firstIndex(of: "backfillParentLinks")),
+            try XCTUnwrap(database.callOrder.firstIndex(of: "enqueueStaleFtsJobs"))
+        )
+    }
+
     func testStartupIndexJobDrainRethrowsCancellation() async throws {
         let runner = RecordingStartupIndexJobRunner()
         runner.recoverError = CancellationError()
@@ -1600,6 +2472,29 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testDeduplicateFilePathsRemovesOrphanedRebuildRows_repro() throws {
+        try writer.write { db in
+            try insertSession(db, id: "old-shadow", source: "codex", filePath: "/tmp/dup-shadow.jsonl")
+            try insertSession(db, id: "new-shadow", source: "codex", filePath: "/tmp/dup-shadow.jsonl")
+            try db.execute(sql: "CREATE VIRTUAL TABLE sessions_fts_rebuild USING fts5(session_id UNINDEXED, content)")
+            try db.execute(sql: """
+                INSERT INTO sessions_fts_rebuild(session_id, content)
+                VALUES ('old-shadow', 'stale shadow'), ('new-shadow', 'kept shadow')
+                """)
+
+            XCTAssertEqual(try StartupBackfills.deduplicateFilePaths(db), 1)
+
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts_rebuild WHERE session_id = 'old-shadow'"),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts_rebuild WHERE session_id = 'new-shadow'"),
+                1
+            )
+        }
+    }
+
     func testDeduplicateFilePathsPurgesDeletedSessionArtifactTables_repro() throws {
         try writer.write { db in
             let leaked = "purge-leak-deduplicate"
@@ -1649,6 +2544,47 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testDeduplicateFilePathsRemapsRelatedSessionBeforeDeletingDuplicate_repro() throws {
+        try writer.write { db in
+            try insertSession(db, id: "old", source: "codex", filePath: "/tmp/related-dup.jsonl")
+            try insertSession(db, id: "new", source: "codex", filePath: "/tmp/related-dup.jsonl")
+            try insertSession(db, id: "peer", source: "codex", filePath: "/tmp/related-peer.jsonl")
+            try db.execute(sql: """
+                CREATE TABLE IF NOT EXISTS session_relations (
+                  a_id TEXT NOT NULL,
+                  b_id TEXT NOT NULL,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  PRIMARY KEY (a_id, b_id)
+                );
+                INSERT INTO session_relations(a_id, b_id) VALUES ('old', 'peer');
+                """)
+
+            XCTAssertEqual(try StartupBackfills.deduplicateFilePaths(db), 1)
+
+            XCTAssertEqual(
+                try Row.fetchAll(db, sql: "SELECT a_id, b_id FROM session_relations").map {
+                    [String($0["a_id"] as String), String($0["b_id"] as String)]
+                },
+                [["new", "peer"]]
+            )
+        }
+    }
+
+    func testMigratedSessionRelationsCascadeWhenEitherSessionIsDeleted_repro() throws {
+        try writer.write { db in
+            try insertSession(db, id: "left", source: "codex", filePath: "/tmp/relation-left.jsonl")
+            try insertSession(db, id: "right", source: "codex", filePath: "/tmp/relation-right.jsonl")
+
+            let foreignKeys = try Row.fetchAll(db, sql: "PRAGMA foreign_key_list(session_relations)")
+            XCTAssertEqual(foreignKeys.count, 2)
+            XCTAssertEqual(Set(foreignKeys.compactMap { $0["on_delete"] as String? }), ["CASCADE"])
+
+            try db.execute(sql: "INSERT INTO session_relations(a_id, b_id) VALUES ('left', 'right')")
+            try db.execute(sql: "DELETE FROM sessions WHERE id = 'right'")
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session_relations"), 0)
+        }
+    }
+
     func testSessionDeleteTriggerNullifiesChildParentSessionId() throws {
         try writer.write { db in
             try insertSession(db, id: "parent", source: "codex", filePath: "/tmp/parent.jsonl")
@@ -1660,6 +2596,37 @@ final class StartupBackfillTests: XCTestCase {
             try db.execute(sql: "DELETE FROM sessions WHERE id = 'parent'")
 
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'child'"))
+        }
+    }
+
+    func testSessionDeleteTriggerPreservesExistingChildTiers_repro() throws {
+        try writer.write { db in
+            try insertSession(db, id: "parent", source: "codex", filePath: "/tmp/parent.jsonl")
+            try insertSession(db, id: "confirmed-lite", source: "codex", filePath: "/tmp/confirmed-lite.jsonl", tier: "lite")
+            try insertSession(db, id: "suggested-skip", source: "codex", filePath: "/tmp/suggested-skip.jsonl", tier: "skip")
+            try db.execute(
+                sql: "UPDATE sessions SET parent_session_id = 'parent', link_source = 'manual' WHERE id = 'confirmed-lite'"
+            )
+            try db.execute(
+                sql: "UPDATE sessions SET suggested_parent_id = 'parent' WHERE id = 'suggested-skip'"
+            )
+
+            try db.execute(sql: "DELETE FROM sessions WHERE id = 'parent'")
+
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'confirmed-lite'")
+            )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT suggested_parent_id FROM sessions WHERE id = 'suggested-skip'")
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'confirmed-lite'"),
+                "lite"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'suggested-skip'"),
+                "skip"
+            )
         }
     }
 
@@ -1954,6 +2921,84 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testOrphanScanSkipsRemoteImportedRows_repro() async throws {
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "remote-origin",
+                source: "codex",
+                filePath: "/files/imported.jsonl"
+            )
+            try db.execute(sql: "UPDATE sessions SET origin = 'hq' WHERE id = 'remote-origin'")
+            try insertSession(
+                db,
+                id: "remote-locator",
+                source: "codex",
+                filePath: "remote://hq/native-session"
+            )
+            try insertSession(db, id: "local-missing", source: "codex", filePath: "/files/local.jsonl")
+        }
+
+        let adapter = FakeAccessibilityAdapter(accessibleLocators: [])
+        let scanner = WriterStartupOrphanScanning(writer: writer, minimumScanInterval: 0)
+
+        let result = try await scanner.detectOrphans(adapters: [adapter])
+
+        XCTAssertEqual(result.scanned, 1, "only the local filesystem row belongs in an orphan scan")
+        XCTAssertEqual(result.newlyFlagged, 1)
+        XCTAssertEqual(adapter.probedLocators, ["/files/local.jsonl"])
+        try writer.read { db in
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT orphan_status FROM sessions WHERE id = 'remote-origin'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT orphan_status FROM sessions WHERE id = 'remote-locator'"))
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT orphan_status FROM sessions WHERE id = 'local-missing'"),
+                "suspect"
+            )
+        }
+    }
+
+    func testOrphanScanBackfillsPreviouslyMarkedRemoteRowsOnce_repro() async throws {
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "remote-suspect",
+                source: "codex",
+                filePath: "remote://hq/native-suspect"
+            )
+            try db.execute(
+                sql: """
+                UPDATE sessions
+                SET origin = 'hq', orphan_status = 'suspect',
+                    orphan_since = datetime('now', '-2 days'), orphan_reason = 'path_unreachable'
+                WHERE id = 'remote-suspect';
+                INSERT INTO metadata(key, value) VALUES ('last_orphan_scan', datetime('now'));
+                """
+            )
+        }
+
+        let scanner = WriterStartupOrphanScanning(writer: writer)
+
+        let first = try await scanner.detectOrphans(adapters: [FakeAccessibilityAdapter(accessibleLocators: [])])
+
+        XCTAssertEqual(first.recovered, 1, "the one-time repair must run even when the filesystem scan is interval-gated")
+        try writer.read { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: "SELECT orphan_status, orphan_since, orphan_reason FROM sessions WHERE id = 'remote-suspect'"
+            )
+            XCTAssertNil(row?["orphan_status"] as String?)
+            XCTAssertNil(row?["orphan_since"] as String?)
+            XCTAssertNil(row?["orphan_reason"] as String?)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'remote_orphan_reconcile_version'"),
+                "1"
+            )
+        }
+
+        let second = try await scanner.detectOrphans(adapters: [FakeAccessibilityAdapter(accessibleLocators: [])])
+        XCTAssertEqual(second.recovered, 0, "the versioned repair must be idempotent")
+    }
+
     func testEnqueueStaleFtsJobsAddsPendingJobForCurrentSnapshotHash() throws {
         try writer.write { db in
             try insertSession(db, id: "stale", source: "codex", tier: "normal")
@@ -1962,6 +3007,8 @@ final class StartupBackfillTests: XCTestCase {
             try db.execute(sql: "UPDATE sessions SET sync_version = 1, snapshot_hash = 'current' WHERE id IN ('stale', 'fresh', 'skip')")
             try db.execute(
                 sql: """
+                INSERT INTO sessions_fts(session_id, content)
+                VALUES ('fresh', 'current searchable content');
                 INSERT INTO session_index_jobs(id, session_id, job_kind, target_sync_version, status)
                 VALUES
                   ('stale:1:old:fts', 'stale', 'fts', 1, 'completed'),
@@ -1979,6 +3026,74 @@ final class StartupBackfillTests: XCTestCase {
                     sql: "SELECT id FROM session_index_jobs WHERE status = 'pending' ORDER BY id"
                 ),
                 ["stale:1:current:fts"]
+            )
+        }
+    }
+
+    func testEnqueueStaleFtsJobsReopensCurrentCompletedJobWhenFtsRowIsMissing_repro() throws {
+        try writer.write { db in
+            try insertSession(db, id: "hole", source: "codex", filePath: "/tmp/hole.jsonl", tier: "normal")
+            try insertSession(db, id: "skip-hole", source: "codex", filePath: "/tmp/skip.jsonl", tier: "skip")
+            try insertSession(db, id: "no-locator", source: "codex", filePath: "", tier: "normal")
+            try db.execute(
+                sql: """
+                UPDATE sessions
+                SET sync_version = 1, snapshot_hash = 'current'
+                WHERE id IN ('hole', 'skip-hole', 'no-locator');
+                INSERT INTO session_index_jobs(id, session_id, job_kind, target_sync_version, status)
+                VALUES
+                  ('hole:1:current:fts', 'hole', 'fts', 1, 'completed'),
+                  ('skip-hole:1:current:fts', 'skip-hole', 'fts', 1, 'completed'),
+                  ('no-locator:1:current:fts', 'no-locator', 'fts', 1, 'completed');
+                """
+            )
+
+            XCTAssertEqual(try StartupBackfills.enqueueStaleFtsJobs(db), 1)
+            XCTAssertEqual(
+                try String.fetchAll(
+                    db,
+                    sql: "SELECT session_id FROM session_index_jobs WHERE status = 'pending' ORDER BY session_id"
+                ),
+                ["hole"]
+            )
+        }
+    }
+
+    func testEnqueueStaleFtsJobsDoesNotReopenFailedPermanentHole_repro() throws {
+        try writer.write { db in
+            for id in ["completed", "not-applicable", "permanent", "missing-job", "skip-hole"] {
+                try insertSession(
+                    db,
+                    id: id,
+                    source: "codex",
+                    filePath: "/tmp/\(id).jsonl",
+                    tier: id == "skip-hole" ? "skip" : "normal"
+                )
+            }
+            try db.execute(sql: """
+                UPDATE sessions SET sync_version = 1, snapshot_hash = 'current';
+                INSERT INTO session_index_jobs(id, session_id, job_kind, target_sync_version, status)
+                VALUES
+                  ('completed:1:current:fts', 'completed', 'fts', 1, 'completed'),
+                  ('not-applicable:1:current:fts', 'not-applicable', 'fts', 1, 'not_applicable'),
+                  ('permanent:1:current:fts', 'permanent', 'fts', 1, 'failed_permanent'),
+                  ('skip-hole:1:current:fts', 'skip-hole', 'fts', 1, 'failed_permanent');
+                """)
+
+            XCTAssertEqual(try StartupBackfills.enqueueStaleFtsJobs(db), 3)
+            XCTAssertEqual(
+                try String.fetchAll(
+                    db,
+                    sql: "SELECT session_id FROM session_index_jobs WHERE status = 'pending' ORDER BY session_id"
+                ),
+                ["completed", "missing-job", "not-applicable"]
+            )
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT status FROM session_index_jobs WHERE session_id = 'permanent'"
+                ),
+                "failed_permanent"
             )
         }
     }
@@ -2738,6 +3853,98 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testBackfillCodexNativeParentsUsesSourceLocator_repro() throws {
+        let parentId = "locator-parent"
+        let childId = "locator-child"
+        let rollout = try writeCodexSpawnRollout(id: childId, parentThreadId: parentId)
+        defer {
+            try? FileManager.default.removeItem(
+                at: rollout.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            )
+        }
+
+        try writer.write { db in
+            try insertSession(db, id: parentId, source: "codex", filePath: "/tmp/.codex/parent.jsonl", tier: "premium")
+            try insertSession(
+                db,
+                id: childId,
+                source: "codex",
+                filePath: "/tmp/codex-fallback.jsonl",
+                sourceLocator: rollout.path,
+                tier: "premium"
+            )
+
+            XCTAssertEqual(try StartupBackfills.backfillCodexNativeParents(db), 1)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [childId]),
+                parentId
+            )
+        }
+    }
+
+    func testBackfillCodexNativeParentsRetriesTransientlyUnresolvedRows_repro() throws {
+        let missingParentId = "late-parent"
+        let unreadableParentId = "unreadable-parent"
+        let missingParentChildId = "missing-parent-child"
+        let unreadableChildId = "unreadable-child"
+        let missingParentRollout = try writeCodexSpawnRollout(
+            id: missingParentChildId,
+            parentThreadId: missingParentId
+        )
+        let unreadableRollout = try writeCodexSpawnRollout(
+            id: unreadableChildId,
+            parentThreadId: unreadableParentId
+        )
+        let unreadableData = try Data(contentsOf: unreadableRollout)
+        try FileManager.default.removeItem(at: unreadableRollout)
+        defer {
+            for rollout in [missingParentRollout, unreadableRollout] {
+                try? FileManager.default.removeItem(
+                    at: rollout.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                )
+            }
+        }
+
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: missingParentChildId,
+                source: "codex",
+                filePath: missingParentRollout.path,
+                tier: "premium"
+            )
+            try insertSession(
+                db,
+                id: unreadableChildId,
+                source: "codex",
+                filePath: unreadableRollout.path,
+                tier: "premium"
+            )
+
+            XCTAssertEqual(try StartupBackfills.backfillCodexNativeParents(db), 0)
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [missingParentChildId])
+            )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [unreadableChildId])
+            )
+
+            try insertSession(db, id: missingParentId, source: "codex", filePath: "/tmp/.codex/late-parent.jsonl", tier: "premium")
+            try insertSession(db, id: unreadableParentId, source: "codex", filePath: "/tmp/.codex/unreadable-parent.jsonl", tier: "premium")
+            try unreadableData.write(to: unreadableRollout)
+
+            XCTAssertEqual(try StartupBackfills.backfillCodexNativeParents(db), 2)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [missingParentChildId]),
+                missingParentId
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [unreadableChildId]),
+                unreadableParentId
+            )
+        }
+    }
+
     /// Rowid high-water cursor: after scanning rejected rows, later calls do not re-read them
     /// even if the on-disk stamp becomes linkable.
     func testBackfillCodexNativeParentsDoesNotRereadRejectedRowsOnThirdCall() throws {
@@ -3110,6 +4317,7 @@ private enum TestError: Error, CustomStringConvertible {
 private final class FakeAccessibilityAdapter: SessionAdapter {
     let source: SourceName = .codex
     private let accessibleLocators: Set<String>
+    private(set) var probedLocators: [String] = []
 
     init(accessibleLocators: Set<String>) {
         self.accessibleLocators = accessibleLocators
@@ -3130,7 +4338,8 @@ private final class FakeAccessibilityAdapter: SessionAdapter {
     }
 
     func isAccessible(locator: String) async -> Bool {
-        accessibleLocators.contains(locator)
+        probedLocators.append(locator)
+        return accessibleLocators.contains(locator)
     }
 }
 

@@ -843,6 +843,40 @@ describe('parent-link-repo', () => {
       expect(row.link_source).toBe('path');
     });
 
+    it('links workflow subagent paths via shared layout (repro)', () => {
+      db.upsertSession(
+        makeSession({
+          id: 'sess-workflow',
+          source: 'claude-code',
+          startTime: '2026-04-13T10:00:00Z',
+          filePath: '/home/.claude/projects/myproj/sess-workflow.jsonl',
+          sizeBytes: 100,
+        }),
+      );
+      db.raw
+        .prepare(
+          `
+        INSERT INTO sessions (id, source, start_time, cwd, file_path, size_bytes, agent_role, tier, message_count, user_message_count)
+        VALUES ('agent-workflow', 'claude-code', '2026-04-13T10:05:00Z', '/test',
+                '/home/.claude/projects/myproj/sess-workflow/subagents/workflows/wf_123/agent-workflow.jsonl',
+                50, 'subagent', 'skip', 5, 2)
+      `,
+        )
+        .run();
+
+      expect(backfillParentLinks(db.raw)).toEqual({ linked: 1 });
+      const row = db.raw
+        .prepare(
+          'SELECT parent_session_id, link_source, tier FROM sessions WHERE id = ?',
+        )
+        .get('agent-workflow') as Record<string, unknown>;
+      expect(row).toMatchObject({
+        parent_session_id: 'sess-workflow',
+        link_source: 'path',
+        tier: 'skip',
+      });
+    });
+
     it('skips manually unlinked sessions', () => {
       db.upsertSession(
         makeSession({

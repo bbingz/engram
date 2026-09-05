@@ -7,6 +7,46 @@ import EngramCoreWrite
 @testable import EngramServiceCore
 
 final class EngramServiceIPCTests: XCTestCase {
+    func testServiceRunnerProductionPathsUseFileManagerHome_repro() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        let start = try XCTUnwrap(source.range(of: "let runtimeHome ="))
+        let end = try XCTUnwrap(source.range(of: "let settingsURL =", range: start.lowerBound..<source.endIndex))
+        let startupPaths = source[start.lowerBound..<end.lowerBound]
+
+        XCTAssertTrue(startupPaths.contains("let serviceHome = isTestProcess"))
+        XCTAssertTrue(startupPaths.contains("FileManager.default.homeDirectoryForCurrentUser"))
+        XCTAssertTrue(startupPaths.contains("?? serviceHome"))
+    }
+
+    func testRunnerReconcilesInsightsBeforeStartingListener_repro() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        let migrate = try XCTUnwrap(source.range(of: #"performWriteCommand(name: "migrate")"#))
+        let listen = try XCTUnwrap(source.range(of: "try server.start()", range: migrate.lowerBound..<source.endIndex))
+        let preListen = String(source[migrate.lowerBound..<listen.lowerBound])
+
+        XCTAssertTrue(
+            preListen.contains("StartupBackfills.reconcileInsights(db)"),
+            "insight chains must be reconciled in the migration write before agent reads are served"
+        )
+    }
+
+    func testServiceRunnerRejectsRelativeOrBlankPathFlags_repro() {
+        for value in ["relative.sock", "relative/service.sock", "   "] {
+            XCTAssertThrowsError(
+                try engramServiceAbsoluteArgumentValue(
+                    after: "--service-socket",
+                    in: ["--service-socket", value]
+                )
+            )
+        }
+        XCTAssertEqual(
+            try engramServiceAbsoluteArgumentValue(
+                after: "--database-path",
+                in: ["--database-path", "/tmp/engram.sqlite"]
+            ),
+            "/tmp/engram.sqlite"
+        )
+    }
     func testReadAIContextAggregatesAllFtsRows() throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
@@ -51,6 +91,26 @@ final class EngramServiceIPCTests: XCTestCase {
         )
     }
 
+    func testRegenerateAllTitlesCapturesAISettingsBeforeStartingBackgroundTask_repro() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceCommandHandler.swift")
+        let start = try XCTUnwrap(source.range(of: "private static func regenerateAllTitles("))
+        let end = try XCTUnwrap(
+            source.range(
+                of: "private static func regenerateAllTitlesInBackground(",
+                range: start.upperBound..<source.endIndex
+            )
+        )
+        let entrypoint = String(source[start.lowerBound..<end.lowerBound])
+        let settingsRead = try XCTUnwrap(entrypoint.range(of: "ServiceAISettings.read()"))
+        let backgroundStart = try XCTUnwrap(entrypoint.range(of: "titleRegenerationCoordinator.start"))
+
+        XCTAssertLessThan(
+            settingsRead.lowerBound,
+            backgroundStart.lowerBound,
+            "tests may restore a scoped HOME as soon as the async command returns"
+        )
+    }
+
     func testSQLiteResumeCommandUsesCodexResumeSubcommand() {
         XCTAssertEqual(
             SQLiteEngramServiceReadProvider.resumeArguments(tool: "codex", sessionId: "s1"),
@@ -92,7 +152,7 @@ final class EngramServiceIPCTests: XCTestCase {
 
     func testServiceSearchDrivesLatinQueriesFromFtsMatches() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceReadProvider.swift")
-        let start = try XCTUnwrap(source.range(of: "let termMatches = CJKText.ftsMatchTerms(query)"))
+        let start = try XCTUnwrap(source.range(of: "let termMatches = CJKText.ftsMatchTerms(tokens)"))
         let end = try XCTUnwrap(source.range(of: "let rows = try Row.fetchAll", options: [], range: start.lowerBound..<source.endIndex))
         let latinPath = String(source[start.lowerBound..<end.lowerBound])
 
@@ -288,6 +348,32 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(firstToken, secondToken)
     }
 
+    func testAuthenticatedShutdownRespondsBeforeSignaling_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let recorder = ShutdownCallbackRecorder()
+        let server = UnixSocketServiceServer(
+            socketPath: paths.socket.path,
+            onShutdown: { Task { await recorder.record() } }
+        ) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let transport = UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+        let request = EngramServiceRequestEnvelope(command: "shutdown")
+        let response = try await transport.send(request, timeout: 2)
+
+        XCTAssertEqual(response.requestId, request.requestId)
+        if case .failure(_, let error) = response {
+            XCTFail("shutdown failed before signaling: \(error.name): \(error.message)")
+        }
+        let callbackArrived = await recorder.waitUntilCalled()
+        XCTAssertTrue(callbackArrived)
+    }
+
     func testGenerateTitlesForContextsHonorsCancellationBeforeWork() async throws {
         let contexts = [
             EngramServiceCommandHandler.AIContext(
@@ -436,6 +522,47 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(settings.summaryConfig?.summaryTruncateChars, 40)
     }
 
+    func testServiceAISettingsUsesKeychainWhenSettingsFileIsMissing_repro() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-ai-missing-settings-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let settingsURL = directory.appendingPathComponent("settings.json")
+
+        let settings = EngramServiceCommandHandler.ServiceAISettings.read(
+            settingsPath: settingsURL,
+            environment: [:],
+            keychainReader: { account in account == "aiApiKey" ? "keychain-secret" : nil }
+        )
+
+        XCTAssertEqual(settings.summaryConfig?.provider, "openai")
+        XCTAssertEqual(settings.summaryConfig?.model, "gpt-4o-mini")
+        XCTAssertEqual(settings.summaryConfig?.apiKey, "keychain-secret")
+        XCTAssertEqual(settings.titleConfig?.provider, "ollama")
+    }
+
+    func testServiceAISettingsHonorsEnvironmentSettingsPath_repro() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-ai-env-settings-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let settingsURL = directory.appendingPathComponent("settings.json")
+        try JSONSerialization.data(withJSONObject: [
+            "aiProtocol": "openai",
+            "aiApiKey": "env-settings-secret",
+            "aiModel": "env-settings-model",
+        ]).write(to: settingsURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: settingsURL.path)
+
+        let settings = EngramServiceCommandHandler.ServiceAISettings.read(
+            environment: ["ENGRAM_SETTINGS_PATH": settingsURL.path],
+            keychainReader: { _ in nil }
+        )
+
+        XCTAssertEqual(settings.summaryConfig?.apiKey, "env-settings-secret")
+        XCTAssertEqual(settings.summaryConfig?.model, "env-settings-model")
+    }
+
     func testServiceAIClientSamplesTranscriptFromSummaryTuning() {
         let context = EngramServiceCommandHandler.AIContext(
             id: "sample",
@@ -478,6 +605,32 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(transcript.contains("...[2 messages omitted]..."))
         XCTAssertFalse(transcript.contains("middle message should be omitted"))
         XCTAssertFalse(transcript.contains("long tail"))
+    }
+
+    func testServiceAIClientRedactsFullTranscriptBeforeBounding_repro() {
+        let key = "-----BEGIN PRIVATE KEY-----\n"
+            + String(repeating: "A", count: 13_000)
+            + "\n-----END PRIVATE KEY-----"
+        let context = EngramServiceCommandHandler.AIContext(
+            id: "redacted-prompt",
+            source: "codex",
+            project: "engram",
+            cwd: "/tmp/engram",
+            messageCount: 1,
+            startTime: "2026-04-23T00:00:00Z",
+            nativeTitle: "Native",
+            nativeSummary: key,
+            transcript: key
+        )
+
+        let bounded = EngramServiceCommandHandler.ServiceAIClient.boundedTranscript(
+            context,
+            limit: 12_000
+        )
+
+        XCTAssertTrue(bounded.contains(TranscriptRedactionPolicy.redactionToken), bounded)
+        XCTAssertFalse(bounded.contains("BEGIN PRIVATE KEY"), bounded)
+        XCTAssertFalse(bounded.contains(String(repeating: "A", count: 64)), bounded)
     }
 
     func testServiceAISettingsResolvesKeychainMarkerWithoutEnvironmentSecretFallback() throws {
@@ -528,6 +681,7 @@ final class EngramServiceIPCTests: XCTestCase {
         try #"{"aiApiKey":"summary-secret","titleApiKey":"title-secret"}"#
             .data(using: .utf8)!
             .write(to: bridgeURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: bridgeURL.path)
 
         let settings = EngramServiceCommandHandler.ServiceAISettings.read(
             settingsPath: settingsURL,
@@ -537,6 +691,52 @@ final class EngramServiceIPCTests: XCTestCase {
 
         XCTAssertEqual(settings.summaryConfig?.apiKey, "summary-secret")
         XCTAssertEqual(settings.titleConfig?.apiKey, "title-secret")
+    }
+
+    func testServiceAISettingsPrefersFreshKeychainOverStaleBridgeAndPlaintext_repro() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-ai-secret-precedence-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let settingsURL = directory.appendingPathComponent("settings.json")
+        try #"{"aiProtocol":"openai","aiApiKey":"stale-plaintext","aiModel":"gpt-4o-mini"}"#
+            .data(using: .utf8)!
+            .write(to: settingsURL)
+        let bridgeURL = directory.appendingPathComponent("ai-secrets.json")
+        try #"{"aiApiKey":"stale-bridge"}"#.data(using: .utf8)!.write(to: bridgeURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: bridgeURL.path)
+
+        let settings = EngramServiceCommandHandler.ServiceAISettings.read(
+            settingsPath: settingsURL,
+            environment: ["ENGRAM_RUNTIME_AI_SECRETS_PATH": bridgeURL.path],
+            keychainReader: { account in account == "aiApiKey" ? "fresh-keychain" : nil }
+        )
+
+        XCTAssertEqual(settings.summaryConfig?.apiKey, "fresh-keychain")
+    }
+
+    func testServiceAISettingsRejectsSymlinkRuntimeSecretBridge_repro() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-ai-secret-link-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let settingsURL = directory.appendingPathComponent("settings.json")
+        try #"{"aiApiKey":"@keychain","aiModel":"gpt-4o-mini"}"#
+            .data(using: .utf8)!
+            .write(to: settingsURL)
+        let outside = directory.appendingPathComponent("outside-secrets.json")
+        try #"{"aiApiKey":"linked-secret"}"#.data(using: .utf8)!.write(to: outside)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outside.path)
+        let bridgeURL = directory.appendingPathComponent("ai-secrets.json")
+        try FileManager.default.createSymbolicLink(atPath: bridgeURL.path, withDestinationPath: outside.path)
+
+        let settings = EngramServiceCommandHandler.ServiceAISettings.read(
+            settingsPath: settingsURL,
+            environment: ["ENGRAM_RUNTIME_AI_SECRETS_PATH": bridgeURL.path],
+            keychainReader: { _ in nil }
+        )
+
+        XCTAssertNil(settings.summaryConfig)
     }
 
     func testAIChatURLDoesNotDoubleV1Path() throws {
@@ -694,8 +894,8 @@ final class EngramServiceIPCTests: XCTestCase {
             "manual unlink must preserve skip for subagent and dispatched agents"
         )
         XCTAssertTrue(
-            clearSource.contains("ELSE NULL"),
-            "manual unlink must re-evaluate ordinary (non-agent) children"
+            clearSource.contains("ELSE tier"),
+            "manual unlink must preserve an already classified ordinary child tier"
         )
     }
 
@@ -835,6 +1035,164 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(source.contains("RepoDiscovery.probeRepositories"))
         XCTAssertTrue(source.contains("RepoDiscovery.upsert"))
         XCTAssertFalse(source.contains("writer.write { db in try RepoDiscovery.discover(db) }"))
+    }
+
+    func testRunnerRefreshesRepoCountsWhenProbeCooldownHasNoDueCandidates_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        defer { try? FileManager.default.removeItem(at: paths.runtime.deletingLastPathComponent()) }
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime
+        )
+        _ = try await gate.performWriteCommand(name: "seedRepoCountRefresh") { writer in
+            try writer.migrate()
+            try writer.write { db in
+                try db.execute(sql: """
+                    INSERT INTO sessions(
+                        id, source, start_time, cwd, file_path, tier,
+                        message_count, user_message_count, assistant_message_count,
+                        instruction_count, human_turn_count
+                    )
+                    VALUES ('repo-count-1', 'codex', '2026-08-22T00:00:00Z',
+                            '/work/recount', '/tmp/repo-count-1.jsonl', 'normal',
+                            4, 2, 2, 2, 2)
+                    """)
+            }
+        }
+        let clock = RunnerRepoClock()
+        let throttle = RepoDiscoveryMaintenanceThrottle(
+            batchLimit: 32,
+            cooldown: 21_600,
+            now: { clock.now }
+        )
+        let probeCalls = LockedCounter()
+        let probe: @Sendable (String) -> GitRepoProbe? = { cwd in
+            probeCalls.increment()
+            return GitRepoProbe(
+                path: cwd,
+                name: "recount",
+                branch: "main",
+                dirtyCount: 0,
+                untrackedCount: 0,
+                unpushedCount: 0,
+                lastCommitHash: nil,
+                lastCommitMsg: nil,
+                lastCommitAt: nil
+            )
+        }
+
+        _ = try await EngramServiceRunner.refreshRepoDiscovery(
+            gate: gate,
+            throttle: throttle,
+            probe: probe,
+            phaseName: "repoCountRepro"
+        )
+        _ = try await gate.performWriteCommand(name: "insertRepoCountSecondSession") { writer in
+            try writer.write { db in
+                try db.execute(sql: """
+                    INSERT INTO sessions(
+                        id, source, start_time, cwd, file_path, tier,
+                        message_count, user_message_count, assistant_message_count,
+                        instruction_count, human_turn_count
+                    )
+                    VALUES ('repo-count-2', 'codex', '2026-08-22T00:01:00Z',
+                            '/work/recount', '/tmp/repo-count-2.jsonl', 'normal',
+                            4, 2, 2, 2, 2)
+                    """)
+            }
+        }
+
+        _ = try await EngramServiceRunner.refreshRepoDiscovery(
+            gate: gate,
+            throttle: throttle,
+            probe: probe,
+            phaseName: "repoCountRepro"
+        )
+        let count = try await gate.performReadCommand(name: "readRepoCount") { writer in
+            try writer.read { db in
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT session_count FROM git_repos WHERE path = '/work/recount'"
+                ) ?? 0
+            }
+        }.value
+
+        XCTAssertEqual(probeCalls.value, 1, "the second cycle must be inside metadata-probe cooldown")
+        XCTAssertEqual(count, 2, "count refresh must run even when no git probe is due")
+    }
+
+    func testRunnerReprobesVisibleCwdWhenRepoRowDisappearsDuringCooldown_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        defer { try? FileManager.default.removeItem(at: paths.runtime.deletingLastPathComponent()) }
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime
+        )
+        _ = try await gate.performWriteCommand(name: "seedMissingRepoRefresh") { writer in
+            try writer.migrate()
+            try writer.write { db in
+                try db.execute(sql: """
+                    INSERT INTO sessions(
+                        id, source, start_time, cwd, file_path, tier,
+                        message_count, user_message_count, assistant_message_count,
+                        instruction_count, human_turn_count
+                    )
+                    VALUES ('missing-repo', 'codex', '2026-08-23T00:00:00Z',
+                            '/work/missing-repo', '/tmp/missing-repo.jsonl', 'normal',
+                            4, 2, 2, 2, 2)
+                    """)
+            }
+        }
+        let clock = RunnerRepoClock()
+        let throttle = RepoDiscoveryMaintenanceThrottle(
+            batchLimit: 32,
+            cooldown: 21_600,
+            now: { clock.now }
+        )
+        let probeCalls = LockedCounter()
+        let probe: @Sendable (String) -> GitRepoProbe? = { cwd in
+            probeCalls.increment()
+            return GitRepoProbe(
+                path: cwd,
+                name: "missing-repo",
+                branch: "main",
+                dirtyCount: 0,
+                untrackedCount: 0,
+                unpushedCount: 0,
+                lastCommitHash: nil,
+                lastCommitMsg: nil,
+                lastCommitAt: nil
+            )
+        }
+
+        _ = try await EngramServiceRunner.refreshRepoDiscovery(
+            gate: gate,
+            throttle: throttle,
+            probe: probe,
+            phaseName: "missingRepoRepro"
+        )
+        _ = try await gate.performWriteCommand(name: "removeRepoIdentity") { writer in
+            try writer.write { db in
+                try db.execute(sql: "DELETE FROM git_repos WHERE path = '/work/missing-repo'")
+            }
+        }
+        _ = try await EngramServiceRunner.refreshRepoDiscovery(
+            gate: gate,
+            throttle: throttle,
+            probe: probe,
+            phaseName: "missingRepoRepro"
+        )
+
+        let repoCount = try await gate.performReadCommand(name: "readRecreatedRepo") { writer in
+            try writer.read { db in
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM git_repos WHERE path = '/work/missing-repo'"
+                ) ?? 0
+            }
+        }.value
+        XCTAssertEqual(probeCalls.value, 2, "a missing repo identity must bypass the cwd cooldown")
+        XCTAssertEqual(repoCount, 1)
     }
 
     func testRunnerPeriodicScanDoesNotCompeteWithStartupScanImmediately() throws {
@@ -978,6 +1336,140 @@ final class EngramServiceIPCTests: XCTestCase {
         await fulfillment(of: [handlerCancelled], timeout: 3)
     }
 
+    func testQueuedMutationCommitsAfterPeerDisconnectWithoutHoldingClientPermit_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let holderStarted = CheckpointTestSignal()
+        let holderRelease = CheckpointTestSignal()
+        let holder = Task {
+            try await gate.performWriteCommand(name: "heldBeforePeerDisconnect") { _ in
+                await holderStarted.signal()
+                await holderRelease.wait()
+            }
+        }
+        await holderStarted.wait()
+
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+        let token = try XCTUnwrap(
+            ServiceCapabilityToken.load(
+                fromPath: ServiceCapabilityToken.path(forSocketPath: paths.socket.path)
+            )
+        )
+        let fd = try UnixSocketEngramServiceTransport.connectSocket(path: paths.socket.path)
+        let request = EngramServiceRequestEnvelope(
+            command: "test.write_intent",
+            capabilityToken: token
+        )
+        try UnixSocketEngramServiceTransport.writeFrame(try JSONEncoder().encode(request), to: fd)
+
+        let queueDeadline = ContinuousClock.now + .seconds(1)
+        while await gate.queuedWriteWaiterCountForTesting() == 0 {
+            guard ContinuousClock.now < queueDeadline else {
+                XCTFail("mutation did not queue behind the held writer gate")
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        shutdown(fd, SHUT_RDWR)
+        close(fd)
+
+        let releaseDeadline = ContinuousClock.now + .milliseconds(500)
+        while server.activeClientTaskCountForTesting() != 0,
+              ContinuousClock.now < releaseDeadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let releasedBeforeCommit = server.activeClientTaskCountForTesting() == 0
+
+        await holderRelease.signal()
+        _ = try await holder.value
+        let commitDeadline = ContinuousClock.now + .seconds(1)
+        while await gate.currentDatabaseGeneration() < 2,
+              ContinuousClock.now < commitDeadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertTrue(
+            releasedBeforeCommit,
+            "peer disconnect must release the outer handler/fd/connection permit while the producer remains queued"
+        )
+        let finalGeneration = await gate.currentDatabaseGeneration()
+        XCTAssertEqual(
+            finalGeneration,
+            2,
+            "the already-accepted queued mutation must commit after its client disconnects"
+        )
+    }
+
+    func testLongProtectedHandlerDisconnectReleasesPermitAndKeepsStatusAvailable_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        let started = CheckpointTestSignal()
+        let cancelled = CheckpointTestSignal()
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            guard request.command == "generateSummary" else {
+                return .success(requestId: request.requestId, result: Data("{}".utf8))
+            }
+            await started.signal()
+            do {
+                try await Task.sleep(nanoseconds: 5_000_000_000)
+            } catch is CancellationError {
+                await cancelled.signal()
+            } catch {
+                XCTFail("unexpected long-handler error: \(error)")
+            }
+            return .failure(
+                requestId: request.requestId,
+                error: EngramServiceErrorEnvelope(
+                    name: "Cancelled",
+                    message: "peer disconnected",
+                    retryPolicy: "never"
+                )
+            )
+        }
+        try server.start()
+        defer { server.stop() }
+        let token = try XCTUnwrap(
+            ServiceCapabilityToken.load(
+                fromPath: ServiceCapabilityToken.path(forSocketPath: paths.socket.path)
+            )
+        )
+        let fd = try UnixSocketEngramServiceTransport.connectSocket(path: paths.socket.path)
+        let request = EngramServiceRequestEnvelope(
+            command: "generateSummary",
+            capabilityToken: token
+        )
+        try UnixSocketEngramServiceTransport.writeFrame(try JSONEncoder().encode(request), to: fd)
+        await started.wait()
+        shutdown(fd, SHUT_RDWR)
+        close(fd)
+
+        let releaseDeadline = ContinuousClock.now + .milliseconds(500)
+        while server.activeClientTaskCountForTesting() != 0,
+              ContinuousClock.now < releaseDeadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(
+            server.activeClientTaskCountForTesting(),
+            0,
+            "disconnect must promptly unwind a long protected handler and return its connection permit"
+        )
+        let handlerSawCancellation = await cancelled.isSignaled()
+        XCTAssertTrue(handlerSawCancellation)
+
+        let statusTransport = UnixSocketEngramServiceTransport(socketPath: paths.socket.path, connectTimeout: 1)
+        let status = try await statusTransport.send(
+            EngramServiceRequestEnvelope(command: "status"),
+            timeout: 1
+        )
+        guard case .success = status else {
+            return XCTFail("status must remain available after the abandoned protected command")
+        }
+    }
+
     func testRunnerPeriodicScanUsesEnabledAdapters() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
         // Cycle body lives in runOnePeriodicIndexCycle (under performWhenDue work).
@@ -996,8 +1488,9 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(body.contains("try await writer.indexRecentSessions("))
         XCTAssertTrue(body.contains("excludedSnapshotSources: excludedSnapshotSources"))
         XCTAssertTrue(body.contains("let enabledAdapters = adaptersExcludingDisabled("))
-        XCTAssertTrue(body.contains("periodicParserAdapters = enabledAdapters"))
-        XCTAssertTrue(body.contains("IndexJobRunner(writer: writer, adapters: periodicParserAdapters)"))
+        XCTAssertTrue(body.contains("drainRecoverableFtsJobs("))
+        XCTAssertTrue(body.contains("adapters: enabledAdapters"))
+        XCTAssertTrue(source.contains("IndexJobRunner(writer: writer, adapters: adapters)"))
         XCTAssertFalse(
             body.contains("try await writer.indexRecentSessions()"),
             "periodic indexing must honor disabled/default-off archived sources"
@@ -1098,11 +1591,30 @@ final class EngramServiceIPCTests: XCTestCase {
 
     func testRunnerInitialScanFullBackfillsWhenUsageParserVersionChanges() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
-        XCTAssertTrue(source.contains(#"performWriteCommand(name: "usageParserBackfillCheck")"#))
+        XCTAssertTrue(source.contains(#"performReadCommand(name: "usageParserBackfillCheck")"#))
+        XCTAssertFalse(source.contains(#"performWriteCommand(name: "usageParserBackfillCheck")"#))
         XCTAssertTrue(source.contains("UsageParserBackfillPolicy.needsBackfill"))
         XCTAssertTrue(source.contains("let startupAdapters = enabledAdapters"))
         XCTAssertTrue(source.contains(#"performWriteCommand(name: "usageParserBackfillMark")"#))
         XCTAssertTrue(source.contains("UsageParserBackfillPolicy.markComplete"))
+    }
+
+    func testUsageParserVersionForcesKnownFileReparseBeforeMarkingComplete_repro() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        let start = try XCTUnwrap(source.range(of: "static func runInitialScan("))
+        let end = try XCTUnwrap(
+            source.range(of: "private static func elapsedMs", range: start.lowerBound..<source.endIndex)
+        )
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(
+            source.contains("forceReparseKnownFiles: usageParserBackfillNeeded"),
+            "a parser-version change must bypass unchanged-file indexing decisions"
+        )
+        XCTAssertTrue(
+            body.contains("if usageParserBackfillNeeded && coreIndexSucceeded"),
+            "the parser version must only be marked complete after the forced index phase succeeds"
+        )
     }
 
     func testRunnerInitialScanSchedulesInsightEmbeddingBackfillOutsideMainWritePhases() throws {
@@ -1121,7 +1633,7 @@ final class EngramServiceIPCTests: XCTestCase {
 
     func testRunnerPeriodicScanSchedulesInsightEmbeddingBackfill() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
-        let start = try XCTUnwrap(source.range(of: "private static func runIndexingLoop("))
+        let start = try XCTUnwrap(source.range(of: "static func runIndexingLoop("))
         let end = try XCTUnwrap(source.range(of: "/// V2 composition root", options: [], range: start.lowerBound..<source.endIndex))
         let body = String(source[start.lowerBound..<end.lowerBound])
 
@@ -1132,7 +1644,7 @@ final class EngramServiceIPCTests: XCTestCase {
     func testRunnerObservabilityRetentionLogsZeroRowCompletion() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
         let start = try XCTUnwrap(source.range(of: "private static func runObservabilityRetention"))
-        let end = try XCTUnwrap(source.range(of: "private static func runIndexingLoop"))
+        let end = try XCTUnwrap(source.range(of: "static func runIndexingLoop"))
         let retentionSource = String(source[start.lowerBound..<end.lowerBound])
 
         XCTAssertFalse(
@@ -1153,6 +1665,83 @@ final class EngramServiceIPCTests: XCTestCase {
         )
     }
 
+    func testRunnerPeriodicScanDrainsParentBackfillsWhenIndexIsIdle_repro() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        let start = try XCTUnwrap(source.range(of: "private static func runOnePeriodicIndexCycle("))
+        let end = try XCTUnwrap(
+            source.range(of: "private final class IndexingScheduleBox", range: start.lowerBound..<source.endIndex)
+        )
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        let parentBackfill = try XCTUnwrap(body.range(of: #"performWriteCommand(name: "periodicParentBackfills")"#))
+        let prefix = String(body[..<parentBackfill.lowerBound])
+
+        XCTAssertFalse(
+            prefix.hasSuffix("if scan.indexed > 0 {\n                _ = try await gate."),
+            "queued suggested parents must drain even when the current file scan is idle"
+        )
+        XCTAssertTrue(body.contains("refreshRepoDiscovery("))
+    }
+
+    func testSuccessfulPeriodicScanRemainsHealthyWhenMaintenanceThrows_repro() async {
+        let monitor = ServiceStatusMonitor(
+            staleAfter: 600,
+            now: { Date(timeIntervalSince1970: 200) }
+        )
+        let telemetry = ServiceTelemetryCollector()
+        let completion = PeriodicScanCompletionProbe()
+        await monitor.recordScanFailure("old failure", at: Date(timeIntervalSince1970: 100))
+
+        let completed = await EngramServiceRunner.runPeriodicPostIndexMaintenance {
+            throw NSError(domain: "EngramServiceIPCTests", code: 1)
+        } onSuccess: { (_: Int?) in
+            await monitor.recordScanSuccess()
+            await telemetry.recordScan(durationMs: 5, indexed: 3, total: 42)
+            await completion.recordEvent()
+        }
+
+        XCTAssertTrue(completed)
+        let eventCount = await completion.eventCount()
+        let telemetrySnapshot = await telemetry.snapshot()
+        XCTAssertEqual(eventCount, 1)
+        XCTAssertEqual(telemetrySnapshot.scanCount, 1)
+        let status = await monitor.status(
+            indexStatus: EngramDatabaseIndexStatus(total: 42, todayParents: 7)
+        )
+        XCTAssertEqual(
+            status,
+            .running(
+                total: 42,
+                todayParents: 7,
+                nextScanIntervalSeconds: nil,
+                lastScanAt: "1970-01-01T00:03:20Z"
+            )
+        )
+    }
+
+    func testCancelledPeriodicMaintenanceDoesNotRunSuccessfulScanCompletion_repro() async {
+        let started = CheckpointTestSignal()
+        let release = CheckpointTestSignal()
+        let completion = PeriodicScanCompletionProbe()
+        let task = Task {
+            await EngramServiceRunner.runPeriodicPostIndexMaintenance {
+                await started.signal()
+                await release.wait()
+                return 1
+            } onSuccess: { (_: Int?) in
+                await completion.recordEvent()
+            }
+        }
+
+        await started.wait()
+        task.cancel()
+        await release.signal()
+
+        let completed = await task.value
+        let eventCount = await completion.eventCount()
+        XCTAssertFalse(completed)
+        XCTAssertEqual(eventCount, 0)
+    }
+
     func testRunnerPeriodicScanSplitsWriteGateAcrossPhases() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
         let start = try XCTUnwrap(source.range(of: #"gate.performWriteCommand(name: "indexRecent")"#))
@@ -1160,14 +1749,16 @@ final class EngramServiceIPCTests: XCTestCase {
         let periodicBeforeGitProbe = String(source[start.lowerBound..<end.lowerBound])
 
         XCTAssertTrue(source.contains(#"performWriteCommand(name: "periodicParentBackfills")"#))
-        XCTAssertTrue(source.contains(#"performWriteCommand(name: "periodicFtsDrain")"#))
+        XCTAssertTrue(source.contains(#"commandName: "periodicFtsDrain""#))
+        XCTAssertTrue(source.contains("performWriteCommand(name: commandName)"))
         // Wave 7C M01: pure status reads use performReadCommand (no gen bump).
         XCTAssertTrue(
             source.contains(#"performReadCommand(name: "periodicIndexStatus")"#)
                 || source.contains(#"performWriteCommand(name: "periodicIndexStatus")"#)
         )
-        XCTAssertTrue(source.contains(#"performWriteCommand(name: "periodicRepoCandidates")"#))
-        XCTAssertTrue(periodicBeforeGitProbe.contains("runRecoverableJobsOnce()"))
+        XCTAssertTrue(source.contains(#"performReadCommand(name: "\(phaseName)Candidates")"#))
+        XCTAssertTrue(periodicBeforeGitProbe.contains("drainRecoverableFtsJobs("))
+        XCTAssertTrue(source.contains("runRecoverableJobsOnce()"))
         XCTAssertFalse(
             periodicBeforeGitProbe.contains("runRecoverableJobs()"),
             "periodic FTS drain must release the write gate between batches"
@@ -1182,6 +1773,25 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertFalse(indexRecentBlock.contains("RepoDiscovery.sessionCwdCounts"))
     }
 
+    func testRunnerPureMaintenanceReadsDoNotAdvanceGeneration_repro() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+
+        XCTAssertTrue(
+            source.contains(#"performReadCommand(name: "usageParserBackfillCheck")"#)
+        )
+        XCTAssertEqual(
+            source.components(separatedBy: #"performReadCommand(name: "\(phaseName)Read")"#).count - 1,
+            2,
+            "session and insight embedding candidate reads are pure reads"
+        )
+        XCTAssertFalse(
+            source.contains(#"performWriteCommand(name: "usageParserBackfillCheck")"#)
+        )
+        XCTAssertFalse(
+            source.contains(#"performWriteCommand(name: "\(phaseName)Read")"#)
+        )
+    }
+
     func testRunnerPeriodicScanRefreshesCountsAfterParentBackfills() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
         let start = try XCTUnwrap(source.range(of: #"performWriteCommand(name: "periodicParentBackfills")"#))
@@ -1194,9 +1804,18 @@ final class EngramServiceIPCTests: XCTestCase {
                 ?? loop.range(of: #"performWriteCommand(name: "periodicIndexStatus")"#)
         )
         XCTAssertLessThan(backfills.lowerBound, status.lowerBound)
-        XCTAssertTrue(source.contains("total=\\(status.total) todayParents=\\(status.todayParents)"))
+        XCTAssertTrue(source.contains("total=\\(total) todayParents=\\(todayParents)"))
+        XCTAssertTrue(source.contains("summary?.total ?? scan.total"))
+        XCTAssertTrue(source.contains("summary?.todayParents ?? scan.todayParents"))
         XCTAssertTrue(source.contains("total: status.total"))
         XCTAssertTrue(source.contains("todayParents: status.todayParents"))
+    }
+
+    func testIndexingLoopSchedulesDeferredFtsBacklogBeforeAdaptiveScan_repro() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        XCTAssertTrue(source.contains("nextFtsRetryDelaySeconds"))
+        XCTAssertTrue(source.contains("runFtsOnlyCycle"))
+        XCTAssertTrue(source.contains("min(adaptiveSleepSeconds, max(ftsRetryDelaySeconds, 1))"))
     }
 
     func testProjectMigrationPipelineErrorTestUsesScopedHome() throws {
@@ -1331,6 +1950,48 @@ final class EngramServiceIPCTests: XCTestCase {
         await fulfillment(of: [requestStarted], timeout: 1)
         server.stop()
         await fulfillment(of: [handlerCancelled], timeout: 1)
+        requestTask.cancel()
+    }
+
+    func testUnixSocketServiceServerDrainsCancelledClientHandlersBeforeReturning_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        let requestStarted = CheckpointTestSignal()
+        let handlerRelease = CheckpointTestSignal()
+        let handlerFinished = CheckpointTestSignal()
+        let drainReturned = CheckpointTestSignal()
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await requestStarted.signal()
+            await handlerRelease.wait()
+            await handlerFinished.signal()
+            return .success(requestId: request.requestId, result: Data("{}".utf8))
+        }
+        try server.start()
+
+        let client = EngramServiceClient(
+            transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+        )
+        let requestTask = Task { _ = try? await client.status() }
+        await requestStarted.wait()
+
+        server.stop()
+        let drainTask = Task {
+            let drained = await server.drainClientHandlers(timeoutNanoseconds: 1_000_000_000)
+            await drainReturned.signal()
+            return drained
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let drainReturnedEarly = await drainReturned.isSignaled()
+        XCTAssertFalse(
+            drainReturnedEarly,
+            "drain must not report completion while a cancelled handler is still unwinding"
+        )
+
+        await handlerRelease.signal()
+        let drainSucceeded = await drainTask.value
+        let handlerDidFinish = await handlerFinished.isSignaled()
+        XCTAssertTrue(drainSucceeded)
+        XCTAssertTrue(handlerDidFinish)
+        XCTAssertEqual(server.activeClientTaskCountForTesting(), 0)
         requestTask.cancel()
     }
 
@@ -1619,8 +2280,329 @@ final class EngramServiceIPCTests: XCTestCase {
         )
     }
 
+    func testStatusMonitorDeferredOpportunityRefreshesHealthyScanAge_repro() async {
+        let monitor = ServiceStatusMonitor(
+            staleAfter: 600,
+            now: { Date(timeIntervalSince1970: 1_200) }
+        )
+        await monitor.recordSchedule(nextScanIntervalSeconds: 900)
+        await monitor.recordScanSuccess(at: Date(timeIntervalSince1970: 100))
+
+        await monitor.recordScanDeferred(at: Date(timeIntervalSince1970: 1_000))
+
+        let status = await monitor.status(
+            indexStatus: EngramDatabaseIndexStatus(total: 42, todayParents: 7)
+        )
+        XCTAssertEqual(
+            status,
+            .running(
+                total: 42,
+                todayParents: 7,
+                nextScanIntervalSeconds: 900,
+                lastScanAt: "1970-01-01T00:16:40Z"
+            )
+        )
+    }
+
+    func testRunnerRecordsSchedulerAndLowPowerDeferralsAsHealthy_repro() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        XCTAssertTrue(
+            source.contains("if opportunity == .deferred {")
+                && source.contains("commandName: \"deferredActivityFtsDrain\"")
+        )
+        let deferStart = try XCTUnwrap(
+            source.range(of: "if IndexingSchedulePolicy.shouldDefer(conditions: conditions) {")
+        )
+        let recorded = try XCTUnwrap(
+            source.range(
+                of: "await statusMonitor.recordScanDeferred()",
+                range: deferStart.upperBound..<source.endIndex
+            )
+        )
+        let returned = try XCTUnwrap(
+            source.range(of: "return", range: recorded.upperBound..<source.endIndex)
+        )
+        XCTAssertLessThan(recorded.lowerBound, returned.lowerBound)
+    }
+
+    func testRunnerRefreshesUsageBeforeBothDeferredCycleReturns_repro() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        let schedulerStart = try XCTUnwrap(source.range(of: "if opportunity == .deferred {"))
+        let schedulerEnd = try XCTUnwrap(
+            source.range(
+                of: "// .deferred / .run both continue",
+                range: schedulerStart.upperBound..<source.endIndex
+            )
+        )
+        let schedulerBody = source[schedulerStart.lowerBound..<schedulerEnd.lowerBound]
+        XCTAssertTrue(schedulerBody.contains("collectUsageBestEffort("))
+
+        let lowPowerStart = try XCTUnwrap(
+            source.range(of: "if IndexingSchedulePolicy.shouldDefer(conditions: conditions) {")
+        )
+        let lowPowerEnd = try XCTUnwrap(
+            source.range(
+                of: "let recentAdapters = await recentAdaptersForPeriodicCycle(",
+                range: lowPowerStart.upperBound..<source.endIndex
+            )
+        )
+        let lowPowerBody = source[lowPowerStart.lowerBound..<lowPowerEnd.lowerBound]
+        XCTAssertTrue(lowPowerBody.contains("collectUsageBestEffort("))
+    }
+
+    func testRunnerRefreshesUsageAndRepoCountsAfterFtsOnlyAndDeferredCycles_repro() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        let ftsStart = try XCTUnwrap(source.range(of: "if ftsOnlyDue {"))
+        let ftsEnd = try XCTUnwrap(
+            source.range(of: "let tolerance =", range: ftsStart.upperBound..<source.endIndex)
+        )
+        let ftsBody = source[ftsStart.lowerBound..<ftsEnd.lowerBound]
+        XCTAssertTrue(ftsBody.contains("runFtsOnlyCycle"))
+        XCTAssertTrue(ftsBody.contains("collectUsageBestEffort("))
+        XCTAssertTrue(ftsBody.contains("refreshRepoDiscovery("))
+
+        let schedulerStart = try XCTUnwrap(source.range(of: "if opportunity == .deferred {"))
+        let schedulerEnd = try XCTUnwrap(
+            source.range(of: "// .deferred / .run both continue", range: schedulerStart.upperBound..<source.endIndex)
+        )
+        XCTAssertTrue(source[schedulerStart.lowerBound..<schedulerEnd.lowerBound].contains("refreshRepoDiscovery("))
+
+        let lowPowerStart = try XCTUnwrap(
+            source.range(of: "if IndexingSchedulePolicy.shouldDefer(conditions: conditions) {")
+        )
+        let lowPowerEnd = try XCTUnwrap(
+            source.range(
+                of: "let recentAdapters = await recentAdaptersForPeriodicCycle(",
+                range: lowPowerStart.upperBound..<source.endIndex
+            )
+        )
+        XCTAssertTrue(source[lowPowerStart.lowerBound..<lowPowerEnd.lowerBound].contains("refreshRepoDiscovery("))
+    }
+
+    func testFtsOnlyCyclePublishesHealthyNonzeroNextSchedule_repro() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        let dueStart = try XCTUnwrap(source.range(of: "if ftsOnlyDue {"))
+        let dueEnd = try XCTUnwrap(
+            source.range(of: "let tolerance =", range: dueStart.upperBound..<source.endIndex)
+        )
+        let dueBody = source[dueStart.lowerBound..<dueEnd.lowerBound]
+        XCTAssertTrue(dueBody.contains("statusMonitor: statusMonitor"))
+        XCTAssertTrue(source.contains("ftsOnlyDue ? IndexingSchedulePolicy.minInterval"))
+
+        let cycleStart = try XCTUnwrap(source.range(of: "private static func runFtsOnlyCycle("))
+        let cycleEnd = try XCTUnwrap(
+            source.range(of: "/// One adaptive scan cycle", range: cycleStart.upperBound..<source.endIndex)
+        )
+        let cycleBody = source[cycleStart.lowerBound..<cycleEnd.lowerBound]
+        XCTAssertTrue(cycleBody.contains("recordScanDeferred()"))
+        XCTAssertTrue(source.contains("max(ftsRetryDelaySeconds, 1)"))
+    }
+
+    func testFtsOnlyCycleDoesNotPostponeAlreadyScheduledFileScan_repro() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        let dueStart = try XCTUnwrap(source.range(of: "if ftsOnlyDue {"))
+        let dueEnd = try XCTUnwrap(
+            source.range(of: "let tolerance =", range: dueStart.upperBound..<source.endIndex)
+        )
+        let dueBody = source[dueStart.lowerBound..<dueEnd.lowerBound]
+        XCTAssertFalse(dueBody.contains("\n                continue\n"))
+        XCTAssertTrue(source.contains("fileScanSleepSeconds"))
+    }
+
+    func testFtsOnlyCycleSleepsUntilPublishedRetryAndHeartbeatsEachBatch_repro() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        let dueStart = try XCTUnwrap(source.range(of: "if ftsOnlyDue {"))
+        let dueEnd = try XCTUnwrap(
+            source.range(of: "let tolerance =", range: dueStart.upperBound..<source.endIndex)
+        )
+        let dueBody = source[dueStart.lowerBound..<dueEnd.lowerBound]
+        XCTAssertTrue(dueBody.contains("sleepBeforeFtsOnlyCycle(seconds: sleepSeconds)"))
+
+        let drainStart = try XCTUnwrap(source.range(of: "private static func drainRecoverableFtsJobs("))
+        let drainEnd = try XCTUnwrap(
+            source.range(of: "/// Refresh repository counts", range: drainStart.upperBound..<source.endIndex)
+        )
+        let drainBody = source[drainStart.lowerBound..<drainEnd.lowerBound]
+        XCTAssertTrue(drainBody.contains("await onProgress()"))
+        XCTAssertTrue(drainBody.contains("enqueueStaleFtsJobs()"))
+        XCTAssertTrue(drainBody.contains("ftsDrainHeartbeat"))
+    }
+
+    func testForcedSchedulerDeferralStillDrainsRecoverableFts_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        _ = try await gate.performWriteCommand(name: "seedDeferredFtsDrain") { writer in
+            try writer.migrate()
+            try writer.write { db in
+                try db.execute(sql: """
+                    INSERT INTO sessions (
+                      id, source, start_time, file_path, tier, offload_state, summary
+                    ) VALUES (
+                      'deferred-fts', 'claude-code', '2026-08-23T00:00:00Z',
+                      '/tmp/deferred-fts.jsonl', 'normal', 'offloaded', 'deferred searchable shadow'
+                    );
+                    INSERT INTO session_index_jobs (
+                      id, session_id, job_kind, target_sync_version, status
+                    ) VALUES (
+                      'deferred-fts:1:fts', 'deferred-fts', 'fts', 1, 'pending'
+                    );
+                    """)
+            }
+        }
+        let scheduler = RecordingIndexingBackgroundActivityScheduler()
+        scheduler.forceDeferred = true
+        let loop = Task {
+            await EngramServiceRunner.runIndexingLoop(
+                gate: gate,
+                statusMonitor: ServiceStatusMonitor(),
+                environment: [:],
+                tokenLimitsProvider: { [:] },
+                activityScheduler: scheduler
+            )
+        }
+
+        var indexed = false
+        for _ in 0..<100 {
+            indexed = try await gate.performReadCommand(name: "observeDeferredFtsDrain") { writer in
+                try writer.read { db in
+                    try Int.fetchOne(
+                        db,
+                        sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'deferred-fts'"
+                    ) ?? 0
+                }
+            }.value > 0
+            if indexed { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        loop.cancel()
+        await loop.value
+
+        XCTAssertTrue(indexed, "an OS-deferred periodic opportunity must still drain durable FTS work")
+        XCTAssertEqual(scheduler.workInvocations, 0, "forceDeferred proves the normal activity body never ran")
+    }
+
+    func testDeferredCycleEnqueuesMissingFtsRowsBeforeDrain_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        _ = try await gate.performWriteCommand(name: "seedMissingFtsJob") { writer in
+            try writer.migrate()
+            try writer.write { db in
+                try db.execute(sql: """
+                    INSERT INTO sessions (
+                      id, source, start_time, file_path, source_locator,
+                      snapshot_hash, sync_version, tier, offload_state, summary
+                    ) VALUES (
+                      'missing-fts-job', 'claude-code', '2026-08-24T00:00:00Z',
+                      '/tmp/missing-fts-job.jsonl', '/tmp/missing-fts-job.jsonl',
+                      'hash-v1', 1, 'normal', 'offloaded', 'stale hole searchable'
+                    );
+                    """)
+            }
+        }
+        let scheduler = RecordingIndexingBackgroundActivityScheduler()
+        scheduler.forceDeferred = true
+        let loop = Task {
+            await EngramServiceRunner.runIndexingLoop(
+                gate: gate,
+                statusMonitor: ServiceStatusMonitor(),
+                environment: [:],
+                tokenLimitsProvider: { [:] },
+                activityScheduler: scheduler
+            )
+        }
+
+        var indexed = false
+        for _ in 0..<100 {
+            indexed = try await gate.performReadCommand(name: "observeMissingFtsJob") { writer in
+                try writer.read { db in
+                    try Int.fetchOne(
+                        db,
+                        sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'missing-fts-job'"
+                    ) ?? 0
+                }
+            }.value > 0
+            if indexed { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        loop.cancel()
+        await loop.value
+
+        XCTAssertTrue(indexed, "periodic recovery must enqueue live FTS holes, not only startup")
+    }
+
+    func testDueFtsDrainBypassesDiscretionaryScheduler_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        _ = try await gate.performWriteCommand(name: "seedImmediateFtsDrain") { writer in
+            try writer.migrate()
+            try writer.write { db in
+                try db.execute(sql: """
+                    INSERT INTO sessions (
+                      id, source, start_time, file_path, tier, offload_state, summary
+                    ) VALUES (
+                      'immediate-fts', 'claude-code', '2026-08-23T00:00:00Z',
+                      '/tmp/immediate-fts.jsonl', 'normal', 'offloaded', 'immediate searchable shadow'
+                    );
+                    INSERT INTO session_index_jobs (
+                      id, session_id, job_kind, target_sync_version, status
+                    ) VALUES ('immediate-fts:1:fts', 'immediate-fts', 'fts', 1, 'pending');
+                    """)
+            }
+        }
+        let scheduler = RecordingIndexingBackgroundActivityScheduler()
+        scheduler.forceDeferred = true
+        let loop = Task {
+            await EngramServiceRunner.runIndexingLoop(
+                gate: gate,
+                statusMonitor: ServiceStatusMonitor(),
+                environment: [:],
+                tokenLimitsProvider: { [:] },
+                activityScheduler: scheduler
+            )
+        }
+
+        var indexed = false
+        for _ in 0..<100 {
+            indexed = try await gate.performReadCommand(name: "observeImmediateFtsDrain") { writer in
+                try writer.read { db in
+                    try Int.fetchOne(
+                        db,
+                        sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'immediate-fts'"
+                    ) ?? 0
+                }
+            }.value > 0
+            if indexed { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        loop.cancel()
+        await loop.value
+
+        XCTAssertTrue(indexed)
+        XCTAssertEqual(scheduler.workInvocations, 0)
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        let directStart = try XCTUnwrap(source.range(of: "if ftsOnlyDue {"))
+        let schedulerStart = try XCTUnwrap(
+            source.range(of: "activityScheduler.performWhenDue(", range: directStart.upperBound..<source.endIndex)
+        )
+        let directBody = source[directStart.lowerBound..<schedulerStart.lowerBound]
+        XCTAssertTrue(directBody.contains("runFtsOnlyCycle"))
+        XCTAssertTrue(directBody.contains("fileScanSleepSeconds = max(fileScanDueAt.timeIntervalSinceNow, 0)"))
+    }
+
     func testRunnerCancellationReleasesWriterGateAndRemovesSocket() async throws {
         let paths = try makeServiceIPCPaths()
+        let home = paths.runtime.deletingLastPathComponent()
+            .appendingPathComponent("home", isDirectory: true)
+        let settingsDirectory = home.appendingPathComponent(".engram", isDirectory: true)
+        try FileManager.default.createDirectory(at: settingsDirectory, withIntermediateDirectories: true)
+        let settingsURL = settingsDirectory.appendingPathComponent("settings.json")
+        try #"{"remoteOffloadEnabled":false,"titleProvider":"native"}"#.write(
+            to: settingsURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        let homeScope = ServiceCoreTestHomeScope(home: home)
+        defer { homeScope.restore() }
 
         let runner = Task {
             try await EngramServiceRunner.run(
@@ -1628,7 +2610,10 @@ final class EngramServiceIPCTests: XCTestCase {
                     "--service-socket", paths.socket.path,
                     "--database-path", paths.database.path
                 ],
-                environment: [:]
+                environment: [
+                    "ENGRAM_REMOTE_OFFLOAD_ENABLED": "false",
+                    "ENGRAM_SETTINGS_PATH": settingsURL.path,
+                ]
             )
         }
         try await waitUntilFileExists(paths.socket.path)
@@ -1645,6 +2630,101 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertNoThrow(
             try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime),
             "runner cancellation must release process and database writer locks"
+        )
+    }
+
+    func testCustomSocketParentNeverBecomesTheServiceRuntimeDirectory_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        let home = paths.runtime.deletingLastPathComponent()
+            .appendingPathComponent("custom-runtime-home", isDirectory: true)
+        let customParent = paths.runtime.deletingLastPathComponent()
+            .appendingPathComponent("caller-owned-socket-parent", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: customParent,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let socket = customParent.appendingPathComponent("custom.sock")
+        let sentinel = customParent.appendingPathComponent("webui.token")
+        try "caller-owned".write(to: sentinel, atomically: true, encoding: .utf8)
+        let settingsDirectory = home.appendingPathComponent(".engram", isDirectory: true)
+        try FileManager.default.createDirectory(at: settingsDirectory, withIntermediateDirectories: true)
+        let settingsURL = settingsDirectory.appendingPathComponent("settings.json")
+        try #"{"remoteOffloadEnabled":false,"titleProvider":"native"}"#.write(
+            to: settingsURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        let homeScope = ServiceCoreTestHomeScope(home: home)
+        defer { homeScope.restore() }
+
+        let runner = Task {
+            try await EngramServiceRunner.run(
+                arguments: ["--service-socket", socket.path, "--database-path", paths.database.path],
+                environment: [
+                    "ENGRAM_REMOTE_OFFLOAD_ENABLED": "false",
+                    "ENGRAM_SETTINGS_PATH": settingsURL.path,
+                ]
+            )
+        }
+        try await waitUntilFileExists(socket.path)
+
+        XCTAssertEqual(try String(contentsOf: sentinel, encoding: .utf8), "caller-owned")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: customParent.appendingPathComponent("engram-service.lock").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: customParent.appendingPathComponent("cmd.token").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: socket.path + ".cmd.token"))
+
+        runner.cancel()
+        _ = try? await runner.value
+    }
+
+    func testCustomSocketRunnerDoesNotInitializeDedicatedHomeRuntime_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        let injectedHome = paths.runtime.deletingLastPathComponent()
+            .appendingPathComponent("explicit-runner-home", isDirectory: true)
+        let settingsDirectory = injectedHome.appendingPathComponent(".engram", isDirectory: true)
+        try FileManager.default.createDirectory(at: settingsDirectory, withIntermediateDirectories: true)
+        let settingsURL = settingsDirectory.appendingPathComponent("settings.json")
+        try #"{"remoteOffloadEnabled":false,"titleProvider":"native"}"#.write(
+            to: settingsURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        let dedicatedRuntime = settingsDirectory.appendingPathComponent("run", isDirectory: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dedicatedRuntime.path))
+
+        let blockingGate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime
+        )
+        _ = blockingGate
+        do {
+            try await EngramServiceRunner.run(
+                arguments: [
+                    "--service-socket", paths.socket.path,
+                    "--database-path", paths.database.path,
+                ],
+                environment: [
+                    "XCTestConfigurationFilePath": "/tmp/engram-tests.xctestconfiguration",
+                    "CFFIXED_USER_HOME": injectedHome.path,
+                    "HOME": injectedHome.path,
+                    "ENGRAM_REMOTE_OFFLOAD_ENABLED": "false",
+                    "ENGRAM_SETTINGS_PATH": settingsURL.path,
+                ]
+            )
+            XCTFail("the pre-held database lock must stop the runner after path setup")
+        } catch {
+            // Expected: the database lock keeps this repro before long-lived tasks.
+        }
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: dedicatedRuntime.path),
+            "a custom socket must not initialize the dedicated default runtime"
+        )
+        let runnerSource = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        XCTAssertFalse(
+            runnerSource.contains("let runtimeDirectory = try UnixSocketEngramServiceTransport.secureRuntimeDirectory()"),
+            "runner must not fall through to the process user's home"
         )
     }
 
@@ -1684,9 +2764,124 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(finishedAfterCheckpointReturned)
     }
 
-    // A runner is already cancelled when its orderly shutdown path begins. The
-    // final best-effort TRUNCATE still needs a fresh cancellation context.
-    func testRunnerFinalCheckpointRunsAfterParentCancellation_repro() async throws {
+    func testCancelledRunnerUsesNonblockingShutdownTruncateWhenIdle_repro() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("EngramService/Core/EngramServiceRunner.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("await waitForShutdownWriterIdle(gate: gate)"))
+        XCTAssertTrue(source.contains("checkpointTruncate(waitForReaders: false)"))
+        XCTAssertFalse(source.contains("let cancelledShutdown = Task.isCancelled"))
+    }
+
+    func testCancelledShutdownWaitsForDetachedWriterBeforeCheckpoint_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let writeStarted = CheckpointTestSignal()
+        let writeRelease = CheckpointTestSignal()
+        let checkpointRan = CheckpointTestSignal()
+        let holder = Task {
+            try await gate.performWriteCommand(name: "projectMove") { _ in
+                await writeStarted.signal()
+                await writeRelease.wait()
+            }
+        }
+        await writeStarted.wait()
+        await gate.beginShutdown()
+
+        let shutdown = Task {
+            await EngramServiceRunner.waitForShutdownWriterIdle(gate: gate)
+            await checkpointRan.signal()
+        }
+
+        // docs/invariants.md #1: shutdown maintenance must never queue behind
+        // a still-live service writer or let process exit race that writer.
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let ranBeforeRelease = await checkpointRan.isSignaled()
+        XCTAssertFalse(ranBeforeRelease)
+
+        await writeRelease.signal()
+        _ = try await holder.value
+        await shutdown.value
+        let ranAfterRelease = await checkpointRan.isSignaled()
+        XCTAssertTrue(ranAfterRelease)
+    }
+
+    func testWriterGateRejectsNewWritesAfterCancellationButAllowsCheckpoint_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let holderStarted = CheckpointTestSignal()
+        let holderRelease = CheckpointTestSignal()
+        let lateWriteCalls = LockedCounter()
+        let holder = Task {
+            try await gate.performWriteCommand(name: "heldBeforeShutdown") { _ in
+                await holderStarted.signal()
+                await holderRelease.wait()
+            }
+        }
+        await holderStarted.wait()
+
+        let lateWrite = Task { () -> EngramServiceError? in
+            do {
+                _ = try await gate.performWriteCommand(name: "indexRecent") { _ in
+                    lateWriteCalls.increment()
+                }
+                return nil
+            } catch let error as EngramServiceError {
+                return error
+            } catch {
+                XCTFail("unexpected late-write error: \(error)")
+                return nil
+            }
+        }
+        let queueDeadline = ContinuousClock.now + .seconds(1)
+        while await gate.queuedWriteWaiterCountForTesting() == 0 {
+            guard ContinuousClock.now < queueDeadline else {
+                XCTFail("late write did not queue behind the held gate")
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        await gate.beginShutdown()
+        await holderRelease.signal()
+        _ = try await holder.value
+
+        let lateWriteError = await lateWrite.value
+        XCTAssertEqual(
+            lateWriteError,
+            .serviceUnavailable(message: "EngramService is shutting down")
+        )
+        XCTAssertEqual(lateWriteCalls.value, 0)
+
+        do {
+            _ = try await gate.performWriteCommand(name: "postShutdownWrite") { _ in
+                lateWriteCalls.increment()
+            }
+            XCTFail("shutdown must reject writes before they queue")
+        } catch let error as EngramServiceError {
+            XCTAssertEqual(
+                error,
+                .serviceUnavailable(message: "EngramService is shutting down")
+            )
+        }
+        XCTAssertEqual(lateWriteCalls.value, 0)
+
+        await EngramServiceRunner.waitForShutdownWriterIdle(gate: gate)
+        let checkpointed = try await EngramServiceRunner.runShutdownCheckpoint {
+            try await gate.checkpointWal()
+            return true
+        }
+        XCTAssertEqual(checkpointed, true)
+    }
+
+    // An orderly, non-cancelled shutdown can still run the full TRUNCATE in a
+    // fresh task after all background writers have unwound.
+    func testRunnerFinalCheckpointRunsForOrderlyShutdown() async throws {
         let callerBlocked = CheckpointTestSignal()
         let callerRelease = CheckpointTestSignal()
         let checkpointRan = CheckpointTestSignal()
@@ -1701,7 +2896,6 @@ final class EngramServiceIPCTests: XCTestCase {
         }
         await callerBlocked.wait()
 
-        shutdownTask.cancel()
         await callerRelease.signal()
 
         let result = try await shutdownTask.value
@@ -1735,6 +2929,82 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(sources, [])
         XCTAssertEqual(memory, [])
         XCTAssertEqual(replay.sessionId, "session-1")
+    }
+
+    func testMemoryFilesSkipsSymlinksAndReadsOnlyBoundedPreview_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-memory-list-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let memory = root.appendingPathComponent(".claude/projects/demo/memory", isDirectory: true)
+        try FileManager.default.createDirectory(at: memory, withIntermediateDirectories: true)
+
+        let regular = memory.appendingPathComponent("bounded.md")
+        var boundedPayload = Data(String(repeating: "a", count: 512).utf8)
+        boundedPayload.append(0xff)
+        try boundedPayload.write(to: regular)
+
+        let outside = root.appendingPathComponent("outside-secret.md")
+        try Data("must not be listed".utf8).write(to: outside)
+        try FileManager.default.createSymbolicLink(
+            at: memory.appendingPathComponent("linked.md"),
+            withDestinationURL: outside
+        )
+        let outsideProject = root.appendingPathComponent("outside-project", isDirectory: true)
+        let outsideMemory = outsideProject.appendingPathComponent("memory", isDirectory: true)
+        try FileManager.default.createDirectory(at: outsideMemory, withIntermediateDirectories: true)
+        try Data("ancestor symlink secret".utf8).write(
+            to: outsideMemory.appendingPathComponent("ancestor-linked.md")
+        )
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent(".claude/projects/linked-project", isDirectory: true),
+            withDestinationURL: outsideProject
+        )
+
+        let files = try await FileSystemEngramServiceReadProvider(homeDirectory: root).memoryFiles()
+
+        XCTAssertEqual(files.map(\.name), ["bounded.md"])
+        XCTAssertEqual(files.first?.preview, String(repeating: "a", count: 200))
+        XCTAssertNil(files.first?.content)
+    }
+
+    func testMemoryFileContentRejectsSymlinkedMemoryDirectory_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-memory-dir-link-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let project = root.appendingPathComponent(".claude/projects/demo", isDirectory: true)
+        let targetMemory = root.appendingPathComponent(".claude/projects/target/memory", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: targetMemory, withIntermediateDirectories: true)
+        try Data("must not escape through memory directory".utf8).write(
+            to: targetMemory.appendingPathComponent("escaped.md")
+        )
+        try FileManager.default.createSymbolicLink(
+            at: project.appendingPathComponent("memory", isDirectory: true),
+            withDestinationURL: targetMemory
+        )
+
+        let result = try await FileSystemEngramServiceReadProvider(homeDirectory: root).memoryFileContent(
+            EngramServiceMemoryFileContentRequest(path: "~/.claude/projects/demo/memory/escaped.md")
+        )
+
+        XCTAssertEqual(result.content, "", "detail reads must reject a symlinked project/memory directory")
+    }
+
+    func testMemoryFilesBacksOffIncompleteUTF8AtBoundedReadEdge_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-memory-utf8-edge-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let memory = root.appendingPathComponent(".claude/projects/demo/memory", isDirectory: true)
+        try FileManager.default.createDirectory(at: memory, withIntermediateDirectories: true)
+        let expectedPreview = String(repeating: "a", count: 199) + "é"
+        let payload = expectedPreview + String(repeating: "b", count: 310) + "é" + "tail"
+        try Data(payload.utf8).write(to: memory.appendingPathComponent("utf8-edge.md"))
+
+        let files = try await FileSystemEngramServiceReadProvider(homeDirectory: root).memoryFiles()
+
+        XCTAssertEqual(files.map(\.name), ["utf8-edge.md"])
+        XCTAssertEqual(files.first?.preview, expectedPreview)
+        XCTAssertNil(files.first?.content)
     }
 
     func testSQLiteReadProviderServesSearchAndSources() async throws {
@@ -2048,6 +3318,7 @@ final class EngramServiceIPCTests: XCTestCase {
         let glm = try XCTUnwrap(sources.first { $0.name == "glm" })
 
         XCTAssertEqual(glm.sessionCount, 2, "raw source inventory remains diagnostic")
+        XCTAssertEqual(glm.listVisibleSessionCount, 1, "SourcePulse must receive the list-visible count")
         XCTAssertEqual(glm.failedIndexJobCount, 0)
         XCTAssertEqual(glm.tokenSessionCount, 1)
         XCTAssertEqual(glm.tokenCoveragePercent, 100)
@@ -2170,6 +3441,28 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertNil(keyword.warning)
     }
 
+    func testShortSemanticQueriesDoNotClaimProviderUnavailable_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+
+        let semantic = try await provider.search(
+            EngramServiceSearchRequest(query: "A", mode: "semantic", limit: 10)
+        )
+        XCTAssertEqual(semantic.items, [])
+        XCTAssertEqual(semantic.searchModes, ["semantic"])
+        XCTAssertNil(semantic.warning)
+        XCTAssertNil(semantic.warningCode)
+
+        let hybrid = try await provider.search(
+            EngramServiceSearchRequest(query: "A", mode: "hybrid", limit: 10)
+        )
+        XCTAssertEqual(hybrid.items, [])
+        XCTAssertEqual(hybrid.searchModes, ["keyword", "semantic"])
+        XCTAssertNil(hybrid.warning)
+        XCTAssertNil(hybrid.warningCode)
+    }
+
     func testSearchSemanticModeUsesSemanticChunksWhenProviderConfigured() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
@@ -2227,6 +3520,272 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(semantic.items.first?.snippet, "semantic recall chunk")
     }
 
+    func testSemanticSearchAppliesRequestedHQOriginBeforeCandidateAndResultLimits_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        defer { try? FileManager.default.removeItem(at: paths.runtime.deletingLastPathComponent()) }
+        let requestLimit = 1
+        try seedOriginFilteredSemanticSearchFixture(
+            at: paths.database.path,
+            targetOrigin: "hq",
+            interferenceOrigin: "m1",
+            interferenceCount: SessionSemanticSearchPolicy.candidateBatchSize(requestLimit: requestLimit) + 1
+        )
+        let provider = try SQLiteEngramServiceReadProvider(
+            databasePath: paths.database.path,
+            embeddingEnvironment: [
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_MODEL": "probe",
+                "ENGRAM_EMBEDDING_DIM": "3",
+            ],
+            embeddingProviderFactory: { _ in
+                StaticEmbeddingProvider { _ in [1, 0, 0] }
+            }
+        )
+
+        let semantic = try await provider.search(
+            EngramServiceSearchRequest(
+                query: "originneedle",
+                mode: "semantic",
+                limit: requestLimit,
+                origin: "hq"
+            )
+        )
+
+        XCTAssertEqual(semantic.items.map(\.id), ["s2"])
+        XCTAssertEqual(semantic.items.first?.origin, "hq")
+        XCTAssertEqual(semantic.searchModes, ["semantic"])
+    }
+
+    func testHybridSearchAppliesRequestedLocalOriginBeforeCandidateAndResultLimits_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        defer { try? FileManager.default.removeItem(at: paths.runtime.deletingLastPathComponent()) }
+        let requestLimit = 1
+        try seedOriginFilteredSemanticSearchFixture(
+            at: paths.database.path,
+            targetOrigin: "m1",
+            interferenceOrigin: "hq",
+            interferenceCount: SessionSemanticSearchPolicy.candidateBatchSize(requestLimit: requestLimit) + 1
+        )
+        let provider = try SQLiteEngramServiceReadProvider(
+            databasePath: paths.database.path,
+            embeddingEnvironment: [
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_MODEL": "probe",
+                "ENGRAM_EMBEDDING_DIM": "3",
+            ],
+            embeddingProviderFactory: { _ in
+                StaticEmbeddingProvider { _ in [1, 0, 0] }
+            }
+        )
+
+        let hybrid = try await provider.search(
+            EngramServiceSearchRequest(
+                query: "originneedle",
+                mode: "hybrid",
+                limit: requestLimit,
+                origin: "local"
+            )
+        )
+
+        XCTAssertEqual(hybrid.items.map(\.id), ["s2"])
+        XCTAssertEqual(hybrid.items.first?.origin, "m1")
+        XCTAssertEqual(hybrid.items.first?.matchType, "semantic")
+        XCTAssertEqual(hybrid.searchModes, ["keyword", "semantic"])
+    }
+
+    func testSemanticAvailabilityBusyFailsClosedWithoutProviderOrKeywordRetry_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let reader = try BusySequenceServiceDatabaseReader(
+            path: paths.database.path,
+            busyImmediateReadNumbers: [1]
+        )
+        let providerCalls = LockedCounter()
+        let provider = try SQLiteEngramServiceReadProvider(
+            databasePath: paths.database.path,
+            makeDatabaseReader: { _ in reader },
+            embeddingEnvironment: [
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_MODEL": "probe",
+                "ENGRAM_EMBEDDING_DIM": "3",
+            ],
+            embeddingProviderFactory: { _ in
+                providerCalls.increment()
+                return StaticEmbeddingProvider { _ in [1, 0, 0] }
+            }
+        )
+
+        let response = try await provider.search(
+            EngramServiceSearchRequest(query: "memory recall", mode: "semantic", limit: 10)
+        )
+
+        XCTAssertEqual(response.items, [])
+        XCTAssertEqual(response.searchModes, ["semantic"])
+        XCTAssertEqual(response.warningCode, "searchFailed")
+        XCTAssertFalse(response.warning?.localizedCaseInsensitiveContains("keyword") ?? true)
+        XCTAssertEqual(reader.immediateReadCount, 1, "BUSY must not trigger a second keyword read")
+        XCTAssertEqual(providerCalls.value, 0, "availability must fail before query embedding")
+    }
+
+    func testSemanticPageBusyFailsClosedWithoutKeywordRetry_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSemanticSearchFixture(at: paths.database.path)
+        let reader = try BusySequenceServiceDatabaseReader(
+            path: paths.database.path,
+            busyImmediateReadNumbers: [2]
+        )
+        let providerCalls = LockedCounter()
+        let provider = try SQLiteEngramServiceReadProvider(
+            databasePath: paths.database.path,
+            makeDatabaseReader: { _ in reader },
+            embeddingEnvironment: [
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_MODEL": "probe",
+                "ENGRAM_EMBEDDING_DIM": "3",
+            ],
+            embeddingProviderFactory: { _ in
+                providerCalls.increment()
+                return StaticEmbeddingProvider { _ in [1, 0, 0] }
+            }
+        )
+
+        let response = try await provider.search(
+            EngramServiceSearchRequest(query: "memory recall", mode: "semantic", limit: 10)
+        )
+
+        XCTAssertEqual(response.items, [])
+        XCTAssertEqual(response.searchModes, ["semantic"])
+        XCTAssertEqual(response.warningCode, "searchFailed")
+        XCTAssertFalse(response.warning?.localizedCaseInsensitiveContains("keyword") ?? true)
+        XCTAssertEqual(reader.immediateReadCount, 2, "BUSY during semantic paging must not fall through to keyword")
+        XCTAssertEqual(providerCalls.value, 1)
+    }
+
+    func testHybridKeywordBusyKeepsSemanticHits_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSemanticSearchFixture(at: paths.database.path)
+        let reader = try BusySequenceServiceDatabaseReader(
+            path: paths.database.path,
+            busyReadNumbers: [1],
+            busyImmediateReadNumbers: [5]
+        )
+        let provider = try SQLiteEngramServiceReadProvider(
+            databasePath: paths.database.path,
+            makeDatabaseReader: { _ in reader },
+            embeddingEnvironment: [
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_MODEL": "probe",
+                "ENGRAM_EMBEDDING_DIM": "3",
+            ],
+            embeddingProviderFactory: { _ in
+                StaticEmbeddingProvider { _ in [1, 0, 0] }
+            }
+        )
+
+        let response = try await provider.search(
+            EngramServiceSearchRequest(query: "memory recall", mode: "hybrid", limit: 10)
+        )
+
+        XCTAssertEqual(response.items.map(\.id), ["s2"])
+        XCTAssertEqual(response.searchModes, ["semantic"])
+        XCTAssertEqual(reader.normalReadCount, 0, "hybrid fusion must not use the 30-second reader")
+        XCTAssertEqual(reader.immediateReadCount, 5)
+    }
+
+    func testSemanticHydrationBusyKeepsRankedHitsWithoutSlowRetry_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSemanticSearchFixture(at: paths.database.path)
+        let reader = try BusySequenceServiceDatabaseReader(
+            path: paths.database.path,
+            busyReadNumbers: [1],
+            busyImmediateReadNumbers: [4]
+        )
+        let provider = try SQLiteEngramServiceReadProvider(
+            databasePath: paths.database.path,
+            makeDatabaseReader: { _ in reader },
+            embeddingEnvironment: [
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_MODEL": "probe",
+                "ENGRAM_EMBEDDING_DIM": "3",
+            ],
+            embeddingProviderFactory: { _ in
+                StaticEmbeddingProvider { _ in [1, 0, 0] }
+            }
+        )
+
+        let response = try await provider.search(
+            EngramServiceSearchRequest(query: "memory recall", mode: "semantic", limit: 10)
+        )
+
+        XCTAssertEqual(response.items.map(\.id), ["s2"])
+        XCTAssertEqual(response.searchModes, ["semantic"])
+        XCTAssertNil(response.warningCode)
+        XCTAssertEqual(reader.normalReadCount, 0, "hydration BUSY must use the in-hand visible snapshot")
+    }
+
+    func testSearchSemanticEmptyFilteredSliceIsAValidEmptyResult_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE semantic_chunks (
+                  id TEXT PRIMARY KEY, session_id TEXT NOT NULL, chunk_index INTEGER NOT NULL,
+                  text TEXT NOT NULL, embedding BLOB, model TEXT, dim INTEGER,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE TABLE embedding_meta (
+                  id INTEGER PRIMARY KEY CHECK (id = 1), provider TEXT, model TEXT,
+                  dimension INTEGER, updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                INSERT INTO embedding_meta (id, provider, model, dimension)
+                VALUES (1, 'test', 'probe', 3);
+                """)
+            try db.execute(
+                sql: """
+                INSERT INTO semantic_chunks(id, session_id, chunk_index, text, embedding, model, dim)
+                VALUES ('s2:c0', 's2', 0, 'semantic recall chunk', ?, 'probe', 3)
+                """,
+                arguments: [VectorMath.encode(VectorMath.l2Normalize([1, 0, 0]))]
+            )
+        }
+        let provider = try SQLiteEngramServiceReadProvider(
+            databasePath: paths.database.path,
+            embeddingEnvironment: [
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_MODEL": "probe",
+                "ENGRAM_EMBEDDING_DIM": "3",
+            ],
+            embeddingProviderFactory: { _ in StaticEmbeddingProvider { _ in [1, 0, 0] } }
+        )
+
+        let semantic = try await provider.search(
+            EngramServiceSearchRequest(
+                query: "memory recall",
+                mode: "semantic",
+                limit: 10,
+                source: "claude-code"
+            )
+        )
+        XCTAssertEqual(semantic.items, [])
+        XCTAssertEqual(semantic.searchModes, ["semantic"])
+        XCTAssertNil(semantic.warning)
+        XCTAssertNil(semantic.warningCode)
+
+        let hybrid = try await provider.search(
+            EngramServiceSearchRequest(
+                query: "memory recall",
+                mode: "hybrid",
+                limit: 10,
+                source: "claude-code"
+            )
+        )
+        XCTAssertEqual(hybrid.items, [])
+        XCTAssertEqual(hybrid.searchModes, ["keyword", "semantic"])
+        XCTAssertNil(hybrid.warning)
+        XCTAssertNil(hybrid.warningCode)
+    }
+
     func testFtsMetacharacterQueryIsEscapedNotASyntaxError() async throws {
         // Audit round 1 (#19): a query containing FTS5 metacharacters (here an
         // unbalanced double-quote) must NOT reach SQLite as a raw MATCH and fail
@@ -2268,6 +3827,12 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(EngramServiceCommandHandler.genericErrorEnvelope(transient).retryPolicy, "safe")
     }
 
+    func testCancellationIsNotAdvertisedAsRetryableCommandFailure_repro() {
+        let envelope = EngramServiceCommandHandler.genericErrorEnvelope(CancellationError())
+        XCTAssertEqual(envelope.name, "Cancelled")
+        XCTAssertEqual(envelope.retryPolicy, "never")
+    }
+
     func testSQLiteReadProviderSearchExcludesSkipAndLiteSessions() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
@@ -2292,6 +3857,68 @@ final class EngramServiceIPCTests: XCTestCase {
         let search = try await provider.search(EngramServiceSearchRequest(query: "hello", mode: "keyword", limit: 10))
 
         XCTAssertEqual(search.items.map(\.id), ["s1"])
+    }
+
+    func testSQLiteReadProviderAppliesOriginBeforeSearchLimit_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            for index in 0 ..< 31 {
+                let id = "local-origin-\(index)"
+                try db.execute(
+                    sql: """
+                        INSERT INTO sessions (
+                          id, source, start_time, cwd, project, message_count,
+                          file_path, size_bytes, indexed_at, tier, origin
+                        ) VALUES (?, 'codex', ?, '/tmp/local', 'engram', 2,
+                                  ?, 42, ?, 'normal', 'local')
+                        """,
+                    arguments: [
+                        id,
+                        String(format: "2026-08-%02dT12:00:00Z", index + 1),
+                        "/tmp/\(id).jsonl",
+                        String(format: "2026-08-%02dT12:30:00Z", index + 1),
+                    ]
+                )
+                try db.execute(
+                    sql: "INSERT INTO sessions_fts(session_id, content) VALUES (?, 'originneedle')",
+                    arguments: [id]
+                )
+            }
+            try db.execute(sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, message_count,
+                  file_path, size_bytes, indexed_at, tier, origin
+                ) VALUES (
+                  'hq-origin-target', 'codex', '2000-01-01T00:00:00Z', '/tmp/hq',
+                  'engram', 2, 'remote://hq/hq-origin-target', 42,
+                  '2000-01-01T00:00:00Z', 'normal', 'hq'
+                );
+                INSERT INTO sessions_fts(session_id, content)
+                VALUES ('hq-origin-target', 'originneedle');
+                """)
+        }
+        let request = try JSONDecoder().decode(
+            EngramServiceSearchRequest.self,
+            from: Data(#"{"query":"originneedle","mode":"keyword","limit":30,"origin":"hq"}"#.utf8)
+        )
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+
+        let search = try await provider.search(request)
+        let legacyRequest = try JSONDecoder().decode(
+            EngramServiceSearchRequest.self,
+            from: Data(#"{"query":"originneedle","mode":"keyword","limit":30}"#.utf8)
+        )
+        let allMachines = try await provider.search(legacyRequest)
+
+        XCTAssertEqual(
+            search.items.map(\.id),
+            ["hq-origin-target"],
+            "the requested origin must constrain SQL before LIMIT"
+        )
+        XCTAssertNil(legacyRequest.origin)
+        XCTAssertEqual(allMachines.items.count, 30, "missing origin must preserve the v1 all-machines request")
     }
 
     // Latin/MATCH search must return a match-centered, highlighted snippet
@@ -2327,6 +3954,38 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertLessThan(
             snippet.count, filler.count,
             "snippet must be a match-centered window, not the full content"
+        )
+    }
+
+    func testSQLiteReadProviderKeywordSnippetSQLNeverSelectsWholeContent_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let recorder = ServiceSQLTraceRecorder()
+        let provider = try SQLiteEngramServiceReadProvider(
+            databasePath: paths.database.path,
+            makeDatabaseReader: { path in
+                try TracingServiceDatabaseReader(path: path, recorder: recorder)
+            }
+        )
+
+        _ = try await provider.search(
+            EngramServiceSearchRequest(query: "hello", mode: "keyword", limit: 10)
+        )
+        _ = try await provider.search(
+            EngramServiceSearchRequest(query: "你好", mode: "keyword", limit: 10)
+        )
+
+        let searchSQL = recorder.statements()
+            .filter { $0.localizedCaseInsensitiveContains("FROM sessions_fts") }
+            .joined(separator: "\n")
+        XCTAssertFalse(
+            searchSQL.localizedCaseInsensitiveContains("MIN(content)"),
+            "keyword search SQL must not materialize an unbounded transcript: \(searchSQL)"
+        )
+        XCTAssertTrue(
+            searchSQL.localizedCaseInsensitiveContains("snippet(")
+                || searchSQL.localizedCaseInsensitiveContains("substr("),
+            "keyword search must construct a bounded snippet in SQLite: \(searchSQL)"
         )
     }
 
@@ -2377,6 +4036,92 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(
             snippet.localizedCaseInsensitiveContains("<mark>AI</mark>"),
             "expected highlighted short Latin match, got: \(snippet)"
+        )
+    }
+
+    func testSQLiteReadProviderHighlightsEveryMixedTokenAcrossRows_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        try await DatabaseQueue(path: paths.database.path).write { db in
+            try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = 's1'")
+            try db.execute(sql: "INSERT INTO sessions_fts(session_id, content) VALUES ('s1', 'alpha planning note')")
+            try db.execute(sql: "INSERT INTO sessions_fts(session_id, content) VALUES ('s1', 'beta verifier note')")
+        }
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+
+        let search = try await provider.search(
+            EngramServiceSearchRequest(query: "alpha beta", mode: "keyword", limit: 10)
+        )
+        let snippet = try XCTUnwrap(search.items.first?.snippet)
+        XCTAssertTrue(snippet.contains("<mark>alpha</mark>"), snippet)
+        XCTAssertTrue(snippet.contains("<mark>beta</mark>"), snippet)
+    }
+
+    func testSQLiteReadProviderDeduplicatesSameFTSRowSnippet_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        try await DatabaseQueue(path: paths.database.path).write { db in
+            try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = 's1'")
+            try db.execute(
+                sql: "INSERT INTO sessions_fts(session_id, content) VALUES ('s1', 'alpha beta shared context')"
+            )
+        }
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+
+        let search = try await provider.search(
+            EngramServiceSearchRequest(query: "alpha beta", mode: "keyword", limit: 10)
+        )
+        let snippet = try XCTUnwrap(search.items.first?.snippet)
+        XCTAssertEqual(snippet.components(separatedBy: "<mark>alpha beta</mark>").count - 1, 1, snippet)
+        XCTAssertTrue(snippet.contains("<mark>alpha beta</mark>"), snippet)
+    }
+
+    func testSQLiteReadProviderMixedShortAndLongTermsUseLikeAndMatch_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions_fts SET content = ? WHERE session_id = 's1'",
+                arguments: ["Ship the AI usage monitor; think, fix bug, and parser notes"]
+            )
+        }
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+
+        let search = try await provider.search(
+            EngramServiceSearchRequest(query: "AI usage", mode: "keyword", limit: 10)
+        )
+
+        XCTAssertEqual(search.items.map(\.id), ["s1"])
+
+        for query in ["I think", "fix a bug", "C parser"] {
+            let mixed = try await provider.search(
+                EngramServiceSearchRequest(query: query, mode: "keyword", limit: 10)
+            )
+            XCTAssertEqual(mixed.items.map(\.id), ["s1"], "query=\(query)")
+        }
+    }
+
+    func testSQLiteReadProviderRehighlightsWholeMatchFirstPhrase_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions_fts SET content = ? WHERE session_id = 's1'",
+                arguments: ["Deploy the usage monitor before release"]
+            )
+        }
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+
+        let search = try await provider.search(
+            EngramServiceSearchRequest(query: "usage monitor", mode: "keyword", limit: 10)
+        )
+
+        XCTAssertEqual(search.items.map(\.id), ["s1"])
+        XCTAssertTrue(
+            search.items.first?.snippet?.contains("<mark>usage monitor</mark>") ?? false,
+            "got: \(search.items.first?.snippet ?? "")"
         )
     }
 
@@ -2543,6 +4288,148 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertNil(resume.error)
     }
 
+    func testRemoteHqSessionResumeIsHonestError_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: """
+                UPDATE sessions
+                SET origin = 'hq', file_path = 'remote://hq/s1', cwd = ''
+                WHERE id = 's1'
+                """
+            )
+        }
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(
+                databasePath: paths.database.path,
+                commandLocator: { command in command == "codex" ? "/usr/local/bin/codex" : nil }
+            )
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        let resume = try await client.resumeCommand(sessionId: "s1")
+        XCTAssertNil(resume.command)
+        XCTAssertEqual(resume.error, "This session lives on HQ and cannot be resumed from this Mac.")
+        XCTAssertTrue(resume.hint?.contains("snapshot") == true)
+    }
+
+    func testClaudeSubagentResumeDegradesToContextPrimer_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let transcript = paths.runtime
+            .appendingPathComponent(".claude/projects/encoded/parent-claude/subagents/child-claude.jsonl")
+        try FileManager.default.createDirectory(
+            at: transcript.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("{}\n".utf8).write(to: transcript)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET source = 'claude-code', parent_session_id = ?, file_path = ? WHERE id = 's1'",
+                arguments: ["parent-claude", transcript.path]
+            )
+        }
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(
+                databasePath: paths.database.path,
+                fileSystemProvider: FileSystemEngramServiceReadProvider(homeDirectory: paths.runtime),
+                commandLocator: { command in command == "claude" ? "/usr/local/bin/claude" : nil }
+            )
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        let resume = try await client.resumeCommand(sessionId: "s1")
+
+        XCTAssertNil(resume.command)
+        XCTAssertEqual(resume.args, [])
+        XCTAssertEqual(resume.error, "This transcript cannot be resumed directly")
+        XCTAssertTrue(resume.hint?.contains("parent-claude") ?? false)
+        XCTAssertFalse(resume.contextPrimer?.isEmpty ?? true)
+    }
+
+    func testClaudeManualParentOnTopLevelTranscriptRemainsResumable_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let transcript = paths.runtime
+            .appendingPathComponent(".claude/projects/encoded/s1.jsonl")
+        try FileManager.default.createDirectory(
+            at: transcript.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("{}\n".utf8).write(to: transcript)
+        try await DatabaseQueue(path: paths.database.path).write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET source = 'claude-code', parent_session_id = 'manual-parent', link_source = 'manual', file_path = ? WHERE id = 's1'",
+                arguments: [transcript.path]
+            )
+        }
+        let provider = try SQLiteEngramServiceReadProvider(
+            databasePath: paths.database.path,
+            fileSystemProvider: FileSystemEngramServiceReadProvider(homeDirectory: paths.runtime),
+            commandLocator: { command in command == "claude" ? "/usr/local/bin/claude" : nil }
+        )
+
+        let resume = try await provider.resumeCommand(.init(sessionId: "s1"))
+
+        XCTAssertEqual(resume.command, "/usr/local/bin/claude")
+        XCTAssertEqual(resume.args, ["--resume", "s1"])
+        XCTAssertNil(resume.error)
+    }
+
+    func testProductionWorkItemTitleDoesNotApplySecondPerBeatCap_repro() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("EngramService/Core/EngramServiceCommandHandler.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(source.range(of: "static func workItemTitle("))
+        let end = try XCTUnwrap(source.range(of: "static func chat(", range: start.upperBound..<source.endIndex))
+        let function = source[start.lowerBound..<end.lowerBound]
+        XCTAssertFalse(function.contains("intent.prefix(600)"))
+        XCTAssertFalse(function.contains("outcome.prefix(1200)"))
+        XCTAssertTrue(function.contains(#"Intent: \(intent)"#))
+        XCTAssertTrue(function.contains(#"Outcome: \(outcome)"#))
+    }
+
+    func testClaudeResumeFileIdentityUsesLeafInsteadOfAbsoluteSubagentsSubstring_repro() {
+        XCTAssertTrue(
+            SQLiteEngramServiceReadProvider.claudeResumeFileMatchesID(
+                filePath: "/Users/test/.claude/projects/repo/session-1.jsonl",
+                id: "session-1"
+            )
+        )
+        XCTAssertTrue(
+            SQLiteEngramServiceReadProvider.claudeResumeFileMatchesID(
+                filePath: "/Users/test/custom/subagents/projects/repo/session-1.jsonl",
+                id: "session-1"
+            )
+        )
+        XCTAssertFalse(
+            SQLiteEngramServiceReadProvider.claudeResumeFileMatchesID(
+                filePath: "/Users/test/.claude/projects/repo/agent-session-1.jsonl",
+                id: "session-1"
+            )
+        )
+    }
+
     func testResumeCommandForEmptyCwdReturnsHintInsteadOfOpenEmptyString() {
         let resume = SQLiteEngramServiceReadProvider.openBasedResumeCommand(
             source: "cursor",
@@ -2558,7 +4445,7 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(resume.contextPrimer, "Resume context")
     }
 
-    func testSQLiteReadProviderBuildsResumePrimerFromMetadataWhenFtsIsMissing() async throws {
+    func testSQLiteReadProviderBuildsIncompleteResumePrimerFromMetadataWhenFtsIsMissing_repro() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
         let queue = try DatabaseQueue(path: paths.database.path)
@@ -2599,8 +4486,76 @@ final class EngramServiceIPCTests: XCTestCase {
         - Project: engram
         - Model: gpt-5.4
         - Messages: 2 total, 1 user, 1 assistant, 0 tool
+        - Transcript could not be read; this resume context is incomplete.
         """)
         XCTAssertNil(resume.error)
+    }
+
+    func testResumeCommandLabelsParserFailureInsteadOfClaimingCompleteMetadata_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = 's1'")
+        }
+        let provider = try SQLiteEngramServiceReadProvider(
+            databasePath: paths.database.path,
+            commandLocator: { command in command == "codex" ? "/usr/local/bin/codex" : nil },
+            transcriptPrimerReader: { _, _, _ in throw ParserFailure.malformedJSON }
+        )
+
+        let resume = try await provider.resumeCommand(.init(sessionId: "s1"))
+
+        XCTAssertTrue(resume.contextPrimer?.contains("Title: Generated Title") ?? false)
+        XCTAssertTrue(resume.contextPrimer?.contains("could not be read") ?? false)
+        XCTAssertTrue(resume.contextPrimer?.contains("incomplete") ?? false)
+    }
+
+    func testResumeCommandRethrowsTranscriptCancellation_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = 's1'")
+        }
+        let provider = try SQLiteEngramServiceReadProvider(
+            databasePath: paths.database.path,
+            transcriptPrimerReader: { _, _, _ in throw CancellationError() }
+        )
+
+        do {
+            _ = try await provider.resumeCommand(.init(sessionId: "s1"))
+            XCTFail("resume cancellation must not become a successful metadata primer")
+        } catch is CancellationError {
+            // expected
+        }
+    }
+
+    func testResumeCommandUsesLocalReadablePathForRelocatedTranscript_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let transcript = paths.runtime.appendingPathComponent("relocated-s1.jsonl")
+        try #"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Recovered from local readable path"}]}}"#
+            .write(to: transcript, atomically: true, encoding: .utf8)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = 's1'")
+            try db.execute(
+                sql: "UPDATE sessions SET file_path = '/missing/original.jsonl' WHERE id = 's1'"
+            )
+            try db.execute(
+                sql: "INSERT OR REPLACE INTO session_local_state(session_id, local_readable_path) VALUES ('s1', ?)",
+                arguments: [transcript.path]
+            )
+        }
+        let provider = try SQLiteEngramServiceReadProvider(
+            databasePath: paths.database.path,
+            commandLocator: { command in command == "codex" ? "/usr/local/bin/codex" : nil }
+        )
+
+        let resume = try await provider.resumeCommand(.init(sessionId: "s1"))
+
+        XCTAssertTrue(resume.contextPrimer?.contains("Recovered from local readable path") ?? false)
     }
 
     func testSQLiteReadProviderRedactsFtsResumePrimerExcerpts() async throws {
@@ -2907,7 +4862,7 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertFalse(exported.contains("hidden agent comm"), exported)
     }
 
-    func testExportSessionMarksTruncatedMarkdownAndJSONTranscripts() async throws {
+    func testExportSessionMarksTruncatedMarkdownAndJSONTranscripts_repro() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
         let transcript = paths.runtime.appendingPathComponent("oversized-codex.jsonl")
@@ -2943,6 +4898,10 @@ final class EngramServiceIPCTests: XCTestCase {
             databasePath: paths.database.path
         )
         XCTAssertEqual(json.messageCount, 10_000)
+        XCTAssertTrue(json.truncated)
+        XCTAssertFalse(json.totalKnownComplete)
+        XCTAssertEqual(json.truncatedAt, 10_000)
+        XCTAssertNil(json.parseFailure)
         let data = try Data(contentsOf: URL(fileURLWithPath: json.outputPath))
         let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let transcriptMetadata = try XCTUnwrap(payload["transcript"] as? [String: Any])
@@ -3402,6 +5361,11 @@ final class EngramServiceIPCTests: XCTestCase {
         let clientHome = serviceHome.appendingPathComponent("client-home", isDirectory: true)
         let homeScope = ServiceCoreTestHomeScope(home: serviceHome)
         defer { homeScope.restore() }
+        try FileManager.default.createDirectory(
+            at: clientHome,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
 
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
         let handler = EngramServiceCommandHandler(writerGate: gate)
@@ -3651,6 +5615,32 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertNil(dismissedState.suggestedParentId)
     }
 
+    func testProjectCwdsExcludesSkipAndHiddenSessions_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, model, message_count,
+                  user_message_count, assistant_message_count, file_path, size_bytes,
+                  indexed_at, tier
+                ) VALUES
+                  ('skip-cwd', 'codex', '2026-04-23T03:00:00Z', '/aaa-skip', 'engram',
+                   'gpt-5.4', 1, 1, 0, '/tmp/skip-cwd.jsonl', 1, '2026-04-23T03:00:00Z', 'skip'),
+                  ('hidden-cwd', 'codex', '2026-04-23T04:00:00Z', '/bbb-hidden', 'engram',
+                   'gpt-5.4', 1, 1, 0, '/tmp/hidden-cwd.jsonl', 1, '2026-04-23T04:00:00Z', 'normal');
+                UPDATE sessions SET hidden_at = '2026-04-23T05:00:00Z' WHERE id = 'hidden-cwd';
+                """)
+        }
+
+        let response = try await SQLiteEngramServiceReadProvider(
+            databasePath: paths.database.path
+        ).projectCwds(EngramServiceProjectCwdsRequest(project: "engram"))
+
+        XCTAssertEqual(response.cwds, ["/tmp/engram"])
+    }
+
     func testManualParentLinkAndUnlinkRoundTripThroughClient() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
@@ -3735,6 +5725,89 @@ final class EngramServiceIPCTests: XCTestCase {
                 sql: "SELECT parent_session_id FROM sessions WHERE id = 's2'"
             )
             XCTAssertNil(parent)
+        }
+    }
+
+    func testSetParentSessionRejectsSuggestedChildAsParent_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET suggested_parent_id = 'missing-host' WHERE id = 's1'"
+            )
+        }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(
+            transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+        )
+        let linked = try await client.setParentSession(sessionId: "s2", parentId: "s1")
+        XCTAssertEqual(linked, EngramServiceLinkResponse(ok: false, error: "depth-exceeded"))
+
+        try await queue.read { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: "SELECT parent_session_id, suggested_parent_id FROM sessions WHERE id = 's2'"
+            )
+            XCTAssertNil(row?["parent_session_id"] as String?)
+            XCTAssertEqual(row?["suggested_parent_id"] as String?, "s1")
+        }
+    }
+
+    func testSetAndConfirmParentRejectHiddenAndOrphanHosts_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET hidden_at = '2026-04-23T05:00:00Z' WHERE id = 's1'"
+            )
+        }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(
+            transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+        )
+        let hiddenSet = try await client.setParentSession(sessionId: "s2", parentId: "s1")
+        XCTAssertEqual(hiddenSet, EngramServiceLinkResponse(ok: false, error: "parent-hidden"))
+        let hiddenConfirm = try await client.confirmSuggestion(sessionId: "s2")
+        XCTAssertEqual(hiddenConfirm, EngramServiceLinkResponse(ok: false, error: "parent-hidden"))
+
+        try await queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET hidden_at = NULL, orphan_status = 'suspect' WHERE id = 's1'"
+            )
+        }
+        let orphanSet = try await client.setParentSession(sessionId: "s2", parentId: "s1")
+        XCTAssertEqual(orphanSet, EngramServiceLinkResponse(ok: false, error: "parent-orphan"))
+        let orphanConfirm = try await client.confirmSuggestion(sessionId: "s2")
+        XCTAssertEqual(orphanConfirm, EngramServiceLinkResponse(ok: false, error: "parent-orphan"))
+
+        try await queue.read { db in
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 's2'")
+            )
         }
     }
 
@@ -3836,6 +5909,52 @@ final class EngramServiceIPCTests: XCTestCase {
         }
     }
 
+    func testClearParentPreservesExistingRolelessTier_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE sessions
+                    SET parent_session_id = 's1',
+                        link_source = 'path',
+                        agent_role = NULL,
+                        tier = 'lite'
+                    WHERE id = 's2'
+                    """
+            )
+        }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(
+            transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+        )
+        let response = try await client.clearParentSession(sessionId: "s2")
+        XCTAssertEqual(response, EngramServiceLinkResponse(ok: true, error: nil))
+
+        try await queue.read { db in
+            let row = try XCTUnwrap(Row.fetchOne(
+                db,
+                sql: "SELECT parent_session_id, agent_role, tier, link_source FROM sessions WHERE id = 's2'"
+            ))
+            XCTAssertNil(row["parent_session_id"] as String?)
+            XCTAssertNil(row["agent_role"] as String?)
+            XCTAssertEqual(row["tier"] as String?, "lite")
+            XCTAssertEqual(row["link_source"] as String?, "manual")
+        }
+    }
+
     func testDismissAmbiguousSuggestionRoundTripThroughClient() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
@@ -3930,6 +6049,185 @@ final class EngramServiceIPCTests: XCTestCase {
         )
     }
 
+    func testLiveSessionsDoesNotDescendIntoExcludedClaudeSubagentCorpus_repro() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath()
+            .appendingPathComponent("engram-live-claude-top-level-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let project = root.appendingPathComponent(".claude/projects/-tmp-engram", isDirectory: true)
+        let subagents = project.appendingPathComponent("parent-session/subagents", isDirectory: true)
+        try FileManager.default.createDirectory(at: subagents, withIntermediateDirectories: true)
+
+        let topLevel = project.appendingPathComponent("top-level.jsonl")
+        try #"{"type":"user","sessionId":"top-level","cwd":"/tmp/engram"}"#.appending("\n")
+            .write(to: topLevel, atomically: true, encoding: .utf8)
+        let nested = subagents.appendingPathComponent("agent-nested.jsonl")
+        try #"{"type":"user","sessionId":"nested","cwd":"/tmp/engram"}"#.appending("\n")
+            .write(to: nested, atomically: true, encoding: .utf8)
+        let now = Date()
+        for file in [topLevel, nested] {
+            try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: file.path)
+        }
+
+        let excludedVisitCount = LockedCounter()
+        let response = try await FileSystemEngramServiceReadProvider(
+            homeDirectory: root,
+            liveSessionCacheTTL: 0,
+            now: { now },
+            liveSessionScanCheckpoint: { url in
+                if url.path.contains("/subagents/") {
+                    excludedVisitCount.increment()
+                }
+            }
+        ).liveSessions()
+
+        XCTAssertEqual(response.sessions.compactMap(\.sessionId), ["top-level"])
+        XCTAssertEqual(
+            excludedVisitCount.value,
+            0,
+            "Claude live scanning must not visit entries below a parent-session/subagents branch"
+        )
+    }
+
+    func testLiveSessionsPropagatesCancellationFromRecursiveTraversal_repro() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath()
+            .appendingPathComponent("engram-live-cancel-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDirectory = root.appendingPathComponent(".codex/sessions/2026/08/31", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDirectory, withIntermediateDirectories: true)
+        let transcript = sessionDirectory.appendingPathComponent("rollout-cancel.jsonl")
+        try #"{"type":"session_meta","payload":{"id":"cancelled"}}"#.appending("\n")
+            .write(to: transcript, atomically: true, encoding: .utf8)
+
+        let checkpoints = LockedCounter()
+        let provider = FileSystemEngramServiceReadProvider(
+            homeDirectory: root,
+            liveSessionScanCheckpoint: { _ in
+                checkpoints.increment()
+                if checkpoints.value == 3 {
+                    throw CancellationError()
+                }
+            }
+        )
+
+        do {
+            _ = try await provider.liveSessions()
+            XCTFail("Expected CancellationError from the recursive traversal checkpoint")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+        XCTAssertEqual(checkpoints.value, 3, "Traversal must stop at the cancellation checkpoint")
+
+        let retry = try await provider.liveSessions()
+        XCTAssertEqual(retry.sessions.compactMap(\.sessionId), ["cancelled"])
+        XCTAssertGreaterThan(checkpoints.value, 3, "A cancelled scan must not populate the live-session cache")
+    }
+
+    func testLiveSessionsCancellationDuringFinalizationThrowsAndDoesNotCache_repro() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath()
+            .appendingPathComponent("engram-live-finalization-cancel-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDirectory = root.appendingPathComponent(".codex/sessions/2026/08/31", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDirectory, withIntermediateDirectories: true)
+        let transcript = sessionDirectory.appendingPathComponent("rollout-finalization.jsonl")
+        try #"{"type":"session_meta","payload":{"id":"finalization"}}"#.appending("\n")
+            .write(to: transcript, atomically: true, encoding: .utf8)
+        let now = Date()
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: transcript.path)
+
+        let finalizationEntered = DispatchSemaphore(value: 0)
+        let finalizationRelease = DispatchSemaphore(value: 0)
+        let finalizationCount = LockedCounter()
+        let provider = FileSystemEngramServiceReadProvider(
+            homeDirectory: root,
+            now: { now },
+            liveSessionFinalizationCheckpoint: {
+                finalizationCount.increment()
+                if finalizationCount.value == 1 {
+                    finalizationEntered.signal()
+                    finalizationRelease.wait()
+                }
+            }
+        )
+
+        let cancelledScan = Task { try await provider.liveSessions() }
+        XCTAssertEqual(finalizationEntered.wait(timeout: .now() + 5), .success)
+        cancelledScan.cancel()
+        finalizationRelease.signal()
+
+        do {
+            _ = try await cancelledScan.value
+            XCTFail("Expected CancellationError after candidate collection")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+
+        let retry = try await provider.liveSessions()
+        XCTAssertEqual(retry.sessions.compactMap(\.sessionId), ["finalization"])
+        XCTAssertEqual(finalizationCount.value, 2, "A cancelled finalization must not populate the cache")
+    }
+
+    func testLiveSessionsRejectsPreCancelledCacheHit_repro() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath()
+            .appendingPathComponent("engram-live-cached-cancel-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDirectory = root.appendingPathComponent(".codex/sessions/2026/08/31", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDirectory, withIntermediateDirectories: true)
+        let transcript = sessionDirectory.appendingPathComponent("rollout-cached.jsonl")
+        try #"{"type":"session_meta","payload":{"id":"cached"}}"#.appending("\n")
+            .write(to: transcript, atomically: true, encoding: .utf8)
+        let now = Date()
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: transcript.path)
+
+        let provider = FileSystemEngramServiceReadProvider(homeDirectory: root, now: { now })
+        _ = try await provider.liveSessions()
+
+        let release = CheckpointTestSignal()
+        let cancelledCacheHit = Task {
+            await release.wait()
+            return try await provider.liveSessions()
+        }
+        cancelledCacheHit.cancel()
+        await release.signal()
+
+        do {
+            _ = try await cancelledCacheHit.value
+            XCTFail("Expected CancellationError from a pre-cancelled cache hit")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+    }
+
+    func testClaudeLiveScanFindsRecentSessionInsideOldMtimeProjectDirectory_repro() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath()
+            .appendingPathComponent("engram-live-old-claude-project-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let project = root.appendingPathComponent(".claude/projects/-tmp-engram", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let transcript = project.appendingPathComponent("recent.jsonl")
+        try #"{"type":"user","sessionId":"recent-in-old-project","cwd":"/tmp/engram"}"#.appending("\n")
+            .write(to: transcript, atomically: true, encoding: .utf8)
+        let now = Date()
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: transcript.path)
+        try FileManager.default.setAttributes(
+            [.modificationDate: now.addingTimeInterval(-2 * 24 * 60 * 60)],
+            ofItemAtPath: project.path
+        )
+
+        let response = try await FileSystemEngramServiceReadProvider(
+            homeDirectory: root,
+            liveSessionCacheTTL: 0,
+            now: { now }
+        ).liveSessions()
+
+        XCTAssertTrue(response.sessions.contains { $0.sessionId == "recent-in-old-project" })
+    }
+
     func testFileSystemProviderReportsRecentlyModifiedLiveSessions() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("engram-live-home-\(UUID().uuidString)", isDirectory: true)
@@ -3937,7 +6235,7 @@ final class EngramServiceIPCTests: XCTestCase {
         let sessionDir = root
             .appendingPathComponent(".codex/sessions/2026/05/24", isDirectory: true)
         try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
-        let sessionFile = sessionDir.appendingPathComponent("rollout.jsonl")
+        let sessionFile = sessionDir.appendingPathComponent("rollout-live.jsonl")
         try """
         {"type":"session_meta","payload":{"id":"live-codex","cwd":"/tmp/engram","model":"gpt-5"}}
         {"type":"turn_context","cwd":"/tmp/engram"}
@@ -3953,6 +6251,41 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(response.sessions.first?.activityLevel, "active")
     }
 
+    func testLiveMetadataPrefersSessionKeysOverMessageIDs_repro() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("engram-live-ids-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let claudeDirectory = root.appendingPathComponent(".claude/projects/-tmp-engram", isDirectory: true)
+        let geminiDirectory = root.appendingPathComponent(".gemini/tmp/engram/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: claudeDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: geminiDirectory, withIntermediateDirectories: true)
+        let claudeFile = claudeDirectory.appendingPathComponent("with-tools.jsonl")
+        let geminiFile = geminiDirectory.appendingPathComponent("session-sample.json")
+        try FileManager.default.copyItem(
+            at: repository.appendingPathComponent("tests/fixtures/claude-code/with-tools.jsonl"),
+            to: claudeFile
+        )
+        try FileManager.default.copyItem(
+            at: repository.appendingPathComponent("tests/fixtures/gemini/session-sample.json"),
+            to: geminiFile
+        )
+        for file in [claudeFile, geminiFile] {
+            try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: file.path)
+        }
+
+        let response = try await FileSystemEngramServiceReadProvider(homeDirectory: root).liveSessions()
+        let idsBySource = Dictionary(uniqueKeysWithValues: response.sessions.compactMap { session in
+            session.sessionId.map { (session.source, $0) }
+        })
+
+        XCTAssertEqual(idsBySource["claude-code"], "tool-session-001")
+        XCTAssertEqual(idsBySource["gemini-cli"], "gemini-session-001")
+    }
+
     func testFileSystemProviderKeepsNewestLiveSessionsWhenCandidatesExceedLimit() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("engram-live-home-\(UUID().uuidString)", isDirectory: true)
@@ -3966,7 +6299,7 @@ final class EngramServiceIPCTests: XCTestCase {
         let oldBase = Date(timeIntervalSinceNow: -60 * 60)
         for index in 0..<105 {
             let id = String(format: "old-%03d", index)
-            let file = oldDir.appendingPathComponent("\(id).jsonl")
+            let file = oldDir.appendingPathComponent("rollout-\(id).jsonl")
             try """
             {"type":"session_meta","payload":{"id":"\(id)","cwd":"/tmp/old","model":"gpt-5"}}
             """.write(to: file, atomically: true, encoding: .utf8)
@@ -3975,7 +6308,7 @@ final class EngramServiceIPCTests: XCTestCase {
                 ofItemAtPath: file.path
             )
         }
-        let newest = newDir.appendingPathComponent("zz-newest.jsonl")
+        let newest = newDir.appendingPathComponent("rollout-zz-newest.jsonl")
         try """
         {"type":"session_meta","payload":{"id":"newest","cwd":"/tmp/new","model":"gpt-5"}}
         """.write(to: newest, atomically: true, encoding: .utf8)
@@ -3990,14 +6323,14 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertFalse(response.sessions.contains { $0.sessionId == "old-000" })
     }
 
-    func testFileSystemProviderExcludesSubagentChurnFromLiveScan() async throws {
+    func testFileSystemProviderClassifiesLiveSubagentsRelativeToEachProjectsRoot_repro() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("engram-live-home-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let projectDir = root
             .appendingPathComponent(".claude/projects/-tmp-engram", isDirectory: true)
         let subagentDir = projectDir
-            .appendingPathComponent("subagents/workflows", isDirectory: true)
+            .appendingPathComponent("parent-session/subagents", isDirectory: true)
         try FileManager.default.createDirectory(at: subagentDir, withIntermediateDirectories: true)
 
         // A real session directly under the project dir must be reported.
@@ -4008,11 +6341,38 @@ final class EngramServiceIPCTests: XCTestCase {
         try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: realSession.path)
 
         // A subagent transcript under /subagents/ is churn — it must be excluded.
-        let subagentSession = subagentDir.appendingPathComponent("workflow-abc.jsonl")
+        let subagentSession = subagentDir.appendingPathComponent("agent-abc.jsonl")
         try """
         {"type":"user","sessionId":"subagent-session","cwd":"/tmp/engram"}
         """.write(to: subagentSession, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: subagentSession.path)
+
+        // docs/invariants.md #2: a custom projects root may itself contain a
+        // `subagents` component. Its direct project session is still top-level.
+        let customProjectsRoot = root
+            .appendingPathComponent("custom/subagents/projects", isDirectory: true)
+        let customProjectDir = customProjectsRoot
+            .appendingPathComponent("-tmp-custom", isDirectory: true)
+        try FileManager.default.createDirectory(at: customProjectDir, withIntermediateDirectories: true)
+        let customSession = customProjectDir.appendingPathComponent("custom-top-level.jsonl")
+        let customLines = (0..<20).map { index in
+            let type = index.isMultiple(of: 2) ? "user" : "assistant"
+            return #"{"type":"\#(type)","sessionId":"custom-top-level","cwd":"/tmp/custom"}"#
+        }
+        try customLines.joined(separator: "\n")
+            .write(to: customSession, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: customSession.path)
+
+        let settingsDirectory = root.appendingPathComponent(".engram", isDirectory: true)
+        try FileManager.default.createDirectory(at: settingsDirectory, withIntermediateDirectories: true)
+        let settings = [
+            "claudeCodeProfiles": [
+                "autoDiscover": false,
+                "customProjectsRoots": [customProjectsRoot.path],
+            ] as [String: Any],
+        ]
+        try JSONSerialization.data(withJSONObject: settings)
+            .write(to: settingsDirectory.appendingPathComponent("settings.json"))
 
         let provider = FileSystemEngramServiceReadProvider(homeDirectory: root)
         let response = try await provider.liveSessions()
@@ -4024,37 +6384,354 @@ final class EngramServiceIPCTests: XCTestCase {
         )
         XCTAssertFalse(
             sessionIds.contains("subagent-session"),
-            "Subagent transcripts under /subagents/ must be excluded from the live scan"
+            "A validated default-root subagent transcript must be excluded from the live scan"
         )
-        XCTAssertFalse(
-            response.sessions.contains { $0.filePath.contains("/subagents/") },
-            "No reported live session may originate from a /subagents/ path"
+        XCTAssertTrue(
+            sessionIds.contains("custom-top-level"),
+            "A top-level session under a custom projects root containing /subagents/ must stay live"
         )
     }
 
-    func testPeriodicRepoDiscoveryIsGatedBehindIndexedSessions() throws {
-        // Repo discovery spawns several `git` subprocesses per cwd (up to 200).
-        // It must NOT run on every idle 5-min indexing tick — only when the scan
-        // actually indexed new content, mirroring the parent-backfill guard.
-        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
-        var guardIndices: [String.Index] = []
-        var searchStart = source.startIndex
-        while let range = source.range(of: "if scan.indexed > 0", range: searchStart..<source.endIndex) {
-            guardIndices.append(range.lowerBound)
-            searchStart = range.upperBound
+    func testLiveSessionEnumerationMatchesAdapterLocators_repro() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath()
+            .appendingPathComponent("engram-live-locators-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let geminiChats = root.appendingPathComponent(".gemini/tmp/project/chats", isDirectory: true)
+        let antigravityTranscript = root.appendingPathComponent(
+            ".gemini/antigravity-cli/brain/brain-session/.system_generated/logs/transcript.jsonl"
+        )
+        let codexDirectory = root.appendingPathComponent(".codex/sessions/2026/08/22", isDirectory: true)
+        let openCodeDatabase = root.appendingPathComponent(".local/share/opencode/opencode.db")
+        for directory in [geminiChats, antigravityTranscript.deletingLastPathComponent(), codexDirectory,
+                          openCodeDatabase.deletingLastPathComponent()] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         }
-        XCTAssertGreaterThanOrEqual(
-            guardIndices.count, 2,
-            "repo discovery must add its own `if scan.indexed > 0` guard alongside parent-backfill"
+
+        let geminiSession = geminiChats.appendingPathComponent("session.json")
+        try #"{"sessionId":"gemini-live","messages":[]}"#.write(
+            to: geminiSession,
+            atomically: true,
+            encoding: .utf8
         )
-        let probe = try XCTUnwrap(source.range(of: "RepoDiscovery.probeRepositories"))
-        XCTAssertTrue(
-            guardIndices.contains { $0 < probe.lowerBound },
-            "RepoDiscovery.probeRepositories must be gated behind `if scan.indexed > 0`, not run unconditionally"
+        for sidecar in [
+            geminiChats.appendingPathComponent("session.engram.json"),
+            geminiChats.appendingPathComponent("logs.json"),
+        ] {
+            try #"{"sessionId":"must-not-appear"}"#.write(to: sidecar, atomically: true, encoding: .utf8)
+        }
+        try #"{"type":"message","sessionId":"transcript-must-not-win","content":"live"}"#.write(
+            to: antigravityTranscript,
+            atomically: true,
+            encoding: .utf8
         )
+        try #"{"sessionId":"metadata-must-not-appear"}"#.write(
+            to: antigravityTranscript.deletingLastPathComponent().appendingPathComponent("metadata.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let noIDCodex = codexDirectory.appendingPathComponent("filename-is-not-an-id.jsonl")
+        try #"{"type":"message","content":"no explicit session identity"}"#.write(
+            to: noIDCodex,
+            atomically: true,
+            encoding: .utf8
+        )
+        let codexSession = codexDirectory.appendingPathComponent("rollout-real-session.jsonl")
+        try #"{"type":"message","content":"adapter-visible Codex transcript"}"#.write(
+            to: codexSession,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let now = Date()
+        do {
+            let queue = try DatabaseQueue(path: openCodeDatabase.path)
+            let recentMilliseconds = Int64(now.timeIntervalSince1970 * 1_000)
+            let staleMilliseconds = recentMilliseconds - 30 * 24 * 3_600_000
+            try await queue.write { db in
+                try db.execute(sql: """
+                    CREATE TABLE session (
+                      id TEXT PRIMARY KEY,
+                      directory TEXT,
+                      title TEXT,
+                      time_updated INTEGER NOT NULL,
+                      time_archived INTEGER
+                    );
+                    INSERT INTO session (id, directory, title, time_updated, time_archived)
+                    VALUES
+                      ('opencode-live', '/repo/opencode', 'OpenCode live title', ?, NULL),
+                      ('opencode-stale', '/repo/stale', 'Stale', ?, NULL),
+                      ('archived', '/repo/archived', 'Archived', ?, 3);
+                    """, arguments: [recentMilliseconds, staleMilliseconds, recentMilliseconds])
+            }
+        }
+
+        for file in [geminiSession, antigravityTranscript, noIDCodex, codexSession] {
+            try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: file.path)
+        }
+        try FileManager.default.setAttributes(
+            [.modificationDate: now.addingTimeInterval(-3_600)],
+            ofItemAtPath: openCodeDatabase.path
+        )
+
+        let response = try await FileSystemEngramServiceReadProvider(
+            homeDirectory: root,
+            liveSessionCacheTTL: 0,
+            now: { now }
+        ).liveSessions()
+        func canonicalLocator(_ locator: String) -> String {
+            let parts = locator.components(separatedBy: "::")
+            let path = URL(fileURLWithPath: parts[0]).resolvingSymlinksInPath().path
+            return parts.count == 2 ? "\(path)::\(parts[1])" : path
+        }
+        let locators = Set(response.sessions.map { canonicalLocator($0.filePath) })
+        let expected = Set([
+            geminiSession.path,
+            antigravityTranscript.path,
+            codexSession.path,
+            "\(openCodeDatabase.path)::opencode-live",
+        ].map(canonicalLocator))
+
+        XCTAssertEqual(locators, expected)
+        XCTAssertTrue(response.sessions.allSatisfy { $0.id == $0.filePath })
+        XCTAssertEqual(
+            response.sessions.first { $0.source == "opencode" }?.sessionId,
+            "opencode-live",
+            "OpenCode must carry its source database primary key"
+        )
+        XCTAssertEqual(
+            response.sessions.first {
+                canonicalLocator($0.filePath) == canonicalLocator(antigravityTranscript.path)
+            }?.sessionId,
+            "brain-session",
+            "Antigravity CLI live identity is the brain directory UUID"
+        )
+        XCTAssertFalse(
+            locators.contains(canonicalLocator(noIDCodex.path)),
+            "Codex live cards must use the same rollout-*.jsonl locators as CodexAdapter"
+        )
+    }
+
+    func testAntigravityLiveCacheReadsMetadataOnlyFromFirstJSONObject_repro() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath()
+            .appendingPathComponent("engram-live-antigravity-cache-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = root.appendingPathComponent(".engram/cache/antigravity", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        let transcript = cache.appendingPathComponent("cached.jsonl")
+        try """
+        {"sessionId":"cache-header-id"}
+        {"sessionId":"later-id","title":"later title","cwd":"/later/path"}
+        """.appending("\n").write(to: transcript, atomically: true, encoding: .utf8)
+        let now = Date()
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: transcript.path)
+
+        let response = try await FileSystemEngramServiceReadProvider(
+            homeDirectory: root,
+            liveSessionCacheTTL: 0,
+            now: { now }
+        ).liveSessions()
+        let session = try XCTUnwrap(response.sessions.first)
+
+        XCTAssertEqual(session.sessionId, "cache-header-id")
+        XCTAssertNil(session.title)
+        XCTAssertNil(session.cwd)
+    }
+
+    func testAntigravityBrainLiveIdentityWinsWhenFirstLineIsNotJSON_repro() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath()
+            .appendingPathComponent("engram-live-antigravity-explicit-id-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transcript = root.appendingPathComponent(
+            ".gemini/antigravity-cli/brain/brain-uuid/.system_generated/logs/transcript.jsonl"
+        )
+        try FileManager.default.createDirectory(
+            at: transcript.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try """
+        truncated-prefix
+        {"sessionId":"body-id-must-not-win","title":"Live work"}
+        """.appending("\n").write(to: transcript, atomically: true, encoding: .utf8)
+        let now = Date()
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: transcript.path)
+
+        let response = try await FileSystemEngramServiceReadProvider(
+            homeDirectory: root,
+            liveSessionCacheTTL: 0,
+            now: { now }
+        ).liveSessions()
+
+        XCTAssertEqual(try XCTUnwrap(response.sessions.first).sessionId, "brain-uuid")
+    }
+
+    func testAntigravityLiveScanCoversEveryDocumentedBrainRoot_repro() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath()
+            .appendingPathComponent("engram-live-antigravity-roots-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let roots = [
+            ".gemini/antigravity-cli/brain",
+            ".gemini/antigravity/brain",
+            ".gemini/antigravity-ide/brain",
+        ]
+        let now = Date()
+        for (index, relativeRoot) in roots.enumerated() {
+            let transcript = root.appendingPathComponent(
+                "\(relativeRoot)/brain-\(index)/.system_generated/logs/transcript.jsonl"
+            )
+            try FileManager.default.createDirectory(
+                at: transcript.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try "not-json\n".write(to: transcript, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: transcript.path)
+        }
+
+        let response = try await FileSystemEngramServiceReadProvider(
+            homeDirectory: root,
+            liveSessionCacheTTL: 0,
+            now: { now }
+        ).liveSessions()
+
+        XCTAssertEqual(Set(response.sessions.compactMap(\.sessionId)), Set(["brain-0", "brain-1", "brain-2"]))
+    }
+
+    func testLiveScanSkipsDirectorySymlinkChildren_repro() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath()
+            .appendingPathComponent("engram-live-linked-dir-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessions = root.appendingPathComponent(".codex/sessions", isDirectory: true)
+        let physical = root.appendingPathComponent("physical-sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: physical, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: sessions.appendingPathComponent("linked", isDirectory: true),
+            withDestinationURL: physical
+        )
+        let transcript = physical.appendingPathComponent("rollout-linked.jsonl")
+        try #"{"type":"session_meta","payload":{"id":"linked-live"}}"#.appending("\n")
+            .write(to: transcript, atomically: true, encoding: .utf8)
+        let now = Date()
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: transcript.path)
+
+        let response = try await FileSystemEngramServiceReadProvider(
+            homeDirectory: root,
+            liveSessionCacheTTL: 0,
+            now: { now }
+        ).liveSessions()
+
+        XCTAssertFalse(
+            response.sessions.contains { $0.sessionId == "linked-live" },
+            "live sessions: \(response.sessions)"
+        )
+    }
+
+    func testOpenCodeLiveScanAcceptsSymlinkToRegularDatabase_repro() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath()
+            .appendingPathComponent("engram-live-opencode-link-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let physical = root.appendingPathComponent("physical-opencode.db")
+        let link = root.appendingPathComponent(".local/share/opencode/opencode.db")
+        try FileManager.default.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let now = Date()
+        let updated = Int64(now.timeIntervalSince1970 * 1_000)
+        try await DatabaseQueue(path: physical.path).write { db in
+            try db.execute(sql: """
+                CREATE TABLE session (
+                  id TEXT PRIMARY KEY, directory TEXT, title TEXT,
+                  time_updated INTEGER NOT NULL, time_archived INTEGER
+                );
+                INSERT INTO session VALUES ('linked-opencode', '/repo', 'Linked', ?, NULL);
+                """, arguments: [updated])
+        }
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: physical)
+
+        let response = try await FileSystemEngramServiceReadProvider(
+            homeDirectory: root,
+            liveSessionCacheTTL: 0,
+            now: { now }
+        ).liveSessions()
+
+        XCTAssertTrue(response.sessions.contains { $0.sessionId == "linked-opencode" })
+    }
+
+    func testMissingAntigravityTranscriptDoesNotAbortOtherLiveSources_repro() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath()
+            .appendingPathComponent("engram-live-missing-antigravity-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let missingBrain = root.appendingPathComponent(
+            ".gemini/antigravity-cli/brain/missing/.system_generated/logs",
+            isDirectory: true
+        )
+        let codexDirectory = root.appendingPathComponent(".codex/sessions/2026/08/23", isDirectory: true)
+        try FileManager.default.createDirectory(at: missingBrain, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: codexDirectory, withIntermediateDirectories: true)
+        let codex = codexDirectory.appendingPathComponent("rollout-survives.jsonl")
+        try #"{"type":"session_meta","payload":{"id":"codex-survives"}}"#.write(
+            to: codex,
+            atomically: true,
+            encoding: .utf8
+        )
+        let now = Date()
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: codex.path)
+
+        let response = try await FileSystemEngramServiceReadProvider(
+            homeDirectory: root,
+            liveSessionCacheTTL: 0,
+            now: { now }
+        ).liveSessions()
+
+        XCTAssertEqual(response.sessions.map(\.sessionId), ["codex-survives"])
+    }
+
+    func testOpenCodeLiveCardsUseRowMetadataWithoutParsingTheDatabaseBlob_repro() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath()
+            .appendingPathComponent("engram-live-opencode-metadata-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let databaseURL = root.appendingPathComponent(".local/share/opencode/opencode.db")
+        try FileManager.default.createDirectory(
+            at: databaseURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let now = Date()
+        let queue = try DatabaseQueue(path: databaseURL.path)
+        try await queue.write { database in
+            try database.execute(sql: """
+                CREATE TABLE session (
+                  id TEXT PRIMARY KEY,
+                  directory TEXT,
+                  title TEXT,
+                  time_updated INTEGER NOT NULL,
+                  time_archived INTEGER
+                );
+                INSERT INTO session (id, directory, title, time_updated, time_archived)
+                VALUES ('open-live', '/repo/from-row', 'Title from row', ?, NULL);
+                """, arguments: [Int64(now.timeIntervalSince1970 * 1_000)])
+        }
+
+        let response = try await FileSystemEngramServiceReadProvider(
+            homeDirectory: root,
+            liveSessionCacheTTL: 0,
+            now: { now }
+        ).liveSessions()
+        let session = try XCTUnwrap(response.sessions.first { $0.source == "opencode" })
+
+        XCTAssertEqual(session.sessionId, "open-live")
+        XCTAssertEqual(session.title, "Title from row")
+        XCTAssertEqual(session.cwd, "/repo/from-row")
+    }
+
+    func testPeriodicRepoDiscoveryRefreshesCountsOnIdleCycles_repro() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        let cycle = try XCTUnwrap(source.range(of: "private static func runOnePeriodicIndexCycle("))
+        let helper = try XCTUnwrap(source.range(of: "static func refreshRepoDiscovery("))
+        let body = String(source[cycle.lowerBound..<helper.lowerBound])
+        XCTAssertTrue(body.contains("let repoCount = try await refreshRepoDiscovery("))
+        XCTAssertFalse(body.contains("if scan.indexed > 0 {\n                let repoCandidates"))
         XCTAssertTrue(
-            source.contains("RepoDiscoveryMaintenanceThrottle.shared")
-                && source.contains("selectCandidates(repoCandidates)"),
+            source.contains("throttle: RepoDiscoveryMaintenanceThrottle = .shared")
+                && source.contains("throttle.selectCandidates(")
+                && source.contains("forcedCwds: snapshot.1"),
             "repo probing must pass through the bounded maintenance throttle"
         )
         XCTAssertTrue(
@@ -4066,7 +6743,7 @@ final class EngramServiceIPCTests: XCTestCase {
 
     func testLiveSessionsStreamsEnumeratorInsteadOfMaterializingFullTree() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceReadProvider.swift")
-        let start = try XCTUnwrap(source.range(of: "private func scanLiveSessions(now: Date)"))
+        let start = try XCTUnwrap(source.range(of: "private func scanLiveSessions("))
         let end = try XCTUnwrap(source.range(of: "private struct LiveMetadata"))
         let body = String(source[start.lowerBound..<end.lowerBound])
 
@@ -4075,8 +6752,8 @@ final class EngramServiceIPCTests: XCTestCase {
             "liveSessions must not materialize the full directory tree before applying the result cap"
         )
         XCTAssertTrue(
-            body.contains("while let file = enumerator.nextObject() as? URL"),
-            "liveSessions should stream candidates from FileManager enumerators"
+            body.contains("enumerateLiveFiles") && source.contains("directChildren(of:"),
+            "liveSessions should stream one directory at a time while following safe directory symlinks"
         )
     }
 
@@ -4087,7 +6764,7 @@ final class EngramServiceIPCTests: XCTestCase {
         let sessionDir = root
             .appendingPathComponent(".codex/sessions/2026/05/24", isDirectory: true)
         try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
-        let first = sessionDir.appendingPathComponent("first.jsonl")
+        let first = sessionDir.appendingPathComponent("rollout-first.jsonl")
         try """
         {"type":"session_meta","payload":{"id":"first","cwd":"/tmp/engram","model":"gpt-5"}}
         """.write(to: first, atomically: true, encoding: .utf8)
@@ -4095,7 +6772,7 @@ final class EngramServiceIPCTests: XCTestCase {
 
         let provider = FileSystemEngramServiceReadProvider(homeDirectory: root)
         let initial = try await provider.liveSessions()
-        let second = sessionDir.appendingPathComponent("second.jsonl")
+        let second = sessionDir.appendingPathComponent("rollout-second.jsonl")
         try """
         {"type":"session_meta","payload":{"id":"second","cwd":"/tmp/engram","model":"gpt-5"}}
         """.write(to: second, atomically: true, encoding: .utf8)
@@ -4119,7 +6796,7 @@ final class EngramServiceIPCTests: XCTestCase {
             .appendingPathComponent(".codex/sessions/2026/05/24", isDirectory: true)
         try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
         let clock = ManualDateProvider(Date())
-        let first = sessionDir.appendingPathComponent("first.jsonl")
+        let first = sessionDir.appendingPathComponent("rollout-first.jsonl")
         try """
         {"type":"session_meta","payload":{"id":"first","cwd":"/tmp/engram","model":"gpt-5"}}
         """.write(to: first, atomically: true, encoding: .utf8)
@@ -4133,7 +6810,7 @@ final class EngramServiceIPCTests: XCTestCase {
         let initial = try await provider.liveSessions()
         XCTAssertEqual(initial.sessions.map(\.sessionId), ["first"])
 
-        let second = sessionDir.appendingPathComponent("second.jsonl")
+        let second = sessionDir.appendingPathComponent("rollout-second.jsonl")
         try """
         {"type":"session_meta","payload":{"id":"second","cwd":"/tmp/engram","model":"gpt-5"}}
         """.write(to: second, atomically: true, encoding: .utf8)
@@ -4158,6 +6835,110 @@ final class EngramServiceIPCTests: XCTestCase {
         )
     }
 
+    func testFileSystemProviderStartsLiveSessionTTLAfterSlowScanCompletes_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-live-post-load-ttl-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent(".codex/sessions/2026/09/02", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        let clock = ManualDateProvider(Date())
+        let transcript = sessionDir.appendingPathComponent("rollout-slow.jsonl")
+        try #"{"type":"session_meta","payload":{"id":"slow"}}"#.appending("\n")
+            .write(to: transcript, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: clock.now()], ofItemAtPath: transcript.path)
+
+        let checkpoints = LockedCounter()
+        let completedScans = LockedCounter()
+        let provider = FileSystemEngramServiceReadProvider(
+            homeDirectory: root,
+            liveSessionCacheTTL: 30,
+            now: clock.now,
+            liveSessionScanCheckpoint: { _ in
+                checkpoints.increment()
+                if checkpoints.value == 1 {
+                    clock.advance(by: 40)
+                }
+            },
+            liveSessionFinalizationCheckpoint: {
+                completedScans.increment()
+            }
+        )
+
+        _ = try await provider.liveSessions()
+        _ = try await provider.liveSessions()
+
+        XCTAssertEqual(
+            completedScans.value,
+            1,
+            "a scan that outlasts the TTL must still be cached for a full TTL after it publishes"
+        )
+    }
+
+    func testClaudeDerivedLiveSessionsUseDetectedSourceAndHonorDisabledSources_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-live-derived-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let minimaxProject = root.appendingPathComponent(".claude/projects/minimax-project", isDirectory: true)
+        let lobsterProject = root.appendingPathComponent(".claude/projects/lobsterai-project", isDirectory: true)
+        try FileManager.default.createDirectory(at: minimaxProject, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: lobsterProject, withIntermediateDirectories: true)
+        let now = Date()
+        let minimax = minimaxProject.appendingPathComponent("minimax.jsonl")
+        try #"{"type":"assistant","sessionId":"minimax-live","model":"MiniMax-M2"}"#.appending("\n")
+            .write(to: minimax, atomically: true, encoding: .utf8)
+        let lobster = lobsterProject.appendingPathComponent("lobster.jsonl")
+        try #"{"type":"assistant","sessionId":"lobster-live","model":"claude-opus"}"#.appending("\n")
+            .write(to: lobster, atomically: true, encoding: .utf8)
+        for file in [minimax, lobster] {
+            try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: file.path)
+        }
+
+        let response = try await FileSystemEngramServiceReadProvider(
+            homeDirectory: root,
+            liveSessionCacheTTL: 0,
+            now: { now }
+        ).liveSessions()
+
+        XCTAssertEqual(response.sessions.map(\.source), ["minimax"])
+        XCTAssertEqual(response.sessions.compactMap(\.sessionId), ["minimax-live"])
+    }
+
+    func testLiveSessionScanDoesNotPreenumerateWholeClaudeCorpus_repro() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceReadProvider.swift")
+        let liveStart = try XCTUnwrap(source.range(of: "func liveSessions() async throws"))
+        let scanStart = try XCTUnwrap(
+            source.range(of: "private func scanLiveSessions(", range: liveStart.upperBound..<source.endIndex)
+        )
+        let preScan = String(source[liveStart.lowerBound..<scanStart.lowerBound])
+
+        XCTAssertFalse(preScan.contains("listSessionLocators()"), preScan)
+        XCTAssertFalse(preScan.contains("claudeDerivedSourceHints"), preScan)
+    }
+
+    func testClaudeLiveSessionClassificationFailureIsDropped_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-live-unclassified-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let project = root.appendingPathComponent(".claude/projects/neutral-project", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let transcript = project.appendingPathComponent("unknown.jsonl")
+        try Data([0xff, 0xfe, 0x0a]).write(to: transcript)
+        let now = Date()
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: transcript.path)
+
+        let response = try await FileSystemEngramServiceReadProvider(
+            homeDirectory: root,
+            liveSessionCacheTTL: 0,
+            now: { now }
+        ).liveSessions()
+
+        XCTAssertEqual(
+            response.sessions,
+            [],
+            "an unreadable source hint must fail closed instead of falling back to claude-code"
+        )
+    }
+
     func testFileSystemProviderKeepsActiveSessionFromAnotherSourceUnderGlobalCap() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("engram-live-home-\(UUID().uuidString)", isDirectory: true)
@@ -4171,7 +6952,7 @@ final class EngramServiceIPCTests: XCTestCase {
         let base = Date(timeIntervalSinceNow: -30 * 60)
         for index in 0..<105 {
             let id = String(format: "codex-%03d", index)
-            let file = codexDir.appendingPathComponent("\(id).jsonl")
+            let file = codexDir.appendingPathComponent("rollout-\(id).jsonl")
             try """
             {"type":"session_meta","payload":{"id":"\(id)","cwd":"/tmp/codex","model":"gpt-5"}}
             """.write(to: file, atomically: true, encoding: .utf8)
@@ -4242,6 +7023,50 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(response.errors[0].contains("refusing to link path outside known session roots"))
         let linkPath = targetDir.appendingPathComponent("conversation_log/codex/allowed.jsonl").path
         XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: linkPath), allowedFile.path)
+    }
+
+    func testLinkSessionsRejectsSymlinkedSessionFilesAndAncestors_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let home = paths.runtime.appendingPathComponent("home", isDirectory: true)
+        let allowedDir = home.appendingPathComponent(".codex/sessions", isDirectory: true)
+        let deniedDir = home.appendingPathComponent(".ssh", isDirectory: true)
+        try FileManager.default.createDirectory(at: allowedDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: deniedDir, withIntermediateDirectories: true)
+        let deniedLeaf = deniedDir.appendingPathComponent("session.jsonl")
+        try Data("secret".utf8).write(to: deniedLeaf)
+
+        let linkedLeaf = allowedDir.appendingPathComponent("linked-leaf.jsonl")
+        try FileManager.default.createSymbolicLink(at: linkedLeaf, withDestinationURL: deniedLeaf)
+        let linkedAncestor = allowedDir.appendingPathComponent("linked-ancestor", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: linkedAncestor, withDestinationURL: deniedDir)
+        let throughAncestor = linkedAncestor.appendingPathComponent("session.jsonl")
+
+        let homeScope = ServiceCoreTestHomeScope(home: home)
+        defer { homeScope.restore() }
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET file_path = ? WHERE id = 's1'",
+                arguments: [linkedLeaf.path]
+            )
+            try db.execute(
+                sql: "UPDATE sessions SET file_path = ? WHERE id = 's2'",
+                arguments: [throughAncestor.path]
+            )
+        }
+
+        let response = try EngramServiceCommandHandler.linkSessions(
+            EngramServiceLinkSessionsRequest(
+                targetDir: home.appendingPathComponent("engram", isDirectory: true).path,
+                actor: "test"
+            ),
+            databasePath: paths.database.path
+        )
+
+        XCTAssertEqual(response.created, 0)
+        XCTAssertEqual(response.errors.count, 2)
+        XCTAssertTrue(response.errors.allSatisfy { $0.contains("outside known session roots") })
     }
 
     func testLinkSessionsDoesNotReplaceExistingDifferentSymlink() async throws {
@@ -4376,12 +7201,21 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertNil(generation, "linkSessions does not write the DB and must not advance the database generation")
     }
 
-    func testAppSessionMetadataMutationsAreOwnedByServiceWriterGate() async throws {
+    func testHideEmptySessionsIgnoresSkipTierRows_repro() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
         let queue = try DatabaseQueue(path: paths.database.path)
         try await queue.write { db in
             try db.execute(sql: "UPDATE sessions SET message_count = 0, size_bytes = 512 WHERE id = 's2'")
+            try db.execute(sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, message_count, file_path,
+                  size_bytes, indexed_at, tier
+                ) VALUES (
+                  'skip-empty', 'codex', '2026-04-23T03:00:00Z', '/tmp/engram', 'engram', 0,
+                  '/tmp/skip-empty.jsonl', 100, '2026-04-23T03:00:00Z', 'skip'
+                )
+                """)
         }
 
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
@@ -4422,6 +7256,12 @@ final class EngramServiceIPCTests: XCTestCase {
             )
             XCTAssertNotNil(s2?["hidden_at"] as String?)
 
+            let skipHidden = try String.fetchOne(
+                db,
+                sql: "SELECT hidden_at FROM sessions WHERE id = 'skip-empty'"
+            )
+            XCTAssertNil(skipHidden)
+
             let localHidden = try String.fetchOne(
                 db,
                 sql: "SELECT hidden_at FROM session_local_state WHERE session_id = 's1'"
@@ -4437,6 +7277,58 @@ final class EngramServiceIPCTests: XCTestCase {
             )
             XCTAssertEqual(favorite, 0)
         }
+    }
+
+    func testHygieneHideSurvivesSourceDisableEnable_repro() async throws {
+        let settingsDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-hygiene-hide-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(at: settingsDirectory, withIntermediateDirectories: true)
+        let settingsURL = settingsDirectory.appendingPathComponent("settings.json")
+        let seedData = try JSONSerialization.data(withJSONObject: [
+            "disabledSources": [] as [String],
+            ArchivedDefaultOffSources.settingsMigrationKey: true,
+        ])
+        try seedData.write(to: settingsURL)
+        setenv("ENGRAM_SETTINGS_PATH", settingsURL.path, 1)
+        defer {
+            unsetenv("ENGRAM_SETTINGS_PATH")
+            try? FileManager.default.removeItem(at: settingsDirectory)
+        }
+
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        let source = try await queue.write { db -> String in
+            try db.execute(sql: "UPDATE sessions SET message_count = 0, size_bytes = 512 WHERE id = 's2'")
+            return try String.fetchOne(db, sql: "SELECT source FROM sessions WHERE id = 's2'") ?? "codex"
+        }
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+
+        let hidden = try await client.hideEmptySessions()
+        XCTAssertEqual(hidden.hiddenCount, 1)
+        try await client.setSourceEnabled(source: source, enabled: false)
+        try await client.setSourceEnabled(source: source, enabled: true)
+
+        let row = try await queue.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                    SELECT s.hidden_at, ls.hidden_at AS local_hidden_at
+                    FROM sessions s
+                    LEFT JOIN session_local_state ls ON ls.session_id = s.id
+                    WHERE s.id = 's2'
+                """
+            )
+        }
+        XCTAssertNotNil(row?["hidden_at"] as String?)
+        XCTAssertNotNil(row?["local_hidden_at"] as String?)
     }
 
     func testSetFavoriteWritesCreatedAtForLegacySchemaWithoutDefault_repro() async throws {
@@ -4922,50 +7814,47 @@ final class EngramServiceIPCTests: XCTestCase {
     }
 
     func testReadDisabledSourcesTreatsLegacyEmptyListAsArchivedDefaults() throws {
-        let settingsURL = URL(fileURLWithPath: "/tmp")
-            .appendingPathComponent("engram-settings-\(UUID().uuidString.prefix(8)).json")
+        let fixture = try makePrivateSettingsFixture()
         let data = try JSONSerialization.data(withJSONObject: ["disabledSources": []])
-        try data.write(to: settingsURL)
-        defer { try? FileManager.default.removeItem(at: settingsURL) }
+        try data.write(to: fixture.settingsURL)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
 
         let disabled = EngramServiceRunner.readDisabledSources(
             environment: [:],
-            settingsURL: settingsURL
+            settingsURL: fixture.settingsURL
         )
 
         XCTAssertEqual(disabled, ArchivedDefaultOffSources.ids)
     }
 
     func testReadDisabledSourcesMergesArchivedDefaultsIntoLegacyList() throws {
-        let settingsURL = URL(fileURLWithPath: "/tmp")
-            .appendingPathComponent("engram-settings-\(UUID().uuidString.prefix(8)).json")
+        let fixture = try makePrivateSettingsFixture()
         let data = try JSONSerialization.data(withJSONObject: ["disabledSources": ["codex"]])
-        try data.write(to: settingsURL)
-        defer { try? FileManager.default.removeItem(at: settingsURL) }
+        try data.write(to: fixture.settingsURL)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
 
         let disabled = EngramServiceRunner.readDisabledSources(
             environment: [:],
-            settingsURL: settingsURL
+            settingsURL: fixture.settingsURL
         )
 
         XCTAssertEqual(disabled, ArchivedDefaultOffSources.ids.union(["codex"]))
     }
 
     func testReadDisabledSourcesHonorsMigratedExplicitEmptyList() throws {
-        let settingsURL = URL(fileURLWithPath: "/tmp")
-            .appendingPathComponent("engram-settings-\(UUID().uuidString.prefix(8)).json")
+        let fixture = try makePrivateSettingsFixture()
         let data = try JSONSerialization.data(
             withJSONObject: [
                 "disabledSources": [],
                 ArchivedDefaultOffSources.settingsMigrationKey: true,
             ]
         )
-        try data.write(to: settingsURL)
-        defer { try? FileManager.default.removeItem(at: settingsURL) }
+        try data.write(to: fixture.settingsURL)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
 
         let disabled = EngramServiceRunner.readDisabledSources(
             environment: [:],
-            settingsURL: settingsURL
+            settingsURL: fixture.settingsURL
         )
 
         XCTAssertEqual(disabled, [], "a migrated explicit empty list means the user enabled every source")
@@ -5278,6 +8167,72 @@ final class EngramServiceIPCTests: XCTestCase {
         }
     }
 
+    func testSaveInsightSupersedesMatchingActiveOutsideFormerTwoHundredRowWindow_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        _ = try await gate.performWriteCommand(name: "prepareInsightCapRepro") { writer in
+            try writer.migrate()
+        }
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO insights (id, content, wing, room, created_at, superseded_by)
+                VALUES ('old-clone', 'Remember the uncapped active insight rule', 'engram', 'memory',
+                        '2026-01-01T00:00:00Z', NULL)
+                """)
+            for index in 0..<201 {
+                try db.execute(
+                    sql: """
+                    INSERT INTO insights (id, content, wing, room, created_at, superseded_by)
+                    VALUES (?, ?, 'engram', 'memory', ?, NULL)
+                    """,
+                    arguments: [
+                        "unique-\(index)",
+                        "Unique active insight number \(index)",
+                        String(format: "2026-02-%02dT00:%02d:00Z", (index % 28) + 1, index % 60),
+                    ]
+                )
+            }
+        }
+
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+        let client = EngramServiceClient(
+            transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+        )
+
+        let saved = try await client.saveInsight(
+            EngramServiceSaveInsightRequest(
+                content: "  remember   the uncapped active insight rule  ",
+                wing: "engram",
+                room: "memory",
+                importance: 5,
+                sourceSessionId: nil,
+                actor: "test"
+            )
+        )
+        let newestId = try XCTUnwrap(saved.objectValue?["id"]?.stringValue)
+
+        try await queue.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT superseded_by FROM insights WHERE id = 'old-clone'"),
+                newestId
+            )
+        }
+        let matchingActive = try await client.insights().filter {
+            $0.content.lowercased().contains("uncapped active insight rule")
+        }
+        XCTAssertEqual(matchingActive.map(\.id), [newestId])
+    }
+
     func testDeleteInsightRemovesInsightAndFtsRowsThroughServiceWriterGate() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
@@ -5332,11 +8287,269 @@ final class EngramServiceIPCTests: XCTestCase {
         }
     }
 
+    func testInsightListHidesSupersededRowsAndDeleteRestoresPredecessor_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(
+            transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+        )
+        let content = "Keep the active insight lifecycle visible"
+        let first = try await client.saveInsight(
+            EngramServiceSaveInsightRequest(
+                content: content,
+                wing: "engram",
+                room: "memory",
+                importance: 4,
+                sourceSessionId: "s1",
+                actor: "test"
+            )
+        )
+        let firstId = try XCTUnwrap(first.objectValue?["id"]?.stringValue)
+        let second = try await client.saveInsight(
+            EngramServiceSaveInsightRequest(
+                content: "  keep   the active insight lifecycle visible  ",
+                wing: "engram",
+                room: "memory",
+                importance: 5,
+                sourceSessionId: "s2",
+                actor: "test"
+            )
+        )
+        let secondId = try XCTUnwrap(second.objectValue?["id"]?.stringValue)
+        let third = try await client.saveInsight(
+            EngramServiceSaveInsightRequest(
+                content: "KEEP THE ACTIVE INSIGHT LIFECYCLE VISIBLE",
+                wing: "engram",
+                room: "memory",
+                importance: 5,
+                sourceSessionId: "s3",
+                actor: "test"
+            )
+        )
+        let thirdId = try XCTUnwrap(third.objectValue?["id"]?.stringValue)
+
+        let activeBeforeDelete = try await client.insights()
+        XCTAssertEqual(activeBeforeDelete.map(\.id), [thirdId])
+        _ = try await client.deleteInsight(EngramServiceDeleteInsightRequest(id: secondId))
+
+        let activeAfterDelete = try await client.insights()
+        XCTAssertEqual(activeAfterDelete.map(\.id), [thirdId])
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT superseded_by FROM insights WHERE id = ?",
+                    arguments: [firstId]
+                ),
+                thirdId
+            )
+        }
+    }
+
+    func testDeleteInsightTipKeepsOneNewestInboundPredecessorActive_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(
+            transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+        )
+        var ids: [String] = []
+        for source in ["old", "middle", "tip"] {
+            let saved = try await client.saveInsight(
+                EngramServiceSaveInsightRequest(
+                    content: "Collapse duplicate active insight chains",
+                    wing: "engram",
+                    room: "memory",
+                    importance: 5,
+                    sourceSessionId: source,
+                    actor: "test"
+                )
+            )
+            ids.append(try XCTUnwrap(saved.objectValue?["id"]?.stringValue))
+        }
+        let oldID = ids[0]
+        let middleID = ids[1]
+        let tipID = ids[2]
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: "UPDATE insights SET created_at = '2026-08-23T00:00:00Z' WHERE id = ?", arguments: [oldID])
+            try db.execute(sql: "UPDATE insights SET created_at = '2026-08-23T00:01:00Z' WHERE id = ?", arguments: [middleID])
+            try db.execute(sql: "UPDATE insights SET created_at = '2026-08-23T00:02:00Z' WHERE id = ?", arguments: [tipID])
+            try db.execute(
+                sql: "UPDATE insights SET superseded_by = ? WHERE id = ?",
+                arguments: [tipID, oldID]
+            )
+        }
+
+        _ = try await client.deleteInsight(.init(id: tipID))
+
+        let activeIDs = try await client.insights().map(\.id)
+        XCTAssertEqual(activeIDs, [middleID])
+        try await queue.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT superseded_by FROM insights WHERE id = ?", arguments: [oldID]),
+                middleID
+            )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT superseded_by FROM insights WHERE id = ?", arguments: [middleID])
+            )
+        }
+    }
+
+    func testInsightWritesRepairDanglingSameScopeChains_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        _ = try await gate.performWriteCommand(name: "prepareDanglingInsightRepro") { writer in
+            try writer.migrate()
+        }
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO insights (id, content, wing, room, created_at, superseded_by) VALUES
+                  ('save-dangling', 'Repair this normalized save chain', 'engram', 'save',
+                   '2026-08-23T00:00:00Z', 'missing-save-tip'),
+                  ('delete-inbound', 'Repair this normalized delete chain', 'engram', 'delete',
+                   '2026-08-23T00:00:00Z', 'delete-bridge'),
+                  ('delete-bridge', 'Repair this normalized delete chain', 'engram', 'delete',
+                   '2026-08-23T00:01:00Z', 'missing-delete-tip'),
+                  ('delete-live-tip', '  REPAIR   this normalized delete chain  ', 'engram', 'delete',
+                   '2026-08-23T00:02:00Z', NULL)
+                """)
+        }
+
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+        let client = EngramServiceClient(
+            transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+        )
+
+        let saved = try await client.saveInsight(
+            .init(
+                content: "  REPAIR   this normalized save chain  ",
+                wing: "engram",
+                room: "save",
+                importance: 5,
+                sourceSessionId: nil,
+                actor: "test"
+            )
+        )
+        let savedID = try XCTUnwrap(saved.objectValue?["id"]?.stringValue)
+        _ = try await client.deleteInsight(.init(id: "delete-bridge"))
+
+        try await queue.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT superseded_by FROM insights WHERE id = 'save-dangling'"),
+                savedID
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT superseded_by FROM insights WHERE id = 'delete-inbound'"),
+                "delete-live-tip"
+            )
+        }
+    }
+
+    func testDeleteInsightRetiresDanglingSameScopeClonesAndReactivatesLivePredecessor_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        _ = try await gate.performWriteCommand(name: "prepareInsightDeleteChainRepro") { writer in
+            try writer.migrate()
+        }
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO insights (id, content, wing, room, created_at, superseded_by) VALUES
+                  ('active-old', 'Retire this dangling clone', 'engram', 'delete-a',
+                   '2026-08-23T00:00:00Z', NULL),
+                  ('dangling-new', '  RETIRE   this dangling clone  ', 'engram', 'delete-a',
+                   '2026-08-23T00:01:00Z', 'missing-tip'),
+                  ('clone-predecessor', 'Preserve the inbound clone chain', 'engram', 'delete-a',
+                   '2026-08-22T23:59:00Z', 'dangling-new'),
+                  ('chain-a', 'Repair this deleted middle chain', 'engram', 'delete-b',
+                   '2026-08-23T00:00:00Z', 'chain-b'),
+                  ('chain-b', 'Repair this deleted middle chain', 'engram', 'delete-b',
+                   '2026-08-23T00:01:00Z', 'chain-c'),
+                  ('chain-c', 'Repair this deleted middle chain', 'engram', 'delete-b',
+                   '2026-08-23T00:02:00Z', 'missing-chain-tip');
+                """)
+        }
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+        let client = EngramServiceClient(
+            transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+        )
+
+        _ = try await client.deleteInsight(.init(id: "active-old"))
+        _ = try await client.deleteInsight(.init(id: "chain-b"))
+
+        try await queue.read { db in
+            XCTAssertEqual(
+                try String.fetchAll(
+                    db,
+                    sql: "SELECT id FROM insights WHERE id IN ('active-old', 'dangling-new') ORDER BY id"
+                ),
+                []
+            )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT superseded_by FROM insights WHERE id = 'clone-predecessor'"),
+                "deleting a dangling clone must splice its inbound pointers instead of leaving a deleted target"
+            )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT superseded_by FROM insights WHERE id = 'chain-a'")
+            )
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT id FROM insights WHERE id = 'chain-c'"))
+        }
+    }
+
     func testFormerBridgeCommandsUseNativeServiceBehavior() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
         let home = paths.runtime.appendingPathComponent("home", isDirectory: true)
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let settingsDirectory = home.appendingPathComponent(".engram", isDirectory: true)
+        try FileManager.default.createDirectory(at: settingsDirectory, withIntermediateDirectories: true)
+        try #"{"titleProvider":"native"}"#.write(
+            to: settingsDirectory.appendingPathComponent("settings.json"),
+            atomically: true,
+            encoding: .utf8
+        )
         let homeScope = ServiceCoreTestHomeScope(home: home)
         defer { homeScope.restore() }
 
@@ -5366,7 +8579,7 @@ final class EngramServiceIPCTests: XCTestCase {
         let handoff = try await client.handoff(
             EngramServiceHandoffRequest(cwd: "/tmp/engram", sessionId: nil, format: "markdown")
         )
-        XCTAssertEqual(handoff.sessionCount, 2)
+        XCTAssertEqual(handoff.sessionCount, 1)
         XCTAssertTrue(handoff.brief.contains("## Handoff"))
         XCTAssertTrue(handoff.brief.contains("Generated Title"))
 
@@ -5384,9 +8597,130 @@ final class EngramServiceIPCTests: XCTestCase {
             )
         ])
 
+        let titleQueue = try DatabaseQueue(path: paths.database.path)
+        try await titleQueue.write { db in
+            try db.execute(sql: "UPDATE sessions SET generated_title = NULL")
+        }
         let titles = try await client.regenerateAllTitles()
         XCTAssertTrue(["started", "running"].contains(titles.status))
         XCTAssertNil(titles.total)
+
+        let titleDeadline = Date().addingTimeInterval(5)
+        while Date() < titleDeadline {
+            let missingTitles = try await titleQueue.read { db in
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM sessions WHERE generated_title IS NULL"
+                ) ?? 0
+            }
+            if missingTitles == 0 { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let missingTitles = try await titleQueue.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM sessions WHERE generated_title IS NULL"
+            ) ?? 0
+        }
+        XCTAssertEqual(missingTitles, 0, "title regeneration should finish before the scoped HOME is restored")
+    }
+
+    func testHandoffListingFiltersHiddenSkipAndChildSessionsButByIDRemainsUnfiltered_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, message_count, file_path,
+                  size_bytes, indexed_at, tier, hidden_at, parent_session_id
+                ) VALUES
+                  ('skip-child', 'codex', '2026-04-23T03:00:00Z', '/tmp/engram', 'engram', 1,
+                   '/tmp/skip-child.jsonl', 10, '2026-04-23T03:00:00Z', 'skip', NULL, 's1'),
+                  ('normal-child', 'codex', '2026-04-23T04:00:00Z', '/tmp/engram', 'engram', 1,
+                   '/tmp/normal-child.jsonl', 10, '2026-04-23T04:00:00Z', 'normal', NULL, 's1'),
+                  ('hidden-top', 'codex', '2026-04-23T05:00:00Z', '/tmp/engram', 'engram', 1,
+                   '/tmp/hidden-top.jsonl', 10, '2026-04-23T05:00:00Z', 'normal', datetime('now'), NULL)
+                """)
+        }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+        let client = EngramServiceClient(
+            transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+        )
+
+        let listing = try await client.handoff(
+            EngramServiceHandoffRequest(cwd: "/tmp/engram", sessionId: nil, format: "markdown")
+        )
+        XCTAssertEqual(listing.sessionCount, 1)
+        XCTAssertFalse(listing.brief.contains("skip-child"))
+        XCTAssertFalse(listing.brief.contains("normal-child"))
+        XCTAssertFalse(listing.brief.contains("hidden-top"))
+
+        let explicitSkip = try await client.handoff(
+            EngramServiceHandoffRequest(cwd: "/tmp/engram", sessionId: "skip-child", format: "plain")
+        )
+        XCTAssertEqual(explicitSkip.sessionCount, 1, "explicit by-id handoff must remain unfiltered")
+    }
+
+    func testGenerateSummaryRejectsSkipAndEmptyTranscriptWithoutPersistingMetadata_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let home = paths.runtime.appendingPathComponent("home", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let homeScope = ServiceCoreTestHomeScope(home: home)
+        defer { homeScope.restore() }
+
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: """
+                UPDATE sessions SET tier = 'skip' WHERE id = 's1';
+                UPDATE sessions SET generated_title = 'Metadata only', summary = NULL WHERE id = 's2';
+                DELETE FROM sessions_fts WHERE session_id = 's2';
+                """)
+        }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+        let client = EngramServiceClient(
+            transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+        )
+
+        for sessionID in ["s1", "s2"] {
+            do {
+                _ = try await client.generateSummary(
+                    EngramServiceGenerateSummaryRequest(sessionId: sessionID)
+                )
+                XCTFail("generateSummary must reject non-summarizable session \(sessionID)")
+            } catch let error as EngramServiceError {
+                guard case .invalidRequest = error else {
+                    return XCTFail("expected invalidRequest for \(sessionID), got \(error)")
+                }
+            }
+        }
+
+        try await queue.read { db in
+            for sessionID in ["s1", "s2"] {
+                let row = try XCTUnwrap(Row.fetchOne(
+                    db,
+                    sql: "SELECT summary, summary_message_count FROM sessions WHERE id = ?",
+                    arguments: [sessionID]
+                ))
+                XCTAssertNil(row["summary"] as String?)
+                XCTAssertNil(row["summary_message_count"] as Int?)
+            }
+        }
     }
 
     func testServiceAIClientTransportErrorsPreserveStructuredEnvelopeFields() async throws {
@@ -5459,6 +8793,11 @@ final class EngramServiceIPCTests: XCTestCase {
         func increment() { value += 1 }
     }
 
+    private actor WorkTitlePromptCapture {
+        private(set) var value = (intent: "", outcome: "")
+        func record(intent: String, outcome: String) { value = (intent, outcome) }
+    }
+
     private static let fakeTitleConfig = EngramServiceCommandHandler.ServiceAISettings.ChatConfig(
         provider: "custom", baseURL: "http://localhost", apiKey: "",
         model: "test-model", maxTokens: 120, temperature: 0.3
@@ -5487,9 +8826,9 @@ final class EngramServiceIPCTests: XCTestCase {
                          work_title, human_intent, assistant_outcome, kind, status,
                          operation_events, confidence)
                     VALUES
-                        ('p1', 0, '2026-06-25', '2026-06-25T10:00:00Z', 'wk-a',
+                        ('p1', 0, date('now', 'localtime'), datetime('now'), 'wk-a',
                          'A', 'intent A', 'outcome A', 'implementation', 'completed', '[]', 0.9),
-                        ('p1', 1, '2026-06-25', '2026-06-25T10:05:00Z', 'wk-b',
+                        ('p1', 1, date('now', 'localtime'), datetime('now'), 'wk-b',
                          'B', 'intent B', 'outcome B', 'fix', 'completed', '[]', 0.9)
                     """)
             }
@@ -5507,6 +8846,152 @@ final class EngramServiceIPCTests: XCTestCase {
                 ) ?? 0
             }
         }.value
+    }
+
+    func testReadProjectWorkItemsUsesSQLiteLocalDayCutoff_repro() async throws {
+        let originalTZ = ProcessInfo.processInfo.environment["TZ"]
+        var utcCalendar = Calendar(identifier: .gregorian)
+        utcCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let utcHour = utcCalendar.component(.hour, from: Date())
+        setenv("TZ", utcHour < 12 ? "Etc/GMT+12" : "Pacific/Kiritimati", 1)
+        tzset()
+        defer {
+            if let originalTZ { setenv("TZ", originalTZ, 1) } else { unsetenv("TZ") }
+            tzset()
+        }
+
+        let paths = try makeServiceIPCPaths()
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        _ = try await gate.performWriteCommand(name: "seedLocalWorkBeat") { writer in
+            try writer.migrate()
+            try writer.write { db in
+                try db.execute(sql: """
+                    INSERT INTO sessions (id, source, start_time, file_path, project, tier)
+                    VALUES ('local-day', 'cursor', datetime('now'), '/tmp/local-day.jsonl', 'p', 'normal');
+                    INSERT INTO session_work_beats
+                        (session_id, beat_index, action_date, action_timestamp, work_key,
+                         work_title, human_intent, assistant_outcome, kind, status,
+                         operation_events, confidence)
+                    VALUES
+                        ('local-day', 0, date('now', 'localtime'), datetime('now'), 'local-work',
+                         'Local work', 'intent', 'outcome', 'implementation', 'completed', '[]', 0.9),
+                        ('local-day', 1, 'unknown', NULL, 'unknown-work',
+                         'Unknown work', 'intent', 'outcome', 'implementation', 'completed', '[]', 0.9);
+                    """)
+            }
+        }
+
+        // docs/invariants.md #6: the database and runtime paths are both temporary.
+        let items = try EngramServiceCommandHandler.readProjectWorkItems(
+            project: "p",
+            days: 0,
+            databasePath: paths.database.path
+        )
+
+        XCTAssertEqual(items.map(\.workKey), ["local-work"])
+    }
+
+    func testReadProjectWorkItemsPromotesSuggestedChildWhenHostIsNotHumanDriven_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        _ = try await gate.performWriteCommand(name: "seedPromotedWorkBeat") { writer in
+            try writer.migrate()
+            try writer.write { db in
+                try db.execute(sql: """
+                    INSERT INTO sessions (
+                      id, source, start_time, file_path, project, tier,
+                      instruction_count, human_turn_count, user_message_count,
+                      suggested_parent_id
+                    ) VALUES
+                      ('weak-work-host', 'claude-code', datetime('now'), '/tmp/weak-host.jsonl',
+                       'p', 'normal', 1, 1, 1, NULL),
+                      ('promoted-work-child', 'cursor', datetime('now'), '/tmp/promoted-child.jsonl',
+                       'p', 'normal', NULL, NULL, 2, 'weak-work-host');
+                    INSERT INTO session_work_beats
+                        (session_id, beat_index, action_date, action_timestamp, work_key,
+                         work_title, human_intent, assistant_outcome, kind, status,
+                         operation_events, confidence)
+                    VALUES
+                      ('promoted-work-child', 0, date('now', 'localtime'), datetime('now'),
+                       'promoted-work', 'Promoted', 'human request', 'completed',
+                       'implementation', 'completed', '[]', 0.9);
+                    """)
+            }
+        }
+
+        let items = try EngramServiceCommandHandler.readProjectWorkItems(
+            project: "p",
+            days: 1,
+            databasePath: paths.database.path
+        )
+
+        XCTAssertEqual(items.map(\.workKey), ["promoted-work"])
+    }
+
+    func testGenerateProjectWorkTitlesPromptsFromNewestWindowButHashesAllDisplayedKeyBeats_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        _ = try await gate.performWriteCommand(name: "seedWindowedWorkBeats") { writer in
+            try writer.migrate()
+            try writer.write { db in
+                try db.execute(sql: """
+                    INSERT INTO sessions (id, source, start_time, file_path, project, tier)
+                    VALUES
+                      ('old', 'cursor', '2025-01-01T10:00:00Z', '/tmp/old.jsonl', 'p', 'normal'),
+                      ('new', 'cursor', '2026-01-15T10:00:00Z', '/tmp/new.jsonl', 'p', 'normal');
+                    INSERT INTO session_work_beats
+                        (session_id, beat_index, action_date, action_timestamp, work_key,
+                         work_title, human_intent, assistant_outcome, kind, status,
+                         operation_events, confidence)
+                    VALUES
+                      ('old', 0, '2025-01-01', '2025-01-01T10:00:00Z', 'shared',
+                       'Shared', 'old intent outside window', 'old outcome outside window', 'implementation', 'completed', '[]', 0.9),
+                      ('new', 0, '2026-01-15', '2026-01-15T10:00:00Z', 'shared',
+                       'Shared', 'new intent', 'new outcome', 'implementation', 'completed', '[]', 0.9);
+                    """)
+            }
+        }
+
+        let captured = WorkTitlePromptCapture()
+        _ = try await EngramServiceCommandHandler.generateProjectWorkTitles(
+            EngramServiceGenerateProjectWorkTitlesRequest(
+                project: "p",
+                now: ISO8601DateFormatter().date(from: "2026-01-15T12:00:00Z")
+            ),
+            writerGate: gate,
+            titleConfig: Self.fakeTitleConfig
+        ) { intent, outcome, _ in
+            await captured.record(intent: intent, outcome: outcome)
+            return "Stable title"
+        }
+
+        let prompt = await captured.value
+        XCTAssertTrue(prompt.intent.contains("new intent"))
+        XCTAssertTrue(prompt.outcome.contains("new outcome"))
+        XCTAssertFalse(prompt.intent.contains("old intent outside window"))
+        XCTAssertFalse(prompt.outcome.contains("old outcome outside window"))
+
+        _ = try await gate.performWriteCommand(name: "mutateOldDisplayedKeyBeat") { writer in
+            try writer.write { db in
+                try db.execute(
+                    sql: "UPDATE session_work_beats SET human_intent = 'changed old intent outside window' WHERE session_id = 'old'"
+                )
+            }
+        }
+        let counter = WorkTitleCallCounter()
+        _ = try await EngramServiceCommandHandler.generateProjectWorkTitles(
+            EngramServiceGenerateProjectWorkTitlesRequest(
+                project: "p",
+                now: ISO8601DateFormatter().date(from: "2026-01-15T12:00:00Z")
+            ),
+            writerGate: gate,
+            titleConfig: Self.fakeTitleConfig
+        ) { _, _, _ in
+            await counter.increment()
+            return "Regenerated title"
+        }
+        let regeneratedCount = await counter.value
+        XCTAssertEqual(regeneratedCount, 1, "all beats of a displayed key must participate in the cache hash")
     }
 
     func testGenerateProjectWorkTitlesSkipsCachedAndRegeneratesOnChange() async throws {
@@ -6249,6 +9734,17 @@ private func makeServiceIPCPaths() throws -> (runtime: URL, socket: URL, databas
     )
 }
 
+private func makePrivateSettingsFixture() throws -> (directory: URL, settingsURL: URL) {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("engram-settings-\(UUID().uuidString.prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+    )
+    return (directory, directory.appendingPathComponent("settings.json"))
+}
+
 private func waitUntilFileExists(_ path: String) async throws {
     let deadline = Date().addingTimeInterval(5)
     while !FileManager.default.fileExists(atPath: path) {
@@ -6385,6 +9881,99 @@ private func seedSearchFixture(at path: String) throws {
     }
 }
 
+private func seedSemanticSearchFixture(at path: String) throws {
+    try seedSearchFixture(at: path)
+    let queue = try DatabaseQueue(path: path)
+    try queue.write { db in
+        try db.execute(sql: """
+            CREATE TABLE semantic_chunks (
+              id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              chunk_index INTEGER NOT NULL,
+              text TEXT NOT NULL,
+              embedding BLOB,
+              model TEXT,
+              dim INTEGER,
+              created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE embedding_meta (
+              id INTEGER PRIMARY KEY CHECK (id = 1),
+              provider TEXT,
+              model TEXT,
+              dimension INTEGER,
+              updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO embedding_meta (id, provider, model, dimension)
+            VALUES (1, 'test', 'probe', 3);
+            """)
+        try db.execute(
+            sql: """
+                INSERT INTO semantic_chunks(id, session_id, chunk_index, text, embedding, model, dim)
+                VALUES ('s2:c0', 's2', 0, 'semantic recall chunk', ?, 'probe', 3)
+                """,
+            arguments: [VectorMath.encode(VectorMath.l2Normalize([1, 0, 0]))]
+        )
+    }
+}
+
+private func seedOriginFilteredSemanticSearchFixture(
+    at path: String,
+    targetOrigin: String,
+    interferenceOrigin: String,
+    interferenceCount: Int
+) throws {
+    try seedSemanticSearchFixture(at: path)
+    let queue = try DatabaseQueue(path: path)
+    let targetEmbedding = VectorMath.encode(VectorMath.l2Normalize([0.1, 1, 0]))
+    let interferenceEmbedding = VectorMath.encode(VectorMath.l2Normalize([1, 0, 0]))
+    try queue.write { db in
+        try db.execute(
+            sql: "UPDATE sessions SET origin = ? WHERE id = 's2'",
+            arguments: [targetOrigin]
+        )
+        try db.execute(
+            sql: "DELETE FROM semantic_chunks WHERE id = 's2:c0'"
+        )
+        try db.execute(
+            sql: "INSERT INTO sessions_fts(session_id, content) VALUES ('s2', 'originneedle target')"
+        )
+
+        for index in 0 ..< interferenceCount {
+            let id = "reverse-origin-\(index)"
+            try db.execute(
+                sql: """
+                    INSERT INTO sessions (
+                      id, source, start_time, cwd, project, message_count,
+                      file_path, size_bytes, indexed_at, tier, origin
+                    ) VALUES (?, 'codex', '2026-08-30T12:00:00Z', '/tmp/reverse',
+                              'engram', 2, ?, 42, '2026-08-30T12:30:00Z', 'normal', ?)
+                    """,
+                arguments: [id, "/tmp/\(id).jsonl", interferenceOrigin]
+            )
+            try db.execute(
+                sql: "INSERT INTO sessions_fts(session_id, content) VALUES (?, 'originneedle interference')",
+                arguments: [id]
+            )
+            try db.execute(
+                sql: """
+                    INSERT INTO semantic_chunks(
+                      id, session_id, chunk_index, text, embedding, model, dim
+                    ) VALUES (?, ?, 0, 'originneedle interference', ?, 'probe', 3)
+                    """,
+                arguments: ["\(id):c0", id, interferenceEmbedding]
+            )
+        }
+        try db.execute(
+            sql: """
+                INSERT INTO semantic_chunks(
+                  id, session_id, chunk_index, text, embedding, model, dim
+                ) VALUES ('s2:c0', 's2', 0, 'originneedle target', ?, 'probe', 3)
+                """,
+            arguments: [targetEmbedding]
+        )
+    }
+}
+
 private func loadSettings(_ url: URL) throws -> [String: Any] {
     let data = try Data(contentsOf: url)
     return (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
@@ -6504,6 +10093,40 @@ private actor CheckpointTestSignal {
     }
 }
 
+private actor PeriodicScanCompletionProbe {
+    private var events = 0
+
+    func recordEvent() {
+        events += 1
+    }
+
+    func eventCount() -> Int {
+        events
+    }
+}
+
+private final class RunnerRepoClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = Date(timeIntervalSince1970: 1_777_000_000)
+
+    var now: Date {
+        lock.withLock { value }
+    }
+}
+
+private final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int {
+        lock.withLock { count }
+    }
+
+    func increment() {
+        lock.withLock { count += 1 }
+    }
+}
+
 private func serviceCoreSource(_ relativePath: String) throws -> String {
     var directory = URL(fileURLWithPath: #filePath)
     while directory.lastPathComponent != "macos" {
@@ -6541,5 +10164,103 @@ private final class CountingServiceDatabaseReader: ServiceDatabaseReading, @unch
     func read<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
         readCount += 1
         return try queue.read(block)
+    }
+}
+
+private final class ServiceSQLTraceRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String] = []
+
+    func append(_ statement: String) {
+        lock.lock()
+        values.append(statement)
+        lock.unlock()
+    }
+
+    func statements() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return values
+    }
+}
+
+private final class TracingServiceDatabaseReader: ServiceDatabaseReading, @unchecked Sendable {
+    private let queue: DatabaseQueue
+
+    init(path: String, recorder: ServiceSQLTraceRecorder) throws {
+        var configuration = Configuration()
+        configuration.readonly = true
+        configuration.prepareDatabase { db in
+            db.trace { event in recorder.append(String(describing: event)) }
+        }
+        queue = try DatabaseQueue(path: path, configuration: configuration)
+    }
+
+    func read<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
+        try queue.read(block)
+    }
+}
+
+private final class BusySequenceServiceDatabaseReader: ServiceDatabaseReading, @unchecked Sendable {
+    private let queue: DatabaseQueue
+    private let lock = NSLock()
+    private let busyReadNumbers: Set<Int>
+    private let busyImmediateReadNumbers: Set<Int>
+    private var normalCount = 0
+    private var immediateCount = 0
+
+    var readCount: Int {
+        lock.withLock { normalCount + immediateCount }
+    }
+
+    var normalReadCount: Int { lock.withLock { normalCount } }
+    var immediateReadCount: Int { lock.withLock { immediateCount } }
+
+    init(
+        path: String,
+        busyReadNumbers: Set<Int> = [],
+        busyImmediateReadNumbers: Set<Int> = []
+    ) throws {
+        self.queue = try DatabaseQueue(path: path)
+        self.busyReadNumbers = busyReadNumbers
+        self.busyImmediateReadNumbers = busyImmediateReadNumbers
+    }
+
+    func read<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
+        let current = lock.withLock { () -> Int in
+            normalCount += 1
+            return normalCount
+        }
+        if busyReadNumbers.contains(current) {
+            throw DatabaseError(resultCode: .SQLITE_BUSY, message: "database is locked")
+        }
+        return try queue.read(block)
+    }
+
+    func readImmediate<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
+        let current = lock.withLock { () -> Int in
+            immediateCount += 1
+            return immediateCount
+        }
+        if busyImmediateReadNumbers.contains(current) {
+            throw DatabaseError(resultCode: .SQLITE_BUSY, message: "database is locked")
+        }
+        return try queue.read(block)
+    }
+}
+
+private actor ShutdownCallbackRecorder {
+    private var called = false
+
+    func record() {
+        called = true
+    }
+
+    func waitUntilCalled() async -> Bool {
+        let deadline = ContinuousClock.now + .seconds(1)
+        while !called, ContinuousClock.now < deadline {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return called
     }
 }

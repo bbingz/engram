@@ -46,8 +46,9 @@ if (existsSync(fixturePath)) {
 const db = new Database(fixturePath);
 const raw = db.raw;
 
-// Switch to DELETE journal mode for single-file determinism
-raw.pragma('journal_mode = DELETE');
+// Native app readers reject non-WAL databases. WAL mode persists in the main
+// file after a clean close while the generated fixture remains deterministic.
+raw.pragma('journal_mode = WAL');
 
 // Keep dev fixture schema aligned with the Swift-owned product schema. The
 // legacy TS migration does not create vector-memory tables unless vector-store
@@ -72,13 +73,15 @@ const insertSession = raw.prepare(`
     id, source, start_time, end_time, cwd, project, model,
     message_count, user_message_count, assistant_message_count,
     tool_message_count, system_message_count,
-    summary, file_path, size_bytes, indexed_at,
+    summary, instruction_count, human_turn_count,
+    file_path, size_bytes, indexed_at,
     agent_role, origin, tier, generated_title, quality_score
   ) VALUES (
     @id, @source, @startTime, @endTime, @cwd, @project, @model,
     @messageCount, @userMessageCount, @assistantMessageCount,
     @toolMessageCount, @systemMessageCount,
-    @summary, @filePath, @sizeBytes, @indexedAt,
+    @summary, MIN(@userMessageCount, 2), @userMessageCount,
+    @filePath, @sizeBytes, @indexedAt,
     @agentRole, @origin, @tier, @generatedTitle, @qualityScore
   )
 `);
@@ -651,6 +654,22 @@ const insertAll = raw.transaction(() => {
   }
 });
 insertAll();
+
+// Seed the FTS table used by native UI-test offline search. The UI-test mock
+// deliberately fails service reads so these rows exercise the real fixture DB.
+const insertFTS = raw.prepare(`
+  INSERT INTO sessions_fts (session_id, content)
+  VALUES (?, ?)
+`);
+const insertAllFTS = raw.transaction(() => {
+  for (const session of sessions) {
+    const content = [session.generatedTitle, session.summary]
+      .filter((value): value is string => Boolean(value))
+      .join('\n');
+    if (content) insertFTS.run(session.id, content);
+  }
+});
+insertAllFTS();
 
 // ─── session_local_state entries ──────────────────────────────────────
 // seed-17: hidden session

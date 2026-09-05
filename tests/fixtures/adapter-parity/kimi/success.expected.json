@@ -1,7 +1,7 @@
 {
   "failure": null,
   "fileToolCounts": {},
-  "generatedAtCommit": "88f86631",
+  "generatedAtCommit": "d97d0257",
   "inputPath": "kimi/input/sessions/ws-001/sess-001/context.jsonl",
   "insightFields": {
     "firstUserSummary": "帮我排查内存泄漏",
@@ -25,7 +25,7 @@
       "role": "user"
     }
   ],
-  "nodeVersion": "v26.0.0",
+  "nodeVersion": "v26.7.0",
   "projectFields": {
     "cwd": "/Users/test/my-project",
     "project": null,

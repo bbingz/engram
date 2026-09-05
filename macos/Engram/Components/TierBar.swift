@@ -10,10 +10,10 @@ struct TierBar: View {
     private var total: Int { premium + normal + lite + skip }
 
     private let tierColors: [(String, Color)] = [
-        ("premium", Color(hex: 0x4A8FE7)),
-        ("normal", Color(hex: 0x30D158)),
-        ("lite", Color(hex: 0xFF9F0A)),
-        ("skip", Color(hex: 0x636366)),
+        ("premium", Theme.accent),
+        ("normal", Theme.green),
+        ("lite", Theme.orange),
+        ("skip", Theme.gray),
     ]
 
     private var segments: [(name: String, count: Int, color: Color)] {

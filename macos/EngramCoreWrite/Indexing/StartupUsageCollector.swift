@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import EngramCoreRead
 
 public struct StartupUsageSnapshot: Equatable, Sendable {
     public let source: String
@@ -182,11 +183,12 @@ public final class WriterStartupUsageCollector: StartupUsageCollecting {
     private func usageAggregates(_ db: Database, since: String) throws -> [UsageAggregate] {
         var arguments = StatementArguments()
         arguments += [since, since, since]
+        let activityTime = SearchFilterPredicates.activityTimeSQL(alias: "s")
         let rows = try Row.fetchAll(
             db,
             sql: """
             SELECT LOWER(TRIM(s.source)) AS source,
-                   MIN(CASE WHEN s.start_time < ? THEN ? ELSE s.start_time END) AS earliest_start_time,
+                   MIN(CASE WHEN \(activityTime) < ? THEN ? ELSE \(activityTime) END) AS earliest_start_time,
                    SUM(c.cost_usd) AS cost_usd,
                    SUM(
                      COALESCE(c.input_tokens, 0)
@@ -196,8 +198,9 @@ public final class WriterStartupUsageCollector: StartupUsageCollecting {
                    ) AS tokens
             FROM session_costs c
             JOIN sessions s ON s.id = c.session_id
-            WHERE COALESCE(NULLIF(s.end_time, ''), NULLIF(s.indexed_at, ''), s.start_time) >= ?
-              AND s.hidden_at IS NULL
+            WHERE \(activityTime) >= ?
+              -- docs/invariants.md invariant 3: usage pressure matches list visibility.
+              AND \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
               AND TRIM(s.source) <> ''
             GROUP BY LOWER(TRIM(s.source))
             HAVING SUM(c.cost_usd) > 0 OR SUM(

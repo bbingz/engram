@@ -14,7 +14,7 @@ SPEC_JSON="$(cd "$ROOT_DIR/macos" && xcodegen dump --spec project.yml --type jso
 
 node - "$SPEC_JSON" <<'NODE'
 const spec = JSON.parse(process.argv[2]);
-const forbiddenTargets = new Set(['Engram', 'EngramMCP', 'EngramCLI']);
+const forbiddenTargets = new Set(['Engram', 'EngramCLI']);
 const targets = spec.targets || {};
 const violations = [];
 
@@ -36,18 +36,32 @@ if (!writeDeps.some((dep) => dep.target === 'EngramCoreRead')) {
   violations.push('EngramCoreWrite must depend on EngramCoreRead');
 }
 
+const mcpDeps = targets.EngramMCP?.dependencies || [];
+if (!mcpDeps.some((dep) => dep.target === 'EngramCoreWrite')) {
+  violations.push('EngramMCP must depend on EngramCoreWrite for read-only ReviewScan');
+}
+
 if (violations.length > 0) {
   console.error(violations.join('\n'));
   process.exit(1);
 }
 NODE
 
-if rg -n "import EngramCoreWrite" \
+if grep -R -n -F "import EngramCoreWrite" \
   "$ROOT_DIR/macos/Engram" \
-  "$ROOT_DIR/macos/EngramMCP" \
   "$ROOT_DIR/macos/EngramCLI" \
   "$ROOT_DIR/macos/Shared" >/tmp/engram-core-write-imports.txt; then
   cat /tmp/engram-core-write-imports.txt >&2
+  exit 1
+fi
+
+# Invariant 1: MCP mutations still go through EngramServiceClient. The sole
+# WriteCore import is the read-only project_review scanner required to keep its
+# path semantics identical to the service/orchestrator implementation.
+MCP_WRITE_IMPORT_FILES="$(grep -R -l -F "import EngramCoreWrite" "$ROOT_DIR/macos/EngramMCP" || true)"
+EXPECTED_MCP_WRITE_IMPORT="$ROOT_DIR/macos/EngramMCP/Core/MCPFileTools.swift"
+if [[ "$MCP_WRITE_IMPORT_FILES" != "$EXPECTED_MCP_WRITE_IMPORT" ]]; then
+  printf '%s\n' "$MCP_WRITE_IMPORT_FILES" >&2
   exit 1
 fi
 

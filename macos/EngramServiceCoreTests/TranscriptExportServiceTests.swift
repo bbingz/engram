@@ -6,6 +6,38 @@ import GRDB
 import Darwin
 
 final class TranscriptExportServiceTests: XCTestCase {
+    func testExportSessionRejectsRemoteSnapshotWithStructuredError_repro() async throws {
+        let harness = try await makeArchivePageHarness(name: "remote-export")
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        try await insertArchivePageSession(
+            gate: harness.gate,
+            id: "remote-export",
+            source: "codex",
+            filePath: "remote://hq/remote-export",
+            messageCount: 1
+        )
+
+        do {
+            _ = try await TranscriptExportService.exportSession(
+                EngramServiceExportSessionRequest(
+                    id: "remote-export",
+                    format: "markdown",
+                    outputHome: harness.root.path,
+                    actor: "test"
+                ),
+                databasePath: harness.gate.databasePath
+            )
+            XCTFail("expected remote snapshot export to fail closed")
+        } catch let error as EngramServiceError {
+            XCTAssertEqual(
+                error,
+                .invalidRequest(
+                    message: "HQ index snapshots do not contain a source transcript and cannot be exported from this Mac."
+                )
+            )
+        }
+    }
+
     func testArchiveReadSessionPageWireRoundTripsAndRejectsUnsupportedRoles() throws {
         let request = try EngramServiceArchiveReadSessionPageRequest(
             sessionId: "session-1",
@@ -196,6 +228,72 @@ final class TranscriptExportServiceTests: XCTestCase {
         for forbidden in ["path", "digest", "manifest", "receipt", "archiveBytes"] {
             XCTAssertNil(object[forbidden])
         }
+    }
+
+    func testArchiveReadSessionPageRedactsLongPEMBeforeBudgetTruncation_repro() async throws {
+        let harness = try await makeArchivePageHarness(name: "long-pem-redaction")
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        let transcript = harness.root.appendingPathComponent("session.jsonl")
+        let pem = """
+        token:
+        -----BEGIN PRIVATE KEY-----
+        \(String(repeating: "A", count: 200_000))
+        -----END PRIVATE KEY-----
+        """
+        try writeCodexTranscript([("user", pem)], to: transcript)
+        try await insertArchivePageSession(
+            gate: harness.gate,
+            id: "session-long-pem",
+            source: "codex",
+            filePath: transcript.path,
+            messageCount: 1
+        )
+        let archiveRoot = harness.root.appendingPathComponent("archive", isDirectory: true)
+        let cas = try ImmutableArchiveCAS(root: archiveRoot)
+        let catalog = try ArchiveCatalog(
+            root: archiveRoot,
+            machineID: "11111111-1111-4111-8111-111111111111"
+        )
+        try catalog.migrate()
+        let replayParent = harness.root.appendingPathComponent("replay", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: replayParent,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let handler = EngramServiceCommandHandler(
+            writerGate: harness.gate,
+            archiveTranscriptResolver: try ArchiveTranscriptResolver(
+                catalog: catalog,
+                cas: cas,
+                temporaryParent: replayParent
+            )
+        )
+
+        let envelope = await handler.handle(
+            EngramServiceRequestEnvelope(
+                requestId: "archive-long-pem",
+                command: "archiveReadSessionPage",
+                payload: try JSONEncoder().encode(
+                    EngramServiceArchiveReadSessionPageRequest(
+                        sessionId: "session-long-pem",
+                        page: 1,
+                        pageSize: 1,
+                        roles: nil
+                    )
+                )
+            )
+        )
+        let page = try JSONDecoder().decode(
+            EngramServiceArchiveReadSessionPageResponse.self,
+            from: archivePageSuccessData(envelope)
+        )
+
+        XCTAssertTrue(page.messages.first?.content.contains(TranscriptRedactionPolicy.redactionToken) ?? false)
+        XCTAssertFalse(page.messages.first?.content.contains("BEGIN PRIVATE KEY") ?? true)
+        XCTAssertFalse(page.messages.first?.content.contains("END PRIVATE KEY") ?? true)
+        XCTAssertFalse(page.messages.first?.content.contains(String(repeating: "A", count: 64)) ?? true)
+        XCTAssertFalse(page.responseBudgetTruncated, "redaction must happen before response budgeting")
     }
 
     func testArchiveCoordinatorResolverSnapshotIsEnabledOnlyAndDefaultOffHasNoStorageEffects() async throws {
@@ -401,6 +499,109 @@ final class TranscriptExportServiceTests: XCTestCase {
         }
     }
 
+    func testLiveTranscriptParserFailureDoesNotBecomeCompleteFallback_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-live-parser-terminal-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let missingSQLite = root.appendingPathComponent("missing-opencode.db")
+
+        do {
+            _ = try await ServiceTranscriptReader.readMessagesWithMetadata(
+                filePath: missingSQLite.path,
+                source: "opencode"
+            )
+            XCTFail("parser failure must not be replaced by a complete legacy fallback")
+        } catch let failure as ParserFailure {
+            XCTAssertEqual(failure, .unsupportedVirtualLocator)
+        }
+    }
+
+    func testTranscriptSizeGuardFailsClosedForMissingRealFile_repro() {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-missing-transcript-\(UUID().uuidString).json")
+
+        XCTAssertThrowsError(
+            try TranscriptSizeGuard.validateFullJSONTranscript(
+                filePath: missing.path,
+                source: "gemini-cli"
+            )
+        )
+    }
+
+    func testCursorVirtualLocatorSkipsFullJSONFileGuard_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-cursor-virtual-\(UUID().uuidString)", isDirectory: true)
+        let globalStorage = root
+            .appendingPathComponent("Library/Application Support/Cursor/User/globalStorage", isDirectory: true)
+        try FileManager.default.createDirectory(at: globalStorage, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let homeScope = ServiceCoreTestHomeScope(home: root)
+        defer { homeScope.restore() }
+        let dbPath = globalStorage.appendingPathComponent("state.vscdb").path
+        let queue = try DatabaseQueue(path: dbPath)
+        try await queue.write { db in
+            try db.execute(sql: "CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)")
+            try db.execute(
+                sql: "INSERT INTO cursorDiskKV (key, value) VALUES (?, ?), (?, ?), (?, ?)",
+                arguments: [
+                    "composerData:virtual", #"{"composerId":"virtual"}"#,
+                    "bubbleId:virtual:u1", #"{"type":1,"text":"virtual user"}"#,
+                    "bubbleId:virtual:a1", #"{"type":2,"text":"virtual assistant"}"#,
+                ]
+            )
+        }
+
+        let result = try await ServiceTranscriptReader.readMessagesWithMetadata(
+            filePath: "\(dbPath)?composer=virtual",
+            source: "cursor"
+        )
+        var messages: [ServiceTranscriptMessage] = []
+        for message in result.messages { messages.append(message) }
+
+        XCTAssertEqual(messages.map(\.content), ["virtual user", "virtual assistant"])
+    }
+
+    func testLiveTranscriptCocoaReadFailureIsTerminal_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-live-cocoa-terminal-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let unreadable = root.appendingPathComponent("unreadable.jsonl")
+        try #"{"type":"user","message":{"role":"user","content":"must not export"}}"#
+            .write(to: unreadable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: unreadable.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: unreadable.path) }
+
+        do {
+            let result = try await ServiceTranscriptReader.readMessagesWithMetadata(
+                filePath: unreadable.path,
+                source: "iflow"
+            )
+            XCTFail("Cocoa read failure must be terminal, got complete=\(result.totalKnownComplete)")
+        } catch {
+            XCTAssertTrue(error is CocoaError, "unexpected error: \(error)")
+        }
+    }
+
+    func testLiveTranscriptCancellationRemainsCancellation_repro() async throws {
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await ServiceTranscriptReader.readPrimerMessagesWithMetadata(
+                filePath: "/tmp/engram-cancelled-primer.jsonl",
+                source: "iflow",
+                limit: 6
+            )
+        }
+
+        do {
+            _ = try await task.value
+            XCTFail("cancelled primer must not become a complete fallback")
+        } catch is CancellationError {
+            // expected
+        }
+    }
+
     func testArchiveTranscriptTooLargeMapperStabilizesParserAndSizeGuardFailures() {
         assertTranscriptTooLarge(
             ArchiveTranscriptServiceErrorMapper.serviceError(
@@ -425,9 +626,11 @@ final class TranscriptExportServiceTests: XCTestCase {
         XCTAssertEqual(retryPolicy, "never")
     }
 
-    func testDefaultOffDirectParserFailureKeepsLegacyGenericErrorSemantics() async throws {
+    func testDefaultOffDirectParserFailureKeepsLegacyGenericErrorSemantics_repro() async throws {
         let harness = try await makeArchivePageHarness(name: "default-off-parser-failure")
         defer { try? FileManager.default.removeItem(at: harness.root) }
+        let homeScope = ServiceCoreTestHomeScope(home: harness.root)
+        defer { homeScope.restore() }
         let invalidTranscript = harness.root.appendingPathComponent("invalid-utf8.jsonl")
         try Data([0xFF, 0x0A]).write(to: invalidTranscript)
         try await insertArchivePageSession(
@@ -852,6 +1055,28 @@ final class TranscriptExportServiceTests: XCTestCase {
         XCTAssertTrue(redacted.contains("[REDACTED]"))
     }
 
+    func testRedactionCoversUnclosedPrivateKeyToEndOfInput_repro() {
+        let input = "token:\n-----BEGIN PRIVATE KEY-----\n"
+            + String(repeating: "A", count: 160 * 1024)
+
+        let redacted = TranscriptExportService.redactSensitiveContent(input)
+
+        XCTAssertTrue(redacted.contains(TranscriptRedactionPolicy.redactionToken), redacted)
+        XCTAssertFalse(redacted.contains("BEGIN PRIVATE KEY"), redacted)
+        XCTAssertFalse(redacted.contains(String(repeating: "A", count: 64)), redacted)
+    }
+
+    func testRedactionCoversOpenPGPPrivateKeyBlocks_repro() {
+        let input = "before\n-----BEGIN PGP PRIVATE KEY BLOCK-----\nsecret-material\n"
+            + "-----END PGP PRIVATE KEY BLOCK-----\nafter"
+
+        let redacted = TranscriptExportService.redactSensitiveContent(input)
+
+        XCTAssertEqual(redacted, "before\n\(TranscriptRedactionPolicy.redactionToken)\nafter")
+        XCTAssertFalse(redacted.contains("PGP PRIVATE KEY"), redacted)
+        XCTAssertFalse(redacted.contains("secret-material"), redacted)
+    }
+
     func testRedactionStaticPatternsProduceByteIdenticalOutput() {
         let samples = [
             "api_key: ABCDEF0123456789 tail",
@@ -866,7 +1091,7 @@ final class TranscriptExportServiceTests: XCTestCase {
         let expected = [
             "[REDACTED] tail",
             "[REDACTED]",
-            "[REDACTED] done",
+            "token=[REDACTED] done",
             "[REDACTED] and [REDACTED] and [REDACTED]",
             "[REDACTED] here",
             "[REDACTED] and [REDACTED] and [REDACTED]",

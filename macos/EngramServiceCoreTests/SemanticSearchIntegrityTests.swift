@@ -83,15 +83,26 @@ final class SemanticSearchIntegrityTests: XCTestCase {
             sessions: [("s2", "2026-06-01T00:00:00Z", [1, 0, 0], "semantic recall chunk")]
         )
 
-        // No usable API key and no settings file → provider unavailable.
-        // Isolate from process env / ~/.engram/settings.json (may have keys).
+        // Exercise the provider-unavailable path without consulting process
+        // settings or Keychain state.
+        let isolatedHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-no-settings-\(UUID().uuidString)").path
+        let embedCalls = EmbedCallCounter()
         let provider = try SQLiteEngramServiceReadProvider(
             databasePath: paths.database.path,
             embeddingEnvironment: [
-                "HOME": FileManager.default.temporaryDirectory
-                    .appendingPathComponent("engram-no-settings-\(UUID().uuidString)").path,
+                "HOME": isolatedHome,
+                "CFFIXED_USER_HOME": isolatedHome,
                 "ENGRAM_SETTINGS_PATH": "/tmp/engram-missing-settings-\(UUID().uuidString).json",
-            ]
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_MODEL": "probe",
+                "ENGRAM_EMBEDDING_DIM": "3",
+            ],
+            embeddingProviderFactory: { _ in
+                CountingEmbeddingProvider(counter: embedCalls) { _ in
+                    throw EmbeddingError.notConfigured
+                }
+            }
         )
         let response = try await provider.search(
             EngramServiceSearchRequest(query: "semantic recall", mode: "semantic", limit: 10)
@@ -137,6 +148,111 @@ final class SemanticSearchIntegrityTests: XCTestCase {
                 && warning.localizedCaseInsensitiveContains("missing"),
             "expected corpus-missing wording, got: \(warning)"
         )
+    }
+
+    func testSemanticAvailabilityIgnoresChunksOwnedOnlyByHiddenSessions_repro() async throws {
+        let paths = try makePaths()
+        try seedBaseSessions(at: paths.database.path)
+        try seedSemanticCorpus(
+            at: paths.database.path,
+            model: "probe",
+            sessions: [("s2", "2026-06-01T00:00:00Z", [1, 0, 0], "semantic recall chunk")]
+        )
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: "UPDATE sessions SET hidden_at = datetime('now') WHERE id = 's2'")
+        }
+
+        let embedCalls = EmbedCallCounter()
+        let provider = try SQLiteEngramServiceReadProvider(
+            databasePath: paths.database.path,
+            embeddingEnvironment: [
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_MODEL": "probe",
+                "ENGRAM_EMBEDDING_DIM": "3",
+            ],
+            embeddingProviderFactory: { _ in
+                CountingEmbeddingProvider(counter: embedCalls) { _ in [1, 0, 0] }
+            }
+        )
+
+        let response = try await provider.search(
+            EngramServiceSearchRequest(query: "semantic recall", mode: "semantic", limit: 10)
+        )
+
+        XCTAssertEqual(response.searchModes, ["keyword"])
+        XCTAssertEqual(response.warningCode, "embeddingCorpusMissing")
+        let callCount = await embedCalls.count()
+        XCTAssertEqual(callCount, 0, "an invisible corpus must not trigger query embedding")
+    }
+
+    func testSemanticSearchKeepsOrphanedSessionsVisibleLikeKeywordSearch_repro() async throws {
+        let paths = try makePaths()
+        try seedBaseSessions(at: paths.database.path)
+        try seedSemanticCorpus(
+            at: paths.database.path,
+            model: "probe",
+            sessions: [("s2", "2026-06-01T00:00:00Z", [1, 0, 0], "semantic orphan recall")]
+        )
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET orphan_status = 'missing_parent' WHERE id = 's2'"
+            )
+        }
+        let provider = try semanticProvider(databasePath: paths.database.path)
+
+        let response = try await provider.search(
+            EngramServiceSearchRequest(query: "orphan recall", mode: "semantic", limit: 10)
+        )
+
+        XCTAssertEqual(response.searchModes, ["semantic"])
+        XCTAssertEqual(response.items.map(\.id), ["s2"])
+    }
+
+    func testSemanticBusyHydrationFallbackKeepsSameOrphanPolicy_repro() async throws {
+        let paths = try makePaths()
+        try seedBaseSessions(at: paths.database.path)
+        try seedSemanticCorpus(
+            at: paths.database.path,
+            model: "probe",
+            sessions: [("s2", "2026-06-01T00:00:00Z", [1, 0, 0], "semantic orphan recall")]
+        )
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET orphan_status = 'missing_parent' WHERE id = 's2'"
+            )
+        }
+        let reader = try BusyNthImmediateIntegrityReader(
+            path: paths.database.path,
+            busyReadNumber: 4
+        )
+        let provider = try semanticProvider(databasePath: paths.database.path, reader: reader)
+
+        let response = try await provider.search(
+            EngramServiceSearchRequest(query: "orphan recall", mode: "semantic", limit: 10)
+        )
+
+        XCTAssertEqual(reader.immediateReadCount, 4)
+        XCTAssertEqual(response.searchModes, ["semantic"])
+        XCTAssertEqual(response.items.map(\.id), ["s2"])
+    }
+
+    func testSemanticDatabaseReadFailureIsNotReportedAsEmbeddingFailure_repro() async throws {
+        let paths = try makePaths()
+        try seedBaseSessions(at: paths.database.path)
+        let reader = try ThrowingImmediateIntegrityReader(path: paths.database.path)
+        let provider = try semanticProvider(databasePath: paths.database.path, reader: reader)
+
+        do {
+            _ = try await provider.search(
+                EngramServiceSearchRequest(query: "memory recall", mode: "semantic", limit: 10)
+            )
+            XCTFail("a non-embedding database read failure must propagate")
+        } catch let error as IntegrityReadError {
+            XCTAssertEqual(error, .forced)
+        }
     }
 
     func testSemanticDegradeWarningNamesBreakerOpenWithoutCallingInnerProvider() async throws {
@@ -502,6 +618,27 @@ final class SemanticSearchIntegrityTests: XCTestCase {
             }
         }
     }
+
+    private func semanticProvider(
+        databasePath: String,
+        reader: (any ServiceDatabaseReading)? = nil
+    ) throws -> SQLiteEngramServiceReadProvider {
+        try SQLiteEngramServiceReadProvider(
+            databasePath: databasePath,
+            makeDatabaseReader: { path in
+                if let reader { return reader }
+                return try IntegrityDatabaseReader(path: path)
+            },
+            embeddingEnvironment: [
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_MODEL": "probe",
+                "ENGRAM_EMBEDDING_DIM": "3",
+            ],
+            embeddingProviderFactory: { _ in
+                StaticIntegrityEmbeddingProvider { _ in [1, 0, 0] }
+            }
+        )
+    }
 }
 
 // MARK: - Test doubles
@@ -535,5 +672,66 @@ private struct StaticIntegrityEmbeddingProvider: EmbeddingProvider {
 
     func embed(_ texts: [String]) async throws -> [[Float]] {
         texts.map { VectorMath.l2Normalize(vector($0)) }
+    }
+}
+
+private final class IntegrityDatabaseReader: ServiceDatabaseReading, @unchecked Sendable {
+    let queue: DatabaseQueue
+
+    init(path: String) throws {
+        queue = try DatabaseQueue(path: path)
+    }
+
+    func read<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
+        try queue.read(block)
+    }
+}
+
+private final class BusyNthImmediateIntegrityReader: ServiceDatabaseReading, @unchecked Sendable {
+    private let queue: DatabaseQueue
+    private let busyReadNumber: Int
+    private let lock = NSLock()
+    private var immediateReads = 0
+
+    var immediateReadCount: Int { lock.withLock { immediateReads } }
+
+    init(path: String, busyReadNumber: Int) throws {
+        queue = try DatabaseQueue(path: path)
+        self.busyReadNumber = busyReadNumber
+    }
+
+    func read<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
+        try queue.read(block)
+    }
+
+    func readImmediate<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
+        let count = lock.withLock { () -> Int in
+            immediateReads += 1
+            return immediateReads
+        }
+        if count == busyReadNumber {
+            throw DatabaseError(resultCode: .SQLITE_BUSY, message: "database is locked")
+        }
+        return try queue.read(block)
+    }
+}
+
+private enum IntegrityReadError: Error, Equatable {
+    case forced
+}
+
+private final class ThrowingImmediateIntegrityReader: ServiceDatabaseReading, @unchecked Sendable {
+    private let queue: DatabaseQueue
+
+    init(path: String) throws {
+        queue = try DatabaseQueue(path: path)
+    }
+
+    func read<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
+        try queue.read(block)
+    }
+
+    func readImmediate<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
+        throw IntegrityReadError.forced
     }
 }

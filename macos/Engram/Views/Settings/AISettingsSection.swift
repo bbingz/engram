@@ -2,12 +2,20 @@
 import SwiftUI
 
 struct AISettingsSection: View {
-    @Environment(EngramServiceClient.self) var serviceClient
+    let serviceSocketPath: String
+    @Environment(\.engramServiceClient) var serviceClient
+
+    init(serviceSocketPath: String) {
+        self.serviceSocketPath = serviceSocketPath
+    }
 
     // Provider
     @State private var aiProtocol: String = "openai"
     @State private var aiBaseURL: String = ""
     @State private var aiApiKey: String = ""
+    @State private var aiAPIKeyWasEdited = false
+    @State private var preserveEmptyAIAPIKey = false
+    @State private var aiAPIKeyPersistenceResult: APIKeyPersistenceResult? = nil
     @State private var aiModel: String = "gpt-4o-mini"
 
     // NOTE: Embeddings controls (provider/model/dimension) are intentionally
@@ -37,11 +45,18 @@ struct AISettingsSection: View {
     @State private var titleBaseURL: String = ""
     @State private var titleModel: String = "qwen2.5:3b"
     @State private var titleApiKey: String = ""
+    @State private var titleAPIKeyWasEdited = false
+    @State private var preserveEmptyTitleAPIKey = false
+    @State private var titleAPIKeyPersistenceResult: APIKeyPersistenceResult? = nil
     @State private var titleTestStatus: TitleConnectionStatus = .idle
     @State private var titleRegenerateStatus: TitleRegenerationStatus = .idle
     @State private var isLoadingSettings = false
+    @State private var settingsLoadApplied = false
+    @State private var settingsLoadGeneration = 0
     @State private var saveAISettingsTask: Task<Void, Never>? = nil
     @State private var saveTitleSettingsTask: Task<Void, Never>? = nil
+    @FocusState private var aiAPIKeyFocused: Bool
+    @FocusState private var titleAPIKeyFocused: Bool
     static let settingsSaveDebounceNanoseconds: UInt64 = 400_000_000
 
     var body: some View {
@@ -75,7 +90,24 @@ struct AISettingsSection: View {
                         SecureField("Required", text: $aiApiKey)
                             .frame(width: 260)
                             .multilineTextAlignment(.trailing)
-                            .onChange(of: aiApiKey) { scheduleSaveAISettings() }
+                            .focused($aiAPIKeyFocused)
+                            .onChange(of: aiApiKey) {
+                                guard settingsLoadApplied else { return }
+                                aiAPIKeyWasEdited = true
+                                preserveEmptyAIAPIKey = false
+                                scheduleSaveAISettings()
+                            }
+                            .onChange(of: aiAPIKeyFocused) {
+                                if !aiAPIKeyFocused { scheduleSaveAISettings() }
+                            }
+                            .disabled(!settingsLoadApplied)
+                        Button("Clear") {
+                            aiApiKey = ""
+                            aiAPIKeyWasEdited = true
+                            preserveEmptyAIAPIKey = false
+                            saveAISettings(commitFocusedEmpty: true)
+                        }
+                        .disabled(!settingsLoadApplied)
                     }
 
                     HStack {
@@ -87,9 +119,15 @@ struct AISettingsSection: View {
                             .onChange(of: aiModel) { scheduleSaveAISettings() }
                     }
 
-                    Text("API keys are stored in macOS Keychain")
+                    Text(apiKeyStorageMessage(
+                        result: aiAPIKeyPersistenceResult,
+                        preservingUnavailableKey: preserveEmptyAIAPIKey
+                    ))
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(apiKeyStorageColor(
+                            result: aiAPIKeyPersistenceResult,
+                            preservingUnavailableKey: preserveEmptyAIAPIKey
+                        ))
                 }
                 .padding(.vertical, 4)
             }
@@ -236,8 +274,34 @@ struct AISettingsSection: View {
                             SecureField("Required", text: $titleApiKey)
                                 .frame(width: 260)
                                 .multilineTextAlignment(.trailing)
-                                .onChange(of: titleApiKey) { scheduleSaveTitleSettings() }
+                                .focused($titleAPIKeyFocused)
+                                .onChange(of: titleApiKey) {
+                                    guard settingsLoadApplied else { return }
+                                    titleAPIKeyWasEdited = true
+                                    preserveEmptyTitleAPIKey = false
+                                    scheduleSaveTitleSettings()
+                                }
+                                .onChange(of: titleAPIKeyFocused) {
+                                    if !titleAPIKeyFocused { scheduleSaveTitleSettings() }
+                                }
+                                .disabled(!settingsLoadApplied)
+                            Button("Clear") {
+                                titleApiKey = ""
+                                titleAPIKeyWasEdited = true
+                                preserveEmptyTitleAPIKey = false
+                                saveTitleSettings(commitFocusedEmpty: true)
+                            }
+                            .disabled(!settingsLoadApplied)
                         }
+                        Text(apiKeyStorageMessage(
+                            result: titleAPIKeyPersistenceResult,
+                            preservingUnavailableKey: preserveEmptyTitleAPIKey
+                        ))
+                        .font(.caption2)
+                        .foregroundStyle(apiKeyStorageColor(
+                            result: titleAPIKeyPersistenceResult,
+                            preservingUnavailableKey: preserveEmptyTitleAPIKey
+                        ))
                     }
 
                     HStack(spacing: 8) {
@@ -309,7 +373,7 @@ struct AISettingsSection: View {
                 .padding(.vertical, 4)
             }
         }
-        .onAppear { loadAISettings() }
+        .task { await loadAISettings() }
         // R9/M21 residual: cancel-on-retype alone dropped the last keystrokes when the
         // section disappeared before the 400ms timer fired. Flush any pending debounce
         // immediately on leave so model/baseURL/API-key edits are not lost.
@@ -325,6 +389,7 @@ struct AISettingsSection: View {
     /// Debounce settings.json writes while typing (M21). The timer stays on
     /// MainActor so it can read `@State`; persist is off-main (R9).
     private func scheduleSaveAISettings() {
+        guard !isLoadingSettings else { return }
         saveAISettingsTask?.cancel()
         saveAISettingsTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: Self.settingsSaveDebounceNanoseconds)
@@ -335,6 +400,7 @@ struct AISettingsSection: View {
     }
 
     private func scheduleSaveTitleSettings() {
+        guard !isLoadingSettings else { return }
         saveTitleSettingsTask?.cancel()
         saveTitleSettingsTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: Self.settingsSaveDebounceNanoseconds)
@@ -359,20 +425,33 @@ struct AISettingsSection: View {
         saveAISettingsTask = nil
         saveTitleSettingsTask = nil
         if flushAI {
-            saveAISettings()
+            saveAISettings(commitFocusedEmpty: false)
         }
         if flushTitle {
-            saveTitleSettings()
+            saveTitleSettings(commitFocusedEmpty: false)
+        }
+        Task { @MainActor in
+            await AISettingsPersister.waitForPendingPersistence()
         }
     }
 
     /// Snapshot `@State` on MainActor, then persist off-main so debounce/flush
     /// never flocks settings.json or talks to Keychain on the UI thread (R9).
-    private func saveAISettings() {
+    private func saveAISettings(commitFocusedEmpty: Bool = false) {
         guard !isLoadingSettings else { return }
+        let applyAPIKey = aiAPIKeyWasEdited
+        let submittedAPIKey = aiApiKey
         AISettingsPersister.persistAIOffMain(
             AISettingsPersistSnapshot(
-                apiKey: aiApiKey,
+                apiKey: submittedAPIKey,
+                preserveEmptyAPIKey: preserveEmptyAIAPIKey
+                    || !aiAPIKeyWasEdited
+                    || APIKeyFocusedEmptyPolicy.shouldPreserve(
+                        value: aiApiKey,
+                        isFocused: aiAPIKeyFocused,
+                        commitFocusedEmpty: commitFocusedEmpty
+                    ),
+                applyAPIKey: applyAPIKey,
                 aiProtocol: aiProtocol,
                 aiBaseURL: aiBaseURL,
                 aiModel: aiModel,
@@ -386,33 +465,90 @@ struct AISettingsSection: View {
                 summarySampleFirst: summarySampleFirst,
                 summarySampleLast: summarySampleLast,
                 summaryTruncateChars: summaryTruncateChars
-            )
+            ),
+            serviceSocketPath: serviceSocketPath,
+            onAPIKeyResult: { result in
+                guard applyAPIKey, result.isRealKeyApply else { return }
+                aiAPIKeyPersistenceResult = result
+                if APIKeyEditCompletion.shouldClearEdited(
+                    result: result,
+                    submittedValue: submittedAPIKey,
+                    currentValue: self.aiApiKey
+                ) {
+                    aiAPIKeyWasEdited = false
+                }
+            }
         )
     }
 
-    private func saveTitleSettings() {
+    private func saveTitleSettings(commitFocusedEmpty: Bool = false) {
         guard !isLoadingSettings else { return }
+        let applyAPIKey = titleAPIKeyWasEdited
+        let submittedAPIKey = titleApiKey
         AISettingsPersister.persistTitleOffMain(
             TitleSettingsPersistSnapshot(
                 provider: titleProvider,
-                apiKey: titleApiKey,
+                apiKey: submittedAPIKey,
+                preserveEmptyAPIKey: preserveEmptyTitleAPIKey
+                    || !titleAPIKeyWasEdited
+                    || APIKeyFocusedEmptyPolicy.shouldPreserve(
+                        value: titleApiKey,
+                        isFocused: titleAPIKeyFocused,
+                        commitFocusedEmpty: commitFocusedEmpty
+                    ),
+                applyAPIKey: applyAPIKey,
                 baseURL: titleBaseURL,
                 model: titleModel
-            )
+            ),
+            serviceSocketPath: serviceSocketPath,
+            onAPIKeyResult: { result in
+                guard applyAPIKey, result.isRealKeyApply else { return }
+                titleAPIKeyPersistenceResult = result
+                if APIKeyEditCompletion.shouldClearEdited(
+                    result: result,
+                    submittedValue: submittedAPIKey,
+                    currentValue: self.titleApiKey
+                ) {
+                    titleAPIKeyWasEdited = false
+                }
+            }
         )
     }
 
-    private func loadAISettings() {
-        guard let settings = readEngramSettings() else { return }
+    private func loadAISettings() async {
+        settingsLoadGeneration += 1
+        let generation = settingsLoadGeneration
         isLoadingSettings = true
-        defer { clearLoadingSettingsAfterViewUpdate() }
+        settingsLoadApplied = false
+        defer { clearLoadingSettingsAfterViewUpdate(generation: generation) }
+        let loaded = await AISettingsLoader.loadOffMain()
+        guard !Task.isCancelled, generation == settingsLoadGeneration else { return }
+        let settings = loaded.settingsData.flatMap {
+            try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
+        } ?? [:]
+
+        let loadedAIKey = APIKeyLoadedState.resolve(
+            keychainValue: loaded.aiAPIKey,
+            storedValue: settings["aiApiKey"] as? String
+        )
+        aiApiKey = loadedAIKey.value
+        preserveEmptyAIAPIKey = loadedAIKey.preserveEmptyValue
+        aiAPIKeyPersistenceResult = loadedAIKey.persistenceResult
+        aiAPIKeyWasEdited = false
+
+        let loadedTitleKey = APIKeyLoadedState.resolve(
+            keychainValue: loaded.titleAPIKey,
+            storedValue: settings["titleApiKey"] as? String
+        )
+        titleApiKey = loadedTitleKey.value
+        preserveEmptyTitleAPIKey = loadedTitleKey.preserveEmptyValue
+        titleAPIKeyPersistenceResult = loadedTitleKey.persistenceResult
+        titleAPIKeyWasEdited = false
 
         if let v = settings["aiProtocol"] as? String {
             aiProtocol = v == "openai" ? v : "openai"
         }
         if let v = settings["aiBaseURL"] as? String { aiBaseURL = v }
-        aiApiKey = KeychainHelper.get("aiApiKey")
-            ?? { let v = settings["aiApiKey"] as? String; return v == "@keychain" ? nil : v }() ?? ""
         if let v = settings["aiModel"] as? String { aiModel = normalizeOpenAICompatibleModel(v, baseURL: aiBaseURL) }
 
         if let v = settings["summaryLanguage"] as? String { summaryLanguage = v }
@@ -437,14 +573,36 @@ struct AISettingsSection: View {
         if let v = settings["titleBaseUrl"] as? String { titleBaseURL = v }
         else if let v = settings["titleBaseURL"] as? String { titleBaseURL = v }
         if let v = settings["titleModel"] as? String { titleModel = normalizeOpenAICompatibleModel(v, baseURL: titleBaseURL) }
-        titleApiKey = KeychainHelper.get("titleApiKey")
-            ?? { let v = settings["titleApiKey"] as? String; return v == "@keychain" ? nil : v }() ?? ""
     }
 
-    private func clearLoadingSettingsAfterViewUpdate() {
+    private func clearLoadingSettingsAfterViewUpdate(generation: Int) {
         Task { @MainActor in
             await Task.yield()
+            guard generation == settingsLoadGeneration else { return }
             isLoadingSettings = false
+            settingsLoadApplied = true
+        }
+    }
+
+    private func apiKeyStorageMessage(
+        result: APIKeyPersistenceResult?,
+        preservingUnavailableKey: Bool
+    ) -> String {
+        if preservingUnavailableKey {
+            return "Existing Keychain key is preserved but unavailable in this build"
+        }
+        return result?.message ?? "API keys are stored in macOS Keychain"
+    }
+
+    private func apiKeyStorageColor(
+        result: APIKeyPersistenceResult?,
+        preservingUnavailableKey: Bool
+    ) -> Color {
+        if preservingUnavailableKey { return .orange }
+        switch result {
+        case .plaintext: return .orange
+        case .savedMarkerFailed, .runtimeBridgeRefreshFailed, .failed: return .red
+        case .saved, .cleared, .unchanged, .none: return .secondary
         }
     }
 
@@ -478,6 +636,8 @@ fileprivate func normalizeOpenAICompatibleModelName(_ model: String, baseURL: St
 
 struct AISettingsPersistSnapshot: Sendable, Equatable {
     var apiKey: String
+    var preserveEmptyAPIKey: Bool
+    var applyAPIKey: Bool
     var aiProtocol: String
     var aiBaseURL: String
     var aiModel: String
@@ -496,34 +656,176 @@ struct AISettingsPersistSnapshot: Sendable, Equatable {
 struct TitleSettingsPersistSnapshot: Sendable, Equatable {
     var provider: String
     var apiKey: String
+    var preserveEmptyAPIKey: Bool
+    var applyAPIKey: Bool
     var baseURL: String
     var model: String
+}
+
+struct AISettingsPersistenceHooks: Sendable {
+    let beforeMailbox: @Sendable (AISettingsPersistSnapshot) async -> Void
+    let persist: @Sendable (AISettingsPersistSnapshot) -> APIKeyPersistenceResult
+}
+
+struct TitleSettingsPersistenceHooks: Sendable {
+    let beforeMailbox: @Sendable (TitleSettingsPersistSnapshot) async -> Void
+    let persist: @Sendable (TitleSettingsPersistSnapshot) -> APIKeyPersistenceResult
+}
+
+enum AISettingsLoader {
+    struct Loaded: Sendable {
+        let settingsData: Data?
+        let aiAPIKey: String?
+        let titleAPIKey: String?
+    }
+
+    static func loadOffMain() async -> Loaded {
+        await AISettingsPersister.waitForPendingPersistence()
+        return await Task.detached(priority: .userInitiated) {
+            Loaded(
+                settingsData: readEngramSettingsData(),
+                aiAPIKey: KeychainHelper.get("aiApiKey"),
+                titleAPIKey: KeychainHelper.get("titleApiKey")
+            )
+        }.value
+    }
+}
+
+struct APIKeyLoadedState: Equatable {
+    let value: String
+    let preserveEmptyValue: Bool
+    let persistenceResult: APIKeyPersistenceResult?
+
+    static func resolve(keychainValue: String?, storedValue: String?) -> APIKeyLoadedState {
+        if let keychainValue {
+            return APIKeyLoadedState(
+                value: keychainValue,
+                preserveEmptyValue: false,
+                persistenceResult: .saved
+            )
+        }
+        if storedValue == "@keychain" {
+            return APIKeyLoadedState(value: "", preserveEmptyValue: true, persistenceResult: nil)
+        }
+        if let storedValue, !storedValue.isEmpty {
+            return APIKeyLoadedState(
+                value: storedValue,
+                preserveEmptyValue: false,
+                persistenceResult: .plaintext
+            )
+        }
+        return APIKeyLoadedState(value: "", preserveEmptyValue: true, persistenceResult: nil)
+    }
 }
 
 /// R9: Keychain + settings.json + runtime-secrets I/O runs off MainActor.
 enum AISettingsPersister {
     private static let mailbox = Mailbox()
+    @MainActor private static var aiPersistenceTail: Task<Void, Never>?
+    @MainActor private static var titlePersistenceTail: Task<Void, Never>?
 
-    static func persistAIOffMain(_ snapshot: AISettingsPersistSnapshot) {
-        Task.detached(priority: .userInitiated) {
-            await mailbox.persistAI(snapshot)
-        }
+    @MainActor
+    static func waitForPendingPersistence() async {
+        let aiTail = aiPersistenceTail
+        let titleTail = titlePersistenceTail
+        await aiTail?.value
+        await titleTail?.value
     }
 
-    static func persistTitleOffMain(_ snapshot: TitleSettingsPersistSnapshot) {
-        Task.detached(priority: .userInitiated) {
-            await mailbox.persistTitle(snapshot)
+    @MainActor
+    static func persistAIOffMain(
+        _ snapshot: AISettingsPersistSnapshot,
+        serviceSocketPath: String,
+        testHooks: AISettingsPersistenceHooks? = nil,
+        onAPIKeyResult: @escaping @MainActor @Sendable (APIKeyPersistenceResult) -> Void
+    ) {
+        let previous = aiPersistenceTail
+        let task = Task.detached(priority: .userInitiated) {
+            await previous?.value
+            if let testHooks {
+                await testHooks.beforeMailbox(snapshot)
+            }
+            let result = await mailbox.persistAI(
+                snapshot,
+                serviceSocketPath: serviceSocketPath,
+                override: testHooks?.persist
+            )
+            await onAPIKeyResult(result)
         }
+        aiPersistenceTail = task
+    }
+
+    @MainActor
+    static func persistTitleOffMain(
+        _ snapshot: TitleSettingsPersistSnapshot,
+        serviceSocketPath: String,
+        testHooks: TitleSettingsPersistenceHooks? = nil,
+        onAPIKeyResult: @escaping @MainActor @Sendable (APIKeyPersistenceResult) -> Void
+    ) {
+        let previous = titlePersistenceTail
+        let task = Task.detached(priority: .userInitiated) {
+            await previous?.value
+            if let testHooks {
+                await testHooks.beforeMailbox(snapshot)
+            }
+            let result = await mailbox.persistTitle(
+                snapshot,
+                serviceSocketPath: serviceSocketPath,
+                override: testHooks?.persist
+            )
+            await onAPIKeyResult(result)
+        }
+        titlePersistenceTail = task
     }
 
     actor Mailbox {
-        func persistAI(_ snapshot: AISettingsPersistSnapshot) {
-            applyAPIKey(
-                account: "aiApiKey",
-                settingsKey: "aiApiKey",
-                value: snapshot.apiKey
+        private var aiSnapshotBlockedByFailedApply = false
+        private var titleSnapshotBlockedByFailedApply = false
+
+        func persistAI(
+            _ snapshot: AISettingsPersistSnapshot,
+            serviceSocketPath: String,
+            override: (@Sendable (AISettingsPersistSnapshot) -> APIKeyPersistenceResult)? = nil
+        ) -> APIKeyPersistenceResult {
+            if let override { return override(snapshot) }
+            let action = APIKeyEditAction.decide(
+                apiKey: snapshot.apiKey,
+                preserveEmptyAPIKey: snapshot.preserveEmptyAPIKey,
+                applyAPIKey: snapshot.applyAPIKey
             )
-            refreshRuntimeAISecrets()
+            var result: APIKeyPersistenceResult
+            switch action {
+            case .write(let apiKey):
+                result = applyAPIKey(
+                    account: "aiApiKey",
+                    settingsKey: "aiApiKey",
+                    value: apiKey,
+                    preserveEmptyValue: false
+                )
+            case .deleteExisting:
+                result = applyAPIKey(
+                    account: "aiApiKey",
+                    settingsKey: "aiApiKey",
+                    value: "",
+                    preserveEmptyValue: false
+                )
+            case .preserveExisting:
+                result = .unchanged
+            }
+            result = result.reconcilingRuntimeBridgeRefresh {
+                refreshRuntimeAISecrets(serviceSocketPath: serviceSocketPath)
+            }
+            let wasBlocked = aiSnapshotBlockedByFailedApply
+            aiSnapshotBlockedByFailedApply = APIKeySnapshotPersistenceGate.nextBlockedState(
+                wasBlockedByFailedApply: wasBlocked,
+                action: action,
+                result: result
+            )
+            guard APIKeySnapshotPersistenceGate.permitsSnapshot(
+                wasBlockedByFailedApply: wasBlocked,
+                action: action,
+                result: result
+            ) else { return result }
             mutateEngramSettings { settings in
                 settings["aiProtocol"] = snapshot.aiProtocol
                 if !snapshot.aiBaseURL.isEmpty {
@@ -556,19 +858,58 @@ enum AISettingsPersister {
                     truncateChars: snapshot.summaryTruncateChars
                 ).write(into: &settings)
             }
+            return result
         }
 
-        func persistTitle(_ snapshot: TitleSettingsPersistSnapshot) {
-            switch TitleAPIKeyPersistenceAction.decide(provider: snapshot.provider, apiKey: snapshot.apiKey) {
+        func persistTitle(
+            _ snapshot: TitleSettingsPersistSnapshot,
+            serviceSocketPath: String,
+            override: (@Sendable (TitleSettingsPersistSnapshot) -> APIKeyPersistenceResult)? = nil
+        ) -> APIKeyPersistenceResult {
+            if let override { return override(snapshot) }
+            let titleAction = TitleAPIKeyPersistenceAction.decide(
+                provider: snapshot.provider,
+                apiKey: snapshot.apiKey,
+                preserveEmptyAPIKey: snapshot.preserveEmptyAPIKey,
+                applyAPIKey: snapshot.applyAPIKey
+            )
+            let action: APIKeyEditAction
+            var result: APIKeyPersistenceResult
+            switch titleAction {
             case .write(let titleApiKey):
-                applyAPIKey(account: "titleApiKey", settingsKey: "titleApiKey", value: titleApiKey)
+                action = .write(titleApiKey)
+                result = applyAPIKey(
+                    account: "titleApiKey",
+                    settingsKey: "titleApiKey",
+                    value: titleApiKey,
+                    preserveEmptyValue: snapshot.preserveEmptyAPIKey
+                )
             case .deleteExisting:
-                KeychainHelper.delete("titleApiKey")
-                mutateEngramSettings { $0.removeValue(forKey: "titleApiKey") }
+                action = .deleteExisting
+                result = applyAPIKey(
+                    account: "titleApiKey",
+                    settingsKey: "titleApiKey",
+                    value: "",
+                    preserveEmptyValue: false
+                )
             case .preserveExisting:
-                break
+                action = .preserveExisting
+                result = .unchanged
             }
-            refreshRuntimeAISecrets()
+            result = result.reconcilingRuntimeBridgeRefresh {
+                refreshRuntimeAISecrets(serviceSocketPath: serviceSocketPath)
+            }
+            let wasBlocked = titleSnapshotBlockedByFailedApply
+            titleSnapshotBlockedByFailedApply = APIKeySnapshotPersistenceGate.nextBlockedState(
+                wasBlockedByFailedApply: wasBlocked,
+                action: action,
+                result: result
+            )
+            guard APIKeySnapshotPersistenceGate.permitsSnapshot(
+                wasBlockedByFailedApply: wasBlocked,
+                action: action,
+                result: result
+            ) else { return result }
             mutateEngramSettings { settings in
                 settings["titleProvider"] = snapshot.provider
                 if !snapshot.baseURL.isEmpty {
@@ -583,34 +924,177 @@ enum AISettingsPersister {
                     baseURL: snapshot.baseURL
                 )
             }
+            return result
         }
 
         /// SEC-M3: Keychain first. Only DEBUG may fall back to plaintext.
-        private func applyAPIKey(account: String, settingsKey: String, value: String) {
-            if value.isEmpty {
-                KeychainHelper.delete(account)
-                mutateEngramSettings { $0.removeValue(forKey: settingsKey) }
-                return
-            }
-            let saved = KeychainHelper.set(account, value: value)
-            mutateEngramSettings { settings in
-                if saved {
-                    settings[settingsKey] = "@keychain"
-                } else if KeychainHelper.allowsPlaintextSettingsFallback {
-                    settings[settingsKey] = value
-                } else {
-                    settings[settingsKey] = "@keychain"
+        private func applyAPIKey(
+            account: String,
+            settingsKey: String,
+            value: String,
+            preserveEmptyValue: Bool
+        ) -> APIKeyPersistenceResult {
+            APIKeyPersistencePolicy.apply(
+                settingsKey: settingsKey,
+                value: value,
+                preserveEmptyValue: preserveEmptyValue,
+                saveToKeychain: { KeychainHelper.set(account, value: $0) },
+                deleteFromKeychain: { KeychainHelper.delete(account) },
+                keychainReader: { KeychainHelper.get(account) },
+                allowsPlaintextFallback: KeychainHelper.allowsPlaintextSettingsFallback,
+                probeSettings: { probeEngramSettingsForMutation() },
+                mutateSettings: { transform in
+                    mutateEngramSettings { settings in transform(&settings) }
                 }
-            }
+            )
         }
 
-        private func refreshRuntimeAISecrets() {
-            EngramServiceLauncher.writeRuntimeAISecrets(
+        private func refreshRuntimeAISecrets(serviceSocketPath: String) -> Bool {
+            EngramServiceLauncher.refreshRuntimeAISecrets(
                 toPath: EngramServiceLauncher.runtimeAISecretsPath(
-                    forSocketPath: UnixSocketEngramServiceTransport.defaultSocketPath()
+                    forSocketPath: serviceSocketPath
                 ),
                 keychainReader: KeychainHelper.get
             )
+        }
+    }
+}
+
+enum APIKeyPersistenceResult: Sendable, Equatable {
+    case saved
+    case savedMarkerFailed
+    case cleared
+    case runtimeBridgeRefreshFailed
+    case plaintext
+    case unchanged
+    case failed
+
+    var changedKeychain: Bool {
+        self == .saved
+            || self == .savedMarkerFailed
+            || self == .cleared
+            || self == .runtimeBridgeRefreshFailed
+    }
+
+    var isRealKeyApply: Bool {
+        self != .unchanged
+    }
+
+    var permitsSettingsSnapshotPersistence: Bool {
+        self != .failed && self != .savedMarkerFailed
+    }
+
+    var message: String {
+        switch self {
+        case .saved: return "API key is stored in macOS Keychain"
+        case .savedMarkerFailed: return "API key is stored in Keychain, but settings.json could not be updated"
+        case .cleared: return "API key was removed from macOS Keychain"
+        case .runtimeBridgeRefreshFailed:
+            return "API key changed in Keychain, but the service credential bridge could not be refreshed"
+        case .plaintext: return "DEBUG only: API key is stored in plaintext in ~/.engram/settings.json"
+        case .unchanged: return "Existing API key was preserved"
+        case .failed: return "Could not store API key in macOS Keychain"
+        }
+    }
+
+    func reconcilingRuntimeBridgeRefresh(
+        _ refresh: () -> Bool
+    ) -> APIKeyPersistenceResult {
+        guard changedKeychain else { return self }
+        let refreshed = refresh()
+        guard self != .savedMarkerFailed else { return self }
+        return refreshed ? self : .runtimeBridgeRefreshFailed
+    }
+}
+
+enum APIKeyPersistencePolicy {
+    static func apply(
+        settingsKey: String,
+        value: String,
+        preserveEmptyValue: Bool,
+        saveToKeychain: (String) -> Bool,
+        deleteFromKeychain: () -> Void,
+        keychainReader: () -> String? = { nil },
+        allowsPlaintextFallback: Bool,
+        probeSettings: () -> Bool = { true },
+        mutateSettings: (((inout [String: Any]) -> Void) -> Bool)
+    ) -> APIKeyPersistenceResult {
+        if value.isEmpty {
+            guard !preserveEmptyValue else { return .unchanged }
+            guard mutateSettings({ $0.removeValue(forKey: settingsKey) }) else {
+                return .failed
+            }
+            deleteFromKeychain()
+            guard keychainReader() == nil else {
+                _ = mutateSettings { $0[settingsKey] = "@keychain" }
+                return .failed
+            }
+            return .cleared
+        }
+        if allowsPlaintextFallback {
+            guard mutateSettings({ $0[settingsKey] = value }) else { return .failed }
+            guard saveToKeychain(value) else { return .plaintext }
+            if mutateSettings({ $0[settingsKey] = "@keychain" }) { return .saved }
+            return mutateSettings({ $0[settingsKey] = "@keychain" }) ? .saved : .plaintext
+        }
+        // Probe without a no-op write: a missing settings file must not be
+        // materialized before Keychain accepts the replacement credential.
+        guard probeSettings() else { return .failed }
+        guard saveToKeychain(value) else { return .failed }
+        if mutateSettings({ $0[settingsKey] = "@keychain" }) { return .saved }
+        return mutateSettings({ $0[settingsKey] = "@keychain" }) ? .saved : .savedMarkerFailed
+    }
+}
+
+enum APIKeySnapshotPersistenceGate {
+    static func permitsSnapshot(
+        wasBlockedByFailedApply: Bool,
+        action: APIKeyEditAction,
+        result: APIKeyPersistenceResult
+    ) -> Bool {
+        guard result.permitsSettingsSnapshotPersistence else { return false }
+        guard wasBlockedByFailedApply else { return true }
+        switch action {
+        case .write, .deleteExisting:
+            return result == .saved
+                || result == .cleared
+                || result == .runtimeBridgeRefreshFailed
+                || result == .plaintext
+        case .preserveExisting:
+            return false
+        }
+    }
+
+    static func nextBlockedState(
+        wasBlockedByFailedApply: Bool,
+        action: APIKeyEditAction,
+        result: APIKeyPersistenceResult
+    ) -> Bool {
+        if result == .failed || result == .savedMarkerFailed { return true }
+        switch action {
+        case .write, .deleteExisting:
+            return !(result == .saved
+                || result == .cleared
+                || result == .runtimeBridgeRefreshFailed
+                || result == .plaintext)
+        case .preserveExisting:
+            return wasBlockedByFailedApply
+        }
+    }
+}
+
+enum APIKeyEditCompletion {
+    static func shouldClearEdited(
+        result: APIKeyPersistenceResult,
+        submittedValue: String,
+        currentValue: String
+    ) -> Bool {
+        guard submittedValue == currentValue else { return false }
+        switch result {
+        case .saved, .cleared, .plaintext:
+            return true
+        case .savedMarkerFailed, .runtimeBridgeRefreshFailed, .unchanged, .failed:
+            return false
         }
     }
 }
@@ -640,17 +1124,57 @@ enum AISettingsSaveFlush {
     }
 }
 
+enum APIKeyFocusedEmptyPolicy {
+    static func shouldPreserve(
+        value: String,
+        isFocused: Bool,
+        commitFocusedEmpty: Bool
+    ) -> Bool {
+        _ = isFocused
+        return value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !commitFocusedEmpty
+    }
+}
+
+enum APIKeyEditAction: Equatable {
+    case write(String)
+    case deleteExisting
+    case preserveExisting
+
+    static func decide(
+        apiKey: String,
+        preserveEmptyAPIKey: Bool,
+        applyAPIKey: Bool = true
+    ) -> APIKeyEditAction {
+        guard applyAPIKey else { return .preserveExisting }
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedKey.isEmpty {
+            return preserveEmptyAPIKey ? .preserveExisting : .deleteExisting
+        }
+        return .write(trimmedKey)
+    }
+}
+
 enum TitleAPIKeyPersistenceAction: Equatable {
     case write(String)
     case deleteExisting
     case preserveExisting
 
-    static func decide(provider: String, apiKey: String) -> TitleAPIKeyPersistenceAction {
+    static func decide(
+        provider: String,
+        apiKey: String,
+        preserveEmptyAPIKey: Bool = false,
+        applyAPIKey: Bool = true
+    ) -> TitleAPIKeyPersistenceAction {
+        guard applyAPIKey else { return .preserveExisting }
         let normalizedProvider = provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if normalizedProvider == "ollama" {
             return .preserveExisting
         }
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedKey.isEmpty, preserveEmptyAPIKey {
+            return .preserveExisting
+        }
         return trimmedKey.isEmpty ? .deleteExisting : .write(trimmedKey)
     }
 }

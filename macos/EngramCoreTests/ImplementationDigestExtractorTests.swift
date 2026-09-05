@@ -50,6 +50,52 @@ final class ImplementationDigestExtractorTests: XCTestCase {
         }
     }
 
+    func testActionDateFormatterAlwaysUsesGregorianCalendar_repro() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repoRoot.appendingPathComponent(
+                "macos/Shared/EngramCore/Indexing/ImplementationDigestExtractor.swift"
+            ),
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("formatter.calendar = Calendar(identifier: .gregorian)"))
+        XCTAssertFalse(source.contains("formatter.calendar = Calendar.current"))
+    }
+
+    func testActionDateFormatterTracksSystemTimezoneChanges_repro() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repoRoot.appendingPathComponent(
+                "macos/Shared/EngramCore/Indexing/ImplementationDigestExtractor.swift"
+            ),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("formatter.timeZone = TimeZone.autoupdatingCurrent"))
+        XCTAssertFalse(source.contains("formatter.timeZone = TimeZone.current"))
+    }
+
+    func testInvalidTimestampsDoNotPersistUnknownActionDates_repro() {
+        let messages = [
+            NormalizedMessage(role: .user, content: "Implement the timeline fix", timestamp: "not-a-date"),
+            NormalizedMessage(role: .assistant, content: "Result: complete", timestamp: nil),
+        ]
+
+        XCTAssertTrue(
+            ImplementationDigestExtractor.extract(
+                messages: messages,
+                sessionId: "invalid-date",
+                sessionTitle: nil
+            ).isEmpty
+        )
+    }
+
     private func localDayKey(fromISO timestamp: String) -> String {
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

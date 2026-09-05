@@ -175,7 +175,7 @@ const DEFAULT_BASE_URLS: Record<string, string> = {
 // ── Paths ────────────────────────────────────────────────────────────
 
 function settingsPaths(): { dir: string; file: string } {
-  const dir = join(homedir(), '.engram');
+  const dir = process.env.ENGRAM_DIR ?? join(homedir(), '.engram');
   return { dir, file: join(dir, 'settings.json') };
 }
 

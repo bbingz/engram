@@ -4,6 +4,26 @@ import GRDB
 import XCTest
 
 final class FTSRebuildPolicyTests: XCTestCase {
+
+    func testSkipSessionCannotReenterPendingRebuildShadow_repro() throws {
+        let writer = try EngramDatabaseWriter(path: databasePath("skip-shadow.sqlite"))
+        try writer.migrate()
+        try writer.write { db in
+            try db.execute(sql: "INSERT INTO sessions(id, source, start_time, cwd, file_path, size_bytes, indexed_at, tier) VALUES ('skip-shadow', 'codex', '2026-08-22T00:00:00Z', '/tmp', '/tmp/x', 1, '2026-08-22T00:00:00Z', 'skip')")
+            try db.execute(sql: """
+                INSERT INTO metadata(key, value) VALUES ('fts_version', '2')
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """)
+            try FTSRebuildPolicy.apply(db)
+            try FTSRebuildPolicy.replaceFtsContent(db, sessionId: "skip-shadow", contents: ["must not survive"])
+            try db.execute(sql: "DELETE FROM session_index_jobs WHERE session_id = 'skip-shadow'")
+            XCTAssertTrue(try FTSRebuildPolicy.finalizeRebuildIfReady(db))
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'skip-shadow'"),
+                0
+            )
+        }
+    }
     private var tempDir: URL!
 
     override func setUpWithError() throws {
@@ -183,6 +203,31 @@ final class FTSRebuildPolicyTests: XCTestCase {
                 bySession["perm"]?.map { $0["content"] as String },
                 ["permanent live keyword"],
                 "live keyword rows for permanent-failure sessions must survive rebuild swap"
+            )
+        }
+    }
+
+    func testFinalizeRebuildCopiesHiddenAndOrphanLiveRowsIntoShadow_repro() throws {
+        let writer = try EngramDatabaseWriter(path: databasePath("finalize-hidden-orphan.sqlite"))
+        try writer.migrate()
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions(id, source, start_time, cwd, file_path, size_bytes, tier, hidden_at, orphan_status)
+                VALUES
+                  ('hidden', 'codex', '2026-01-01T00:00:00Z', '/tmp', '/tmp/hidden', 1, 'normal', '2026-08-23T00:00:00Z', NULL),
+                  ('orphan', 'codex', '2026-01-01T00:00:00Z', '/tmp', '/tmp/orphan', 1, 'normal', NULL, 'suspect');
+                INSERT INTO sessions_fts(session_id, content)
+                VALUES ('hidden', 'hidden live'), ('orphan', 'orphan live');
+                INSERT INTO metadata(key, value) VALUES ('fts_version', '2')
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                """)
+            try FTSRebuildPolicy.apply(db)
+            try db.execute(sql: "DELETE FROM session_index_jobs")
+
+            XCTAssertTrue(try FTSRebuildPolicy.finalizeRebuildIfReady(db))
+            XCTAssertEqual(
+                try String.fetchAll(db, sql: "SELECT content FROM sessions_fts ORDER BY content"),
+                ["hidden live", "orphan live"]
             )
         }
     }

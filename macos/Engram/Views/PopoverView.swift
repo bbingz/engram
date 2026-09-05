@@ -1,5 +1,6 @@
 // macos/Engram/Views/PopoverView.swift
 import SwiftUI
+import GRDB
 
 enum PopoverRefreshPolicy {
     static let liveSessionCacheTTL: TimeInterval = 30
@@ -15,7 +16,7 @@ struct PopoverDataSnapshot {
 struct PopoverView: View {
     @Environment(DatabaseManager.self) var db
     @Environment(EngramServiceStatusStore.self) var serviceStatusStore
-    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.engramServiceClient) var serviceClient
 
     @State private var data = PopoverDataSnapshot.empty
     /// Poll interval × 1.5 slack — must not share SourcePulse's 10s-scale window.
@@ -25,6 +26,7 @@ struct PopoverView: View {
     @State private var livePollAttempted = false
     @State private var refreshTimer: Timer?
     @State private var refreshTask: Task<Void, Never>?
+    @State private var liveOpenRequestId: UUID?
 
     // The Live section is a glance surface: cap how many cards can render so it
     // can't dominate the popover, spilling the rest into one overflow row.
@@ -83,6 +85,7 @@ struct PopoverView: View {
         .onDisappear {
             refreshTimer?.invalidate(); refreshTimer = nil
             refreshTask?.cancel(); refreshTask = nil
+            liveOpenRequestId = nil
         }
     }
 
@@ -105,6 +108,9 @@ struct PopoverView: View {
                 Image(systemName: "gearshape").foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
+            // Icon-only: name the action for VoiceOver and hover (residual 3c).
+            .accessibilityLabel("Open Settings")
+            .help("Open Settings")
         }
     }
 
@@ -149,7 +155,7 @@ struct PopoverView: View {
                     } label: {
                         Text("+\(visible.count - Self.liveSectionLimit) more")
                             .font(.caption)
-                            .foregroundStyle(.blue)
+                            .foregroundStyle(Theme.accent)
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("popover_liveOverflow")
@@ -228,21 +234,75 @@ struct PopoverView: View {
                     .font(.caption)
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.blue)
+            .foregroundStyle(Theme.accent)
             Spacer()
         }
     }
 
     private func openLive(_ session: EngramServiceLiveSessionInfo) {
-        guard let id = session.sessionId else { return }
         let db = self.db
+        let requestId = UUID()
+        liveOpenRequestId = requestId
+        let token = SessionNavigationGate.begin()
         Task {
             let resolved = await Task.detached { () -> Session? in
-                try? db.getSession(id: id)
+                try? Self.resolveLiveSession(session, database: db)
             }.value
-            guard let resolved else { return }
-            NotificationCenter.default.post(name: .openWindow, object: SessionBox(resolved))
+            guard let resolved else {
+                SessionNavigationGate.complete(token)
+                return
+            }
+            guard liveOpenRequestId == requestId else { return }
+            NotificationCenter.default.post(
+                name: .openWindow,
+                object: SessionBox(resolved, navigationId: token)
+            )
         }
+    }
+
+    nonisolated static func resolveLiveSession(
+        _ session: EngramServiceLiveSessionInfo,
+        database db: DatabaseManager
+    ) throws -> Session? {
+        if let id = session.sessionId,
+           let exactID = try db.readInBackground({ database in
+               try Session.fetchOne(
+                   database,
+                   sql: "SELECT * FROM sessions WHERE id = ? AND source = ? LIMIT 1",
+                   arguments: [id, session.source]
+               )
+           }) {
+            return exactID
+        }
+        let rawPath: String
+        if let separator = session.filePath.range(of: "::", options: .backwards) {
+            rawPath = String(session.filePath[..<separator.lowerBound])
+        } else {
+            rawPath = session.filePath
+        }
+        let rawURL = URL(fileURLWithPath: rawPath)
+        let normalizedPaths = Array(Set([
+            session.filePath,
+            rawPath,
+            rawURL.standardizedFileURL.path,
+            rawURL.standardizedFileURL.resolvingSymlinksInPath().standardizedFileURL.path,
+        ]))
+        return try db.readInBackground { database in
+            var arguments = [session.source]
+            arguments.append(contentsOf: normalizedPaths)
+            if let exactPath = try Session.fetchOne(
+                database,
+                sql: "SELECT * FROM sessions WHERE source = ? AND file_path IN (\(databaseQuestionMarks(count: normalizedPaths.count))) LIMIT 1",
+                arguments: StatementArguments(arguments)
+            ) {
+                return exactPath
+            }
+            return nil
+        }
+    }
+
+    nonisolated private static func databaseQuestionMarks(count: Int) -> String {
+        Array(repeating: "?", count: count).joined(separator: ", ")
     }
 
     // MARK: - Data Loading
@@ -262,29 +322,14 @@ struct PopoverView: View {
             // human-driven filter (per HumanDrivenFilter's contract) regardless
             // of the app's browse noise setting, so freshly-indexed untiered
             // agent/probe sessions can't flood the list with "Untitled" rows.
-            // R1.P1.parent_filter_surface_drift / RETRO-P1-POPOVER: also require
-            // top-level roots so confirmed/suggested children cannot appear as
-            // top rows (matches Home/Sessions/Timeline via SessionVisibilityFilter).
-            let whereClause = """
-                \(SessionVisibilityFilter.listVisibleSQL) \
-                AND \(SessionVisibilityFilter.topLevelSQL) \
-                AND (\(HumanDrivenFilter.sqlPredicate))
-                """
-
             let sessions: [Session]
             do {
-                sessions = try db.readInBackground { d in
-                    try Session.fetchAll(d, sql: """
-                        SELECT * FROM sessions
-                        WHERE \(whereClause)
-                        ORDER BY start_time DESC LIMIT 30
-                    """)
-                }
+                sessions = try db.recentSessions(limit: 12, humanDriven: true)
             } catch {
                 EngramLogger.error("PopoverView recent sessions load failed", module: .ui, error: error)
                 sessions = []
             }
-            return PopoverDataSnapshot(recentSessions: Array(sessions.prefix(12)))
+            return PopoverDataSnapshot(recentSessions: sessions)
         }.value
         data = result
 
@@ -304,7 +349,7 @@ struct PopoverView: View {
     // MARK: - Helpers
 
     private static func pollLiveSessions(
-        _ serviceClient: EngramServiceClient
+        _ serviceClient: any EngramServiceClientProtocol
     ) async -> Result<[EngramServiceLiveSessionInfo], Error> {
         do {
             return .success(try await serviceClient.liveSessions().sessions)
@@ -389,6 +434,7 @@ private struct PopoverTimelineRow: View {
             Circle()
                 .fill(SourceDisplay.color(for: session.source))
                 .frame(width: 4, height: 4)
+            OriginBadge(origin: session.origin)
             Text(session.project ?? "—")
                 .font(.caption2)
                 .foregroundStyle(.secondary)

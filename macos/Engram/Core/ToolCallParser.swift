@@ -7,6 +7,8 @@ struct ParsedToolCall {
     let toolName: String
     let parameters: [(key: String, value: String)]
     let rawContent: String
+    let preamble: String?
+    let remainder: String?
 }
 
 struct ParsedToolResult {
@@ -20,15 +22,16 @@ struct ParsedToolResult {
 
 struct ToolCallParser {
 
-    // Match "`ToolName`:" or "`ToolName(`".
+    // Match a header line in either the backticked colon form or the legacy
+    // parenthesized form (`ToolName(` / ToolName().
     // This is a compile-time-constant pattern, so a failure means the literal
     // is malformed — surface it loudly instead of silently disabling ALL tool
     // call parsing via `try?` (which returns nil and degrades every transcript).
     private static let toolCallHeaderPattern: NSRegularExpression = {
         do {
             return try NSRegularExpression(
-                pattern: #"`([A-Za-z][A-Za-z0-9_]*)[`(]"#,
-                options: []
+                pattern: #"^[ \t]*(?:`([A-Za-z][A-Za-z0-9_]*)`:|`?([A-Za-z][A-Za-z0-9_]*)\()"#,
+                options: [.anchorsMatchLines]
             )
         } catch {
             preconditionFailure("ToolCallParser header regex failed to compile: \(error)")
@@ -72,24 +75,44 @@ struct ToolCallParser {
             range: NSRange(prefix.startIndex..., in: prefix)
         ) else { return nil }
 
-        guard let nameRange = Range(match.range(at: 1), in: prefix) else { return nil }
-        let toolName = String(prefix[nameRange])
+        let toolName = [1, 2].compactMap { capture in
+            Range(match.range(at: capture), in: prefix).map { String(prefix[$0]) }
+        }.first
+        guard let toolName else { return nil }
 
-        // Extract parameter block — content after the header line
-        let params = extractParameters(from: content, toolName: toolName)
+        // Parameters may start on the matched header line. Keep only payload
+        // text that was not consumed as structured parameters so compact
+        // rendering never paints the same value twice.
+        let payload = parameterPayload(
+            from: content,
+            afterHeaderUTF16Offset: match.range.location + match.range.length
+        )
+        let params = extractParameters(from: payload.text, sameLineValue: payload.sameLineValue)
+        let preamble = extractPreamble(
+            from: content,
+            beforeHeaderUTF16Offset: match.range.location
+        )
+        let remainder = unparsedRemainder(
+            from: payload.text,
+            sameLineValue: payload.sameLineValue
+        )
 
-        return ParsedToolCall(toolName: toolName, parameters: params, rawContent: content)
+        return ParsedToolCall(
+            toolName: toolName,
+            parameters: params,
+            rawContent: content,
+            preamble: preamble,
+            remainder: remainder
+        )
     }
 
     // MARK: - parseToolResult
 
     /// Parse a tool result message. Returns nil if content doesn't match tool result format.
     static func parseToolResult(_ content: String) -> ParsedToolResult? {
-        // Must contain at least one result signal to qualify
-        let prefix = String(content.prefix(500))
-        let knownSignals = ["tool_result", "⟪out⟫", "<local-command-stdout>", "<local-command-caveat>"]
-        let isResult = knownSignals.contains { prefix.contains($0) }
-        guard isResult else { return nil }
+        // Result wrappers are an envelope, not a substring classifier. A tool
+        // call whose payload mentions e.g. `tool_result.json` stays a tool call.
+        guard leadingResultEnvelope(in: content) != nil else { return nil }
 
         // Check for errors
         let isError = errorSignals.contains { content.contains($0) }
@@ -110,22 +133,75 @@ struct ToolCallParser {
 
     // MARK: - Parameter Extraction
 
-    private static func extractParameters(from content: String, toolName: String) -> [(key: String, value: String)] {
-        // Find everything after the first line (the header line)
-        let lines = content.components(separatedBy: "\n")
-        guard lines.count > 1 else { return [] }
+    private static func extractPreamble(
+        from content: String,
+        beforeHeaderUTF16Offset headerStart: Int
+    ) -> String? {
+        guard headerStart > 0 else { return nil }
+        let headerStartIndex = String.Index(utf16Offset: headerStart, in: content)
+        let preamble = content[..<headerStartIndex]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return preamble.isEmpty ? nil : preamble
+    }
 
-        // The body is everything after the first line
-        let body = lines.dropFirst().joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !body.isEmpty else { return [] }
+    private static func parameterPayload(
+        from content: String,
+        afterHeaderUTF16Offset headerEnd: Int
+    ) -> (text: String, sameLineValue: String?) {
+        guard headerEnd < content.utf16.count else { return ("", nil) }
+        let headerEndIndex = String.Index(utf16Offset: headerEnd, in: content)
+        let suffix = content[headerEndIndex...]
+        let lineEnd = suffix.firstIndex(of: "\n") ?? content.endIndex
+        let sameLine = suffix[..<lineEnd]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = suffix.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (text, sameLine.isEmpty ? nil : sameLine)
+    }
+
+    private static func extractParameters(
+        from text: String,
+        sameLineValue: String?
+    ) -> [(key: String, value: String)] {
+        guard !text.isEmpty else { return [] }
 
         // Try JSON first
-        if let jsonParams = tryParseJSON(body) {
+        if let jsonParams = tryParseJSON(text) {
             return jsonParams
         }
 
         // Fallback: line-format "key: value"
-        return parseLineFormat(body)
+        var parameters = parseLineFormat(text)
+        if let sameLineValue,
+           !parameters.contains(where: { $0.value == sameLineValue }) {
+            parameters.insert((key: "input", value: sameLineValue), at: 0)
+        }
+        return parameters
+    }
+
+    private static func unparsedRemainder(
+        from text: String,
+        sameLineValue: String?
+    ) -> String? {
+        guard !text.isEmpty else { return nil }
+
+        if tryParseJSON(text) != nil,
+           let start = text.firstIndex(of: "{"),
+           let end = text.lastIndex(of: "}") {
+            let suffixStart = text.index(after: end)
+            let remainder = String(text[..<start]) + String(text[suffixStart...])
+            let trimmed = remainder.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+
+        var lines = text.components(separatedBy: "\n")
+        if let sameLineValue,
+           lines.first?.trimmingCharacters(in: .whitespacesAndNewlines) == sameLineValue {
+            lines.removeFirst()
+        }
+        let remainder = lines.filter { parseLineFormat($0).isEmpty }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return remainder.isEmpty ? nil : remainder
     }
 
     private static func tryParseJSON(_ text: String) -> [(key: String, value: String)]? {
@@ -182,13 +258,38 @@ struct ToolCallParser {
     }
 
     private static func cleanResultOutput(_ content: String) -> String {
-        var cleaned = content
-        // Strip common wrapper tokens
-        let wrappers = ["tool_result", "⟪out⟫", "<local-command-stdout>", "</local-command-stdout>",
-                        "<local-command-caveat>", "</local-command-caveat>"]
-        for wrapper in wrappers {
-            cleaned = cleaned.replacingOccurrences(of: wrapper, with: "")
+        var cleaned = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let envelope = leadingResultEnvelope(in: cleaned) else {
+            return cleaned
+        }
+        cleaned.removeSubrange(envelope.openRange)
+        cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let closing = envelope.closing,
+           cleaned.hasSuffix(closing) {
+            cleaned.removeLast(closing.count)
         }
         return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func leadingResultEnvelope(
+        in content: String
+    ) -> (openRange: Range<String.Index>, closing: String?)? {
+        let trimmed = content.drop(while: { $0.isWhitespace })
+        let envelopes: [(open: String, closing: String?)] = [
+            ("tool_result", nil),
+            ("⟪out⟫", nil),
+            ("<local-command-stdout>", "</local-command-stdout>"),
+            ("<local-command-caveat>", "</local-command-caveat>"),
+        ]
+        for envelope in envelopes where trimmed.hasPrefix(envelope.open) {
+            let end = trimmed.index(trimmed.startIndex, offsetBy: envelope.open.count)
+            if envelope.open == "tool_result",
+               end != trimmed.endIndex,
+               !trimmed[end].isWhitespace {
+                continue
+            }
+            return (trimmed.startIndex..<end, envelope.closing)
+        }
+        return nil
     }
 }

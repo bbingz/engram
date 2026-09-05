@@ -1,8 +1,9 @@
 import { createReadStream } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, relative, sep } from 'node:path';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { subagentTranscriptLayout } from '../core/subagent-transcript-path.js';
 import { isFileAccessible } from './_accessible.js';
 import { truncateJSON, truncateString } from './_truncate.js';
 import type {
@@ -99,8 +100,15 @@ export class QoderAdapter implements SessionAdapter {
       }
 
       if (!sessionId) return null;
-      const isSubagent = filePath.includes('/subagents/');
-      const id = isSubagent && agentId ? agentId : sessionId;
+      const subagentLayout = subagentTranscriptLayout(
+        filePath,
+        this.projectsRoot,
+      );
+      const isSubagent = subagentLayout != null;
+      // Preserve the parent row when a subagent transcript has no agentId.
+      const id = isSubagent
+        ? agentId || `sub:${sessionId}:${subagentLayout.relativePath}`
+        : sessionId;
       return {
         id,
         source: 'qoder',
@@ -117,9 +125,7 @@ export class QoderAdapter implements SessionAdapter {
         filePath,
         sizeBytes: fileStat.size,
         agentRole: isSubagent ? 'subagent' : undefined,
-        parentSessionId: isSubagent
-          ? this.parentSessionId(filePath)
-          : undefined,
+        parentSessionId: subagentLayout?.parentSessionId,
       };
     } catch {
       return null;
@@ -260,13 +266,6 @@ export class QoderAdapter implements SessionAdapter {
         | number
         | undefined,
     };
-  }
-
-  private parentSessionId(filePath: string): string | undefined {
-    const parts = relative(this.projectsRoot, filePath).split(sep);
-    const subagentsIndex = parts.indexOf('subagents');
-    if (subagentsIndex < 2) return undefined;
-    return parts[subagentsIndex - 1];
   }
 
   private async *subagentFiles(containerPath: string): AsyncGenerator<string> {

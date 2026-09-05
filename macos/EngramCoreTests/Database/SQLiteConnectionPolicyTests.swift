@@ -71,6 +71,18 @@ final class SQLiteConnectionPolicyTests: XCTestCase {
         XCTAssertEqual(count, 1)
     }
 
+    func testReaderConfigurationAvoidsWriterOnlyPragmas_repro() throws {
+        let source = try sharedCoreSource("Database/SQLiteConnectionPolicy.swift")
+        let reader = try XCTUnwrap(source.range(of: "public static func readerConfiguration("))
+        let common = try XCTUnwrap(source.range(of: "public static func applyCommonPragmas"))
+        let body = String(source[reader.lowerBound..<common.lowerBound])
+
+        XCTAssertTrue(body.contains("applyReaderPragmas(db"))
+        XCTAssertFalse(body.contains("applyCommonPragmas(db)"))
+        XCTAssertFalse(body.contains("PRAGMA synchronous"))
+        XCTAssertFalse(body.contains("PRAGMA wal_autocheckpoint"))
+    }
+
     func testReaderRejectsNonWalDatabase() throws {
         let path = databasePath("delete-journal.sqlite")
         let queue = try DatabaseQueue(path: path)
@@ -87,7 +99,7 @@ final class SQLiteConnectionPolicyTests: XCTestCase {
     }
 
     func testFileSecurityAssertsOwnerAndModeForDatabaseSiblings() throws {
-        let source = try coreReadSource("Database/SQLiteConnectionPolicy.swift")
+        let source = try sharedCoreSource("Database/SQLiteConnectionPolicy.swift")
         let start = try XCTUnwrap(source.range(of: "public enum SQLiteFileSecurity"))
         let securitySource = String(source[start.lowerBound...])
 
@@ -101,13 +113,13 @@ final class SQLiteConnectionPolicyTests: XCTestCase {
         tempDir.appendingPathComponent(name).path
     }
 
-    private func coreReadSource(_ relativePath: String) throws -> String {
+    private func sharedCoreSource(_ relativePath: String) throws -> String {
         var directory = URL(fileURLWithPath: #filePath)
         while directory.lastPathComponent != "macos" {
             directory.deleteLastPathComponent()
         }
         let file = directory
-            .appendingPathComponent("EngramCoreRead")
+            .appendingPathComponent("Shared/EngramCore")
             .appendingPathComponent(relativePath)
         return try String(contentsOf: file, encoding: .utf8)
     }

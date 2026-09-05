@@ -21,10 +21,10 @@ final class AgentsTests: XCTestCase {
         let agents = AgentsScreen(app: app)
         agents.waitForLoad()
 
-        let hasList = agents.list.waitForExistence(timeout: 5)
-        let hasEmpty = agents.emptyState.waitForExistence(timeout: 3)
-        XCTAssertTrue(hasList || hasEmpty,
-                      "Agents should show a list or empty state")
+        XCTAssertTrue(agents.emptyState.waitForExistence(timeout: 5),
+                      "The fixture's unlinked subagent should produce the dedicated no-agent-sessions state")
+        XCTAssertTrue(app.staticTexts["No agent sessions"].exists,
+                      "The agent miss case should assert its dedicated empty-state title")
         ScreenshotCapture.capture(name: "agents_list", app: app, screen: "agents", test: #function)
     }
 

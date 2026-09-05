@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import GRDB
 import XCTest
 @testable import EngramCoreRead
 @testable import EngramCoreWrite
@@ -289,6 +290,230 @@ final class ExactSourceCapturerTests: XCTestCase {
         }
     }
 
+    func testCaptureCancellationLeavesNoUntrackedCASFiles_repro() async throws {
+        let storeRoot = root.appendingPathComponent("store-cancelled-capture", isDirectory: true)
+        let sourceURL = root.appendingPathComponent("cancelled-capture.jsonl")
+        try Data("cancel after staging\n".utf8).write(to: sourceURL)
+        let descriptor = try ArchiveSourceDescriptor.singleFile(
+            locator: sourceURL.path,
+            sourceURL: sourceURL,
+            replayRelativePath: "cancelled/session.jsonl"
+        )
+        let (cas, catalog) = try makeStore(storeRoot)
+        let capturer = ExactSourceCapturer(
+            cas: cas,
+            catalog: catalog,
+            descriptor: descriptor,
+            testHooks: ExactSourceCapturerTestHooks(
+                afterStreamingBeforeFinalStat: { _ in
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+            )
+        )
+
+        let result = await Task {
+            try capturer.capture(
+                source: .claudeCode,
+                locator: sourceURL.path,
+                machineID: machineID
+            )
+        }.result
+
+        guard case .failure(let error) = result else {
+            return XCTFail("expected capture cancellation")
+        }
+        XCTAssertTrue(error is CancellationError, "unexpected error: \(error)")
+        XCTAssertTrue(try catalog.unboundCaptures(limit: 10).isEmpty)
+        try assertNoCASContent(in: storeRoot)
+    }
+
+    func testCatalogRecordFailureLeavesPublishedCASReusableAndNoStagedTemp_repro() throws {
+        let storeRoot = root.appendingPathComponent("store-catalog-failure", isDirectory: true)
+        let sourceURL = root.appendingPathComponent("catalog-failure.jsonl")
+        let payload = Data("record failure after staging\n".utf8)
+        try payload.write(to: sourceURL)
+        let descriptor = try ArchiveSourceDescriptor.singleFile(
+            locator: sourceURL.path,
+            sourceURL: sourceURL,
+            replayRelativePath: "catalog-failure/session.jsonl"
+        )
+        let (cas, catalog) = try makeStore(storeRoot)
+        let triggerDatabase = try DatabaseQueue(
+            path: storeRoot.appendingPathComponent("archive.sqlite").path
+        )
+        try triggerDatabase.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_archive_capture_insert
+                BEFORE INSERT ON archive_captures
+                BEGIN
+                    SELECT RAISE(ABORT, 'forced capture insert failure');
+                END
+                """)
+        }
+        let capturer = ExactSourceCapturer(cas: cas, catalog: catalog, descriptor: descriptor)
+
+        XCTAssertThrowsError(
+            try capturer.capture(
+                source: .claudeCode,
+                locator: sourceURL.path,
+                machineID: machineID
+            )
+        ) { error in
+            XCTAssertTrue(
+                String(describing: error).contains("forced capture insert failure"),
+                "unexpected error: \(error)"
+            )
+        }
+        XCTAssertTrue(try catalog.unboundCaptures(limit: 10).isEmpty)
+        XCTAssertEqual(
+            try cas.readObject(sha256: ArchiveV2Hash.sha256(payload)),
+            payload
+        )
+        XCTAssertEqual(try manifestFileCount(storeRoot), 1)
+        XCTAssertEqual(
+            try regularFileCount(in: storeRoot.appendingPathComponent("tmp", isDirectory: true)),
+            0
+        )
+    }
+
+    func testCatalogRecordFailureDoesNotDeleteChunkCommittedByConcurrentCapture_repro() async throws {
+        let storeRoot = root.appendingPathComponent("store-shared-cas-race", isDirectory: true)
+        let payload = Data("shared immutable archive bytes\n".utf8)
+        let failingSourceURL = root.appendingPathComponent("shared-cas-failing.jsonl")
+        let committedSourceURL = root.appendingPathComponent("shared-cas-committed.jsonl")
+        try payload.write(to: failingSourceURL)
+        try payload.write(to: committedSourceURL)
+        let failingDescriptor = try ArchiveSourceDescriptor.singleFile(
+            locator: failingSourceURL.path,
+            sourceURL: failingSourceURL,
+            replayRelativePath: "shared/failing.jsonl"
+        )
+        let committedDescriptor = try ArchiveSourceDescriptor.singleFile(
+            locator: committedSourceURL.path,
+            sourceURL: committedSourceURL,
+            replayRelativePath: "shared/committed.jsonl"
+        )
+        let publishGate = CASObjectPublishGate()
+        let failingCAS = try ImmutableArchiveCAS(
+            root: storeRoot,
+            testHooks: ImmutableArchiveCASTestHooks(
+                afterDirectoryFsync: { directory in
+                    publishGate.observeDirectoryFsync(directory)
+                }
+            )
+        )
+        let committedCAS = try ImmutableArchiveCAS(root: storeRoot)
+        let catalog = try ArchiveCatalog(root: storeRoot, machineID: machineID)
+        try catalog.migrate()
+        let triggerDatabase = try DatabaseQueue(
+            path: storeRoot.appendingPathComponent("archive.sqlite").path
+        )
+        try await triggerDatabase.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_claude_archive_capture_insert
+                BEFORE INSERT ON archive_captures
+                WHEN NEW.source = 'claude-code'
+                BEGIN
+                    SELECT RAISE(ABORT, 'forced concurrent capture insert failure');
+                END
+                """)
+        }
+        let failingCapturer = ExactSourceCapturer(
+            cas: failingCAS,
+            catalog: catalog,
+            descriptor: failingDescriptor
+        )
+        let committedCapturer = ExactSourceCapturer(
+            cas: committedCAS,
+            catalog: catalog,
+            descriptor: committedDescriptor
+        )
+        let testMachineID = machineID
+
+        let failingTask = Task.detached(priority: .high) {
+            Result {
+                try failingCapturer.capture(
+                    source: .claudeCode,
+                    locator: failingSourceURL.path,
+                    machineID: testMachineID
+                )
+            }
+        }
+        guard publishGate.waitUntilObjectPublished() else {
+            publishGate.releaseFailingCapture()
+            _ = await failingTask.value
+            return XCTFail("failing capture did not pause after publishing its object")
+        }
+        let committedAttempt = Result {
+            try committedCapturer.capture(
+                source: .codex,
+                locator: committedSourceURL.path,
+                machineID: machineID
+            )
+        }
+        publishGate.releaseFailingCapture()
+        let failingAttempt = await failingTask.value
+        let committed = try committedAttempt.get()
+
+        guard case .failure(let error) = failingAttempt else {
+            return XCTFail("expected the first catalog insert to fail")
+        }
+        XCTAssertTrue(
+            String(describing: error).contains("forced concurrent capture insert failure"),
+            "unexpected error: \(error)"
+        )
+        XCTAssertEqual(
+            try catalog.capture(captureID: committed.capture.captureID),
+            committed.capture
+        )
+        XCTAssertEqual(
+            try committedCAS.readManifest(sha256: committed.capture.unboundManifestSHA256),
+            committed.capture.unboundManifestBytes
+        )
+        XCTAssertEqual(try reconstruct(committed.manifest, from: committedCAS), payload)
+        XCTAssertEqual(
+            try regularFileCount(in: storeRoot.appendingPathComponent("tmp", isDirectory: true)),
+            0
+        )
+    }
+
+    func testPublishFailureDoesNotRecordCapturedRow_repro() throws {
+        enum Marker: Error {
+            case publishFailed
+        }
+
+        let storeRoot = root.appendingPathComponent("store-publish-failure", isDirectory: true)
+        let sourceURL = root.appendingPathComponent("publish-failure.jsonl")
+        try Data("publish must finish before catalog record\n".utf8).write(to: sourceURL)
+        let descriptor = try ArchiveSourceDescriptor.singleFile(
+            locator: sourceURL.path,
+            sourceURL: sourceURL,
+            replayRelativePath: "publish-failure/session.jsonl"
+        )
+        let cas = try ImmutableArchiveCAS(
+            root: storeRoot,
+            testHooks: ImmutableArchiveCASTestHooks(
+                afterFinalLinkPublished: { _ in throw Marker.publishFailed }
+            )
+        )
+        let catalog = try ArchiveCatalog(root: storeRoot, machineID: machineID)
+        try catalog.migrate()
+        let capturer = ExactSourceCapturer(cas: cas, catalog: catalog, descriptor: descriptor)
+
+        XCTAssertThrowsError(
+            try capturer.capture(
+                source: .claudeCode,
+                locator: sourceURL.path,
+                machineID: machineID
+            )
+        ) { error in
+            guard case Marker.publishFailed = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+        XCTAssertTrue(try catalog.unboundCaptures(limit: 10).isEmpty)
+    }
+
     func testFIFOReplacementCannotBlockCaptureOrVerification() throws {
         let storeRoot = root.appendingPathComponent("store-fifo-race", isDirectory: true)
         let fifo = root.appendingPathComponent("race-fifo.jsonl")
@@ -424,6 +649,36 @@ final class ExactSourceCapturerTests: XCTestCase {
         return count
     }
 
+    private func assertNoCASContent(in storeRoot: URL) throws {
+        XCTAssertEqual(
+            try regularFileCount(
+                in: storeRoot.appendingPathComponent("objects/sha256", isDirectory: true)
+            ),
+            0
+        )
+        XCTAssertEqual(try manifestFileCount(storeRoot), 0)
+        XCTAssertEqual(
+            try regularFileCount(in: storeRoot.appendingPathComponent("tmp", isDirectory: true)),
+            0
+        )
+    }
+
+    private func regularFileCount(in directory: URL) throws -> Int {
+        guard FileManager.default.fileExists(atPath: directory.path) else { return 0 }
+        let keys: [URLResourceKey] = [.isRegularFileKey]
+        let contents = FileManager.default.enumerator(
+            at: directory,
+            includingPropertiesForKeys: keys
+        )
+        var count = 0
+        while let url = contents?.nextObject() as? URL {
+            if try url.resourceValues(forKeys: Set(keys)).isRegularFile == true {
+                count += 1
+            }
+        }
+        return count
+    }
+
     private func manifestURL(storeRoot: URL, sha256: String) -> URL {
         storeRoot
             .appendingPathComponent("manifests/sha256", isDirectory: true)
@@ -479,6 +734,36 @@ private final class FIFOOperationOutcome: @unchecked Sendable {
 
 private enum FIFOOperationTestError: Error {
     case unexpectedSuccess
+}
+
+private final class CASObjectPublishGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let objectPublished = DispatchSemaphore(value: 0)
+    private let resumeFailingCapture = DispatchSemaphore(value: 0)
+    private var objectShardFsyncCount = 0
+
+    func observeDirectoryFsync(_ directory: URL) {
+        guard directory.deletingLastPathComponent().lastPathComponent == "sha256",
+              directory.deletingLastPathComponent()
+                .deletingLastPathComponent().lastPathComponent == "objects" else {
+            return
+        }
+        lock.lock()
+        objectShardFsyncCount += 1
+        let shouldPause = objectShardFsyncCount == 2
+        lock.unlock()
+        guard shouldPause else { return }
+        objectPublished.signal()
+        _ = resumeFailingCapture.wait(timeout: .now() + 5)
+    }
+
+    func waitUntilObjectPublished() -> Bool {
+        objectPublished.wait(timeout: .now() + 5) == .success
+    }
+
+    func releaseFailingCapture() {
+        resumeFailingCapture.signal()
+    }
 }
 
 private final class ExactArchiveTestAdapter: ExactArchiveSourceAdapter, @unchecked Sendable {

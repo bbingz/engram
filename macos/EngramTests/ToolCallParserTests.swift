@@ -21,6 +21,17 @@ final class ToolCallParserTests: XCTestCase {
         XCTAssertNotNil(ToolCallParser.parseToolResult("tool_result\nok"))
     }
 
+    func testParseToolResultRequiresLeadingEnvelope_repro() {
+        XCTAssertNil(ToolCallParser.parseToolResult("Read(\npath: /tmp/tool_result.json)"))
+    }
+
+    func testParseToolResultOnlyStripsLeadingEnvelope_repro() throws {
+        let parsed = try XCTUnwrap(
+            ToolCallParser.parseToolResult("tool_result\ncreated /tmp/tool_result.json")
+        )
+        XCTAssertEqual(parsed.output, "created /tmp/tool_result.json")
+    }
+
     func testResultToolNameFromResultFromPattern() {
         let parsed = ToolCallParser.parseToolResult("tool_result\nResult from `Bash`: done")
         XCTAssertEqual(parsed?.toolName, "Bash")

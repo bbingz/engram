@@ -63,6 +63,22 @@ final class ServiceUsageEventTests: XCTestCase {
         XCTAssertEqual(limits["claude-code"]?.weeklyTokens, 7_500)
     }
 
+    func testReadUsageTokenLimitsHonorsSettingsPathEnvironment_repro() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-usage-settings-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let settingsURL = directory.appendingPathComponent("settings.json")
+        try Data(#"{"usageTokenLimits":{"codex":{"weeklyTokens":4321}}}"#.utf8).write(to: settingsURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: settingsURL.path)
+
+        let limits = EngramServiceRunner.readUsageTokenLimits(environment: [
+            "ENGRAM_SETTINGS_PATH": settingsURL.path,
+        ])
+
+        XCTAssertEqual(limits["codex"]?.weeklyTokens, 4_321)
+    }
+
     func testUsageEventCarriesResetAtForQuotaSnapshots() throws {
         let event = ServiceUsageEvent(snapshots: [
             StartupUsageSnapshot(

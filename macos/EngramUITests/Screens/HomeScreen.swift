@@ -26,6 +26,25 @@ struct HomeScreen {
         app.element(id: "home_recentSession_\(index)")
     }
 
+    func recentSession(containingText text: String) -> XCUIElement {
+        recentSessions.staticTexts
+            .matching(NSPredicate(
+                format: "identifier BEGINSWITH %@ AND (label CONTAINS[c] %@ OR value CONTAINS[c] %@)",
+                "home_sessionTitle_",
+                text,
+                text
+            ))
+            .firstMatch
+    }
+
+    func followUpSession(at index: Int) -> XCUIElement {
+        app.element(id: "home_followUpSession_\(index)")
+    }
+
+    func changedRepo(at index: Int) -> XCUIElement {
+        app.element(id: "home_changedRepo_\(index)")
+    }
+
     // MARK: - Waits
 
     func waitForLoad(timeout: TimeInterval = 5) {

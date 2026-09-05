@@ -39,7 +39,7 @@ struct MessageTypeChip: View {
                         .fill(isVisible ? chipColor : .secondary)
                         .frame(width: 6, height: 6)
                     Text("\(type.label) \(currentIndex >= 0 ? "\(currentIndex + 1)/" : "")\(countLabel)")
-                        .font(.system(size: 11))
+                        .scaledFont(11)
                         .foregroundStyle(isVisible ? .primary : .secondary)
                 }
             }
@@ -48,7 +48,7 @@ struct MessageTypeChip: View {
 
             if totalCount > 0 && isVisible {
                 Button(action: onPrev) {
-                    Text("∧").font(.system(size: 9))
+                    Text("∧").scaledFont(9)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
@@ -56,7 +56,7 @@ struct MessageTypeChip: View {
                 .help("Previous \(type.label) message")
 
                 Button(action: onNext) {
-                    Text("∨").font(.system(size: 9))
+                    Text("∨").scaledFont(9)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)

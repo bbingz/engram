@@ -27,18 +27,32 @@ private struct MalformedEmbeddingProvider: EmbeddingProvider {
     }
 }
 
+private struct NotConfiguredEmbeddingProvider: EmbeddingProvider {
+    let model = "fake-model"
+    let dimension = 3
+    func embed(_ texts: [String]) async throws -> [[Float]] {
+        throw EmbeddingError.notConfigured
+    }
+}
+
 private actor BatchRecordingEmbeddingProvider: EmbeddingProvider {
     let model = "batch-model"
     let dimension = 3
     private var recordedBatchSizes: [Int] = []
+    private var recordedTexts: [String] = []
 
     func embed(_ texts: [String]) async throws -> [[Float]] {
         recordedBatchSizes.append(texts.count)
+        recordedTexts.append(contentsOf: texts)
         return texts.map { _ in [1, 0, 0] }
     }
 
     func batchSizes() -> [Int] {
         recordedBatchSizes
+    }
+
+    func texts() -> [String] {
+        recordedTexts
     }
 }
 
@@ -71,6 +85,34 @@ private struct ModelBEmbeddingProvider: EmbeddingProvider {
     }
 }
 
+private final class EmbeddingRepairFTSAdapter: SessionAdapter {
+    let source: SourceName = .codex
+    let content: String
+
+    init(content: String) {
+        self.content = content
+    }
+
+    func detect() async -> Bool { true }
+    func listSessionLocators() async throws -> [String] { [] }
+    func isAccessible(locator: String) async -> Bool { true }
+
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        .failure(.fileMissing)
+    }
+
+    func streamMessages(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        let content = self.content
+        return AsyncThrowingStream { continuation in
+            continuation.yield(NormalizedMessage(role: .assistant, content: content))
+            continuation.finish()
+        }
+    }
+}
+
 final class InsightEmbeddingBackfillTests: XCTestCase {
     private var tempDir: URL!
 
@@ -82,6 +124,38 @@ final class InsightEmbeddingBackfillTests: XCTestCase {
 
     override func tearDownWithError() throws {
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
+    }
+
+    func testWriteEmbeddingsSkipsDeletedInsightWithoutAbortingLiveSibling_repro() throws {
+        let path = tempDir.appendingPathComponent("deleted-pending-insight.sqlite").path
+        let writer = try EngramDatabaseWriter(path: path)
+        try writer.migrate()
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO insights (id, content, importance, superseded_by) VALUES
+                  ('deleted', 'deleted while embedding was in flight', 5, NULL),
+                  ('live', 'live sibling embedding must commit', 5, NULL);
+                DELETE FROM insights WHERE id = 'deleted';
+                """)
+        }
+
+        let result = try InsightEmbeddingBackfill.writeEmbeddings(
+            writer: writer,
+            embeddings: [
+                .init(id: "deleted", vector: [1, 0, 0]),
+                .init(id: "live", vector: [0, 1, 0]),
+            ],
+            model: "fake-model",
+            dimension: 3
+        )
+
+        XCTAssertEqual(result, .init(embedded: 1, failed: 0))
+        try writer.read { db in
+            XCTAssertEqual(
+                try String.fetchAll(db, sql: "SELECT insight_id FROM insight_embeddings ORDER BY insight_id"),
+                ["live"]
+            )
+        }
     }
 
     func testBackfillEmbedsPendingInsightsExactlyOnce() async throws {
@@ -113,6 +187,40 @@ final class InsightEmbeddingBackfillTests: XCTestCase {
         // Nothing pending on the second run.
         let second = try await InsightEmbeddingBackfill.run(writer: writer, provider: provider)
         XCTAssertEqual(second, .init(embedded: 0, failed: 0))
+    }
+
+    func testPendingInsightsExcludeSupersededClones_repro() throws {
+        let path = tempDir.appendingPathComponent("superseded-pending.sqlite").path
+        let writer = try EngramDatabaseWriter(path: path)
+        try writer.migrate()
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO insights (id, content, importance, superseded_by) VALUES
+                  ('active-tip', 'active insight pending embedding', 5, NULL),
+                  ('hidden-clone', 'superseded clone must not spend embedding budget', 5, 'active-tip')
+                """)
+        }
+
+        let pending = try InsightEmbeddingBackfill.pendingInsights(writer: writer, limit: 10)
+
+        XCTAssertEqual(pending.map(\.id), ["active-tip"])
+    }
+
+    func testInsightEmbeddingRedactsPrivateKeyBeforeProvider_repro() async throws {
+        let provider = BatchRecordingEmbeddingProvider()
+        let privateKey = "context\n-----BEGIN PRIVATE KEY-----\n"
+            + String(repeating: "A", count: 2_000)
+            + "\n-----END PRIVATE KEY-----\nafter"
+
+        _ = try await InsightEmbeddingBackfill.embedPendingIsolated(
+            [.init(id: "insight-redacted", content: privateKey)],
+            provider: provider
+        )
+
+        let outbound = (await provider.texts()).joined(separator: "\n")
+        XCTAssertTrue(outbound.contains(TranscriptRedactionPolicy.redactionToken), outbound)
+        XCTAssertFalse(outbound.contains("BEGIN PRIVATE KEY"), outbound)
+        XCTAssertFalse(outbound.contains(String(repeating: "A", count: 64)), outbound)
     }
 
     // PR #197: explicit item-local input rejection is isolated and terminalized.
@@ -325,6 +433,117 @@ final class InsightEmbeddingBackfillTests: XCTestCase {
         XCTAssertEqual(batchSizes, [4, 4, 4, 4, 4])
     }
 
+    func testSessionEmbeddingWaitsForFtsAndFtsCompletionRepairsSummaryOnlyVector_repro() async throws {
+        let path = tempDir.appendingPathComponent("fts-before-embedding.sqlite").path
+        let writer = try EngramDatabaseWriter(path: path)
+        try writer.migrate()
+        let locator = tempDir.appendingPathComponent("repair-source.jsonl")
+        try Data("{}".utf8).write(to: locator)
+
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO sessions(id, source, start_time, file_path, tier, summary) VALUES
+                  ('not-ready', 'codex', datetime('now'), '/tmp/not-ready.jsonl', 'normal', 'summary must not embed'),
+                  ('repair', 'codex', datetime('now'), ?, 'normal', 'old summary-only text');
+                INSERT INTO session_index_jobs(
+                  id, session_id, job_kind, target_sync_version, status, retry_count, created_at, updated_at
+                ) VALUES
+                  ('not-ready:embedding', 'not-ready', 'embedding', 1, 'pending', 0, datetime('now'), datetime('now')),
+                  ('repair:embedding', 'repair', 'embedding', 1, 'completed', 0, datetime('now'), datetime('now')),
+                  ('repair:fts', 'repair', 'fts', 1, 'pending', 0, datetime('now'), datetime('now'));
+                INSERT INTO semantic_chunks(
+                  id, session_id, chunk_index, text, embedding, model, dim
+                ) VALUES (
+                  'repair:c0', 'repair', 0, 'old summary-only text', X'000000000000000000000000', 'old-model', 3
+                );
+                """,
+                arguments: [locator.path]
+            )
+        }
+
+        let beforeFts = try SessionEmbeddingBackfill.pendingSessions(writer: writer, limit: 10)
+        XCTAssertTrue(
+            beforeFts.isEmpty,
+            "a pending embedding job with no FTS content must stay pending without sending the summary"
+        )
+
+        let runner = IndexJobRunner(
+            writer: writer,
+            adapters: [EmbeddingRepairFTSAdapter(content: "fresh transcript content")]
+        )
+        let (ftsResult, _) = try await runner.runRecoverableJobsOnce()
+        XCTAssertEqual(ftsResult.completed, 1)
+
+        try writer.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT status FROM session_index_jobs WHERE id = 'repair:embedding'"
+                ),
+                "pending",
+                "the first successful FTS fill must re-enqueue an earlier summary-only embedding"
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM semantic_chunks WHERE session_id = 'repair'"),
+                0,
+                "the summary-only semantic vector must not remain queryable after FTS becomes authoritative"
+            )
+        }
+
+        let afterFts = try SessionEmbeddingBackfill.pendingSessions(writer: writer, limit: 10)
+        XCTAssertEqual(afterFts.map(\.sessionId), ["repair"])
+        XCTAssertTrue(
+            afterFts.first?.content.hasPrefix("fresh transcript content") == true,
+            "embedding input must now be sourced from the authoritative FTS rows"
+        )
+    }
+
+    func testSessionEmbeddingDefaultBatchDoesNotExceedEight_repro() async throws {
+        let provider = BatchRecordingEmbeddingProvider()
+        let content = (0..<11)
+            .map { index in "line-\(index)-" + String(repeating: "x", count: 650) }
+            .joined(separator: "\n")
+        let pending = [
+            SessionEmbeddingBackfill.PendingSession(
+                jobId: "job-default-batch",
+                sessionId: "session-default-batch",
+                content: content
+            ),
+        ]
+
+        _ = try await SessionEmbeddingBackfill.embedPendingSessionsIsolated(
+            pending,
+            provider: provider
+        )
+
+        let batchSizes = await provider.batchSizes()
+        XCTAssertEqual(batchSizes, [8, 3])
+    }
+
+    func testSessionEmbeddingRedactsUnclosedPrivateKeyBeforeProvider_repro() async throws {
+        let provider = BatchRecordingEmbeddingProvider()
+        let privateKey = "context\n-----BEGIN PRIVATE KEY-----\n"
+            + String(repeating: "A", count: 2_000)
+        let pending = [
+            SessionEmbeddingBackfill.PendingSession(
+                jobId: "job-redacted",
+                sessionId: "session-redacted",
+                content: privateKey
+            ),
+        ]
+
+        _ = try await SessionEmbeddingBackfill.embedPendingSessionsIsolated(
+            pending,
+            provider: provider
+        )
+
+        let outbound = (await provider.texts()).joined(separator: "\n")
+        XCTAssertTrue(outbound.contains(TranscriptRedactionPolicy.redactionToken), outbound)
+        XCTAssertFalse(outbound.contains("BEGIN PRIVATE KEY"), outbound)
+        XCTAssertFalse(outbound.contains(String(repeating: "A", count: 64)), outbound)
+    }
+
     /// M3: one session failure must not abort remaining sessions; failures advance
     /// retry_count and eventually reach failed_permanent.
     func testSessionEmbeddingIsolatesPerSessionFailure_repro() async throws {
@@ -417,6 +636,36 @@ final class InsightEmbeddingBackfillTests: XCTestCase {
             stillPending.contains(where: { $0.sessionId == "s-bad" }),
             "M3: failed_permanent jobs must leave the pending selection set"
         )
+    }
+
+    func testSessionEmbeddingOnlyIsolatesInputRejected_repro() async {
+        let pending = [
+            SessionEmbeddingBackfill.PendingSession(
+                jobId: "job",
+                sessionId: "session",
+                content: "content long enough to embed"
+            ),
+        ]
+        let cases: [(provider: any EmbeddingProvider, expected: EmbeddingError)] = [
+            (HTTP500EmbeddingProvider(), .http(500)),
+            (MalformedEmbeddingProvider(), .malformedResponse),
+            (WrongDimEmbeddingProvider(), .dimensionMismatch(expected: 3, actual: 2)),
+            (NotConfiguredEmbeddingProvider(), .notConfigured),
+        ]
+
+        for testCase in cases {
+            do {
+                _ = try await SessionEmbeddingBackfill.embedPendingSessionsIsolated(
+                    pending,
+                    provider: testCase.provider
+                )
+                XCTFail("expected provider-scoped error \(testCase.expected) to propagate")
+            } catch let error as EmbeddingError {
+                XCTAssertEqual(error, testCase.expected)
+            } catch {
+                XCTFail("unexpected error: \(error)")
+            }
+        }
     }
 
     /// M16: refuse writes when native vector length ≠ configured dimension; store
@@ -610,6 +859,79 @@ final class InsightEmbeddingBackfillTests: XCTestCase {
             XCTAssertEqual(
                 try String.fetchOne(db, sql: "SELECT model FROM embedding_meta WHERE id = 1"),
                 "old-model"
+            )
+        }
+    }
+
+    func testFailureOnlyInsightWritePreservesExistingNativeCorpus_repro() throws {
+        let path = tempDir.appendingPathComponent("failure-only-insight-native.sqlite").path
+        let writer = try EngramDatabaseWriter(path: path)
+        try writer.migrate()
+        try seedEmbeddedInsights(writer: writer)
+        try writer.write { db in
+            try db.execute(
+                sql: "INSERT INTO insights (id, content, has_embedding) VALUES ('poison', 'rejected', 0)"
+            )
+        }
+
+        _ = try InsightEmbeddingBackfill.writeEmbeddings(
+            writer: writer,
+            embeddings: [],
+            model: "old-model",
+            dimension: 1_536,
+            failures: [.init(id: "poison", error: "content rejected")]
+        )
+
+        try writer.read { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM insight_embeddings"), 2)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT dimension FROM embedding_meta WHERE id = 1"), 3)
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT status FROM insight_embedding_failures WHERE insight_id = 'poison'"
+                ),
+                "failed_retryable"
+            )
+        }
+    }
+
+    func testFailureOnlySessionWritePreservesExistingNativeCorpus_repro() throws {
+        let path = tempDir.appendingPathComponent("failure-only-session-native.sqlite").path
+        let writer = try EngramDatabaseWriter(path: path)
+        try writer.migrate()
+        try seedEmbeddingSessions(
+            writer: writer,
+            sessions: [("s1", "job-1", "existing native semantic text")]
+        )
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO semantic_chunks (
+                  id, session_id, chunk_index, text, embedding, model, dim
+                ) VALUES ('s1:c0', 's1', 0, 'existing native semantic text',
+                          X'000000000000000000000000', 'old-model', 3)
+                """
+            )
+            try db.execute(sql: """
+                INSERT INTO embedding_meta (id, provider, model, dimension)
+                VALUES (1, 'openai-compatible', 'old-model', 3)
+            """)
+        }
+
+        _ = try SessionEmbeddingBackfill.writeEmbeddings(
+            writer: writer,
+            sessions: [],
+            model: "old-model",
+            dimension: 1_536,
+            failures: [.init(jobId: "job-1", sessionId: "s1", error: "content rejected")]
+        )
+
+        try writer.read { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM semantic_chunks"), 1)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT dimension FROM embedding_meta WHERE id = 1"), 3)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT status FROM session_index_jobs WHERE id = 'job-1'"),
+                "failed_retryable"
             )
         }
     }

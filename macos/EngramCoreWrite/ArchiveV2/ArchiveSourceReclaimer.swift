@@ -61,7 +61,7 @@ public struct ArchiveSourceReclaimer: Sendable {
         case .eligible:
             return try plan(intent: intent, capture: capture)
         case .quarantinePlanned, .sourceQuarantined, .sourceDeletePlanned:
-            return try recover(intent: intent, capture: capture)
+            return try recover(intent: intent, capture: capture, deletionAllowed: true)
         default:
             throw ArchiveSourceReclaimerError.staleIntent
         }
@@ -69,13 +69,22 @@ public struct ArchiveSourceReclaimer: Sendable {
 
     public func recover(
         intent: ArchiveReclamationIntent,
-        capture: ArchiveCapture
+        capture: ArchiveCapture,
+        deletionAllowed: Bool
     ) throws -> ArchiveSourceReclaimResult {
         try validateIdentity(intent: intent, capture: capture)
         guard let quarantineURL = try quarantineURL(for: intent) else {
             throw ArchiveSourceReclaimerError.invalidIntent
         }
         let sourceURL = URL(fileURLWithPath: intent.locator)
+        guard deletionAllowed else {
+            return try abortRecovery(
+                intent,
+                capture: capture,
+                sourceURL: sourceURL,
+                quarantineURL: quarantineURL
+            )
+        }
         switch intent.phase {
         case .quarantinePlanned:
             let sourceExists = pathExists(sourceURL)
@@ -184,11 +193,17 @@ public struct ArchiveSourceReclaimer: Sendable {
             to: .sourceDeletePlanned,
             quarantinePath: quarantineURL.path
         )
-        try testHooks.afterDeletePlan?(quarantineURL)
+        do {
+            try testHooks.afterDeletePlan?(quarantineURL)
+        } catch is CancellationError {
+            try restoreOrPause(deletePlanned, quarantineURL: quarantineURL, error: "cancelled")
+            throw CancellationError()
+        }
         do {
             try revalidate(verified, at: quarantineURL)
             try Task.checkCancellation()
         } catch is CancellationError {
+            try restoreOrPause(deletePlanned, quarantineURL: quarantineURL, error: "cancelled")
             throw CancellationError()
         } catch {
             try restoreOrPause(deletePlanned, quarantineURL: quarantineURL, error: "generation_changed")
@@ -211,6 +226,7 @@ public struct ArchiveSourceReclaimer: Sendable {
             try Task.checkCancellation()
             return try unlinkAndCommit(intent, quarantineURL: quarantineURL, capture: capture)
         } catch is CancellationError {
+            try restoreOrPause(intent, quarantineURL: quarantineURL, error: "cancelled")
             throw CancellationError()
         } catch {
             try restoreOrPause(intent, quarantineURL: quarantineURL, error: "generation_changed")
@@ -261,6 +277,31 @@ public struct ArchiveSourceReclaimer: Sendable {
         try pause(intent, error: pathExists(sourceURL) && pathExists(quarantineURL)
             ? "quarantine_collision"
             : error)
+    }
+
+    private func abortRecovery(
+        _ intent: ArchiveReclamationIntent,
+        capture: ArchiveCapture,
+        sourceURL: URL,
+        quarantineURL: URL
+    ) throws -> ArchiveSourceReclaimResult {
+        let sourceExists = pathExists(sourceURL)
+        let quarantineExists = pathExists(quarantineURL)
+        if intent.phase == .sourceDeletePlanned, !sourceExists, !quarantineExists {
+            return try commitDeleted(intent, capture: capture)
+        }
+        if sourceExists, !quarantineExists {
+            try pause(intent, error: "policy_changed")
+        } else if !sourceExists, quarantineExists {
+            try restoreOrPause(intent, quarantineURL: quarantineURL, error: "policy_changed")
+        } else {
+            try pause(intent, error: "quarantine_collision")
+            throw ArchiveSourceReclaimerError.pathCollision
+        }
+        return ArchiveSourceReclaimResult(
+            manifestSHA256: intent.manifestSHA256,
+            releasedBytes: 0
+        )
     }
 
     private func validateIdentity(
