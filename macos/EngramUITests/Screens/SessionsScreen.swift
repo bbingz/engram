@@ -10,6 +10,7 @@ struct SessionsScreen {
     var filterPills: XCUIElement { app.element(id: "sessions_filterPills") }
     var sourcePicker: XCUIElement { app.element(id: "sessions_sourcePicker") }
     var showAllToggle: XCUIElement { app.element(id: "sessions_showAllToggle") }
+    var hqOnlyToggle: XCUIElement { app.element(id: "sessions_hqOnlyToggle") }
     var emptyState: XCUIElement { app.element(id: "sessions_emptyState") }
 
     func filterPill(named name: String) -> XCUIElement {
