@@ -7,6 +7,140 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Collector, shared IPC and intake-ledger foundations (2026-09-05; local integration)
+
+Integrated the separately verified W3 host-role and behavior-preserving
+capture-core slices into `codex/collector-server-web-20260905`. This is a
+foundation checkpoint, not completion of the no-index collector, central replay,
+or Web product. The coordinator compared every integrated source/test byte with
+the frozen worker trees (capture 16/16, role 14/14, excluding regenerated target
+routing), then regenerated the combined project with pinned XcodeGen 2.45.4.
+
+The App/MCP now read the same bounded, owner-only persisted runtimeRole before
+local-index access. Missing settings retain local behavior; invalid explicit or
+unsafe settings fail closed. Collector/replica reject local database access,
+service startup and automatic credential migrations; their App entry reports
+local-index unavailability and points to the HQ reader. Index role pins external
+process ownership before its initial probe, including an absent socket, and
+does not spawn, replace or stop that external service. Retained connection tasks
+and termination guards prevent queued reconnect work from publishing after quit.
+Index role still allows ordinary settings migration and explicit credential
+settings operations: lifecycle isolation is not a claim that all App settings
+activity is read-only.
+
+Role RED evidence: Core 9 tests/29 assertions, initial App 15 tests/74 assertions,
+and a corrected one-response-per-process MCP discovery test with 12 assertions.
+An additional real App-quit race failed one test/three assertions before the
+minimal task-retention/cancellation fix. Final focused GREEN is App 208, Core 9,
+MCP 5, all zero failures/unexpected failures and producer exits 0. Source and
+actual logs were independently read by the coordinator; W4 tests-only review
+performed by that implementing worker is not this role implementation gate.
+Local evidence: `/tmp/engram-host-role.mgi3Cv/{core-red.log,app-red.log,mcp-discovery-red.log,app-quit-red.log,app-green.log,core-green.log,mcp-green.log}`.
+
+Five capture files now live once in `macos/EngramCaptureShared`; both CoreWrite
+and the new CollectorCore compile those same sources. CollectorCore has an
+explicit 11-file capture list and GRDB-dynamic as its sole package dependency,
+with no product index, parser, Service or AI core. SourceName, exact-adapter
+conformance and the unchanged SQLite busy/checkpoint defaults were narrowly
+separated. Coordinator comparison verified four moved files unchanged after
+the expected import/constant routing, and the classifier adapter overload
+retains both original cancellation checks.
+
+A fresh isolated CollectorCore build/test passed 9/9, with dyld and actual
+dependency-graph/link evidence. Existing Core capture suites passed 129/129
+(Coordinator 35, Catalog 45, ExactCapturer 19, CAS 12, Models 12, SQLitePolicy 6).
+The first Core run failed only the old source-path inspection after the move;
+only that path literal changed before the identical suite passed. The archive
+safety gate now scans the moved directory while preserving one global object
+unlink and quarantine gate: new-location negatives first failed 9 assertions,
+then all 39 script tests passed. No deletion/receipt/reclamation authority was
+added. Grok's independent extraction-only review verified all 19 frozen hashes
+and returned PASS / APPROVED at approximately 20:49 CST; root separately has the
+tool-returned producer exit codes, which are not embedded in those raw logs.
+Local evidence: `/tmp/engram-w3-capture.TyQFgQ/{collector-first.log,collector-otool-L.log,core-focused.log,core-focused-final.log,safety-red.log,safety-final-green.log,source-final-build.sha256}`.
+
+The pure JSON wire envelopes and one socket-I/O engine are also integrated,
+byte-compared with the seven frozen worker source/test files. The new raw
+exchange has a monotonic total deadline, a pre-I/O/pre-allocation 256 KiB limit,
+same-user socket checks and one owned descriptor close. A Darwin socketpair
+reproduction showed MSG_DONTWAIT alone can block a large send; the exchange now
+keeps its owned descriptor nonblocking until close. Borrowed framing does not
+change caller descriptor flags; the general transport preserves its legacy
+inactivity timeout and capability-token behavior rather than claiming the raw
+exchange's total-budget contract. Final focused App 59/59 and Service 3/3 passed,
+producer exits 0. Grok independently returned PASS / APPROVED at approximately
+21:00 CST. Logs: `/tmp/engram-web-ipc.l9O7bZ/{red.log,green.log,green2.log,service3structural.log}`.
+This is not yet the typed Web client or an enabled HTTP reader.
+
+The first W4 identity and durable intake slice adds a byte-stable ImportRepo
+namespace projection, four bookkeeping tables and two indexes through the
+existing additive base-schema hook. Publications, per-parser work, replica
+arrivals and checkpoints commit in one inner savepoint even when a caller
+catches an error in its outer transaction. Duplicate intake preserves terminal
+work; conflicting stream tuples quarantine nonterminal work without retracting
+last-good parsed/index-ready generations. Pending intake grants no source/epoch,
+parser, session or FTS authority. Alias reconciliation and replay are later work.
+The unchanged 21 behavior tests first failed 55 assertions (exit 65), then the
+focused identity/ledger/migration suite passed 37/37 (exit 0). An independent
+source/log gate returned PASS / APPROVED. Logs and xcresults are under
+`/tmp/engram-w4-ingest.Tq3mq1/` (identity-ledger-red, identity-ledger-green,
+core-full); that isolated full Core run was 1,473/one existing performance skip/0.
+
+Combined integration Core passed 1,482/one existing performance skip/0. App's
+first full 1,175-test run found one old source-text assertion requiring an if
+instead of the equivalent, stronger role/test-mode guard. Only that structural
+assertion changed; the fixture-mode no-settings/Keychain-mutation behavior test
+was retained. The next full App run passed 1,175/1,175, and full Service passed
+833/one existing skip/0, all producer exits 0. Logs and xcresults:
+`/tmp/engram-w3-foundation-core-integrated`,
+`/tmp/engram-w3-foundation-app-integrated` (original structural failure),
+`/tmp/engram-w3-foundation-app-integrated2`, and
+`/tmp/engram-w3-foundation-service-integrated`.
+
+Final combined MCP 270/270, Collector 9/9 and Remote 229/229 also passed, with
+zero skips/failures and producer exits 0. Matching logs/xcresults are
+`/tmp/engram-w3-foundation-{mcp,collector,remote}-integrated`. Grok's read-only
+cross-slice integration gate returned PASS / APPROVED after checking actual
+target routing, additive migration, byte-exact identity, status/checkpoint
+protection and the App structural-test correction. Its first review preceded
+the final App/Service/MCP/Remote logs; coordinator verified those separately.
+
+CI now explicitly runs the isolated CollectorCore scheme through its existing
+required Swift-test helper. The new workflow regression first failed one test
+with 36 passing, then the unchanged 37-test suite passed after one workflow-line
+addition. Evidence: `/tmp/engram-w3-collector-ci-{red,green}.log`, producer exits
+1 and 0. Ten final script suites passed 190 tests with two existing dirty-project
+conditional skips; test TypeScript checking, focused Biome and all five invariant
+boundary gates passed (producer exits 0). Logs:
+`/tmp/engram-w3-foundation-{script-final,typecheck,biome,invariants-final}.log`.
+The separate CI-delta read-only review also returned PASS / APPROVED and checked
+the final App/Service/MCP/Collector logs. Actionlint passed for the changed
+workflow (`/tmp/engram-w3-foundation-actionlint.log`, producer 0).
+This tranche's pushed-head CI remains pending; local results are not remote CI.
+
+Next collector work is fixture-only identity reading and immutable metadata/
+privacy proof, before durable inventory and two-replica upload. No installed
+role/settings, source inventory, live catalog, credential, network, service or
+production DB changed. Separate test-fixture WAL/SHM sidecars of unproven origin
+are preserved and excluded from staging, not silently cleaned.
+
+### W2 exact-head CI closeout (2026-09-05)
+
+The receiver commit `874a63f13438785f7ad9a8d930682fcb687bf610` was pushed to
+existing Draft PR #446. Tests run `33965852625`, CodeQL `33965852598` (both Swift
+product and RemoteServer, including CodeQL Gate), and dependency review
+`33965852614` all passed for that exact SHA. Required Node, script/fixture,
+Remote Swift, product Swift and UI-smoke jobs passed. PR full UI, unchanged
+TypeScript CodeQL and the unnecessary smoke-failure reporter were intentionally
+skipped; the separate CodeQL summary was neutral, not a failed required gate.
+These remote results supersede the pending CI statements in the earlier dated
+W2 local checkpoint, without changing those historical observations.
+
+Evidence: `https://github.com/bbingz/engram/actions/runs/33965852625`,
+`https://github.com/bbingz/engram/actions/runs/33965852598`,
+`https://github.com/bbingz/engram/actions/runs/33965852614`. No merge or deployment
+was performed. Later worktree changes do not inherit this SHA's passing CI.
+
 ### W2 durable collector publication receiver (2026-09-05; local gate)
 
 The default-OFF receiver now accepts canonical, separately versioned collector

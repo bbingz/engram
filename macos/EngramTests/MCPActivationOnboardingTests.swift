@@ -250,7 +250,7 @@ final class MCPActivationOnboardingTests: XCTestCase {
         XCTAssertTrue(launch.contains("removeItem(at: root)"))
         XCTAssertTrue(signing.contains("TestLaunchConfig.mainWindow.configure(app)"))
         XCTAssertTrue(darkMode.contains("TestLaunchConfig.popover.configure(popoverApp)"))
-        XCTAssertTrue(app.contains("if !environment.isTestMode"))
+        XCTAssertTrue(app.contains("guard !environment.isTestMode, environment.runtimeRole.allowsLocalIndex else { return }"))
     }
 
     func testUITestConfigureFailsClosedBeforeReportingSetupFailure_repro() throws {

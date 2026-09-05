@@ -1,5 +1,7 @@
 import Darwin
+#if !ENGRAM_COLLECTOR_CORE
 import EngramCoreRead
+#endif
 import Foundation
 
 public enum ArchiveLocatorClassification: Equatable, Sendable {
@@ -14,22 +16,6 @@ public enum ArchiveLocatorClassification: Equatable, Sendable {
 public enum ArchiveLocatorClassifier {
     public static func normalize(_ locator: String) -> String? {
         ArchiveSourceDescriptor.normalizedAbsolutePath(locator)
-    }
-
-    public static func classify(
-        adapter: any SessionAdapter,
-        locator: String
-    ) async throws -> ArchiveLocatorClassification {
-        try Task.checkCancellation()
-        if isVirtual(locator) {
-            return .unsupportedVirtual
-        }
-        guard let adapter = adapter as? any ExactArchiveSourceAdapter else {
-            return .unsupportedAdapter
-        }
-        let descriptor = try await adapter.archiveSourceDescriptor(locator: locator)
-        try Task.checkCancellation()
-        return classify(descriptor: descriptor, enumeratedLocator: locator)
     }
 
     static func classify(

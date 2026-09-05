@@ -333,7 +333,7 @@ final class ImmutableArchiveCASTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("EngramCoreWrite/ArchiveV2/ImmutableArchiveCAS.swift")
+            .appendingPathComponent("EngramCaptureShared/ImmutableArchiveCAS.swift")
         return try String(contentsOf: source, encoding: .utf8)
     }
 

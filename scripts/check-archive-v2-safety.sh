@@ -38,6 +38,7 @@ append_archive_files() {
 }
 
 append_archive_files "$ROOT_DIR/macos/EngramCoreWrite/ArchiveV2" '*.swift'
+append_archive_files "$ROOT_DIR/macos/EngramCaptureShared" '*.swift'
 append_archive_files "$ROOT_DIR/macos/EngramRemoteServer/Core" 'Archive*.swift'
 append_archive_files "$ROOT_DIR/macos/EngramService/Core" 'Archive*.swift'
 append_archive_files "$ROOT_DIR/macos/EngramService/Core" 'EngramServiceCommandHandler+Archive*.swift'
@@ -60,10 +61,10 @@ const archiveSourceReclaimer = resolve(
   root,
   'macos/EngramCoreWrite/ArchiveV2/ArchiveSourceReclaimer.swift',
 );
-const immutableArchiveCAS = resolve(
-  root,
-  'macos/EngramCoreWrite/ArchiveV2/ImmutableArchiveCAS.swift',
-);
+const immutableArchiveCASPaths = new Set([
+  resolve(root, 'macos/EngramCoreWrite/ArchiveV2/ImmutableArchiveCAS.swift'),
+  resolve(root, 'macos/EngramCaptureShared/ImmutableArchiveCAS.swift'),
+]);
 const archiveStore = resolve(
   root,
   'macos/EngramRemoteServer/Core/ArchiveStore.swift',
@@ -213,7 +214,7 @@ for (const path of process.argv.slice(3)) {
     }
     if (
       name === 'Darwin.unlink' &&
-      path === immutableArchiveCAS &&
+      immutableArchiveCASPaths.has(path) &&
       argument === 'objectURL.path'
     ) {
       immutableObjectUnlinkCount += 1;
@@ -221,7 +222,7 @@ for (const path of process.argv.slice(3)) {
     }
     if (
       name === 'Darwin.unlink' &&
-      path === immutableArchiveCAS &&
+      immutableArchiveCASPaths.has(path) &&
       (argument === 'temporaryURL.path' ||
         argument === 'staged.temporaryURL.path')
     ) {

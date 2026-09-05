@@ -109,6 +109,7 @@ final class DatabaseManager: @unchecked Sendable {
     }
 
     @ObservationIgnored private let dbPath: String
+    @ObservationIgnored private let runtimeRole: EngramRuntimeRole
     @ObservationIgnored private var pool: DatabasePool?
     @ObservationIgnored private let poolLock = NSLock()
     @ObservationIgnored private static let sessionTimelineMaxLimit = 10_000
@@ -122,13 +123,17 @@ final class DatabaseManager: @unchecked Sendable {
         return try pool.read(block)
     }
 
-    init(path: String? = nil) {
+    init(path: String? = nil, runtimeRole: EngramRuntimeRole = .local) {
+        self.runtimeRole = runtimeRole
         // docs/invariants.md #6: default XCTest reads stay under the injected home.
         self.dbPath = path ?? EngramUserDataDirectory.resolvedHomeDirectory()
             .appendingPathComponent(".engram/index.sqlite").path
     }
 
     func open() throws {
+        guard runtimeRole.allowsLocalIndex else {
+            throw RuntimeRoleSettings.UnavailableError(role: runtimeRole)
+        }
         poolLock.lock()
         defer { poolLock.unlock() }
         guard pool == nil else { return }
@@ -136,6 +141,9 @@ final class DatabaseManager: @unchecked Sendable {
     }
 
     private func currentPool() throws -> DatabasePool {
+        guard runtimeRole.allowsLocalIndex else {
+            throw RuntimeRoleSettings.UnavailableError(role: runtimeRole)
+        }
         // Always read `pool` under the lock; a lock-free fast-path read would
         // race with the write below.
         poolLock.lock()

@@ -12,6 +12,9 @@ import { describe, expect, it } from 'vitest';
 
 const repoRoot = resolve(import.meta.dirname, '../..');
 const script = resolve(repoRoot, 'scripts/check-archive-v2-safety.sh');
+const legacyCASPath =
+  'macos/EngramCoreWrite/ArchiveV2/ImmutableArchiveCAS.swift';
+const sharedCASPath = 'macos/EngramCaptureShared/ImmutableArchiveCAS.swift';
 
 function runGate(root = repoRoot): {
   status: number | null;
@@ -49,7 +52,7 @@ function write(root: string, relativePath: string, content: string): void {
   writeFileSync(target, content, 'utf8');
 }
 
-function makeSafeFixture(): string {
+function makeSafeFixture(casPath = legacyCASPath): string {
   const root = mkdtempSync(join(tmpdir(), 'engram-archive-v2-gate-'));
   write(
     root,
@@ -62,7 +65,7 @@ function makeSafeFixture(): string {
   );
   write(
     root,
-    'macos/EngramCoreWrite/ArchiveV2/ImmutableArchiveCAS.swift',
+    casPath,
     [
       'guard Darwin.unlink(objectURL.path) == 0 else {',
       '  throw TestError()',
@@ -129,6 +132,79 @@ describe('archive v2 release safety gate', () => {
   it('accepts only the explicit archive cleanup and reclamation sites', () => {
     const result = runGate(makeSafeFixture());
     expect(result.status).toBe(0);
+  });
+
+  it('accepts the moved shared CAS cleanup at its exact new path', () => {
+    expect(runGate(makeSafeFixture(sharedCASPath)).status).toBe(0);
+  });
+
+  it('rejects duplicate object unlink across old and shared CAS paths', () => {
+    const root = makeSafeFixture();
+    write(root, sharedCASPath, readFileSync(join(root, legacyCASPath), 'utf8'));
+
+    const result = runGate(root);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toContain(
+      'ImmutableArchiveCAS object unlink must occur exactly once',
+    );
+  });
+
+  it('rejects a duplicate object unlink in the moved shared CAS', () => {
+    const root = makeSafeFixture(sharedCASPath);
+    const content = readFileSync(join(root, sharedCASPath), 'utf8');
+    write(root, sharedCASPath, `${content}\nDarwin.unlink(objectURL.path)\n`);
+
+    const result = runGate(root);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toContain(
+      'ImmutableArchiveCAS object unlink must occur exactly once',
+    );
+  });
+
+  it.each([
+    ['ExactSourceCapturer.swift', 'Darwin.unlink(sourceURL.path)'],
+    ['ArchiveCatalog.swift', 'unlinkat(directoryFD, sourceName, 0)'],
+    [
+      'ArchiveCatalogMigrations.swift',
+      'try FileManager.default.removeItem(at: sourceURL)',
+    ],
+    [
+      'ArchiveLocatorClassifier.swift',
+      'try receiver.removeItem(at: sourceURL)',
+    ],
+    ['ImmutableArchiveCAS.swift', 'Darwin.unlink(sourceURL.path)'],
+    ['ArchiveSourceReclaimer.swift', 'Darwin.unlink(quarantineURL.path)'],
+  ])(
+    'rejects forbidden primitives in shared capture file %s',
+    (filename, content) => {
+      const root = makeSafeFixture();
+      write(root, `macos/EngramCaptureShared/${filename}`, `${content}\n`);
+
+      const result = runGate(root);
+
+      expect(result.status).not.toBe(0);
+      expect(`${result.stdout}${result.stderr}`).toContain(
+        'forbidden archive deletion primitive',
+      );
+    },
+  );
+
+  it('rejects legacy coupling in the shared capture directory', () => {
+    const root = makeSafeFixture();
+    write(
+      root,
+      'macos/EngramCaptureShared/ArchiveCatalog.swift',
+      'try OffloadRepo.commitOffloaded(db)\n',
+    );
+
+    const result = runGate(root);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toContain(
+      'legacy offload coupling',
+    );
   });
 
   it('rejects a duplicate quarantine unlink in ArchiveSourceReclaimer', () => {

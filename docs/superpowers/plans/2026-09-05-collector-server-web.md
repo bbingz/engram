@@ -8,15 +8,19 @@
 
 **Branch / base:** `codex/collector-server-web-20260905` / `625ecc9737c219f401200d3c2e301f537582ff11`
 
-**Status:** W1 is pushed in Draft PR #446 at `638a8454` after a documentation
-anchor correction. Tests run `33961440699`, CodeQL `33961440704`, and dependency
-review passed for that exact head. W2 receiver implementation passes the local
-complete Remote suite (229 tests, zero failures/skips) and final independent
-safety review (PASS / APPROVED); its own PR CI gate is pending. It is not deployed.
-Revised design passed the independent B1-B7 closure gate; W2 intake and W3/W4
-interfaces are frozen. W3 host-role isolation, behavior-preserving capture-core
-extraction, and W4/W5 shared socket/wire foundation are independently developing
-in separate worktrees at base `638a8454`; none closes the full W3-W6 gates.
+**Status:** W1 `638a8454` and W2 `874a63f1` are pushed in Draft PR #446 with their
+own required CI gates passing. W2 Tests `33965852625`, CodeQL `33965852598`, and
+dependency review `33965852614` passed for its exact head; nothing is deployed.
+Revised design passed the independent B1-B7 closure gate. Independently reviewed
+host-role/capture-core, shared wire/socket, and first identity/durable-intake
+slices are now locally integrated. The combined Core suite is 1,482 tests/one
+existing performance skip/zero failures; combined App is 1,175/0, Service
+833/one existing skip/0, MCP 270/0, Collector 9/0 and Remote 229/0. Cross-slice
+source/target review passed; ten script suites are 190 passed/two existing
+conditional skips. The next tranche's pushed-head CI remains pending.
+These are foundations, not full W3-W6 completion.
+Collector privacy proof, source/epoch registry and normalized-message
+continuation are separately developing through new TDD gates.
 The owner authorized committing/pushing W1, running CI, then autonomous staged
 implementation/review/CI through W6 on 2026-09-05. Production W7, credentials,
 network changes, and merge/release remain separate authority boundaries.

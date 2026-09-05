@@ -54,7 +54,7 @@ Invariants are properties that must survive every change; each entry names where
 ## 8. Service Socket Security
 
 - **Statement** - The service socket uses a private runtime directory, owner-only socket permissions, capability-token authorization for mutating commands, and current-user local socket confinement.
-- **Enforced by** - `macos/Shared/Service/UnixSocketEngramServiceTransport.swift`, `macos/EngramService/Core/ServiceWriterGate.swift`, `docs/SECURITY.md`.
+- **Enforced by** - `macos/Shared/Service/UnixSocketEngramServiceTransport.swift`, `macos/Shared/Service/EngramServiceSocketIO.swift`, `macos/EngramService/Core/ServiceWriterGate.swift`, `docs/SECURITY.md`.
 - **Verified by** - `macos/EngramServiceCoreTests/ServiceSecurityHardeningTests.swift` (testDestructiveCommandWithoutTokenIsUnauthorized, testEveryMutatingCommandRequiresCapabilityToken, testCapabilityTokenFileIsWrittenWithOwnerOnlyPermissions, testClientAutoAttachedTokenAuthorizesDestructiveCommand).
 - **Gate** - `none`.
 
@@ -109,9 +109,23 @@ Invariants are properties that must survive every change; each entry names where
 
 ## External Service Ownership
 
-- **Statement** - Once the App adopts an externally managed service, quitting, failed health probes, and manual reconnect do not signal or replace that service, acquire its writer locks, or remove its runtime secrets. This guarantee does not cover the initial connection attempt before ownership is known.
-- **Enforced by** - `macos/Engram/Core/EngramServiceLauncher.swift` (adoptedConfiguration, startHealthMonitor, restart, stopIfOwned).
-- **Verified by** - `macos/EngramTests/EngramServiceLauncherTests.swift` (testQuitPreservesAdoptedServiceAndItsRuntimeSecrets_repro, testAdoptedServiceProbeFailureRecoversWithoutShutdownOrReplacement_repro, testSuspendedAdoptedProbeCannotRestartAfterQuit_repro, testRestartOfAdoptedServiceOnlyReconnects_repro).
+- **Statement** - Once the App adopts an externally managed service, quitting, failed health probes, and manual reconnect do not signal or replace that service, acquire its writer locks, or remove its runtime secrets. Persisted index role pins external ownership before its initial probe, including an absent socket; cancelled or terminated App connection tasks cannot start later. Ordinary settings migration and user-initiated credential settings remain outside this lifecycle-only guarantee.
+- **Enforced by** - `macos/Engram/Core/EngramServiceLauncher.swift` (adoptedConfiguration, startHealthMonitor, restart, stopIfOwned), `macos/Engram/App.swift`, `macos/Shared/EngramCore/RuntimeRoleSettings.swift`.
+- **Verified by** - `macos/EngramTests/EngramServiceLauncherTests.swift` (testQuitPreservesAdoptedServiceAndItsRuntimeSecrets_repro, testAdoptedServiceProbeFailureRecoversWithoutShutdownOrReplacement_repro, testSuspendedAdoptedProbeCannotRestartAfterQuit_repro, testRestartOfAdoptedServiceOnlyReconnects_repro, testRuntimeRoleColdIndexCannotSpawnOrTouchLockAndSecrets_repro, testRuntimeRoleSuspendedInitialProbeCannotStartAfterQuit_repro), `macos/EngramTests/RuntimeRoleAppTests.swift` (testTerminatedIndexAppCannotRestartOrPublishLateStatus_repro).
+- **Gate** - `none`.
+
+## Persisted Host Role Before Local Index Access
+
+- **Statement** - The App and MCP resolve the same owner-only persisted role before local-index access. Collector, replica and invalid settings cannot open the local product DB or start a service through the App; they do not automatically migrate settings/credentials. Missing role preserves local behavior. This is a host-entry guard, not proof of a complete collector or source coverage.
+- **Enforced by** - `macos/Shared/EngramCore/RuntimeRoleSettings.swift`, `macos/Engram/Core/AppEnvironment.swift`, `macos/Engram/App.swift`, `macos/Engram/Core/Database.swift`, `macos/EngramMCP/Core/MCPConfig.swift`, `macos/EngramMCP/Core/MCPToolRegistry.swift`.
+- **Verified by** - `macos/EngramCoreTests/RuntimeRoleSettingsTests.swift`, `macos/EngramTests/RuntimeRoleAppTests.swift`, `macos/EngramTests/DatabaseManagerTests.swift`, `macos/EngramMCPTests/EngramMCPExecutableTests.swift` (runtime-role tests).
+- **Gate** - `none`.
+
+## Collector Capture Core Excludes Product Index Dependencies
+
+- **Statement** - CollectorCore compiles only explicit capture sources plus GRDB, with no CoreRead/CoreWrite/Service/parser dependencies or product index tables. CoreWrite reuses the same five capture files, not a second implementation. The archive no-delete gate scans their new location with the same global unlink limits. This foundation does not yet guarantee a complete no-index collector executable.
+- **Enforced by** - `macos/project.yml`, `macos/EngramCaptureShared/ArchiveCatalog.swift`, `macos/EngramCaptureShared/ExactSourceCapturer.swift`, `scripts/check-archive-v2-safety.sh`.
+- **Verified by** - `macos/EngramCollectorCoreTests/CollectorTargetDependencyTests.swift`, `macos/EngramCollectorCoreTests/CollectorCaptureCoreTests.swift`, `tests/scripts/archive-v2-safety-gate.test.ts`.
 - **Gate** - `none`.
 
 ## Collector Publication ACK Durability
@@ -119,6 +133,13 @@ Invariants are properties that must survive every change; each entry names where
 - **Statement** - A collector capture ACK is issued only after one encrypted immutable acceptance record durably commits both the publication and its arrival identity. Restart rebuilds discovery from those records; uncertain storage or journal ownership fails closed. This ACK neither creates a legacy bound receipt nor proves parsing, keyword readiness, or reclamation authority. Publication intake is default OFF.
 - **Enforced by** - `macos/EngramRemoteServer/Core/ArchiveStore.swift`, `macos/EngramRemoteServer/Core/ArchiveEnvelopeCodec.swift`, `macos/EngramRemoteServer/Core/ArchivePublicationRoutes.swift`, `macos/EngramRemoteServer/Core/ArchiveRoutes.swift`, `macos/EngramRemoteServer/Core/EngramRemoteServerConfig.swift`.
 - **Verified by** - `macos/EngramRemoteServerCoreTests/ArchivePublicationStoreTests.swift` (testFirstAcceptanceIsEncryptedImmutableAndIdenticalRetryReturnsOriginalACK, testAcceptedRecordSurvivesIndependentProcessRestart, testAcceptanceDirectoryFsyncFailureReconcilesTheOneRenamedRecord, testArrivalCursorReadsLaterSmallerDigestAndRemainsReusableAtEOF), `macos/EngramRemoteServerCoreTests/ArchivePublicationRouteTests.swift`, `macos/EngramRemoteServerCoreTests/CollectorPublicationModelTests.swift`.
+- **Gate** - `none`.
+
+## Durable Collector Intake Is Not Index Readiness
+
+- **Statement** - Publication bytes, per-parser work, replica arrivals and checkpoint advancement share one inner savepoint. Identical replay cannot reset terminal work, and conflicting stream tuples quarantine nonterminal work without retracting last-good parsed/index-ready rows. Pending intake does not authorize parsing, source/epoch promotion or session/FTS writes.
+- **Enforced by** - `macos/EngramCoreWrite/CaptureIngest/CaptureIngestLedger.swift`, `macos/EngramCoreWrite/CaptureIngest/CaptureIngestIdentity.swift`, `macos/EngramCoreWrite/Database/EngramMigrations.swift`.
+- **Verified by** - `macos/EngramCoreTests/CaptureIngest/CaptureIngestLedgerTests.swift`, `macos/EngramCoreTests/CaptureIngest/CaptureIngestIdentityTests.swift`.
 - **Gate** - `none`.
 
 ## Unverified Anchors

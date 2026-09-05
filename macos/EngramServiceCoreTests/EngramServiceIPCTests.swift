@@ -1854,13 +1854,18 @@ final class EngramServiceIPCTests: XCTestCase {
 
     func testUnixSocketClientTransportUsesCheckedSendable() throws {
         let source = try serviceCoreSource("Shared/Service/UnixSocketEngramServiceTransport.swift")
+        let shared = try serviceCoreSource("Shared/Service/EngramServiceSocketIO.swift")
 
         XCTAssertTrue(source.contains("final class UnixSocketEngramServiceTransport: EngramServiceTransport, Sendable"))
         XCTAssertFalse(
             source.contains("UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked Sendable"),
             "client transport only stores Sendable let values and must not use unchecked Sendable"
         )
-        XCTAssertTrue(source.contains("private final class FdBox: @unchecked Sendable"))
+        XCTAssertTrue(source.contains("try await EngramServiceSocketIO.exchangeLegacy("))
+        XCTAssertFalse(source.contains("private final class FdBox"))
+        XCTAssertTrue(shared.contains("private final class SocketDescriptorOwner: @unchecked Sendable"))
+        XCTAssertTrue(shared.contains("private let lock = NSLock()"))
+        XCTAssertTrue(shared.contains("private var cancelled = false"))
     }
 
     func testServerRejectsClientWhenSocketTimeoutCannotBeArmed() throws {
@@ -2054,27 +2059,34 @@ final class EngramServiceIPCTests: XCTestCase {
         // perf: SO_RCVTIMEO/SO_SNDTIMEO only bound a single syscall, so a peer
         // trickling one byte before each window can stretch a frame across
         // maximumFrameLength iterations. The transport must additionally track a
-        // wall-clock deadline for the whole frame.
+        // monotonic deadline for the whole frame. The general transport keeps
+        // its legacy frame policy while delegating I/O to the shared kernel.
         let source = try serviceCoreSource("Shared/Service/UnixSocketEngramServiceTransport.swift")
+        let shared = try serviceCoreSource("Shared/Service/EngramServiceSocketIO.swift")
         XCTAssertTrue(
-            source.contains("maximumFrameDurationSeconds"),
-            "transport must define a whole-frame wall-clock budget"
+            source.contains("maximumFrameDurationSeconds = EngramServiceSocketIO.maximumFrameDurationSeconds"),
+            "the compatibility wrapper must use the shared frame budget"
+        )
+        XCTAssertTrue(source.contains("try EngramServiceSocketIO.writeFrame("))
+        XCTAssertTrue(source.contains("try EngramServiceSocketIO.readFrame("))
+        XCTAssertTrue(
+            shared.contains("ContinuousClock.now"),
+            "the shared kernel must use a monotonic deadline"
         )
         XCTAssertTrue(
-            source.contains("checkFrameDeadline"),
-            "readExact/writeAll must check the per-frame deadline before each blocking syscall"
-        )
-        XCTAssertTrue(
-            source.contains("deadline: Date?"),
-            "the per-frame deadline must be threaded into readExact/writeAll"
+            shared.contains("try budget.check()"),
+            "frame transfers must check their deadline and cancellation budget"
         )
     }
 
     func testTransportRetriesInterruptedReadWriteSyscalls() throws {
         let source = try serviceCoreSource("Shared/Service/UnixSocketEngramServiceTransport.swift")
+        let shared = try serviceCoreSource("Shared/Service/EngramServiceSocketIO.swift")
 
-        XCTAssertTrue(source.contains("errno == EINTR"))
-        XCTAssertTrue(source.contains("continue"))
+        XCTAssertTrue(source.contains("try EngramServiceSocketIO.writeFrame("))
+        XCTAssertTrue(source.contains("try EngramServiceSocketIO.readFrame("))
+        XCTAssertTrue(shared.contains("errno == EINTR"))
+        XCTAssertTrue(shared.contains("continue"))
     }
 
     func testServiceReadsHopOffCooperativePool() throws {

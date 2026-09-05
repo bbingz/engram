@@ -7,26 +7,7 @@ private let engramSettingsMaximumBytes = 1024 * 1024
 func resolveEngramSettingsURL(
     environment: [String: String] = ProcessInfo.processInfo.environment
 ) -> URL {
-    if let override = environment["ENGRAM_SETTINGS_PATH"], !override.isEmpty {
-        return URL(fileURLWithPath: override)
-    }
-    if let fixedHome = environment["CFFIXED_USER_HOME"], !fixedHome.isEmpty {
-        return URL(fileURLWithPath: fixedHome).appendingPathComponent(".engram/settings.json")
-    }
-    if environment["XCTestConfigurationFilePath"] != nil
-        || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
-        // docs/invariants.md #6: an in-process XCTest host never falls back to
-        // the passwd-backed production home when no explicit path is supplied.
-        return FileManager.default.temporaryDirectory
-            .appendingPathComponent(
-                "engram-tests-\(ProcessInfo.processInfo.processIdentifier)",
-                isDirectory: true
-            )
-            .appendingPathComponent(".engram/settings.json")
-    }
-    let home = environment["HOME"].flatMap { $0.isEmpty ? nil : $0 }
-        ?? FileManager.default.homeDirectoryForCurrentUser.path
-    return URL(fileURLWithPath: home).appendingPathComponent(".engram/settings.json")
+    RuntimeRoleSettings.settingsURL(environment: environment)
 }
 
 let engramSettingsPath = resolveEngramSettingsURL()

@@ -237,6 +237,7 @@ jobs:
           bash scripts/release-verify.sh "$ENGRAM_APP" --hygiene-only
           run_xcode_tests EngramServiceCore
           run_xcode_tests EngramMCPTests
+          run_xcode_tests EngramCollectorCore
 
   remote-server-swift:
     needs: changes

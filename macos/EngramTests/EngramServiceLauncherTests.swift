@@ -1498,6 +1498,143 @@ final class EngramServiceLauncherTests: XCTestCase {
             return false
         })
     }
+    @MainActor
+    func testRuntimeRoleColdIndexCannotSpawnOrTouchLockAndSecrets_repro() async throws {
+        let fixture = try RuntimeRoleLauncherFixture(role: .index)
+        defer { fixture.cleanup() }
+        let launcher = EngramServiceLauncher(healthIntervalNanoseconds: 60_000_000_000)
+        defer { launcher.stopIfOwned() }
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(
+            socketPath: fixture.configuration.socketPath, connectTimeout: 0.05
+        ))
+        defer { client.close() }
+        let recorder = ServiceStatusRecorder()
+        await launcher.startOrAdopt(
+            configuration: fixture.configuration,
+            statusProbe: { try await client.status() },
+            onStatus: { recorder.append($0) }
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertFalse(launcher.isRunning, "an absent external socket is not a running service")
+        XCTAssertFalse(recorder.statuses.contains(.starting))
+        XCTAssertTrue(recorder.statuses.contains {
+            if case .degraded(let message) = $0 { return message.contains("externally managed") }
+            return false
+        })
+        XCTAssertEqual(markerLineCount(fixture.marker), 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.lock.path))
+        XCTAssertEqual(try? Data(contentsOf: fixture.secret), fixture.secretBytes)
+    }
+
+    @MainActor
+    func testRuntimeRoleIndexReconnectsAfterInitialFailureWithoutTakingOwnership_repro() async throws {
+        let fixture = try RuntimeRoleLauncherFixture(role: .index)
+        defer { fixture.cleanup() }
+        let launcher = EngramServiceLauncher(healthIntervalNanoseconds: 60_000_000_000)
+        defer { launcher.stopIfOwned() }
+        let state = AdoptedServiceState()
+        await state.failNextProbes(1)
+        let recorder = ServiceStatusRecorder()
+        await launcher.startOrAdopt(
+            configuration: fixture.configuration,
+            statusProbe: { try await state.status() }, onStatus: { recorder.append($0) }
+        )
+        await launcher.restart(
+            configuration: fixture.configuration,
+            statusProbe: { try await state.status() }, onStatus: { recorder.append($0) }
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertTrue(launcher.isRunning)
+        XCTAssertEqual(recorder.statuses.last, .running(total: 1, todayParents: 0))
+        XCTAssertFalse(recorder.statuses.contains(.starting))
+        launcher.stopIfOwned()
+        XCTAssertEqual(markerLineCount(fixture.marker), 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.lock.path))
+        XCTAssertEqual(try? Data(contentsOf: fixture.secret), fixture.secretBytes)
+    }
+
+    @MainActor
+    func testRuntimeRoleSuspendedInitialProbeCannotStartAfterQuit_repro() async throws {
+        for role in [EngramRuntimeRole.index, .local] {
+            let fixture = try RuntimeRoleLauncherFixture(role: role)
+            defer { fixture.cleanup() }
+            let launcher = EngramServiceLauncher(healthIntervalNanoseconds: 60_000_000_000)
+            defer { launcher.stopIfOwned() }
+            let state = AdoptedServiceState()
+            await state.suspendNextProbe()
+            let recorder = ServiceStatusRecorder()
+            let task = Task { @MainActor in
+                await launcher.startOrAdopt(
+                    configuration: fixture.configuration,
+                    statusProbe: { try await state.status() }, onStatus: { recorder.append($0) }
+                )
+            }
+            let deadline = ContinuousClock.now + .seconds(1)
+            while !(await state.hasSuspendedProbe()), ContinuousClock.now < deadline {
+                try await Task.sleep(nanoseconds: 5_000_000)
+            }
+            let suspended = await state.hasSuspendedProbe()
+            XCTAssertTrue(suspended)
+            launcher.stopIfOwned()
+            let statusesAtQuit = recorder.statuses
+            await state.resumeSuspendedProbe()
+            await task.value
+            try await Task.sleep(nanoseconds: 100_000_000)
+            XCTAssertEqual(recorder.statuses, statusesAtQuit)
+            XCTAssertFalse(launcher.isRunning)
+            XCTAssertEqual(markerLineCount(fixture.marker), 0, "\(role)")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.lock.path))
+            XCTAssertEqual(try? Data(contentsOf: fixture.secret), fixture.secretBytes)
+        }
+    }
+
+    @MainActor
+    func testRuntimeRoleDirectStartRefusesNonLocalRolesBeforeAnySideEffects_repro() async throws {
+        for role in [EngramRuntimeRole.collector, .replica, .invalidSettings, .index] {
+            let fixture = try RuntimeRoleLauncherFixture(role: role)
+            defer { fixture.cleanup() }
+            let launcher = EngramServiceLauncher()
+            defer { launcher.stopIfOwned() }
+            XCTAssertThrowsError(try launcher.start(configuration: fixture.configuration))
+            try await Task.sleep(nanoseconds: 100_000_000)
+            XCTAssertEqual(markerLineCount(fixture.marker), 0, "\(role)")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.lock.path))
+            XCTAssertEqual(try? Data(contentsOf: fixture.secret), fixture.secretBytes)
+        }
+    }
+}
+
+private final class RuntimeRoleLauncherFixture {
+    let root: URL
+    let marker: URL
+    let lock: URL
+    let secret: URL
+    let secretBytes = Data("external-role-fixture-secret".utf8)
+    let configuration: EngramServiceLaunchConfiguration
+    private let executable: URL
+
+    init(role: EngramRuntimeRole) throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("e-role-\(UUID().uuidString.prefix(8))")
+        let run = root.appendingPathComponent("run")
+        try FileManager.default.createDirectory(at: run, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        marker = root.appendingPathComponent("spawned")
+        lock = run.appendingPathComponent("engram-service.lock")
+        executable = try makeCountingExitExecutable(marker: marker)
+        let socket = run.appendingPathComponent("service.sock").path
+        secret = URL(fileURLWithPath: EngramServiceLauncher.runtimeAISecretsPath(forSocketPath: socket))
+        try secretBytes.write(to: secret)
+        _ = chmod(secret.path, 0o600)
+        configuration = EngramServiceLaunchConfiguration(
+            executablePath: executable.path, socketPath: socket,
+            databasePath: root.appendingPathComponent("index.sqlite").path,
+            foreground: false, runtimeRole: role
+        )
+    }
+
+    func cleanup() {
+        try? FileManager.default.removeItem(at: root)
+        try? FileManager.default.removeItem(at: executable.deletingLastPathComponent())
+    }
 }
 
 @MainActor

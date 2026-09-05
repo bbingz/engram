@@ -4,6 +4,7 @@
 
 ### 2026-09-05
 
+- [验证] W2 `874a63f1` 已通过全部必需 CI；角色/采集核心、共享 IPC、首片身份与 intake ledger 已本地整合，Core 1,482、Service 833（各 1 既有 skip）、App 1,175、MCP 270、Collector 9、Remote 229 均零失败，独立交叉门通过且补入 Collector CI，本波 CI 待验；完整 collector、中央 replay/Web 链未完成，未部署，详见 `CHANGELOG.md`。
 - [验证] W2 默认关闭的 publication/ACK 接收端已通过独立完整 Remote 回归 229/229、零失败/跳过，包含真实子进程重启恢复与旧 archive/recovery/MCP；模型与存储最终只读门 PASS/APPROVED，本波 PR CI 待验。W3 角色/采集核心与 Web IPC 基础在独立工作树推进，未部署，详见 `CHANGELOG.md`。
 - [验证] Draft PR #446 的 W1 修正 head `638a8454` 已通过 Tests、CodeQL Gate 和依赖审查；Core/App/Service/MCP/Remote 与 14 项 UI smoke 均零失败，本地 Node 1,564/1,564；完整 UI 不属于此次 PR 门。W2 接收入库继续推进，W3 角色隔离在独立工作树开发，未合并或部署，详见 `CHANGELOG.md`。
 - [提交] W1 已提交推送 `52fcc86e` 并建 Draft PR #446；CI 抓到新增 invariant 的符号反引号违反文件锚点约定，已复现并仅修文档，本地完整脚本门 135/135；待新 head CI 通过后继续 W2，未合并或部署，详见 `CHANGELOG.md`。

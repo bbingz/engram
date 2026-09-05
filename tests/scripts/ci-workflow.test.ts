@@ -119,6 +119,14 @@ const parsedTestWorkflow = parseDocument(testWorkflow).toJS() as {
 };
 
 describe('CI workflow hardening', () => {
+  it('runs the isolated collector core tests as a required Swift unit step', () => {
+    const step = parsedTestWorkflow.jobs?.['swift-unit']?.steps?.find(
+      (candidate) => candidate.name === 'Run Swift unit tests',
+    );
+    expect(step?.run).toMatch(/^\s*run_xcode_tests EngramCollectorCore\s*$/m);
+    expect(step?.['continue-on-error']).not.toBe(true);
+  });
+
   it('parses every workflow as YAML', () => {
     for (const workflow of allWorkflows) {
       expect(parseDocument(workflow).errors).toEqual([]);

@@ -46,6 +46,7 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: EngramCoreWrite
+      - path: EngramCaptureShared
     dependencies:
       - target: EngramCoreRead
       - package: GRDB
@@ -54,6 +55,50 @@ targets:
       PRODUCT_BUNDLE_IDENTIFIER: com.engram.core-write
       SWIFT_VERSION: "5.9"
       MACOSX_DEPLOYMENT_TARGET: "14.0"
+      GENERATE_INFOPLIST_FILE: YES
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: "-"
+
+  EngramCollectorCore:
+    type: framework
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramCaptureShared/ExactSourceCapturer.swift
+      - path: EngramCaptureShared/ImmutableArchiveCAS.swift
+      - path: EngramCaptureShared/ArchiveCatalog.swift
+      - path: EngramCaptureShared/ArchiveCatalogMigrations.swift
+      - path: EngramCaptureShared/ArchiveLocatorClassifier.swift
+      - path: Shared/EngramCore/Adapters/SourceName.swift
+      - path: Shared/EngramCore/ArchiveV2/ArchiveHash.swift
+      - path: Shared/EngramCore/ArchiveV2/ArchiveCanonicalJSON.swift
+      - path: Shared/EngramCore/ArchiveV2/ArchiveModels.swift
+      - path: Shared/EngramCore/ArchiveV2/ArchiveSourceDescriptor.swift
+      - path: Shared/EngramCore/Database/SQLiteBusyDefaults.swift
+    dependencies:
+      - package: GRDB
+        product: GRDB-dynamic
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.engram.collector-core
+      SWIFT_VERSION: "5.9"
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) ENGRAM_COLLECTOR_CORE"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      GENERATE_INFOPLIST_FILE: YES
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: "-"
+
+  EngramCollectorCoreTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramCollectorCoreTests
+    dependencies:
+      - target: EngramCollectorCore
+      - package: GRDB
+        product: GRDB-dynamic
+    settings:
+      SWIFT_VERSION: "5.9"
       GENERATE_INFOPLIST_FILE: YES
       CODE_SIGNING_ALLOWED: NO
       CODE_SIGN_IDENTITY: "-"
@@ -384,6 +429,15 @@ targets:
       MACOSX_DEPLOYMENT_TARGET: "14.0"
 
 schemes:
+  EngramCollectorCore:
+    build:
+      targets:
+        EngramCollectorCore: all
+        EngramCollectorCoreTests: all
+    test:
+      config: Debug
+      targets:
+        - EngramCollectorCoreTests
   Engram:
     build:
       targets:

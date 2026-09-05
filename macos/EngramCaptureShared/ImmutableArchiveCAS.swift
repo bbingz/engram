@@ -1,5 +1,7 @@
 import Darwin
+#if !ENGRAM_COLLECTOR_CORE
 import EngramCoreRead
+#endif
 import Foundation
 
 public enum ArchivePublishResult: Equatable, Sendable {

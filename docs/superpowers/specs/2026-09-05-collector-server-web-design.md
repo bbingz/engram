@@ -1,6 +1,6 @@
 # Design Doc: lightweight collectors, central indexing, and a read-only Web client
 
-- **Status**: Accepted for staged implementation; revised-design gate PASS / APPROVED, W1 pushed in Draft PR #446 with passing CI, W2 local Remote suite 229/0 and final safety gate PASS / APPROVED with its own CI pending; isolated W3 host-role/capture-core and W4/W5 IPC-foundation development, full W3-W7 not complete
+- **Status**: Accepted for staged implementation; revised-design gate PASS / APPROVED, W1 and W2 pushed in Draft PR #446 with exact-head required CI passing; independently reviewed role/capture/IPC and first identity/intake foundations locally integrated, combined Core 1,482 and Service 833 (one existing skip each), App 1,175, MCP 270, Collector 9 and Remote 229 all zero failures, this tranche's pushed-head CI pending; privacy/epoch/continuation slices developing, full W3-W7 not complete
 - **Owner**: Engram maintainers; Codex coordinates bounded implementation workers
 - **Date**: 2026-09-05
 - **Related**: [implementation plan](../plans/2026-09-05-collector-server-web.md), [archive v2 contract](../../remote-archive-v2.md), [invariants](../../invariants.md), root `CHANGELOG.md`
@@ -424,6 +424,22 @@ fragments against the final encoded JSON/frame size, not character count; keep
 the result below the existing 256 KiB frame ceiling with envelope headroom.
 The same cursor reads the same generation; changed/unavailable generation gives
 an explicit stale-cursor error, never silently switches content mid-page.
+
+The concrete projection is `redacted-normalized-message-json-v1`. Preserve all
+NormalizedMessage fields, including toolCalls name/input/output and usage. Apply
+the existing redaction policy to each complete string field before canonical
+JSON encoding; fragment the resulting UTF-8 payload, not just message.content.
+Each fragment carries ordinal, role, full redacted-payload SHA, payload offset
+and completion. The browser reassembles that whole message payload before
+JSON.parse and text-only rendering, so large tool fields also continue without
+loss. Cursor offsets may split ASCII JSON escapes but never a UTF-8 scalar;
+the client must not parse individual fragments. Bind cursor state to session ID
+hash, immutable generation, projection/redaction revisions and canonical role
+filter; writer databaseGeneration is not that immutable generation. Account for
+the final success envelope's base64 Data expansion, not merely inner page JSON.
+This is complete normalized-message projection, not preservation of raw log
+bytes or a promise that parser limits disappear. Partial/failed sources never
+become complete, even if the parser returned some messages.
 
 The existing `archiveReadSessionPage` prefix-truncating response is forbidden as
 the full Web transcript path. Oversized messages within parser limits must have

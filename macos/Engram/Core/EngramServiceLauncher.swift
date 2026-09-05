@@ -6,6 +6,7 @@ struct EngramServiceLaunchConfiguration: Equatable {
     let socketPath: String
     let databasePath: String
     let foreground: Bool
+    var runtimeRole: EngramRuntimeRole = .local
 
     static func `default`(
         homeDirectory: URL = EngramUserDataDirectory.resolvedHomeDirectory(),
@@ -50,6 +51,8 @@ final class EngramServiceLauncher {
     /// discovered at launch belongs to its external supervisor.
     /// Track the connection without taking ownership of its process or secrets.
     private var adoptedConfiguration: EngramServiceLaunchConfiguration?
+    private var adoptedServiceAvailable = false
+    private var lifecycleGeneration = UUID()
     /// Socket path of the currently launched helper — used to scrub
     /// `ai-secrets.json` on stop (SEC-H2).
     private var processSocketPath: String?
@@ -214,10 +217,15 @@ final class EngramServiceLauncher {
     }
 
     var isRunning: Bool {
-        process?.isRunning == true || adoptedConfiguration != nil
+        process?.isRunning == true || (adoptedConfiguration != nil && adoptedServiceAvailable)
     }
 
     func start(configuration: EngramServiceLaunchConfiguration, onEvent: EventSink? = nil) throws {
+        guard configuration.runtimeRole == .local else {
+            throw EngramServiceError.serviceUnavailable(message: configuration.runtimeRole == .index
+                ? "EngramService is externally managed; reconnect instead of starting a helper"
+                : configuration.runtimeRole.unavailableMessage)
+        }
         if let onEvent { self.onEvent = onEvent }
         guard adoptedConfiguration == nil else {
             throw EngramServiceError.serviceUnavailable(
@@ -398,6 +406,18 @@ final class EngramServiceLauncher {
         onStatus: @escaping StatusSink,
         onEvent: EventSink? = nil
     ) {
+        guard configuration.runtimeRole.allowsLocalIndex else {
+            onStatus(.error(message: configuration.runtimeRole.unavailableMessage))
+            return
+        }
+        if configuration.runtimeRole == .index, adoptedConfiguration == nil {
+            guard process?.isRunning != true else {
+                onStatus(.error(message: "Cannot adopt an App-owned helper as externally managed"))
+                return
+            }
+            adoptedConfiguration = configuration
+            adoptedServiceAvailable = false
+        }
         if let onEvent { self.onEvent = onEvent }
         healthTask?.cancel()
         onUnexpectedExit = onStatus
@@ -431,6 +451,9 @@ final class EngramServiceLauncher {
                     let status = try await statusProbe()
                     guard !Task.isCancelled else { return }
                     await MainActor.run {
+                        if self?.adoptedConfiguration != nil {
+                            self?.adoptedServiceAvailable = true
+                        }
                         onStatus(status)
                     }
                     restartAttempts = 0
@@ -442,6 +465,7 @@ final class EngramServiceLauncher {
                     let message = error.localizedDescription
                     guard let self else { return }
                     if self.adoptedConfiguration != nil {
+                        self.adoptedServiceAvailable = false
                         restartAttempts += 1
                         onStatus(.degraded(
                             message: "EngramService is externally managed; waiting for it to recover: \(message)"
@@ -535,6 +559,23 @@ final class EngramServiceLauncher {
         onStatus: @escaping StatusSink,
         onEvent: EventSink? = nil
     ) async {
+        guard !Task.isCancelled else { return }
+        let generation = UUID()
+        lifecycleGeneration = generation
+        guard configuration.runtimeRole.allowsLocalIndex else {
+            onStatus(.error(message: configuration.runtimeRole.unavailableMessage))
+            return
+        }
+        if configuration.runtimeRole == .index, adoptedConfiguration == nil {
+            guard process?.isRunning != true else {
+                onStatus(.error(message: "Cannot adopt an App-owned helper as externally managed"))
+                return
+            }
+            // Pin external ownership before the initial probe can suspend or
+            // fail. An absent socket never grants permission to spawn a writer.
+            adoptedConfiguration = configuration
+            adoptedServiceAvailable = false
+        }
         if adoptedConfiguration != nil {
             await restart(
                 configuration: configuration,
@@ -545,9 +586,11 @@ final class EngramServiceLauncher {
             return
         }
         if let status = try? await statusProbe() {
+            guard !Task.isCancelled, lifecycleGeneration == generation else { return }
             if let onEvent { self.onEvent = onEvent }
             if process?.isRunning != true {
                 adoptedConfiguration = configuration
+                adoptedServiceAvailable = true
                 process = nil
                 processSocketPath = nil
             }
@@ -561,6 +604,7 @@ final class EngramServiceLauncher {
             return
         }
 
+        guard !Task.isCancelled, lifecycleGeneration == generation else { return }
         do {
             try start(configuration: configuration, onEvent: onEvent)
             onStatus(.starting)
@@ -594,15 +638,32 @@ final class EngramServiceLauncher {
         onStatus: @escaping StatusSink,
         onEvent: EventSink? = nil
     ) async {
+        guard !Task.isCancelled else { return }
+        let generation = UUID()
+        lifecycleGeneration = generation
+        guard configuration.runtimeRole.allowsLocalIndex else {
+            onStatus(.error(message: configuration.runtimeRole.unavailableMessage))
+            return
+        }
+        if configuration.runtimeRole == .index, adoptedConfiguration == nil {
+            guard process?.isRunning != true else {
+                onStatus(.error(message: "Cannot adopt an App-owned helper as externally managed"))
+                return
+            }
+            adoptedConfiguration = configuration
+            adoptedServiceAvailable = false
+        }
         if adoptedConfiguration != nil {
             healthTask?.cancel()
             healthTask = nil
             do {
                 let status = try await statusProbe()
-                guard !Task.isCancelled, adoptedConfiguration != nil else { return }
+                guard !Task.isCancelled, lifecycleGeneration == generation, adoptedConfiguration != nil else { return }
+                adoptedServiceAvailable = true
                 onStatus(status)
             } catch {
-                guard !Task.isCancelled, adoptedConfiguration != nil else { return }
+                guard !Task.isCancelled, lifecycleGeneration == generation, adoptedConfiguration != nil else { return }
+                adoptedServiceAvailable = false
                 onStatus(.degraded(
                     message: "EngramService is externally managed; waiting for it to recover: \(error.localizedDescription)"
                 ))
@@ -615,7 +676,9 @@ final class EngramServiceLauncher {
             )
             return
         }
-        guard await stopProcessOnly() else {
+        let stopped = await stopProcessOnly()
+        guard !Task.isCancelled, lifecycleGeneration == generation else { return }
+        guard stopped else {
             onStatus(.degraded(message: "EngramService is still shutting down; replacement not started"))
             return
         }
@@ -656,6 +719,8 @@ final class EngramServiceLauncher {
     }
 
     func stopIfOwned() {
+        lifecycleGeneration = UUID()
+        adoptedServiceAvailable = false
         healthTask?.cancel()
         healthTask = nil
         if adoptedConfiguration != nil {

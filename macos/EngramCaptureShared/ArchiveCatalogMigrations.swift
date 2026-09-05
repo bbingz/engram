@@ -1,5 +1,7 @@
 import Foundation
+#if !ENGRAM_COLLECTOR_CORE
 import EngramCoreRead
+#endif
 import GRDB
 
 enum ArchiveCatalogMigrations {

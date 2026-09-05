@@ -1,6 +1,8 @@
 import CryptoKit
 import Darwin
+#if !ENGRAM_COLLECTOR_CORE
 import EngramCoreRead
+#endif
 import Foundation
 
 public enum ExactSourceCapturerError: Error, Equatable, Sendable {

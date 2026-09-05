@@ -45,6 +45,37 @@ final class DatabaseManagerTests: XCTestCase {
 
     // MARK: - Basic open/close
 
+    func testRuntimeRoleDeniesExplicitOpenAndLazyReadsOfExistingDatabase_repro() throws {
+        for role in [EngramRuntimeRole.collector, .replica, .invalidSettings] {
+            let blocked = DatabaseManager(path: dbPath, runtimeRole: role)
+            XCTAssertThrowsError(try blocked.open(), "\(role) must not explicitly open a stale local database")
+            var accessed = false
+            XCTAssertThrowsError(try blocked.readInBackground { _ in accessed = true })
+            XCTAssertFalse(accessed)
+            XCTAssertThrowsError(try blocked.listSessions(limit: 1))
+        }
+    }
+
+    func testRuntimeRoleDeniesLazyFirstReadWithoutCreatingSQLiteSidecars_repro() throws {
+        let sidecars = [dbPath + "-wal", dbPath + "-shm"]
+        let before = sidecars.map { FileManager.default.fileExists(atPath: $0) }
+        for role in [EngramRuntimeRole.collector, .replica, .invalidSettings] {
+            let blocked = DatabaseManager(path: dbPath, runtimeRole: role)
+            var accessed = false
+            XCTAssertThrowsError(try blocked.readInBackground { _ in accessed = true })
+            XCTAssertFalse(accessed, "lazy reads must be gated independently of open()")
+        }
+        XCTAssertEqual(sidecars.map { FileManager.default.fileExists(atPath: $0) }, before)
+    }
+
+    func testRuntimeRoleLocalAndIndexRetainReadOnlyDatabaseAccess() throws {
+        for role in [EngramRuntimeRole.local, .index] {
+            let allowed = DatabaseManager(path: dbPath, runtimeRole: role)
+            XCTAssertNoThrow(try allowed.open())
+            XCTAssertEqual(try allowed.readInBackground { try Int.fetchOne($0, sql: "SELECT 1") }, 1)
+        }
+    }
+
     func testOpenDoesNotCreateServiceOwnedExtensionTables() throws {
         let queue = try DatabaseQueue(path: dbPath)
         let tables = try queue.read { db in
