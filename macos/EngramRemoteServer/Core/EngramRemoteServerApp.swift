@@ -69,7 +69,8 @@ public final class EngramRemoteServerApp: Sendable {
             self.archiveStore = try ArchiveStore(
                 root: archive.root,
                 key: archive.atRestKey,
-                serverID: archive.serverID
+                serverID: archive.serverID,
+                publicationsEnabled: archive.publicationsEnabled
             )
             self.archiveTelemetry = try ArchiveRemoteTelemetryStore(
                 archiveRoot: archive.root,
@@ -228,6 +229,14 @@ public final class EngramRemoteServerApp: Sendable {
                 token: archive.bearerToken,
                 telemetry: archiveTelemetry
             )
+            if archive.publicationsEnabled {
+                ArchivePublicationRoutes.mount(
+                    on: router,
+                    store: archiveStore,
+                    token: archive.bearerToken,
+                    serverID: archive.serverID
+                )
+            }
         }
 
         if let mcp = config.mcp, let archiveStore {
@@ -260,6 +269,20 @@ public final class EngramRemoteServerApp: Sendable {
                         "archive list index warm failed; lists will rebuild on demand",
                         metadata: ["error": "\(error)"]
                     )
+                }
+            }
+        }
+        if config.archiveV2?.publicationsEnabled == true, let archiveStore {
+            let warmLogger = logger
+            // Publication requests fail closed while this independent index is
+            // cold. A journal failure must not disable existing archive routes.
+            Task.detached(priority: .utility) {
+                do {
+                    try archiveStore.warmPublicationIndex()
+                    warmLogger.notice("collector publication index warm complete")
+                } catch {
+                    // Do not log payloads or filesystem paths from store errors.
+                    warmLogger.warning("collector publication intake unavailable")
                 }
             }
         }

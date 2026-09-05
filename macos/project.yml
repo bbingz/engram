@@ -258,6 +258,7 @@ targets:
       - path: Shared/EngramCore/ArchiveV2/ArchiveHash.swift
       - path: Shared/EngramCore/ArchiveV2/ArchiveCanonicalJSON.swift
       - path: Shared/EngramCore/ArchiveV2/ArchiveModels.swift
+      - path: Shared/EngramCore/ArchiveV2/CollectorPublicationModels.swift
       - path: Shared/EngramCore/ArchiveV2/ArchiveRemoteTelemetry.swift
       - path: Shared/EngramCore/TranscriptRedactionPolicy.swift
     dependencies:

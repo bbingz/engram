@@ -114,6 +114,13 @@ Invariants are properties that must survive every change; each entry names where
 - **Verified by** - `macos/EngramTests/EngramServiceLauncherTests.swift` (testQuitPreservesAdoptedServiceAndItsRuntimeSecrets_repro, testAdoptedServiceProbeFailureRecoversWithoutShutdownOrReplacement_repro, testSuspendedAdoptedProbeCannotRestartAfterQuit_repro, testRestartOfAdoptedServiceOnlyReconnects_repro).
 - **Gate** - `none`.
 
+## Collector Publication ACK Durability
+
+- **Statement** - A collector capture ACK is issued only after one encrypted immutable acceptance record durably commits both the publication and its arrival identity. Restart rebuilds discovery from those records; uncertain storage or journal ownership fails closed. This ACK neither creates a legacy bound receipt nor proves parsing, keyword readiness, or reclamation authority. Publication intake is default OFF.
+- **Enforced by** - `macos/EngramRemoteServer/Core/ArchiveStore.swift`, `macos/EngramRemoteServer/Core/ArchiveEnvelopeCodec.swift`, `macos/EngramRemoteServer/Core/ArchivePublicationRoutes.swift`, `macos/EngramRemoteServer/Core/ArchiveRoutes.swift`, `macos/EngramRemoteServer/Core/EngramRemoteServerConfig.swift`.
+- **Verified by** - `macos/EngramRemoteServerCoreTests/ArchivePublicationStoreTests.swift` (testFirstAcceptanceIsEncryptedImmutableAndIdenticalRetryReturnsOriginalACK, testAcceptedRecordSurvivesIndependentProcessRestart, testAcceptanceDirectoryFsyncFailureReconcilesTheOneRenamedRecord, testArrivalCursorReadsLaterSmallerDigestAndRemainsReusableAtEOF), `macos/EngramRemoteServerCoreTests/ArchivePublicationRouteTests.swift`, `macos/EngramRemoteServerCoreTests/CollectorPublicationModelTests.swift`.
+- **Gate** - `none`.
+
 ## Unverified Anchors
 
 None.

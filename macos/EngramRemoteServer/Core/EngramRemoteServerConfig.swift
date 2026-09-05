@@ -7,17 +7,20 @@ public struct EngramRemoteArchiveConfig: Sendable {
     public let root: URL
     public let bearerToken: String
     public let atRestKey: SymmetricKey
+    public let publicationsEnabled: Bool
 
     public init(
         serverID: String,
         root: URL,
         bearerToken: String,
-        atRestKey: SymmetricKey
+        atRestKey: SymmetricKey,
+        publicationsEnabled: Bool = false
     ) {
         self.serverID = serverID
         self.root = root
         self.bearerToken = bearerToken
         self.atRestKey = atRestKey
+        self.publicationsEnabled = publicationsEnabled
     }
 }
 
@@ -75,6 +78,8 @@ public struct EngramRemoteServerConfig: Sendable {
         case missingKey
         case badKey
         case invalidArchiveEnabled
+        case invalidCollectorPublicationsEnabled
+        case collectorPublicationsRequireArchive
         case missingArchiveServerID
         case invalidArchiveServerID
         case missingArchiveRoot
@@ -100,6 +105,10 @@ public struct EngramRemoteServerConfig: Sendable {
                 return "ENGRAM_REMOTE_AT_REST_KEY must be base64 of exactly 32 bytes."
             case .invalidArchiveEnabled:
                 return "ENGRAM_REMOTE_ARCHIVE_ENABLED must be 0 or 1."
+            case .invalidCollectorPublicationsEnabled:
+                return "ENGRAM_REMOTE_COLLECTOR_PUBLICATIONS_ENABLED must be 0 or 1."
+            case .collectorPublicationsRequireArchive:
+                return "ENGRAM_REMOTE_COLLECTOR_PUBLICATIONS_ENABLED=1 requires archive v2 to be enabled."
             case .missingArchiveServerID:
                 return "ENGRAM_REMOTE_ARCHIVE_SERVER_ID is required when archive v2 is enabled."
             case .invalidArchiveServerID:
@@ -158,6 +167,19 @@ public struct EngramRemoteServerConfig: Sendable {
             throw ConfigError.invalidArchiveEnabled
         }
 
+        let publicationsEnabled: Bool
+        switch env["ENGRAM_REMOTE_COLLECTOR_PUBLICATIONS_ENABLED"] {
+        case nil, "0":
+            publicationsEnabled = false
+        case "1":
+            publicationsEnabled = true
+        default:
+            throw ConfigError.invalidCollectorPublicationsEnabled
+        }
+        guard !publicationsEnabled || archiveEnabled else {
+            throw ConfigError.collectorPublicationsRequireArchive
+        }
+
         let archiveV2: EngramRemoteArchiveConfig?
         if archiveEnabled {
             guard let serverID = env["ENGRAM_REMOTE_ARCHIVE_SERVER_ID"],
@@ -196,7 +218,8 @@ public struct EngramRemoteServerConfig: Sendable {
                 serverID: serverID,
                 root: URL(fileURLWithPath: archiveRootPath, isDirectory: true).standardizedFileURL,
                 bearerToken: archiveToken,
-                atRestKey: SymmetricKey(data: archiveKeyData)
+                atRestKey: SymmetricKey(data: archiveKeyData),
+                publicationsEnabled: publicationsEnabled
             )
         } else {
             archiveV2 = nil

@@ -7,6 +7,117 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### W2 durable collector publication receiver (2026-09-05; local gate)
+
+The default-OFF receiver now accepts canonical, separately versioned collector
+publications referencing unchanged unbound Claude/Codex archive-v2 manifests.
+It verifies referenced bytes and machine/source shape before returning a
+replica-bound capture ACK. A single encrypted immutable acceptance record is
+the durability/discovery commit point, with a shared lifetime filesystem lock,
+rebuildable lookup/sequence/arrival indexes, restart-stable journal cursors, and
+fail-closed handling of uncertain writes or changed journal ownership. Existing
+kind numbers, bound receipts, recovery/reclamation and archive MCP remain intact;
+capture ACKs do not imply HQ parsing, keyword readiness, or deletion authority.
+
+Four authenticated publication routes provide capabilities, acceptance, lookup
+and arrival pagination. Strict feature configuration and bounded canonical
+payloads/error codes are covered by tests. Enabling the switch warms the derived
+index independently; cold or poisoned intake returns 503 while old paths remain
+available. RemoteServer still compiles only narrow wire models, not DB-core
+dependencies. The guarantee is recorded in `docs/invariants.md`.
+
+Behavior RED evidence covers canonical models, strict opt-in configuration,
+new envelope kind, HTTP contracts and cold-to-ready discovery. A subsequent
+extended-year timestamp RED enforces the frozen 24-byte timestamp. Independent
+review found a real missing-journal-metadata bug: known lookup/list/accept
+returned ordinary not-found instead of unavailable. Its one-test/three-assertion
+RED precedes the narrow fix; ordinary unknown publication lookup remains 404.
+
+Coordinator verification at 19:56 CST: the final-built full Remote XCTest bundle
+passed **229 tests, zero failures and zero skips**, producer exit 0, in 17.4s.
+This includes Store 35, Routes 13, Models 14, Codec 8 and Config 24 suites,
+plus all legacy suites. The first 122-test combined attempt had one independent
+child-runner timeout (two assertions), not a demonstrated storage failure.
+Removing only inherited XCTest coordination/injection variables made the real
+child recovery pass in 0.460s; the full suite then passed without weakening
+original-ACK or disk-recovery assertions. Test homes remain task-owned; no live
+Engram home or production archive was used.
+
+Local-only logs: `/tmp/engram-w2-wire.qnAYrQ/{red.log,red-timestamp.log,green-final.log}`,
+`/tmp/engram-w2-storage.Zj81if/{red.log,metadata-red2.log,green-attempt1.log,green-restart-probe.log}`,
+and `/tmp/engram-w2-remote-full.log`. Earlier compiler (`Darwin.flock` naming),
+test-home firmlink, and nested-runner launch failures remain recorded separately
+from behavior RED. The canonical golden tests and five invariant boundary scans
+passed. Final independent read-only Store/Codec review checked the exact file
+hashes, metadata RED/fix, all 35 storage tests and child-runner assertions, then
+returned SPEC_COMPLIANCE PASS / CODE_QUALITY APPROVED at approximately 20:00 CST.
+The pure-model gate separately passed; coordinator review and the full suite
+cover HTTP/configuration integration. This tranche's PR CI is still pending.
+
+Pre-commit integration then caught two existing no-delete gate violations: the
+new metadata temporary variable did not use the allowed temporaryURL name, and
+publication routes duplicated DELETE registrations. Kept the gate unchanged,
+used the existing temporary cleanup convention, and reused ArchiveRoutes' sole
+enumerated auth-to-405 guard. A real 229-test rerun rejected the intermediate
+wildcard-fallback assumption with 45 assertions in two route tests: an existing
+GET/PUT path does not fall back to a wildcard DELETE method. Adding only the
+three publication paths to that existing enumerated guard fixed it without
+new deletion authority. All original 401/405 assertions remain unchanged.
+
+Final exact-source Xcode build/test at 20:14 CST passed 229/229, zero skips,
+producer exit 0: `/tmp/engram-w2-remote-final3.log` and
+`/tmp/engram-w2-remote-final3.xcresult`. The intermediate routing RED remains
+`/tmp/engram-w2-remote-final2.log`; the earlier `remote-final.log` selected the
+non-test executable scheme and exited 66 before tests, not a product failure.
+Nine script suites passed 143 tests with two existing dirty-project conditional
+skips in `/tmp/engram-w2-script-final-serial.log`. An unchanged HQ termination
+timing test failed during the concurrent attempt, then passed unchanged in the
+isolated 38-test and serial full-script reruns; no HQ implementation was edited.
+The original script failures remain in `/tmp/engram-w2-script-full-gates.log`
+and `/tmp/engram-w2-script-full-gates-green.log`. Direct archive no-delete and
+invariant boundary gates also pass; no safety allowlist was broadened.
+An independent worker checked the coordinator-authored final routing delta,
+reversed it in memory to match the original worker hashes, read the final
+229-test log, and returned PASS / APPROVED. This is distinct from self-review
+of that worker's original routes implementation.
+
+The next host-role, capture-core and shared socket/wire slices use independent
+worktrees at W1 head `638a8454`, keeping their source/project edits out of this
+receiver gate. No collector binary, HQ replay, Web reader, source-retirement
+proof, installation, merge, production credential or network change is claimed.
+
+### W1 exact-head CI closeout and next-wave isolation (2026-09-05)
+
+Draft PR #446 remains open and unmerged at
+`638a84544c90a43eade65ae8416818af6236e212`. Tests run `33961440699`, CodeQL
+`33961440704`, and dependency review `33961440741` all passed for that exact
+head. The earlier `52fcc86e` failure/cancellation evidence is not relabeled.
+PR full UI and unchanged CodeQL languages/targets were intentionally skipped;
+the separate CodeQL summary was neutral, while the required CodeQL Gate passed.
+
+Independent completed-job log checks confirm Core 1,452 (one existing skip),
+App 1,141, Service 833 (one existing skip), MCP 265, Remote 161, and UI smoke
+14, all with zero failures. The Remote job also built the Release package.
+Linux Node CI passed 1,539 with 25 platform skips (1,564 total). Locally,
+`npm run test:coverage` passed all 130 files / 1,564 tests after installing the
+worktree's locked dependencies; statement coverage was 77.69%. The initial
+local coverage attempt lacked the worktree-local `tsx` executable required by
+the screenshot-comparison harness; it was an environment failure, not three
+product regressions. No dependency upgrade or audit fix was performed.
+
+Evidence is local-only in `/tmp/engram-w1-ci-{node,remote,ui-smoke,swift-unit}-638a8454.log`,
+`/tmp/engram-w1-worktree-npm-ci.log`, and
+`/tmp/engram-w1-node-coverage-after-install-638a8454.log`; the failed first
+coverage log remains `/tmp/engram-w1-node-coverage-638a8454.log`.
+
+W2 receiver work now continues in the main implementation worktree. W3 host-role
+isolation is independently developing in `.worktrees/collector-host-role-20260905`
+on `codex/collector-host-role-20260905`, based on the same tested W1 head. This
+keeps its App/MCP/Core and project changes out of W2's commit and test inputs;
+heavy builds remain serialized. Neither next wave is closed by the W1 evidence.
+No merge, installation, production configuration/credential change, service
+restart, or production cutover was performed in this tranche.
+
 ### W1 PR CI anchor correction (2026-09-05)
 
 The owner authorized commit/push and iterative CI through W6. W1 was committed

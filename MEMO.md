@@ -4,6 +4,8 @@
 
 ### 2026-09-05
 
+- [验证] W2 默认关闭的 publication/ACK 接收端已通过独立完整 Remote 回归 229/229、零失败/跳过，包含真实子进程重启恢复与旧 archive/recovery/MCP；模型与存储最终只读门 PASS/APPROVED，本波 PR CI 待验。W3 角色/采集核心与 Web IPC 基础在独立工作树推进，未部署，详见 `CHANGELOG.md`。
+- [验证] Draft PR #446 的 W1 修正 head `638a8454` 已通过 Tests、CodeQL Gate 和依赖审查；Core/App/Service/MCP/Remote 与 14 项 UI smoke 均零失败，本地 Node 1,564/1,564；完整 UI 不属于此次 PR 门。W2 接收入库继续推进，W3 角色隔离在独立工作树开发，未合并或部署，详见 `CHANGELOG.md`。
 - [提交] W1 已提交推送 `52fcc86e` 并建 Draft PR #446；CI 抓到新增 invariant 的符号反引号违反文件锚点约定，已复现并仅修文档，本地完整脚本门 135/135；待新 head CI 通过后继续 W2，未合并或部署，详见 `CHANGELOG.md`。
 - [设计] 新工作树已写完整 collector→HQ 索引/Web→独立双副本的七波实施顺序；Grok 经 Herdr 审出的 7 组合同缺口已修订并通过复核（PASS/APPROVED），W2 接收协议与 W3/W4 接口冻结；详见 `CHANGELOG.md` 及其链接设计/计划。
 - [修复] 第一波本地完成 embedding 热查询与“App 不拥有已 adopted 的外部 Service”；查询真实 VM-step RED→GREEN，启动器含退出后迟到探测竞态，未更改生产实例。

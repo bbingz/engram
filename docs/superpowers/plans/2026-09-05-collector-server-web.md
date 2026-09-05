@@ -8,11 +8,15 @@
 
 **Branch / base:** `codex/collector-server-web-20260905` / `625ecc9737c219f401200d3c2e301f537582ff11`
 
-**Status:** W1 local implementation/independent review passed; Core 1,452 tests
-(one existing performance skip), launcher 56 tests. Revised design passed the
-independent B1-B7 closure gate; W2 intake and W3/W4 interfaces are frozen. Later
-waves are planned, not implemented or deployed. The next bounded implementation
-slice is W2 wire models/fixtures, followed by receiver storage/routes.
+**Status:** W1 is pushed in Draft PR #446 at `638a8454` after a documentation
+anchor correction. Tests run `33961440699`, CodeQL `33961440704`, and dependency
+review passed for that exact head. W2 receiver implementation passes the local
+complete Remote suite (229 tests, zero failures/skips) and final independent
+safety review (PASS / APPROVED); its own PR CI gate is pending. It is not deployed.
+Revised design passed the independent B1-B7 closure gate; W2 intake and W3/W4
+interfaces are frozen. W3 host-role isolation, behavior-preserving capture-core
+extraction, and W4/W5 shared socket/wire foundation are independently developing
+in separate worktrees at base `638a8454`; none closes the full W3-W6 gates.
 The owner authorized committing/pushing W1, running CI, then autonomous staged
 implementation/review/CI through W6 on 2026-09-05. Production W7, credentials,
 network changes, and merge/release remain separate authority boundaries.
@@ -32,6 +36,21 @@ network changes, and merge/release remain separate authority boundaries.
   the appropriate product-boundary tests before each local closeout.
 - Feature/network paths remain default OFF. A green implementation gate does
   not grant operational authority. Stop at exact authority boundaries.
+- Independent next-wave work may proceed while an immutable prior head runs
+  CI; the next push waits for the prior-head gate. Prior-head failures take
+  priority, and evidence for one SHA never characterizes another. This replaces
+  the coordinator's initial idle-wait sequencing, not any test, review, or
+  production-authority requirement.
+- The host-role worker uses `.worktrees/collector-host-role-20260905` so its
+  App/MCP/Core edits and regenerated project cannot enter the W2 receiver
+  tranche. Integrate that bounded diff only after its RED/GREEN and independent
+  gate; regenerate the combined project from `project.yml`. Both worktrees
+  still share the serialized heavy-build budget.
+- Capture-core extraction uses `.worktrees/collector-capture-core-20260905`;
+  shared socket/wire extraction uses `.worktrees/collector-web-ipc-20260905`.
+  Each has bounded source ownership and its own generated project. Their diffs
+  enter the main implementation branch only after independent gates, followed
+  by combined project regeneration. They never alter W2's frozen test inputs.
 
 ## Dependency order and parallel lanes
 
@@ -111,6 +130,26 @@ coordinator owns target source lists. Preserve old canonical schema-1 bytes.
 
 Gate: Remote Core full suite; canonical golden comparison; independent protocol
 and safety review. A bare `putManifest` 2xx is not enough.
+
+Local checkpoint (2026-09-05 19:56 CST): the coordinator independently ran the
+final-built full Remote XCTest bundle in an isolated test home: 229/0, no skips,
+producer exit 0, `/tmp/engram-w2-remote-full.log`. This includes all legacy
+archive/recovery/MCP paths and the new publication models/config/routes/store.
+The first combined attempt's child-test timeout was corrected only in its
+inherited XCTest coordination environment; the real independent-process ACK
+recovery assertion remains and passes. Final read-only Store/Codec review checked
+the exact four-file hashes and logs and returned PASS / APPROVED at approximately
+20:00 CST. The model gate separately passed; coordinator source/HTTP/full-suite
+checks cover routes and opt-in integration. W2 PR CI is pending.
+
+Final integration checkpoint (20:14 CST): unchanged no-delete gates required
+the existing temporary-file naming convention and reuse of ArchiveRoutes'
+enumerated auth-to-405 guard. The actual routing test disproved wildcard method
+fallback; three exact publication paths now use that same guard, with all
+401/405 assertions retained. Final full Xcode Remote build/test is 229/0,
+no skips, producer 0 (`/tmp/engram-w2-remote-final3.log`); nine script suites are
+143 passed/two dirty-project conditional skips. Prior failures remain recorded
+in CHANGELOG rather than being relabeled as success.
 
 ## W3 — genuine no-index collector
 

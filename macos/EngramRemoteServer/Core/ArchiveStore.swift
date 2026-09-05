@@ -19,6 +19,25 @@ public struct ArchiveReceiptCreation: Equatable, Sendable {
     }
 }
 
+public struct ArchivePublicationAcceptance: Equatable, Sendable {
+    public let record: CollectorPublicationAcceptanceRecord
+    public let result: ArchivePublishResult
+
+    public init(record: CollectorPublicationAcceptanceRecord, result: ArchivePublishResult) {
+        self.record = record
+        self.result = result
+    }
+}
+
+public enum ArchivePublicationStoreError: Error, Equatable, Sendable {
+    case sequenceConflict
+    case cursorJournalMismatch
+    case cursorAheadOfTail
+    case invalidPublication
+    case unavailable
+    case ordinalOverflow
+}
+
 /// One receipt as the MCP capture list reports it.
 ///
 /// Every field is captured when the receipt is scanned or published, so a page
@@ -80,6 +99,9 @@ struct ArchiveStoreTestHooks: Sendable {
     /// Invoked after a successful full disk scan that builds the list index,
     /// once per process lifetime for a given store instance (single-flight).
     let afterListIndexBuild: (@Sendable () -> Void)?
+    let afterPublicationIndexScan: (@Sendable () -> Void)?
+    let beforePublicationMetadataFileFsync: (@Sendable () throws -> Void)?
+    let beforePublicationMetadataDirectoryFsync: (@Sendable () throws -> Void)?
 
     init(
         maximumWriteBytesPerCall: Int? = nil,
@@ -90,7 +112,10 @@ struct ArchiveStoreTestHooks: Sendable {
         beforeFinalPublish: (@Sendable (ArchiveEnvelopeKind, URL) throws -> Void)? = nil,
         afterFinalPublish: (@Sendable (ArchiveEnvelopeKind, URL) -> Void)? = nil,
         afterExistingEnvelopeVerified: (@Sendable (URL) throws -> Void)? = nil,
-        afterListIndexBuild: (@Sendable () -> Void)? = nil
+        afterListIndexBuild: (@Sendable () -> Void)? = nil,
+        afterPublicationIndexScan: (@Sendable () -> Void)? = nil,
+        beforePublicationMetadataFileFsync: (@Sendable () throws -> Void)? = nil,
+        beforePublicationMetadataDirectoryFsync: (@Sendable () throws -> Void)? = nil
     ) {
         self.maximumWriteBytesPerCall = maximumWriteBytesPerCall
         self.afterWriteCall = afterWriteCall
@@ -101,6 +126,9 @@ struct ArchiveStoreTestHooks: Sendable {
         self.afterFinalPublish = afterFinalPublish
         self.afterExistingEnvelopeVerified = afterExistingEnvelopeVerified
         self.afterListIndexBuild = afterListIndexBuild
+        self.afterPublicationIndexScan = afterPublicationIndexScan
+        self.beforePublicationMetadataFileFsync = beforePublicationMetadataFileFsync
+        self.beforePublicationMetadataDirectoryFsync = beforePublicationMetadataDirectoryFsync
     }
 }
 
@@ -442,6 +470,104 @@ public struct ArchiveStore: Sendable {
         case alreadyPresent(Data)
     }
 
+    private struct PublicationJournalMetadata: Codable, Equatable {
+        let schemaVersion: Int
+        let serverID: String
+        let journalID: String
+    }
+
+    private struct PublicationSequenceKey: Hashable {
+        let machineID: String
+        let sourceInstanceID: String
+        let collectorEpoch: String
+        let sequence: Int64
+
+        init(_ publication: CollectorPublicationEnvelope) {
+            machineID = publication.machineID
+            sourceInstanceID = publication.sourceInstanceID
+            collectorEpoch = publication.collectorEpoch
+            sequence = publication.sequence
+        }
+    }
+
+    /// Only acceptance files are authoritative. All three lookup maps and
+    /// arrival ordering are disposable, and never commit a second journal.
+    private final class PublicationIndex {
+        let metadata: PublicationJournalMetadata
+        let metadataBytes: Data
+        let metadataIdentity: DirectoryIdentity
+        let topIdentity: DirectoryIdentity
+        let baseIdentity: DirectoryIdentity
+        var records: [String: CollectorPublicationAcceptanceRecord] = [:]
+        var sequences: [PublicationSequenceKey: String] = [:]
+        var ordinals: [Int64: String] = [:]
+        var arrivals: [CollectorPublicationAcceptanceRecord] = []
+        var tail: Int64 = 0
+
+        init(
+            metadata: PublicationJournalMetadata,
+            metadataBytes: Data,
+            metadataIdentity: DirectoryIdentity,
+            topIdentity: DirectoryIdentity,
+            baseIdentity: DirectoryIdentity
+        ) {
+            self.metadata = metadata
+            self.metadataBytes = metadataBytes
+            self.metadataIdentity = metadataIdentity
+            self.topIdentity = topIdentity
+            self.baseIdentity = baseIdentity
+        }
+
+        func insert(_ record: CollectorPublicationAcceptanceRecord, digest: String) throws {
+            let key = PublicationSequenceKey(record.publication)
+            guard record.ack.serverID == metadata.serverID,
+                  record.ack.journalID == metadata.journalID,
+                  record.ack.publicationSHA256 == digest,
+                  records[digest] == nil,
+                  sequences[key] == nil,
+                  ordinals[record.ack.arrivalOrdinal] == nil else {
+                throw ArchivePublicationStoreError.unavailable
+            }
+            records[digest] = record
+            sequences[key] = digest
+            ordinals[record.ack.arrivalOrdinal] = digest
+            arrivals.append(record)
+            tail = max(tail, record.ack.arrivalOrdinal)
+        }
+
+        func firstArrival(after ordinal: Int64) -> Int {
+            var lower = 0
+            var upper = arrivals.count
+            while lower < upper {
+                let middle = lower + (upper - lower) / 2
+                if arrivals[middle].ack.arrivalOrdinal <= ordinal {
+                    lower = middle + 1
+                } else {
+                    upper = middle
+                }
+            }
+            return lower
+        }
+    }
+
+    /// Value copies share the filesystem-lock lifetime, allocation mutex,
+    /// poison state, and derived index. Initialization performs no new I/O.
+    private final class PublicationOwner: @unchecked Sendable {
+        enum State { case cold, warming, ready, poisoned }
+        let mutex = NSLock()
+        var state: State = .cold
+        var lockFD: Int32 = -1
+        var rootIdentity: DirectoryIdentity?
+        var index: PublicationIndex?
+
+        deinit {
+            if lockFD >= 0 {
+                _ = flock(lockFD, LOCK_UN)
+                _ = Darwin.close(lockFD)
+            }
+        }
+    }
+
     private let root: URL
     private let serverID: String
     private let codec: ArchiveEnvelopeCodec
@@ -450,14 +576,21 @@ public struct ArchiveStore: Sendable {
     /// Shared across value copies of this store so list warm and receipt
     /// publication see one process-local index.
     private let listIndex: ArchiveReceiptListIndex
+    private let publicationOwner: PublicationOwner?
 
-    public init(root: URL, key: SymmetricKey, serverID: String) throws {
+    public init(
+        root: URL,
+        key: SymmetricKey,
+        serverID: String,
+        publicationsEnabled: Bool = false
+    ) throws {
         try self.init(
             root: root,
             key: key,
             serverID: serverID,
             hooks: ArchiveStoreTestHooks(),
-            now: { Self.currentTimestamp() }
+            now: { Self.currentTimestamp() },
+            publicationsEnabled: publicationsEnabled
         )
     }
 
@@ -466,6 +599,7 @@ public struct ArchiveStore: Sendable {
         key: SymmetricKey,
         serverID: String,
         testHooks: ArchiveStoreTestHooks,
+        publicationsEnabled: Bool = false,
         listIndexRetryBackoff: TimeInterval = ArchiveReceiptListIndex.defaultRetryBackoff
     ) throws {
         try self.init(
@@ -474,6 +608,7 @@ public struct ArchiveStore: Sendable {
             serverID: serverID,
             hooks: testHooks,
             now: { Self.currentTimestamp() },
+            publicationsEnabled: publicationsEnabled,
             listIndexRetryBackoff: listIndexRetryBackoff
         )
     }
@@ -482,14 +617,16 @@ public struct ArchiveStore: Sendable {
         root: URL,
         key: SymmetricKey,
         serverID: String,
-        now: @escaping @Sendable () -> String
+        now: @escaping @Sendable () -> String,
+        publicationsEnabled: Bool = false
     ) throws {
         try self.init(
             root: root,
             key: key,
             serverID: serverID,
             hooks: ArchiveStoreTestHooks(),
-            now: now
+            now: now,
+            publicationsEnabled: publicationsEnabled
         )
     }
 
@@ -499,6 +636,7 @@ public struct ArchiveStore: Sendable {
         serverID: String,
         hooks: ArchiveStoreTestHooks,
         now: @escaping @Sendable () -> String,
+        publicationsEnabled: Bool = false,
         listIndexRetryBackoff: TimeInterval = ArchiveReceiptListIndex.defaultRetryBackoff
     ) throws {
         guard Self.isSafeServerID(serverID) else {
@@ -510,6 +648,7 @@ public struct ArchiveStore: Sendable {
         self.hooks = hooks
         self.now = now
         self.listIndex = ArchiveReceiptListIndex(retryBackoff: listIndexRetryBackoff)
+        self.publicationOwner = publicationsEnabled ? PublicationOwner() : nil
 
         guard Self.isSafeArchiveRoot(self.root) else {
             throw ArchiveStoreError.conflict
@@ -532,6 +671,177 @@ public struct ArchiveStore: Sendable {
                 self.root.appendingPathComponent(relative, isDirectory: true),
                 beforeParentFsync: hooks.beforeDirectoryParentFsync
             )
+        }
+    }
+
+    public func warmPublicationIndex() throws {
+        guard let owner = publicationOwner else {
+            throw ArchivePublicationStoreError.unavailable
+        }
+        owner.mutex.lock()
+        switch owner.state {
+        case .ready:
+            owner.mutex.unlock()
+            try withPublicationIndex { _, _ in () }
+            return
+        case .warming:
+            owner.mutex.unlock()
+            throw ArchivePublicationStoreError.unavailable
+        case .cold, .poisoned:
+            owner.state = .warming
+            owner.index = nil
+            owner.mutex.unlock()
+        }
+        do {
+            try acquirePublicationLock(owner)
+            let index = try preparePublicationIndex(owner)
+            try forEachEnvelope(kind: .publicationAcceptance, durable: true) { digest, bytes in
+                try validatePublicationLock(owner)
+                let record = try decodedPublicationRecord(bytes, expectedDigest: digest)
+                try index.insert(record, digest: digest)
+            }
+            index.arrivals.sort { $0.ack.arrivalOrdinal < $1.ack.arrivalOrdinal }
+            hooks.afterPublicationIndexScan?()
+            try validatePublicationOwnership(owner, index: index)
+            owner.mutex.lock()
+            owner.index = index
+            owner.state = .ready
+            owner.mutex.unlock()
+        } catch {
+            owner.mutex.lock()
+            owner.index = nil
+            owner.state = .poisoned
+            owner.mutex.unlock()
+            throw ArchivePublicationStoreError.unavailable
+        }
+    }
+
+    public func acceptPublication(
+        digest: String,
+        canonicalBytes: Data
+    ) throws -> ArchivePublicationAcceptance {
+        try Self.validateDigest(digest)
+        guard canonicalBytes.count <= CollectorPublicationProtocolLimits.maxPublicationBytes else {
+            throw ArchiveStoreError.tooLarge
+        }
+        guard ArchiveV2Hash.sha256(canonicalBytes) == digest else {
+            throw ArchiveStoreError.digestMismatch
+        }
+        let publication: CollectorPublicationEnvelope
+        do {
+            publication = try ArchiveCanonicalJSON.decode(
+                CollectorPublicationEnvelope.self, from: canonicalBytes
+            )
+        } catch {
+            throw ArchiveStoreError.invalidPage
+        }
+        return try withPublicationIndex { owner, index in
+            let sequenceKey = PublicationSequenceKey(publication)
+            if let previous = index.sequences[sequenceKey], previous != digest {
+                throw ArchivePublicationStoreError.sequenceConflict
+            }
+            try validatePublicationReferences(publication)
+            if let existing = index.records[digest] {
+                let durable = try readPublicationRecord(digest: digest)
+                guard durable == existing, durable.publication == publication else {
+                    throw ArchivePublicationStoreError.unavailable
+                }
+                return ArchivePublicationAcceptance(record: existing, result: .alreadyPresent)
+            }
+            guard index.tail < Int64.max else {
+                throw ArchivePublicationStoreError.ordinalOverflow
+            }
+            let ack = try CollectorPublicationACK(
+                serverID: serverID,
+                journalID: index.metadata.journalID,
+                arrivalOrdinal: index.tail + 1,
+                publicationSHA256: digest,
+                manifestSHA256: publication.manifestSHA256,
+                storedAt: now()
+            )
+            let record = try CollectorPublicationAcceptanceRecord(publication: publication, ack: ack)
+            let bytes = try ArchiveCanonicalJSON.encode(record)
+            guard bytes.count <= CollectorPublicationProtocolLimits.maxAcceptanceRecordBytes else {
+                throw ArchivePublicationStoreError.unavailable
+            }
+            let envelope = try encode(bytes, kind: .publicationAcceptance, expectedDigest: digest)
+            // No ACK is returned before both file and directory durability.
+            // Any uncertainty poisons this owner until a durable disk rebuild.
+            switch try publish(
+                envelope,
+                expectedDigest: digest,
+                kind: .publicationAcceptance,
+                ownershipCheck: { try validatePublicationOwnership(owner, index: index) }
+            ) {
+            case .published:
+                try index.insert(record, digest: digest)
+                return ArchivePublicationAcceptance(record: record, result: .published)
+            case .alreadyPresent:
+                // An unindexed final cannot arise under our lifetime lock.
+                // Reconcile it before returning any ACK or allocating again.
+                throw ArchivePublicationStoreError.unavailable
+            }
+        }
+    }
+
+    public func getPublication(digest: String) throws -> CollectorPublicationAcceptanceRecord {
+        try Self.validateDigest(digest)
+        let record: CollectorPublicationAcceptanceRecord? = try withPublicationIndex { _, index in
+            guard let expected = index.records[digest] else { return nil }
+            let record = try readPublicationRecord(digest: digest)
+            guard record == expected else { throw ArchivePublicationStoreError.unavailable }
+            return record
+        }
+        guard let record else { throw ArchiveStoreError.notFound }
+        return record
+    }
+
+    public func listPublications(cursor: String?, limit: Int) throws -> CollectorPublicationPage {
+        guard (1...CollectorPublicationProtocolLimits.maxPageItems).contains(limit) else {
+            throw ArchiveStoreError.invalidPage
+        }
+        let requestCursor: CollectorPublicationCursor?
+        do {
+            requestCursor = try cursor.map(CollectorPublicationCursor.decode)
+        } catch {
+            throw ArchiveStoreError.invalidPage
+        }
+        return try withPublicationIndex { _, index in
+            if let requestCursor, requestCursor.journalID != index.metadata.journalID {
+                throw ArchivePublicationStoreError.cursorJournalMismatch
+            }
+            let afterOrdinal = requestCursor?.afterArrivalOrdinal ?? 0
+            guard afterOrdinal <= index.tail else {
+                throw ArchivePublicationStoreError.cursorAheadOfTail
+            }
+            let start = index.firstArrival(after: afterOrdinal)
+            var selected: [CollectorPublicationAcceptanceRecord] = []
+            var afterCursor = try CollectorPublicationCursor(
+                journalID: index.metadata.journalID, afterArrivalOrdinal: afterOrdinal
+            ).encoded()
+            var position = start
+            while position < index.arrivals.count, selected.count < limit {
+                let record = index.arrivals[position]
+                let candidateCursor = try CollectorPublicationCursor(
+                    journalID: index.metadata.journalID,
+                    afterArrivalOrdinal: record.ack.arrivalOrdinal
+                ).encoded()
+                let candidate = try CollectorPublicationPage(
+                    items: selected + [record],
+                    afterCursor: candidateCursor,
+                    hasMore: position + 1 < index.arrivals.count
+                )
+                guard try ArchiveCanonicalJSON.encode(candidate).count
+                    <= CollectorPublicationProtocolLimits.maxPageBytes else { break }
+                selected.append(record)
+                afterCursor = candidateCursor
+                position += 1
+            }
+            let page = try CollectorPublicationPage(
+                items: selected, afterCursor: afterCursor, hasMore: position < index.arrivals.count
+            )
+            try page.validate(after: requestCursor, expectedServerID: serverID)
+            return page
         }
     }
 
@@ -924,6 +1234,318 @@ public struct ArchiveStore: Sendable {
         )
     }
 
+    private func withPublicationIndex<T>(
+        _ body: (PublicationOwner, PublicationIndex) throws -> T
+    ) throws -> T {
+        guard let owner = publicationOwner else { throw ArchivePublicationStoreError.unavailable }
+        owner.mutex.lock()
+        defer { owner.mutex.unlock() }
+        guard case .ready = owner.state, let index = owner.index else {
+            throw ArchivePublicationStoreError.unavailable
+        }
+        do {
+            try validatePublicationOwnership(owner, index: index)
+            let result = try body(owner, index)
+            try validatePublicationOwnership(owner, index: index)
+            return result
+        } catch let error as ArchivePublicationStoreError {
+            if error == .unavailable { owner.state = .poisoned }
+            throw error
+        } catch {
+            owner.state = .poisoned
+            throw ArchivePublicationStoreError.unavailable
+        }
+    }
+
+    private func validatePublicationReferences(_ publication: CollectorPublicationEnvelope) throws {
+        do {
+            let bytes = try readDurableEnvelope(digest: publication.manifestSHA256, kind: .manifest)
+            let manifest = try decodedManifest(bytes, expectedDigest: publication.manifestSHA256)
+            guard manifest.sessionID == nil,
+                  manifest.source == "codex" || manifest.source == "claude-code",
+                  UUID(uuidString: manifest.machineID) == UUID(uuidString: publication.machineID),
+                  manifest.replayLayout.strategy == .singleFile,
+                  manifest.replayLayout.relativePaths.count == 1 else {
+                throw ArchivePublicationStoreError.invalidPublication
+            }
+            _ = try validatedManifest(
+                bytes, expectedDigest: publication.manifestSHA256, durableReferences: true
+            )
+        } catch let error as ArchivePublicationStoreError {
+            throw error
+        } catch ArchiveStoreError.notFound,
+                ArchiveStoreError.missingReference,
+                ArchiveStoreError.invalidManifest {
+            throw ArchivePublicationStoreError.invalidPublication
+        } catch {
+            throw ArchivePublicationStoreError.unavailable
+        }
+    }
+
+    private func readPublicationRecord(digest: String) throws -> CollectorPublicationAcceptanceRecord {
+        do {
+            return try decodedPublicationRecord(
+                readDurableEnvelope(digest: digest, kind: .publicationAcceptance),
+                expectedDigest: digest
+            )
+        } catch {
+            throw ArchivePublicationStoreError.unavailable
+        }
+    }
+
+    private func decodedPublicationRecord(
+        _ bytes: Data,
+        expectedDigest: String
+    ) throws -> CollectorPublicationAcceptanceRecord {
+        guard bytes.count <= CollectorPublicationProtocolLimits.maxAcceptanceRecordBytes else {
+            throw ArchivePublicationStoreError.unavailable
+        }
+        let record = try ArchiveCanonicalJSON.decode(
+            CollectorPublicationAcceptanceRecord.self, from: bytes
+        )
+        try record.ack.validate(against: record.publication, expectedServerID: serverID)
+        guard record.ack.publicationSHA256 == expectedDigest else {
+            throw ArchivePublicationStoreError.unavailable
+        }
+        return record
+    }
+
+    private var publicationTopURL: URL {
+        root.appendingPathComponent("publications", isDirectory: true)
+    }
+
+    private var publicationLockURL: URL { root.appendingPathComponent("publications.lock") }
+    private var publicationMetadataURL: URL { publicationTopURL.appendingPathComponent("journal.json") }
+    private static let maximumPublicationMetadataBytes = 512
+
+    private func acquirePublicationLock(_ owner: PublicationOwner) throws {
+        if owner.lockFD >= 0 {
+            try validatePublicationLock(owner)
+            return
+        }
+        guard let rootIdentity = try Self.validatedDirectoryIdentity(root) else {
+            throw ArchivePublicationStoreError.unavailable
+        }
+        var created = true
+        var fd = Darwin.open(
+            publicationLockURL.path,
+            O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC,
+            S_IRUSR | S_IWUSR
+        )
+        if fd < 0, errno == EEXIST {
+            created = false
+            fd = Darwin.open(
+                publicationLockURL.path, O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
+            )
+        }
+        guard fd >= 0 else { throw ArchivePublicationStoreError.unavailable }
+        var retained = false
+        defer { if !retained { _ = Darwin.close(fd) } }
+        var descriptorInfo = stat()
+        var pathInfo = stat()
+        guard Darwin.fstat(fd, &descriptorInfo) == 0,
+              Darwin.lstat(publicationLockURL.path, &pathInfo) == 0,
+              Self.isSafeFinalFile(descriptorInfo),
+              Self.isSafeFinalFile(pathInfo),
+              descriptorInfo.st_size == 0,
+              Self.sameFileIdentity(descriptorInfo, pathInfo),
+              try Self.validatedDirectoryIdentity(root) == rootIdentity,
+              flock(fd, LOCK_EX | LOCK_NB) == 0,
+              Darwin.fsync(fd) == 0 else {
+            throw ArchivePublicationStoreError.unavailable
+        }
+        if created { try Self.fsyncDirectory(root) }
+        owner.rootIdentity = rootIdentity
+        owner.lockFD = fd
+        retained = true
+        try validatePublicationLock(owner)
+    }
+
+    private func validatePublicationLock(_ owner: PublicationOwner) throws {
+        guard owner.lockFD >= 0, let rootIdentity = owner.rootIdentity,
+              try Self.validatedDirectoryIdentity(root) == rootIdentity else {
+            throw ArchivePublicationStoreError.unavailable
+        }
+        var descriptorInfo = stat()
+        var pathInfo = stat()
+        guard Darwin.fstat(owner.lockFD, &descriptorInfo) == 0,
+              Darwin.lstat(publicationLockURL.path, &pathInfo) == 0,
+              Self.isSafeFinalFile(descriptorInfo),
+              Self.isSafeFinalFile(pathInfo),
+              descriptorInfo.st_size == 0,
+              Self.sameFileIdentity(descriptorInfo, pathInfo) else {
+            throw ArchivePublicationStoreError.unavailable
+        }
+    }
+
+    private func preparePublicationIndex(_ owner: PublicationOwner) throws -> PublicationIndex {
+        for directory in [publicationTopURL, baseURL(for: .publicationAcceptance)] {
+            try validatePublicationLock(owner)
+            try Self.ensureDirectory(directory, beforeParentFsync: hooks.beforeDirectoryParentFsync)
+            try validatePublicationLock(owner)
+        }
+        guard let topIdentity = try Self.validatedDirectoryIdentity(publicationTopURL) else {
+            throw ArchivePublicationStoreError.unavailable
+        }
+        let baseIdentity = try validatedBaseDirectoryIdentity(kind: .publicationAcceptance)
+        let stored: (bytes: Data, identity: DirectoryIdentity)
+        do {
+            stored = try readPublicationMetadata(topIdentity: topIdentity, durable: true)
+        } catch ArchiveStoreError.notFound {
+            var hasAcceptance = false
+            try forEachEnvelope(kind: .publicationAcceptance) { _, _ in hasAcceptance = true }
+            guard !hasAcceptance else { throw ArchivePublicationStoreError.unavailable }
+            let metadata = PublicationJournalMetadata(
+                schemaVersion: 1, serverID: serverID, journalID: UUID().uuidString
+            )
+            try publishPublicationMetadata(
+                ArchiveCanonicalJSON.encode(metadata), owner: owner, topIdentity: topIdentity
+            )
+            stored = try readPublicationMetadata(topIdentity: topIdentity, durable: true)
+        }
+        let metadata = try ArchiveCanonicalJSON.decode(PublicationJournalMetadata.self, from: stored.bytes)
+        guard metadata.schemaVersion == 1,
+              metadata.serverID == serverID,
+              UUID(uuidString: metadata.journalID)?.uuidString == metadata.journalID else {
+            throw ArchivePublicationStoreError.unavailable
+        }
+        let index = PublicationIndex(
+            metadata: metadata,
+            metadataBytes: stored.bytes,
+            metadataIdentity: stored.identity,
+            topIdentity: topIdentity,
+            baseIdentity: baseIdentity
+        )
+        try validatePublicationOwnership(owner, index: index)
+        return index
+    }
+
+    private func validatePublicationOwnership(
+        _ owner: PublicationOwner,
+        index: PublicationIndex
+    ) throws {
+        try validatePublicationLock(owner)
+        guard try Self.validatedDirectoryIdentity(publicationTopURL) == index.topIdentity,
+              try validatedBaseDirectoryIdentity(kind: .publicationAcceptance) == index.baseIdentity else {
+            throw ArchivePublicationStoreError.unavailable
+        }
+        let current = try readPublicationMetadata(topIdentity: index.topIdentity, durable: false)
+        guard current.identity == index.metadataIdentity,
+              current.bytes == index.metadataBytes else {
+            throw ArchivePublicationStoreError.unavailable
+        }
+        try validatePublicationLock(owner)
+    }
+
+    private func readPublicationMetadata(
+        topIdentity: DirectoryIdentity,
+        durable: Bool
+    ) throws -> (bytes: Data, identity: DirectoryIdentity) {
+        guard try Self.validatedDirectoryIdentity(publicationTopURL) == topIdentity else {
+            throw ArchivePublicationStoreError.unavailable
+        }
+        var pathInfo = stat()
+        guard Darwin.lstat(publicationMetadataURL.path, &pathInfo) == 0 else {
+            if errno == ENOENT { throw ArchiveStoreError.notFound }
+            throw ArchivePublicationStoreError.unavailable
+        }
+        guard Self.isSafeFinalFile(pathInfo), pathInfo.st_size >= 0,
+              pathInfo.st_size <= Self.maximumPublicationMetadataBytes else {
+            throw ArchivePublicationStoreError.unavailable
+        }
+        let fd = Darwin.open(
+            publicationMetadataURL.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
+        )
+        guard fd >= 0 else { throw ArchivePublicationStoreError.unavailable }
+        defer { _ = Darwin.close(fd) }
+        var descriptorInfo = stat()
+        guard Darwin.fstat(fd, &descriptorInfo) == 0,
+              Self.isSafeFinalFile(descriptorInfo),
+              Self.sameFileIdentity(descriptorInfo, pathInfo),
+              descriptorInfo.st_size == pathInfo.st_size else {
+            throw ArchivePublicationStoreError.unavailable
+        }
+        var bytes = Data()
+        var buffer = [UInt8](repeating: 0, count: Self.maximumPublicationMetadataBytes + 1)
+        while true {
+            let count = buffer.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
+            if count < 0, errno == EINTR { continue }
+            guard count >= 0 else { throw ArchivePublicationStoreError.unavailable }
+            if count == 0 { break }
+            guard bytes.count + count <= Self.maximumPublicationMetadataBytes else {
+                throw ArchivePublicationStoreError.unavailable
+            }
+            bytes.append(buffer, count: count)
+        }
+        if durable {
+            try hooks.beforePublicationMetadataFileFsync?()
+            guard Darwin.fsync(fd) == 0 else { throw ArchivePublicationStoreError.unavailable }
+            try hooks.beforePublicationMetadataDirectoryFsync?()
+            try Self.fsyncDirectory(publicationTopURL)
+        }
+        var finalInfo = stat()
+        var finalPathInfo = stat()
+        guard Darwin.fstat(fd, &finalInfo) == 0,
+              Darwin.lstat(publicationMetadataURL.path, &finalPathInfo) == 0,
+              Self.isSafeFinalFile(finalInfo), Self.isSafeFinalFile(finalPathInfo),
+              Self.sameFileIdentity(descriptorInfo, finalInfo),
+              Self.sameFileIdentity(finalInfo, finalPathInfo),
+              finalInfo.st_size == descriptorInfo.st_size,
+              bytes.count == descriptorInfo.st_size,
+              try Self.validatedDirectoryIdentity(publicationTopURL) == topIdentity else {
+            throw ArchivePublicationStoreError.unavailable
+        }
+        return (bytes, DirectoryIdentity(finalInfo))
+    }
+
+    private func publishPublicationMetadata(
+        _ bytes: Data,
+        owner: PublicationOwner,
+        topIdentity: DirectoryIdentity
+    ) throws {
+        guard bytes.count <= Self.maximumPublicationMetadataBytes else {
+            throw ArchivePublicationStoreError.unavailable
+        }
+        try validatePublicationLock(owner)
+        let temporaryURL = publicationTopURL.appendingPathComponent(
+            ".engram-publication-journal-\(UUID().uuidString).tmp"
+        )
+        let fd = Darwin.open(
+            temporaryURL.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR
+        )
+        guard fd >= 0 else { throw ArchivePublicationStoreError.unavailable }
+        var descriptor = fd
+        var temporaryExists = true
+        defer {
+            if descriptor >= 0 { _ = Darwin.close(descriptor) }
+            if temporaryExists { _ = Darwin.unlink(temporaryURL.path) }
+        }
+        guard try Self.validatedDirectoryIdentity(publicationTopURL) == topIdentity,
+              Darwin.fchmod(fd, S_IRUSR | S_IWUSR) == 0 else {
+            throw ArchivePublicationStoreError.unavailable
+        }
+        try writeAll(bytes, to: fd)
+        try hooks.beforePublicationMetadataFileFsync?()
+        guard Darwin.fsync(fd) == 0 else { throw ArchivePublicationStoreError.unavailable }
+        let closeResult = Darwin.close(descriptor)
+        descriptor = -1
+        guard closeResult == 0 else { throw ArchivePublicationStoreError.unavailable }
+        try validatePublicationLock(owner)
+        guard try Self.validatedDirectoryIdentity(publicationTopURL) == topIdentity,
+              Darwin.renameatx_np(
+                  AT_FDCWD, temporaryURL.path, AT_FDCWD, publicationMetadataURL.path, UInt32(RENAME_EXCL)
+              ) == 0 else {
+            throw ArchivePublicationStoreError.unavailable
+        }
+        temporaryExists = false
+        try hooks.beforePublicationMetadataDirectoryFsync?()
+        try Self.fsyncDirectory(publicationTopURL)
+        guard try Self.validatedDirectoryIdentity(publicationTopURL) == topIdentity else {
+            throw ArchivePublicationStoreError.unavailable
+        }
+        try validatePublicationLock(owner)
+    }
+
     /// Manifest envelope checks only: digest match plus canonical decode.
     /// Chunk verification is the caller's choice, so a windowed read does not
     /// pay for chunks it never serves (retro PR-2, F01).
@@ -1089,8 +1711,10 @@ public struct ArchiveStore: Sendable {
     private func publish(
         _ envelope: Data,
         expectedDigest: String,
-        kind: ArchiveEnvelopeKind
+        kind: ArchiveEnvelopeKind,
+        ownershipCheck: (() throws -> Void)? = nil
     ) throws -> PublicationResult {
+        try ownershipCheck?()
         let finalURL = try url(for: expectedDigest, kind: kind, createShard: true)
         let parent = finalURL.deletingLastPathComponent()
         let parentIdentity = try requiredParentIdentity(
@@ -1108,17 +1732,17 @@ public struct ArchiveStore: Sendable {
             S_IRUSR | S_IWUSR
         )
         guard fd >= 0 else { throw ArchiveStoreError.io }
-        try assertParentIdentity(
-            parentIdentity,
-            digest: expectedDigest,
-            kind: kind
-        )
         var descriptor = fd
         var temporaryExists = true
         defer {
             if descriptor >= 0 { _ = Darwin.close(descriptor) }
             if temporaryExists { _ = Darwin.unlink(temporaryURL.path) }
         }
+        try assertParentIdentity(
+            parentIdentity,
+            digest: expectedDigest,
+            kind: kind
+        )
 
         guard Darwin.fchmod(descriptor, S_IRUSR | S_IWUSR) == 0 else {
             throw ArchiveStoreError.io
@@ -1132,6 +1756,7 @@ public struct ArchiveStore: Sendable {
         }
         descriptor = -1
         try hooks.beforeFinalPublish?(kind, finalURL)
+        try ownershipCheck?()
         try assertParentIdentity(
             parentIdentity,
             digest: expectedDigest,
@@ -1159,6 +1784,7 @@ public struct ArchiveStore: Sendable {
                 digest: expectedDigest,
                 kind: kind
             )
+            try ownershipCheck?()
             return .published
         }
 
@@ -1189,6 +1815,7 @@ public struct ArchiveStore: Sendable {
             digest: expectedDigest,
             kind: kind
         )
+        try ownershipCheck?()
         return .alreadyPresent(existing)
     }
 
@@ -1334,6 +1961,7 @@ public struct ArchiveStore: Sendable {
         case .object: directory = "objects/sha256"
         case .manifest: directory = "manifests/sha256"
         case .receipt: directory = "receipts/sha256"
+        case .publicationAcceptance: directory = "publications/sha256"
         }
         let base = root.appendingPathComponent(directory, isDirectory: true)
         let shard = base.appendingPathComponent(String(digest.prefix(2)), isDirectory: true)
@@ -1345,7 +1973,7 @@ public struct ArchiveStore: Sendable {
         return shard.appendingPathComponent(digest, isDirectory: false)
     }
 
-    /// Read one receipt for enumeration only.
+    /// Validate one already-authenticated receipt for enumeration only.
     ///
     /// `getReceipt` is the durable single-receipt contract: it fsyncs the file
     /// and the shard directory, re-walks the directory chain three times, and
@@ -1363,15 +1991,9 @@ public struct ArchiveStore: Sendable {
     /// receipt↔manifest cross-check, which still runs whenever a caller
     /// actually fetches a receipt or manifest.
     private func scanReceipt(
-        manifestDigest: String,
-        shardIdentity: DirectoryIdentity
-    ) throws -> (Data, ArchiveServerReceipt) {
-        let bytes = try readEnvelope(
-            at: url(for: manifestDigest, kind: .receipt, createShard: false),
-            expectedKind: .receipt,
-            expectedDigest: manifestDigest,
-            knownParentIdentity: shardIdentity
-        )
+        bytes: Data,
+        manifestDigest: String
+    ) throws -> ArchiveServerReceipt {
         guard bytes.count <= ArchiveV2ProtocolLimits.maxReceiptBytes else {
             throw ArchiveStoreError.conflict
         }
@@ -1381,20 +2003,38 @@ public struct ArchiveStore: Sendable {
               Self.isCanonicalTimestamp(receipt.storedAt) else {
             throw ArchiveStoreError.conflict
         }
-        return (bytes, receipt)
+        return receipt
     }
 
     private func forEachReceipt(
         _ body: (String, Data, ArchiveServerReceipt) throws -> Void
     ) throws {
-        let base = root.appendingPathComponent("receipts/sha256", isDirectory: true)
-        let baseIdentity = try validatedBaseDirectoryIdentity(kind: .receipt)
+        try forEachEnvelope(kind: .receipt) { digest, bytes in
+            let receipt = try scanReceipt(bytes: bytes, manifestDigest: digest)
+            try body(digest, bytes, receipt)
+        }
+    }
+
+    /// Stream bounded encrypted records. Publication reconciliation opts into
+    /// file and shard durability; legacy receipt discovery remains read-only.
+    private func forEachEnvelope(
+        kind: ArchiveEnvelopeKind,
+        durable: Bool = false,
+        _ body: (String, Data) throws -> Void
+    ) throws {
+        let base = baseURL(for: kind)
+        let baseIdentity = try validatedBaseDirectoryIdentity(kind: kind)
         guard let baseDirectory = Darwin.opendir(base.path) else {
             throw ArchiveStoreError.io
         }
         defer { Darwin.closedir(baseDirectory) }
 
-        while let shardEntry = Darwin.readdir(baseDirectory) {
+        while true {
+            errno = 0
+            guard let shardEntry = Darwin.readdir(baseDirectory) else {
+                guard errno == 0 else { throw ArchiveStoreError.io }
+                break
+            }
             let shard = Self.directoryEntryName(shardEntry)
             if shard == "." || shard == ".." { continue }
             if shard.hasPrefix(".") { continue }
@@ -1416,25 +2056,37 @@ public struct ArchiveStore: Sendable {
                 throw ArchiveStoreError.conflict
             }
 
-            while let receiptEntry = Darwin.readdir(shardDirectory) {
-                let manifestDigest = Self.directoryEntryName(receiptEntry)
-                if manifestDigest == "." || manifestDigest == ".." { continue }
-                if manifestDigest.hasPrefix(".") { continue }
-                guard shard == String(manifestDigest.prefix(2)),
-                      ArchiveV2Hash.isValidSHA256(manifestDigest) else {
+            while true {
+                errno = 0
+                guard let entry = Darwin.readdir(shardDirectory) else {
+                    guard errno == 0 else { throw ArchiveStoreError.io }
+                    break
+                }
+                let digest = Self.directoryEntryName(entry)
+                if digest == "." || digest == ".." { continue }
+                if digest.hasPrefix(".") { continue }
+                guard shard == String(digest.prefix(2)),
+                      ArchiveV2Hash.isValidSHA256(digest) else {
                     throw ArchiveStoreError.conflict
                 }
-                let (receiptBytes, receipt) = try scanReceipt(
-                    manifestDigest: manifestDigest,
-                    shardIdentity: shardIdentity
+                let bytes = try readEnvelope(
+                    at: url(for: digest, kind: kind, createShard: false),
+                    expectedKind: kind,
+                    expectedDigest: digest,
+                    fsyncBeforeAccept: durable,
+                    knownParentIdentity: shardIdentity
                 )
-                try body(manifestDigest, receiptBytes, receipt)
+                try body(digest, bytes)
+            }
+            if durable {
+                try hooks.beforeDirectoryFsync?(kind)
+                try Self.fsyncDirectory(shardURL)
             }
             guard try Self.validatedDirectoryIdentity(shardURL) == shardIdentity else {
                 throw ArchiveStoreError.conflict
             }
         }
-        guard try validatedBaseDirectoryIdentity(kind: .receipt) == baseIdentity else {
+        guard try validatedBaseDirectoryIdentity(kind: kind) == baseIdentity else {
             throw ArchiveStoreError.conflict
         }
     }
@@ -1542,6 +2194,7 @@ public struct ArchiveStore: Sendable {
         case .object: return "objects"
         case .manifest: return "manifests"
         case .receipt: return "receipts"
+        case .publicationAcceptance: return "publications"
         }
     }
 
@@ -1732,6 +2385,7 @@ public struct ArchiveStore: Sendable {
         case .object: rawBytes = ArchiveV2ProtocolLimits.maxObjectRawBytes
         case .manifest: rawBytes = ArchiveV2ProtocolLimits.maxManifestBytes
         case .receipt: rawBytes = ArchiveV2ProtocolLimits.maxReceiptBytes
+        case .publicationAcceptance: rawBytes = CollectorPublicationProtocolLimits.maxAcceptanceRecordBytes
         }
         return Int64(rawBytes + 48 + 12 + 16)
     }

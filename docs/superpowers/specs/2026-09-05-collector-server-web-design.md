@@ -1,6 +1,6 @@
 # Design Doc: lightweight collectors, central indexing, and a read-only Web client
 
-- **Status**: Accepted for staged implementation; independent revised-design gate PASS / APPROVED, W1 locally implemented, W2-W7 not implemented
+- **Status**: Accepted for staged implementation; revised-design gate PASS / APPROVED, W1 pushed in Draft PR #446 with passing CI, W2 local Remote suite 229/0 and final safety gate PASS / APPROVED with its own CI pending; isolated W3 host-role/capture-core and W4/W5 IPC-foundation development, full W3-W7 not complete
 - **Owner**: Engram maintainers; Codex coordinates bounded implementation workers
 - **Date**: 2026-09-05
 - **Related**: [implementation plan](../plans/2026-09-05-collector-server-web.md), [archive v2 contract](../../remote-archive-v2.md), [invariants](../../invariants.md), root `CHANGELOG.md`

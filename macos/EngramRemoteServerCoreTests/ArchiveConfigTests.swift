@@ -63,6 +63,54 @@ final class ArchiveConfigTests: XCTestCase {
         XCTAssertEqual(programmatic.sourceRevision, "unknown")
     }
 
+    func testCollectorPublicationFlagRejectsNonBooleanValues_repro() {
+        for value in ["", "2", "true", "yes", " 1", "1\n"] {
+            var env = enabledEnvironment(host: "127.0.0.1")
+            env["ENGRAM_REMOTE_COLLECTOR_PUBLICATIONS_ENABLED"] = value
+            XCTAssertThrowsError(
+                try EngramRemoteServerConfig.fromEnvironment(env),
+                "an invalid publication flag must not be silently ignored"
+            ) { error in
+                XCTAssertEqual(
+                    String(describing: error),
+                    "ENGRAM_REMOTE_COLLECTOR_PUBLICATIONS_ENABLED must be 0 or 1."
+                )
+            }
+        }
+    }
+
+    func testCollectorPublicationCannotEnableWithoutArchive_repro() {
+        var env = environment(host: "127.0.0.1")
+        env["ENGRAM_REMOTE_COLLECTOR_PUBLICATIONS_ENABLED"] = "1"
+        XCTAssertThrowsError(try EngramRemoteServerConfig.fromEnvironment(env)) { error in
+            XCTAssertEqual(
+                String(describing: error),
+                "ENGRAM_REMOTE_COLLECTOR_PUBLICATIONS_ENABLED=1 requires archive v2 to be enabled."
+            )
+        }
+    }
+
+    func testCollectorPublicationIsOptInForArchiveAndProgrammaticConfiguration() throws {
+        var env = enabledEnvironment(host: "127.0.0.1")
+        XCTAssertFalse(try XCTUnwrap(EngramRemoteServerConfig.fromEnvironment(env).archiveV2).publicationsEnabled)
+        env["ENGRAM_REMOTE_COLLECTOR_PUBLICATIONS_ENABLED"] = "0"
+        XCTAssertFalse(try XCTUnwrap(EngramRemoteServerConfig.fromEnvironment(env).archiveV2).publicationsEnabled)
+        env["ENGRAM_REMOTE_COLLECTOR_PUBLICATIONS_ENABLED"] = "1"
+        XCTAssertTrue(try XCTUnwrap(EngramRemoteServerConfig.fromEnvironment(env).archiveV2).publicationsEnabled)
+
+        let archive = EngramRemoteArchiveConfig(
+            serverID: "hq",
+            root: URL(fileURLWithPath: "/tmp/engram-archive-v2"),
+            bearerToken: "archive-token",
+            atRestKey: SymmetricKey(data: archiveKeyData)
+        )
+        XCTAssertFalse(archive.publicationsEnabled)
+
+        var legacy = environment(host: "127.0.0.1")
+        legacy["ENGRAM_REMOTE_COLLECTOR_PUBLICATIONS_ENABLED"] = "0"
+        XCTAssertNil(try EngramRemoteServerConfig.fromEnvironment(legacy).archiveV2)
+    }
+
     func testEnabledArchiveRequiresServerIDAndAbsoluteRoot() {
         let base = environment(host: "127.0.0.1")
 
@@ -825,6 +873,7 @@ final class ArchiveConfigTests: XCTestCase {
         XCTAssertTrue(target.contains("Shared/EngramCore/ArchiveV2/ArchiveHash.swift"))
         XCTAssertTrue(target.contains("Shared/EngramCore/ArchiveV2/ArchiveCanonicalJSON.swift"))
         XCTAssertTrue(target.contains("Shared/EngramCore/ArchiveV2/ArchiveModels.swift"))
+        XCTAssertTrue(target.contains("Shared/EngramCore/ArchiveV2/CollectorPublicationModels.swift"))
         XCTAssertFalse(target.contains("Shared/EngramCore/ArchiveV2\n"))
         XCTAssertFalse(target.contains("ArchiveSourceDescriptor.swift"))
         XCTAssertFalse(target.contains("target: EngramCoreRead"))
