@@ -27,10 +27,10 @@ struct HomeScreen {
     }
 
     func recentSession(containingText text: String) -> XCUIElement {
-        app.staticTexts
+        recentSessions.staticTexts
             .matching(NSPredicate(
                 format: "identifier BEGINSWITH %@ AND (label CONTAINS[c] %@ OR value CONTAINS[c] %@)",
-                "home_recentSession_",
+                "home_sessionTitle_",
                 text,
                 text
             ))

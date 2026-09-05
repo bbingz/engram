@@ -241,6 +241,7 @@ struct HomeView: View {
                 }
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("home_recentSessions")
     }
 
@@ -622,6 +623,8 @@ private struct TodaySessionRow: View {
                     .font(.callout)
                     .lineLimit(1)
                     .foregroundStyle(Theme.primaryText)
+                    .accessibilityIdentifier("home_sessionTitle_\(session.id)")
+                    .accessibilityLabel(session.displayTitle)
                 HStack(spacing: 6) {
                     Text(detail)
                     Text(relativeTime(session.startTime))
@@ -667,6 +670,7 @@ private struct TodaySessionRow: View {
         .background(Theme.surface)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .contain)
     }
 
     private func relativeTime(_ iso: String) -> String {

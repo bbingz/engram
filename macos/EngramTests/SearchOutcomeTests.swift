@@ -186,6 +186,7 @@ final class SearchOutcomeTests: XCTestCase {
         let smoke = try source("macos/EngramUITests/Tests/SmokeTests/SearchSmokeTests.swift")
         let sessions = try source("macos/EngramUITests/Tests/SmokeTests/SessionsSmokeTests.swift")
         let projects = try source("macos/EngramUITests/Tests/FullTests/ProjectsTests.swift")
+        let homeView = try source("macos/Engram/Views/Pages/HomeView.swift")
         let homeScreen = try source("macos/EngramUITests/Screens/HomeScreen.swift")
         let homeSmoke = try source("macos/EngramUITests/Tests/SmokeTests/HomeSmokeTests.swift")
 
@@ -194,9 +195,15 @@ final class SearchOutcomeTests: XCTestCase {
         XCTAssertTrue(sessions.contains("sessions.result(containingText:"))
         XCTAssertTrue(projects.contains("projects.result(containingText:"))
         XCTAssertTrue(homeSmoke.contains("home.recentSession(containingText:"))
-        XCTAssertTrue(homeScreen.contains("app.staticTexts"))
+        XCTAssertTrue(homeScreen.contains("recentSessions.staticTexts"))
+        XCTAssertFalse(homeScreen.contains("app.staticTexts"))
         XCTAssertTrue(homeScreen.contains("identifier BEGINSWITH %@"))
-        XCTAssertTrue(homeScreen.contains("home_recentSession_"))
+        XCTAssertTrue(homeScreen.contains("home_sessionTitle_"))
         XCTAssertFalse(homeScreen.contains("app.element(containingText: text)"))
+        XCTAssertGreaterThanOrEqual(
+            homeView.components(separatedBy: ".accessibilityElement(children: .contain)").count - 1,
+            2
+        )
+        XCTAssertTrue(homeView.contains(".accessibilityIdentifier(\"home_sessionTitle_\\(session.id)\")"))
     }
 }
