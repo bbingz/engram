@@ -2,6 +2,11 @@
 
 ## Changelog Memo
 
+### 2026-09-05
+
+- [修复] #441/#442 已合并；完整 UI 剩余空结果断言改用 fixture 中零匹配的 HQ-only 筛选，未改产品逻辑。
+- [验证] 逐张核对并刷新 8 张过期基线，31 张 CI 截图重放全部通过，阈值未放宽；新一轮完整 CI 与部署验证仍待完成，详见 `CHANGELOG.md`。
+
 ### 2026-09-02（2026-09-04 复验）
 
 - [修复] 已按当前源码裁决完成四份清单中全部 115 个确认 ID（109 个实现簇），覆盖 High/Medium/Low 等全部确认问题；rejected、duplicate-only、stale 行保持排除，完整目录与分包证据见 `CHANGELOG.md` 和 `.grok/all-confirmed-remediation-ledger-2026-09-02.md`。

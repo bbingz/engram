@@ -7,6 +7,24 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Full UI closeout (2026-09-05)
+
+PRs #441 and #442 landed the confirmed-review remediation and fixture/AX
+repairs. The resulting-main UI run `33939347429` executed 61 tests with one
+failure and two existing skips. Its remaining empty-state assertion assumed
+that `Today` was a bounded calendar day, but the filter is a lower bound and
+the fixture contains four later Codex sessions. The test now selects the
+existing HQ-only filter after checking that the initial list is present;
+all 20 fixture rows are local, so this reliably exercises a filtered miss.
+No product behavior or fixture data changed in this follow-up.
+
+Eight screenshot baselines were visually reviewed against the same CI run
+and refreshed for the current English UI, classified session counts,
+follow-up panel, populated activity chart, and honest health display. The
+comparison thresholds are unchanged. Replaying all 31 downloaded screenshots
+against these baselines passed; the replay manifest was reconstructed from
+the CI comparison report. A new full CI execution remains the final verifier.
+
 ### Complete confirmed-review remediation (2026-09-02; revalidated 2026-09-04)
 
 Reconciled the current review inventories against the base revision
