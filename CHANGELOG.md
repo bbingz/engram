@@ -7,6 +7,93 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Bounded FTS startup repair (2026-09-05; source verified)
+
+Build 1566 runtime verification exposed a startup bottleneck in
+`enqueueStaleFtsJobs`: each candidate session repeated a full FTS virtual-table
+scan. The consistent daily database backup contains 447,853 FTS rows;
+`EXPLAIN QUERY PLAN` reports a correlated scalar subquery, and one matched-
+dSYM HQ sample locates the live initial scan in this exact query. The two-line
+SQL change uses a single null-filtered membership subquery. It retains the
+pending/inflight exclusions, completed/not_applicable repair, permanent-failure
+terminal state, and skip-session contract, without schema or dependency changes.
+
+A synthetic 128-session/4,096-FTS regression interrupts at 250,000 SQLite VM
+steps. It failed on the original query with `SQLITE_INTERRUPT` and passes on
+the new query; existing membership coverage now also includes duplicate and
+NULL FTS IDs. Focused StartupBackfillTests passed 110/110; independent full
+EngramCoreTests passed 1,450 tests with one existing skip and zero failures.
+Spec compliance is PASS and code quality is APPROVED for the two-file patch.
+Logs: `/tmp/engram-stale-fts-red-20260905.log`,
+`/tmp/engram-stale-fts-green-20260905.log`, and
+`/tmp/engram-stale-fts-full-core-20260905.log` (local-only).
+This product change requires fresh artifacts and deployment; build 1566 does
+not yet contain it.
+
+### Internal build 1566 deployment (2026-09-05; in progress)
+
+PR #443 merged normally after all required checks passed, producing
+`main@dfc988b76c2a283af56010fa1f98d7ae5476e1d2`. Its product-source diff from
+`2b31a40abe50a02955eea8e3b73037adb43be5ff` is empty; the follow-up changes only
+UI tests, reviewed screenshot baselines, and documentation. Release artifacts
+therefore retain their actual provenance, `2b31a40a`, version 1.0.5 (1566),
+without rebuilding identical product code for a test-only merge.
+
+The Developer ID signed universal App passed archive/export and full
+`release-verify.sh`; the ZIP SHA-256 is
+`5f4f16772f34aab6294ba4b71cd2c4852c54291adefcfa815ed7143381240520`.
+The arm64 RemoteServer package passed the supported verifier locally, after
+transfer, and at its final release path. Its binary SHA-256 is
+`7358ab755c94b47906efe7c599401bba7ef1e72b4c57edf722634df06db312ee`.
+Artifact roots are `/tmp/engram-release-main-2b31a40a.FHBpdF` and
+`/tmp/engram-remote-2b31a40a-build1566.x9s4Es` (local-only).
+
+M1 and HQ RemoteServer run the exact `2b31a40a` binary, each
+with one tailnet-only listener; `/v1/health` returns `ok` and unauthenticated
+`/v1/catalog` returns 401. HQ's new lock wrapper is the launchd-owned parent
+of the listener process, not a second server. Root LaunchDaemon plists are
+unchanged. HQ T9 scripts were updated. HQ old Service PID 42994 and daily old
+PID 1402 both exited normally after TERM; no forced termination was needed.
+Ordinary launchd kickstart then started HQ PID 85024 from
+`releases/2b31a40a-build1566` and daily PID 2637 from the installed
+`/Applications/Engram.app`. Both have the exact Service SHA-256
+`460008fac81dd6a551dad4fab8b503de16ef4a0a835151f04542dea2abb1553f`, one
+owner-only socket (UID 501, mode 0600), and responsive `running` status.
+Daily Live returned 87 sessions in 2.033s; HQ returned 61 in 0.717s. Both
+new MCP helpers passed initialize/tools-list with 27 tools. Existing client-
+owned MCP processes were not signalled; they retain old mapped images until
+their clients naturally restart them. The daily GUI was not running before
+deployment and was not launched just to change that state.
+
+The unchanged daily watchdog plist was restored at 11:55 CST. Its run count
+advanced from 1 to 5 through natural 120-second cycles, all exit 0; HQ logs
+record `remote=healthy service=managed` and no degraded sentinel is present.
+Both Service databases have online SQLite backups with immutable
+`PRAGMA quick_check` returning `ok`, under the host's
+`rollback/deploy-1566-20260905/service-index-backup.sqlite` (HQ uses
+`.engram-remote`, daily uses `.engram`). Old releases and wrappers are retained.
+An aggregate comparison against the daily backup found 9,903 removed skip-row
+IDs, all of whose file paths still have current rows. This is consistent with
+the existing startup duplicate-file-path cleanup; no source file was manually
+deleted, and the original rows remain recoverable from the database backup.
+
+Resulting-main Tests run `33942411922` passed every required job: Node,
+Swift unit, RemoteServer, scripts, and full UI (61 tests, two existing skips,
+zero failures; all 31 screenshot comparisons passed). The full UI log is
+`/tmp/engram-main-dfc988b7-ui.log`; installed App verification is
+`/tmp/engram-installed-1566-release-verify.log` (local-only). Exact release
+source CodeQL run `33939347422`, PR #443 CodeQL run `33940389021`, and
+resulting-main CodeQL run `33942411910` all passed.
+At 12:07 CST, both first scans are still in progress (`lastScanAt=null`), so
+post-scan `remoteSyncStatus` has deliberately not been queried. Sanitized
+logs contain source-session parse failures; their cause is unverified and
+this deployment does not claim complete corpus integrity. No Docker,
+public release, notarization, forced process termination, or manual database rewrite
+was performed. Optional Node tooling still has two upstream advisories
+(`GHSA-xcpc-8h2w-3j85`, `GHSA-f88m-g3jw-g9cj`), represented by four npm audit
+high entries with no compatible fix available. These dependencies are absent
+from the verified Swift App bundle; no unsafe dependency override was added.
+
 ### Full UI closeout (2026-09-05)
 
 PRs #441 and #442 landed the confirmed-review remediation and fixture/AX

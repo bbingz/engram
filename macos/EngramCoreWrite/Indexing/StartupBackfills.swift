@@ -1193,8 +1193,8 @@ public enum StartupBackfills {
                 WHERE current.id = s.id || ':' || s.sync_version || ':' || s.snapshot_hash || ':fts'
                   AND current.status IN ('pending', 'inflight')
               )
-              AND NOT EXISTS (
-                SELECT 1 FROM sessions_fts live WHERE live.session_id = s.id
+              AND s.id NOT IN (
+                SELECT session_id FROM sessions_fts WHERE session_id IS NOT NULL
               )
             ON CONFLICT(id) DO UPDATE SET
               status = 'pending',
