@@ -33,6 +33,15 @@ adapter-fixture checks passed. Logs are `/tmp/engram-w4-foundations-*-integrated
 with exact per-gate paths in CHANGELOG. This supersedes the earlier local
 pending-suite statements; this tranche's new-head CI is still pending.
 Inventory, bounded CAS/replay and real Web IPC remain separate next-wave work.
+CI correction checkpoint: that tranche is pushed as `745de11d`. Tests
+`33996341619` failed its existing macOS flock-retention fixture; Node quality,
+Swift unit, Remote/package and UI smoke passed. The precise original CI race
+is not attributed, but three new real-Popen TERM/INT/HUP repros proved a startup
+lock-release gap before a minimal fix. The fixture now uses explicit shutdown
+handshakes. HQ 12/12, four signal tests repeated 12 times, ten script suites
+195/195, test typecheck, targeted Biome and diff checks passed locally. The
+independent source/log gate passed; correction-head CI is pending. CAS/inventory/replay/Web
+integration is excluded from this CI-fix commit. Detailed logs are in CHANGELOG.
 The owner authorized committing/pushing W1, running CI, then autonomous staged
 implementation/review/CI through W6 on 2026-09-05. Production W7, credentials,
 network changes, and merge/release remain separate authority boundaries.

@@ -7,6 +7,49 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Flock startup signal correction after pushed-head CI (2026-09-06)
+
+The combined foundation tranche was pushed as `745de11d` to Draft PR #446.
+Tests run `33996341619` failed only its macOS script job `101387497380`:
+the existing lock-retention fixture unexpectedly let a contender acquire the
+lock during child shutdown. Node quality/tests, Swift unit, Remote/package,
+and UI smoke jobs passed for that SHA; full UI was intentionally skipped.
+Dependency review passed; Swift CodeQL jobs were still running at this local
+checkpoint. No prior-head result is a new-head CI result.
+
+The old fixture announced readiness before installing its shell trap and used
+fixed 100/400 ms timing. It now installs the trap before readiness and uses
+explicit termination/release handshakes while preserving the lock assertions.
+The old fixture passed 12 local baseline repetitions, so the precise window
+behind the CI failure remains unproven. Independently, three new deterministic
+tests paused the real Popen return after child readiness and proved that the
+old wrapper released its lock on TERM, INT, or HUP while the child was alive.
+All three failed before the implementation change (six assertions). The
+wrapper now installs signal handlers before Popen, retains a startup signal,
+then forwards it and waits for the child. Its non-inheritable lock descriptor,
+busy exit convention, and existing detached-descendant behavior are unchanged.
+
+The unchanged three repro tests passed after the minimal implementation fix.
+The complete HQ suite passed 12/12; all four signal tests passed 12 consecutive
+repetitions. Ten script suites passed 195/195 with no skips, test TypeScript
+typecheck and targeted Biome passed, Python AST syntax validation passed, and
+`git diff --check` passed; all GREEN producers exited 0. Evidence:
+`/tmp/engram-745de11d-ci-macos-scripts.log`,
+`/tmp/engram-745de11d-flock-fixture-baseline.log`,
+`/tmp/engram-flock-startup-gap-signals-{red,green}.log`,
+`/tmp/engram-flock-startup-gap-full-green.log`,
+`/tmp/engram-flock-startup-gap-repeat-green.log`, and
+`/tmp/engram-flock-correction-{script-full,typecheck,biome}.log`.
+The independent two-file source/log review returned SPEC PASS / QUALITY
+APPROVED (`/tmp/engram-flock-review.OSmdGo/review.md`). Its child-ready ordering
+inference is not adopted: child readiness cannot prove that parent Popen has
+returned, so the original CI interleaving remains unproven. Correction-head
+CI is pending at this checkpoint.
+Only the wrapper, its fixture, and this bounded status documentation enter the
+correction commit. Subsequent bounded CAS source/test changes remain unstaged.
+No installed script, launchd job, production helper, Docker, deployment, merge,
+or release was touched; production behavior is not verified by these fixtures.
+
 ### Privacy, registry, Web-read and optional-AI combined gate (2026-09-06)
 
 The coordinator completed all six full integrated XCTest targets with the

@@ -4,6 +4,7 @@
 
 ### 2026-09-06
 
+- [修复] `745de11d` 的 CI 仅 macOS 脚本门失败；旧 fixture 改为明确握手，另以 TERM/INT/HUP 三条真实 RED 证明并修复 Popen 返回前的锁释放窗口。HQ 12/12、信号组连续 12 轮、脚本 195/195、typecheck/Biome 及独立双门均通过；修正 head CI 待验，原 CI 调度窗口未归因，未修改已部署脚本，详见 `CHANGELOG.md`。
 - [验证] 本批完整整合门全部通过：Core 1,521、App 1,175、Service 858、MCP 270、Remote 247、Collector 35 零失败（Core/Service 各 1 既有 skip），190 项脚本、invariants、fixture 和独立交叉门通过；准备提交推送，新 SHA CI 待验，inventory/replay/实际 Web IPC 尚在独立树，未部署，详见 `CHANGELOG.md`。
 - [验证] C1 隐私/身份源及 typed Web client 已按冻结哈希整合，worker Collector 35、Core 定向 273、client 18 均零失败并过独立门；中央完整 Service 858（1 既有 skip）零失败。Remote 全套的既有 firmlink 测试环境问题仍在复验，完整 replay/HTTP/W3–W6 尚未完成，未部署，详见 `CHANGELOG.md`。
 

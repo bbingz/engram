@@ -181,11 +181,12 @@ describe.skipIf(process.platform !== 'darwin')('HQ live boot hardening', () => {
     const ready = join(root, 'ready');
     const terminated = join(root, 'terminated');
     const childDone = join(root, 'child-done');
+    const releaseChild = join(root, 'release-child');
     const contenderDuring = join(root, 'contender-during');
     const contenderAfter = join(root, 'contender-after');
     const guardedScript =
+      'trap \'printf terminated > "$3"; while [ ! -e "$5" ]; do sleep 0.01; done; printf done > "$4"; exit 0\' TERM INT HUP; ' +
       'printf %s "$$" > "$1"; printf ready > "$2"; ' +
-      'trap \'printf terminated > "$3"; sleep 0.4; printf done > "$4"; exit 0\' TERM INT HUP; ' +
       'while :; do sleep 0.02; done';
     const holder = spawn(
       flockExecPath,
@@ -199,6 +200,7 @@ describe.skipIf(process.platform !== 'darwin')('HQ live boot hardening', () => {
         ready,
         terminated,
         childDone,
+        releaseChild,
       ],
       { stdio: 'ignore' },
     );
@@ -207,7 +209,7 @@ describe.skipIf(process.platform !== 'darwin')('HQ live boot hardening', () => {
     try {
       await waitForFile(ready);
       expect(holder.kill('SIGTERM')).toBe(true);
-      await wait(100);
+      await waitForFile(terminated);
 
       const during = spawnSync(
         flockExecPath,
@@ -225,6 +227,7 @@ describe.skipIf(process.platform !== 'darwin')('HQ live boot hardening', () => {
       expect(existsSync(contenderDuring)).toBe(false);
       expect(existsSync(terminated)).toBe(true);
 
+      writeFileSync(releaseChild, 'release\n');
       await waitForFile(childDone);
       await holderExit;
       const after = spawnSync(
@@ -247,7 +250,8 @@ describe.skipIf(process.platform !== 'darwin')('HQ live boot hardening', () => {
         expect(wrapper).toContain(`signal.${forwarded}`);
       }
     } finally {
-      if (existsSync(childPidFile)) {
+      writeFileSync(releaseChild, 'release\n');
+      if (!existsSync(childDone) && existsSync(childPidFile)) {
         try {
           process.kill(Number(readFileSync(childPidFile, 'utf8')), 'SIGKILL');
         } catch {
@@ -260,6 +264,119 @@ describe.skipIf(process.platform !== 'darwin')('HQ live boot hardening', () => {
       await holderExit;
     }
   });
+
+  it.each(['SIGTERM', 'SIGINT', 'SIGHUP'] as const)(
+    'retains and forwards %s in the startup signal gap_repro',
+    async (terminationSignal) => {
+      const root = makeTempRoot();
+      const lock = join(root, 'ensure.lock');
+      const ready = join(root, 'ready');
+      const spawnPaused = join(root, 'spawn-paused');
+      const resumeSpawn = join(root, 'resume-spawn');
+      const signalObserved = join(root, 'signal-observed');
+      const terminated = join(root, 'terminated');
+      const releaseChild = join(root, 'release-child');
+      const childDone = join(root, 'child-done');
+      const contenderDuring = join(root, 'contender-during');
+      const contenderAfter = join(root, 'contender-after');
+      const guardedScript =
+        'trap \'printf terminated > "$2"; while [ ! -e "$3" ]; do sleep 0.01; done; printf done > "$4"; exit 0\' TERM INT HUP; ' +
+        'printf ready > "$1"; while [ ! -e "$3" ]; do sleep 0.01; done; printf done > "$4"';
+      // Hold the real Popen return after exec/child readiness. This controls the
+      // scheduling window without replacing the wrapper's lock/signal logic.
+      const harness = [
+        'import os, runpy, signal, subprocess, sys, time',
+        'wrapper, ready, paused, resume, observed = sys.argv[1:6]',
+        'command = sys.argv[6:]',
+        'original_popen, original_signal = subprocess.Popen, signal.signal',
+        'def recording_signal(signum, handler):',
+        '    if not callable(handler):',
+        '        return original_signal(signum, handler)',
+        '    def record(received, frame):',
+        '        handler(received, frame)',
+        '        open(observed, "w").close()',
+        '    return original_signal(signum, record)',
+        'def paused_popen(*args, **kwargs):',
+        '    child = original_popen(*args, **kwargs)',
+        '    deadline = time.monotonic() + 3',
+        '    while not os.path.exists(ready):',
+        '        if time.monotonic() > deadline: raise RuntimeError("child not ready")',
+        '        time.sleep(0.005)',
+        '    open(paused, "w").close()',
+        '    while not os.path.exists(resume):',
+        '        if time.monotonic() > deadline: raise RuntimeError("spawn not resumed")',
+        '        time.sleep(0.005)',
+        '    return child',
+        'subprocess.Popen, signal.signal = paused_popen, recording_signal',
+        'sys.argv = [wrapper] + command',
+        'runpy.run_path(wrapper, run_name="__main__")',
+      ].join('\n');
+      const holder = spawn(
+        '/usr/bin/python3',
+        [
+          '-c',
+          harness,
+          flockExecPath,
+          ready,
+          spawnPaused,
+          resumeSpawn,
+          signalObserved,
+          lock,
+          '/bin/sh',
+          '-c',
+          guardedScript,
+          'guarded',
+          ready,
+          terminated,
+          releaseChild,
+          childDone,
+        ],
+        { stdio: 'ignore' },
+      );
+      const holderExit = waitForExit(holder);
+      const contend = (path: string) =>
+        spawnSync(
+          flockExecPath,
+          [lock, '/bin/sh', '-c', 'printf contender > "$1"', 'contender', path],
+          { encoding: 'utf8' },
+        );
+
+      try {
+        await waitForFile(spawnPaused);
+        expect(holder.kill(terminationSignal)).toBe(true);
+        const deadline = Date.now() + 3_000;
+        while (
+          !existsSync(signalObserved) &&
+          holder.exitCode === null &&
+          holder.signalCode === null &&
+          Date.now() < deadline
+        ) {
+          await wait(10);
+        }
+        expect.soft(existsSync(signalObserved)).toBe(true);
+        expect(contend(contenderDuring).status).toBe(0);
+        expect(existsSync(contenderDuring)).toBe(false);
+        writeFileSync(resumeSpawn, 'resume\n');
+        await waitForFile(terminated);
+        expect(existsSync(childDone)).toBe(false);
+        expect(contend(contenderDuring).status).toBe(0);
+        expect(existsSync(contenderDuring)).toBe(false);
+        writeFileSync(releaseChild, 'release\n');
+        await waitForFile(childDone);
+        expect(await holderExit).toBe(0);
+        expect(contend(contenderAfter).status).toBe(0);
+        expect(existsSync(contenderAfter)).toBe(true);
+      } finally {
+        writeFileSync(resumeSpawn, 'resume\n');
+        writeFileSync(releaseChild, 'release\n');
+        if (holder.exitCode === null && holder.signalCode === null) {
+          holder.kill('SIGTERM');
+        }
+        await holderExit;
+        if (existsSync(ready)) await waitForFile(childDone);
+      }
+    },
+  );
 
   it('requires remote health and the managed service identity before reporting healthy_repro', () => {
     const ensure = readFileSync(ensurePath, 'utf8');
