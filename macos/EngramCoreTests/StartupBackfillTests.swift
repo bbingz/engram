@@ -1,4 +1,5 @@
 import GRDB
+import SQLite3
 import XCTest
 @testable import EngramCoreRead
 @testable import EngramCoreWrite
@@ -3008,7 +3009,9 @@ final class StartupBackfillTests: XCTestCase {
             try db.execute(
                 sql: """
                 INSERT INTO sessions_fts(session_id, content)
-                VALUES ('fresh', 'current searchable content');
+                VALUES ('fresh', 'current searchable content'),
+                       ('fresh', 'another searchable chunk'),
+                       (NULL, 'unlinked searchable content');
                 INSERT INTO session_index_jobs(id, session_id, job_kind, target_sync_version, status)
                 VALUES
                   ('stale:1:old:fts', 'stale', 'fts', 1, 'completed'),
@@ -3027,6 +3030,30 @@ final class StartupBackfillTests: XCTestCase {
                 ),
                 ["stale:1:current:fts"]
             )
+        }
+    }
+
+    func testEnqueueStaleFtsJobsUsesBoundedWorkForLargeFtsCorpus_repro() throws {
+        try writer.write { db in
+            for index in 0..<128 {
+                try insertSession(db, id: "missing-\(index)", source: "codex", tier: "normal")
+            }
+            try db.execute(sql: """
+                UPDATE sessions SET sync_version = 1, snapshot_hash = 'current';
+                WITH RECURSIVE corpus(n) AS (
+                    VALUES(1) UNION ALL SELECT n + 1 FROM corpus WHERE n < 4096
+                )
+                INSERT INTO sessions_fts(session_id, content)
+                SELECT 'indexed-' || n, 'searchable content' FROM corpus;
+                """)
+        }
+
+        try writer.writeWithoutTransaction { db in
+            // A single FTS pass fits this VM-step budget; 128 full passes do not.
+            sqlite3_progress_handler(db.sqliteConnection, 250_000, { _ in 1 }, nil)
+            defer { sqlite3_progress_handler(db.sqliteConnection, 0, nil, nil) }
+
+            XCTAssertEqual(try StartupBackfills.enqueueStaleFtsJobs(db), 128)
         }
     }
 
