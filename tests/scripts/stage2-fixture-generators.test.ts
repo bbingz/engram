@@ -96,6 +96,26 @@ describe('stage2 Node parity fixture generators', () => {
     expect(first.get('seed-01.jsonl')).toContain(
       'Refactored adapter pipeline for performance',
     );
+    const database = new BetterSqlite3(dbPath, { readonly: true });
+    try {
+      const followUp = database
+        .prepare(
+          `SELECT s.id, s.summary, s.start_time, s.agent_role, s.tier
+           FROM sessions s
+           JOIN sessions_fts f ON f.session_id = s.id
+           WHERE sessions_fts MATCH 'remaining'`,
+        )
+        .get();
+      expect(followUp).toEqual({
+        id: 'seed-01',
+        summary: 'Refactored adapter pipeline for performance',
+        start_time: '2026-01-15T10:00:00.000Z',
+        agent_role: null,
+        tier: 'normal',
+      });
+    } finally {
+      database.close();
+    }
 
     runScript('scripts/generate-test-fixtures.ts', [
       '--out-db',

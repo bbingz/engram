@@ -74,11 +74,14 @@ final class SettingsTests: XCTestCase {
     func testArchiveSectionSimplifiedChinese() {
         app.terminate()
         app = XCUIApplication()
-        TestLaunchConfig.mainWindow.configure(app)
-        app.launchArguments += [
-            "-AppleLanguages", "(zh-Hans)",
-            "-AppleLocale", "zh_CN",
-        ]
+        TestLaunchConfig.mainWindow.configure(
+            app,
+            appLanguage: "simplifiedChinese",
+            localizationArguments: [
+                "-AppleLanguages", "(zh-Hans)",
+                "-AppleLocale", "zh_CN",
+            ]
+        )
         app.launch()
 
         openSettings()

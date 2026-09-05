@@ -37,12 +37,25 @@ struct HomeScreen {
             .firstMatch
     }
 
-    func followUpSession(at index: Int) -> XCUIElement {
-        app.element(id: "home_followUpSession_\(index)")
+    func followUpSession(containingText text: String) -> XCUIElement {
+        followUps.staticTexts
+            .matching(NSPredicate(
+                format: "identifier BEGINSWITH %@ AND (label CONTAINS[c] %@ OR value CONTAINS[c] %@)",
+                "home_sessionTitle_",
+                text,
+                text
+            ))
+            .firstMatch
     }
 
-    func changedRepo(at index: Int) -> XCUIElement {
-        app.element(id: "home_changedRepo_\(index)")
+    func changedRepo(containingText text: String) -> XCUIElement {
+        changedRepos.buttons
+            .matching(NSPredicate(
+                format: "label CONTAINS[c] %@ OR value CONTAINS[c] %@",
+                text,
+                text
+            ))
+            .firstMatch
     }
 
     // MARK: - Waits
