@@ -7,6 +7,74 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Final build 1569 closeout (2026-09-05)
+
+PR #444 merged normally as `81ee3a1d06ea26845f390359776bbed45f861891`
+after its required Tests, CodeQL, and dependency-review gates passed.
+The entire merged tree equals artifact source
+`cabeeb24aa84f2080bde4dd94c13fbd7f4f5515b`; artifacts retain their actual
+source revision and version 1.0.5 (1569). Resulting-main Tests run
+`33945699824` passed, including full UI: 61 tests, two existing skips,
+zero failures, and all 31 screenshot comparisons passing. Exact-source PR
+CodeQL run `33944298658` and resulting-main CodeQL run `33945699829` passed.
+
+The signed universal App passed archive/export, ZIP round-trip checks, and
+independent full Developer ID verification both before and after installation.
+ZIP SHA-256: `b0bc3d1df79118ceded40508d896f533625f7c6977b682b7a74ff7d7edb5e2b2`.
+Service SHA-256: `9acd7eb0e15c3894fba974ba60f240930c04b3616e5f20e7d62bf33e6d5c2860`.
+MCP SHA-256: `2c80e214264b9a3a392d833a4f19be5168a712956cba2591a0cefd3f543f4e70`.
+App artifacts: `/tmp/engram-release-cabeeb24-build1569.qngC9k`.
+Local-only deployment receipts: `/tmp/engram-deploy-1569.fRZd3B`, including
+`installed-app-verify.log` and `main-81ee3a1d-ui.log`.
+
+HQ old Service PID 85024 exited normally after TERM. Its replacement PID 30392
+started at 13:05:16 CST from `releases/cabeeb24-build1569`, with the exact
+Service hash, one UID-501 mode-0600 socket, and unchanged root LaunchDaemon
+plists. The initial scan completed at 13:07:33 CST. Post-scan status returned
+`running` in 45 ms; `remoteSyncStatus` returned in 14 ms with both pending
+queues zero. `enabled=false` describes optional offload configuration, not
+Live publishing. Live returned 55 sessions in 0.713s; the new MCP helper
+returned 27 tools in 0.641s. These are observed checks, not a corpus-integrity
+or reboot-SLA claim. The unchanged daily HQ watchdog was restored at 13:05:58.
+Its initial run and first natural 120-second run exited 0. At 13:10 CST,
+run 3 exited 255 during the recurring direct-to-HQ SSH connectivity problem.
+After connectivity recovered, direct natural watchdog runs at 13:21, 13:23,
+13:25, and 13:27 all recorded `remote=healthy service=managed`; at 13:28,
+launchd reported run count 25 and last exit 0, with no degraded sentinel.
+The transient failure remains recorded, rather than being erased by recovery.
+
+M1 and HQ RemoteServer remain on their verified `2b31a40a` releases: the
+fresh `cabeeb24` build is byte-identical (SHA-256
+`7358ab755c94b47906efe7c599401bba7ef1e72b4c57edf722634df06db312ee`).
+Both retained their sole tailnet listener, health `ok`, and unauthenticated
+catalog 401; no redundant restart or provenance relabeling was performed.
+A temporary daily-to-HQ connectivity failure was bypassed using the existing
+M1 SSH jump host; direct connectivity subsequently recovered intermittently
+without network configuration changes. M1-mediated checks must not be used
+as proof that the watchdog's direct SSH path is stable.
+
+Daily old Service PID 2637 did not exit after nearly 30 minutes of graceful
+shutdown. Its bounded, symbolicated sample resolves to
+`SessionEmbeddingBackfill.pendingSessions`, not the repaired startup query.
+After the user confirmed proceeding, its UID, start time, mapped rollback
+binary, old/new hashes, and immutable backup `quick_check` were reverified.
+Only that old PID received SIGKILL at 13:28:23 CST. Launchd automatically
+started PID 25371 from the installed 1569 App; no extra kickstart was needed.
+Its exact Service/MCP hashes and sole UID-501 mode-0600 socket were verified.
+The live database subsequently passed read-only `PRAGMA quick_check`.
+Initial status returned `running`, and the new MCP helper returned 27 tools
+in 0.038s. An early Live request timed out at 28 seconds during startup.
+After four adapter-completion events established forward progress, one
+bounded Live recheck returned 87 sessions in 14.022s. Daily initial-scan
+completion and post-scan sync verification remain pending at this checkpoint;
+responsive status/Live must not be presented as full scan completion.
+
+The 1566 rollback App, old HQ releases, and checked online database backups
+are retained. No local Docker, public release, notarization, manual database
+rewrite, or client-owned MCP termination occurred. Existing optional-tooling
+upstream advisories and the unverified reboot/corpus-integrity boundaries
+remain as documented below; this closeout does not claim zero residual risk.
+
 ### Bounded FTS startup repair (2026-09-05; source verified)
 
 Build 1566 runtime verification exposed a startup bottleneck in
