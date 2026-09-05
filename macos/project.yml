@@ -69,7 +69,10 @@ targets:
       - path: EngramCaptureShared/ArchiveCatalog.swift
       - path: EngramCaptureShared/ArchiveCatalogMigrations.swift
       - path: EngramCaptureShared/ArchiveLocatorClassifier.swift
+      - path: EngramCollectorCore/CollectorMachineIdentityReader.swift
+      - path: EngramCollectorCore/CollectorPrivacyProof.swift
       - path: Shared/EngramCore/Adapters/SourceName.swift
+      - path: Shared/EngramCore/Adapters/SourceMetadataProjection.swift
       - path: Shared/EngramCore/ArchiveV2/ArchiveHash.swift
       - path: Shared/EngramCore/ArchiveV2/ArchiveCanonicalJSON.swift
       - path: Shared/EngramCore/ArchiveV2/ArchiveModels.swift
@@ -306,6 +309,11 @@ targets:
       - path: Shared/EngramCore/ArchiveV2/CollectorPublicationModels.swift
       - path: Shared/EngramCore/ArchiveV2/ArchiveRemoteTelemetry.swift
       - path: Shared/EngramCore/TranscriptRedactionPolicy.swift
+      - path: Shared/Service/EngramServiceSocketIO.swift
+      - path: Shared/Service/EngramServiceWireEnvelopes.swift
+      - path: Shared/Service/EngramServiceError.swift
+      - path: Shared/Service/EngramServiceWebReadModels.swift
+      - path: Shared/Service/EngramServiceWebReadClient.swift
     dependencies:
       - package: Hummingbird
         product: Hummingbird

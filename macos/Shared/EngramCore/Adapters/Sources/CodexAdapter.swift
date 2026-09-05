@@ -912,6 +912,7 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
         locator: String
     ) -> AdapterParseResult<NormalizedSessionInfo> {
         var meta: JSONLAdapterSupport.JSONObject?
+        var metadata = SourceMetadataProjection(format: .codex, locator: locator)
         var userCount = 0
         var assistantCount = 0
         var toolCount = 0
@@ -925,7 +926,7 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
             if let timestamp = JSONLAdapterSupport.string(object["timestamp"]) {
                 lastTimestamp = timestamp
             }
-            if JSONLAdapterSupport.string(object["type"]) == "session_meta", meta == nil {
+            if metadata.consume(object) == .codexMetadata {
                 meta = JSONLAdapterSupport.object(object["payload"])
             }
             if JSONLAdapterSupport.string(object["type"]) == "turn_context",
@@ -962,7 +963,7 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
         }
 
         guard let meta,
-              let id = JSONLAdapterSupport.string(meta["id"]),
+              let id = metadata.nativeSessionID,
               let startTime = JSONLAdapterSupport.string(meta["timestamp"])
         else { return .failure(.malformedJSON) }
         guard userCount + assistantCount + toolCount > 0 else {
@@ -977,7 +978,7 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
                 source: .codex,
                 startTime: startTime,
                 endTime: lastTimestamp.isEmpty ? nil : lastTimestamp,
-                cwd: JSONLAdapterSupport.string(meta["cwd"]) ?? "",
+                cwd: metadata.cwd ?? "",
                 project: nil,
                 model: detectedModel ?? turnContextModel ?? JSONLAdapterSupport.string(meta["model"]),
                 messageCount: userCount + assistantCount + toolCount,

@@ -273,6 +273,18 @@ public enum EngramServiceRunner {
         arguments: [String] = Array(CommandLine.arguments.dropFirst()),
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) async throws {
+        try await run(arguments: arguments, environment: environment, testHooks: RunnerTestHooks())
+    }
+
+    struct RunnerTestHooks: Sendable {
+        var optionalAIMaintenance: (@Sendable (ServiceWriterGate) async -> Void)? = nil
+    }
+
+    static func run(
+        arguments: [String],
+        environment: [String: String],
+        testHooks: RunnerTestHooks
+    ) async throws {
         let runtimeHome = RemoteSyncConfig.homeDirectory(environment: environment)
         let isTestProcess = environment["XCTestConfigurationFilePath"] != nil
             || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
@@ -541,6 +553,28 @@ public enum EngramServiceRunner {
                 )
             }
         }
+        // Required scan/capture/FTS workers never await optional provider I/O.
+        // Each background turn remains bounded by the existing batch limits
+        // and checks provider configuration/backoff before reading candidates.
+        let embeddingMaintenanceTask = Task(priority: .background) {
+            await Self.runOptionalAIMaintenanceLoop(initialScanTask: initialScanTask) {
+                if let operation = testHooks.optionalAIMaintenance {
+                    await operation(gate)
+                    return
+                }
+                await Self.runSessionEmbeddingBackfillBestEffort(
+                    name: "backgroundSessionEmbeddingBackfill",
+                    gate: gate,
+                    environment: environment
+                )
+                guard !Task.isCancelled else { return }
+                await Self.runInsightEmbeddingBackfillBestEffort(
+                    name: "backgroundInsightEmbeddingBackfill",
+                    gate: gate,
+                    environment: environment
+                )
+            }
+        }
         let liveIngestTask = Task {
             await Self.runLiveIngestLoop(
                 coordinator: liveSync,
@@ -612,6 +646,7 @@ public enum EngramServiceRunner {
         defer {
             initialScanTask.cancel()
             indexingTask.cancel()
+            embeddingMaintenanceTask.cancel()
             liveIngestTask.cancel()
             archiveDrainStartTask.cancel()
             checkpointTask.cancel()
@@ -642,6 +677,7 @@ public enum EngramServiceRunner {
         // gate alive (and its locks held) past `run()` returning.
         initialScanTask.cancel()
         indexingTask.cancel()
+        embeddingMaintenanceTask.cancel()
         liveIngestTask.cancel()
         archiveDrainStartTask.cancel()
         checkpointTask.cancel()
@@ -654,6 +690,7 @@ public enum EngramServiceRunner {
         )
         await initialScanTask.value
         await indexingTask.value
+        await embeddingMaintenanceTask.value
         await liveIngestTask.value
         await archiveDrainStartTask.value
         await archiveStopTask.value
@@ -755,6 +792,23 @@ public enum EngramServiceRunner {
         await initialScanTask.value
         guard !Task.isCancelled else { return }
         await operation()
+    }
+
+    static func runOptionalAIMaintenanceLoop(
+        initialScanTask: Task<Void, Never>,
+        sleep: @escaping @Sendable () async throws -> Void = {
+            try await Task.sleep(nanoseconds: 900_000_000_000)
+        },
+        operation: @escaping @Sendable () async -> Void
+    ) async {
+        await runAfterInitialScan(initialScanTask: initialScanTask) {
+            while !Task.isCancelled {
+                await operation()
+                guard !Task.isCancelled else { return }
+                do { try await sleep() }
+                catch { return }
+            }
+        }
     }
 
     /// Startup indexing and maintenance intentionally create many short-lived
@@ -1473,25 +1527,6 @@ public enum EngramServiceRunner {
                 )
             }
 
-            let shouldRunEmbeddingBackfill: Bool
-            if scan.indexed > 0 {
-                shouldRunEmbeddingBackfill = true
-            } else {
-                shouldRunEmbeddingBackfill = try await hasPendingEmbeddingBackfill(gate: gate)
-            }
-            if shouldRunEmbeddingBackfill {
-                await runSessionEmbeddingBackfillBestEffort(
-                    name: "periodicSessionEmbeddingBackfill",
-                    gate: gate,
-                    environment: environment
-                )
-                await runInsightEmbeddingBackfillBestEffort(
-                    name: "periodicInsightEmbeddingBackfill",
-                    gate: gate,
-                    environment: environment
-                )
-            }
-
             if let remoteSync {
                 do {
                     let sync = try await remoteSync.runOnce()
@@ -2086,18 +2121,6 @@ private final class IndexingScheduleBox: @unchecked Sendable {
                 try? await Task.sleep(nanoseconds: retryDelay)
             }
         }
-
-        await runSessionEmbeddingBackfillBestEffort(
-            name: "initialSessionEmbeddingBackfill",
-            gate: gate,
-            environment: environment
-        )
-
-        await runInsightEmbeddingBackfillBestEffort(
-            name: "initialInsightEmbeddingBackfill",
-            gate: gate,
-            environment: environment
-        )
 
         do {
             _ = try await refreshRepoDiscovery(

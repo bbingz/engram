@@ -7,6 +7,166 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Privacy, registry, Web-read and optional-AI combined gate (2026-09-06)
+
+The coordinator completed all six full integrated XCTest targets with the
+frozen source in this tranche: Core 1,521/one existing performance skip/0,
+App 1,175/0, Service 858/one existing live-URL skip/0, MCP 270/0, Remote 247/0,
+and Collector 35/0. Every producer exited 0. The App scheme also reran Core
+1,521/one skip/0. The Remote run used the previously verified worktree-local
+XCTest home; its existing firmlink test passed with no product/test changes.
+This supersedes the dated local pending-suite statements below, not their
+recorded failures. Evidence: `/tmp/engram-w4-foundations-{core,app,service,mcp,remote,collector}-integrated.log`
+and matching `.xcresult` bundles. Tests used the existing Xcode-beta developer
+directory, arm64 destination, jobs 2, serial testing and explicit
+`TEST_RUNNER_CFFIXED_USER_HOME` forwarding to the isolated test home.
+
+Ten script suites passed 190 tests with two existing dirty-project conditional
+skips; all five invariant scripts and the adapter-parity fixture check passed.
+Logs: `/tmp/engram-w4-foundations-script-integrated.log`,
+`/tmp/engram-w4-foundations-invariants.log`, and
+`/tmp/engram-w4-foundations-adapter-fixtures.log`. Final C1 nine-file hashes and
+registry/client hashes still match their independently reviewed frozen sources.
+The read-only integrated routing/composition review returned PASS / APPROVED
+with no cross-slice blocker (`/tmp/engram-w4-integration-review.ydcybm/review.md`).
+The Web client intentionally has no capability-token loader; future same-UID,
+owner-only Service reads and HTTP viewer authentication are separate gates.
+
+Only this reviewed tranche is being committed: generation/format-bound privacy
+proof and read-only machine identity, durable source/epoch/parse-format registry,
+pure transcript continuation and typed client, optional-AI readiness/shutdown,
+and their exact target/test/doc routing. Inventory, bounded CAS API/replay and
+the real Web IPC handler continue in separate worktrees and are excluded.
+New-head CI is pending; the previous all-green CI belongs only to `248e64ab`.
+Local UI automation, a production snapshot provider, HTTP/browser integration,
+full collector/uploader, package/shadow/resource gates and W3-W6 completion are
+not claimed. No production helper, provider request, Docker, deployment, merge
+or release was run. Unknown pre-existing SQLite WAL/SHM fixture files remain
+unstaged and untouched.
+
+### C1 privacy and typed Web client integration checkpoint (2026-09-06)
+
+Integrated nine byte-identical C1 source/test files from the independently
+reviewed collector worktree, with only three explicit CollectorCore source-list
+additions. The same narrow metadata projection now feeds Claude/Codex parser
+selection and conservative CAS-generation privacy proof. Proof requires a fresh
+policy and full format binding before upload; the custom-profile-to-default
+change with an unchanged policy first failed two assertions, then passed.
+CollectorCore is 35/0 in the worker's final run; independent parser regression
+coverage is 273/0, including all four new projection-parity tests. Grok closed
+the format blocker with PASS / APPROVED. Evidence:
+`/tmp/engram-w3-c1.i68kFy/format-binding-red.log`,
+`collector-c1-format-green.log`, `core-adapter-parity-green.log`, and
+`collector35-source.sha256`. The coordinator verified all nine integration
+hashes. These are not inventory, uploader or source-retirement gates.
+
+The identity reader opens only an existing owner-only catalog and never repairs
+WAL sidecars or provisions a machine ID. The tests separately proved the latest
+identity from an independent live-WAL writer without altering main/WAL/SHM bytes,
+permissions or directory entries, rejected same-process writable SHM reuse and
+missing/orphaned SHM, and caught an owned SHM-mapping leak before the final
+unmap fix. SQLite's actually loaded library in this fixture was 3.54.0, not the
+older cached source VERSION file. The accepted guarantee is the independent-
+process bootstrap topology; the probe is not an atomic generic guarantee against
+a new same-process RW connection between unmap and query. Collector must not
+own a live Service catalog writer. Existing CAS reads also still lack an actual-
+object allocation cap; the next replay slice has a separate bounded-read TDD
+prerequisite, rather than treating declared manifest limits as that guarantee.
+
+Integrated the typed messages-only Web client and its 18 tests, plus five exact
+RemoteServer wire/kernel source inclusions; no DB framework dependency was
+introduced into that product target. Independent review found two blockers:
+the client confused the pager's 255 KiB generation budget with the kernel's
+256 KiB receive ceiling, and all-role results could skip message ordinals.
+After moving expensive synthetic payload preparation outside the transport
+deadline, the unchanged implementation produced a causal 18-test/4-assertion
+RED. The two minimal fixes passed the same 18 tests with unchanged test SHA;
+the independent gate returned PASS / APPROVED. Final client/test hashes are
+`7bfe0a76...b41ce` / `c9ca61fe...dd500`. Evidence:
+`/tmp/engram-web-read-client.RX3Dh5/review-red2.log` and `green.log`.
+Full transcript reassembly, payload hash verification across pages, the real
+Service command and HTTP/browser behavior remain later work.
+
+Two worker full Remote runs were 247 tests/one unexpected failure, solely in the
+existing Users-firmlink test. Foundation normalizes a temporary home under
+private/tmp back to tmp, so changing only that spelling did not repair the test's
+physical-path assumption. Source and assertions stayed frozen. The coordinator
+is rerunning the integrated Remote target with the previously verified isolated
+worktree-local home; the earlier two failures remain in `full-remote.log` and
+`full-remote2.log`. The new combined full Service gate has already passed:
+858 tests/one existing skip/zero failures, producer exit 0,
+`/tmp/engram-w4-foundations-service-integrated.log` and its result bundle.
+Other combined suites and new-head CI remain pending. No merge or deployment.
+
+### W4 registry, transcript and optional-AI local checkpoint (2026-09-05)
+
+Integrated explicit durable source-instance/root/epoch/parse-format authority.
+The registry has 35 tests, including ten new format cases: an old nullable
+format receives no inferred default or backfill; it remains quarantined, while
+still reserving its root for overlap checks. Epoch approval preserves format
+and compares the expected authority generation. The worker's combined
+registry/identity/ledger/migration RED was 72 tests/51 assertions failed, then
+72/0 with unchanged tests. Grok independently reviewed the exact format source
+and tests against the previously accepted 25-case registry and returned
+PASS / APPROVED. The coordinator integrated byte-identical final files
+(`63338ab1...5fa7f`, `ee4d25ab...4050`). Evidence:
+`/tmp/engram-w4-registry-format.tHpz0l/red.log` and `green.log`.
+No replay, operator IPC command, alias migration or snapshot write is implied.
+
+The separately reviewed normalized-message continuation DTO/pager is also
+integrated: 9 continuation and 5 wire tests passed in the first combined
+Service run, including full Unicode/tool/usage reconstruction, redaction before
+fragmentation, generation-bound cursors and outer Data/base64 escape budgeting.
+This pure layer still requires an authoritative snapshot provider and a real
+Service command; it is not a completed Web endpoint.
+
+Removed awaited embedding batches from initial/periodic required indexing and
+placed the existing bounded provider/backoff-guarded operations in an independent
+maintenance task. Initial eight tests produced an actual RED with 14 failed
+assertions; all eight passed after the minimal implementation. Independent
+review then caught missing explicit shutdown cancellation/join. Three added
+tests produced a real 11-test/5-failure RED, including premature runner return
+and writer-lock retention. Two production lines now cancel/join before writer
+drain and final checkpoint; the startup source assertion is scoped before
+shutdown so that legitimate shutdown joining is not forbidden. The same
+lifecycle tests passed 11/0, producer exit 0, and the independent slice gate
+returned PASS / APPROVED. Evidence:
+`/tmp/engram-w4-optional-ai-red.log`,
+`/tmp/engram-w4-optional-ai-shutdown-red.log`, and
+`/tmp/engram-w4-optional-ai-shutdown-green2.log` plus their result bundles.
+The first shutdown GREEN attempt used different XCTest-home forwarding,
+stalled in required backfill, and was cancelled (producer exit 73); it is not
+a passing gate or an attributed product regression.
+
+The earlier full Service attempt ran 855 tests/one existing skip and failed
+five assertions in three old source-text tests that demanded embedding work in
+its former location. Only those three structural anchors were updated to the
+new task composition; their guardrail assertions remain. Full combined Service
+and Core verification, remaining privacy/client closure and new-head CI are
+still pending. Existing foundation CI below characterizes only `248e64ab`.
+No production helper, provider request, deployment, merge or release was run.
+
+### Foundation exact-head CI closeout (2026-09-05)
+
+Commit `248e64ab63034378f5842c9e065ba671d8570a71` was pushed normally to existing
+Draft PR #446. Tests `33969590181`, CodeQL `33969590195` and dependency review
+`33969590247` all completed successfully for that exact head. The coordinator
+checked the final PR head/check rollup after both Swift CodeQL jobs and CodeQL
+Gate finished. Full UI and the unnecessary UI-smoke failure reporter were
+intentionally skipped; the separate CodeQL summary was neutral, not a failed
+required check. No merge, release or deployment occurred.
+
+The downloaded Swift CI log independently confirms Core 1,482/one existing
+performance skip/0, App 1,175/0, Service 833/one existing skip/0, MCP 270/0 and
+the newly required CollectorCore 9/0. Evidence:
+`/tmp/engram-foundation-ci-swift-unit-248e64ab.log`,
+`https://github.com/bbingz/engram/actions/runs/33969590181`,
+`https://github.com/bbingz/engram/actions/runs/33969590195`, and
+`https://github.com/bbingz/engram/actions/runs/33969590247`.
+This supersedes only the dated foundation checkpoint's pending-CI status below.
+Subsequent local continuation, registry, privacy and optional-AI work does not
+inherit this immutable head's passing CI.
+
 ### Collector, shared IPC and intake-ledger foundations (2026-09-05; local integration)
 
 Integrated the separately verified W3 host-role and behavior-preserving

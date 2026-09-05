@@ -2,8 +2,15 @@
 
 ## Changelog Memo
 
+### 2026-09-06
+
+- [验证] 本批完整整合门全部通过：Core 1,521、App 1,175、Service 858、MCP 270、Remote 247、Collector 35 零失败（Core/Service 各 1 既有 skip），190 项脚本、invariants、fixture 和独立交叉门通过；准备提交推送，新 SHA CI 待验，inventory/replay/实际 Web IPC 尚在独立树，未部署，详见 `CHANGELOG.md`。
+- [验证] C1 隐私/身份源及 typed Web client 已按冻结哈希整合，worker Collector 35、Core 定向 273、client 18 均零失败并过独立门；中央完整 Service 858（1 既有 skip）零失败。Remote 全套的既有 firmlink 测试环境问题仍在复验，完整 replay/HTTP/W3–W6 尚未完成，未部署，详见 `CHANGELOG.md`。
+
 ### 2026-09-05
 
+- [验证] W4 源/epoch/解析格式 registry 已整合（worker 72/0、Grok 独立双门通过）；全文续传 14 项通过；可选 AI 解耦补获退出锁滞留真实 RED，最小 cancel/join 后 11/0 并过独立门，完整整合回归和新 head CI 待验，仍非完整 replay/Web，详见 `CHANGELOG.md`。
+- [验证] 基础提交 `248e64ab` 在 Draft PR #446 的 Tests、CodeQL Gate 和依赖检查全部通过，CollectorCore 已实际进入必需 CI；后续 registry、隐私证明、全文续传及可选 AI 解耦仍在本地 TDD/整合中，不继承旧 SHA 的 CI 结论，未合并或部署，详见 `CHANGELOG.md`。
 - [验证] W2 `874a63f1` 已通过全部必需 CI；角色/采集核心、共享 IPC、首片身份与 intake ledger 已本地整合，Core 1,482、Service 833（各 1 既有 skip）、App 1,175、MCP 270、Collector 9、Remote 229 均零失败，独立交叉门通过且补入 Collector CI，本波 CI 待验；完整 collector、中央 replay/Web 链未完成，未部署，详见 `CHANGELOG.md`。
 - [验证] W2 默认关闭的 publication/ACK 接收端已通过独立完整 Remote 回归 229/229、零失败/跳过，包含真实子进程重启恢复与旧 archive/recovery/MCP；模型与存储最终只读门 PASS/APPROVED，本波 PR CI 待验。W3 角色/采集核心与 Web IPC 基础在独立工作树推进，未部署，详见 `CHANGELOG.md`。
 - [验证] Draft PR #446 的 W1 修正 head `638a8454` 已通过 Tests、CodeQL Gate 和依赖审查；Core/App/Service/MCP/Remote 与 14 项 UI smoke 均零失败，本地 Node 1,564/1,564；完整 UI 不属于此次 PR 门。W2 接收入库继续推进，W3 角色隔离在独立工作树开发，未合并或部署，详见 `CHANGELOG.md`。

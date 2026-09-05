@@ -1,6 +1,6 @@
 # Design Doc: lightweight collectors, central indexing, and a read-only Web client
 
-- **Status**: Accepted for staged implementation; revised-design gate PASS / APPROVED, W1 and W2 pushed in Draft PR #446 with exact-head required CI passing; independently reviewed role/capture/IPC and first identity/intake foundations locally integrated, combined Core 1,482 and Service 833 (one existing skip each), App 1,175, MCP 270, Collector 9 and Remote 229 all zero failures, this tranche's pushed-head CI pending; privacy/epoch/continuation slices developing, full W3-W7 not complete
+- **Status**: Accepted for staged implementation; revised-design gate PASS / APPROVED. W1, W2 and the role/capture/IPC/identity/intake foundations (`248e64ab`) are pushed in Draft PR #446 with exact-head required CI passing. The next privacy/epoch/parse-format/continuation/client/optional-AI tranche is locally integrated and independently approved: Core 1,521 and Service 858 (one existing skip each), App 1,175, MCP 270, Collector 35 and Remote 247 have zero failures. Its new-head CI is pending; inventory, bounded CAS/replay and real Web IPC remain separate work. Full W3-W7 are not complete.
 - **Owner**: Engram maintainers; Codex coordinates bounded implementation workers
 - **Date**: 2026-09-05
 - **Related**: [implementation plan](../plans/2026-09-05-collector-server-web.md), [archive v2 contract](../../remote-archive-v2.md), [invariants](../../invariants.md), root `CHANGELOG.md`

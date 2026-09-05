@@ -1222,18 +1222,20 @@ final class EngramServiceIPCTests: XCTestCase {
 
     // EMB-STARVE: an idle merge-only scan must still drain existing session
     // or insight embedding work instead of waiting for a future merge/restart.
-    func testRunnerPeriodicEmbeddingBackfillChecksBacklogOnIdleScan_repro() throws {
+    func testRunnerOptionalEmbeddingBackfillIsIndependentOfIdleScanCounts_repro() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
-        let cycleStart = try XCTUnwrap(source.range(of: "runOnePeriodicIndexCycle"))
-        let cycleBody = String(source[cycleStart.lowerBound...])
+        let cycleStart = try XCTUnwrap(source.range(of: "let embeddingMaintenanceTask = Task"))
+        let cycleEnd = try XCTUnwrap(source.range(of: "let liveIngestTask = Task", range: cycleStart.lowerBound..<source.endIndex))
+        let cycleBody = String(source[cycleStart.lowerBound..<cycleEnd.lowerBound])
 
         XCTAssertTrue(
-            cycleBody.contains("shouldRunEmbeddingBackfill = try await hasPendingEmbeddingBackfill(gate: gate)")
-                && cycleBody.contains("if shouldRunEmbeddingBackfill {")
-                && cycleBody.contains("periodicSessionEmbeddingBackfill")
-                && cycleBody.contains("periodicInsightEmbeddingBackfill"),
-            "idle periodic scans must use an embedding-backlog signal independent of scan.indexed"
+            cycleBody.contains("runOptionalAIMaintenanceLoop(initialScanTask: initialScanTask)")
+                && cycleBody.contains("backgroundSessionEmbeddingBackfill")
+                && cycleBody.contains("backgroundInsightEmbeddingBackfill"),
+            "bounded optional turns must drain both backlogs even when file scans are idle"
         )
+        XCTAssertFalse(cycleBody.contains("scan.indexed"))
+        XCTAssertFalse(cycleBody.contains("hasPendingEmbeddingBackfill("), "provider/backoff checks precede candidate reads")
     }
 
     func testPeriodicEmbeddingBacklogDetectsSessionAndInsightWork_repro() async throws {
@@ -1617,28 +1619,29 @@ final class EngramServiceIPCTests: XCTestCase {
         )
     }
 
-    func testRunnerInitialScanSchedulesInsightEmbeddingBackfillOutsideMainWritePhases() throws {
+    func testRunnerSchedulesInsightEmbeddingBackfillOutsideRequiredInitialScan() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
         let start = try XCTUnwrap(source.range(of: "static func runInitialScan("))
         let end = try XCTUnwrap(source.range(of: "private static func elapsedMs", options: [], range: start.lowerBound..<source.endIndex))
         let body = String(source[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(body.contains("initialInsightEmbeddingBackfill"))
-        XCTAssertTrue(body.contains("runInsightEmbeddingBackfillBestEffort("))
+        XCTAssertFalse(body.contains("runInsightEmbeddingBackfillBestEffort("))
+        XCTAssertTrue(source.contains("backgroundInsightEmbeddingBackfill"))
+        XCTAssertTrue(source.contains("runOptionalAIMaintenanceLoop(initialScanTask: initialScanTask)"))
         XCTAssertFalse(
-            body.contains(#"performWriteCommand(name: "initialInsightEmbeddingBackfill") { writer in"#),
+            source.contains(#"performWriteCommand(name: "backgroundInsightEmbeddingBackfill") { writer in"#),
             "embedding provider I/O must not run inside one long write-gate closure"
         )
     }
 
-    func testRunnerPeriodicScanSchedulesInsightEmbeddingBackfill() throws {
+    func testRunnerPeriodicScanDoesNotWaitForOptionalInsightEmbeddingBackfill() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
         let start = try XCTUnwrap(source.range(of: "static func runIndexingLoop("))
         let end = try XCTUnwrap(source.range(of: "/// V2 composition root", options: [], range: start.lowerBound..<source.endIndex))
         let body = String(source[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(body.contains("periodicInsightEmbeddingBackfill"))
-        XCTAssertTrue(body.contains("runInsightEmbeddingBackfillBestEffort("))
+        XCTAssertFalse(body.contains("runInsightEmbeddingBackfillBestEffort("))
+        XCTAssertTrue(source.contains("backgroundInsightEmbeddingBackfill"))
     }
 
     func testRunnerObservabilityRetentionLogsZeroRowCompletion() throws {

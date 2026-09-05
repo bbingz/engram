@@ -18,9 +18,21 @@ existing performance skip/zero failures; combined App is 1,175/0, Service
 833/one existing skip/0, MCP 270/0, Collector 9/0 and Remote 229/0. Cross-slice
 source/target review passed; ten script suites are 190 passed/two existing
 conditional skips. The next tranche's pushed-head CI remains pending.
-These are foundations, not full W3-W6 completion.
-Collector privacy proof, source/epoch registry and normalized-message
-continuation are separately developing through new TDD gates.
+Foundation follow-up: `248e64ab` is now pushed to the same Draft PR, with Tests
+`33969590181`, CodeQL `33969590195` and dependency review `33969590247` all
+passing for that exact SHA. The earlier pending statement above describes its
+local checkpoint. These are foundations, not full W3-W6 completion.
+The next local tranche is now integrated and independently approved: C1
+generation/format-bound privacy and read-only machine identity, source/epoch/
+parse-format registry, pure normalized-message continuation and typed client,
+and optional-AI readiness/shutdown isolation. Its six full targets passed:
+Core 1,521 and Service 858 (one existing skip each), App 1,175, MCP 270,
+Remote 247 and Collector 35, all zero failures and producer exits 0.
+Ten script suites passed 190/two existing conditional skips; invariant and
+adapter-fixture checks passed. Logs are `/tmp/engram-w4-foundations-*-integrated.log`
+with exact per-gate paths in CHANGELOG. This supersedes the earlier local
+pending-suite statements; this tranche's new-head CI is still pending.
+Inventory, bounded CAS/replay and real Web IPC remain separate next-wave work.
 The owner authorized committing/pushing W1, running CI, then autonomous staged
 implementation/review/CI through W6 on 2026-09-05. Production W7, credentials,
 network changes, and merge/release remain separate authority boundaries.

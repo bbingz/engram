@@ -123,7 +123,7 @@ Invariants are properties that must survive every change; each entry names where
 
 ## Collector Capture Core Excludes Product Index Dependencies
 
-- **Statement** - CollectorCore compiles only explicit capture sources plus GRDB, with no CoreRead/CoreWrite/Service/parser dependencies or product index tables. CoreWrite reuses the same five capture files, not a second implementation. The archive no-delete gate scans their new location with the same global unlink limits. This foundation does not yet guarantee a complete no-index collector executable.
+- **Statement** - CollectorCore compiles only explicit capture/identity/privacy sources, a narrow shared metadata projection and GRDB, with no CoreRead/CoreWrite/Service/full-parser dependencies or product index tables. CoreWrite reuses the same five capture files, not a second implementation. The archive no-delete gate scans their new location with the same global unlink limits. This foundation does not yet guarantee a complete no-index collector executable.
 - **Enforced by** - `macos/project.yml`, `macos/EngramCaptureShared/ArchiveCatalog.swift`, `macos/EngramCaptureShared/ExactSourceCapturer.swift`, `scripts/check-archive-v2-safety.sh`.
 - **Verified by** - `macos/EngramCollectorCoreTests/CollectorTargetDependencyTests.swift`, `macos/EngramCollectorCoreTests/CollectorCaptureCoreTests.swift`, `tests/scripts/archive-v2-safety-gate.test.ts`.
 - **Gate** - `none`.
@@ -140,6 +140,34 @@ Invariants are properties that must survive every change; each entry names where
 - **Statement** - Publication bytes, per-parser work, replica arrivals and checkpoint advancement share one inner savepoint. Identical replay cannot reset terminal work, and conflicting stream tuples quarantine nonterminal work without retracting last-good parsed/index-ready rows. Pending intake does not authorize parsing, source/epoch promotion or session/FTS writes.
 - **Enforced by** - `macos/EngramCoreWrite/CaptureIngest/CaptureIngestLedger.swift`, `macos/EngramCoreWrite/CaptureIngest/CaptureIngestIdentity.swift`, `macos/EngramCoreWrite/Database/EngramMigrations.swift`.
 - **Verified by** - `macos/EngramCoreTests/CaptureIngest/CaptureIngestLedgerTests.swift`, `macos/EngramCoreTests/CaptureIngest/CaptureIngestIdentityTests.swift`.
+- **Gate** - `none`.
+
+## Source and Epoch Authority Precedes Capture Replay
+
+- **Statement** - Capture eligibility requires an explicitly provisioned machine/source-instance/root/parse-format binding and an approved epoch. Unknown streams, overlapping roots, unsupported shapes and unapproved epochs are quarantined without promoting last-good data. Legacy NULL parse formats remain unprovisioned; epoch changes use expected-binding checks and retain the selected format. This database contract does not expose an operator command or perform replay.
+- **Enforced by** - `macos/EngramCoreWrite/CaptureIngest/CaptureIngestSourceRegistry.swift`, `macos/EngramCoreWrite/Database/EngramMigrations.swift`.
+- **Verified by** - `macos/EngramCoreTests/CaptureIngest/CaptureIngestSourceRegistryTests.swift`.
+- **Gate** - `none`.
+
+## Local Privacy Proof Binds Captured Bytes and Current Format
+
+- **Statement** - Upload eligibility uses the immutable captured generation, not a later live source read. The shared Claude/Codex metadata projection preserves parser selection while retaining conflicting evidence for conservative withholding. Proof binds capture/manifest/whole-source identity, project root, exclusion-policy revision/digest and the entire selected format; fresh policy and format are mandatory before upload. Unsupported, incomplete, conflicting or excluded evidence does not authorize transfer. This local proof neither proves an HQ replay nor retroactively removes remote bytes.
+- **Enforced by** - `macos/EngramCollectorCore/CollectorPrivacyProof.swift`, `macos/Shared/EngramCore/Adapters/SourceMetadataProjection.swift`.
+- **Verified by** - `macos/EngramCollectorCoreTests/CollectorPrivacyProofTests.swift`, `macos/EngramCoreTests/Adapters/SourceMetadataProjectionParityTests.swift`.
+- **Gate** - `none`.
+
+## Transcript Continuation Preserves Redacted UTF-8 Payloads
+
+- **Statement** - The pure Service pager redacts every string field before fragmenting normalized message JSON at UTF-8 boundaries. Cursors bind session, immutable generation, projection, redaction revision, roles, ordinal, offset and payload digest; stale or unavailable snapshots fail explicitly. Encoded envelope sizing includes Data/base64 escaping and reserves framing headroom. The pager does not itself establish snapshot authority or expose an IPC command.
+- **Enforced by** - `macos/EngramService/Core/ServiceTranscriptContinuation.swift`, `macos/Shared/Service/EngramServiceWebReadModels.swift`.
+- **Verified by** - `macos/EngramServiceCoreTests/WebTranscriptContinuationTests.swift`, `macos/EngramServiceCoreTests/WebTranscriptWireTests.swift`.
+- **Gate** - `none`.
+
+## Optional AI Maintenance Does Not Gate Required Index Readiness
+
+- **Statement** - Initial scan and periodic indexing do not await embedding providers. A separate bounded maintenance task starts after the required scan, checks provider configuration and cooldown before backlog queries, and retains existing retry/terminal semantics. Orderly shutdown explicitly cancels and joins that task before draining writers and checkpointing; optional work cannot retain writer ownership after the runner returns.
+- **Enforced by** - `macos/EngramService/Core/EngramServiceRunner.swift`.
+- **Verified by** - `macos/EngramServiceCoreTests/OptionalAIReadinessTests.swift`, `macos/EngramServiceCoreTests/EmbeddingGuardrailsTests.swift`, `macos/EngramServiceCoreTests/EngramServiceIPCTests.swift`.
 - **Gate** - `none`.
 
 ## Unverified Anchors
