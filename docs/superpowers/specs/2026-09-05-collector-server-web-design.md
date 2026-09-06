@@ -33,6 +33,30 @@ its independently rejected initial test draft before RED, not running SQL.
 
 ## Problem
 
+A5d gate supplement: central App/Core2901(one existing skip) and MCP270 pass
+with zero failures and actual0 producers. Final independent eight-path gate
+is running; prior9b CodeQL remains pending. T4a's12 demonstrated worker gaps
+and11 independently adjudicated trace/history fixture failures are separated
+in CHANGELOG; focused corrected GREEN is running, not yet claimed.
+
+A5d central regression follow-up: Service935/one existing skip/zero failures
+and script/typecheck/safety/invariant gates passed, actual0 producers. Final
+staged gate, commit and own-head CI remain pending; prior9b CodeQL is running.
+T4a57-test donor RED is separate; no full W3-W6/W7 acceptance is inferred.
+
+Latest central integration checkpoint: A5d donor source/full-Service gate passed
+and exact three files plus pinned references entered central; central Service
+is running. N4a donor passed279/279 after fixture-only cleanup correction;
+T4a additive12-test draft is approved for RED only. Correction9b Tests and
+dependency review passed, CodeQL pending. Details and preserved runtime/full
+W3-W6/W7 limitations are in CHANGELOG; these supersede earlier pending states.
+
+Latest push/verification checkpoint: corrected head `9b969a9c` is pushed in
+Draft/open/unmerged PR #446; dependency review passed, Tests/CodeQL pending.
+A5d focused GREEN passed23/23 with full Service running. N4a storage-test
+reuse expectation and T4a full-binding/post-claim fence regressions remain
+under review/test drafting. No donor feature or full W3-W6/W7 claim is added.
+
 Final correction gate: independent five-path staged/record review passed
 SPEC PASS / QUALITY APPROVED with exact one-token inverse proof and unchanged
 corrected hashes. Normal corrective commit/push is next; fixed-head Xcode 16.4

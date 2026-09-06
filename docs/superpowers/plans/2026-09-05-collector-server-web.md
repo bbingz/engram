@@ -1,5 +1,36 @@
 # Collector / central Service / Web implementation plan
 
+Checkpoint supersession clarification (2026-09-06): this file retains older
+append-only entries whose labels say "Latest push/verification checkpoint".
+The completed9b Tests/dependency results and integrated A5d central regressions
+reported in the top follow-ups supersede those older Tests-pending/no-donor-
+central statements, including under Execution rules. CodeQL, final integration
+gate/commit and own-head CI remain independently pending; no runtime/full-wave
+completion is substituted for these source/test checkpoints.
+
+A5d additional regression: central App/Core2901(one existing skip)/zero failures
+and MCP270/270 passed, actual0 producers. Pinned staged drift passed; independent
+eight-path integration gate is running, old9b CodeQL still pending. T4a57-test
+RED proved12 source gaps; independent trace/history fixture corrections retain
+all assertions, and its targeted GREEN is now running. No runtime/fullW3-W6/W7
+claim follows; full evidence and warning/skip attribution are in CHANGELOG.
+
+A5d central result follow-up: full Service935 passed/one existing skip/zero
+failures, scripts205 passed/two conditional skips, typecheck/safety/invariants
+passed with actual0 producers. Final staged gate/commit/own CI are pending;
+previous9b CodeQL is running. T4a57-test RED is a separate donor run. No Runner,
+browser or full W3-W6/W7 acceptance follows; detailed evidence is in CHANGELOG.
+
+Latest local checkpoint (2026-09-06): correction `9b969a9c` Tests and dependency
+review succeeded; CodeQL remains pending. A5d donor full Service passed
+924/one existing skip/zero failures and independent source/contract gate;
+three matching files plus eight pinned generated references entered central,
+whose full Service regression is running. N4a full donor Collector passed279/279
+after independently approved fixture-only close/FD correction; source unchanged.
+T4a's additive12-test draft passed independent gate; actual57-test RED is next.
+All final integration/new-head CI and full W3-W6/W7 limitations remain explicit
+in CHANGELOG; no donor-only or running test is counted as central completion.
+
 **Date:** 2026-09-05
 
 **Governing design:** [collector-server-web-design](../specs/2026-09-05-collector-server-web-design.md)
@@ -384,6 +415,15 @@ implementation/review/CI through W6 on 2026-09-05. Production W7, credentials,
 network changes, and merge/release remain separate authority boundaries.
 
 ## Execution rules
+
+Latest push/verification checkpoint: CI correction is pushed as `9b969a9c`,
+Draft/open/unmerged PR #446; new dependency review passed, Tests/CodeQL pending.
+A5d focused GREEN is 23/23, full donor Service running. N4a full GREEN is not
+accepted: 276/279, three diagnostic failures occur on original-connection reuse
+after main-file tampering, after successful rollback proofs; a test-contract
+adjudication is pending. T4a source type correction is frozen and additive
+full-binding/post-claim fence regressions are being drafted before correction.
+No donor feature is central and no full W3-W6/W7 result is implied; see CHANGELOG.
 
 Final correction gate: independent exact-five-path index/record review passed
 SPEC PASS / QUALITY APPROVED, inverse one-token proof and producer/test hashes

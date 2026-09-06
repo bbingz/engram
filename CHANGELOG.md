@@ -7,6 +7,136 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+Record clarification (2026-09-06): the A5d completed central Service/App/Core/MCP
+results above each older entry supersede earlier central-running/donor-only
+checkpoints retained below. The phrase "supersedes central-running above" in
+the historical Service result entry means the older entry below, not a running
+test in the current checkpoint. For9b, Tests and dependency review are complete;
+only CodeQL remains pending. Final integration/own-head CI is still separate.
+
+### A5d App/Core and MCP regression supplement (2026-09-06)
+
+Full central App (UI explicitly excluded) exited0, session55419: 2,901 total/
+2,900 passed/one existing Core performance skip/zero failures, including
+App1,175 and rerun Core1,726. Eleven existing writer QoS runtime warnings remain.
+Central MCP exited0, session97936:270/270 with no skip/failure/runtime warning.
+These cover the handler constructor/dispatch blast radius without changing
+source or requiring live services. Evidence:
+`/tmp/engram-a5d-central-{app,mcp}-v1.{log,xcresult,producer-exit0}`.
+Pinned staged driftv1 passed; the eight-path independent integration/record
+gate is in progress and old9b CodeQL still gates feature push. UI/browser,
+unchanged Remote/Collector full suites and production were not rerun for A5d;
+separate N4a donor Collector proof is not central evidence.
+
+T4a all57 additive REDv1 actually exited65, session27444:34 passed/23 failed,
+zero skips/runtime warnings. Twelve additions independently prove worker
+Replay-error hook, complete-binding and post-claim transaction fence gaps;
+targeted source-only correction is now under root verification. Ten old failures
+are synthetic SQL trace rendering: independent GRDB6.29.3 evidence approved
+`event.expandedDescription` in this temporary testDB instead of description
+with unexpanded parameters. A separate history fixture now proves its valid
+positive commit before deleting a sibling history row, then verifies scalar
+selection leaves that corrupted candidate pending/attempt0 with all WorkRow
+fields unchanged. It does not promise a valid commit amid corrupted sibling
+authority. All assertions remain; production Registry is unchanged. Independent
+fixture-only SPEC PASS / QUALITY APPROVED preceded both edits. Corrected tests
+`9719eacf...`, worker candidate `886ae224...`; focused GREENv1 is running.
+Evidence: `/tmp/engram-t4a-worker-additive-red-v1.{log,xcresult,producer-exit65}`
+and `/tmp/engram-t4a-worker-green-v1.*`. No T4a GREEN/runtime result follows yet.
+
+### A5d central full Service and script gates passed (2026-09-06)
+
+Central A5d Service v1 actually exited 0, session 34146: 936 total/935 passed/
+one existing opt-in live-offload skip/zero failures; one existing reader QoS
+runtime warning. All 23 new IPC and38 unchanged metadata tests passed against
+the exact integrated hashes. Ten script suites exited 0 (session30753),
+205 passed/two existing dirty-project conditional skips; test typecheck,
+archive safety, invariants and diff checks also returned 0. Evidence:
+`/tmp/engram-a5d-central-service-v1.{log,xcresult,producer-exit0}` and
+`/tmp/engram-a5d-tranche-{scripts,typecheck-test,archive-safety,invariants}.log`.
+This supersedes central-running above; final staged integration/record gate,
+commit and own-head CI are still pending. Previous9b CodeQL is still running.
+T4a57-test additive RED now runs separately in its donor; N4a remains donor-only.
+
+### A5d donor gate and central integration; N4a full GREEN (2026-09-06)
+
+Correction head `9b969a9c` Tests `34028552400` now succeeded, including its
+Swift unit job, and its watch producer 22869 exited 0. Dependency review also
+passed; CodeQL `34028552396` remains pending. The feature push still waits
+for that separate gate. No deployment or PR merge is authorized here.
+
+A5d full donor Service v1 exited 0 (session 4194): 925 total/924 passed/one
+existing live-offload opt-in skip/zero failures, one existing reader QoS
+warning. All 23 IPC and unchanged 38 metadata tests passed. Root's complete
+source/contract review plus executable RED, focused GREEN and this regression
+passes the independent donor SPEC/QUALITY gate. Exactly three matching files
+entered central: handler `69c25458...`, extension `1909d286...`, tests
+`97d13177...`. Pinned XcodeGen 2.45.4 adds eight references for the two new
+files; no donor project was copied. Central full Service v1 is running, not
+yet claimed. Evidence: `/tmp/engram-a5d-service-full-v1.{log,xcresult,producer-exit0}`,
+`/tmp/engram-a5d-central-service-v1.*`. Runner composition remains unavailable
+by default, and this slice is not running HQ metadata or browser acceptance.
+
+N4a's independently approved test-only correction removes the extra expectation
+that a SQLite connection remains reusable after external main-inode replacement.
+It retains unsafePath, normal hook return, replacement unchanged, original inode
+restoration and complete readonly SQL/live-byte rollback assertions, then
+explicitly closes Owner and asserts no fixture descriptors. No production reopen
+or SQLite bypass was added. Full donor Collector GREEN v2 actually exited 0,
+session 65577: 279/279, no failures/skips, one existing native-smoke QoS warning.
+All three storage matrices now reach all six targets. Source remains
+`69341422...`; final test hash `bc082c8c...`. Root's renewed source/acceptance
+review and this full result pass donor SPEC PASS / QUALITY APPROVED. N4a remains
+donor-only, not central/capture/privacy/uploader acceptance. Evidence:
+`/tmp/engram-n4a-owner-green-v2.{log,xcresult,producer-exit0}`.
+
+T4a additive draft has independent SPEC PASS / QUALITY APPROVED for executable
+RED only: 12 new cases cover full-binding changes before failure and after
+parsed/failure materialization, plus post-claim cancel/policy/clock SQL triggers.
+Exact inverse hashing recovers all original 45 tests/helpers, `d5cc9946...`;
+new 57-test hash `a80f2acd...` and source `174a0eab...` remain frozen. Actual RED
+waits for the serial build slot. Evidence: `/tmp/engram-t4a-additive-test-draft-gate.md`.
+Full W3-W6 and W7 remain incomplete/excluded; N4b is a read-only next-seam proposal.
+
+### CI correction pushed; independent next-slice verification continues (2026-09-06)
+
+The five-path CI correction passed final pinned drift and was normally
+committed/pushed as `9b969a9cae63f3de70227bde68d370284d7f7e23`, both commands
+actually exiting 0. PR #446 resolves to that exact head and remains Draft/open/
+unmerged. New dependency review `34028552602` succeeded; Tests `34028552400`
+and CodeQL `34028552396` are pending. Watch logs are
+`/tmp/engram-a5c-ci-fix-{tests,codeql}-watch.log`. Fixed 16.4 compatibility is
+not yet claimed, and no feature donor entered the correction commit.
+
+A5d focused GREEN v1 passed all 23 tests with zero skips/runtime warnings,
+actual session 52001 exit 0. Three accepted A5d hashes are handler `69c25458...`,
+extension `1909d286...`, tests `97d13177...`; producer remains `2aeb1355...`,
+and its test baseline has only the approved `61167657...` CI qualification.
+Root's complete source/contract review preceded this run. Full donor Service
+is now running; central integration and new-head CI remain separate. Evidence:
+`/tmp/engram-a5d-ipc-green-v1.{log,xcresult,producer-exit0}` and
+`/tmp/engram-a5d-service-full-v1.*`.
+
+N4a full GREEN v1 executed 279 tests: 276 passed/three failed/zero skips, one
+existing native-smoke QoS warning, actual session 58394 exit 65. A separate
+diagnostic-only test rerun, session 25434 exit 65, identifies all three errors
+at the final repeated operation after the first main-file substitution and
+restoration. Earlier unsafePath/normal-hook-return/replacement-unchanged/
+original-inode/full-readonly-rollback assertions passed. Apple SQLite logs
+vnode rename invalidation, then the repeated old connection fails query_only
+with IOERR; the remaining five matrix targets were not reached. This is not
+GREEN or a waiver. An independent review of the test's extra same-connection
+reuse expectation is pending; source remains frozen `69341422...`. Evidence:
+`/tmp/engram-n4a-owner-green-v1.*`, `/tmp/engram-n4a-owner-storage-diagnostic.*`.
+
+T4a's first 450-line candidate incorrectly typed the borrowed task as Task
+instead of UnsafeCurrentTask; source-only type correction is frozen at
+`174a0eab...`, without execution or behavior changes. Root's complete source
+review also found that full binding comparisons and post-claim transactional
+fences need explicit regression evidence. Only additive tests are now being
+drafted; all original 45 tests remain frozen and functional correction is
+closed until actual RED. No T4a/N4a/A5d central or W3-W6/W7 completion follows.
+
 ### CI correction final integration gate passed (2026-09-06)
 
 Independent five-path staged review returned SPEC PASS / QUALITY APPROVED:

@@ -4,6 +4,14 @@
 
 ### 2026-09-06
 
+- [验证] A5d追加App/Core共2901项（1既有跳过、零失败）及MCP270/270通过，独立最终门进行中。T4a真实RED暴露12项围栏缺口，另11项测试观测/顺序已独立裁决修正，GREEN执行中，详见 `CHANGELOG.md`。
+
+- [验证] A5d中央Service935过/1既有跳过/零失败，脚本205过/2条件跳过及类型/安全门通过；最终集成门与新CI待验。T4a57项回归执行中，旧head CodeQL仍待验，详见 `CHANGELOG.md`。
+
+- [验证] `9b969a9c` Tests/依赖已过，CodeQL待验；A5d donor全Service过门、三文件按哈希整合后中央回归中。N4a修正额外连接复用断言后279/279，T4a新增12项草案过门待RED；均非完整运行验收，详见 `CHANGELOG.md`。
+
+- [提交] CI 修正已推送 `9b969a9c`，新依赖过、Tests/CodeQL待验；A5d定向23/23通过、全Service运行中。N4a 276/279，三项定位为替换main后的旧连接复用；T4a新增围栏回归草案中，均未整合，详见 `CHANGELOG.md`。
+
 - [验证] CI 单点修正五路径最终独立双门已过，逆向字节比较确认仅 `self.records`，准备正常修正提交推送；新head 16.4 CI仍待验，不夹带 donor 功能，详见 `CHANGELOG.md`。
 
 - [修复] `010a2c5d` Swift CI 在 Xcode16.4 编译测试辅助类时失败；独立门批准仅补 `self.records`，38项测试体与生产代码不变。中央 Service 912过/1既有跳过/零失败；修正最终门及新head CI待验。A5d 23项真实RED后仅扩展实现，详见 `CHANGELOG.md`。
