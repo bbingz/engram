@@ -4,6 +4,12 @@
 
 ### 2026-09-06
 
+- [验证] CI 单点修正五路径最终独立双门已过，逆向字节比较确认仅 `self.records`，准备正常修正提交推送；新head 16.4 CI仍待验，不夹带 donor 功能，详见 `CHANGELOG.md`。
+
+- [修复] `010a2c5d` Swift CI 在 Xcode16.4 编译测试辅助类时失败；独立门批准仅补 `self.records`，38项测试体与生产代码不变。中央 Service 912过/1既有跳过/零失败；修正最终门及新head CI待验。A5d 23项真实RED后仅扩展实现，详见 `CHANGELOG.md`。
+
+- [提交] A5c 已正常推送 `010a2c5d`，PR #446 仍 Draft/未合并，新三 CI 待验。T4a 45 项与 N4a 新24项真实 RED 已确认，仅各自源文件进入 GREEN；N4a 旧255全过。A5d 23项草案过门、RED运行中，详见 `CHANGELOG.md`。
+
 - [验证] A5c 七路径最终独立双门与暂存漂移已过，冻结哈希未变；旧 head 三 CI 再核全过，准备正常提交推送，新 head CI 待验。T4a 前轮混有夹具错误，仅修夹具重跑 RED，未开实现，详见 `CHANGELOG.md`。
 
 - [验证] A5c 独立双门后按原哈希整合：中央 Service 912 过/1 既有跳过/零失败，1 条 reader QoS 警告；脚本205过/2条件跳过及类型/安全门通过，最终暂存门与新CI待验。T4a进入45项RED，N4a/A5d仅测试草案，详见 `CHANGELOG.md`。

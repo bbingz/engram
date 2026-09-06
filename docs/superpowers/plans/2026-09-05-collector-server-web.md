@@ -385,6 +385,31 @@ network changes, and merge/release remain separate authority boundaries.
 
 ## Execution rules
 
+Final correction gate: independent exact-five-path index/record review passed
+SPEC PASS / QUALITY APPROVED, inverse one-token proof and producer/test hashes
+unchanged from the corrected verification above. Normal corrective commit/push
+is next; new-head CI remains mandatory and no donor feature enters this patch.
+
+CI correction checkpoint: exact `010a2c5d` Tests failed at Xcode 16.4 test-helper
+generic inference, before executable tests. Independent review approved only
+the explicit self.records qualifier; all 38 test bodies/fixtures/assertions
+and production bytes remain unchanged. Corrected central full Service passed
+912/one existing skip/zero failures, one existing reader QoS warning, actual
+exit 0. Five-path correction final gate, normal commit/push and authoritative
+fixed-head 16.4 CI are next; no T4a/N4a/A5d donor source enters this correction.
+A5d RED v1 is verified (4 pass/19 fail, zero skips/warnings); only its extension
+source entered GREEN, with execution/full Service still pending. See CHANGELOG.
+
+Push/RED checkpoint: A5c is normally committed/pushed as exact `010a2c5d`,
+Draft/open/unmerged PR #446; its three new CI workflows are pending. T4a v5
+is accepted behavioral RED (45 total, 2 pass/43 fail, no skips/warnings), now
+source-only GREEN. N4a independent draft gate and full Collector RED v2 passed
+the progression gate (old 255 pass/new 24 notImplemented failures, one existing
+native smoke QoS warning); only Owner source enters GREEN. A5d's independent
+23-test draft gate passed and coordinator-owned RED v1 is running, not GREEN.
+Exact hashes, compile-only corrections, logs and exits are in CHANGELOG.
+No next-slice donor files are central; runtime/full W3-W6/W7 remains incomplete.
+
 Final A5c checkpoint: seven-path independent staged integration/record review
 passed SPEC PASS / QUALITY APPROVED, frozen source/test hashes unchanged and
 pinned staged drift passed. Root refreshed all three successful workflows on

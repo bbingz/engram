@@ -33,6 +33,25 @@ its independently rejected initial test draft before RED, not running SQL.
 
 ## Problem
 
+Final correction gate: independent five-path staged/record review passed
+SPEC PASS / QUALITY APPROVED with exact one-token inverse proof and unchanged
+corrected hashes. Normal corrective commit/push is next; fixed-head Xcode 16.4
+CI and all donor feature/runtime gates remain separate and unverified.
+
+CI correction checkpoint: `010a2c5d` Tests failed during Xcode 16.4 compilation
+of one test-helper shadowed property. Independently approved self.records-only
+correction passed local central Service 912/one skip/zero failures; 38 test
+bodies and producer bytes are unchanged. Final correction gate/commit/new-head
+16.4 CI remain pending. No donor feature is included; A5d has actual RED but
+its extension GREEN/full Service and all runtime/W3-W6/W7 claims remain separate.
+
+Push/RED checkpoint: A5c is pushed at `010a2c5d` in Draft/open/unmerged PR #446;
+its new Tests/CodeQL/dependency workflows remain pending. T4a v5 and N4a v2
+have verified behavioral RED, opening only their respective source GREEN;
+N4a all 255 old Collector tests passed. A5d's 23-test draft passed independent
+review and is under coordinator-owned RED, not implemented IPC. All next-slice
+source remains donor-only; runtime/browser/full W3-W6/W7 is not complete.
+
 Final A5c checkpoint: independent seven-path staged integration/record gate
 passed SPEC PASS / QUALITY APPROVED with frozen hashes and pinned drift.
 Prior-head `843d0038` CI was refreshed successfully; normal commit/push and

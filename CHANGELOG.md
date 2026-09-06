@@ -7,6 +7,86 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### CI correction final integration gate passed (2026-09-06)
+
+Independent five-path staged review returned SPEC PASS / QUALITY APPROVED:
+binary index/worktree equality, exact inverse one-token test correction,
+unchanged production hash, actual 913-test result and pinned drift all agree.
+The final gate read the authoritative 16.4 compile failure and verified that
+the records do not claim fixed-head CI success. Normal corrective commit/push
+is next; donor feature files remain excluded. Existing `010a2c5d` Tests are
+failed, dependency review succeeded, and CodeQL remains independently pending.
+
+### Metadata test-helper Xcode 16.4 compatibility correction (2026-09-06)
+
+Exact `010a2c5d` Tests `34027689013` failed: swift-unit job `101471533185`
+did not execute tests because Xcode 16.4 could not infer generic R at
+WebMetadataProducerTests.swift:1469, `let records = lock.withLock { records }`.
+The authoritative job log is `/tmp/engram-a5c-ci-swift-unit-failure-raw.log`,
+lines 15667-15675; its toolchain path is `/Applications/Xcode_16.4.app`.
+Node, macOS scripts and UI smoke jobs passed; other workflow results remain
+separate. An initial log download was refused for ANSI escapes; the successful
+raw download used gh's explicit allow-escape-sequences option, actual exit 0.
+
+Independent read-only reviewer approved exactly `{ self.records }` as SPEC
+PASS / QUALITY APPROVED. Root made that one-token property qualification only;
+inverse comparison proves all 38 test bodies, fixtures and assertions unchanged,
+and production producer SHA256 remains `2aeb1355...`. Corrected test SHA256 is
+`61167657eea97fedbe975f42c6a100171bda38d8816cf9ee9e8191e0c65f284a`.
+Central full Service passed 912 with one existing opt-in live-offload skip,
+zero failures, all 38 metadata tests passing, one existing reader QoS warning
+and actual command session 2072 exit 0. Raw NULL-connection/misuse logs remain
+absent. Evidence: `/tmp/engram-a5c-ci-fix-central-service.{log,xcresult,producer-exit0}`.
+Pinned project drift and exact correction/diff checks passed. App/Core/MCP/
+Remote/Collector/Node suites were not rerun for this test-helper-only change.
+Local Xcode is 27.0 (27A5218g); Xcode.app and Xcode_16.4.app are absent at the
+checked standard paths. Fixed-head Xcode 16.4 CI remains mandatory and unverified.
+Final five-path correction gate and normal commit/push are next; no next-slice
+feature source is included in this CI correction candidate.
+
+A5d focused RED v1 actually exited 65: 23 total, 4 passed/19 failed, no skips/
+runtime warnings. All invalid-DTO/whole-frame fixture proofs ran without their
+own failures; failures correspond to the unavailable adapter stub. Only its
+extension source entered GREEN and root accepted the 97-line candidate for
+execution, with three-file source/test hashes separately frozen. The donor's
+38-test baseline received only the same approved self.records correction.
+A5d GREEN/full Service remains unverified; N4a/T4a remain donor source work.
+
+### Metadata producer pushed; worker/owner RED accepted (2026-09-06)
+
+A5c passed pinned staged drift v2 and was normally committed/pushed as
+`010a2c5d1b51fb1147bde0387fd427ccc60bd032` (commit/push actual exit 0).
+PR #446 still resolves to that exact head and remains Draft/open/unmerged.
+New Tests `34027689013`, CodeQL `34027689037` and dependency review
+`34027689022` are pending; none inherit the prior head's green evidence.
+Watch logs: `/tmp/engram-a5c-{tests,codeql}-watch.log`.
+
+T4a v5 now executes 45 tests: 2 passed, 43 failed, zero skips/runtime warnings,
+actual command session 50046 exit 65. Independent real Replay fixture
+classifications no longer fail after the canonical temporary-root correction;
+the remaining 100 assertions (34 unexpected notImplemented throws) match the
+worker stub. Only worker source now enters GREEN; test SHA256 is frozen at
+`d5cc9946154f85d1d3e25d56e7a9e1ff43c3d178ac6cca0b307f5bb542935bf8`.
+Evidence: `/tmp/engram-t4a-worker-red-v5.{log,xcresult,producer-exit65}`.
+
+N4a's 24-test draft passed independent root SPEC/QUALITY review and exact
+inverse baseline comparison. RED v1 was compile-only; four added try tokens
+correct the new borrowed-task rethrows calls/joins. Full Collector RED v2
+then passed all 255 old tests and failed all 24 new tests with notImplemented,
+zero skips, one existing native-smoke QoS warning, actual session 50205 exit 65.
+Only Owner source enters GREEN; test SHA256 is frozen at
+`ac52336fdb6a3832690d582a57b5f4a3304b4e10d5cb1f903b32306a9e5296b4`.
+Evidence: `/tmp/engram-n4a-test-draft-gate.md` and
+`/tmp/engram-n4a-owner-red-v{1,2}.{log,xcresult,producer-exit65}`.
+
+A5d's three-file/23-test draft passed root independent SPEC/QUALITY review;
+root added pinned donor references and is running focused IPC RED v1. Source
+implementation remains closed until actual behavioral failure is verified.
+The A5c producer and its 38 tests remain frozen. Evidence:
+`/tmp/engram-a5d-test-draft-gate.md`, `/tmp/engram-a5d-ipc-red-v1.*`.
+No donor worker/owner/IPC source is integrated into central yet. Runner,
+capture/upload, browser/full W3-W6 and W7 remain incomplete or excluded.
+
 ### Metadata producer final staged gate passed (2026-09-06)
 
 Independent seven-path review returned SPEC PASS / QUALITY APPROVED with no

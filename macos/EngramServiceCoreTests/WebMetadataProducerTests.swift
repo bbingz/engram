@@ -1466,7 +1466,7 @@ private final class MetadataSnapshotLifecycleObserver: @unchecked Sendable {
     }
 
     func assertClosedSnapshots(_ count: Int, file: StaticString = #filePath, line: UInt = #line) {
-        let records = lock.withLock { records }
+        let records = lock.withLock { self.records }
         XCTAssertEqual(records.count, count, file: file, line: line)
         for record in records {
             let events = record.lock.withLock { record.events }
