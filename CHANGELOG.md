@@ -7,6 +7,125 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Native-stream final candidate gate (2026-09-06)
+
+Independent ten-path index/record/source review passed SPEC PASS / QUALITY
+APPROVED, with matching index/worktree bytes, six unchanged implementation/
+routing hashes and verified local test/xcresult evidence. Pinned staged drift
+v1 passed (`/tmp/engram-n3b2-staged-drift-v1.log`). Prior-head CI remains
+separately verified; normal commit/push and the new head's CI are next.
+
+Terminology clarification: earlier entries' numeric "producer" identifiers
+refer to execution-tool command sessions, not operating-system process IDs.
+Central Collector command session 34387 completed with actual exit code 0;
+its log records xcodebuild PID 16425. The exit marker was written after the
+completion was harvested. This is not a conflicting PID or a new test run.
+Historical entries remain intact. The one smoke QoS warning and all stated
+runtime/W3-W6/W7 exclusions remain unchanged.
+
+### Native-stream central verification checkpoint (2026-09-06)
+
+This supersedes the donor-only and pending-CodeQL checkpoint below. Exact
+`18c9bc06588f5e473424ea338b8879c2213d892f` now has successful Tests
+`34019524050`, CodeQL `34019524056` and dependency review `34019523987`.
+PR #446 remains Draft/open/unmerged at that SHA.
+
+N3-B2 passed the supplemental independent smoke/routing gate (SPEC PASS /
+QUALITY APPROVED). The coordinator integrated three frozen native source/test
+files, the target dependency guard, and minimal explicit source/CoreServices
+routing with XcodeGen 2.45.4; the generated project adds only 16 lines.
+All six implementation/routing hashes match the reviewed candidate. The full
+central Collector run passed 255/255 with zero failures/skips, actual producer
+34387 exit 0, and one retained setup-semaphore QoS runtime warning:
+`/tmp/engram-n3b2-central-collector-full-v1.{log,xcresult,producer-exit0}`.
+Ten scoped script suites passed 205 with two existing dirty-project conditional
+skips; test typecheck, archive safety and all five invariant gates passed.
+Their logs are `/tmp/engram-n3b2-tranche-{scripts,typecheck-test,archive-safety,invariants}.log`.
+Unchanged App/Core/Service/MCP/Remote suites were not rerun for this isolated
+Collector-only integration; new-head CI remains a separate gate.
+
+The ten-path candidate awaits pinned staged drift, independent final
+index/record review, normal commit/push and its own CI. The real smoke proves
+only temporary-root default-backend callback delivery, not native replay,
+kernel drops, normalization-form identity end-to-end or W6 latency. A5c's
+two-file test-draft correction ownership transferred from Grok to the bounded
+Web worker; SQL implementation remains closed pending independent draft review
+and actual RED. No full W3-W6, runtime producer, uploader, browser, merge,
+deployment or W7 completion is claimed.
+
+### Native-stream GREEN, real callback smoke, and metadata draft correction (2026-09-06)
+
+Exact A5b `18c9bc06` Tests `34019524050` completed successfully, including
+Swift unit, Remote/package, UI smoke and CI Gate (07:45:31 UTC). Its dependency
+review already passed; CodeQL `34019524056` remains separately pending.
+
+N3-B2 native source passed independent SPEC PASS / QUALITY APPROVED against the
+frozen 58-test contract. The coordinator harvested full donor Collector GREEN:
+254/254, no failures/skips/runtime warnings, actual producer 9444 exit 0,
+`/tmp/engram-n3b2-native-green-v1.{log,xcresult}`. Source SHA256 is
+`2f6aadd57cccda39333ee4be201d7f50b89f66d14f9349729463f788d6a143cc`;
+all 58 test bytes remain frozen. These tests inject native API faults, not
+kernel events. Their drain error is explicitly injected after a completed
+barrier, not proof of safe release after an incomplete drain.
+
+A separate coordinator-owned real default-backend smoke used only its own
+temporary root. V1 and V2 failed with continuityLoss; independent raw probes
+observed root ItemIsDir flags `0x2c100` in the same batch as file `0x19100`,
+so whole-batch reconciliation was correct. V1 also assumed NFC callback bytes,
+while the observed filename was NFD. No production decoder was changed.
+An immediate setup FlushSync alone yielded no setup callback and did not fence
+the first batch. V3 first observed a live setup callback, then flushed/drained
+the setup stream before starting the real adapter and appending a preexisting
+Chinese-named file. It passed 1/1, actual producer 5221 exit 0, with one setup
+semaphore QoS runtime warning. Full donor Collector then passed 255/255,
+zero failures/skips and the same one runtime warning, producer 60190 exit 0.
+Logs and xcresults are
+`/tmp/engram-n3b2-real-smoke-v{1,2,3}.*` and
+`/tmp/engram-n3b2-native-full-v2.*`; raw probe v1-v3 files are retained separately.
+The native source, old tests and new smoke remain donor-only pending the
+supplemental independent smoke/routing gate and central integration.
+
+A5c's initial two-file draft failed independent test-design gates: real-schema
+fixture constraints, continuation preconditions, lease release, fresh authority,
+count units, redaction, SQL observer validity, entered-work cancellation and
+valid-envelope pressure required correction before executable RED. Grok owns
+only those draft corrections; SQL implementation remains closed. No Service
+producer, uploader, browser, complete W3-W6, merge, deployment or W7 pass is claimed.
+
+### A5b push, native-stream RED and metadata-producer acceptance (2026-09-06)
+
+Exact T3b `6a33a42a` completed Tests `34017787159`, dependency review
+`34017787161` and CodeQL `34017787170`; CodeQL Gate ended at 07:31:39 UTC.
+The approved nine-file A5b tranche was normally committed/pushed as
+`18c9bc06588f5e473424ea338b8879c2213d892f`, both producer exits 0. Full logs:
+`/tmp/engram-a5b-tranche-{commit,push}.log`; pinned staged drift v2 also passed.
+PR #446 remains Draft/open/unmerged. New-head dependency review `34019523987`
+succeeded; Tests `34019524050` and CodeQL `34019524056` remain pending.
+
+N3-B2's independent test-draft gate required one additive negative raw-count
+case. The original 57 cases/helpers remain byte-identical after removing only
+that method and five mechanical compile corrections (one SinceNow cast, two
+try calls and their two try-await propagations). The first attempt was only
+a compile failure, not behavioral RED. Full RED v2 then executed 254 tests:
+the old 196 all passed; all 58 native tests failed, zero skips/runtime warnings,
+actual producer exit 65. `/tmp/engram-n3b2-native-red-{v1,v2}.*` retains both.
+Root-owned routing adds the native file and CoreServices SDK with exact source
+and framework dependency assertions, which passed in RED. Frozen test SHA256
+is `5e82fbe154fc2c95bb1d7f6c2584bea9529a427a24f657358b39bbd229a6a313`.
+Only the native source now has GREEN implementation authority; no real watcher
+or complete Collector runtime has been validated.
+
+A5c's amended metadata-only acceptance passed independent feasibility gates.
+The canonical plan freezes readonly immediate-lock-failure SQL, bounded hard
+snapshot/cursor lifetimes, fresh authority checks, scalar readiness counts,
+redaction and full-envelope budgets. Two-file test-draft work is separate from
+implementation. The coordinator synchronized exactly 15 previously verified
+central ingest foundation files into the Web donor and checked all final bytes;
+the four frozen A5b files and shared DTO/client hashes remain unchanged. These
+are donor baselines, not new central changes or new test results. The initial
+capture-only corpus is not full W6 legacy/source coverage. No merge, deploy,
+provider/credential access, SSH, Docker or W7 action occurred.
+
 ### A5b metadata HTTP central candidate and T3b push (2026-09-06)
 
 Final nine-path integration/record review passed SPEC PASS / QUALITY APPROVED.

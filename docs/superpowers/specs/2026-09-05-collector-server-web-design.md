@@ -20,7 +20,36 @@
 
 - **A5b final candidate gate (2026-09-06)**: Independent nine-path integration/record review passed SPEC PASS / QUALITY APPROVED with unchanged four hashes, exact old-test inverse, index/worktree equality and verified xcresults/producer exits. Pinned staged drift v1 passed. T3b Tests `34017787159` now succeeded alongside dependency review, superseding its pending checkpoint; CodeQL `34017787170` is still running. A5b push waits for that prior-head gate; new-head CI and full W3-W6 remain unverified.
 
+- **A5b pushed / next drafts (2026-09-06)**: T3b `6a33a42a` now has all three workflows successful, CodeQL Gate at 07:31:39 UTC. A5b was normally committed/pushed as `18c9bc06`, producer exits 0, and PR #446 remains Draft/open/unmerged. New dependency review `34019523987` passed; Tests `34019524050` and CodeQL `34019524056` are pending. N3-B2 full RED v2 has old 196 passed/new 58 failed/zero skips or runtime warnings, authorizing only native source GREEN. A5c has a frozen metadata-only acceptance in the plan and two-file test-draft authority, not Service/browser/full W3-W6 completion.
+
+Checkpoint follow-up: A5b `18c9bc06` Tests and dependency review succeeded;
+CodeQL is still pending. N3-B2 independently reviewed native source passed donor
+254/254 injected tests; a separate real temporary-root smoke passed 1/1 after
+two retained fixture failures, then full donor Collector passed 255/255. The
+smoke records one setup semaphore QoS warning and does not prove native replay,
+kernel drops, normalization-form identity end-to-end or W6 latency. Supplemental
+smoke/routing review and central integration remain pending; A5c is correcting
+its independently rejected initial test draft before RED, not running SQL.
+
 ## Problem
+
+Final N3-B2 gate follow-up: the independent ten-path index/record/source gate
+passed SPEC PASS / QUALITY APPROVED with unchanged six hashes; pinned staged
+drift v1 passed. Normal commit/push and new-head CI remain next. CHANGELOG
+clarifies execution command-session numbers versus OS PIDs without changing
+historical records or rerunning tests. Runtime/full W3-W6/W7 remain excluded.
+
+Implementation checkpoint supersession (2026-09-06): exact A5b `18c9bc06`
+now has all three CI workflows successful. N3-B2 passed supplemental independent
+smoke/routing review and six frozen implementation/routing files are integrated.
+Central Collector passed 255/255, zero failures/skips, producer exit 0, with
+one retained smoke setup QoS warning; scripts passed 205/two conditional skips
+and typecheck/safety/invariants passed. The ten-path candidate awaits staged
+drift, final independent index/record gate, commit/push and its own CI. A5c's
+two-file draft is now corrected by the bounded worker before independent
+review/RED; SQL implementation remains closed. Native replay, kernel drops,
+normalization identity end-to-end, runtime wiring, uploader, browser and full
+W3-W6 remain unverified; W7 authority is unchanged. Exact logs are in CHANGELOG.
 
 The desired deployment is a lightweight daily-Mac collector, central parsing,
 indexing and reading on HQ, and an independent M1 archive replica. Opening or

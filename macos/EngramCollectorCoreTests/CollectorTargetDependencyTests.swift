@@ -17,6 +17,7 @@ final class CollectorTargetDependencyTests: XCTestCase {
         "EngramCollectorCore/CollectorPOSIXRootEnumerator.swift",
         "EngramCollectorCore/CollectorInventoryOwner.swift",
         "EngramCollectorCore/CollectorEventCoordinator.swift",
+        "EngramCollectorCore/CollectorNativeEventStream.swift",
         "Shared/EngramCore/Adapters/SourceName.swift",
         "Shared/EngramCore/Adapters/SourceMetadataProjection.swift",
         "Shared/EngramCore/ArchiveV2/ArchiveHash.swift",
@@ -41,6 +42,7 @@ final class CollectorTargetDependencyTests: XCTestCase {
         XCTAssertEqual(paths.count, expectedSources.count)
         XCTAssertEqual(lines.filter { $0.contains("- package:") }, ["      - package: GRDB"])
         XCTAssertEqual(lines.filter { $0.contains("product:") }, ["        product: GRDB-dynamic"])
+        XCTAssertEqual(lines.filter { $0.contains("- sdk:") }, ["      - sdk: CoreServices.framework"])
         XCTAssertFalse(lines.contains { $0.contains("- target:") })
         XCTAssertTrue(lines.contains { $0.contains("ENGRAM_COLLECTOR_CORE") })
     }
@@ -54,6 +56,12 @@ final class CollectorTargetDependencyTests: XCTestCase {
         let products = try XCTUnwrap(target["packageProductDependencies"] as? [String])
         XCTAssertEqual(products.compactMap { objects[$0]?["productName"] as? String }, ["GRDB-dynamic"])
         let phases = try XCTUnwrap(target["buildPhases"] as? [String]).compactMap { objects[$0] }
+        let frameworks = try XCTUnwrap(phases.first { $0["isa"] as? String == "PBXFrameworksBuildPhase" })
+        let frameworkIDs = try XCTUnwrap(frameworks["files"] as? [String])
+        let sdkReferences = frameworkIDs.compactMap { objects[$0]?["fileRef"] as? String }.compactMap { objects[$0] }
+        XCTAssertEqual(sdkReferences.count, 1)
+        XCTAssertEqual(sdkReferences.first?["path"] as? String, "System/Library/Frameworks/CoreServices.framework")
+        XCTAssertEqual(sdkReferences.first?["sourceTree"] as? String, "SDKROOT")
         let sourcePhase = try XCTUnwrap(phases.first { $0["isa"] as? String == "PBXSourcesBuildPhase" })
         let files = try XCTUnwrap(sourcePhase["files"] as? [String])
         var paths: [String: String] = [:]

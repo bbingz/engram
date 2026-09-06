@@ -357,11 +357,54 @@ the old-test inverse and three xcresults/producer exits. Pinned staged drift v1
 passed. Exact T3b Tests `34017787159` now succeeded alongside dependency review;
 CodeQL `34017787170` still runs, so A5b push waits and new-head CI remains
 unverified. No A5c/N3-B2 implementation is included in this candidate.
+Exact T3b CodeQL `34017787170` subsequently passed (Gate 07:31:39 UTC), so
+all three prior-head workflows succeeded. A5b was normally committed/pushed as
+`18c9bc06`, both producer exits 0, after pinned staged drift v2 passed. PR #446
+is still Draft/open/unmerged. Its dependency review `34019523987` succeeded;
+Tests `34019524050` and CodeQL `34019524056` remain separately pending.
+N3-B2 RED v2 passed all old 196 tests and failed all new 58, zero skips/runtime
+warnings, actual exit 65. V1 was compile-only; its five mechanical test fixes
+preserve all behavioral assertions. The native source alone may enter GREEN.
+A5c amended acceptance is below; only a two-file test draft is authorized,
+with 15 previously verified ingest foundations synchronized to its donor.
+Exact A5b Tests `34019524050` subsequently passed (CI Gate 07:45:31 UTC);
+CodeQL `34019524056` remains pending. N3-B2 source passed its independent
+implementation gate and full donor Collector 254/254, actual exit 0. A separate
+real temporary-root smoke passed 1/1 after two retained fixture failures:
+coalesced directory setup events intentionally require reconciliation; an
+observed setup callback followed by FlushSync/drain fences the ordinary append.
+The basic Unicode fixture makes no NFC-preservation assumption. Full donor
+Collector with the smoke passed 255/255, actual exit 0; the focused smoke has
+one setup semaphore QoS warning. Source/58 tests remain unchanged. Supplemental
+smoke/routing review and central integration are pending. A5c initial draft
+failed independent test-design gates; nine bounded corrections precede actual
+RED and SQL implementation. Detailed evidence remains in CHANGELOG.
 The owner authorized committing/pushing W1, running CI, then autonomous staged
 implementation/review/CI through W6 on 2026-09-05. Production W7, credentials,
 network changes, and merge/release remain separate authority boundaries.
 
 ## Execution rules
+
+Final N3-B2 gate follow-up: independent ten-path index/record/source review
+passed SPEC PASS / QUALITY APPROVED with six hashes unchanged; pinned staged
+drift v1 passed. Normal commit/push and new-head CI are next. Historical
+"producer 34387" means execution command session (exit 0), not OS PID; the
+central log identifies xcodebuild PID 16425. No test was rerun for this wording
+clarification, and all runtime/W3-W6/W7 exclusions remain unchanged.
+
+Checkpoint supersession (2026-09-06): exact A5b `18c9bc06` has successful
+Tests `34019524050`, CodeQL `34019524056` and dependency review `34019523987`.
+N3-B2 supplemental independent smoke/routing review passed; six frozen
+implementation/routing files are integrated, including minimal pinned project
+generation. Central Collector passed 255/255 with zero failures/skips and one
+retained setup QoS warning, actual producer 34387 exit 0. Ten script suites
+passed 205/two existing conditional skips; typecheck, archive safety and all
+five invariants passed. Logs are in the newest CHANGELOG entry. The ten-path
+candidate awaits staged drift, final independent index/record review,
+commit/push and new-head CI. Unchanged App/Core/Service/MCP/Remote suites were
+not rerun for this Collector-only slice. A5c's two-file draft correction is
+now owned by the bounded Web worker before independent review and executable
+RED; SQL implementation remains closed. No full W3-W6 or W7 claim is added.
 
 - Coordinator owns this plan, design, integration routing, and CHANGELOG/MEMO.
   Workers own explicit files. Never overwrite another worker or another worktree.
@@ -652,6 +695,65 @@ read DTO extraction is coordinator-owned and must not link DB writer libraries.
 
 Gate: Remote + relevant Service/MCP suites; negative authority tests; browser
 acceptance. Production Web remains OFF without approved HTTPS/credential setup.
+
+### A5c metadata producer acceptance (before W6)
+
+The independently reviewed next W5 slice owns only new
+`ServiceWebMetadataProducer.swift` and `WebMetadataProducerTests.swift` in the
+Web-reader donor. The coordinator owns later handler/init/extension/Runner
+wiring and real IPC tests. A5a DTO/client and all four A5b files remain frozen.
+Tests precede implementation; this contract is not a running producer result.
+
+- The initial corpus is capture-bound, visible top-level sessions only; legacy
+  local coverage remains W6 work. Lists retain lite; keyword uses the existing
+  searchable-tier rule. Excluded detail is nil. Inject a callable current
+  parser/enabled-source policy, re-evaluated before and after asynchronous work;
+  absent/invalid/empty policy is unavailable, never inferred from table presence.
+- Own a private readonly GRDB pool using the existing
+  `SQLiteConnectionPolicy.immediateReaderConfiguration()`: the ordinary reader
+  has a 30-second busy timeout and does not meet this two-second request budget.
+  Do not instantiate the chmod-performing CoreRead reader, change CoreRead,
+  migrate schema, use a writer, or read manifest/publication/normalized BLOBs.
+  Create immutable WAL snapshots outside transactions, with bounded SQL and
+  cancellation during creation and reads, not only a post-query checkpoint.
+- One Service-owned producer retains at most eight snapshots for a hard maximum
+  30 seconds from creation. No idle extension. Oldest eviction, independent
+  weakly-held expiry timer, explicit stop/close and deinit release the leases;
+  expired leases admit no new page. Entered work is joined and remains within
+  its two-second SQL budget. Test expiration without another client request.
+- Bind byte-exact query, all filters, requested limit, sort version, snapshot
+  and visibility/registry/FTS view. Sort by start time descending, unknown last,
+  then session-ID UTF-8; overview uses machine/instance binary order. Use random
+  opaque cursor tokens with server-held keysets, not encoded IDs/paths. Retain
+  at most 128 cursor positions per snapshot, evict oldest positions to stale,
+  and reuse a cached successor when replaying a cursor rather than allocating
+  unbounded tokens. Expired, evicted, mismatched and unknown cursors are stale.
+- Every page, including the first, and detail recheck fresh source/registry/
+  epoch-history and current visibility/parent authority after preparation.
+  A would-be page row losing authority returns stale/unavailable, not silent
+  omission with cursor advancement; excluded detail is nil. Previously returned
+  rows are not retroactively revoked. Unrelated inserts stay absent from the
+  held snapshot; do not invalidate all snapshots on writer databaseGeneration.
+- Count stored stream publications, parser tasks and logical sessions separately.
+  Ready-session counts require matching parsed/ready/generation heads, current
+  owner/source/version/hash, parser policy, registry/history tuple, index-ready
+  ledger and FTS row, using scalar evidence only. Divergent heads may be metadata
+  provenance, never available transcript authority. lastCapture/heartbeat/ACK/AI
+  observations remain nil; transcript availability is unavailable/generation nil.
+  A healthy supplied SQL producer may measure missing capture tables as empty;
+  an absent producer must never return a successful empty corpus.
+- Redact title/projectLabel with the existing full-string policy before a
+  conservative path/NUL/byte-length fence. Emit projectKey only if the existing
+  value is a valid token and redaction leaves it unchanged; no cwd/native/root
+  fallback. Omit unsafe fields, do not prefix-truncate secrets. Preserve DTO
+  round-trip validation, strict integer counts and safe symbolic errors.
+- Encode the entire success envelope, including result Data base64, at no more
+  than 261120 bytes. Shrink pages coherently; one oversize item is unavailable.
+  Provider tests cover ordering/filter/Unicode, expiry/eviction, policy and
+  visibility revocation, false-ready scalars, redaction, cancellation/timeouts,
+  readonly/no-BLOB behavior, envelope budgets and honest unknown observations.
+  Handler extra-payload, real dispatch and Runner injection tests belong to the
+  later coordinator slice, not a fake dispatcher in these provider tests.
 
 ## W6 — packages, coverage, and shadow integration
 

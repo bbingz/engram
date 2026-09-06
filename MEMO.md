@@ -4,6 +4,10 @@
 
 ### 2026-09-06
 
+- [验证] N3-B2 十路径最终独立双门及暂存漂移已过，六个实现/路由哈希未变，准备正常提交推送；记录中的数字 producer 是命令会话编号而非 OS PID，已追加澄清，新 head CI 仍单独待验，详见 `CHANGELOG.md`。
+- [验证] `18c9bc06` 三项 CI 全过；N3-B2 补充独立门后按冻结哈希进入中央，完整 Collector 255/255、脚本 205/2 条件 skip 与类型/安全/invariants 通过，保留 1 条烟测 QoS 警告。十路径最终门与新 head CI 待验，A5c 继续测试草稿校正，详见 `CHANGELOG.md`。
+- [验证] `18c9bc06` Tests/依赖 CI 已过，CodeQL 待验；N3-B2 donor 254/254 和真实临时目录烟测 1/1、合并 255/255 通过，保留前两次夹具失败与 QoS 警告，补充独立门及中央整合待验。A5c 测试草稿九组修正中，详见 `CHANGELOG.md`。
+- [验证] `6a33a42a` 三项 CI 全过后已推送 A5b `18c9bc06`，新依赖 CI 通过、Tests/CodeQL 待验；N3-B2 旧 196 全过／新 58 真实 RED，现仅源文件进入 GREEN。A5c 验收冻结并准备测试草案，仍未完成 W3–W6，详见 `CHANGELOG.md`。
 - [验证] A5b 九路径最终整合/记录独立双门与暂存漂移通过；`6a33a42a` Tests/依赖 CI 已过、CodeQL 仍运行，下一次推送等待其通过。原生监听新增负计数补测尚待 RED，Service producer 仍仅方案，详见 `CHANGELOG.md`。
 - [验证] T3b 已推送 `6a33a42a`，依赖 CI 通过、Tests/CodeQL 待验；A5b HTTP 补丁经独立双门按四哈希整合，donor 定向 68/68、donor/中央完整 Remote 各 391/391。Service producer、浏览器与完整 W3–W6 仍未完成，详见 `CHANGELOG.md`。
 - [验证] T3b 十路径最终整合及记录/索引独立双门通过，原四哈希未变、暂存漂移 v2 通过，准备按授权提交推送；新 head CI 单独待验，详见 `CHANGELOG.md`。
