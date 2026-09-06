@@ -7,6 +7,118 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### T3a complete central regression gates (2026-09-06)
+
+The coordinator independently completed the four affected full targets with
+the frozen T3a files: Core 1,681 and Service 875 (one existing skip each),
+App 1,175 and MCP 270, zero failures and actual producer exits 0. Raw logs
+and xcresult summaries agree at `/tmp/engram-t3a-central-{core,service,app,mcp}-full.*`;
+the App scheme also reruns Core, not another distinct test population.
+The Core skip is the existing performance opt-in; Service skips its existing
+live-credential case. The Service result retains its existing reader QoS warning.
+Ten script suites passed 205 tests with two existing conditional drift skips;
+test typecheck, archive safety, five invariant gates and diff checks passed.
+See `/tmp/engram-t3a-tranche-{scripts,typecheck-test,archive-safety,invariants}.log`.
+Remote and Collector source/dependencies are unchanged by this data-layer
+slice, so their complete suites were not rerun for this candidate.
+
+At 11:55 CST exact prior head `4216479b80dd3043e912d0f2aeb73f23a2f002cc`
+has successful Tests `34009528242` and dependency review `34009528240`;
+CodeQL `34009528232` remains in progress. The T3a final central integration/
+record gate, staged project drift and new-head CI remain pending. Its source
+hashes remain NormalizedStore `c70145c9`, Readiness `17d0e7b4`, tests `9085d40c`.
+
+Separately, A5a's 31 metadata tests plus 18 legacy client tests passed an
+independent executable-draft gate. Protocol helpers now require actual IPC
+even for unsupported responses; cancellation fixtures distinguish immediate
+stub rejection from an in-flight peer. Production remains DTO scaffolds and
+three unsupported methods. The first actual RED build is running at
+`/tmp/engram-a5a-metadata-red.DxXICo/red-v1.*`, not yet RED evidence.
+N3-A's separate donor has 13 additive event-ingress tests (43 Owner tests)
+and fail-closed entry scaffolds; its independent draft gate is pending.
+No Runner/provider/HTTP read wiring, native FSEvents, upload queues, full
+W3-W6, browser or production acceptance is claimed by this checkpoint.
+
+A5a follow-up: the first attempt stopped at a test-only missing `_ in`
+closure parameter, producer 85169 exit 65; it is not behavioral RED.
+Only that syntax changed. Corrected RED ran all 49 tests: 27 failing test
+cases, 22 passing, 483 assertion failures including six unexpected failures,
+producer 71143 exit 65. The old client had only its intentional allowlist
+failure; its other 17 tests passed. The coordinator then implemented only
+the two DTO/client files, keeping the test SHA `b5a5bed3` frozen. First
+GREEN passed 49/49, zero failures/skips, producer 19927 exit 0. Raw logs
+and xcresult agree at `/tmp/engram-a5a-metadata-red.DxXICo/{red-v2,green-v1}.*`;
+the original `red-v1` and source snapshots remain. This is donor-only:
+full Remote regression, independent implementation review and integration
+remain pending. The legacy message method and its 256 KiB ceiling are
+unchanged; the three metadata methods have a separate 255 KiB whole-
+envelope limit, no capability loader, bounded typed fields and cancellation.
+N3-A then passed independent SPEC TEST-DRAFT PASS / QUALITY APPROVED;
+only its executable RED is authorized, not GREEN or native event wiring.
+
+The final central T3a integration/record gate subsequently returned SPEC
+PASS / QUALITY APPROVED at 12:10 CST, independently verifying all eight
+candidate paths, frozen source hashes, additive project routing and complete
+central test artifacts. The coordinator now stages exactly those eight
+paths for pinned project drift; prior-head CodeQL and new-head CI remain
+separate pending gates. Pre-existing SQLite sidecars stay excluded.
+
+The coordinator subsequently verified all four staged implementation/routing
+hashes against the working tree and passed pinned staged project drift
+(`/tmp/engram-t3a-tranche-staged-drift.log`) and cached diff checks. Live
+GitHub reads now confirm exact prior `4216479b` Tests `34009528242`,
+dependency review `34009528240` and CodeQL `34009528232` all succeeded;
+CodeQL Gate completed 12:11:58 CST. Draft PR #446 remains open/unmerged
+at that head. The eight-path T3a candidate is ready for the authorized
+normal commit/push; its new-head CI is separate and not yet available.
+
+Separately, A5a's complete donor Remote Core run passed 372/372 with zero
+failures/skips, producer 53830 actual exit 0; raw log and xcresult agree at
+`/tmp/engram-a5a-metadata-red.DxXICo/remote372-green.*`. Its independent
+implementation gate is running, and its code remains excluded from T3a.
+N3-A's first run was compile-only; the second executed 169 but exposed a
+Unicode-path fixture positive-control failure. The coordinator approved
+only three missing `try` markers and one explicit NFC configuration input,
+preserving every assertion and all production bytes. The third full RED
+ran 169: all old 156 passed, all new 13 failed, zero skips; raw 75 failures
+(11 unexpected), producer 75055 exit 65. The corrected Unicode controls
+pass. Root independently compared all old test names and both raw/xcresult
+evidence at `/tmp/engram-w3-posix-red.1chyCC/collector169-n3a-event-red-v3.*`.
+Only Owner implementation is now authorized for GREEN; tests `80705fb6`
+and Store/POSIX/routing remain frozen. Prior failed attempts stay preserved.
+
+### N2 pushed and independently approved T3a integrated (2026-09-06)
+
+N2 was committed/pushed as `4216479b80dd3043e912d0f2aeb73f23a2f002cc`,
+exactly ten approved files, actual commit/push exits 0; logs are
+`/tmp/engram-n2-tranche-{commit,push}.log`. PR #446 is draft/open/unmerged
+at that SHA. At 11:44 CST its dependency review `34009528240` succeeded;
+Tests `34009528242` and CodeQL `34009528232` are in progress. The previous
+T2 head's success is not evidence for this new head.
+
+T3a then passed an independent source/test/evidence gate, SPEC PASS /
+QUALITY APPROVED. The coordinator integrated only its three exact files:
+NormalizedStore `c70145c9`, Readiness `17d0e7b4`, and 38-case tests
+`9085d40c`; pinned generation added twelve project lines without changing
+project.yml. Required readiness now has a data-layer API for bounded,
+canonical normalized artifact reads and exact-generation atomic FTS/map/
+shadow/job/ledger/ready-head commits. Neither a stored receipt nor an
+owned prepared value substitutes for fresh parser/source/current-state
+authority. The implementation does not wire a Runner, Service provider,
+HTTP read producer or optional AI work. Synchronous JSON decoding has
+acceptance checkpoints, not a claimed interruptible latency bound.
+
+The central full Core suite has started in an isolated worktree-local
+test home; `/tmp/engram-t3a-central-core-full.log` is running evidence,
+not a pass. Combined Service/App/MCP gates remain pending. The previously
+reported donor 129/129 does not replace these central gates. A5a now has
+31 metadata test methods plus the old 18 client tests, plain DTO scaffolds
+and three fail-closed client methods in its separate donor; syntax parsing
+passed, independent test-draft review and executable RED are pending.
+Only the old allowlist expectation anticipates the three newly authorized
+read commands. N3-A remains additive tests/scaffolds only. No full W3-W6,
+runtime, source coverage, browser or deployment acceptance is claimed.
+
 ### N2 central owner integration and T3a donor GREEN (2026-09-06)
 
 At 11:26 CST, live GitHub reads confirmed all three workflows for exact

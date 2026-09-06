@@ -4,6 +4,11 @@
 
 ### 2026-09-06
 
+- [验证] T3a 八路径暂存哈希与工程漂移通过，旧 head `4216479b` 三项 CI 全过，准备授权提交；Web 完整 Remote 372/372 待独立实现门，N3 修夹具后旧 156 全过／新 13 真实 RED，现仅 Owner 允许 GREEN，详见 `CHANGELOG.md`。
+- [验证] T3a 八路径中央整合／记录独立双门通过，开始暂存固定版工程漂移门；旧 head CodeQL 与新 head CI 仍待验，未合并或部署，详见 `CHANGELOG.md`。
+- [验证] Web A5a 真实 RED 49 项／27 失败用例后，测试冻结下 DTO/client 首次 GREEN 49/49；完整 Remote 与独立实现门待验，仍 donor-only。N3 草案双门通过，仅授权可执行 RED，详见 `CHANGELOG.md`。
+- [验证] T3a 中央 Core 1,681、Service 875（各 1 既有 skip）、App 1,175、MCP 270 全部零失败，脚本 205/2 条件 skip 与 typecheck/安全/invariants 通过；最终整合门、旧 head CodeQL 和新 head CI 仍待验。Web 草案双门后首次 RED 开跑，N3 仅测试骨架，详见 `CHANGELOG.md`。
+- [提交] N2 已推送 `4216479b`，PR #446 仍 Draft，依赖 CI 通过、Tests/CodeQL 运行中；T3a 独立实现双门后按三文件哈希整合，中央完整 Core 开跑，其他组合门待验；Web/N3 仍仅测试骨架，详见 `CHANGELOG.md`。
 - [验证] N2 十文件最终整合／记录双门与暂存工程漂移通过，准备授权提交推送；T3a 仅在 donor 过 129 项实测，独立实现门进行中，新 head CI 与完整 W3–W6 仍待验，详见 `CHANGELOG.md`。
 - [验证] N2 独立门后按哈希整合，中央 Collector 156/156、脚本 205/2 条件 skip、typecheck/安全/invariants 通过；`e94c0500` 三项 CI 全过。T3a 修正两处单消息 skip 夹具后 donor 129/129，独立实现门待验且不混入 N2；完整 W3–W6 未完成，详见 `CHANGELOG.md`。
 - [验证] N2 donor 完整 156/156 零失败／跳过，前两次特殊临时路径夹具失败保留；只修夹具，独立门／整合待验。T3a 新增 34 项测试草稿、实现仍为桩；`e94c0500` Tests／依赖通过，Swift CodeQL 待验，详见 `CHANGELOG.md`。

@@ -194,6 +194,40 @@ The final N2 central integration/record gate passed SPEC PASS / QUALITY
 APPROVED. Exactly ten approved paths are staged and pinned staged project
 drift passed; pre-existing SQLite sidecars are excluded. Prepare the
 authorized N2 commit/push; its new-head CI remains separately pending.
+N2 is now pushed as `4216479b80dd3043e912d0f2aeb73f23a2f002cc` in the
+same draft/open/unmerged PR. At 11:44 CST dependency review `34009528240`
+passed; Tests `34009528242` and CodeQL `34009528232` remain in progress.
+T3a passed its independent implementation/evidence gates and exact three-
+file central integration; pinned generation added twelve project lines,
+project.yml unchanged. The coordinator started complete central Core tests;
+Service/App/MCP are pending. A5a now has 31 metadata tests plus the old 18,
+DTO scaffolds and three unsupported client stubs, syntax parsing only;
+test-draft review/RED are pending. N3-A remains tests/scaffolds only.
+The T3a central complete gates then passed: Core 1,681 and Service 875
+(one existing skip each), App 1,175, MCP 270, zero failures and producer
+exits 0. Ten scripts passed 205/two existing conditional skips; typecheck,
+archive safety and five invariants passed. The unchanged Collector/Remote
+full suites were not rerun. Final integration/record gate and staged drift
+remain pending. At 11:55 CST prior `4216479b` Tests and dependency review
+passed while CodeQL still runs. A5a's 49-test draft passed independent
+review and its first RED build is running; N3-A has 13 additive tests and
+fail-closed event-entry scaffolds, pending independent draft review.
+A5a subsequently captured corrected 49-test RED (27 failed cases) after
+one test-only compile correction, then passed 49/49 GREEN with frozen
+tests. Its full Remote and independent implementation/integration gates
+remain pending; it is excluded from T3a. N3-A passed its independent
+test-draft gates and is authorized for executable RED only, not GREEN.
+The final T3a central eight-path integration/record gate returned SPEC PASS /
+QUALITY APPROVED at 12:10 CST. The coordinator is staging only those paths
+for pinned project drift; prior-head CodeQL and new-head CI remain pending.
+The coordinator then verified staged source/routing hashes and passed pinned
+staged drift. Exact prior `4216479b` now has successful Tests, dependency
+review and CodeQL (Gate completed 12:11:58 CST). Prepare the authorized
+eight-path T3a commit/push; its new-head CI remains separate. A5a complete
+donor Remote passed 372/372 and awaits independent implementation review.
+N3-A corrected full RED passed all old 156 and failed only the 13 new cases;
+prior compile/Unicode fixture failures are retained. Only its Owner is
+authorized GREEN; tests and other source/routing remain frozen.
 The owner authorized committing/pushing W1, running CI, then autonomous staged
 implementation/review/CI through W6 on 2026-09-05. Production W7, credentials,
 network changes, and merge/release remain separate authority boundaries.
