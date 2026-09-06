@@ -6,7 +6,29 @@ enum CollectorInventoryOwnerError: Error, Equatable {
     case unsafePath
     case alreadyOwned
     case closed
+    case rootNotEnrolled
+    case rootNotActivated
     case notImplemented
+}
+
+struct CollectorEventIngressBudget {
+    let maxIncomingPaths: Int
+    let maxPathUTF8Bytes: Int
+    let maxTotalPathUTF8Bytes: Int
+    // Sum of all epoch/cursor UTF-8 bytes in expected (if any) and next.
+    let maxCheckpointUTF8Bytes: Int
+}
+
+enum CollectorEventGapReason: String, Equatable {
+    case overflow
+    case continuityLoss
+    case restart
+    case budgetExceeded
+}
+
+enum CollectorEventIngressResult: Equatable {
+    case applied(inputPathCount: Int, checkpoint: CollectorEventCheckpoint)
+    case reconciliationRequested(reason: CollectorEventGapReason, requestedRevision: Int64)
 }
 
 // Narrow fault/observation boundaries for temporary fixture tests only.
@@ -16,6 +38,7 @@ struct CollectorInventoryOwnerTestHooks {
     var afterMainFilePrepared: (() throws -> Void)?
     var afterDatabaseOpened: (() throws -> Void)?
     var beforeRootActivation: (() throws -> Void)?
+    var beforeInventoryCommit: (() throws -> Void)?
 }
 
 // Only values escape this owner. Its mutex covers each operation and close;
@@ -46,6 +69,7 @@ final class CollectorInventoryOwner {
     private var database: DatabaseQueue?
     private var store: CollectorInventoryStore?
     private var activeRoots: [Data: (binding: CollectorPOSIXRootBinding, walker: CollectorBootstrapWalker)] = [:]
+    private var eventCommitCancellationCheck: (() throws -> Void)?
     private var closed = false
 
     private var inventoryRoot: URL { shadowRoot.appendingPathComponent("inventory") }
@@ -172,6 +196,57 @@ final class CollectorInventoryOwner {
         }
     }
 
+    // Checkpoints are opaque bytes. No native FSEvents ordering is implied.
+    func applyEvents(
+        configuration: CollectorRootConfiguration,
+        expectedCheckpoint: CollectorEventCheckpoint?,
+        nextCheckpoint: CollectorEventCheckpoint,
+        dirtyRelativePaths: [String],
+        budget: CollectorEventIngressBudget
+    ) throws -> CollectorEventIngressResult {
+        try withEventStore { store in
+            let (state, binding) = try Self.requireEnrolledEventRoot(store, configuration)
+            guard let active = activeRoots[Data(configuration.rootID.utf8)],
+                  active.binding.configuration == configuration,
+                  active.binding.expectedIdentity == binding.expectedIdentity else {
+                throw CollectorInventoryOwnerError.rootNotActivated
+            }
+            if try Self.exceedsEventBudget(dirtyRelativePaths, expectedCheckpoint, nextCheckpoint, budget) {
+                // Preserve loss even when the source is gone; accept no prefix
+                // and never send an oversized batch to the checkpoint writer.
+                return try Self.recordEventGap(store, state, .budgetExceeded)
+            }
+            guard Self.validEventCheckpoint(nextCheckpoint),
+                  expectedCheckpoint.map(Self.validEventCheckpoint) ?? true,
+                  Self.sameEventCheckpoint(state.eventCheckpoint, expectedCheckpoint),
+                  state.eventCheckpoint.map({ $0.epoch.utf8.elementsEqual(nextCheckpoint.epoch.utf8) }) ?? true else {
+                throw CollectorInventoryError.staleCheckpoint
+            }
+            for path in dirtyRelativePaths {
+                try Task.checkCancellation()
+                guard CollectorInventoryStore.isSafeRelativePath(path) else {
+                    throw CollectorInventoryError.invalidRelativePath
+                }
+            }
+            try CollectorPOSIXRootEnumerator.validateRoot(binding: binding)
+            try store.applyEventBatch(
+                configuration: configuration, expectedCheckpoint: expectedCheckpoint, nextCheckpoint: nextCheckpoint,
+                dirtyRelativePaths: dirtyRelativePaths, requiresReconciliation: false
+            )
+            return .applied(inputPathCount: dirtyRelativePaths.count, checkpoint: nextCheckpoint)
+        }
+    }
+
+    func requestEventReconciliation(
+        configuration: CollectorRootConfiguration,
+        reason: CollectorEventGapReason
+    ) throws -> CollectorEventIngressResult {
+        try withEventStore { store in
+            let (state, _) = try Self.requireEnrolledEventRoot(store, configuration)
+            return try Self.recordEventGap(store, state, reason)
+        }
+    }
+
     func close() throws {
         mutex.lock()
         defer { mutex.unlock() }
@@ -202,6 +277,82 @@ final class CollectorInventoryOwner {
         let result = try operation(store)
         try validateStorage()
         return result
+    }
+
+    private func withEventStore<T>(_ operation: (CollectorInventoryStore) throws -> T) throws -> T {
+        try withStore { store in
+            try withUnsafeCurrentTask { task in
+                try Task.checkCancellation()
+                // The queue's synchronous commit hook may run on another
+                // thread. Borrow the caller's task only for this locked call.
+                eventCommitCancellationCheck = {
+                    if task?.isCancelled == true { throw CancellationError() }
+                }
+                defer { eventCommitCancellationCheck = nil }
+                return try operation(store)
+            }
+        }
+    }
+
+    private static func requireEnrolledEventRoot(
+        _ store: CollectorInventoryStore, _ configuration: CollectorRootConfiguration
+    ) throws -> (CollectorRootState, CollectorPOSIXRootBinding) {
+        guard let state = try store.rootState(rootID: configuration.rootID), state.configuration == configuration else {
+            throw CollectorInventoryError.unknownRoot
+        }
+        guard let binding = try store.enrolledRoot(configuration: configuration) else {
+            throw CollectorInventoryOwnerError.rootNotEnrolled
+        }
+        return (state, binding)
+    }
+
+    private static func recordEventGap(
+        _ store: CollectorInventoryStore, _ state: CollectorRootState, _ reason: CollectorEventGapReason
+    ) throws -> CollectorEventIngressResult {
+        try store.requestReconciliation(configuration: state.configuration)
+        // Store rejects revision exhaustion before this result is formed.
+        return .reconciliationRequested(reason: reason, requestedRevision: state.requestedRevision + 1)
+    }
+
+    private static func exceedsEventBudget(
+        _ paths: [String], _ expected: CollectorEventCheckpoint?, _ next: CollectorEventCheckpoint,
+        _ budget: CollectorEventIngressBudget
+    ) throws -> Bool {
+        guard budget.maxIncomingPaths >= 0, budget.maxPathUTF8Bytes >= 0,
+              budget.maxTotalPathUTF8Bytes >= 0, budget.maxCheckpointUTF8Bytes >= 0 else {
+            throw CollectorInventoryError.invalidBudget
+        }
+        if paths.count > budget.maxIncomingPaths { return true }
+        var remainingPathBytes = budget.maxTotalPathUTF8Bytes
+        for path in paths {
+            try Task.checkCancellation()
+            let bytes = path.utf8.count
+            if bytes > budget.maxPathUTF8Bytes || bytes > remainingPathBytes { return true }
+            remainingPathBytes -= bytes // Count every input, including duplicates, without overflowing.
+        }
+        var remainingCheckpointBytes = budget.maxCheckpointUTF8Bytes
+        for checkpoint in [expected, next].compactMap({ $0 }) {
+            for token in [checkpoint.epoch, checkpoint.cursor] {
+                let bytes = token.utf8.count
+                if bytes > remainingCheckpointBytes { return true }
+                remainingCheckpointBytes -= bytes
+            }
+        }
+        return false
+    }
+
+    private static func validEventCheckpoint(_ checkpoint: CollectorEventCheckpoint) -> Bool {
+        !checkpoint.epoch.isEmpty && !checkpoint.cursor.isEmpty
+            && !checkpoint.epoch.contains("\0") && !checkpoint.cursor.contains("\0")
+    }
+
+    private static func sameEventCheckpoint(_ left: CollectorEventCheckpoint?, _ right: CollectorEventCheckpoint?) -> Bool {
+        switch (left, right) {
+        case (nil, nil): return true
+        case let (left?, right?):
+            return left.epoch.utf8.elementsEqual(right.epoch.utf8) && left.cursor.utf8.elementsEqual(right.cursor.utf8)
+        default: return false
+        }
     }
 
     private func prepareExistingInventory() throws {
@@ -281,7 +432,15 @@ final class CollectorInventoryOwner {
             throw CollectorInventoryOwnerError.unsafePath
         }
         try validateStorage()
-        store = try CollectorInventoryStore(database: queue, machineID: machineID, ownerRunID: ownerRunID)
+        let beforeCommit = testHooks.beforeInventoryCommit
+        store = try CollectorInventoryStore(
+            database: queue, machineID: machineID, ownerRunID: ownerRunID,
+            testHooks: .init(beforeCommit: { [weak self] in
+                try self?.eventCommitCancellationCheck?()
+                try beforeCommit?()
+                try self?.eventCommitCancellationCheck?()
+            })
+        )
         try validateStorage()
     }
 

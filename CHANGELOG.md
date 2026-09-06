@@ -7,6 +7,52 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### A5a/N3-A final local integration and correction-head CI checkpoint (2026-09-06)
+
+The five-path test-only CI correction passed independent final SPEC PASS /
+QUALITY APPROVED at 12:42 CST, the pinned staged Xcode project drift check,
+and exact staged scope/hash checks. It was normally committed and pushed as
+`5995ad66bad8d827f311dd04fef81f287a4d70be`, both producers exiting 0;
+see `/tmp/engram-t3a-ci-annotation-{commit,push}.log`. It contains only the
+readiness fixture annotation and four records, not the five A5a/N3-A files.
+At 12:48 CST, Draft PR #446 remained open/unmerged at that exact SHA:
+dependency review `34012392885` succeeded, Tests `34012392893` was running,
+and CodeQL `34012392888` was queued. Xcode 16.4 compatibility is not yet proved.
+
+Follow-up: Tests `34012392893` subsequently succeeded, including Swift unit,
+UI smoke and CI Gate. The coordinator downloaded the complete Swift job log
+with producer exit 0 to `/tmp/engram-5995-swift-unit-ci.log`: the actual
+Xcode_16.4.app compile path is recorded from line 296, readiness passed all
+38 cases at lines 10082-10083, and complete Core passed 1,681 tests with one
+existing skip and zero failures at lines 12595-12597. This closes the earlier
+Xcode 16.4 compilation gap for the exact correction SHA. Swift CodeQL remains
+pending and is not inferred from successful Tests.
+
+The separate A5a/N3-A feature candidate remains exactly five source/test files,
+all byte-identical to the independently approved donor implementations:
+Web models `3a7edfd6`, client `570968ce`, client tests `b5a5bed3`, inventory
+Owner `b3a0acc0` and Owner tests `80705fb6`. No project source routing changed.
+Complete central Remote 372, Service 875 (one existing credential skip),
+App 1,175, MCP 270 and Collector 169 all passed with zero failures and actual
+producer exits 0. The App scheme also ran Core 1,681 (one existing performance
+skip), not a distinct extra population. Corrected Core then passed the same
+1,681/one skip/zero failures independently. Raw logs, xcresults and exit records
+are `/tmp/engram-a5a-central-{remote,service,app,mcp}-full.*`,
+`/tmp/engram-n3a-central-collector-full.*` and
+`/tmp/engram-t3a-ci-annotation-core-full.*`. The Service reader QoS warning
+remains visible. Ten script suites passed 207/207 with no skips, and test
+typecheck, archive safety and all five invariants passed; see
+`/tmp/engram-a5a-n3a-tranche-{scripts,typecheck-test,archive-safety,invariants}.log`.
+
+The final feature integration/record gate and its own commit/push remain
+pending. Do not push this feature candidate until all required correction-head
+CI succeeds; passing local features cannot be attributed to that test-only SHA.
+N3-B1 fake-stream recovery coordination and T3b capture FTS consumption are
+separate bounded proposals. No native event stream, Service metadata producer,
+HTTP read route, static browser reader, uploader, W6 integration or production
+acceptance is implied. SQLite sidecars stay excluded; no merge, deployment,
+provider/credential access, Docker or W7 action was performed.
+
 ### T3a CI test-helper type inference correction (2026-09-06)
 
 Live Tests run `34011185057` for exact pushed `f683ff71` failed before any

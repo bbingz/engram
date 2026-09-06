@@ -4,6 +4,8 @@
 
 ### 2026-09-06
 
+- [验证] `5995ad66` 的 Tests/Swift unit/UI smoke 已全过，CI Xcode 16.4 下 readiness 38/38、Core 1,681（1 既有 skip）零失败；Swift CodeQL 仍待验，功能提交继续等待其独立门，详见 `CHANGELOG.md`。
+- [验证] CI 单行修正独立终门后已推送 `5995ad66`，新 head 依赖通过、Tests/CodeQL 待验；A5a/N3-A 五文件仍未提交，六套本地完整门零失败，等待功能整合终门及修正 head 全绿后再推送，未合并或部署，详见 `CHANGELOG.md`。
 - [验证] 单行夹具注解修正后完整 Core 1,681 项／1 既有 skip／零失败，38 测试体与夹具字节未变；准备仅修正＋四记录的独立整合门及提交，Xcode 16.4 新 head CI 仍待验，A5/N3 五文件继续排除，详见 `CHANGELOG.md`。
 - [修复] `f683ff71` 的 Swift unit/UI smoke 同在 Xcode 16.4 编译夹具时失败；独立双门批准仅补 `messages` 显式数组类型，38 测试体与生产代码不动，修后完整 Core/新 head CI 待验。A5/N3 本地完整组合门已过，但五文件明确排除本次 CI 修正提交，详见 `CHANGELOG.md`。
 - [验证] T3a 已推送 `f683ff71`，依赖 CI 通过、Tests/CodeQL 待验；A5a 与 N3-A 独立双门后按五文件哈希整合，中央 Remote 372/372 零失败/跳过，Service 开跑，其他组合门仍待验。FSEvents/FTS consumer 仅方案准备，完整 W3–W6 未完成，详见 `CHANGELOG.md`。

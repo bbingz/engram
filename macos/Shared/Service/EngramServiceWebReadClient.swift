@@ -20,7 +20,7 @@ enum EngramServiceWebReadClientError: String, Error, Equatable, LocalizedError, 
 /// cross-page reconstruction and payload SHA verification belong to its caller.
 struct EngramServiceWebReadClient: Sendable {
     static let maximumTotalTimeout: TimeInterval = 2
-    static let allowedCommands: Set<String> = ["webMessages"]
+    static let allowedCommands: Set<String> = ["webMessages", "webOverview", "webSessions", "webSessionDetail"]
 
     private let socketPath: String
     private let totalTimeout: TimeInterval
@@ -77,6 +77,117 @@ struct EngramServiceWebReadClient: Sendable {
         } catch {
             if Task.isCancelled || error is CancellationError { throw CancellationError() }
             if let safe = error as? EngramServiceWebReadClientError { throw safe }
+            throw EngramServiceWebReadClientError.malformed
+        }
+    }
+
+    func overview(_ request: EngramServiceWebOverviewRequest) async throws -> EngramServiceWebOverviewResponse {
+        let response: EngramServiceWebOverviewResponse = try await metadataResponse(.overview, request: request)
+        try Self.validatePage(snapshot: response.snapshotId, nextCursor: response.nextCursor,
+            count: response.streams.count, limit: request.limit, requestedSnapshot: request.snapshotId, cursor: request.cursor)
+        for (previous, current) in zip(response.streams, response.streams.dropFirst()) {
+            guard previous.machineId < current.machineId
+                    || (previous.machineId == current.machineId && previous.sourceInstanceId < current.sourceInstanceId) else {
+                throw EngramServiceWebReadClientError.malformed
+            }
+        }
+        try Task.checkCancellation()
+        return response
+    }
+
+    func sessions(_ request: EngramServiceWebSessionsRequest) async throws -> EngramServiceWebSessionsResponse {
+        let response: EngramServiceWebSessionsResponse = try await metadataResponse(.sessions, request: request)
+        try Self.validatePage(snapshot: response.snapshotId, nextCursor: response.nextCursor,
+            count: response.items.count, limit: request.limit, requestedSnapshot: request.snapshotId, cursor: request.cursor)
+        for item in response.items {
+            guard request.source.map({ $0 == item.source }) ?? true,
+                  request.machineId.map({ $0 == item.captureIdentity?.machineId }) ?? true,
+                  request.sourceInstanceId.map({ $0 == item.captureIdentity?.sourceInstanceId }) ?? true,
+                  request.projectKey.map({ $0 == item.projectKey }) ?? true else {
+                throw EngramServiceWebReadClientError.malformed
+            }
+        }
+        for (previous, current) in zip(response.items, response.items.dropFirst()) {
+            // Valid timestamps are nonnegative; unknown dates sort last. IDs
+            // break ties by exact UTF-8 bytes, never Swift canonical equality.
+            let previousTime = previous.startedAt ?? -1
+            let currentTime = current.startedAt ?? -1
+            guard previousTime > currentTime || (previousTime == currentTime
+                && previous.sessionId.utf8.lexicographicallyPrecedes(current.sessionId.utf8)) else {
+                throw EngramServiceWebReadClientError.malformed
+            }
+        }
+        try Task.checkCancellation()
+        return response
+    }
+
+    func sessionDetail(_ request: EngramServiceWebSessionDetailRequest) async throws -> EngramServiceWebSessionDetailResponse {
+        let response: EngramServiceWebSessionDetailResponse = try await metadataResponse(.detail, request: request)
+        if let detail = response.detail,
+           !detail.session.sessionId.utf8.elementsEqual(request.sessionId.utf8) {
+            throw EngramServiceWebReadClientError.malformed
+        }
+        try Task.checkCancellation()
+        return response
+    }
+
+    private enum MetadataCommand: String {
+        case overview = "webOverview", sessions = "webSessions", detail = "webSessionDetail"
+    }
+
+    /// Only the three typed methods above can choose this private command enum.
+    /// No generic caller-supplied command, capability loader or database access.
+    private func metadataResponse<Request: Encodable, Response: Decodable>(
+        _ command: MetadataCommand, request: Request
+    ) async throws -> Response {
+        do {
+            try Task.checkCancellation()
+            try Self.validateCommand(command.rawValue)
+            let requestID = UUID().uuidString
+            let envelope = EngramServiceRequestEnvelope(requestId: requestID, command: command.rawValue,
+                payload: try JSONEncoder().encode(request), capabilityToken: nil)
+            let encoded = try JSONEncoder().encode(envelope)
+            let bytes: Data
+            do {
+                bytes = try await EngramServiceSocketIO.exchange(encoded, socketPath: socketPath, totalTimeout: totalTimeout)
+            } catch {
+                if Task.isCancelled || error is CancellationError { throw CancellationError() }
+                throw EngramServiceWebReadClientError.unavailable
+            }
+            try Task.checkCancellation()
+            // Count the entire encoded envelope, including Data/base64 and
+            // legal outer metadata. Legacy message reads retain their own cap.
+            guard bytes.count <= EngramServiceWebReadLimits.maximumPageEnvelopeBytes else {
+                throw EngramServiceWebReadClientError.malformed
+            }
+            let frame = try JSONDecoder().decode(ResponseFrame.self, from: bytes)
+            guard frame.kind == "response", frame.requestID.utf8.elementsEqual(requestID.utf8) else {
+                throw EngramServiceWebReadClientError.malformed
+            }
+            if let name = frame.failureName {
+                switch name {
+                case "StaleCursor", "staleCursor": throw EngramServiceWebReadClientError.stale
+                case "UnsupportedCommand", "unsupportedCommand": throw EngramServiceWebReadClientError.unsupported
+                case "ServiceUnavailable", "serviceUnavailable": throw EngramServiceWebReadClientError.unavailable
+                default: throw EngramServiceWebReadClientError.malformed
+                }
+            }
+            guard let payload = frame.result else { throw EngramServiceWebReadClientError.malformed }
+            let response = try JSONDecoder().decode(Response.self, from: payload)
+            try Task.checkCancellation()
+            return response
+        } catch {
+            if Task.isCancelled || error is CancellationError { throw CancellationError() }
+            if let safe = error as? EngramServiceWebReadClientError { throw safe }
+            throw EngramServiceWebReadClientError.malformed
+        }
+    }
+
+    private static func validatePage(
+        snapshot: String, nextCursor: String?, count: Int, limit: Int, requestedSnapshot: String?, cursor: String?
+    ) throws {
+        guard requestedSnapshot.map({ $0 == snapshot }) ?? true,
+              count <= limit, nextCursor == nil || nextCursor != cursor else {
             throw EngramServiceWebReadClientError.malformed
         }
     }

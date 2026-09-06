@@ -571,6 +571,528 @@ final class CollectorInventoryOwnerTests: XCTestCase {
         try next.close()
     }
 
+    // N3-A event ingress tests. Existing N2 tests and fixture behavior stay frozen.
+    func testN3OrdinaryEventsPersistDirtyCheckpointAndExactUTF8BudgetAfterReopen() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let sourceBefore = try fixture.snapshot(at: fixture.sourceRoot)
+        let liveBefore = try fixture.snapshot(at: fixture.liveRoot)
+        let owner = try XCTUnwrap(fixture.open())
+        defer { try? owner.close() }
+        _ = try owner.enrollAndActivateRoot(fixture.configuration)
+        let before = try XCTUnwrap(owner.rootState(rootID: fixture.configuration.rootID))
+        let path = "rollout-一.jsonl"
+        let checkpoint = CollectorEventCheckpoint(epoch: "流", cursor: "甲")
+        let budget = n3Budget(maxIncomingPaths: 2, maxPathUTF8Bytes: path.utf8.count,
+                              maxTotalPathUTF8Bytes: 2 * path.utf8.count, maxCheckpointUTF8Bytes: 6)
+        XCTAssertGreaterThan(path.utf8.count, path.count)
+        XCTAssertEqual(try owner.applyEvents(configuration: fixture.configuration, expectedCheckpoint: nil,
+                                            nextCheckpoint: checkpoint, dirtyRelativePaths: [path, path], budget: budget),
+                       .applied(inputPathCount: 2, checkpoint: checkpoint))
+        let after = try XCTUnwrap(owner.rootState(rootID: fixture.configuration.rootID))
+        n3AssertCheckpoint(after.eventCheckpoint, checkpoint)
+        XCTAssertEqual(after.requestedRevision, before.requestedRevision)
+        try owner.close()
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators"), 1)
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT SUM(dirty_revision) FROM collector_locators"), 2)
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators WHERE observed_generation IS NULL AND acknowledged_revision = 0"), 1)
+        let reopened = try XCTUnwrap(fixture.open(ownerRunID: "n3-reopen"))
+        defer { try? reopened.close() }
+        let persisted = try XCTUnwrap(reopened.rootState(rootID: fixture.configuration.rootID))
+        XCTAssertEqual(persisted, after)
+        n3AssertCheckpoint(persisted.eventCheckpoint, checkpoint)
+        try reopened.close()
+        XCTAssertEqual(try fixture.snapshot(at: fixture.sourceRoot), sourceBefore)
+        XCTAssertEqual(try fixture.snapshot(at: fixture.liveRoot), liveBefore)
+    }
+
+    func testN3OrdinaryEventsRejectUnknownUnenrolledAndInactiveRoots() throws {
+        for variant in 0..<3 {
+            let fixture = try CollectorOwnerFixture()
+            defer { fixture.remove() }
+            if variant == 1 { try n3SeedRegisteredUnboundRoot(fixture) }
+            if variant == 2 {
+                let first = try XCTUnwrap(fixture.open(ownerRunID: "n3-first"))
+                defer { try? first.close() }
+                _ = try first.enrollAndActivateRoot(fixture.configuration)
+                try first.close()
+            }
+            let owner = try XCTUnwrap(fixture.open(ownerRunID: "n3-fenced"))
+            defer { try? owner.close() }
+            let before = try owner.rootState(rootID: fixture.configuration.rootID)
+            XCTAssertThrowsError(try owner.applyEvents(configuration: fixture.configuration, expectedCheckpoint: nil,
+                                                       nextCheckpoint: .init(epoch: "epoch", cursor: "opaque/a"),
+                                                       dirtyRelativePaths: ["rollout-a.jsonl"], budget: n3Budget())) { error in
+                switch variant {
+                case 0: XCTAssertEqual(error as? CollectorInventoryError, .unknownRoot)
+                case 1: XCTAssertEqual(error as? CollectorInventoryOwnerError, .rootNotEnrolled)
+                default: XCTAssertEqual(error as? CollectorInventoryOwnerError, .rootNotActivated)
+                }
+            }
+            if variant < 2 {
+                XCTAssertThrowsError(try owner.requestEventReconciliation(configuration: fixture.configuration, reason: .restart)) { error in
+                    if variant == 0 { XCTAssertEqual(error as? CollectorInventoryError, .unknownRoot) }
+                    else { XCTAssertEqual(error as? CollectorInventoryOwnerError, .rootNotEnrolled) }
+                }
+            }
+            XCTAssertEqual(try owner.rootState(rootID: fixture.configuration.rootID), before)
+            try owner.close()
+            XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators"), 0)
+        }
+    }
+
+    func testN3BothEventEntriesRejectWrongSourcePathAndOldRevisionConfiguration() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let nested = fixture.sourceRoot.appendingPathComponent("é")
+        try fixture.directory(nested)
+        let old = CollectorRootConfiguration(rootID: "root-é", source: .codex, rootPath: fixture.sourceRoot.path + "/é", revision: 1)
+        let current = CollectorRootConfiguration(rootID: old.rootID, source: old.source, rootPath: old.rootPath, revision: 2)
+        let owner = try XCTUnwrap(fixture.open())
+        defer { try? owner.close() }
+        _ = try owner.enrollAndActivateRoot(old)
+        _ = try owner.enrollAndActivateRoot(current)
+        let before = try owner.rootState(rootID: current.rootID)
+        let wrongPath = fixture.sourceRoot.path + "/e\u{301}"
+        XCTAssertEqual(wrongPath, current.rootPath, "positive control: Swift canonical equality is insufficient")
+        XCTAssertNotEqual(Data(wrongPath.utf8), Data(current.rootPath.utf8))
+        let mismatches = [
+            old,
+            CollectorRootConfiguration(rootID: current.rootID, source: .claudeCode, rootPath: current.rootPath, revision: 2),
+            CollectorRootConfiguration(rootID: current.rootID, source: .codex, rootPath: wrongPath, revision: 2),
+            CollectorRootConfiguration(rootID: "root-e\u{301}", source: .codex, rootPath: current.rootPath, revision: 2),
+        ]
+        for configuration in mismatches {
+            XCTAssertThrowsError(try owner.applyEvents(configuration: configuration, expectedCheckpoint: nil,
+                                                       nextCheckpoint: .init(epoch: "epoch", cursor: "opaque/a"),
+                                                       dirtyRelativePaths: ["rollout-a.jsonl"], budget: n3Budget())) {
+                XCTAssertEqual($0 as? CollectorInventoryError, .unknownRoot)
+            }
+            XCTAssertThrowsError(try owner.requestEventReconciliation(configuration: configuration, reason: .overflow)) {
+                XCTAssertEqual($0 as? CollectorInventoryError, .unknownRoot)
+            }
+            XCTAssertEqual(try owner.rootState(rootID: current.rootID), before)
+        }
+        try owner.close()
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators"), 0)
+    }
+
+    func testN3OrdinaryEventsRejectPhysicalRootReplacementButGapOnlySurvivesMissingRoot() throws {
+        for missing in [false, true] {
+            let fixture = try CollectorOwnerFixture()
+            defer { fixture.remove() }
+            let owner = try XCTUnwrap(fixture.open())
+            defer { try? owner.close() }
+            _ = try owner.enrollAndActivateRoot(fixture.configuration)
+            let before = try XCTUnwrap(owner.rootState(rootID: fixture.configuration.rootID))
+            if missing { try FileManager.default.moveItem(at: fixture.sourceRoot, to: fixture.sourceParent.appendingPathComponent("retired")) }
+            else { try fixture.replaceSourceRoot() }
+            let expected: CollectorPOSIXEnumerationError = missing ? .io(.openComponent, ENOENT) : .rootIdentityChanged
+            XCTAssertThrowsError(try owner.applyEvents(configuration: fixture.configuration, expectedCheckpoint: nil,
+                                                       nextCheckpoint: .init(epoch: "epoch", cursor: "opaque/a"),
+                                                       dirtyRelativePaths: ["rollout-a.jsonl"], budget: n3Budget())) {
+                XCTAssertEqual($0 as? CollectorPOSIXEnumerationError, expected)
+            }
+            XCTAssertEqual(try owner.rootState(rootID: fixture.configuration.rootID), before)
+            XCTAssertEqual(try owner.requestEventReconciliation(configuration: fixture.configuration, reason: .continuityLoss),
+                           .reconciliationRequested(reason: .continuityLoss, requestedRevision: before.requestedRevision + 1))
+            let after = try XCTUnwrap(owner.rootState(rootID: fixture.configuration.rootID))
+            XCTAssertNil(after.eventCheckpoint)
+            XCTAssertEqual(after.completedRevision, before.completedRevision)
+            try owner.close()
+            XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators"), 0)
+            let reopened = try XCTUnwrap(fixture.open(ownerRunID: "n3-reopen"))
+            defer { try? reopened.close() }
+            XCTAssertEqual(try reopened.rootState(rootID: fixture.configuration.rootID), after)
+            XCTAssertThrowsError(try reopened.enrollAndActivateRoot(fixture.configuration)) {
+                XCTAssertEqual($0 as? CollectorPOSIXEnumerationError, expected, "event ingress must not replace the persisted binding")
+            }
+            try reopened.close()
+        }
+    }
+
+    func testN3AllExplicitGapReasonsPersistWithoutActivationAndNeverAdvanceCheckpoint() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let first = try XCTUnwrap(fixture.open(ownerRunID: "n3-first"))
+        defer { try? first.close() }
+        _ = try first.enrollAndActivateRoot(fixture.configuration)
+        let checkpoint = CollectorEventCheckpoint(epoch: "epoch", cursor: "opaque/a")
+        _ = try first.applyEvents(configuration: fixture.configuration, expectedCheckpoint: nil, nextCheckpoint: checkpoint,
+                                  dirtyRelativePaths: ["rollout-seed.jsonl"], budget: n3Budget())
+        try first.close()
+        try FileManager.default.moveItem(at: fixture.sourceRoot, to: fixture.sourceParent.appendingPathComponent("retired"))
+        let owner = try XCTUnwrap(fixture.open(ownerRunID: "n3-not-activated"))
+        defer { try? owner.close() }
+        let before = try XCTUnwrap(owner.rootState(rootID: fixture.configuration.rootID))
+        var requested = before.requestedRevision
+        for reason: CollectorEventGapReason in [.overflow, .continuityLoss, .restart, .budgetExceeded] {
+            requested += 1
+            XCTAssertEqual(try owner.requestEventReconciliation(configuration: fixture.configuration, reason: reason),
+                           .reconciliationRequested(reason: reason, requestedRevision: requested))
+            let after = try XCTUnwrap(owner.rootState(rootID: fixture.configuration.rootID))
+            XCTAssertEqual(after.requestedRevision, requested)
+            XCTAssertEqual(after.completedRevision, before.completedRevision)
+            n3AssertCheckpoint(after.eventCheckpoint, checkpoint)
+        }
+        let finalState = try owner.rootState(rootID: fixture.configuration.rootID)
+        try owner.close()
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators"), 1)
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT SUM(dirty_revision) FROM collector_locators"), 1)
+        let reopened = try XCTUnwrap(fixture.open(ownerRunID: "n3-gap-reopen"))
+        defer { try? reopened.close() }
+        XCTAssertEqual(try reopened.rootState(rootID: fixture.configuration.rootID), finalState)
+        try reopened.close()
+    }
+
+    func testN3OversizeBatchesPersistOnlyGapForEveryRawInputBudget() throws {
+        let path = "rollout-一.jsonl"
+        let checkpoint = CollectorEventCheckpoint(epoch: "流", cursor: "甲")
+        let next = CollectorEventCheckpoint(epoch: "流", cursor: "乙")
+        let budgets = [
+            n3Budget(maxIncomingPaths: 1),
+            n3Budget(maxPathUTF8Bytes: path.utf8.count - 1),
+            n3Budget(maxTotalPathUTF8Bytes: 2 * path.utf8.count - 1),
+            n3Budget(maxCheckpointUTF8Bytes: 11), // Expected and next together cost 12, not 6.
+        ]
+        for missing in [false, true] {
+            for budget in budgets {
+                let fixture = try CollectorOwnerFixture()
+                defer { fixture.remove() }
+                let owner = try XCTUnwrap(fixture.open())
+                defer { try? owner.close() }
+                _ = try owner.enrollAndActivateRoot(fixture.configuration)
+                _ = try owner.applyEvents(configuration: fixture.configuration, expectedCheckpoint: nil,
+                                          nextCheckpoint: checkpoint, dirtyRelativePaths: ["rollout-seed.jsonl"], budget: n3Budget())
+                let before = try XCTUnwrap(owner.rootState(rootID: fixture.configuration.rootID))
+                if missing { try FileManager.default.moveItem(at: fixture.sourceRoot, to: fixture.sourceParent.appendingPathComponent("retired")) }
+                XCTAssertEqual(try owner.applyEvents(configuration: fixture.configuration, expectedCheckpoint: checkpoint,
+                                                    nextCheckpoint: next, dirtyRelativePaths: [path, path], budget: budget),
+                               .reconciliationRequested(reason: .budgetExceeded, requestedRevision: before.requestedRevision + 1))
+                let after = try XCTUnwrap(owner.rootState(rootID: fixture.configuration.rootID))
+                XCTAssertEqual(after.requestedRevision, before.requestedRevision + 1)
+                XCTAssertEqual(after.completedRevision, before.completedRevision)
+                n3AssertCheckpoint(after.eventCheckpoint, checkpoint)
+                try owner.close()
+                XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators"), 1)
+                XCTAssertEqual(try fixture.inventoryInteger("SELECT SUM(dirty_revision) FROM collector_locators"), 1)
+                let reopened = try XCTUnwrap(fixture.open(ownerRunID: "n3-oversize-reopen"))
+                defer { try? reopened.close() }
+                XCTAssertEqual(try reopened.rootState(rootID: fixture.configuration.rootID), after)
+                try reopened.close()
+            }
+        }
+    }
+
+    func testN3OversizeCannotBypassUnknownInactiveOrWrongConfigurationFences() throws {
+        for variant in 0..<5 {
+            let fixture = try CollectorOwnerFixture()
+            defer { fixture.remove() }
+            if variant == 1 { try n3SeedRegisteredUnboundRoot(fixture) }
+            if variant == 2 {
+                let first = try XCTUnwrap(fixture.open(ownerRunID: "n3-first"))
+                defer { try? first.close() }
+                _ = try first.enrollAndActivateRoot(fixture.configuration)
+                try first.close()
+            }
+            let owner = try XCTUnwrap(fixture.open(ownerRunID: "n3-oversize-fence"))
+            defer { try? owner.close() }
+            if variant >= 3 { _ = try owner.enrollAndActivateRoot(fixture.configuration) }
+            let configuration: CollectorRootConfiguration
+            if variant == 3 { configuration = fixture.configuration(source: .claudeCode) }
+            else if variant == 4 { configuration = .init(rootID: fixture.configuration.rootID, source: .codex, rootPath: fixture.sourceRoot.path, revision: 0) }
+            else { configuration = fixture.configuration }
+            let before = try owner.rootState(rootID: fixture.configuration.rootID)
+            XCTAssertThrowsError(try owner.applyEvents(configuration: configuration, expectedCheckpoint: nil,
+                                                       nextCheckpoint: .init(epoch: "epoch", cursor: "opaque/a"),
+                                                       dirtyRelativePaths: ["rollout-a.jsonl", "rollout-a.jsonl"],
+                                                       budget: n3Budget(maxIncomingPaths: 1))) { error in
+                switch variant {
+                case 1: XCTAssertEqual(error as? CollectorInventoryOwnerError, .rootNotEnrolled)
+                case 2: XCTAssertEqual(error as? CollectorInventoryOwnerError, .rootNotActivated)
+                default: XCTAssertEqual(error as? CollectorInventoryError, .unknownRoot)
+                }
+            }
+            XCTAssertEqual(try owner.rootState(rootID: fixture.configuration.rootID), before)
+            try owner.close()
+            XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators"), 0)
+        }
+    }
+
+    func testN3InvalidBudgetsAndPathsRejectEntireBatchWithoutGapOrDirtyPrefix() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let owner = try XCTUnwrap(fixture.open())
+        defer { try? owner.close() }
+        _ = try owner.enrollAndActivateRoot(fixture.configuration)
+        let before = try owner.rootState(rootID: fixture.configuration.rootID)
+        for budget in [n3Budget(maxIncomingPaths: -1), n3Budget(maxPathUTF8Bytes: -1),
+                       n3Budget(maxTotalPathUTF8Bytes: -1), n3Budget(maxCheckpointUTF8Bytes: -1)] {
+            XCTAssertThrowsError(try owner.applyEvents(configuration: fixture.configuration, expectedCheckpoint: nil,
+                                                       nextCheckpoint: .init(epoch: "epoch", cursor: "opaque/a"),
+                                                       dirtyRelativePaths: ["rollout-safe.jsonl"], budget: budget)) {
+                XCTAssertEqual($0 as? CollectorInventoryError, .invalidBudget)
+            }
+            XCTAssertEqual(try owner.rootState(rootID: fixture.configuration.rootID), before)
+        }
+        for path in ["", "/absolute", "../escape", "a/./b", "a//b", "a/../b", "nul\0path"] {
+            XCTAssertThrowsError(try owner.applyEvents(configuration: fixture.configuration, expectedCheckpoint: nil,
+                                                       nextCheckpoint: .init(epoch: "epoch", cursor: "opaque/a"),
+                                                       dirtyRelativePaths: ["rollout-safe.jsonl", path], budget: n3Budget())) {
+                XCTAssertEqual($0 as? CollectorInventoryError, .invalidRelativePath)
+            }
+            XCTAssertEqual(try owner.rootState(rootID: fixture.configuration.rootID), before)
+        }
+        try owner.close()
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators"), 0)
+    }
+
+    func testN3CheckpointTokensAreByteExactBoundedOpaqueValues() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let owner = try XCTUnwrap(fixture.open())
+        defer { try? owner.close() }
+        _ = try owner.enrollAndActivateRoot(fixture.configuration)
+        let checkpoint = CollectorEventCheckpoint(epoch: "é", cursor: "café")
+        _ = try owner.applyEvents(configuration: fixture.configuration, expectedCheckpoint: nil, nextCheckpoint: checkpoint,
+                                  dirtyRelativePaths: ["rollout-seed.jsonl"], budget: n3Budget())
+        let before = try owner.rootState(rootID: fixture.configuration.rootID)
+        let decomposed = CollectorEventCheckpoint(epoch: "e\u{301}", cursor: "cafe\u{301}")
+        XCTAssertEqual(checkpoint, decomposed, "positive control: synthesized Swift equality is not a byte fence")
+        XCTAssertNotEqual(Data(checkpoint.epoch.utf8), Data(decomposed.epoch.utf8))
+        let invalid: [(CollectorEventCheckpoint?, CollectorEventCheckpoint)] = [
+            (nil, checkpoint),
+            (.init(epoch: decomposed.epoch, cursor: checkpoint.cursor), checkpoint),
+            (.init(epoch: checkpoint.epoch, cursor: decomposed.cursor), checkpoint),
+            (checkpoint, .init(epoch: decomposed.epoch, cursor: "opaque/a")),
+            (checkpoint, .init(epoch: "other-epoch", cursor: "opaque/a")),
+            (.init(epoch: "", cursor: checkpoint.cursor), checkpoint),
+            (.init(epoch: checkpoint.epoch, cursor: "bad\0expected"), checkpoint),
+            (checkpoint, .init(epoch: "", cursor: "opaque/a")),
+            (checkpoint, .init(epoch: checkpoint.epoch, cursor: "")),
+            (checkpoint, .init(epoch: "bad\0epoch", cursor: "opaque/a")),
+            (checkpoint, .init(epoch: checkpoint.epoch, cursor: "bad\0cursor")),
+        ]
+        for (expected, next) in invalid {
+            XCTAssertThrowsError(try owner.applyEvents(configuration: fixture.configuration, expectedCheckpoint: expected,
+                                                       nextCheckpoint: next, dirtyRelativePaths: ["rollout-rejected.jsonl"], budget: n3Budget())) {
+                XCTAssertEqual($0 as? CollectorInventoryError, .staleCheckpoint)
+            }
+            let state = try XCTUnwrap(owner.rootState(rootID: fixture.configuration.rootID))
+            XCTAssertEqual(state, before)
+            n3AssertCheckpoint(state.eventCheckpoint, checkpoint)
+        }
+        var previous = checkpoint
+        for cursor in ["opaque/z", "opaque/a"] {
+            let next = CollectorEventCheckpoint(epoch: checkpoint.epoch, cursor: cursor)
+            XCTAssertEqual(try owner.applyEvents(configuration: fixture.configuration, expectedCheckpoint: previous,
+                                                nextCheckpoint: next, dirtyRelativePaths: [], budget: n3Budget()),
+                           .applied(inputPathCount: 0, checkpoint: next), "no numeric or lexical native event ordering is assumed")
+            previous = next
+        }
+        n3AssertCheckpoint(try owner.rootState(rootID: fixture.configuration.rootID)?.eventCheckpoint, previous)
+        try owner.close()
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators"), 1)
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT SUM(dirty_revision) FROM collector_locators"), 1)
+    }
+
+    func testN3EventAndGapCommitFailuresRollBackIncludingCancellation() throws {
+        for gapOnly in [false, true] {
+            for cancellation in [false, true] {
+                let fixture = try CollectorOwnerFixture()
+                defer { fixture.remove() }
+                var armed = false
+                var visits = 0
+                var hooks = CollectorInventoryOwnerTestHooks()
+                hooks.beforeInventoryCommit = {
+                    guard armed else { return }
+                    visits += 1
+                    if cancellation { throw CancellationError() }
+                    throw CollectorOwnerFixture.Failure.injected
+                }
+                let owner = try XCTUnwrap(fixture.open(hooks: hooks))
+                defer { try? owner.close() }
+                _ = try owner.enrollAndActivateRoot(fixture.configuration)
+                let before = try owner.rootState(rootID: fixture.configuration.rootID)
+                let checkpoint = CollectorEventCheckpoint(epoch: "epoch", cursor: "opaque/a")
+                armed = true
+                XCTAssertThrowsError(try {
+                    if gapOnly { return try owner.requestEventReconciliation(configuration: fixture.configuration, reason: .overflow) }
+                    return try owner.applyEvents(configuration: fixture.configuration, expectedCheckpoint: nil,
+                                                 nextCheckpoint: checkpoint, dirtyRelativePaths: ["rollout-a.jsonl", "rollout-b.jsonl"], budget: n3Budget())
+                }()) { error in
+                    if cancellation { XCTAssertTrue(error is CancellationError) }
+                    else { XCTAssertEqual(error as? CollectorOwnerFixture.Failure, .injected) }
+                }
+                XCTAssertEqual(visits, 1, "the failure must be inside the inventory transaction")
+                XCTAssertEqual(try owner.rootState(rootID: fixture.configuration.rootID), before)
+                try owner.close()
+                XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators"), 0)
+                armed = false
+                let retry = try XCTUnwrap(fixture.open(ownerRunID: "n3-retry", hooks: hooks))
+                defer { try? retry.close() }
+                XCTAssertEqual(try retry.rootState(rootID: fixture.configuration.rootID), before, "rollback must survive close and reopen")
+                _ = try retry.enrollAndActivateRoot(fixture.configuration)
+                let retryBefore = try XCTUnwrap(retry.rootState(rootID: fixture.configuration.rootID))
+                if gapOnly {
+                    XCTAssertEqual(try retry.requestEventReconciliation(configuration: fixture.configuration, reason: .overflow),
+                                   .reconciliationRequested(reason: .overflow, requestedRevision: retryBefore.requestedRevision + 1))
+                } else {
+                    XCTAssertEqual(try retry.applyEvents(configuration: fixture.configuration, expectedCheckpoint: nil,
+                                                        nextCheckpoint: checkpoint, dirtyRelativePaths: ["rollout-a.jsonl", "rollout-b.jsonl"], budget: n3Budget()),
+                                   .applied(inputPathCount: 2, checkpoint: checkpoint))
+                }
+                try retry.close()
+                XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators"), gapOnly ? 0 : 2)
+            }
+        }
+    }
+
+    func testN3GapDuringBoundedScanSurvivesOldCompletionAndReopen() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        for index in 0..<2 { try fixture.file(fixture.sourceRoot.appendingPathComponent("rollout-\(index).jsonl"), bytes: Data("synthetic".utf8)) }
+        let owner = try XCTUnwrap(fixture.open())
+        defer { try? owner.close() }
+        _ = try owner.enrollAndActivateRoot(fixture.configuration)
+        let budget = CollectorBootstrapBudget(maxEntriesVisited: 1, maxCandidateFiles: 1, maxDirectoryOpens: 1, maxMetadataBytes: 4096)
+        XCTAssertEqual(try owner.stepRoot(fixture.configuration, budget: budget).outcome, .paused(.budget))
+        let before = try XCTUnwrap(owner.rootState(rootID: fixture.configuration.rootID))
+        let oldScan = try XCTUnwrap(before.activeScan)
+        XCTAssertEqual(try owner.requestEventReconciliation(configuration: fixture.configuration, reason: .overflow),
+                       .reconciliationRequested(reason: .overflow, requestedRevision: before.requestedRevision + 1))
+        XCTAssertEqual(try owner.rootState(rootID: fixture.configuration.rootID)?.activeScan, oldScan)
+        var finished = false
+        for _ in 0..<16 {
+            if try owner.stepRoot(fixture.configuration, budget: budget).outcome == .finished { finished = true; break }
+        }
+        XCTAssertTrue(finished)
+        let after = try XCTUnwrap(owner.rootState(rootID: fixture.configuration.rootID))
+        XCTAssertNil(after.activeScan)
+        XCTAssertEqual(after.completedRevision, oldScan.requestedRevision)
+        XCTAssertEqual(after.requestedRevision, before.requestedRevision + 1)
+        XCTAssertGreaterThan(after.requestedRevision, after.completedRevision)
+        XCTAssertNil(after.eventCheckpoint)
+        try owner.close()
+        let reopened = try XCTUnwrap(fixture.open(ownerRunID: "n3-scan-reopen"))
+        defer { try? reopened.close() }
+        XCTAssertEqual(try reopened.rootState(rootID: fixture.configuration.rootID), after)
+        _ = try reopened.enrollAndActivateRoot(fixture.configuration)
+        var reconciled = false
+        for _ in 0..<16 {
+            if try reopened.stepRoot(fixture.configuration, budget: budget).outcome == .finished { reconciled = true; break }
+        }
+        XCTAssertTrue(reconciled)
+        let reconciledState = try XCTUnwrap(reopened.rootState(rootID: fixture.configuration.rootID))
+        XCTAssertEqual(reconciledState.completedRevision, reconciledState.requestedRevision)
+        try reopened.close()
+    }
+
+    func testN3CancellationBeforeAndAtCommitForOrdinaryOversizeAndGapLeavesStateUnchanged() async throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        var commits = 0
+        var armed = false
+        var cancelCurrentTask: (() -> Void)?
+        var hooks = CollectorInventoryOwnerTestHooks()
+        hooks.beforeInventoryCommit = {
+            guard armed else { return }
+            commits += 1
+            // Returning normally after cancellation must still roll back.
+            cancelCurrentTask?()
+        }
+        let owner = try XCTUnwrap(fixture.open(hooks: hooks))
+        defer { try? owner.close() }
+        _ = try owner.enrollAndActivateRoot(fixture.configuration)
+        let before = try owner.rootState(rootID: fixture.configuration.rootID)
+        armed = true
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            for variant in 0..<3 {
+                XCTAssertThrowsError(try {
+                    if variant == 2 { return try owner.requestEventReconciliation(configuration: fixture.configuration, reason: .restart) }
+                    let budget = self.n3Budget(maxIncomingPaths: variant == 1 ? 0 : 64)
+                    return try owner.applyEvents(configuration: fixture.configuration, expectedCheckpoint: nil,
+                                                 nextCheckpoint: .init(epoch: "epoch", cursor: "opaque/a"),
+                                                 dirtyRelativePaths: ["rollout-a.jsonl"], budget: budget)
+                }()) { XCTAssertTrue($0 is CancellationError, "entry variant \(variant)") }
+            }
+        }
+        try await task.value
+        XCTAssertEqual(commits, 0)
+        XCTAssertEqual(try owner.rootState(rootID: fixture.configuration.rootID), before)
+        for variant in 0..<3 {
+            let duringCommit = Task {
+                try withUnsafeCurrentTask { currentTask in
+                    XCTAssertNotNil(currentTask)
+                    XCTAssertFalse(Task.isCancelled)
+                    cancelCurrentTask = { currentTask?.cancel() }
+                    // Never retain the borrowed task handle beyond this scope.
+                    defer { cancelCurrentTask = nil }
+                    XCTAssertThrowsError(try {
+                        if variant == 2 { return try owner.requestEventReconciliation(configuration: fixture.configuration, reason: .restart) }
+                        let budget = self.n3Budget(maxIncomingPaths: variant == 1 ? 0 : 64)
+                        return try owner.applyEvents(configuration: fixture.configuration, expectedCheckpoint: nil,
+                                                     nextCheckpoint: .init(epoch: "epoch", cursor: "opaque/a"),
+                                                     dirtyRelativePaths: ["rollout-a.jsonl"], budget: budget)
+                    }()) { XCTAssertTrue($0 is CancellationError, "commit variant \(variant)") }
+                    XCTAssertTrue(Task.isCancelled)
+                }
+            }
+            try await duringCommit.value
+            XCTAssertEqual(commits, variant + 1)
+            XCTAssertEqual(try owner.rootState(rootID: fixture.configuration.rootID), before)
+        }
+        try owner.close()
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators"), 0)
+    }
+
+    func testN3ClosedOwnerRejectsBothEventEntryPointsWithoutTouchingInventory() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let owner = try XCTUnwrap(fixture.open())
+        _ = try owner.enrollAndActivateRoot(fixture.configuration)
+        try owner.close()
+        let before = try fixture.snapshot()
+        XCTAssertThrowsError(try owner.applyEvents(configuration: fixture.configuration, expectedCheckpoint: nil,
+                                                   nextCheckpoint: .init(epoch: "epoch", cursor: "opaque/a"),
+                                                   dirtyRelativePaths: ["rollout-a.jsonl"], budget: n3Budget())) {
+            XCTAssertEqual($0 as? CollectorInventoryOwnerError, .closed)
+        }
+        XCTAssertThrowsError(try owner.requestEventReconciliation(configuration: fixture.configuration, reason: .restart)) {
+            XCTAssertEqual($0 as? CollectorInventoryOwnerError, .closed)
+        }
+        XCTAssertEqual(try fixture.snapshot(), before)
+        XCTAssertEqual(try collectorOwnerFixtureDescriptors(under: fixture.base), [])
+    }
+
+    private func n3Budget(
+        maxIncomingPaths: Int = 64, maxPathUTF8Bytes: Int = 4096,
+        maxTotalPathUTF8Bytes: Int = 65_536, maxCheckpointUTF8Bytes: Int = 4096
+    ) -> CollectorEventIngressBudget {
+        .init(maxIncomingPaths: maxIncomingPaths, maxPathUTF8Bytes: maxPathUTF8Bytes,
+              maxTotalPathUTF8Bytes: maxTotalPathUTF8Bytes, maxCheckpointUTF8Bytes: maxCheckpointUTF8Bytes)
+    }
+
+    private func n3AssertCheckpoint(
+        _ actual: CollectorEventCheckpoint?, _ expected: CollectorEventCheckpoint,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        XCTAssertEqual(actual.map { Data($0.epoch.utf8) }, Data(expected.epoch.utf8), file: file, line: line)
+        XCTAssertEqual(actual.map { Data($0.cursor.utf8) }, Data(expected.cursor.utf8), file: file, line: line)
+    }
+
+    private func n3SeedRegisteredUnboundRoot(_ fixture: CollectorOwnerFixture) throws {
+        try fixture.seedInventory()
+        let queue = try DatabaseQueue(path: fixture.inventoryURL.path)
+        defer { try? queue.close() }
+        let store = try CollectorInventoryStore(database: queue, machineID: CollectorOwnerFixture.machineID, ownerRunID: "n3-unbound-seed")
+        try store.registerRoot(fixture.configuration)
+        try queue.close()
+        guard chmod(fixture.inventoryURL.path, 0o600) == 0 else { throw POSIXError(.EACCES) }
+    }
+    // End N3-A event ingress tests.
+
     private func assertRejected(_ operation: () throws -> Void, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertThrowsError(try operation(), file: file, line: line) { error in
             XCTAssertNotEqual(error as? CollectorInventoryOwnerError, .notImplemented, "a RED stub is not a security rejection", file: file, line: line)

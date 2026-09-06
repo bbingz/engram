@@ -255,6 +255,21 @@ failures, producer 97659 exit 0 at 12:39:10 CST. Byte comparison proves
 all 38 test bodies/default values unchanged; only the array annotation
 differs. Final five-path correction review/commit/push and new Xcode 16.4
 CI remain pending. A5a/N3-A source stays excluded from that correction.
+The five-path correction then passed its final independent SPEC PASS / QUALITY
+APPROVED gate at 12:42 CST and pinned staged drift. Normal commit/push both
+exited 0, creating `5995ad66bad8d827f311dd04fef81f287a4d70be`. At 12:48 CST
+Draft PR #446 stayed open/unmerged; dependency review `34012392885` passed,
+Tests `34012392893` ran and CodeQL `34012392888` queued. All five A5a/N3-A
+feature files remain uncommitted and byte-identical to approved donor versions;
+their full combined local gates above passed, but their final integration/record
+gate is pending. Their push must wait for all correction-head CI to pass.
+N3-B1 fake-stream recovery and T3b capture FTS remain separate proposals;
+neither native watch nor real Service/Web integration is claimed complete.
+Tests `34012392893` subsequently passed Swift unit/UI smoke and CI Gate;
+its full Xcode 16.4 Swift log independently confirms readiness 38/38 and
+Core 1,681/one existing skip/zero failures. See
+`/tmp/engram-5995-swift-unit-ci.log`. Swift CodeQL remains pending, so the
+feature push is still gated independently from successful Tests.
 The owner authorized committing/pushing W1, running CI, then autonomous staged
 implementation/review/CI through W6 on 2026-09-05. Production W7, credentials,
 network changes, and merge/release remain separate authority boundaries.
@@ -447,6 +462,55 @@ W2 fixtures. Coordinator serializes schema/Runner/DTO changes.
 Gate: full Core/Service suites, fixture transcript/usage/tier/parent parity,
 crash/reorder/namespace tests, direct-writer and migration guards. Demonstrate
 capture and keyword-ready when the AI provider is absent or indefinitely failing.
+
+### T3b bounded test-draft contract (not implemented)
+
+The next W4 slice owns only `IndexJobRunner.swift`, `FTSRebuildPolicy.swift`,
+new `CaptureIngestIndexJobRunnerTests.swift`, and, if needed, existing policy
+tests. The coordinator owns generated test routing. No Service, schema,
+Startup, ImportRepo, OffloadRepo, AI, Readiness or NormalizedStore changes.
+
+- Capture ownership is the indexed stored-session binding OR the reserved
+  `capture-v1.` authority / `remote:capture-v1.` ID prefix, even if tables or
+  bindings are missing. The branch is IF capture-owned THEN capture eligibility
+  ELSE legacy eligibility, never IF eligible capture ELSE legacy. Recheck this
+  at selection, process entry before skip/offload/locator/adapter access, and
+  inside every legacy writer transaction before FTS, completed, not-applicable
+  or retry writes. A legacy adapter suspended while ownership becomes capture
+  must return without modifying that job or any FTS data.
+- One shared SQL predicate governs selection, due count, future backlog and
+  finalization. An independent fresh parser/source policy closure defaults OFF;
+  it is not derived from available adapters. Missing/disabled/stale authority
+  remains unchanged and is not actionable backlog. Capture offloaded rows are
+  excluded before BLOB loading and fenced again inside the writer. They never
+  enter legacy shadow handling or rematerialize full normalized FTS; the existing
+  rebuild copy preserves last-good. Capture-offload support remains incomplete.
+- Neither `invalidStoredRecord` nor a size/count error alone authorizes retry.
+  Before any retry, reread and compare the frozen job ID/session/kind/version/
+  status/retry-count/not-before, generation/required-job identity, identity head,
+  registry epoch/authority and session owner/hash/version, under fresh policy.
+  Any changed authority defers without mutation. Only a still-current record's
+  metadata/payload corruption receives a stable, bounded error code and bounded
+  retry/permanent handling; never persist raw error text. DB infrastructure
+  errors propagate. Cancellation/deadline never becomes a retry or N/A write.
+- A single read-only detached task may load bounded normalized data, with parent
+  cancellation forwarded and its value joined; it performs no writes. JSON
+  decoding remains bounded but not hard-interruptible. Borrow the parent task
+  with `withUnsafeCurrentTask` BEFORE entering synchronous pool.read/pool.write,
+  not inside GRDB's GCD callback. The borrowed handle never escapes that call.
+  Check cancellation/deadline before and after readiness and subsequent
+  embedding/finalize writes so the entire writer transaction rolls back.
+- Readiness, optional first-FTS embedding requeue and fresh-policy finalization
+  share one writer transaction. Initial skip generations without a job remain
+  a later ingest-consumer obligation. A test-only async barrier after load and
+  before parent commit exercises policy/epoch/job/head/version/offload races;
+  cancellation inside the actual writer must also prove complete rollback.
+
+Required RED groups include real T2 fixtures, default OFF and ON with adapters
+empty, reserved/alias/missing bindings or tables, excluded rows without BLOB
+delivery, normalized rather than locator text, legacy-to-capture ownership
+races, stale-authority versus genuine corruption retries, last-good/rebuild,
+future debounce ordering, skip with an actual job and cancellation fences.
 
 ## W5 — native read-only Web
 
