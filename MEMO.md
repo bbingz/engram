@@ -4,6 +4,9 @@
 
 ### 2026-09-06
 
+- [验证] POSIX/T1/Web auth 已整合，六套中央完整门 Core 1,596、Service 875（各 1 既有 skip）、App 1,175、MCP 270、Collector 108、Remote 292 全部零失败；最终脚本 205/2 条件 skip，跨片双门和暂存哈希复核通过，旧 head `09de6304` 三项 CI 全通过，准备提交/新 head CI 待验；N1/T2/真实 HTTP 下一片只在 donor 写 RED，未部署，详见 `CHANGELOG.md`。
+- [验证] 入口取消修复独立双门通过并整合，中央 Collector 108/0；T1 整合后的完整 Core 1,596、Service 875（各 1 既有 skip）零失败，App/其他组合门和 Web 独立门仍在推进，详见 `CHANGELOG.md`。
+- [验证] `09de6304` 已推送，Tests/依赖检查通过、Swift CodeQL 待验；POSIX 中央 107/0，入口取消真实 RED 后 donor 108/0；T1 抢占 44/0 加并发连续 20 次通过并过独立门，Web auth donor 45/0，后续整合/真实接线与 W3–W6 未完成，详见 `CHANGELOG.md`。
 - [验证] 本轮六套完整整合门零失败：Core 1,566、Service 875（各 1 既有 skip）、App 1,175、MCP 270、Remote 247、Collector 74；路径字节身份缺口真实 RED→GREEN 并过独立门，脚本 205/2 条件 skip，新 head CI 待验，W3–W6 未完成，详见 `CHANGELOG.md`。
 - [验证] Replay5 经独立双门通过并按五文件 SHA 整合，完整 Core 1,566（1 既有性能 skip）零失败；Web logout 窄例外 RED→GREEN、安全脚本 49/49、十套脚本 203/2 条件 skip，其他组合门/HTTP 实现/新 head CI 待验，详见 `CHANGELOG.md`。
 - [验证] `1660734` 的 Tests、CodeQL、依赖检查全部通过，PR #446 仍为 Draft；下一批已整合 inventory、Web IPC、bounded CAS 和 pure builder，中央定向门 68/31/127 零失败，完整组合门与新 head CI 尚待执行，详见 `CHANGELOG.md`。

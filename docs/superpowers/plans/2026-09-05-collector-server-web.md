@@ -63,6 +63,36 @@ conditional skips; invariants and safety checks passed. These results supersede
 the preceding pending combined-suite checkpoints; new-head CI is still pending.
 POSIX enumeration, claim state transitions and HTTP auth remain separate donor
 candidates, not part of the verified central runtime or full W3-W6 acceptance.
+Push follow-up: that completed tranche is `09de6304`; its Tests `34001362091`
+and dependency review `34001362277` passed. CodeQL `34001362241` is still running
+at 08:44 CST. The next candidate now has POSIX enumeration integrated (central
+Collector 107/0) and independently approved T1 work leases integrated by SHA
+(donor 44/0 plus 20 successful concurrency repetitions). The held-DIR entry
+cancellation follow-up is donor 108/0, awaiting its independent gate/integration.
+Web auth is donor 45/0 after a compile-only HTTP field alias correction, awaiting
+review/integration. Central full Core is running; no new combined-suite or
+end-to-end success is claimed. T2 atomic parsed/snapshot commit, runtime wiring,
+FSEvents, upload queues, HTTP read routes, UI and W6 remain separate next work.
+The entry-cancellation gate subsequently passed and the frozen pair is now
+integrated: central Collector 108/0, producer 19173 exit 0. The new full central
+Core is 1,596/one existing skip/0, producer 23643 exit 0; Service is 875/one
+existing skip/0, producer 58632 exit 0. App and the remaining combined gates are
+still pending. Exact logs are in CHANGELOG; these are not full W3-W6 results.
+Final candidate checkpoint: independently reviewed Web auth is integrated by
+seven exact hashes. All six central targets passed: Core 1,596 and Service 875
+(one existing skip each), App 1,175, MCP 270, Collector 108, Remote 292, zero
+failures and actual producer exits 0. Final ten-script rerun is 205/two existing
+conditional skips; typecheck and five invariants pass. The initial Remote
+executable-scheme selection executed zero tests and is recorded separately from
+the corrected Core run. Integration-seam review and prior-head CodeQL remain
+pending. Donor-only N1/T2/A4 RED drafts are excluded from this candidate.
+The prior-head gate subsequently completed: `09de6304` Tests `34001362091`,
+CodeQL `34001362241` and dependency review `34001362277` are all successful.
+The current candidate still awaits its integration-seam gate and new-head CI.
+The integration-seam gate then passed SPEC PASS / QUALITY APPROVED and verified
+all 15 staged implementation/routing hashes unchanged; pinned project drift
+passed. The 19-file candidate (including four records) is ready for the
+authorized normal commit/push. New-head CI and full W3-W6 remain pending.
 The owner authorized committing/pushing W1, running CI, then autonomous staged
 implementation/review/CI through W6 on 2026-09-05. Production W7, credentials,
 network changes, and merge/release remain separate authority boundaries.

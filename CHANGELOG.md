@@ -7,6 +7,111 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### POSIX enumeration and ingest work-lease checkpoint (2026-09-06)
+
+The preceding inventory/CAS/replay/IPC/builder tranche was committed and pushed
+as `09de6304c020abc5f0d8cdcb85522c870595fbdd` to still-open Draft PR #446.
+Tests `34001362091` and dependency review `34001362277` passed for that exact
+head. At the 08:44 CST check, CodeQL `34001362241` still had both Swift builds
+in progress; TypeScript passed. No merge, release, deployment, credentials,
+live configuration, or production process changes were made.
+
+The next local candidate contains the independently approved native POSIX root
+enumerator and its 33 tests. The coordinator's complete central Collector run
+passed 107/107, producer 52580 exit 0 (`/tmp/engram-posix-central107-full.log`).
+A separate real held-DIR test then reproduced seven failed assertions when an
+already-cancelled task entered a still-owned Walker. The minimal six-line
+entry catch now resets the cursor and rethrows the original cancellation.
+The donor's complete Collector run passed 108/108, B-run producer 72642 exit 0;
+the coordinator independently read the patch, source hashes, and test log.
+Evidence is `/tmp/engram-w3-posix-red.1chyCC/walker-entry-cancel-{test,implementation}.patch`
+and `{walker-entry-cancel-red,collector108-walker-entry-cancel-green}.log` in
+that directory. The entry-cancellation follow-up gate and central integration
+remain pending. This is not FSEvents, uploader, or collector-process acceptance.
+Follow-up: the exact two-file entry-cancellation review returned SPEC PASS /
+QUALITY APPROVED. Both frozen hashes are now integrated; the coordinator's
+complete central Collector passed 108/108, producer 19173 exit 0
+(`/tmp/engram-posix-central108-full.log` and matching `.xcresult`). This
+supersedes the pending entry-gate/integration checkpoint, not the runtime gaps.
+
+The T1 ingest work-lease slice passed its independent SPEC PASS / QUALITY
+APPROVED gate and is integrated by exact two-file SHA. It adds bounded leases,
+canonical-publication fencing, typed failure-only transitions, and idempotent
+schema extension without snapshot/readiness promotion. The corrected RED was
+30 tests/58 assertion failures, with the old 14 tests passing. The first GREEN
+exposed actual SQLITE_BUSY code 5 in the two-independent-writer claim test;
+it was not SQLITE_BUSY_SNAPSHOT 517. A zero-row UPDATE inside the claim
+savepoint reserves the writer before that transaction's first read. C-run
+producer 15640 then passed 44/44, and producer 31492 passed the single
+concurrency case 20 times without failure-retry mode. The coordinator separately
+read the complete new source and the raw test evidence. Logs:
+`/tmp/engram-capture-claim-red-fixed.SME13h/red.log`,
+`/tmp/engram-capture-claim-race-diagnostic.64X47l/diagnostic.log`,
+`/tmp/engram-capture-claim-lock-green.dJjELl/green.log`, and
+`/tmp/engram-capture-claim-race-repeat20.I5ayso/repeat20.log`.
+This does not guarantee arbitrary caller-owned earlier read snapshots, and
+does not implement T2 parsed/snapshot commit, the Runner, or full W4. Central
+full Core validation of the integrated T1 is running, not yet claimed passed.
+Follow-up: full central Core passed 1,596 tests/one existing performance skip/
+zero failures, producer 23643 exit 0; Service passed 875/one existing skip/zero
+failures, producer 58632 exit 0. Logs and matching `.xcresult` bundles are
+`/tmp/engram-posix-claim-tranche-{core,service}-full.*`. The App scheme is now
+running; the remaining combined gates and next-head CI are not yet passed.
+Follow-up: App passed 1,175/0 and repeated Core 1,596/one existing skip/0,
+producer 45236 exit 0 (`/tmp/engram-posix-claim-tranche-app-full.log`). MCP
+passed 270/0, producer 90144 exit 0 (`/tmp/engram-posix-claim-tranche-mcp-full.log`).
+Ten script suites passed 205/two existing conditional skips, producer 88565
+exit 0 (`/tmp/engram-posix-claim-tranche-scripts.log`). All five invariant gates
+also passed (`/tmp/engram-posix-claim-tranche-invariants.log`).
+
+The separate Web-auth donor passed 45/45 (routes 22, sessions 14, config 9),
+A-run producer 36240 exit 0. Its actual RED was 45 tests/363 assertions;
+the first implementation build instead executed zero tests because HTTPTypes
+marks its Host convenience alias unavailable. Replacing only that alias with
+the explicit field name preserved both authority and duplicate/raw-Host checks.
+Evidence: `/tmp/engram-w5-auth-red2.uA3zCc/w5-auth45-red.log`,
+`/tmp/engram-w5-auth-green.c2mGoL/w5-auth45-green.log`, and
+`/tmp/engram-w5-auth-green2.H8Fb7Q/w5-auth45-green.log`.
+Independent review, central integration, real App/HTTP wiring, static UI,
+browser acceptance, and W3-W6 end-to-end gates remain pending.
+Follow-up: the independent seven-file AUTH FOUNDATION gate returned SPEC PASS /
+QUALITY APPROVED against the central corrected GET contract. All seven frozen
+hashes are integrated, and the archive safety gate passed with the exact logout
+wrapper present. XcodeGen 2.45.4 regenerated ten total new-file references with
+40 additions and no deletions, independently inspected by the coordinator.
+The first central Remote command selected the executable scheme, which has no
+test action: producer 85207 exit 66, zero executed tests, preserved in
+`/tmp/engram-posix-claim-auth-tranche-remote-full.log`. The corrected
+EngramRemoteServerCore run is in progress with separate `remote-full2` evidence;
+this is a command-selection correction, not a production RED or passing suite.
+Final local follow-up: the corrected Remote Core run passed 292/292, producer
+53281 exit 0 (`/tmp/engram-posix-claim-auth-tranche-remote-full2.log` and
+matching `.xcresult`). All six central targets are now green: Core 1,596 and
+Service 875 (one existing skip each), App 1,175, MCP 270, Collector 108, and
+Remote 292, zero failures. Final ten-script rerun after auth integration is
+205 passed/two existing conditional skips, producer 11475 exit 0
+(`/tmp/engram-posix-claim-auth-tranche-scripts-final.log`). Test typecheck and
+all five invariant gates exited 0 (`*-typecheck-test.log`, `*-invariants-final.log`
+under the same prefix). Cross-slice integration review and prior-head CodeQL
+are pending; no new-head CI result or end-to-end/runtime readiness is claimed.
+
+Next donor-only RED preparation is limited to N1 persisted explicit root
+bindings/owner activation, T2 atomic parsed generations/snapshots/jobs, and
+A4 actual HTTP/auth/message-IPC wiring. These drafts are excluded from this
+central candidate. The coordinator synchronized only the already-approved
+builder/indexer/test trio into the ingest donor, matching frozen hashes;
+no new snapshot-builder behavior was introduced by that dependency sync.
+Prior-head CI follow-up: `09de6304` Tests `34001362091`, CodeQL `34001362241`
+and dependency review `34001362277` are all successful, independently refreshed
+before preparing the next commit. This supersedes the prior pending CodeQL
+checkpoint only; the current local candidate has no new-head CI result yet.
+The final integration-seam gate returned SPEC PASS / QUALITY APPROVED, then
+rechecked all 15 implementation/routing index-versus-worktree hashes after
+staging. The 19-file candidate contains only those files plus the four
+coordinator-owned records; both unrelated SQLite sidecars remain excluded.
+Pinned project drift passed after staging. Ready for the authorized normal
+commit/push and fresh-head CI; this is not full W3-W6 or production acceptance.
+
 ### Inventory, snapshot construction and Web boundary checkpoint (2026-09-06)
 
 The signal correction is pushed as `166073471d40038abf150de6cad4e86c45970e28`

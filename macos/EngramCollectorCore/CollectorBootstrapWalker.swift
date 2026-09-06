@@ -32,7 +32,12 @@ final class CollectorBootstrapWalker {
         budget: CollectorBootstrapBudget,
         storageAvailable: Bool = true
     ) throws -> CollectorBootstrapStepResult {
-        try Task.checkCancellation()
+        do {
+            try Task.checkCancellation()
+        } catch {
+            resetCursor()
+            throw error
+        }
         guard budget.maxEntriesVisited >= 0, budget.maxCandidateFiles >= 0,
               budget.maxDirectoryOpens >= 0, budget.maxMetadataBytes >= 0 else {
             throw CollectorInventoryError.invalidBudget
