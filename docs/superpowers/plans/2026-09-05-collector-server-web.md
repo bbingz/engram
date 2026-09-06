@@ -93,6 +93,43 @@ The integration-seam gate then passed SPEC PASS / QUALITY APPROVED and verified
 all 15 staged implementation/routing hashes unchanged; pinned project drift
 passed. The 19-file candidate (including four records) is ready for the
 authorized normal commit/push. New-head CI and full W3-W6 remain pending.
+Push follow-up: this candidate is `1523487bbea97837043ada1ae6a3603157bb98c5`.
+Its Tests `34003169069` and dependency review `34003169052` passed; CodeQL
+`34003169055` is still running at 09:19 CST. Donor N1 complete Collector RED
+executed 124 tests with 52 failures, including ten independent old-API
+Unicode owner-fence assertions. A4's 49-test HTTP draft is reviewed and its
+project regenerated; actual RED is next. Neither donor is integrated or
+GREEN-verified, and T2 remains test preparation. Exact evidence is in CHANGELOG.
+Subsequent donor gates: N1 full Collector passed 126/126 and awaits independent
+review/integration. A4 focused HTTP passed 49/49 after a one-line fixture cut
+correction; its first full 341 run has one pre-existing firmlink fixture/home
+setup error and is being rerun with a verified workspace-local isolated home.
+T2 corrected RED is 45/100 assertions/zero unexpected failures with all 44
+old ledger/claim tests passing; its GREEN is in progress. These supersede
+the earlier donor-preparation state, not the remaining W3-W6/runtime gaps.
+At 09:43 CST the exact `1523487b` Tests, CodeQL and dependency review all
+passed. N1 then passed independent SPEC/QUALITY gates, was integrated by
+exact two-file hashes, and passed the coordinator's complete Collector
+126/126 run (producer 48671 exit 0). A4's workspace-home full rerun passed
+341/341, including the previously failing firmlink test; its independent
+gate/integration are pending. T2's frozen 89-test GREEN is running. N2 is
+limited to owner/enrollment tests and fail-closed scaffolds; no runtime or
+end-to-end readiness is implied. See the newest CHANGELOG evidence entry.
+A4 subsequently passed its independent two gates and exact four-file central
+integration; the coordinator's full Remote Core run passed 341/341. T2's
+donor GREEN passed 89/89, but its history materialization now has a test-first
+bounded-result follow-up before review/integration. Central archive safety,
+typecheck and five invariant gates pass; these do not cover later T2 changes.
+Prepare a bounded N1+A4 commit now, excluding all donor T2/N2 changes.
+Its two affected full targets pass centrally (Collector 126, Remote 341),
+as do ten script suites (205/two existing conditional skips), typecheck,
+archive safety and five invariants. The four unchanged Core/Service/App/MCP
+targets are not rerun for this candidate. Combination/routing review and
+staged project drift precede commit/push; new-head CI remains separate.
+The combination/routing gate passed SPEC PASS / QUALITY APPROVED; the
+coordinator also verified all seven staged source/routing hashes against
+the worktree and passed pinned staged project drift. The eleven-file N1+A4
+candidate is ready for authorized commit/push, with new-head CI pending.
 The owner authorized committing/pushing W1, running CI, then autonomous staged
 implementation/review/CI through W6 on 2026-09-05. Production W7, credentials,
 network changes, and merge/release remain separate authority boundaries.

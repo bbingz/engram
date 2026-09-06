@@ -32,10 +32,11 @@ final class CollectorInventoryStore {
             guard storedMachineID == nil || storedMachineID == machineID else {
                 throw CollectorInventoryError.machineIDMismatch
             }
-            if let version = try String.fetchOne(db, sql: "SELECT value FROM collector_metadata WHERE key = 'schema_version'"), version != "1" {
+            if let version = try String.fetchOne(db, sql: "SELECT value FROM collector_metadata WHERE key = 'schema_version'"),
+               version != "1", version != "2" {
                 throw CollectorInventoryError.invalidState
             }
-            for (key, value) in [("schema_version", "1"), ("machine_id", machineID), ("active_owner_run_id", ownerRunID)] {
+            for (key, value) in [("schema_version", "2"), ("machine_id", machineID), ("active_owner_run_id", ownerRunID)] {
                 try db.execute(
                     sql: "INSERT INTO collector_metadata(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                     arguments: [key, value]
@@ -71,6 +72,56 @@ final class CollectorInventoryStore {
                     VALUES (?, ?, ?, ?, 1, 0)
                     """, arguments: [configuration.rootID, configuration.source.rawValue, configuration.rootPath, configuration.revision])
             }
+        }
+    }
+
+    func enrollRoot(binding: CollectorPOSIXRootBinding) throws {
+        try write { db in
+            try Self.requireRoot(db, binding.configuration)
+            let identity = binding.expectedIdentity
+            guard (0..<1_000_000_000).contains(identity.birthNanoseconds) else {
+                throw CollectorInventoryError.invalidRoot
+            }
+            if let existing = try Self.rootBinding(db, binding.configuration) {
+                guard existing.binding.expectedIdentity == identity else {
+                    throw CollectorInventoryError.invalidRoot
+                }
+                return
+            }
+            try db.execute(sql: """
+                INSERT INTO collector_root_bindings(
+                    root_id, root_revision, device, inode, generation, birth_seconds, birth_nanoseconds
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, arguments: [
+                    binding.configuration.rootID, binding.configuration.revision, identity.device, identity.inode,
+                    Int64(identity.generation), identity.birthSeconds, identity.birthNanoseconds,
+                ])
+        }
+    }
+
+    func enrolledRoot(configuration: CollectorRootConfiguration) throws -> CollectorPOSIXRootBinding? {
+        try database.read { db in
+            try Self.requireRoot(db, configuration)
+            return try Self.rootBinding(db, configuration)?.binding
+        }
+    }
+
+    func activateEnrolledRoot(configuration: CollectorRootConfiguration) throws -> CollectorPOSIXRootBinding? {
+        try write { db in
+            let state = try Self.requireRoot(db, configuration)
+            guard let stored = try Self.rootBinding(db, configuration) else { return nil }
+            if stored.lastActivatedOwnerRunID?.utf8.elementsEqual(ownerRunID.utf8) == true {
+                return stored.binding
+            }
+            try db.execute(
+                sql: "UPDATE collector_roots SET requested_revision = ? WHERE root_id = ?",
+                arguments: [Self.increment(state.requestedRevision), configuration.rootID]
+            )
+            try db.execute(sql: """
+                UPDATE collector_root_bindings SET last_activated_owner_run_id = ?
+                WHERE root_id = ? AND root_revision = ?
+                """, arguments: [ownerRunID, configuration.rootID, configuration.revision])
+            return stored.binding
         }
     }
 
@@ -151,7 +202,8 @@ final class CollectorInventoryStore {
                 let claimedRevision: Int64? = row["claimed_dirty_revision"]
                 let claimedOwner: String? = row["claim_owner_run_id"]
                 let retryNotBefore: Int64? = row["retry_not_before"]
-                guard claimedRevision == nil || claimedOwner != ownerRunID,
+                let ownedByCurrentRun = claimedOwner?.utf8.elementsEqual(ownerRunID.utf8) ?? false
+                guard claimedRevision == nil || !ownedByCurrentRun,
                       retryNotBefore == nil || retryNotBefore! <= now else { return nil }
                 let path: String = row["relative_path"]
                 let dirtyRevision: Int64 = row["dirty_revision"]
@@ -352,7 +404,8 @@ final class CollectorInventoryStore {
 
     private func write<T>(_ body: (Database) throws -> T) throws -> T {
         try database.write { db in
-            guard try String.fetchOne(db, sql: "SELECT value FROM collector_metadata WHERE key = 'active_owner_run_id'") == ownerRunID else {
+            guard let activeOwner = try String.fetchOne(db, sql: "SELECT value FROM collector_metadata WHERE key = 'active_owner_run_id'"),
+                  activeOwner.utf8.elementsEqual(ownerRunID.utf8) else {
                 throw CollectorInventoryError.staleOwner
             }
             let result = try body(db)
@@ -362,13 +415,57 @@ final class CollectorInventoryStore {
     }
 
     private func currentClaimRow(_ db: Database, _ claim: CollectorDirtyClaim) throws -> Row? {
-        guard claim.ownerRunID == ownerRunID,
+        guard claim.ownerRunID.utf8.elementsEqual(ownerRunID.utf8),
               let root = try Self.rootState(db, rootID: claim.rootID), root.configuration.revision == claim.rootRevision,
               let row = try Self.locatorRow(db, root.configuration, claim.relativePath) else { return nil }
         let owner: String? = row["claim_owner_run_id"]
         let generation: Int64 = row["claim_generation"]
         let revision: Int64? = row["claimed_dirty_revision"]
-        return owner == claim.ownerRunID && generation == claim.claimGeneration && revision == claim.dirtyRevision ? row : nil
+        let ownerMatches = owner?.utf8.elementsEqual(claim.ownerRunID.utf8) ?? false
+        return ownerMatches && generation == claim.claimGeneration && revision == claim.dirtyRevision ? row : nil
+    }
+
+    private static func rootBinding(
+        _ db: Database,
+        _ configuration: CollectorRootConfiguration
+    ) throws -> (binding: CollectorPOSIXRootBinding, lastActivatedOwnerRunID: String?)? {
+        let row: Row?
+        do {
+            row = try Row.fetchOne(db, sql: """
+                SELECT device, inode, generation, birth_seconds, birth_nanoseconds, last_activated_owner_run_id
+                FROM collector_root_bindings WHERE root_id = ? AND root_revision = ?
+                """, arguments: [configuration.rootID, configuration.revision])
+        } catch let error as DatabaseError where error.resultCode == .SQLITE_ERROR {
+            // Missing binding columns are corrupt state, not an unenrolled root.
+            throw CollectorInventoryError.invalidState
+        }
+        guard let row else { return nil }
+        let deviceValue: DatabaseValue = row["device"]
+        let inodeValue: DatabaseValue = row["inode"]
+        let generationValue: DatabaseValue = row["generation"]
+        let secondsValue: DatabaseValue = row["birth_seconds"]
+        let nanosecondsValue: DatabaseValue = row["birth_nanoseconds"]
+        let ownerValue: DatabaseValue = row["last_activated_owner_run_id"]
+        guard case let .int64(device) = deviceValue.storage,
+              case let .int64(inode) = inodeValue.storage,
+              case let .int64(rawGeneration) = generationValue.storage,
+              let generation = UInt32(exactly: rawGeneration),
+              case let .int64(seconds) = secondsValue.storage,
+              case let .int64(nanoseconds) = nanosecondsValue.storage,
+              (0..<1_000_000_000).contains(nanoseconds) else {
+            throw CollectorInventoryError.invalidState
+        }
+        let owner: String?
+        switch ownerValue.storage {
+        case .null: owner = nil
+        case let .string(value) where !value.isEmpty: owner = value
+        default: throw CollectorInventoryError.invalidState
+        }
+        let identity = CollectorPOSIXDirectoryIdentity(
+            device: device, inode: inode, generation: generation,
+            birthSeconds: seconds, birthNanoseconds: nanoseconds
+        )
+        return (.init(configuration: configuration, expectedIdentity: identity), owner)
     }
 
     @discardableResult
@@ -459,6 +556,18 @@ final class CollectorInventoryStore {
                 last_scan_failure TEXT CHECK(last_scan_failure IN ('unsafeEntry', 'enumerationUnavailable')),
                 CHECK((event_epoch IS NULL) = (event_cursor IS NULL)),
                 CHECK((active_scan_id IS NULL) = (active_scan_requested_revision IS NULL))
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS collector_root_bindings (
+                root_id TEXT NOT NULL, root_revision INTEGER NOT NULL CHECK(root_revision > 0),
+                device INTEGER NOT NULL CHECK(typeof(device) = 'integer'),
+                inode INTEGER NOT NULL CHECK(typeof(inode) = 'integer'),
+                generation INTEGER NOT NULL CHECK(typeof(generation) = 'integer' AND generation BETWEEN 0 AND 4294967295),
+                birth_seconds INTEGER NOT NULL CHECK(typeof(birth_seconds) = 'integer'),
+                birth_nanoseconds INTEGER NOT NULL CHECK(typeof(birth_nanoseconds) = 'integer' AND birth_nanoseconds BETWEEN 0 AND 999999999),
+                last_activated_owner_run_id TEXT CHECK(last_activated_owner_run_id IS NULL OR
+                    (typeof(last_activated_owner_run_id) = 'text' AND length(CAST(last_activated_owner_run_id AS BLOB)) > 0)),
+                PRIMARY KEY(root_id, root_revision),
+                FOREIGN KEY(root_id) REFERENCES collector_roots(root_id)
             ) WITHOUT ROWID;
             CREATE TABLE IF NOT EXISTS collector_locators (
                 root_id TEXT NOT NULL, root_revision INTEGER NOT NULL, relative_path TEXT NOT NULL,

@@ -4,6 +4,11 @@
 
 ### 2026-09-06
 
+- [验证] N1＋A4 十一文件候选通过组合双门和暂存哈希／固定版工程漂移门；中央 Collector 126、Remote 341 全过，脚本 205/2 条件 skip，准备提交推送，新 head CI 待验；T2/N2 未混入，详见 `CHANGELOG.md`。
+- [验证] A4 独立双门通过并按哈希整合，中央 Remote 341/0；T2 donor 89/0，版本计算的全历史内存展开正补 RED 后收敛，暂未整合；现候选 archive safety/typecheck/五项 invariant 通过，详见 `CHANGELOG.md`。
+- [验证] `1523487b` 三项 CI 全通过；N1 独立双门通过并按哈希整合，中央 Collector 126/0；A4 donor 完整 Remote 341/0，独立门/整合待验；T2 89 项 GREEN 正运行，N2 仅测试骨架，未部署，详见 `CHANGELOG.md`。
+- [验证] N1 donor 完整 Collector 126/0，独立门/中央整合待验；真实 HTTP 定向 49/0，完整 341 仅既有 firmlink 测试 home 选址报错，正换工作树内隔离 home 重跑。T2 修正 fixture 后 45 项真实 RED，旧 44 全过，GREEN 实现中，详见 `CHANGELOG.md`。
+- [验证] `1523487b` 已推送，Tests/依赖检查通过，09:19 CST CodeQL 仍在运行；N1 donor 完整 Collector 124 取得真实 RED，另独立复现旧 owner Unicode 字节栅栏绕过，GREEN/真实 HTTP/T2 仍在推进，未部署，详见 `CHANGELOG.md`。
 - [验证] POSIX/T1/Web auth 已整合，六套中央完整门 Core 1,596、Service 875（各 1 既有 skip）、App 1,175、MCP 270、Collector 108、Remote 292 全部零失败；最终脚本 205/2 条件 skip，跨片双门和暂存哈希复核通过，旧 head `09de6304` 三项 CI 全通过，准备提交/新 head CI 待验；N1/T2/真实 HTTP 下一片只在 donor 写 RED，未部署，详见 `CHANGELOG.md`。
 - [验证] 入口取消修复独立双门通过并整合，中央 Collector 108/0；T1 整合后的完整 Core 1,596、Service 875（各 1 既有 skip）零失败，App/其他组合门和 Web 独立门仍在推进，详见 `CHANGELOG.md`。
 - [验证] `09de6304` 已推送，Tests/依赖检查通过、Swift CodeQL 待验；POSIX 中央 107/0，入口取消真实 RED 后 donor 108/0；T1 抢占 44/0 加并发连续 20 次通过并过独立门，Web auth donor 45/0，后续整合/真实接线与 W3–W6 未完成，详见 `CHANGELOG.md`。

@@ -50,6 +50,8 @@ public struct EngramRemoteServerConfig: Sendable {
     public var archiveV2: EngramRemoteArchiveConfig?
     public var mcp: EngramRemoteMCPConfig?
     public let sourceRevision: String
+    public var web: EngramRemoteWebConfig?
+    public var webServiceSocketPath: String?
 
     public init(
         host: String,
@@ -60,7 +62,9 @@ public struct EngramRemoteServerConfig: Sendable {
         maxBundleBytes: Int = 64 * 1024 * 1024,
         archiveV2: EngramRemoteArchiveConfig? = nil,
         mcp: EngramRemoteMCPConfig? = nil,
-        sourceRevision: String = "unknown"
+        sourceRevision: String = "unknown",
+        web: EngramRemoteWebConfig? = nil,
+        webServiceSocketPath: String? = nil
     ) {
         self.host = host
         self.port = port
@@ -71,6 +75,8 @@ public struct EngramRemoteServerConfig: Sendable {
         self.archiveV2 = archiveV2
         self.mcp = mcp
         self.sourceRevision = Self.validatedSourceRevision(sourceRevision)
+        self.web = web
+        self.webServiceSocketPath = webServiceSocketPath
     }
 
     public enum ConfigError: Error, CustomStringConvertible {
@@ -94,6 +100,8 @@ public struct EngramRemoteServerConfig: Sendable {
         case mcpRequiresArchive
         case missingMCPToken
         case mcpTokenMustBeDistinct
+        case missingWebServiceSocketPath
+        case invalidWebServiceSocketPath
 
         public var description: String {
             switch self {
@@ -137,6 +145,10 @@ public struct EngramRemoteServerConfig: Sendable {
                 return "ENGRAM_REMOTE_MCP_TOKEN is required when the MCP endpoint is enabled."
             case .mcpTokenMustBeDistinct:
                 return "ENGRAM_REMOTE_MCP_TOKEN must be distinct from the legacy v1 and archive v2 bearer tokens."
+            case .missingWebServiceSocketPath:
+                return "Web requires an explicit ENGRAM_REMOTE_WEB_SERVICE_SOCKET."
+            case .invalidWebServiceSocketPath:
+                return "Web service socket must be a bounded absolute non-root path."
             }
         }
     }
@@ -251,6 +263,17 @@ public struct EngramRemoteServerConfig: Sendable {
             mcp = nil
         }
 
+        let web = try EngramRemoteWebConfig.fromEnvironment(
+            env,
+            serverBearerCredentials: [token, env["ENGRAM_REMOTE_ARCHIVE_TOKEN"], env["ENGRAM_REMOTE_MCP_TOKEN"]].compactMap { $0 }
+        )
+        let webServiceSocketPath: String?
+        if web != nil {
+            webServiceSocketPath = try Self.validatedWebServiceSocketPath(env["ENGRAM_REMOTE_WEB_SERVICE_SOCKET"])
+        } else {
+            webServiceSocketPath = nil
+        }
+
         return EngramRemoteServerConfig(
             host: host,
             port: port,
@@ -259,8 +282,27 @@ public struct EngramRemoteServerConfig: Sendable {
             atRestKey: SymmetricKey(data: keyData),
             archiveV2: archiveV2,
             mcp: mcp,
-            sourceRevision: env["ENGRAM_REMOTE_SOURCE_REVISION"] ?? "unknown"
+            sourceRevision: env["ENGRAM_REMOTE_SOURCE_REVISION"] ?? "unknown",
+            web: web,
+            webServiceSocketPath: webServiceSocketPath
         )
+    }
+
+    /// Pure shape validation. Preserve the supplied path, without home discovery or inode reads.
+    static func validatedWebServiceSocketPath(_ path: String?) throws -> String {
+        guard let path, !path.isEmpty else { throw ConfigError.missingWebServiceSocketPath }
+        guard path.hasPrefix("/"), !path.utf8.contains(0),
+              path.utf8.count < MemoryLayout.size(ofValue: sockaddr_un().sun_path) else {
+            throw ConfigError.invalidWebServiceSocketPath
+        }
+        var depth = 0
+        for component in path.split(separator: "/") {
+            if component == "." { continue }
+            if component == ".." { depth = max(0, depth - 1) }
+            else { depth += 1 }
+        }
+        guard depth > 0 else { throw ConfigError.invalidWebServiceSocketPath }
+        return path
     }
 
     /// Generate a fresh base64 at-rest key for first-time setup.

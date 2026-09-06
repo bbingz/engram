@@ -7,6 +7,163 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Root enrollment integration and HTTP full-suite follow-up (2026-09-06)
+
+Draft PR #446 remains open and unmerged at `1523487b`. Its exact-head Tests
+`34003169069`, CodeQL `34003169055` and dependency review `34003169052` all
+passed; the CodeQL Gate completed at 09:43 CST. These results cover that
+immutable commit, not the subsequent uncommitted candidate.
+
+N1's independent read-only gate returned SPEC PASS / QUALITY APPROVED.
+The coordinator integrated only the Store and its tests, verifying exact
+SHA-256 equality with the reviewed donor (`161afd9d...c5335` and
+`1a840c64...25795`). Its own complete central Collector run then passed
+126/126, including Inventory 39/39, actual producer 48671 exit 0. Evidence:
+`/tmp/engram-n1-central-collector126.log` (lines 1178, 1321-1331) and matching
+`.xcresult`. This implements persisted physical bindings, owner-run activation
+and byte-exact owner fencing, not filesystem ownership or a running collector.
+
+A4's corrected full Remote Core run passed 341/341 with no skips or failures,
+including the existing Users-firmlink test and all 49 actual HTTP tests.
+Evidence is `/tmp/engram-a4-remote-full-green2.T4e8t8/a4-remote-core-full-green.log`
+(lines 781, 1530-1542) and matching `.xcresult`; A-run producer 55968 exited 0.
+Only the isolated test home moved under the donor worktree. The command and
+exit record in that directory explicitly identify themselves as post-run
+transcriptions, not producer-created contemporaneous files. All three A4
+production hashes and the corrected test hash remain frozen. Independent A4
+review and central integration are pending. T2's frozen 89-test GREEN is in
+progress; N2 is test/scaffold preparation only. No W3-W6 end-to-end, browser,
+production, merge or deployment acceptance is claimed.
+
+A4's independent gate subsequently returned SPEC PASS / QUALITY APPROVED.
+The coordinator integrated all four exact reviewed hashes and generated only
+eight additive project lines for the two new Swift files using XcodeGen 2.45.4.
+Its own full central Remote Core run passed 341/341, actual producer 31291
+exit 0: `/tmp/engram-a4-central-remote341.log` (lines 2713, 3462-3474) and
+matching `.xcresult`. The central candidate also passes the archive safety
+gate, typecheck and five invariant gates. T2's donor run completed 89/89,
+producer 6167 exit 0 (`/tmp/engram-capture-commit-green.2YjMch/green.log`,
+lines 1554, 1647, 1678-1690). Its per-identity version calculation currently
+materializes every historical generation, so a test-first bounded-result
+follow-up precedes its independent quality gate and integration. This is a
+memory-bound correction, not a claim that SQL history scanning is constant-time.
+
+The coordinator is preparing a bounded N1+A4 commit while T2/N2 stay in donor
+worktrees. Ten central script suites passed 205 tests with two pre-existing
+conditional project-drift skips, producer 74970 exit 0
+(`/tmp/engram-n1-a4-tranche-scripts.log`). Typecheck and all five invariant
+gates exited 0 with logs under the same `/tmp/engram-n1-a4-tranche-` prefix.
+Core/Service/App/MCP production source is unchanged in this candidate and
+those four suites were not rerun; their prior-commit full-target results
+remain explicitly separate. Central combination/routing review and staged
+project drift are the remaining pre-commit gates; new-head CI is pending.
+
+The central combination/routing gate then returned SPEC PASS / QUALITY
+APPROVED. The coordinator independently verified all six source/test files
+and the generated project byte-for-byte between the index and worktree,
+and the pinned staged project-drift gate exited 0
+(`/tmp/engram-n1-a4-tranche-xcodeproj.log`). Exactly eleven files are staged;
+unrelated SQLite sidecars remain excluded. This candidate is ready for the
+authorized normal commit/push; its future SHA and CI are not yet verified.
+
+### Persisted root and HTTP integration RED checkpoint (2026-09-06)
+
+The preceding POSIX/T1/Web-auth candidate was committed and pushed as
+`1523487bbea97837043ada1ae6a3603157bb98c5` to still-open Draft PR #446.
+The coordinator harvested both commit and push producers with exit 0; their
+logs are `/tmp/engram-posix-claim-auth-tranche-{commit,push}.log`.
+At 09:19 CST, exact-head Tests `34003169069` and dependency review
+`34003169052` passed; CodeQL `34003169055` was still in progress. The
+post-commit project-drift script suite also passed 10/10, including its two
+previously conditional skips (`/tmp/engram-posix-claim-auth-tranche-xcodeproj-tests-postcommit.log`).
+This is not a new full 207-script rerun or production verification.
+
+N1 donor-only enrollment tests then produced a real complete Collector RED:
+124 tests, 52 assertion/error failures (23 unexpected), B-run producer 57197
+exit 65. Inventory's 37 tests account for all failures; the other 87 tests
+have zero failures. An independent pre-existing-API regression demonstrates
+that canonically equivalent but byte-different owner IDs bypass the old
+Swift String write fence in both directions: stale markDirty,
+requestReconciliation and registerRoot calls do not reject the old owner,
+and dirty rows/requested revisions change. Those ten failed assertions are
+distinct from the new binding stubs and missing-schema preconditions.
+The coordinator read the complete new test patch, exact source hashes and
+raw failure evidence: `/tmp/engram-w3-posix-red.1chyCC/collector124-n1-red.log`
+(lines 354-363, 591-593) and matching `.xcresult`. N1 GREEN is not yet verified.
+
+Two further pure old-API owner-claim regressions were added before any Store
+implementation changed. Producer 6107 exited 65 with two tests/26 failed
+assertions/zero unexpected failures: byte-different new owners fail to reclaim
+old work, while both original and substituted-owner stale tokens can ACK or
+defer it. Each operation has an independent fixture in both Unicode directions.
+The coordinator read all assertions and verified the unchanged Store SHA.
+Evidence is `/tmp/engram-w3-posix-red.1chyCC/n1-claim-owner-red.log`
+(lines 178-212), `.xcresult`, and `.producer-exit`. The 39 Inventory tests are
+now frozen for the minimal Store-only schema/activation/owner-fence GREEN.
+
+A4's four-file actual-HTTP draft is also donor-only. The coordinator reviewed
+all 49 tests and fail-closed scaffolds, then regenerated the donor project
+with XcodeGen 2.45.4. Its tests exercise App.run and count real AF_UNIX accepts
+and frames; the Unicode fixture is a short DTO fidelity check, not an
+oversized full-transcript acceptance test. Actual A4 RED remains pending;
+T2 atomic parsed-commit tests are still in preparation. Runtime consumers,
+FSEvents, two-replica queues, static Web UI and W6 remain incomplete. No
+merge, release, credentials, live configuration, deployment or production
+process was changed.
+
+HTTP RED follow-up: A-run producer 74732 exited 65 after executing all 49
+integration tests, with 498 failed assertions and zero unexpected failures.
+The coordinator verified current frozen hashes and read the log: configuration
+and pre-store credential checks fail directly, while many authenticated-read
+cases stop at the missing login route's 404 and do not exercise their deeper
+branches. The real legacy v1/archive/MCP compatibility case passes. Evidence is
+`/tmp/engram-a4-web-red.qFtRDE/a4-web49-red.log` (lines 1065-1704) and matching
+`.xcresult`. The three-file A4 GREEN implementation is authorized but not
+verified; the 49-test input remains frozen.
+
+T2 RED follow-up: the first combined run compiled and executed 89 tests but
+42 T2 cases stopped at a noncanonical ACK timestamp in the new fixture,
+before reaching commit behavior. Producer 22338 exited 65; the original
+evidence remains `/tmp/engram-capture-commit-red.tHQY2s/red.{log,xcresult}`.
+Only the test's timestamp constant changed from seconds-only to the existing
+24-byte millisecond contract, without changing any production validation.
+The corrected run, producer 77971 exit 65, executed T2 45 tests/100 failed
+assertions/zero unexpected failures; the frozen 30 claim and 14 legacy ledger
+tests all passed. The coordinator read the full test source, the one-line
+fixture patch, frozen hashes, and raw result summaries in
+`/tmp/engram-capture-commit-red-fixed.4tzJft/red.log` (lines 246, 439, 470-474)
+and matching `.xcresult`. Missing commit/schema behavior is now reproduced;
+the later trigger/last-good assertions still require GREEN execution.
+
+The T2 identity fixture also explicitly preserves an unproved same-native-ID
+local row and its insights/user state alongside an independent capture
+namespace. Native ID/path coincidence is not same-machine provenance and
+never creates an alias. Occupied proposed IDs without a binding, redirected
+stored IDs, or wrong authoritative owners are rejected. Legacy exact-proof
+alias reconciliation remains a separate W4/W6 cutover prerequisite.
+
+N1 GREEN follow-up: full donor Collector passed 126/126, producer 69826 exit 0
+without retries or test changes. Inventory 39/39 includes all 18 N1 methods;
+the other 87 tests also pass. The coordinator checked hashes and the actual
+log at `/tmp/engram-w3-posix-red.1chyCC/collector126-n1-green-v1.log`
+(lines 402, 545-555). Independent review and central integration are pending.
+
+A4 GREEN follow-up: the first focused run passed 48/49; its sole failure was
+the short Unicode fixture cutting inside the ASCII prefix, so its own
+byte-count-versus-character-count assertion failed. Only that fixture cut
+changed to after the first Chinese character; every assertion and all three
+production hashes remain unchanged. The corrected focused run passed 49/49,
+producer 2898 exit 0, with evidence at
+`/tmp/engram-a4-web-green2.FrBGop/a4-web49-green.log` (lines 926-938).
+The first full Remote Core run then executed 341 tests with one unexpected
+failure, producer 79346 exit 65: the pre-existing Users-firmlink fixture
+cannot construct its physical home alias when the isolated test home is under
+`/tmp`. This is separate from the passing 49-test HTTP result. The full-run
+log is `/tmp/engram-a4-remote-full-green.58AK1y/a4-remote-core-full-green.log`
+(lines 787, 1539-1552). A workspace-local isolated test home with independently
+verified alias/physical inode identity is being prepared for the complete
+rerun; no test is skipped and no real user home or production code is changed.
+
 ### POSIX enumeration and ingest work-lease checkpoint (2026-09-06)
 
 The preceding inventory/CAS/replay/IPC/builder tranche was committed and pushed
