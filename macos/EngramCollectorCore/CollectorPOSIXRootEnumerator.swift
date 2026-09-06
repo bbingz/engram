@@ -50,6 +50,81 @@ struct CollectorPOSIXRootEnumeratorTestHooks {
     var didCloseDescriptor: ((Int32, Bool) -> Void)?
 }
 
+// Shared native primitives for source binding and the inventory owner's explicit
+// storage paths. This does not enumerate, canonicalize, create, or repair paths.
+enum CollectorPOSIXDirectoryAccess {
+    static func components(_ path: String) throws -> [String] {
+        guard path.hasPrefix("/"), path.utf8.count <= CollectorPOSIXRootEnumerator.maximumPathBytes,
+              CollectorInventoryStore.isSafeRelativePath(String(path.dropFirst())) else {
+            throw CollectorPOSIXEnumerationError.invalidBinding
+        }
+        let components = path.dropFirst().split(separator: "/").map(String.init)
+        guard components.count <= CollectorPOSIXRootEnumerator.maximumAbsoluteComponents else {
+            throw CollectorPOSIXEnumerationError.invalidBinding
+        }
+        return components
+    }
+
+    static func openAbsolute(
+        components: [String], testHooks: CollectorPOSIXRootEnumeratorTestHooks = .init()
+    ) throws -> (descriptor: Int32, info: stat) {
+        guard components.count <= CollectorPOSIXRootEnumerator.maximumAbsoluteComponents,
+              try self.components("/" + components.joined(separator: "/")) == components else {
+            throw CollectorPOSIXEnumerationError.invalidBinding
+        }
+        var descriptor = try openComponent("/", parent: AT_FDCWD, testHooks: testHooks)
+        defer { if descriptor >= 0 { close(descriptor, testHooks: testHooks) } }
+        for component in components {
+            let next = try openComponent(component, parent: descriptor, testHooks: testHooks)
+            close(descriptor, testHooks: testHooks)
+            descriptor = next
+        }
+        let info = try directoryStat(descriptor)
+        let result = descriptor
+        descriptor = -1
+        return (result, info)
+    }
+
+    static func openComponent(
+        _ component: String, parent: Int32, testHooks: CollectorPOSIXRootEnumeratorTestHooks = .init()
+    ) throws -> Int32 {
+        try Task.checkCancellation()
+        try testHooks.beforeOpenComponent?(component)
+        let descriptor = component.withCString {
+            openat(parent, $0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        }
+        guard descriptor >= 0 else { throw CollectorPOSIXEnumerationError.io(.openComponent, errno) }
+        testHooks.didOpenDescriptor?(descriptor)
+        do {
+            try Task.checkCancellation()
+            return descriptor
+        } catch {
+            close(descriptor, testHooks: testHooks)
+            throw error
+        }
+    }
+
+    static func close(_ descriptor: Int32, testHooks: CollectorPOSIXRootEnumeratorTestHooks = .init()) {
+        _ = Darwin.close(descriptor)
+        testHooks.didCloseDescriptor?(descriptor, false)
+    }
+
+    static func directoryStat(_ descriptor: Int32) throws -> stat {
+        var info = stat()
+        guard fstat(descriptor, &info) == 0 else { throw CollectorPOSIXEnumerationError.io(.statDirectory, errno) }
+        guard info.st_mode & S_IFMT == S_IFDIR else { throw CollectorPOSIXEnumerationError.unsafePath }
+        return info
+    }
+
+    static func identity(_ info: stat) throws -> CollectorPOSIXDirectoryIdentity {
+        guard let inode = Int64(exactly: info.st_ino) else { throw CollectorPOSIXEnumerationError.io(.statDirectory, EOVERFLOW) }
+        return .init(
+            device: Int64(info.st_dev), inode: inode, generation: info.st_gen,
+            birthSeconds: Int64(info.st_birthtimespec.tv_sec), birthNanoseconds: Int64(info.st_birthtimespec.tv_nsec)
+        )
+    }
+}
+
 // A logical cursor open is not one openat syscall. Safety validation may walk
 // bounded root/relative component chains before and after a directory read.
 // libc read-ahead and blocking kernel calls are not hard byte/time budgets.
@@ -57,6 +132,31 @@ final class CollectorPOSIXRootEnumerator: CollectorRootEnumerator {
     static let maximumAbsoluteComponents = 32
     static let maximumRelativeDepth = 32
     static let maximumPathBytes = Int(MAXPATHLEN) - 1
+
+    static func observeRoot(
+        configuration: CollectorRootConfiguration,
+        testHooks: CollectorPOSIXRootEnumeratorTestHooks = .init()
+    ) throws -> CollectorPOSIXRootBinding {
+        let components = try validatedComponents(configuration)
+        let opened = try CollectorPOSIXDirectoryAccess.openAbsolute(components: components, testHooks: testHooks)
+        defer { CollectorPOSIXDirectoryAccess.close(opened.descriptor, testHooks: testHooks) }
+        let binding = CollectorPOSIXRootBinding(configuration: configuration, expectedIdentity: try identity(opened.info))
+        // Reopen the configured route before publishing the observation. A
+        // detached old fd is not proof that the current path still names it.
+        try validateRoot(binding: binding, testHooks: testHooks)
+        try Task.checkCancellation()
+        return binding
+    }
+
+    static func validateRoot(
+        binding: CollectorPOSIXRootBinding,
+        testHooks: CollectorPOSIXRootEnumeratorTestHooks = .init()
+    ) throws {
+        let enumerator = try CollectorPOSIXRootEnumerator(binding: binding, testHooks: testHooks)
+        let opened = try enumerator.openBoundDirectory(relativeComponents: [])
+        defer { enumerator.closeDescriptor(opened.descriptor) }
+        try Task.checkCancellation()
+    }
 
     private let binding: CollectorPOSIXRootBinding
     private let testHooks: CollectorPOSIXRootEnumeratorTestHooks
@@ -66,21 +166,18 @@ final class CollectorPOSIXRootEnumerator: CollectorRootEnumerator {
         binding: CollectorPOSIXRootBinding,
         testHooks: CollectorPOSIXRootEnumeratorTestHooks = .init()
     ) throws {
-        let configuration = binding.configuration
-        guard configuration.source == .codex || configuration.source == .claudeCode,
-              !configuration.rootID.isEmpty, !configuration.rootID.contains("\0"), configuration.revision > 0,
-              configuration.rootPath.hasPrefix("/"),
-              configuration.rootPath.utf8.count <= Self.maximumPathBytes,
-              CollectorInventoryStore.isSafeRelativePath(String(configuration.rootPath.dropFirst())) else {
-            throw CollectorPOSIXEnumerationError.invalidBinding
-        }
-        let components = configuration.rootPath.dropFirst().split(separator: "/").map(String.init)
-        guard components.count <= Self.maximumAbsoluteComponents else {
-            throw CollectorPOSIXEnumerationError.invalidBinding
-        }
+        let components = try Self.validatedComponents(binding.configuration)
         self.binding = binding
         self.testHooks = testHooks
         rootComponents = components
+    }
+
+    private static func validatedComponents(_ configuration: CollectorRootConfiguration) throws -> [String] {
+        guard configuration.source == .codex || configuration.source == .claudeCode,
+              !configuration.rootID.isEmpty, !configuration.rootID.contains("\0"), configuration.revision > 0 else {
+            throw CollectorPOSIXEnumerationError.invalidBinding
+        }
+        return try CollectorPOSIXDirectoryAccess.components(configuration.rootPath)
     }
 
     func open(
@@ -131,15 +228,10 @@ final class CollectorPOSIXRootEnumerator: CollectorRootEnumerator {
     }
 
     private func openBoundDirectory(relativeComponents: [String]) throws -> (descriptor: Int32, info: stat) {
-        var descriptor = try openComponent("/", parent: AT_FDCWD)
+        let opened = try CollectorPOSIXDirectoryAccess.openAbsolute(components: rootComponents, testHooks: testHooks)
+        var descriptor = opened.descriptor
         defer { if descriptor >= 0 { closeDescriptor(descriptor) } }
-        for component in rootComponents {
-            let next = try openComponent(component, parent: descriptor)
-            closeDescriptor(descriptor)
-            descriptor = next
-        }
-        let rootInfo = try directoryStat(descriptor)
-        guard try Self.identity(rootInfo) == binding.expectedIdentity else {
+        guard try Self.identity(opened.info) == binding.expectedIdentity else {
             throw CollectorPOSIXEnumerationError.rootIdentityChanged
         }
         for component in relativeComponents {
@@ -154,40 +246,19 @@ final class CollectorPOSIXRootEnumerator: CollectorRootEnumerator {
     }
 
     private func openComponent(_ component: String, parent: Int32) throws -> Int32 {
-        try Task.checkCancellation()
-        try testHooks.beforeOpenComponent?(component)
-        let descriptor = component.withCString {
-            openat(parent, $0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        }
-        guard descriptor >= 0 else { throw CollectorPOSIXEnumerationError.io(.openComponent, errno) }
-        testHooks.didOpenDescriptor?(descriptor)
-        do {
-            try Task.checkCancellation()
-            return descriptor
-        } catch {
-            closeDescriptor(descriptor)
-            throw error
-        }
+        try CollectorPOSIXDirectoryAccess.openComponent(component, parent: parent, testHooks: testHooks)
     }
 
     private func closeDescriptor(_ descriptor: Int32) {
-        _ = Darwin.close(descriptor)
-        testHooks.didCloseDescriptor?(descriptor, false)
+        CollectorPOSIXDirectoryAccess.close(descriptor, testHooks: testHooks)
     }
 
     private func directoryStat(_ descriptor: Int32) throws -> stat {
-        var info = stat()
-        guard fstat(descriptor, &info) == 0 else { throw CollectorPOSIXEnumerationError.io(.statDirectory, errno) }
-        guard info.st_mode & S_IFMT == S_IFDIR else { throw CollectorPOSIXEnumerationError.unsafePath }
-        return info
+        try CollectorPOSIXDirectoryAccess.directoryStat(descriptor)
     }
 
     private static func identity(_ info: stat) throws -> CollectorPOSIXDirectoryIdentity {
-        guard let inode = Int64(exactly: info.st_ino) else { throw CollectorPOSIXEnumerationError.io(.statDirectory, EOVERFLOW) }
-        return .init(
-            device: Int64(info.st_dev), inode: inode, generation: info.st_gen,
-            birthSeconds: Int64(info.st_birthtimespec.tv_sec), birthNanoseconds: Int64(info.st_birthtimespec.tv_nsec)
-        )
+        try CollectorPOSIXDirectoryAccess.identity(info)
     }
 
     private func selectedDirectory(_ components: [String]) -> Bool {

@@ -90,6 +90,7 @@
 		16F6CBB192D795A0564510A3 /* ArchiveSourceDescriptor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17AC667EE2847548C19C34FE /* ArchiveSourceDescriptor.swift */; };
 		173480C2EBD1A1AF3FA6F77D /* ArchiveHash.swift in Sources */ = {isa = PBXBuildFile; fileRef = 988863FB0DAC31BEF3FC50F9 /* ArchiveHash.swift */; };
 		1787EC2BF4B5C5F257C9F719 /* EmbeddingGuardrailsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD2B4CACC4E50891DB174F45 /* EmbeddingGuardrailsTests.swift */; };
+		18034A14E69C79DC55E72FCC /* CollectorInventoryOwnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE4E472DE2A5404055A5CC9F /* CollectorInventoryOwnerTests.swift */; };
 		182EF8625B383B94009C7B96 /* RankFusion.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB97E0567F19170423333DF8 /* RankFusion.swift */; };
 		185A7A572BB1163235253075 /* EngramRemoteServerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A775956F4959F965C01D79E3 /* EngramRemoteServerApp.swift */; };
 		18CC4E4B172BC2F1B4790F7E /* EngramServiceWebReadClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDD0F658C5D805C729C27245 /* EngramServiceWebReadClient.swift */; };
@@ -644,6 +645,7 @@
 		C0ED889A9425E18A7D505B5E /* WindsurfAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2EDCF96A3B2CE8B52F6153E /* WindsurfAdapter.swift */; };
 		C157ED81A707874C5C539EB6 /* SystemMessageClassifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42221DF48DF9F36A0556900B /* SystemMessageClassifier.swift */; };
 		C15DD309842819EFB42CEF90 /* EngramRemoteBackendTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47557345558ABCD7C17B5E89 /* EngramRemoteBackendTransportTests.swift */; };
+		C1A400351D2EF7B97D5BF1F1 /* CollectorInventoryOwner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20007C4D2806D614D692DFC0 /* CollectorInventoryOwner.swift */; };
 		C207E1C3E8602FABDBF1B4F2 /* TranscriptRedactionPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7EE67511CA4ACBE1781699A /* TranscriptRedactionPolicy.swift */; };
 		C236B9459ED2F4BE336D4EEF /* EngramServiceWebReadModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A6573AD58745EE908427A0A /* EngramServiceWebReadModels.swift */; };
 		C252E7AFEA0C95156EB79964 /* SessionQualityScore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22FE43955422F172389066FF /* SessionQualityScore.swift */; };
@@ -1203,6 +1205,7 @@
 		1DB524C7D024C84A86B5E826 /* SessionSyncTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionSyncTests.swift; sourceTree = "<group>"; };
 		1DD43FF8B404909429B2BB01 /* ArchiveRouteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveRouteTests.swift; sourceTree = "<group>"; };
 		1DE295B8B9CC9FA197017915 /* WebRequestBoundary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebRequestBoundary.swift; sourceTree = "<group>"; };
+		20007C4D2806D614D692DFC0 /* CollectorInventoryOwner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectorInventoryOwner.swift; sourceTree = "<group>"; };
 		21D038E130C1D9B8D518485C /* ArchiveV2ServiceCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveV2ServiceCoordinator.swift; sourceTree = "<group>"; };
 		22AACDDFF337D230DBDEB48F /* EngramServiceCostsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngramServiceCostsTests.swift; sourceTree = "<group>"; };
 		22CB3A688F4ED6A237335F4E /* ProjectMoveOperationRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectMoveOperationRegistryTests.swift; sourceTree = "<group>"; };
@@ -1570,6 +1573,7 @@
 		BD362E1468F8B43A3B8C1C21 /* OSLogReaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OSLogReaderTests.swift; sourceTree = "<group>"; };
 		BDE4DF61DD3A039FECFB821D /* ProjectsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectsTests.swift; sourceTree = "<group>"; };
 		BE17BC91C29E0ECFC56263ED /* AdapterSchemaDriftTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdapterSchemaDriftTests.swift; sourceTree = "<group>"; };
+		BE4E472DE2A5404055A5CC9F /* CollectorInventoryOwnerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectorInventoryOwnerTests.swift; sourceTree = "<group>"; };
 		BEE3D50BCF8F87771B91B639 /* CollectorMachineIdentityReaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectorMachineIdentityReaderTests.swift; sourceTree = "<group>"; };
 		BFCCDD3FC302BD745EDD110E /* SecureSettingsFileWriterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureSettingsFileWriterTests.swift; sourceTree = "<group>"; };
 		C0043D8A369FA7BDECC84AB8 /* Archive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Archive.swift; sourceTree = "<group>"; };
@@ -2298,6 +2302,7 @@
 			children = (
 				2D5EB5ACC940266C678A1EEE /* CollectorBootstrapWalker.swift */,
 				6F5D1291F07FA4A840635892 /* CollectorInventoryModels.swift */,
+				20007C4D2806D614D692DFC0 /* CollectorInventoryOwner.swift */,
 				ACF244AE64E4DCFC94705DB7 /* CollectorInventoryStore.swift */,
 				A7AA81A3519FBD78C8166D74 /* CollectorMachineIdentityReader.swift */,
 				2B092EC33E291F62D89D0D69 /* CollectorPOSIXRootEnumerator.swift */,
@@ -2921,6 +2926,7 @@
 			children = (
 				797A1AE090315AB5C41FD392 /* CollectorBootstrapWalkerTests.swift */,
 				EAD1522F987199FCBC0FE18A /* CollectorCaptureCoreTests.swift */,
+				BE4E472DE2A5404055A5CC9F /* CollectorInventoryOwnerTests.swift */,
 				CE824A53E3EB2A7AF9EA1E2D /* CollectorInventoryStoreTests.swift */,
 				BEE3D50BCF8F87771B91B639 /* CollectorMachineIdentityReaderTests.swift */,
 				5CCC858545967DDF284A3845 /* CollectorPOSIXRootEnumeratorTests.swift */,
@@ -4310,6 +4316,7 @@
 			files = (
 				3F9ADAA4805A7545EC73DD49 /* CollectorBootstrapWalkerTests.swift in Sources */,
 				B59FFC39F232E3FC817DB111 /* CollectorCaptureCoreTests.swift in Sources */,
+				18034A14E69C79DC55E72FCC /* CollectorInventoryOwnerTests.swift in Sources */,
 				547EDFECC30F4FAA84D85861 /* CollectorInventoryStoreTests.swift in Sources */,
 				84017D957758306E78CE6E9B /* CollectorMachineIdentityReaderTests.swift in Sources */,
 				C658BBFD63C6869A2EB593B0 /* CollectorPOSIXRootEnumeratorTests.swift in Sources */,
@@ -4542,6 +4549,7 @@
 				AC0169BE64093F99E1E03AB4 /* ArchiveSourceDescriptor.swift in Sources */,
 				8DC05F31BCC2AFCA358D4A12 /* CollectorBootstrapWalker.swift in Sources */,
 				0076CCB3F7C39E277CBCD7FD /* CollectorInventoryModels.swift in Sources */,
+				C1A400351D2EF7B97D5BF1F1 /* CollectorInventoryOwner.swift in Sources */,
 				F30C2D1B7631A2C90AD1279A /* CollectorInventoryStore.swift in Sources */,
 				295943B6A048F5F2E00E558D /* CollectorMachineIdentityReader.swift in Sources */,
 				3E53FF228DCECA7557838309 /* CollectorPOSIXRootEnumerator.swift in Sources */,

@@ -7,6 +7,120 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### N2 central owner integration and T3a donor GREEN (2026-09-06)
+
+At 11:26 CST, live GitHub reads confirmed all three workflows for exact
+T2 head `e94c05004aa9739ef54291d813fa1d8cee7815e4` succeeded: Tests
+`34007018809`, dependency review `34007018820`, and CodeQL `34007018811`
+(CodeQL Gate completed 11:18:22 CST). This supersedes the earlier pending
+checkpoint, not the CI requirement for any later commit.
+
+N2 passed independent SPEC PASS / QUALITY APPROVED, then entered the central
+worktree by the frozen Owner/POSIX/test hashes `1d0513de` / `40518878` /
+`7104bacc`. The coordinator added only one CollectorCore source path and
+one target-dependency expectation; pinned XcodeGen 2.45.4 generated exactly
+eight additive Owner project lines. The donor's older Remote/Web source
+list and project were not copied over the central routing. This owner is
+default OFF, requires explicit storage/known-root paths (tested synthetically),
+keeps its inventory under a separate exclusive lock, and does not start
+FSEvents, capture/upload, product indexing, providers or runtime services.
+
+The coordinator's complete central Collector suite passed 156/156 with
+zero failures/skips, producer 64757 exit 0. Raw log and xcresult agree:
+`/tmp/engram-n2-central-collector156.{log,xcresult,producer-exit}`;
+log 1159-1160 covers the independent-process owner/CLOEXEC test, 1219 the
+30 Owner cases, and 1463-1473 the full suite. The ordinary fixture uses a
+unique 0700 directory under its checkout; production support for the
+special `/private/var` alias combination remains unverified. The two prior
+donor fixture failures remain recorded below, not relabeled as GREEN.
+
+Ten central script suites passed 205 tests with two existing conditional
+project-drift skips (producer 41336 exit 0); test typecheck, archive safety,
+five invariant gates and diff checks passed. Evidence is
+`/tmp/engram-n2-tranche-{scripts,typecheck-test,archive-safety,invariants}.log`.
+Core/Service/App/MCP/Remote production and target dependencies are unchanged
+by this Collector-only slice, so those full suites were not rerun. The final
+central routing/record gate, staged project drift and new-head CI are pending.
+
+Separately, the coordinator's T3a donor now has 38 tests and two implemented
+data-layer files. Genuine scaffold RED executed 129 tests: all old 91
+passed, 37 new cases failed and the SQL-projection witness passed (producer
+81518 exit 65). An earlier missing `try` compile failure is retained and
+not counted as behavioral RED. The first GREEN had two failing test cases:
+both newer-generation fixtures contained only one user message, correctly
+triggering existing skip policy and FTS cleanup. Independent source review
+approved adding assistant messages and explicit non-skip/job prerequisites;
+all old job/stale-generation/last-good FTS assertions and both production
+files stayed unchanged. The corrected GREEN passed 129/129, zero failures/
+skips, producer 9884 exit 0; log 1291-1303 and xcresult agree at
+`/tmp/engram-t3a-readiness-red.0SJiqN/green-v2.*`. The failed `red-v1`,
+genuine `red-v2` and failed `green-v1` remain in the same evidence directory.
+T3a implementation review/integration remain pending; no T3a code enters
+the N2 candidate. A5a is still an interrupted donor draft. N3-A is limited
+to additive test/scaffold preparation in its separate donor, not GREEN.
+No runtime wiring, full W3-W6, browser or production acceptance is claimed.
+
+The final N2 central integration/record gate returned SPEC PASS / QUALITY
+APPROVED at 11:35 CST. The coordinator staged exactly the ten approved
+paths, excluded the pre-existing SQLite sidecars, and passed pinned staged
+project drift (`/tmp/engram-n2-tranche-staged-drift.log`) and cached diff
+checks. The authorized commit/push is next; new-head CI remains pending.
+
+### N2 donor GREEN and T3a test-first continuation (2026-09-06)
+
+At 11:03 CST, exact T2 head `e94c05004aa9739ef54291d813fa1d8cee7815e4`
+has successful Tests `34007018809` and dependency review `34007018820`.
+CodeQL `34007018811` still has both Swift builds in progress. The next
+push still waits for that head's full gate; PR #446 is draft/open/unmerged.
+
+N2's third complete donor run passed all 156 tests, zero failures/skips,
+actual producer 74479 exit 0. The coordinator independently read its raw
+log and xcresult: `/tmp/engram-w3-posix-red.1chyCC/collector156-n2-owner-green-v3.*`,
+log 235-238, 255-267, 295, 539-549. The 30 N2 tests and old 126 tests all
+pass. The independent-process test asserts both blocked/open child exits
+and mode-specific N2 markers; successful child output/PIDs are not printed
+in this log. The separate old C1 identity marker at line 405 is not N2 proof.
+
+The first two GREEN attempts are retained failures, not acceptance: v1
+156/34 failures/26 unexpected (producer 20205 exit 65), v2 156/32/24
+(97825 exit 65). Their ordinary synthetic fixture used the special macOS
+temporary-path alias: `/var` failed no-follow traversal, while physical
+`/private/var` failed the frozen C1 canonical-path contract. Only the
+ordinary fixture initializer changed, first to realpath and then to one
+unique 0700 task-owned directory under its checkout. All 30 test bodies,
+assertions and the custom real-firmlink fixture stayed byte-identical;
+both production source hashes remained `1d0513de` / `40518878`.
+The accepted fixture file is `7104bacc080de3450b3dbe05aebe97b6c905f2e6d4b55107b88854e1f2bd87f1`.
+Production support for the `/private/var` alias combination is not repaired
+or claimed. N2 independent review and central integration remain pending.
+
+The coordinator resumed the interrupted T3a donor slice with 34 new
+data-layer tests; both original fail-closed source scaffolds remain
+unchanged. Syntax-only Swift parsing passed after correcting an initial
+command-path typo. Pinned XcodeGen 2.45.4 added exactly 12 project lines
+for these three files; project.yml did not change. Independent test-draft
+review and actual executable RED remain pending. No runtime consumer,
+provider, Web metadata implementation, full W3-W6 or deployment acceptance
+is claimed by this checkpoint.
+
+### T2 pushed; next-wave drafts remain isolated (2026-09-06)
+
+The nine-file T2 candidate was committed/pushed as
+`e94c05004aa9739ef54291d813fa1d8cee7815e4`, with actual commit and push
+exits 0 (`/tmp/engram-t2-tranche-{commit,push}.log`). Draft PR #446 is
+open/unmerged at that exact SHA. At 10:39 CST its Tests `34007018809`,
+CodeQL `34007018811` and dependency review `34007018820` had started;
+none is yet claimed successful. This follows the prior `9fd6db26`
+three-workflow success, not inherited CI for the new head.
+
+N2 remains donor-only and not GREEN-tested. T3a has only two fail-closed
+source scaffolds (93 lines total), no test file yet; A5a has seventeen new
+metadata-model test methods but no matching DTO/API implementation or RED.
+Both stopped workers reported usage limits, so the coordinator preserves
+their unfinished drafts without counting them as validated work. No worker
+draft, unrelated SQLite sidecar, deployment or live configuration entered
+this push. Full W3-W6 remains in progress.
+
 ### T2 central full-target verification (2026-09-06)
 
 The coordinator's four affected targets passed with the exact integrated T2

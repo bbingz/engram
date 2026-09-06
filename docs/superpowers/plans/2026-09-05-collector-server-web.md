@@ -163,6 +163,37 @@ QUALITY APPROVED. The coordinator verified prior-head `9fd6db26` CodeQL
 success (Gate completed 10:33:35 CST), completing all three workflows for
 that immutable SHA. Prepare the authorized T2 commit/push; its new-head CI
 is still separate and pending. N2/T3a/A5a remain excluded.
+T2 was then committed/pushed as `e94c05004aa9739ef54291d813fa1d8cee7815e4`.
+Draft PR #446 remains open/unmerged; Tests `34007018809`, CodeQL
+`34007018811` and dependency review `34007018820` started at 10:39 CST.
+No new-head pass is claimed. N2 and the two quota-interrupted worker drafts
+remain donor-only; the coordinator continues the unfinished W3-W6 plan.
+At 11:03 CST, exact T2 head `e94c0500` Tests and dependency review have
+succeeded; both CodeQL Swift builds remain running. N2 donor v3 passed
+156/156 with zero failures/skips after two recorded synthetic temporary-
+path fixture failures. Only the ordinary fixture initializer changed;
+production and all 30 test bodies stayed frozen. Its independent gate and
+central integration are pending. T3a now has 34 coordinator-owned draft
+tests and unchanged fail-closed scaffolds, syntax parsing only; independent
+draft review and executable RED remain pending. Runtime/W3-W6 is not done.
+At 11:26 CST the exact T2 head has successful Tests, CodeQL and dependency
+review. N2 passed its independent implementation gates and frozen-source
+central integration; pinned project generation added only eight Owner lines.
+The coordinator's complete central Collector suite passed 156/156, zero
+failures/skips, producer 64757 exit 0. Ten scripts passed 205/two existing
+conditional skips; typecheck/archive safety/five invariants passed. The five
+unchanged full product targets were not rerun for this Collector-only slice.
+Final routing/record review, staged project drift and new-head CI are pending.
+T3a donor captured genuine 129-test RED, then passed 129/129 GREEN after
+independently adjudicated corrections to two user-only skip fixtures; all
+stale-job/last-good assertions and production hashes stayed unchanged. Its
+implementation gate/integration remain pending and it is excluded from N2.
+N3-A prepares additive Owner event-entry tests/scaffolds only in its donor;
+A5a remains an interrupted draft. No full W3-W6/runtime/browser pass is implied.
+The final N2 central integration/record gate passed SPEC PASS / QUALITY
+APPROVED. Exactly ten approved paths are staged and pinned staged project
+drift passed; pre-existing SQLite sidecars are excluded. Prepare the
+authorized N2 commit/push; its new-head CI remains separately pending.
 The owner authorized committing/pushing W1, running CI, then autonomous staged
 implementation/review/CI through W6 on 2026-09-05. Production W7, credentials,
 network changes, and merge/release remain separate authority boundaries.

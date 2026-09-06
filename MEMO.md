@@ -4,6 +4,10 @@
 
 ### 2026-09-06
 
+- [验证] N2 十文件最终整合／记录双门与暂存工程漂移通过，准备授权提交推送；T3a 仅在 donor 过 129 项实测，独立实现门进行中，新 head CI 与完整 W3–W6 仍待验，详见 `CHANGELOG.md`。
+- [验证] N2 独立门后按哈希整合，中央 Collector 156/156、脚本 205/2 条件 skip、typecheck/安全/invariants 通过；`e94c0500` 三项 CI 全过。T3a 修正两处单消息 skip 夹具后 donor 129/129，独立实现门待验且不混入 N2；完整 W3–W6 未完成，详见 `CHANGELOG.md`。
+- [验证] N2 donor 完整 156/156 零失败／跳过，前两次特殊临时路径夹具失败保留；只修夹具，独立门／整合待验。T3a 新增 34 项测试草稿、实现仍为桩；`e94c0500` Tests／依赖通过，Swift CodeQL 待验，详见 `CHANGELOG.md`。
+- [提交] T2 已推送 `e94c0500`，Draft PR #446 未合并，新三项 CI 已启动；N2 未跑 GREEN，T3/Web 额度中断草稿均隔离保留，完整 W3–W6 仍推进中，详见 `CHANGELOG.md`。
 - [验证] T2 九文件暂存候选通过最终整合／记录双门；旧 head `9fd6db26` 三项 CI 全通过（CodeQL Gate 10:33:35），准备授权提交推送，新 head CI 待验，N2/T3/Web 草稿不在候选中，详见 `CHANGELOG.md`。
 - [验证] T2 过独立双门并按四文件哈希整合；中央 Core 1,643（1 skip）、Service 875（1 skip）、App 1,175、MCP 270 零失败，脚本 205/2 条件 skip；旧 head CodeQL product 仍待验，T3/Web 线程额度中断草稿与 N2 均未混入，详见 `CHANGELOG.md`。
 - [验证] `9fd6db26` Tests/依赖检查通过，CodeQL 仍运行；T2 有界历史 GREEN 91/0 待独立门，N2 原 155 项与补充 firmlink 单项均取得真实 RED，现仅允许最小 GREEN；首版 Web 正文要求 metadata/parsed/ready 同代，未知观测不填健康，详见 `CHANGELOG.md`。
