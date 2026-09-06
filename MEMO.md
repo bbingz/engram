@@ -4,6 +4,8 @@
 
 ### 2026-09-06
 
+- [验证] A5b 九路径最终整合/记录独立双门与暂存漂移通过；`6a33a42a` Tests/依赖 CI 已过、CodeQL 仍运行，下一次推送等待其通过。原生监听新增负计数补测尚待 RED，Service producer 仍仅方案，详见 `CHANGELOG.md`。
+- [验证] T3b 已推送 `6a33a42a`，依赖 CI 通过、Tests/CodeQL 待验；A5b HTTP 补丁经独立双门按四哈希整合，donor 定向 68/68、donor/中央完整 Remote 各 391/391。Service producer、浏览器与完整 W3–W6 仍未完成，详见 `CHANGELOG.md`。
 - [验证] T3b 十路径最终整合及记录/索引独立双门通过，原四哈希未变、暂存漂移 v2 通过，准备按授权提交推送；新 head CI 单独待验，详见 `CHANGELOG.md`。
 - [验证] `5073f3f8` 三项 CI 全过；T3b App 旧调用文本扫描单行校正后全量 2,901（含 Core、1 既有 skip）零失败，MCP 270/270，保留 11 条 QoS 警告。十路径最终整合门及新提交 CI 待验，Web/原生监听草稿均未混入，详见 `CHANGELOG.md`。
 - [验证] N3-B1 已推送 `5073f3f8`，Tests/依赖 CI 通过、CodeQL 待验；T3b 补充双门后按四文件哈希整合，中央 Core 1,726、Service 875（各 1 既有 skip）零失败，App/MCP 与最终整合门待验。Web 新 13 项真实 RED、旧 49 全过，两个预算补测仍待 RED，完整 W3–W6 未完成，详见 `CHANGELOG.md`。

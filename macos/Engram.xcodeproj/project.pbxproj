@@ -172,6 +172,7 @@
 		3073C3963B560DC0678803F8 /* AppNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70AA13804DF1BADC7DB1C591 /* AppNotifications.swift */; };
 		30D5FB735DE8EEBA293E0E97 /* ObservabilityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FBC6551B99980938321BD0A /* ObservabilityView.swift */; };
 		316971CC9E74C1543BFCEE27 /* OnboardingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F6CE6BE94396893A17508F6 /* OnboardingTests.swift */; };
+		31FE98FAB337A9FD79A47FB8 /* WebMetadataHTTPTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EACF31B9449032710883B9C1 /* WebMetadataHTTPTests.swift */; };
 		334010BEDD7D6C2C233549F1 /* StartupUsageCollectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10DC259CB8BB5FAC03715364 /* StartupUsageCollectorTests.swift */; };
 		339A1FBA2BB3F32057C9B3FC /* AGENTS.md in Resources */ = {isa = PBXBuildFile; fileRef = 0341FAB9895067C5C7F9DAB4 /* AGENTS.md */; };
 		33AE281B946683761C5B6EF7 /* OpenCodeAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1980E982CA558FC94B9D15B /* OpenCodeAdapter.swift */; };
@@ -1702,6 +1703,7 @@
 		E948CB379DA78A92DF7E633F /* TranscriptExportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptExportService.swift; sourceTree = "<group>"; };
 		E961234A74A84E35D33B0404 /* ImmutableArchiveCASTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImmutableArchiveCASTests.swift; sourceTree = "<group>"; };
 		EA216B4321BC98A47ED44D87 /* CaptureIngestReadiness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureIngestReadiness.swift; sourceTree = "<group>"; };
+		EACF31B9449032710883B9C1 /* WebMetadataHTTPTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebMetadataHTTPTests.swift; sourceTree = "<group>"; };
 		EAD1522F987199FCBC0FE18A /* CollectorCaptureCoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectorCaptureCoreTests.swift; sourceTree = "<group>"; };
 		EB1486CFA636CF2B30DFCF94 /* WebAuthRoutes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebAuthRoutes.swift; sourceTree = "<group>"; };
 		EB7F18056590015EA9E85B5E /* CursorAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CursorAdapter.swift; sourceTree = "<group>"; };
@@ -1964,6 +1966,7 @@
 				47F6E834197884BAA5DB24B8 /* WebAuthRouteTests.swift */,
 				E609DCF39DA8008C2D7166F1 /* WebAuthSessionTests.swift */,
 				0F3CCF94689F49812C5C71B3 /* WebConfigTests.swift */,
+				EACF31B9449032710883B9C1 /* WebMetadataHTTPTests.swift */,
 				8209B9BF0703A9AA3E3F18FD /* WebReadClientTests.swift */,
 				4165D4153F7DB1A9464C1C9D /* WebServerIntegrationTests.swift */,
 			);
@@ -4175,6 +4178,7 @@
 				D53EDAC73F934645ACAA6311 /* WebAuthRouteTests.swift in Sources */,
 				CF62FF16C42168D96754A4E2 /* WebAuthSessionTests.swift in Sources */,
 				D77B2EFAB1D844AC7E00DB27 /* WebConfigTests.swift in Sources */,
+				31FE98FAB337A9FD79A47FB8 /* WebMetadataHTTPTests.swift in Sources */,
 				F2A9CC99FCCFCD4C8125AD9A /* WebReadClientTests.swift in Sources */,
 				073D40D5149A93ED0ECEF73E /* WebServerIntegrationTests.swift in Sources */,
 			);

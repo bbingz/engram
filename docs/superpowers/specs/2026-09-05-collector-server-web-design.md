@@ -16,6 +16,10 @@
 
 - **T3b final candidate gate (2026-09-06)**: Independent ten-path integration and record/index gates passed SPEC PASS / QUALITY APPROVED with unchanged donor hashes, scanner-only adjustment, matching staged bytes and pinned drift v2. Prior-head CI is verified separately. The authorized normal commit/push is next; no new-head CI or full W3-W6 result is claimed.
 
+- **A5b integration / T3b push (2026-09-06)**: T3b is normally committed/pushed as `6a33a42a`; its dependency review passed while Tests `34017787159` and CodeQL `34017787170` are pending. Independently approved A5b passed donor focused 68/68 and full Remote 391/391, then entered central by four unchanged file hashes plus four pinned generated test references. Central full Remote passed 391/391, zero skips/failures/runtime warnings and actual exit 0; scripts 205/two conditional skips and typecheck/safety/invariants passed. Final nine-path integration/record review and staged drift remain pending, and the next push waits for T3b CI. Service metadata production, real transcript authority, browser and full W3-W6 remain incomplete; A5c/N3-B2 are separate proposal/test-draft work.
+
+- **A5b final candidate gate (2026-09-06)**: Independent nine-path integration/record review passed SPEC PASS / QUALITY APPROVED with unchanged four hashes, exact old-test inverse, index/worktree equality and verified xcresults/producer exits. Pinned staged drift v1 passed. T3b Tests `34017787159` now succeeded alongside dependency review, superseding its pending checkpoint; CodeQL `34017787170` is still running. A5b push waits for that prior-head gate; new-head CI and full W3-W6 remain unverified.
+
 ## Problem
 
 The desired deployment is a lightweight daily-Mac collector, central parsing,

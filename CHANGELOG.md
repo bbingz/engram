@@ -7,6 +7,62 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### A5b metadata HTTP central candidate and T3b push (2026-09-06)
+
+Final nine-path integration/record review passed SPEC PASS / QUALITY APPROVED.
+The independent reviewer checked index/worktree equality, all four hashes,
+the old-test inverse and all three xcresults plus actual producer exits.
+Pinned staged drift v1 passed; `/tmp/engram-a5b-staged-drift-v1.log`.
+Exact T3b Tests `34017787159` subsequently succeeded, superseding the pending
+checkpoint below; dependency review also succeeded and CodeQL `34017787170`
+is still running. A5b is ready for the authorized normal commit, while its
+push still waits for that prior-head CodeQL gate and new-head CI is unverified.
+Empty xcresult runtimeWarnings does not erase compiler/toolchain warnings in
+the retained raw logs. No N3-B2 or A5c implementation enters this candidate.
+
+T3b was normally committed/pushed as
+`6a33a42ad7cd7a5c23347b1e15f1b91c72605814`, both producer exits 0;
+full outputs are `/tmp/engram-t3b-tranche-{commit,push}.log`.
+Its dependency review `34017787161` succeeded. Tests `34017787159` and
+CodeQL `34017787170` remain pending, separate from this new local candidate.
+
+The coordinator independently approved A5b SPEC PASS / QUALITY APPROVED
+against the bounded W5 metadata HTTP contract. Three typed GET routes use
+one stored four-operation Surface and the dedicated read client, with no
+generic command forwarding or capability loader. Literal plus/Unicode bytes,
+strict fields/integers, 4,096-byte encoded queries, detail no-query policy,
+safe error mapping and encoded response limits are tested through HTTP.
+The valid-DTO budget supplement first produced two genuine failing tests;
+all 19 new test bodies remained frozen through implementation. One obsolete
+unmounted-route test now proves the default client's three exact IPC commands,
+no capability token, and safe unsupported-Service responses. Three older
+factory wrappers adapt to Surface without changing their assertions. Removing
+only these authorized differences reproduces the entire old integration test
+file exactly: SHA256
+`01e7b6790cbcc1cee4fd32728af412fa53989b970299188247ae92b1833a82a0`.
+
+Focused donor GREEN passed 68/68 and complete donor Remote passed 391/391,
+zero skips/failures/runtime warnings, actual producer exits 0. Artifacts:
+`/tmp/engram-a5b-http-green-v1.*` and `/tmp/engram-a5b-remote-full-v1.*`.
+Four files entered central by unchanged SHA256: Routes `a1983073`, App
+`b8d31048`, old integration tests `765790a4`, and new metadata tests `bd8c3057`.
+Pinned XcodeGen adds only four test references. The complete central Remote
+suite independently passed 391/391 with no skips/failures/runtime warnings,
+producer exit 0; `/tmp/engram-a5b-central-remote-full-v1.*`. Its raw build log
+also retains an Xcode launch-diagnostics warning; no test failure is attributed
+to that warning. Ten scripts passed 205/two dirty-project conditional skips;
+test typecheck, archive safety and five invariants exited 0. Logs are
+`/tmp/engram-a5b-tranche-{scripts,typecheck-test,archive-safety,invariants}.log`.
+
+Core/Service/App/MCP/Collector full suites are not rerun for this Remote-only
+product change; their source and dependency routing are unchanged. The new
+HTTP success fixtures do not prove a running Service metadata producer,
+real transcript authority, handler-task cancellation/orphan freedom, browser
+acceptance or full W3-W6. Those remain incomplete. Final integration/record
+review, staged drift and new-head CI remain separate; the next push waits for
+the immutable T3b head's CI. A5c is read-only proposal work and N3-B2 remains
+an isolated test draft. No merge/deploy/provider/credential/SSH/Docker/W7 action.
+
 ### T3b authority-fenced FTS central candidate and N3-B1 push (2026-09-06)
 
 The independent final ten-path integration and record/index gates subsequently

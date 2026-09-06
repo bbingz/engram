@@ -339,6 +339,24 @@ The final T3b ten-path integration and record/index gates then passed SPEC PASS 
 QUALITY APPROVED. Worktree/index bytes, four donor hashes, the scanner-only
 change, prior-head CI and pinned staged drift v2 are verified. Prepare the
 authorized normal commit/push; new-head CI remains separate and pending.
+T3b is now normally committed/pushed as `6a33a42a`, both producers exit 0;
+dependency review `34017787161` succeeded while Tests `34017787159` and
+CodeQL `34017787170` remain pending. A5b passed the coordinator's independent
+implementation gate, donor focused 68/68 and full Remote 391/391, retaining
+all 19 new test bytes and the exact inverse of old tests after only authorized
+stage-oracle/factory adaptations. Four frozen files are integrated; pinned
+generation adds four test references. Central full Remote passed 391/391,
+no skips/failures/runtime warnings, actual exit 0. Scripts 205/two conditional
+skips and typecheck/safety/invariants pass. Unchanged full targets are not rerun.
+Final nine-path integration/record review and staged drift remain pending;
+the next push waits for T3b CI. A5c is a read-only metadata producer proposal,
+N3-B2 a separate native test draft; no Service/browser/runtime/W3-W6 pass.
+The independent final A5b nine-path integration/record gate subsequently passed
+SPEC PASS / QUALITY APPROVED, verifying index/worktree equality, frozen hashes,
+the old-test inverse and three xcresults/producer exits. Pinned staged drift v1
+passed. Exact T3b Tests `34017787159` now succeeded alongside dependency review;
+CodeQL `34017787170` still runs, so A5b push waits and new-head CI remains
+unverified. No A5c/N3-B2 implementation is included in this candidate.
 The owner authorized committing/pushing W1, running CI, then autonomous staged
 implementation/review/CI through W6 on 2026-09-05. Production W7, credentials,
 network changes, and merge/release remain separate authority boundaries.

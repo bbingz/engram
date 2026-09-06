@@ -188,7 +188,7 @@ final class WebServerIntegrationTests: XCTestCase {
         let calls = A4Recorder<String>()
         _ = try EngramRemoteServerApp(config: value, webReadClientFactory: { path in
             calls.append(path)
-            return { _ in throw EngramServiceWebReadClientError.unavailable }
+            return WebReadRoutes.messagesOnly { _ in throw EngramServiceWebReadClientError.unavailable }
         })
         XCTAssertEqual(calls.values, [socketPath])
     }
@@ -417,18 +417,23 @@ final class WebServerIntegrationTests: XCTestCase {
         XCTAssertEqual(fixture.requests.count, 1)
     }
 
-    func testUnimplementedOverviewListAndDetailRemain404WithNoIPC() async throws {
-        let fixture = try fixture()
+    func testMountedMetadataUsesDefaultClientAndMapsUnsupportedServiceSafely() async throws {
+        let fixture = try fixture { request in
+            try JSONEncoder().encode(EngramServiceResponseEnvelope.failure(requestId: request.requestId,
+                error: EngramServiceErrorEnvelope(name: "UnsupportedCommand", message: "a4-private-service-detail /private/service.db",
+                    retryPolicy: "never", details: ["secret": .string(Self.viewer)])))
+        }
         defer { fixture.stop() }
         try await withServer(config()) { server in
             let cookie = try await Self.login(server)
             for path in ["/web/api/overview", "/web/api/sessions", "/web/api/sessions/session-a"] {
                 let response = try await server.request("GET", path, headers: Self.originHeaders + [("Cookie", cookie)])
-                XCTAssertEqual(response.status, 404)
-                Self.assertSecurityHeaders(response)
+                XCTAssertEqual(response.status, 503)
+                Self.assertSafeFailure(response)
             }
         }
-        assertNoIPC(fixture)
+        XCTAssertEqual(fixture.requests.map(\.command), ["webOverview", "webSessions", "webSessionDetail"])
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.capabilityToken == nil })
     }
 
     func testDecodedUnicodeIdentityOpaqueCursorAndCanonicalRolesReachTypedDTOUnchanged() async throws {
@@ -612,7 +617,7 @@ final class WebServerIntegrationTests: XCTestCase {
         defer { fixture.stop() }
         let calls = A4Recorder<String>()
         try await withServer(config(), factory: { _ in
-            { request in calls.append(request.sessionId); throw A4Failure("a4-private-service-detail") }
+            WebReadRoutes.messagesOnly { request in calls.append(request.sessionId); throw A4Failure("a4-private-service-detail") }
         }) { server in
             let cookie = try await Self.login(server)
             let response = try await server.request("GET", self.messagesPath, headers: Self.originHeaders + [("Cookie", cookie)])
@@ -627,7 +632,7 @@ final class WebServerIntegrationTests: XCTestCase {
         let fixture = try fixture()
         defer { fixture.stop() }
         try await withServer(config(), factory: { _ in
-            { request in
+            WebReadRoutes.messagesOnly { request in
                 let fragment = try EngramServiceWebMessageFragment(messageOrdinal: 0, role: .assistant,
                     payloadSHA256: String(repeating: "b", count: 64), utf8Offset: 0,
                     payloadFragment: String(repeating: "\n", count: 140_000), isLastFragment: true)
