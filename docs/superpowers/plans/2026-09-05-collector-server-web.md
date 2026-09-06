@@ -130,6 +130,39 @@ The combination/routing gate passed SPEC PASS / QUALITY APPROVED; the
 coordinator also verified all seven staged source/routing hashes against
 the worktree and passed pinned staged project drift. The eleven-file N1+A4
 candidate is ready for authorized commit/push, with new-head CI pending.
+This candidate was then committed/pushed as `9fd6db26d9d02fc77f3e0a5918b4cd831d6b36d3`;
+Draft PR #446 remains open/unmerged. Its Tests `34005267338`, CodeQL
+`34005267336` and dependency review `34005267340` are in progress. The
+post-commit project-drift tests passed 10/10. T2's two added history tests
+are awaiting RED, with its production files still frozen; N2 remains prep.
+At 10:12 CST the exact-head Tests and dependency review passed; CodeQL
+remained running. T2's added tests captured bounded-history RED, then the
+minimal aggregate passed all 91 focused tests; independent review and
+central integration remain pending. N2's 155-test RED preserved all old
+126 passes, and one additive physical-alias test captured three intended
+rejection failures after all real firmlink positive controls passed.
+Only its two owner/POSIX production files are now allowed GREEN edits;
+all 30 tests and routing remain frozen. A5a is DTO/test preparation only.
+T2 then passed independent SPEC PASS / QUALITY APPROVED and exact four-file
+central integration. Pinned XcodeGen generated only eight new project lines;
+the full Core producer 15387 is running. Service/App/MCP combined gates
+remain pending. T3a prepares only three new data-layer files and tests;
+runtime/provider integration stays separate. First Web transcript authority
+requires parsed/ready/current metadata to identify the same generation.
+The central T2 full-target gates then passed: Core 1,643 and Service 875
+(one existing skip each), App 1,175, MCP 270, all zero failures and actual
+producer exits 0. The App scheme also reran the complete Core suite; this
+is not another distinct set of tests. Ten scripts passed 205/two existing
+conditional skips; typecheck/archive safety/five invariants passed. Remote
+and Collector source is unchanged and their full suites were not rerun.
+At 10:32 CST the prior-head CodeQL product gate still runs; next push waits.
+A5a/T3a workers reported usage limits; their incomplete donor drafts are
+preserved and excluded. N2 remains donor-only; the coordinator continues.
+The final nine-path central integration/record gate then passed SPEC PASS /
+QUALITY APPROVED. The coordinator verified prior-head `9fd6db26` CodeQL
+success (Gate completed 10:33:35 CST), completing all three workflows for
+that immutable SHA. Prepare the authorized T2 commit/push; its new-head CI
+is still separate and pending. N2/T3a/A5a remain excluded.
 The owner authorized committing/pushing W1, running CI, then autonomous staged
 implementation/review/CI through W6 on 2026-09-05. Production W7, credentials,
 network changes, and merge/release remain separate authority boundaries.

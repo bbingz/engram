@@ -7,6 +7,126 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### T2 central full-target verification (2026-09-06)
+
+The coordinator's four affected targets passed with the exact integrated T2
+hashes and generated project unchanged. Full logs and xcresults share the
+`/tmp/engram-t2-central-` prefix:
+
+| Check | Actual result | Producer / log evidence |
+| --- | --- | --- |
+| Core, `core-full` | 1,643 total; 1,642 passed, one existing opt-in performance skip, zero failed | 15387 exit 0; log 3421-3422 (T2 47), 5984-5994 |
+| Service, `service-full` | 875 total; 874 passed, one existing live-credential test skip, zero failed | 18946 exit 0; log 3002, 3775-3785 |
+| App scheme, `app-full` | App 1,175/0; the scheme also reran Core 1,643 with its one existing skip, zero failures | 53175 exit 0; log 7433-7435, 10022-10032; xcresult 2,818 total/2,817 passed/one skipped |
+| MCP, `mcp-full` | 270 passed, zero failed/skipped | 99172 exit 0; log 779-789 |
+
+Ten script suites passed 205 tests with two existing conditional project-drift
+skips, producer 47233 exit 0 (`/tmp/engram-t2-tranche-scripts.log`). Test
+typecheck, archive safety, five invariant gates and `git diff --check` passed;
+logs are `/tmp/engram-t2-tranche-{typecheck-test,archive-safety,invariants}.log`.
+The Service xcresult contains a reader QoS warning, not a test failure; no cause
+is attributed. UI/browser, live credential and performance acceptance were not
+run. Collector/Remote source and dependency boundaries are unchanged by T2 and
+their full suites were not rerun; previous `9fd6db26` evidence stays separate.
+
+At 10:32 CST the prior `9fd6db26` Tests/Dependency Review and CodeQL Swift
+Remote checks passed; CodeQL Swift product remains in progress. The next push
+still waits for that exact-head gate. A5a and T3a workers stopped on reported
+usage limits: only unfinished test/scaffold drafts exist in their donors,
+and none enters this candidate. N2 remains an isolated implementation draft.
+No commit, new-head CI, runtime wiring, full W3-W6 or production acceptance is
+claimed by this local checkpoint.
+
+The final central integration/record gate subsequently returned SPEC PASS /
+QUALITY APPROVED for exactly nine staged paths, independently checking the
+four source hashes, target membership, logs and xcresults. The coordinator
+then verified `9fd6db26` CodeQL `34005267336` successful; its CodeQL Gate
+completed at 10:33:35 CST. That prior head now has all three CI workflows
+successful. Only the authorized T2 commit/push and its separate new-head CI
+remain for this candidate; N2/T3a/A5a are excluded. Producer numbers above
+are harvested command handles, not operating-system PIDs inferred from logs.
+
+### T2 history GREEN and N2 physical-alias RED checkpoint (2026-09-06)
+
+At 10:12 CST the coordinator rechecked Draft PR #446 at exact head
+`9fd6db26d9d02fc77f3e0a5918b4cd831d6b36d3`: Tests `34005267338`
+and dependency review `34005267340` succeeded; both Swift jobs in CodeQL
+`34005267336` remained running. The PR is still draft/open/unmerged.
+
+T2's bounded-result follow-up passed its actual focused GREEN: Claim 30,
+Commit 47 and legacy Ledger 14, total 91 passed/zero failures/skips,
+producer 97663 exit 0. The coordinator verified the matching xcresult,
+four frozen source hashes and `/tmp/engram-capture-history-green.5Gk4S0/green.log`
+(lines 250, 257, 303, 347, 378-390). This bounds history rows delivered into
+Swift, not SQLite scan work. Independent review and central full-target
+integration gates are still pending; the donor is not yet integrated.
+
+N2's complete RED executed 155 tests: the old 126 passed and all 29 new
+owner tests failed on fail-closed scaffolds (81 assertions, 28 unexpected
+throws), actual producer 89835 exit 65. Evidence is
+`/tmp/engram-w3-posix-red.1chyCC/collector155-n2-owner-red.log` and xcresult.
+One additive firmlink test then covered equal/ancestor/descendant overlap
+between real Users and Data-volume paths. Its three physical dev/inode and
+non-symlink positive controls plus unchanged-file snapshots passed; its only
+three failures rejected `notImplemented` as a security result. Producer
+23347 exited 65; the coordinator independently read raw lines 174-198,
+the exit record and xcresult at the same directory's `n2-owner-firmlink-red.*`.
+The original 29 tests remain byte-identical. The 30-test file is frozen as
+`c1cd35860fbbc642e4e6c669fb814f149c563f4e8c2a0f2085aaf949bb54cda9`;
+only Owner and minimal shared POSIX helpers are now authorized for GREEN.
+No N2 process-lock child probe or GREEN acceptance has run.
+
+A5a metadata DTO/test preparation is bounded to the existing Foundation-only
+models, typed client and client tests; HTTP/runtime/provider files remain
+frozen. Unknown observations remain nullable, and publication/task/logical-
+session counts have distinct units. The first production transcript provider
+will require matching parsed/ready/current metadata generations and recheck
+authority/visibility on every page. Older artifacts remain durable but this
+phase does not promise historical last-good transcript reads. No production,
+browser, full W3-W6, credentials or deployment acceptance is implied.
+
+T2's independent exact-four-file gate then returned SPEC PASS / QUALITY
+APPROVED. The coordinator read the complete review, rechecked the four
+hashes and applied only those files to the central worktree. Writer means
+`Indexing/SessionSnapshotWriter.swift`, not `Database/EngramDatabaseWriter.swift`;
+the latter is unchanged. XcodeGen 2.45.4 generated exactly eight additive
+project lines and no project.yml change; the resulting project hash is
+`44a0620ad9be710381b0890554f4cf42be10f5b5eb4ada8ebfc9925d5c3a993f`.
+The coordinator's full Core producer 15387 is now running with the isolated
+workspace home and `/tmp/engram-t2-central-core-full.{log,xcresult}`.
+Full Core/Service/App/MCP results are pending. T3a is limited to three new
+normalized-store/readiness/test scaffolds in its donor, with no runtime edits.
+
+### N1/A4 pushed; bounded-history follow-up remains isolated (2026-09-06)
+
+The eleven-file N1/A4 candidate was committed and pushed as
+`9fd6db26d9d02fc77f3e0a5918b4cd831d6b36d3`. The coordinator observed actual
+commit and push exits 0, with logs at `/tmp/engram-n1-a4-tranche-{commit,push}.log`.
+Draft PR #446 remains open and unmerged at that exact head. New Tests
+`34005267338`, CodeQL `34005267336`, and dependency review `34005267340`
+were in progress on the initial live check. The post-commit project-drift
+test suite passed 10/10, including the two formerly conditional skips
+(`/tmp/engram-n1-a4-tranche-xcodeproj-tests-postcommit.log`, producer 13297
+exit 0); this is not another full 207-test rerun.
+
+T2 and N2 are not in this commit. T2's two added history tests preserve the
+original 45 assertions/methods and production hashes: the SQLite ROW trace
+counts result rows delivered into Swift, while thirteen non-head corruption
+variants preserve strict identity/type validation. Their RED is next; the
+89-test GREEN belongs to the preceding donor version. No runtime/provider,
+browser, deployment, credentials or live data acceptance is implied.
+
+T2's added tests then ran: producer 84161 exited 65, with two tests/one
+assertion failure/zero unexpected failures. The result-row bound measured
+66 versus the maximum four; the thirteen-variant corruption test passed.
+The coordinator read `/tmp/engram-capture-history-red.je6Upz/red.log`
+(lines 1808-1828), matching `.xcresult`, and unchanged hashes, then approved
+only the version helper's MAX/invalid-count aggregate replacement. That
+minimal patch is prepared but not GREEN-verified. N2's 29-test owner/root
+scaffolds were fully reviewed; the coordinator added one explicit source
+and its matching dependency-guard entry, then generated only eight additive
+project lines. All N2 work remains donor-only and its first full RED is next.
+
 ### Root enrollment integration and HTTP full-suite follow-up (2026-09-06)
 
 Draft PR #446 remains open and unmerged at `1523487b`. Its exact-head Tests

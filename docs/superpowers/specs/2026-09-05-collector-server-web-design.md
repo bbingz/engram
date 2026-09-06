@@ -1,6 +1,6 @@
 # Design Doc: lightweight collectors, central indexing, and a read-only Web client
 
-- **Status**: Accepted for staged implementation. Draft PR #446 head `1523487b` has successful Tests, CodeQL and dependency review as of 09:43 CST on 2026-09-06. The next local N1 root enrollment/owner-fence and A4 actual-HTTP candidate passed both independent slice gates, combination/routing review and exact-hash central integration. Its coordinator-run complete Collector 126/126 and Remote 341/341, ten-script 205 passed/two existing conditional skips, typecheck, five invariants, archive safety and pinned staged project drift pass. Unchanged Core/Service/App/MCP source was not rebuilt for this bounded candidate; the preceding commit's six-target evidence remains separate. The eleven-file candidate is ready for authorized commit/push; new-head CI remains pending. Donor-only T2 atomic parsed-commit GREEN passed 89/89, but its history materialization still needs a bounded-result regression and quality review; N2 owner/enrollment is test-first preparation. Neither is included in this candidate. None of these close full-transcript/browser acceptance. Runtime wiring, FSEvents/upload queues, parsed/read/FTS consumers, UI and W6 remain incomplete; W7 is separately authorized.
+- **Status**: Accepted for staged implementation. Draft PR #446 head `9fd6db26` contains independently reviewed N1 root enrollment/owner fencing and A4 actual HTTP. Its coordinator-run complete Collector 126/126 and Remote 341/341 plus bounded script/invariant/typecheck/safety/drift gates pass; unchanged Core/Service/App/MCP source was not rebuilt for that commit. All three exact-head CI workflows passed; CodeQL Gate completed at 10:33:35 CST on 2026-09-06. T2's bounded-history follow-up passed 91 focused tests and independent SPEC PASS / QUALITY APPROVED; its exact four hashes are now centrally integrated with eight generated routing lines. Full central Core 1,643 and Service 875 (one existing skip each), App 1,175 and MCP 270 passed with zero failures; script/typecheck/safety/invariant and pinned staged project-drift gates also pass. The nine-file T2 candidate passed its final independent integration/record gate and is ready for the authorized commit/push; its new-head CI remains pending. Donor N2 captured full 155-test RED and an additional physical-alias RED; 30 tests remain frozen while only Owner/POSIX GREEN proceeds. T3a normalized-read/readiness and A5a metadata DTOs are unfinished donor scaffolds/tests; their workers reported usage limits, so the coordinator retains those drafts without claiming verification. Runtime wiring, FSEvents/upload queues, real parsed/read/FTS consumers, metadata/static Web UI and W6 remain incomplete; no full-transcript/browser acceptance is claimed. W7 remains separately authorized.
 - **Owner**: Engram maintainers; Codex coordinates bounded implementation workers
 - **Date**: 2026-09-05
 - **Related**: [implementation plan](../plans/2026-09-05-collector-server-web.md), [archive v2 contract](../../remote-archive-v2.md), [invariants](../../invariants.md), root `CHANGELOG.md`
@@ -478,6 +478,22 @@ same-site/cross-site/no-cors/navigation negative paths without forged test heade
 No shared global Origin/CORS middleware is added. Existing authenticated MCP
 POST rejects any Origin; current archive routes use bearer auth without that
 blanket Origin rejection and must not be described as having one.
+
+The first concrete transcript provider requires `lastParsed == lastReady ==
+requestedGeneration` and current session metadata/owner/source/version/hash
+matching that immutable generation. Every page rechecks current source and
+visibility authority after asynchronous preparation. A newer parsed but not
+ready generation therefore makes transcript reads temporarily unavailable;
+the old artifact, ready head and FTS remain durable. This is not historical
+last-good transcript-read support, and no current title may wrap an older body.
+
+Metadata DTOs distinguish unknown observations from observed zero/empty values,
+and count distinct publications, publication-by-parser tasks and logical sessions
+separately. Continuation snapshots bind normalized query bytes, all filters,
+limit, sort version and the visibility/registry/FTS view; they are not transcript
+generations. The typed client only adds `webOverview`, `webSessions` and
+`webSessionDetail` to `webMessages`. Missing providers return unavailable, not
+an empty successful corpus. Paths, native IDs and resume commands remain absent.
 
 Retain the same-process Web module as the minimum deployment choice, with its
 security cost explicit: an online Web/RemoteServer code-execution compromise can

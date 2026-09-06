@@ -4,6 +4,10 @@
 
 ### 2026-09-06
 
+- [验证] T2 九文件暂存候选通过最终整合／记录双门；旧 head `9fd6db26` 三项 CI 全通过（CodeQL Gate 10:33:35），准备授权提交推送，新 head CI 待验，N2/T3/Web 草稿不在候选中，详见 `CHANGELOG.md`。
+- [验证] T2 过独立双门并按四文件哈希整合；中央 Core 1,643（1 skip）、Service 875（1 skip）、App 1,175、MCP 270 零失败，脚本 205/2 条件 skip；旧 head CodeQL product 仍待验，T3/Web 线程额度中断草稿与 N2 均未混入，详见 `CHANGELOG.md`。
+- [验证] `9fd6db26` Tests/依赖检查通过，CodeQL 仍运行；T2 有界历史 GREEN 91/0 待独立门，N2 原 155 项与补充 firmlink 单项均取得真实 RED，现仅允许最小 GREEN；首版 Web 正文要求 metadata/parsed/ready 同代，未知观测不填健康，详见 `CHANGELOG.md`。
+- [验证] N1＋A4 已提交推送 `9fd6db26`，PR #446 仍 Draft，新三项 CI 运行中；提交后漂移测试 10/10（含原 2 条件 skip）；T2 有界历史 2 项新测试待 RED、N2 骨架准备均未混入，详见 `CHANGELOG.md`。
 - [验证] N1＋A4 十一文件候选通过组合双门和暂存哈希／固定版工程漂移门；中央 Collector 126、Remote 341 全过，脚本 205/2 条件 skip，准备提交推送，新 head CI 待验；T2/N2 未混入，详见 `CHANGELOG.md`。
 - [验证] A4 独立双门通过并按哈希整合，中央 Remote 341/0；T2 donor 89/0，版本计算的全历史内存展开正补 RED 后收敛，暂未整合；现候选 archive safety/typecheck/五项 invariant 通过，详见 `CHANGELOG.md`。
 - [验证] `1523487b` 三项 CI 全通过；N1 独立双门通过并按哈希整合，中央 Collector 126/0；A4 donor 完整 Remote 341/0，独立门/整合待验；T2 89 项 GREEN 正运行，N2 仅测试骨架，未部署，详见 `CHANGELOG.md`。

@@ -501,6 +501,7 @@
 		97789C350318BEAE0F62404A /* WebAuthRoutes.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB1486CFA636CF2B30DFCF94 /* WebAuthRoutes.swift */; };
 		97A124294CD4A72BCB4F47A0 /* VectorMath.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D6403CEF6E13AEDA13148C2 /* VectorMath.swift */; };
 		97CF465E0013272CD08B7BF4 /* SessionModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B191328F4AFC80C4370B9375 /* SessionModelTests.swift */; };
+		980427F87C9B20D390821FF5 /* CaptureIngestCommitter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B457C40A498D0628C314793 /* CaptureIngestCommitter.swift */; };
 		988AE05E6CBF3C1737DBC4DE /* ProjectsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80FF3CC57141F42494844E81 /* ProjectsScreen.swift */; };
 		989F0486E9AC2CF4B05FEC21 /* WorkGraphView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E21FC5ED27185582D19F8FD6 /* WorkGraphView.swift */; };
 		9999306EC3DD1EE4EAB61B24 /* StreamingLineReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77FFA09BE349ACCD2B2C4E73 /* StreamingLineReader.swift */; };
@@ -626,6 +627,7 @@
 		BBA4B8A5B7E8538B17253665 /* ArchiveHash.swift in Sources */ = {isa = PBXBuildFile; fileRef = 988863FB0DAC31BEF3FC50F9 /* ArchiveHash.swift */; };
 		BBC9737D1B712CB133DE6612 /* MCPDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F11777A16A5BF9494F0E586 /* MCPDatabase.swift */; };
 		BBDABE0BC714CBAE6F6ED633 /* BrowseReloadCoalescer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F40F1CCF1C0BF1B7E893478 /* BrowseReloadCoalescer.swift */; };
+		BCDCFF86ED2FA48F88F81048 /* CaptureIngestCommitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E84C2FCBFF78DD608C33E9FA /* CaptureIngestCommitTests.swift */; };
 		BCEEB8EC6137416FB2713276 /* RelativeTime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9DA8AD0AAE8D623BCA54FC4 /* RelativeTime.swift */; };
 		BD36B61F0A90AA98F049B7E5 /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6893032E186098253529B5FF /* ActivityView.swift */; };
 		BD5C4BD7580A606F32A3625E /* ArchiveModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E88F20261BDB5D92EDF539D /* ArchiveModelTests.swift */; };
@@ -1418,6 +1420,7 @@
 		79C335DADB1EAEADE993DA9F /* ArchiveV2ServiceWireTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveV2ServiceWireTests.swift; sourceTree = "<group>"; };
 		7A7F7122CB3E44AD1BDC89CF /* RepoDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepoDetailView.swift; sourceTree = "<group>"; };
 		7AE16B62BAB94DA06590680F /* ObservabilityRetention.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObservabilityRetention.swift; sourceTree = "<group>"; };
+		7B457C40A498D0628C314793 /* CaptureIngestCommitter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureIngestCommitter.swift; sourceTree = "<group>"; };
 		7B5139039ED05A9B4515AE59 /* MemoryViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryViewTests.swift; sourceTree = "<group>"; };
 		7B57AE197E2A40C8D108F512 /* EngramRemoteServerCoreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = EngramRemoteServerCoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		7B7012F7B41FBCB1E2B95076 /* IndexingEventTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IndexingEventTypes.swift; sourceTree = "<group>"; };
@@ -1677,6 +1680,7 @@
 		E739CEB4363175CED46FBCC7 /* SparklineView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SparklineView.swift; sourceTree = "<group>"; };
 		E828A7A1B0155D561C0642AE /* RemoteSyncModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSyncModels.swift; sourceTree = "<group>"; };
 		E82D19B2FEFE12422A15C4F9 /* ImportRepo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportRepo.swift; sourceTree = "<group>"; };
+		E84C2FCBFF78DD608C33E9FA /* CaptureIngestCommitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureIngestCommitTests.swift; sourceTree = "<group>"; };
 		E84E8C543D2B35FC67D38675 /* AboutSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutSettingsSection.swift; sourceTree = "<group>"; };
 		E8A3841D86B13AA2C3546896 /* SettingsIO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsIO.swift; sourceTree = "<group>"; };
 		E8CF94ACF0303DFF81991243 /* ArchiveHeadExistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveHeadExistenceTests.swift; sourceTree = "<group>"; };
@@ -2317,6 +2321,7 @@
 			isa = PBXGroup;
 			children = (
 				5C1CEB2F2E91CAEA3C12652E /* CaptureIngestClaimTests.swift */,
+				E84C2FCBFF78DD608C33E9FA /* CaptureIngestCommitTests.swift */,
 				A6A5A2F21FAE33D8BBE1047A /* CaptureIngestIdentityTests.swift */,
 				6679DDE26217E2DD398B77D9 /* CaptureIngestLedgerTests.swift */,
 				10BD9B6B6C48C879A1A82ED9 /* CaptureIngestReplayTests.swift */,
@@ -2328,6 +2333,7 @@
 		596A6DAF88A21C65851FBB12 /* CaptureIngest */ = {
 			isa = PBXGroup;
 			children = (
+				7B457C40A498D0628C314793 /* CaptureIngestCommitter.swift */,
 				15C5F2D29A541F59384CA0A8 /* CaptureIngestIdentity.swift */,
 				EE7EF32A00DD29799AE4C96C /* CaptureIngestLedger.swift */,
 				8694EE28190F5A1C6A84E101 /* CaptureIngestReplay.swift */,
@@ -3747,6 +3753,7 @@
 				D5A38A972A0C6889C9772405 /* AuthoritativeSessionSnapshotBuilderTests.swift in Sources */,
 				D7845DFA6F44F9C29F508094 /* BatchTests.swift in Sources */,
 				8B7E3607E3722100D3DBF300 /* CaptureIngestClaimTests.swift in Sources */,
+				BCDCFF86ED2FA48F88F81048 /* CaptureIngestCommitTests.swift in Sources */,
 				74611025F6DDFC0A085FF7AC /* CaptureIngestIdentityTests.swift in Sources */,
 				F8F4B4A8C42DED6819041DBA /* CaptureIngestLedgerTests.swift in Sources */,
 				3598E6F494EEBB66BEC619EA /* CaptureIngestReplayTests.swift in Sources */,
@@ -4242,6 +4249,7 @@
 				F66DA1DA45C15A70AF3906A7 /* AuthoritativeSessionSnapshotBuilder.swift in Sources */,
 				0DD10D250D0E20BF30D1DE75 /* Batch.swift in Sources */,
 				E707BAD663F02A3148FC3C19 /* BundleCodec.swift in Sources */,
+				980427F87C9B20D390821FF5 /* CaptureIngestCommitter.swift in Sources */,
 				F165CDB2B788260DA29450CB /* CaptureIngestIdentity.swift in Sources */,
 				3FF2D517E49D2E315C70C30D /* CaptureIngestLedger.swift in Sources */,
 				5C4E3F7B77511D386CFF7361 /* CaptureIngestReplay.swift in Sources */,
