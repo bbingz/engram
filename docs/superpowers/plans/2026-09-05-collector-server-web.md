@@ -307,6 +307,38 @@ have real RED and remain excluded from the N3-B1 candidate. A5b stays donor-only
 N3-B1 pinned staged drift v2 now passes: the first run regenerated non-pinned
 project drift, and the final project differs from HEAD only by eight added
 Coordinator source/test references. Final review/commit/push remain pending.
+N3-B1 subsequently passed its independent final nine-path integration/record
+gate and was normally committed/pushed as `5073f3f8`, both producers exit 0.
+Exact-head Tests `34016074877` and dependency review `34016074843` succeeded;
+CodeQL `34016074803` remains pending. T3b's supplemental implementation gate
+now passed independently after 45/45 GREEN and donor Core 1,713/one skip/zero
+failures. The original 35 tests/helpers retain their exact inverse SHA256.
+Its four frozen files were integrated; pinned generation adds only four test
+references. Central Core 1,726 and Service 875 passed with one existing skip
+each, zero failures, and 11/one QoS warnings respectively. Scripts passed
+205/two conditional skips; typecheck/safety/invariants passed. App/MCP,
+staged drift and final integration/commit/new-head CI remain separate gates.
+A5b corrected only two test factory wrappers after a compile-only first attempt;
+its real RED v2 passed all old 49 and failed 13 of the 17 new HTTP tests.
+Two additive valid-DTO budget tests have passed independent draft review but
+await RED; the old metadata-404 stage oracle may only be migrated after RED.
+No native/uploader/runtime/browser or full W3-W6 acceptance is implied.
+Final T3b combined-gate follow-up: pushed `5073f3f8` now has all three required
+workflows successful; CodeQL Gate completed 06:49:03 UTC. Central App v1's
+single failure was an obsolete call-string source scanner. Its one-line
+correction preserves the skip-tier oracle; App v2 passed 2,901 total/one
+existing skip/zero failures/11 QoS warnings, including App 1,175 and the Core
+rerun. MCP passed 270/270 with no skips or runtime warnings; actual producers
+exited 0. Pinned staged drift v1 passed. The final ten-path integration/record
+gate, commit/push and new-head CI remain pending. Unchanged Remote/Collector
+full suites are not rerun; browser/runtime/W6 remain unverified. A5b's two
+valid-DTO budget tests captured real RED, then its Routes/App-only donor
+implementation and one obsolete stage-oracle migration entered focused GREEN
+verification. All 19 new tests remain frozen and excluded from T3b.
+The final T3b ten-path integration and record/index gates then passed SPEC PASS /
+QUALITY APPROVED. Worktree/index bytes, four donor hashes, the scanner-only
+change, prior-head CI and pinned staged drift v2 are verified. Prepare the
+authorized normal commit/push; new-head CI remains separate and pending.
 The owner authorized committing/pushing W1, running CI, then autonomous staged
 implementation/review/CI through W6 on 2026-09-05. Production W7, credentials,
 network changes, and merge/release remain separate authority boundaries.
@@ -469,6 +501,36 @@ Gate: hermetic capture/upload integration with two local test stores, privacy
 adversarial tests, target-dependency guard, restart/overflow/disk-pressure tests.
 Actual production source inspection is separate and read-only until authorized.
 
+### N3-B2 native adapter draft contract
+
+This next slice owns only new `CollectorNativeEventStream.swift` and its tests.
+Coordinator/Owner/Store and old tests remain frozen; the coordinator owns
+framework/project routing and the exact additional dependency-source assertion.
+The independently reviewed draft contract requires:
+
+- A per-device stream with one descriptor-verified, device-relative root and
+  WatchRoot/FileEvents/FullHistory flags. Epoch is `fsevents-device-v1:<UUID>`
+  from the canonical FSEvents database UUID, not runtime dev_t. Resume cursors
+  are canonical decimal 1 through UInt64.max-1; zero, SinceNow sentinel,
+  noncanonical values and mismatched/unknown epochs fail closed without rebasing.
+- Nil checkpoint alone subscribes SinceNow. After successful start and the
+  post-start root fence, an explicitly synthetic historyDone is ordered on the
+  same serial callback queue, with no synthetic checkpoint. Existing checkpoints
+  wait for native HistoryDone. FullHistory lower/repeated IDs retain every dirty
+  path while checkpoint candidates use the maximum high-water value.
+- Validate and bounded-copy the whole borrowed native batch before admission;
+  no callback filesystem access, Owner writes or Task creation. Loss outranks
+  HistoryDone, seals once, and never advances a checkpoint. Directory/root
+  structural or unknown directory events conservatively request reconciliation:
+  the frozen dirty-locator API cannot expand a moved-in populated subtree.
+  This is application inventory uncertainty, not a kernel-drop claim or a W6
+  latency pass. Ordinary file events remain bounded dirty batches.
+- Private root-FD/mount identity fences and exactly-once native resource cleanup;
+  external stop seals, stops/invalidates, drains, then releases. Callback-reentrant
+  synchronous drain is unsupported and must not falsely claim completion or
+  introduce hidden background cleanup. Native fault-injection tests and later
+  real temporary-root callback smoke remain distinct evidence levels.
+
 ## W4 — central replay, identity, and ready states
 
 Scope: Service/CoreWrite ingest ledger/replay integration and tests; share the
@@ -500,7 +562,7 @@ Gate: full Core/Service suites, fixture transcript/usage/tier/parent parity,
 crash/reorder/namespace tests, direct-writer and migration guards. Demonstrate
 capture and keyword-ready when the AI provider is absent or indefinitely failing.
 
-### T3b bounded test-draft contract (not implemented)
+### T3b bounded readiness contract (runtime wiring pending)
 
 The next W4 slice owns only `IndexJobRunner.swift`, `FTSRebuildPolicy.swift`,
 new `CaptureIngestIndexJobRunnerTests.swift`, and, if needed, existing policy

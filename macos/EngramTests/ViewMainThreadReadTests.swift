@@ -478,7 +478,7 @@ final class ViewMainThreadReadTests: XCTestCase {
             s.contains("contentSource.tier == SessionTier.skip.rawValue"),
             "recoverable FTS jobs for skip-tier sessions must not rebuild searchable content"
         )
-        XCTAssertTrue(s.contains("try Self.markNotApplicable(db, id: job.id, enabledSources: enabledSources)"))
+        XCTAssertTrue(s.contains("try Self.markNotApplicable(db, id: job.id, enabledSources: enabledSources, capturePolicy: capturePolicy())"))
     }
 
     func testAISettingsRefreshesRuntimeSecretBridgeAfterKeychainWrites() throws {

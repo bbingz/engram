@@ -104,7 +104,8 @@ final class Round5RemediationTests: XCTestCase {
         XCTAssertFalse(source.contains("private static func isTerminalFtsFailure"))
 
         let catchStart = try XCTUnwrap(source.range(of: "} catch {", options: .backwards))
-        let catchEnd = try XCTUnwrap(source.range(of: "return .retryable", options: [], range: catchStart.lowerBound..<source.endIndex))
+        let retryStart = try XCTUnwrap(source.range(of: "try Self.markRetryable", options: [], range: catchStart.lowerBound..<source.endIndex))
+        let catchEnd = try XCTUnwrap(source.range(of: "return .retryable", options: [], range: retryStart.lowerBound..<source.endIndex))
         let retryCatch = String(source[catchStart.lowerBound..<catchEnd.upperBound])
         XCTAssertTrue(retryCatch.contains("try Self.markRetryable"))
     }
@@ -169,11 +170,12 @@ final class Round5RemediationTests: XCTestCase {
         XCTAssertTrue(source.contains("private static let maxFtsRetryCount"))
 
         let catchStart = try XCTUnwrap(source.range(of: "} catch {", options: .backwards))
-        let catchEnd = try XCTUnwrap(source.range(of: "return .retryable", options: [], range: catchStart.lowerBound..<source.endIndex))
+        let retryStart = try XCTUnwrap(source.range(of: "try Self.markRetryable", options: [], range: catchStart.lowerBound..<source.endIndex))
+        let catchEnd = try XCTUnwrap(source.range(of: "return .retryable", options: [], range: retryStart.lowerBound..<source.endIndex))
         let retryCatch = String(source[catchStart.lowerBound..<catchEnd.upperBound])
         XCTAssertTrue(retryCatch.contains("try Self.markRetryable"))
         XCTAssertTrue(
-            retryCatch.contains("try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources)"),
+            retryCatch.contains("try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources, capturePolicy: capturePolicy())"),
             "a retryable failure that hits the retry cap must not leave a rebuild permanently pending"
         )
 

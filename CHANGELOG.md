@@ -7,6 +7,109 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### T3b authority-fenced FTS central candidate and N3-B1 push (2026-09-06)
+
+The independent final ten-path integration and record/index gates subsequently
+passed SPEC PASS / QUALITY APPROVED. All ten worktree files matched the index,
+the four frozen donor hashes and scanner-only change remained unchanged, and
+pinned staged drift v2 exited 0. SQLite sidecars remain excluded. This candidate
+is ready for the authorized normal commit/push; new-head CI is still pending.
+
+Final combined-gate follow-up: exact pushed `5073f3f8` now has successful
+Tests `34016074877`, dependency review `34016074843`, and CodeQL `34016074803`;
+the latter Gate completed at 06:49:03 UTC. This supersedes its pending
+checkpoint below. T3b central App v1 exposed one stale source-scanner assertion
+at `ViewMainThreadReadTests.swift:481`, not a product failure: 2,901 total,
+2,899 passed, one failed, one skipped, producer exit 65. Only its expected
+`markNotApplicable` call string gained the fresh `capturePolicy` argument.
+App v2 passed 2,901 total/2,900 passed/one existing skip/zero failures, including
+App 1,175/1,175 and the rerun Core suite, with 11 GRDB QoS warnings. MCP passed
+270/270 with no skips/failures/runtime warnings; both actual producers exited 0.
+Artifacts: `/tmp/engram-t3b-central-app-full-{v1,v2}.*` and
+`/tmp/engram-t3b-central-mcp-full-v1.{log,xcresult,producer-exit}`.
+Pinned staged project drift v1 exited 0; `/tmp/engram-t3b-staged-drift-v1.log`.
+The final candidate has ten paths including the additional scanner-only test.
+Remote/Collector full suites are not rerun for this CoreWrite-only product
+change; their source and dependency routing are unchanged. Browser/UI smoke,
+capture runtime and W6 end-to-end remain unverified. The independent final
+integration/record gate, commit/push and new-head CI are still pending.
+
+N3-B1 passed its final independent nine-path integration/record gate and was
+normally committed/pushed as `5073f3f8cedbe99022a817b954f4438ee9fb8427`.
+Both producers exited 0; `/tmp/engram-n3b-tranche-{commit,push}.log` retains
+the complete output. Exact-head Tests `34016074877` and dependency review
+`34016074843` succeeded; CodeQL `34016074803` remains in progress. PR #446
+is still Draft/open/unmerged. No later donor or candidate result describes
+that pushed SHA.
+
+T3b's independent supplemental implementation gate is SPEC PASS / QUALITY
+APPROVED after executable policy-revocation, epoch-history, sibling-registry,
+overlap, tier and canonical-root regressions. Selection/count/backlog/finalize
+share an ownership-first SQL predicate; unavailable capture authority never
+falls through to a legacy adapter. A single joined read-only task loads the
+bounded normalized snapshot. Readiness, optional first-FTS embedding requeue,
+and finalization share the writer transaction, with fresh policy checks and
+cancellation/deadline fences. Retry writes require the unchanged frozen job
+and authority tuple and persist only bounded stable corruption codes.
+
+The supplemental suite passed 45/45; complete donor Core passed 1,713 total,
+1,712 passed, one existing skip, zero failures and 11 GRDB QoS warnings.
+Artifacts: `/tmp/engram-t3b-runner-sibling-green-v3.*` and
+`/tmp/engram-t3b-runner-core-full-v3.{log,xcresult,producer-exit}`.
+Earlier RED and failed GREEN artifacts remain, including the Swift SQL-string
+inference error and the NUL fixture corrected to bind bytes then CAST AS TEXT.
+The original 35 tests plus helpers are byte-identical after removing only the
+ten contiguous supplementary methods: SHA256
+`c28b5eb4ea2bd64680b6eac669a93574ae720a9f548eb53c441d4df06b44d545`.
+Independent review rechecked this inverse proof and corrected its initial
+missing-artifact statement and assertion-count/test-case-count conflation.
+
+Exactly four donor files were integrated with matching hashes: Runner
+`46cbaf4e`, Policy `75f66933`, new tests `edf8bc92`, and Round5 scanner
+`c02d2788`. Round5 changes only two scanner end boundaries and one expected
+fresh-policy finalize call. The pinned generated project adds four test-file
+references; project.yml and all other donor edits remain excluded. Complete
+central Core passed 1,726 total/one existing skip/zero failures/11 QoS warnings;
+Service passed 875 total/one existing skip/zero failures/one reader QoS warning.
+Both actual producers exited 0. Evidence:
+`/tmp/engram-t3b-central-{core,service}-full-v1.{log,xcresult,producer-exit}`.
+Ten script suites passed 205 cases with two dirty-project conditional skips;
+test typecheck, archive safety and all five invariant gates exited 0. Logs:
+`/tmp/engram-t3b-tranche-scripts.log` and
+`/tmp/engram-t3b-tranche-{typecheck-test,archive-safety,invariants}-v2.log`.
+App/MCP combined verification, staged drift, final integration/record gate,
+commit/push and new-head CI remain pending.
+
+A5b remains donor-only and unmounted. Its first attempt was a compile-only
+failure from two old factory closure return types, not behavioral RED. Only
+two messagesOnly wrappers corrected that setup. RED v2 then ran 66 tests:
+the old 49 all passed; 13 of 17 new metadata HTTP tests failed, zero skips or
+runtime warnings, producer exit 65. Evidence: `/tmp/engram-a5b-http-red-v2.*`.
+Two additive valid-DTO query/response budget tests passed independent draft
+review and await executable RED; all original 17 bytes remain unchanged.
+Only after RED may the single obsolete unimplemented-metadata-404 test be
+migrated to the default client's safe unsupported-service IPC contract.
+
+The two supplemental budget tests subsequently produced real RED: both failed,
+zero passes/skips/runtime warnings, nine assertions, actual producer exit 65.
+DTO construction/round-trip prerequisites passed; only the unmounted HTTP
+contracts failed. `/tmp/engram-a5b-http-budget-red-v1.*` retains the artifacts.
+Grok may now implement only Routes/App and migrate that one obsolete method;
+all 19 new test bodies are frozen. This remains excluded from T3b integration.
+The native-stream proposal also passed independent gates after explicitly
+rejecting cursor zero and retaining conservative directory reconciliation:
+the frozen Owner/Store only marks locators, not subtree frontiers. The adapter
+must not advance a directory-only cursor while silently missing descendants.
+Two-file test-draft preparation is authorized; no native implementation or
+kernel callback acceptance is claimed.
+
+These are bounded foundations: capture policy defaults OFF and the runtime
+caller, capture offload support, initial no-job skip consumption, native
+FSEvents, uploader, Service metadata producer, browser and full W3-W6 remain
+incomplete. Scalar eligibility does not scan publication/manifest BLOBs;
+coherent external corruption of those records is not a proven repair path.
+No merge/deploy, provider/credential access, Docker, SSH or W7 action occurred.
+
 ### N3-B1 coordinator central integration candidate (2026-09-06)
 
 Live exact-head verification now confirms `8a53174b` Tests `34013832379`,

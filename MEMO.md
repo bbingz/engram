@@ -4,6 +4,9 @@
 
 ### 2026-09-06
 
+- [验证] T3b 十路径最终整合及记录/索引独立双门通过，原四哈希未变、暂存漂移 v2 通过，准备按授权提交推送；新 head CI 单独待验，详见 `CHANGELOG.md`。
+- [验证] `5073f3f8` 三项 CI 全过；T3b App 旧调用文本扫描单行校正后全量 2,901（含 Core、1 既有 skip）零失败，MCP 270/270，保留 11 条 QoS 警告。十路径最终整合门及新提交 CI 待验，Web/原生监听草稿均未混入，详见 `CHANGELOG.md`。
+- [验证] N3-B1 已推送 `5073f3f8`，Tests/依赖 CI 通过、CodeQL 待验；T3b 补充双门后按四文件哈希整合，中央 Core 1,726、Service 875（各 1 既有 skip）零失败，App/MCP 与最终整合门待验。Web 新 13 项真实 RED、旧 49 全过，两个预算补测仍待 RED，完整 W3–W6 未完成，详见 `CHANGELOG.md`。
 - [验证] `8a53174b` 三项 CI 全过；N3-B1 独立实现门通过，按哈希整合后中央 Collector 196/196，脚本 205/2 条件 skip 与类型/安全/invariants 通过，暂存漂移与整合终门待验。T3b sibling 权威缺口另有 4 项真实 RED，继续 donor 修复，不混入本批，详见 `CHANGELOG.md`。
 - [验证] `8a53174b` Tests/依赖已通过，CodeQL remote 仍待验；N3-B1 donor 全量 196/196，独立实现门待验。T3b 原 35 GREEN 后又用 3 项真实 RED 复现写中撤权与 history 缺失零延迟待办，最小修复复测中；A5b 草稿补验收，未整合、未部署，详见 `CHANGELOG.md`。
 - [提交] `5995ad66` 三项 CI 全绿后，A5a/N3-A 九文件独立终门通过并推送 `8a53174b`；新 head 依赖通过、Tests/CodeQL 待验。N3-B1 仅 donor 测试草稿过门并获 RED 授权，T3b 草稿审阅中，完整 W3–W6 仍未完成，详见 `CHANGELOG.md`。
