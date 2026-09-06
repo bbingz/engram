@@ -42,6 +42,27 @@ handshakes. HQ 12/12, four signal tests repeated 12 times, ten script suites
 195/195, test typecheck, targeted Biome and diff checks passed locally. The
 independent source/log gate passed; correction-head CI is pending. CAS/inventory/replay/Web
 integration is excluded from this CI-fix commit. Detailed logs are in CHANGELOG.
+Follow-up checkpoint (2026-09-06): correction `1660734` now has successful Tests,
+CodeQL and dependency review. The next local bounded-CAS/Web-IPC/inventory/builder
+tranche is integrated and independently reviewed. Coordinator focused results
+are CAS Core 23/0, IPC+continuation 31/0, full Collector 68/0, and builder+legacy
+indexer 127/0, all producer exits 0. New full combined gates and next-head CI are
+pending. Replay donor 17+23 tests pass. Follow-up: Replay5's independent bounded
+gate passed and all five files are now integrated by frozen SHA. The first full
+combined Core run is 1,566/one existing performance skip/zero failures, producer
+56778 exit 0; remaining combined targets and new-head CI are still pending.
+The Web GET Origin rule is corrected in design section 5 using official Fetch
+rules and a real Chrome 152 loopback probe; this is not implemented HTTP/browser
+acceptance. Detailed source/log evidence and remaining work are in CHANGELOG.
+Final local checkpoint: all six central targets passed with this tranche:
+Core 1,566 and Service 875 (one existing skip each), App 1,175, MCP 270,
+Remote 247, Collector 74, all zero failures and producer exits 0. The final
+Collector count includes lexical-root and byte-exact Unicode binding RED/GREEN
+corrections, independently reviewed. Ten script suites passed 205/two existing
+conditional skips; invariants and safety checks passed. These results supersede
+the preceding pending combined-suite checkpoints; new-head CI is still pending.
+POSIX enumeration, claim state transitions and HTTP auth remain separate donor
+candidates, not part of the verified central runtime or full W3-W6 acceptance.
 The owner authorized committing/pushing W1, running CI, then autonomous staged
 implementation/review/CI through W6 on 2026-09-05. Production W7, credentials,
 network changes, and merge/release remain separate authority boundaries.
@@ -246,6 +267,9 @@ read DTO extraction is coordinator-owned and must not link DB writer libraries.
    cannot close full-transcript acceptance.
 2. Implement dedicated viewer authentication, short-lived cookie, exact
    Host/Origin/CSRF controls, page/body/time budgets, safe errors and no-store.
+   Follow the corrected GET contract: fixed API header, exact Origin when
+   present, otherwise all three exact same-origin fetch metadata checks. Present
+   invalid Origin never falls back; login/logout still require exact Origin.
 3. Implement same-origin static reader with source/machine/project filters and
    safe transcript text. Full content remains pageable even for oversized messages.
 4. Test no token/secret leakage and all attempted write methods/routes; preserve

@@ -331,11 +331,34 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         guard let profile = profile(for: locator) else {
             return .failure(.unsupportedVirtualLocator)
         }
+        switch try Self.scanFileForIndexing(
+            physicalLocator: locator, logicalLocator: locator, projectsRoot: profile.projectsRoot,
+            forceClaudeCodeSource: profile.origin != .default, limits: limits, strictRecords: false
+        ) {
+        case .success(let value): return .success(value.scan)
+        case .failure(let failure): return .failure(failure)
+        }
+    }
+
+    static func scanCapturedSource(
+        physicalLocator: String, stagingRoot: String, logicalLocator: String, forceClaudeCodeSource: Bool
+    ) throws -> AdapterParseResult<CapturedSourceScan> {
+        try scanFileForIndexing(
+            physicalLocator: physicalLocator, logicalLocator: logicalLocator, projectsRoot: stagingRoot,
+            forceClaudeCodeSource: forceClaudeCodeSource, limits: .default, strictRecords: true
+        )
+    }
+
+    private static func scanFileForIndexing(
+        physicalLocator: String, logicalLocator: String, projectsRoot: String,
+        forceClaudeCodeSource: Bool, limits: ParserLimits, strictRecords: Bool
+    ) throws -> AdapterParseResult<CapturedSourceScan> {
         do {
             let (objects, failure) = try JSONLAdapterSupport.readObjects(
-                locator: locator,
+                locator: physicalLocator,
                 limits: limits,
                 reportFailures: true,
+                strictRecords: strictRecords,
                 countsTowardMessageLimit: {
                     Self.message(
                         from: $0,
@@ -351,33 +374,41 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             if failure == .fileModifiedDuringParse, messages.isEmpty {
                 return .failure(.fileModifiedDuringParse)
             }
+            let aggregate = Self.aggregateSessionInfo(from: objects, unknownKinds: unknownKinds)
             switch Self.sessionInfo(
                 from: objects,
-                locator: locator,
-                projectsRoot: profile.projectsRoot,
-                forceClaudeCodeSource: profile.origin != .default,
-                unknownKinds: unknownKinds
+                locator: logicalLocator,
+                projectsRoot: projectsRoot,
+                forceClaudeCodeSource: forceClaudeCodeSource,
+                unknownKinds: unknownKinds,
+                physicalLocator: physicalLocator,
+                aggregate: aggregate
             ) {
             case .failure(let reason):
                 return .failure(reason)
             case .success(let info):
                 let checkpoint = failure == nil
-                    ? try JSONLAdapterSupport.checkpoint(locator: locator, limits: limits)
+                    ? try JSONLAdapterSupport.checkpoint(locator: physicalLocator, limits: limits)
                     : nil
                 let checkpointBoundaryHash = checkpoint?.parsedOffset == info.sizeBytes
                     ? checkpoint?.boundaryHash
                     : nil
                 return .success(
-                    IndexingScan(
-                        info: info,
-                        messages: messages,
-                        parseFailure: failure,
-                        checkpointParsedOffset: checkpoint?.parsedOffset,
-                        checkpointBoundaryHash: checkpointBoundaryHash,
-                        unknownRecordKinds: unknownKinds.kinds
+                    CapturedSourceScan(
+                        scan: IndexingScan(
+                            info: info,
+                            messages: messages,
+                            parseFailure: failure,
+                            checkpointParsedOffset: checkpoint?.parsedOffset,
+                            checkpointBoundaryHash: checkpointBoundaryHash,
+                            unknownRecordKinds: unknownKinds.kinds
+                        ),
+                        rawSourceSessionID: aggregate.sessionId
                     )
                 )
             }
+        } catch is CancellationError where strictRecords {
+            throw CancellationError()
         } catch let failure as ParserFailure {
             return .failure(failure)
         } catch {
@@ -440,14 +471,16 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         locator: String,
         projectsRoot: String,
         forceClaudeCodeSource: Bool,
-        unknownKinds: UnknownRecordKindSink? = nil
+        unknownKinds: UnknownRecordKindSink? = nil,
+        physicalLocator: String? = nil,
+        aggregate suppliedAggregate: SessionInfoAggregate? = nil
     ) -> AdapterParseResult<NormalizedSessionInfo> {
-        let aggregate = aggregateSessionInfo(from: objects, unknownKinds: unknownKinds)
+        let aggregate = suppliedAggregate ?? aggregateSessionInfo(from: objects, unknownKinds: unknownKinds)
         guard aggregate.messageCount > 0 else {
             return objects.isEmpty ? .failure(.malformedJSON) : .failure(.noVisibleMessages)
         }
-        let subagent = SubagentTranscriptPath.layout(locator: locator, projectsRoot: projectsRoot)
-        guard let id = aggregate.id(locator: locator, projectsRoot: projectsRoot) else {
+        let subagent = SubagentTranscriptPath.layout(locator: physicalLocator ?? locator, projectsRoot: projectsRoot)
+        guard let id = aggregate.id(locator: physicalLocator ?? locator, projectsRoot: projectsRoot) else {
             return .failure(.malformedJSON)
         }
 
@@ -469,7 +502,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
                 systemMessageCount: aggregate.systemCount,
                 summary: aggregate.firstUserText.isEmpty ? nil : aggregate.firstUserText,
                 filePath: locator,
-                sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
+                sizeBytes: JSONLAdapterSupport.fileSize(locator: physicalLocator ?? locator),
                 indexedAt: nil,
                 agentRole: subagent == nil ? nil : "subagent",
                 originator: forceClaudeCodeSource ? "claude-code" : nil,

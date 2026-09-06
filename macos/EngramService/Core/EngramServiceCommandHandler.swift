@@ -12,6 +12,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     let writerGate: ServiceWriterGate
     let archiveV2Coordinator: ArchiveV2ServiceCoordinator?
     let archiveTranscriptResolver: ArchiveTranscriptResolver?
+    let webTranscriptSnapshotProvider: any ServiceWebTranscriptSnapshotProviding
     let archiveV2CredentialProvisioner: ArchiveV2CredentialProvisioner
     private let claudeCodeProfileService: ClaudeCodeProfileService?
     private let readProvider: any EngramServiceReadProvider
@@ -57,6 +58,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         writerGate: ServiceWriterGate,
         archiveV2Coordinator: ArchiveV2ServiceCoordinator? = nil,
         archiveTranscriptResolver: ArchiveTranscriptResolver? = nil,
+        webTranscriptSnapshotProvider: any ServiceWebTranscriptSnapshotProviding = UnavailableServiceWebTranscriptSnapshotProvider(),
         archiveV2CredentialProvisioner: ArchiveV2CredentialProvisioner = ArchiveV2CredentialProvisioner(),
         claudeCodeProfileService: ClaudeCodeProfileService? = nil,
         readProvider: any EngramServiceReadProvider = EmptyEngramServiceReadProvider(),
@@ -75,6 +77,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         self.writerGate = writerGate
         self.archiveV2Coordinator = archiveV2Coordinator
         self.archiveTranscriptResolver = archiveTranscriptResolver
+        self.webTranscriptSnapshotProvider = webTranscriptSnapshotProvider
         self.archiveV2CredentialProvisioner = archiveV2CredentialProvisioner
         self.claudeCodeProfileService = claudeCodeProfileService
         self.readProvider = readProvider
@@ -122,6 +125,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     private func dispatch(_ request: EngramServiceRequestEnvelope) async -> EngramServiceResponseEnvelope {
         do {
             switch request.command {
+            case "webMessages":
+                return await webMessagesResponse(request)
             case "claudeCodeProfilesStatus":
                 guard request.payload == nil else {
                     throw EngramServiceError.invalidRequest(

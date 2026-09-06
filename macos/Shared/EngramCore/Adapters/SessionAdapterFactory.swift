@@ -1,5 +1,12 @@
 import Foundation
 
+public struct CapturedSourceScan: Sendable {
+    public let scan: IndexingScan
+    /// The existing parser's selected source field, not the index identity.
+    /// A Claude subagent's raw sessionId can identify its parent.
+    public let rawSourceSessionID: String
+}
+
 protocol ModificationFilteredSessionAdapter: SessionAdapter {
     func listSessionLocators(modifiedSince: Date, fileManager: FileManager) async throws -> [String]
 }
@@ -7,6 +14,30 @@ protocol ModificationFilteredSessionAdapter: SessionAdapter {
 public enum SessionAdapterFactory {
     public static let maximumRecentDays = 7
     public static let maximumTransientRetryLocatorsPerSource = 100
+    public static var maximumCapturedSourceBytes: Int64 { ParserLimits.default.maxFileBytes }
+
+    public static func scanCapturedSource(
+        physicalLocator: String,
+        stagingRoot: String,
+        logicalLocator: String,
+        format: SourceMetadataProjection.Format
+    ) async throws -> AdapterParseResult<CapturedSourceScan> {
+        try Task.checkCancellation()
+        let result: AdapterParseResult<CapturedSourceScan>
+        switch format {
+        case .claudeCode(let forceClaudeCodeSource):
+            result = try ClaudeCodeAdapter.scanCapturedSource(
+                physicalLocator: physicalLocator, stagingRoot: stagingRoot,
+                logicalLocator: logicalLocator, forceClaudeCodeSource: forceClaudeCodeSource
+            )
+        case .codex:
+            result = try CodexAdapter.scanCapturedSource(
+                physicalLocator: physicalLocator, logicalLocator: logicalLocator
+            )
+        }
+        try Task.checkCancellation()
+        return result
+    }
 
     private static func defaultClaudeCodeAdapter(
         homeDirectory: URL,

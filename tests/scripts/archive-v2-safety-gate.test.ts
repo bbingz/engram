@@ -15,6 +15,12 @@ const script = resolve(repoRoot, 'scripts/check-archive-v2-safety.sh');
 const legacyCASPath =
   'macos/EngramCoreWrite/ArchiveV2/ImmutableArchiveCAS.swift';
 const sharedCASPath = 'macos/EngramCaptureShared/ImmutableArchiveCAS.swift';
+const webAuthPath = 'macos/EngramRemoteServer/Core/WebAuthRoutes.swift';
+const webLogoutRoute = [
+  'router.delete("/web/api/auth") { request, _ in',
+  '  await logout(request, boundary: boundary, sessions: sessions)',
+  '}',
+].join('\n');
 
 function runGate(root = repoRoot): {
   status: number | null;
@@ -398,6 +404,85 @@ describe('archive v2 release safety gate', () => {
     expect(`${result.stdout}${result.stderr}`).toContain(
       'legacy offload coupling',
     );
+  });
+
+  it('accepts the single exact Web logout route and no archive mutation', () => {
+    const root = makeSafeFixture();
+    write(root, webAuthPath, webLogoutRoute);
+    expect(runGate(root).status).toBe(0);
+  });
+
+  it.each([
+    'macos/EngramRemoteServer/Core/OtherRoutes.swift',
+    'macos/EngramRemoteServer/Nested/Core/WebAuthRoutes.swift',
+    'macos/EngramRemoteServer/Nested/macos/EngramRemoteServer/Core/WebAuthRoutes.swift',
+  ])('rejects the Web logout route at the wrong file %s', (path) => {
+    const root = makeSafeFixture();
+    write(root, path, webLogoutRoute);
+    expect(runGate(root).status).not.toBe(0);
+  });
+
+  it.each(['/web/api/sessions', '/v2/archive/**'])(
+    'rejects a Web logout wrapper at the wrong path %s',
+    (path) => {
+      const root = makeSafeFixture();
+      write(root, webAuthPath, webLogoutRoute.replace('/web/api/auth', path));
+      expect(runGate(root).status).not.toBe(0);
+    },
+  );
+
+  it.each([
+    'await deleteArchive()\n  await logout(request, boundary: boundary, sessions: sessions)',
+    'await logout(request, boundary: other, sessions: sessions)',
+    'return ok()',
+  ])('rejects changed Web logout bodies: %s', (body) => {
+    const root = makeSafeFixture();
+    write(
+      root,
+      webAuthPath,
+      webLogoutRoute.replace(
+        'await logout(request, boundary: boundary, sessions: sessions)',
+        body,
+      ),
+    );
+    expect(runGate(root).status).not.toBe(0);
+  });
+
+  it('rejects duplicate Web logout registration', () => {
+    const root = makeSafeFixture();
+    write(root, webAuthPath, `${webLogoutRoute}\n${webLogoutRoute}`);
+    expect(runGate(root).status).not.toBe(0);
+  });
+
+  it('rejects Web logout side effects hidden after a comment brace', () => {
+    const root = makeSafeFixture();
+    write(
+      root,
+      webAuthPath,
+      webLogoutRoute.replace(
+        'await logout(request, boundary: boundary, sessions: sessions)',
+        [
+          'await logout(request, boundary: boundary, sessions: sessions)',
+          '// }',
+          'await deleteArchive()',
+          'return await logout(request, boundary: boundary, sessions: sessions)',
+        ].join('\n'),
+      ),
+    );
+    expect(runGate(root).status).not.toBe(0);
+  });
+
+  it('rejects method-based Web logout registration even at the allowed path', () => {
+    const root = makeSafeFixture();
+    write(
+      root,
+      webAuthPath,
+      webLogoutRoute.replace(
+        'router.delete("/web/api/auth")',
+        'router.on("/web/api/auth", method: .delete)',
+      ),
+    );
+    expect(runGate(root).status).not.toBe(0);
   });
 
   it('rejects any v2 DELETE handler in the full remote-server surface', () => {

@@ -7,6 +7,142 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Inventory, snapshot construction and Web boundary checkpoint (2026-09-06)
+
+The signal correction is pushed as `166073471d40038abf150de6cad4e86c45970e28`
+in still-open Draft PR #446. Tests `33997356179`, CodeQL `33997356177`, and
+dependency review `33997356220` all completed successfully for that exact SHA.
+This supersedes the earlier pending correction-head CI checkpoint; the original
+`745de11d` script failure and its unproven interleaving remain historical facts.
+No merge, release, deployment, credential, or production configuration occurred.
+
+The next local tranche integrates the reviewed bounded CAS API, typed Web
+transcript IPC, inventory/dirty queue with injected bootstrap walker, and a pure
+snapshot builder reused by the existing full/tail indexer. Source copies match
+their frozen donor hashes; target routing was regenerated with XcodeGen 2.45.4.
+Independent inventory and builder gates returned SPEC PASS / QUALITY APPROVED.
+The inventory gate is `/tmp/engram-w3-inventory8-review.g7T8bG/review.md`.
+Existing untracked SQLite sidecars remain untouched and excluded.
+
+Coordinator integration evidence, all producer exits 0: bounded CAS Core 23
+(`/tmp/engram-cas-central-core.log`), CAS Collector 35
+(`/tmp/engram-cas-central-collector.log`), Web IPC 17 plus continuation 14
+(`/tmp/engram-web-transcript-ipc-central.log`), complete Collector 68
+(`/tmp/engram-inventory-central-68.log`), and builder 17 plus legacy parity 72
+and parse-once 38 (`/tmp/engram-builder-central-127.log`). Matching `.xcresult`
+bundles accompany these logs. The builder's real RED was 17 tests/115 assertion
+failures; its frozen tests passed after extracting the old algorithms, with
+full-only project fallback and legacy tail/Copilot behavior retained. Inventory
+coverage separately captured seven tests/six failed assertions in two cases
+before adding cancellation checks after enumeration and before committing a
+batch; the same seven then passed, followed by the full 68-test suite.
+
+Replay is now integrated with all five donor SHA256 values matching. Its donor
+17 tests plus 23 CAS tests passed, C-run producer 36029 exit 0
+(`/tmp/engram-capture-replay.xkk1lN/green.log`). Earlier RED attempts are retained.
+Fixture-only corrections made temp paths POSIX-canonical, used the real typed
+canonical manifest encoder, and asserted each staging mutation hook ran once;
+the corrected RED isolated four cleanup-error assertions and one CRLF blank-line
+failure. Minimal GREEN preserves the primary error through cleanup failures and
+accepts only JSON ASCII whitespace in the opt-in strict record reader. These
+donor results are not an integrated HQ ingest or last-good read-model proof.
+The independent bounded Replay5 gate is SPEC PASS / QUALITY APPROVED
+(`/tmp/engram-w4-replay5-review.AkYtNq/review.md`). Its appended erratum corrects
+run provenance and retracts an unreachable chunk-budget concern: validated
+manifest decode already enforces fixed 8 MiB chunks and an exact checked sum.
+The coordinator's first full combined Core run is 1,566 tests/one existing
+performance skip/zero failures, producer 56778 exit 0
+(`/tmp/engram-replay-tranche-core-full.log` and matching `.xcresult`).
+The complete Service suite also passed: 875 tests/one existing skip/zero
+failures, producer 88417 exit 0 (`/tmp/engram-replay-tranche-service-full.log`
+and matching `.xcresult`).
+The full App scheme then passed App 1,175/0 and repeated Core 1,566/one
+existing skip/0, producer 39984 exit 0
+(`/tmp/engram-replay-tranche-app-full.log` and matching `.xcresult`).
+
+POSIX adapter preparation exposed an inventory-domain bug: Foundation path
+standardization rejected a valid physical `/private/var` root and admitted `/`.
+Three added tests captured four failed assertions in two cases; the third
+test already preserved distinct Unicode byte spellings. The Store guard now
+reuses lexical relative-path validation after the leading slash, preserving
+exact UTF-8 without filesystem normalization. The unchanged 18 Store tests
+then passed within the donor's still-RED POSIX run; that overall 104-test run
+is not GREEN. The two-file independent gate passed and exact hashes were
+integrated; the central Collector 71-test run remains pending. Evidence:
+`/tmp/engram-w3-posix-red.1chyCC/collector104-root-lexical-{red,green-posix-red}.log`.
+The integration review subsequently confirmed a separate byte-binding gap:
+synthesized Swift String equality admitted NFC/NFD path substitution under the
+same root ID/revision. Three new coordinator tests captured 14 real assertion
+failures in two cases; explicit configuration equality now compares root ID
+and root path UTF-8 bytes, leaving source/revision value equality unchanged.
+The complete central Collector suite then passed 74/74, including Store 21/21,
+producer 69925 exit 0. This supersedes the pending central 71-test checkpoint;
+it does not claim a POSIX or FSEvents implementation. Evidence:
+`/tmp/engram-inventory-unicode-binding-red.log` (producer 74122 exit 65) and
+`/tmp/engram-inventory-unicode-binding-collector74-green.log`, with matching
+`.xcresult` bundles. The exact two-file follow-up review is pending.
+The final independent Unicode source/hash/log re-review returned SPEC PASS /
+QUALITY APPROVED; the preceding integration-seam review also passed. These
+bounded gates do not include the separate POSIX, claim, or Web auth candidates.
+
+The optional Web logout safety-gate exception is restricted to one exact
+`WebAuthRoutes.swift` path, the literal `/web/api/auth`, and one exact logout
+wrapper body. Wrong file/path, changed body, duplicate or generic registrations
+remain forbidden; existing v1 and v2-405 checks are unchanged. Ten new tests
+gave one expected RED/nine passes against the old script, then the complete
+49-test safety suite passed after the narrow gate change. Logs:
+`/tmp/engram-web-logout-gate-{red,green}.log`, producers 55684 exit 1 and 68295
+exit 0. Independent gate review is pending; this does not verify the future
+HTTP logout helper. Ten script suites passed 203/two existing conditional skips,
+and test typecheck, targeted Biome, shell syntax, adapter fixtures, invariant
+ledger and diff checks passed. Exact script log:
+`/tmp/engram-replay-tranche-script-full.log`.
+Follow-up independent review rejected the first allowlist implementation:
+an entire repeated path suffix bypassed the filename check, and a comment brace
+truncated the body check before additional operations. Both received new real
+RED tests. The root-relative resolved filename must now match exactly; the new
+wrapper body no longer strips comments, while legacy guard semantics remain
+unchanged. Complete safety tests now pass 51/51, producer 83882 exit 0;
+the two original review findings are retained, with final re-review pending.
+Logs: `/tmp/engram-web-logout-gate-path-collision-{red,green}.log` and
+`/tmp/engram-web-logout-gate-comment-brace-{red,green}.log`.
+Final independent source/hash review and nine in-memory negative/positive gate
+probes returned SPEC PASS / QUALITY APPROVED for the exact two files. This
+supersedes the earlier failed/pending allowlist gate, not the pending W5 HTTP
+authentication/session acceptance.
+With both review regressions included, the final ten script suites passed
+205 tests/two existing conditional skips, producer 21554 exit 0
+(`/tmp/engram-replay-tranche-script-final.log`). Final test typecheck also
+exited 0 (`/tmp/engram-replay-tranche-typecheck-test-final.log`). These supersede
+the earlier 203-test checkpoint, not its recorded intermediate results.
+
+The final two integrated targets passed in the coordinator's isolated test
+home: MCP 270/0 (producer 38673 exit 0,
+`/tmp/engram-replay-tranche-mcp-full.log`) and Remote 247/0 (producer 10053
+exit 0, `/tmp/engram-replay-tranche-remote-full.log`), with matching `.xcresult`
+bundles. All six full central targets are now verified: Core 1,566 and Service
+875 (one existing skip each), App 1,175, MCP 270, Remote 247, and Collector 74,
+zero failures. Post-Unicode invariant-ledger and archive-safety checks also
+exited 0 (`/tmp/engram-replay-tranche-{invariants,archive-safety}-post-unicode.log`).
+This supersedes pending integrated-suite checkpoints above. The new tranche's
+commit/push and exact-head CI are still pending; prior-head CI is not reused.
+
+A real Chrome 152 loopback probe confirmed that same-origin GET omits Origin,
+even with a custom header or an attempted script-supplied Origin; POST carries
+the expected Origin. A different-port origin produced a mismatched Origin or
+same-site/no-cors metadata, and custom-header CORS triggered preflight. This
+matches the [Fetch Origin algorithm](https://fetch.spec.whatwg.org/#origin-header)
+and [forbidden-header rule](https://fetch.spec.whatwg.org/#forbidden-request-header).
+Evidence: `/tmp/engram-web-origin-probe.l98sfy/{same-origin,cross-origin}-browser-verified.log`;
+the completed probe producer exited 0 and both fixture listeners/browser closed.
+The design now requires a fixed API header, retains exact Origin for login/logout,
+and permits missing Origin on authenticated GET only with all three exact
+same-origin fetch metadata checks. A present invalid Origin never falls back.
+Independent source/browser design review also passed; this is a design correction, not implemented Web security or browser
+acceptance. The full combined target gates above passed; next-head CI remains pending;
+real directory enumeration, ingest commit/aliases/normalized storage, HTTP UI,
+two-replica upload and W6 end-to-end verification are still unfinished.
+
 ### Flock startup signal correction after pushed-head CI (2026-09-06)
 
 The combined foundation tranche was pushed as `745de11d` to Draft PR #446.

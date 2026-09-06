@@ -22,22 +22,33 @@ public enum ImmutableArchiveCASError: Error, Equatable, Sendable {
     case io(operation: String, code: Int32)
 }
 
+public enum ImmutableArchiveCASReadLimitError: Error, Equatable, Sendable {
+    case invalidMaximumByteCount
+    case exceeded(maximumByteCount: Int64)
+}
+
 struct ImmutableArchiveCASTestHooks: Sendable {
     let afterExistingFileVerified: (@Sendable (URL) throws -> Void)?
     let afterDirectoryFsync: (@Sendable (URL) -> Void)?
     let afterFinalLinkPublished: (@Sendable (URL) throws -> Void)?
     let beforeObjectUnlink: (@Sendable (URL) throws -> Void)?
+    let beforeBoundedReadAllocation: (@Sendable (URL) throws -> Void)?
+    let afterBoundedReadChunk: (@Sendable (URL, Int) throws -> Void)?
 
     init(
         afterExistingFileVerified: (@Sendable (URL) throws -> Void)? = nil,
         afterDirectoryFsync: (@Sendable (URL) -> Void)? = nil,
         afterFinalLinkPublished: (@Sendable (URL) throws -> Void)? = nil,
-        beforeObjectUnlink: (@Sendable (URL) throws -> Void)? = nil
+        beforeObjectUnlink: (@Sendable (URL) throws -> Void)? = nil,
+        beforeBoundedReadAllocation: (@Sendable (URL) throws -> Void)? = nil,
+        afterBoundedReadChunk: (@Sendable (URL, Int) throws -> Void)? = nil
     ) {
         self.afterExistingFileVerified = afterExistingFileVerified
         self.afterDirectoryFsync = afterDirectoryFsync
         self.afterFinalLinkPublished = afterFinalLinkPublished
         self.beforeObjectUnlink = beforeObjectUnlink
+        self.beforeBoundedReadAllocation = beforeBoundedReadAllocation
+        self.afterBoundedReadChunk = afterBoundedReadChunk
     }
 }
 
@@ -122,6 +133,12 @@ public struct ImmutableArchiveCAS: Sendable {
         try read(sha256: sha256, kind: .object)
     }
 
+    /// Reject oversized files before allocation and bound accumulated bytes if
+    /// the file grows while reading. The legacy overload remains unbounded.
+    public func readObject(sha256: String, maximumByteCount: Int64) throws -> Data {
+        try read(sha256: sha256, kind: .object, maximumByteCount: maximumByteCount)
+    }
+
     public func removeObject(sha256: String) throws -> ArchiveRemovalResult {
         try Self.validate(sha256)
         let objectURL = try url(for: sha256, kind: .object, createShard: false)
@@ -166,6 +183,10 @@ public struct ImmutableArchiveCAS: Sendable {
 
     public func readManifest(sha256: String) throws -> Data {
         try read(sha256: sha256, kind: .manifest)
+    }
+
+    public func readManifest(sha256: String, maximumByteCount: Int64) throws -> Data {
+        try read(sha256: sha256, kind: .manifest, maximumByteCount: maximumByteCount)
     }
 
     private func stage(
@@ -345,11 +366,21 @@ public struct ImmutableArchiveCAS: Sendable {
         }
     }
 
-    private func read(sha256: String, kind: Kind) throws -> Data {
+    private func read(sha256: String, kind: Kind, maximumByteCount: Int64? = nil) throws -> Data {
+        if let maximumByteCount {
+            guard maximumByteCount >= 0 else {
+                throw ImmutableArchiveCASReadLimitError.invalidMaximumByteCount
+            }
+            try Task.checkCancellation()
+        }
         try Self.validate(sha256)
         return try Self.readVerified(
             url(for: sha256, kind: kind, createShard: false),
-            expectedSHA256: sha256
+            expectedSHA256: sha256,
+            afterVerified: maximumByteCount == nil ? nil : testHooks.afterExistingFileVerified,
+            maximumByteCount: maximumByteCount,
+            beforeAllocation: maximumByteCount == nil ? nil : testHooks.beforeBoundedReadAllocation,
+            afterReadChunk: maximumByteCount == nil ? nil : testHooks.afterBoundedReadChunk
         )
     }
 
@@ -430,7 +461,10 @@ public struct ImmutableArchiveCAS: Sendable {
         _ url: URL,
         expectedSHA256: String,
         fsyncBeforeAccept: Bool = false,
-        afterVerified: (@Sendable (URL) throws -> Void)? = nil
+        afterVerified: (@Sendable (URL) throws -> Void)? = nil,
+        maximumByteCount: Int64? = nil,
+        beforeAllocation: (@Sendable (URL) throws -> Void)? = nil,
+        afterReadChunk: (@Sendable (URL, Int) throws -> Void)? = nil
     ) throws -> Data {
         var pathInfo = stat()
         guard Darwin.lstat(url.path, &pathInfo) == 0 else {
@@ -458,15 +492,32 @@ public struct ImmutableArchiveCAS: Sendable {
               descriptorInfo.st_dev == pathInfo.st_dev else {
             throw ImmutableArchiveCASError.unsafeExistingPath(url.path)
         }
+        if let maximumByteCount {
+            try Task.checkCancellation()
+            guard descriptorInfo.st_size <= maximumByteCount else {
+                throw ImmutableArchiveCASReadLimitError.exceeded(maximumByteCount: maximumByteCount)
+            }
+        }
 
+        try beforeAllocation?(url)
         var data = Data()
         if descriptorInfo.st_size > 0 {
             data.reserveCapacity(Int(descriptorInfo.st_size))
         }
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
+            let readLimit: Int
+            if let maximumByteCount {
+                try Task.checkCancellation()
+                let remaining = maximumByteCount - Int64(data.count)
+                // One extra byte detects growth at the budget's EOF boundary;
+                // it is rejected before it can enter the accumulated Data.
+                readLimit = remaining < Int64(buffer.count) ? Int(remaining) + 1 : buffer.count
+            } else {
+                readLimit = buffer.count
+            }
             let count = buffer.withUnsafeMutableBytes { rawBuffer in
-                Darwin.read(fd, rawBuffer.baseAddress, rawBuffer.count)
+                Darwin.read(fd, rawBuffer.baseAddress, readLimit)
             }
             if count < 0, errno == EINTR {
                 continue
@@ -475,9 +526,14 @@ public struct ImmutableArchiveCAS: Sendable {
                 throw io("read-final", code: errno)
             }
             if count == 0 { break }
+            if let maximumByteCount, Int64(count) > maximumByteCount - Int64(data.count) {
+                throw ImmutableArchiveCASReadLimitError.exceeded(maximumByteCount: maximumByteCount)
+            }
             data.append(buffer, count: count)
+            try afterReadChunk?(url, data.count)
         }
 
+        if maximumByteCount != nil { try Task.checkCancellation() }
         let actual = ArchiveV2Hash.sha256(data)
         guard actual == expectedSHA256 else {
             throw ImmutableArchiveCASError.digestMismatch(
@@ -503,6 +559,13 @@ public struct ImmutableArchiveCAS: Sendable {
               Self.sameFileIdentity(descriptorInfo, finalDescriptorInfo),
               Self.sameFileIdentity(finalDescriptorInfo, finalPathInfo) else {
             throw ImmutableArchiveCASError.unsafeExistingPath(url.path)
+        }
+        if let maximumByteCount {
+            guard finalDescriptorInfo.st_size <= maximumByteCount,
+                  finalPathInfo.st_size <= maximumByteCount else {
+                throw ImmutableArchiveCASReadLimitError.exceeded(maximumByteCount: maximumByteCount)
+            }
+            try Task.checkCancellation()
         }
         return data
     }

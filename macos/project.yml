@@ -71,6 +71,9 @@ targets:
       - path: EngramCaptureShared/ArchiveLocatorClassifier.swift
       - path: EngramCollectorCore/CollectorMachineIdentityReader.swift
       - path: EngramCollectorCore/CollectorPrivacyProof.swift
+      - path: EngramCollectorCore/CollectorInventoryModels.swift
+      - path: EngramCollectorCore/CollectorInventoryStore.swift
+      - path: EngramCollectorCore/CollectorBootstrapWalker.swift
       - path: Shared/EngramCore/Adapters/SourceName.swift
       - path: Shared/EngramCore/Adapters/SourceMetadataProjection.swift
       - path: Shared/EngramCore/ArchiveV2/ArchiveHash.swift

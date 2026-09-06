@@ -1,6 +1,6 @@
 # Design Doc: lightweight collectors, central indexing, and a read-only Web client
 
-- **Status**: Accepted for staged implementation; revised-design gate PASS / APPROVED. W1, W2 and the role/capture/IPC/identity/intake foundations (`248e64ab`) are pushed in Draft PR #446 with exact-head required CI passing. The next privacy/epoch/parse-format/continuation/client/optional-AI tranche is locally integrated and independently approved: Core 1,521 and Service 858 (one existing skip each), App 1,175, MCP 270, Collector 35 and Remote 247 have zero failures. Its new-head CI is pending; inventory, bounded CAS/replay and real Web IPC remain separate work. Full W3-W7 are not complete.
+- **Status**: Accepted for staged implementation. Draft PR #446 head `1660734` has successful Tests, CodeQL and dependency review. The next local inventory/bounded-CAS/Web-IPC/pure-builder/Replay5 tranche has independent gates and all six full targets passing: Core 1,566 and Service 875 (one existing skip each), App 1,175, MCP 270, Remote 247, Collector 74, zero failures. This includes the byte-exact root-binding correction; new-head CI remains pending. The 2026-09-06 Web GET Origin correction below is independently source/browser-reviewed design, not implemented HTTP acceptance. POSIX, claim and Web auth candidates remain separate; full W3-W7 are not complete.
 - **Owner**: Engram maintainers; Codex coordinates bounded implementation workers
 - **Date**: 2026-09-05
 - **Related**: [implementation plan](../plans/2026-09-05-collector-server-web.md), [archive v2 contract](../../remote-archive-v2.md), [invariants](../../invariants.md), root `CHANGELOG.md`
@@ -455,10 +455,26 @@ and no generic caller-supplied command string. Exhaustively compare the handler
 command inventory against its fixed allowlist; deny everything else before IPC,
 including `resumeCommand`, `memoryFileContent`, `exportSession`, and `shutdown`,
 whether or not the general capability list currently marks it protected.
-Host validation covers every Web asset/API route; every authenticated Web API
-request requires exact Origin, including GET via same-origin fetch. Auth/login
-and logout additionally require JSON and a fixed custom request header. Top-level
-static navigation may lack Origin, but receives no data or credentials itself.
+Host validation covers every Web asset/API route, including failures. Every API
+request requires the single exact `X-Engram-Web: 1` header. Login and logout also
+require JSON and a single exact configured Origin. An authenticated GET with an
+Origin header requires that same exact Origin: empty, null, malformed, duplicate,
+comma-list or mismatched values fail closed and never use a fallback. Only when
+Origin is entirely absent may GET use all of these single-value checks together:
+`Sec-Fetch-Site: same-origin`, `Sec-Fetch-Mode: cors` or `same-origin`, and
+`Sec-Fetch-Dest: empty` (the literal token, not an empty/missing value). Missing,
+duplicate or other values fail closed. Cookies and exact Host are still required;
+metadata is not authentication, and non-browser clients can forge it. Do not use
+Referer or Forwarded as an alternative. OPTIONS, HEAD and unlisted methods remain
+rejected before IPC; do not add automatic HEAD or a CORS preflight allowance.
+Top-level static navigation may lack Origin, but receives no data or credentials itself.
+This corrects the earlier mandatory-Origin GET rule: same-origin browser GET
+normally omits Origin and script cannot set it, per the
+[Fetch algorithm](https://fetch.spec.whatwg.org/#origin-header). The
+[Fetch Metadata draft](https://www.w3.org/TR/fetch-metadata/#sec-fetch-dest-header)
+defines the literal destination token. Chrome 152 loopback evidence is recorded
+in the 2026-09-06 CHANGELOG; real Web tests must cover this positive path and the
+same-site/cross-site/no-cors/navigation negative paths without forged test headers.
 No shared global Origin/CORS middleware is added. Existing authenticated MCP
 POST rejects any Origin; current archive routes use bearer auth without that
 blanket Origin rejection and must not be described as having one.

@@ -267,13 +267,17 @@ done < <(find "$ROOT_DIR/macos/EngramRemoteServer" -type f -name '*.swift' -prin
 (( ${#remote_server_files[@]} > 0 )) || fail "no remote-server production Swift files found"
 
 # Scan the entire production server surface, not only Archive*.swift. The
-# legacy mutable v1 route and the two v2 auth->405 guards are the complete,
-# explicit allowlist; moving a successful v2 route to an innocuous filename
+# legacy mutable v1 route, two v2 auth->405 guards and optional exact Web logout
+# wrapper are the complete allowlist; moving a successful v2 route to another file
 # must not bypass this gate.
 # Scan across newlines and reject common generic registration spellings too, so
 # neither formatting nor a method-based route can evade the explicit allowlist.
-node - "${remote_server_files[@]}" <<'NODE'
+node - "$ROOT_DIR" "${remote_server_files[@]}" <<'NODE'
 const { readFileSync } = require('node:fs');
+const { resolve } = require('node:path');
+const webAuthRoutes = resolve(
+  process.argv[2], 'macos/EngramRemoteServer/Core/WebAuthRoutes.swift',
+);
 
 const directDelete = /\brouter\s*\.\s*delete\s*\(/g;
 const genericPatterns = [
@@ -291,15 +295,18 @@ const expectedWildcardGuardBody = [
   'guard authorized(request, token: token) else { return unauthorized() }',
   'return errorResponse(status: .methodNotAllowed, code: "method_not_allowed") }',
 ].join(' ');
+const expectedWebLogoutBody =
+  'request, _ in await logout(request, boundary: boundary, sessions: sessions)';
 
 let legacyCount = 0;
 let v2Count = 0;
+let webLogoutCount = 0;
 
 function lineAt(source, index) {
   return source.slice(0, index).split('\n').length;
 }
 
-function closureBody(source, start) {
+function closureBody(source, start, stripComments = true) {
   const open = source.indexOf('{', start);
   if (open < 0) return null;
   let depth = 0;
@@ -308,16 +315,15 @@ function closureBody(source, start) {
     if (source[index] !== '}') continue;
     depth -= 1;
     if (depth !== 0) continue;
-    return source
-      .slice(open + 1, index)
-      .replace(/\/\/.*$/gm, '')
+    const body = source.slice(open + 1, index);
+    return (stripComments ? body.replace(/\/\/.*$/gm, '') : body)
       .replace(/\s+/g, ' ')
       .trim();
   }
   return null;
 }
 
-for (const path of process.argv.slice(2)) {
+for (const path of process.argv.slice(3)) {
   const source = readFileSync(path, 'utf8');
   directDelete.lastIndex = 0;
   let match;
@@ -332,9 +338,23 @@ for (const path of process.argv.slice(2)) {
     const isWildcardGuard =
       path.endsWith('/Core/ArchiveRoutes.swift') &&
       /^["']\/v2\/archive\/\*\*["']\s*\)/.test(argument);
+    const isWebLogout =
+      resolve(path) === webAuthRoutes &&
+      /^"\/web\/api\/auth"\s*\)\s*\{/.test(argument);
 
     if (isLegacy) {
       legacyCount += 1;
+      continue;
+    }
+    if (isWebLogout) {
+      // The exact new wrapper permits no comments or additional operations.
+      if (closureBody(source, directDelete.lastIndex, false) !== expectedWebLogoutBody ||
+          ++webLogoutCount > 1) {
+        console.error(
+          'archive v2 safety gate failed: Web logout must be one exact session-only wrapper',
+        );
+        process.exit(1);
+      }
       continue;
     }
     if (isEnumeratedGuard || isWildcardGuard) {
