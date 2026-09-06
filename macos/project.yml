@@ -76,6 +76,7 @@ targets:
       - path: EngramCollectorCore/CollectorBootstrapWalker.swift
       - path: EngramCollectorCore/CollectorPOSIXRootEnumerator.swift
       - path: EngramCollectorCore/CollectorInventoryOwner.swift
+      - path: EngramCollectorCore/CollectorEventCoordinator.swift
       - path: Shared/EngramCore/Adapters/SourceName.swift
       - path: Shared/EngramCore/Adapters/SourceMetadataProjection.swift
       - path: Shared/EngramCore/ArchiveV2/ArchiveHash.swift

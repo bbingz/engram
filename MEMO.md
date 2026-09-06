@@ -4,6 +4,9 @@
 
 ### 2026-09-06
 
+- [验证] `8a53174b` 三项 CI 全过；N3-B1 独立实现门通过，按哈希整合后中央 Collector 196/196，脚本 205/2 条件 skip 与类型/安全/invariants 通过，暂存漂移与整合终门待验。T3b sibling 权威缺口另有 4 项真实 RED，继续 donor 修复，不混入本批，详见 `CHANGELOG.md`。
+- [验证] `8a53174b` Tests/依赖已通过，CodeQL remote 仍待验；N3-B1 donor 全量 196/196，独立实现门待验。T3b 原 35 GREEN 后又用 3 项真实 RED 复现写中撤权与 history 缺失零延迟待办，最小修复复测中；A5b 草稿补验收，未整合、未部署，详见 `CHANGELOG.md`。
+- [提交] `5995ad66` 三项 CI 全绿后，A5a/N3-A 九文件独立终门通过并推送 `8a53174b`；新 head 依赖通过、Tests/CodeQL 待验。N3-B1 仅 donor 测试草稿过门并获 RED 授权，T3b 草稿审阅中，完整 W3–W6 仍未完成，详见 `CHANGELOG.md`。
 - [验证] `5995ad66` 的 Tests/Swift unit/UI smoke 已全过，CI Xcode 16.4 下 readiness 38/38、Core 1,681（1 既有 skip）零失败；Swift CodeQL 仍待验，功能提交继续等待其独立门，详见 `CHANGELOG.md`。
 - [验证] CI 单行修正独立终门后已推送 `5995ad66`，新 head 依赖通过、Tests/CodeQL 待验；A5a/N3-A 五文件仍未提交，六套本地完整门零失败，等待功能整合终门及修正 head 全绿后再推送，未合并或部署，详见 `CHANGELOG.md`。
 - [验证] 单行夹具注解修正后完整 Core 1,681 项／1 既有 skip／零失败，38 测试体与夹具字节未变；准备仅修正＋四记录的独立整合门及提交，Xcode 16.4 新 head CI 仍待验，A5/N3 五文件继续排除，详见 `CHANGELOG.md`。

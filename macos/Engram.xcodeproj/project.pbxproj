@@ -470,6 +470,7 @@
 		8C42131C684D0C2AC0B5B06C /* EngramServiceStatusStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2886C9CA1CFC08345FCB0C4E /* EngramServiceStatusStoreTests.swift */; };
 		8CB8E866C532CFB0D69A8168 /* EngramServiceTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A84EE165301392E05DA4055 /* EngramServiceTransport.swift */; };
 		8CD9664157054378058BF411 /* HomeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF07F679727294E9035DC2F2 /* HomeTests.swift */; };
+		8CED4E4B1463BA5707433E17 /* CollectorEventCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A473B5823E2758EDD74CF21 /* CollectorEventCoordinatorTests.swift */; };
 		8D69D29225879BAE2F744258 /* test-index.sqlite in Resources */ = {isa = PBXBuildFile; fileRef = 8F268A0813CC3D0C75E1AC01 /* test-index.sqlite */; };
 		8DC05F31BCC2AFCA358D4A12 /* CollectorBootstrapWalker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D5EB5ACC940266C678A1EEE /* CollectorBootstrapWalker.swift */; };
 		8DDC02D8C7C3738A955D85F6 /* JSONValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3457E62B73BFD0770B3C2EE0 /* JSONValue.swift */; };
@@ -633,6 +634,7 @@
 		BBDABE0BC714CBAE6F6ED633 /* BrowseReloadCoalescer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F40F1CCF1C0BF1B7E893478 /* BrowseReloadCoalescer.swift */; };
 		BCDCFF86ED2FA48F88F81048 /* CaptureIngestCommitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E84C2FCBFF78DD608C33E9FA /* CaptureIngestCommitTests.swift */; };
 		BCEEB8EC6137416FB2713276 /* RelativeTime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9DA8AD0AAE8D623BCA54FC4 /* RelativeTime.swift */; };
+		BD2563A1E8B3B787F1816C03 /* CollectorEventCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F664FE74C22C161038EEA943 /* CollectorEventCoordinator.swift */; };
 		BD36B61F0A90AA98F049B7E5 /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6893032E186098253529B5FF /* ActivityView.swift */; };
 		BD5C4BD7580A606F32A3625E /* ArchiveModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E88F20261BDB5D92EDF539D /* ArchiveModelTests.swift */; };
 		BDC7CDC23CEFB4B87EE72FB7 /* StartupBackfillTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 646CADEA017A524549A87802 /* StartupBackfillTests.swift */; };
@@ -1339,6 +1341,7 @@
 		58F564930C9AEF2E0AF20609 /* SharedPickers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedPickers.swift; sourceTree = "<group>"; };
 		59D55C7F11EF5C4CFC030FCC /* Engram.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Engram.entitlements; sourceTree = "<group>"; };
 		5A2A430091F68CF3ACFE2261 /* RemoteSyncCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSyncCoordinatorTests.swift; sourceTree = "<group>"; };
+		5A473B5823E2758EDD74CF21 /* CollectorEventCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectorEventCoordinatorTests.swift; sourceTree = "<group>"; };
 		5A5488076252C1CFD0CBCCF2 /* ServiceLogSanitizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceLogSanitizer.swift; sourceTree = "<group>"; };
 		5A851FAB4E1FB6E1A0F01ADE /* GeminiProjectsJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeminiProjectsJSON.swift; sourceTree = "<group>"; };
 		5AA6252A3170373CCC1F1881 /* FtsOptimizeCadenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FtsOptimizeCadenceTests.swift; sourceTree = "<group>"; };
@@ -1735,6 +1738,7 @@
 		F5304C92DF9D1BD43029D4FC /* AIGenerationSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIGenerationSettings.swift; sourceTree = "<group>"; };
 		F5C71A73606B0BEBE33B3711 /* EngramServiceCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = EngramServiceCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		F5D8E6CE491EEB5169A98DD5 /* TranscriptText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptText.swift; sourceTree = "<group>"; };
+		F664FE74C22C161038EEA943 /* CollectorEventCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectorEventCoordinator.swift; sourceTree = "<group>"; };
 		F6CC5E6E6447F051C0B38BD4 /* UsagePressureNotifierTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsagePressureNotifierTests.swift; sourceTree = "<group>"; };
 		F79004FF2727D008428CE643 /* PerformanceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceView.swift; sourceTree = "<group>"; };
 		F7A0C9BC1B020EF76BB29740 /* SwiftIndexer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwiftIndexer.swift; sourceTree = "<group>"; };
@@ -2307,6 +2311,7 @@
 			isa = PBXGroup;
 			children = (
 				2D5EB5ACC940266C678A1EEE /* CollectorBootstrapWalker.swift */,
+				F664FE74C22C161038EEA943 /* CollectorEventCoordinator.swift */,
 				6F5D1291F07FA4A840635892 /* CollectorInventoryModels.swift */,
 				20007C4D2806D614D692DFC0 /* CollectorInventoryOwner.swift */,
 				ACF244AE64E4DCFC94705DB7 /* CollectorInventoryStore.swift */,
@@ -2935,6 +2940,7 @@
 			children = (
 				797A1AE090315AB5C41FD392 /* CollectorBootstrapWalkerTests.swift */,
 				EAD1522F987199FCBC0FE18A /* CollectorCaptureCoreTests.swift */,
+				5A473B5823E2758EDD74CF21 /* CollectorEventCoordinatorTests.swift */,
 				BE4E472DE2A5404055A5CC9F /* CollectorInventoryOwnerTests.swift */,
 				CE824A53E3EB2A7AF9EA1E2D /* CollectorInventoryStoreTests.swift */,
 				BEE3D50BCF8F87771B91B639 /* CollectorMachineIdentityReaderTests.swift */,
@@ -4328,6 +4334,7 @@
 			files = (
 				3F9ADAA4805A7545EC73DD49 /* CollectorBootstrapWalkerTests.swift in Sources */,
 				B59FFC39F232E3FC817DB111 /* CollectorCaptureCoreTests.swift in Sources */,
+				8CED4E4B1463BA5707433E17 /* CollectorEventCoordinatorTests.swift in Sources */,
 				18034A14E69C79DC55E72FCC /* CollectorInventoryOwnerTests.swift in Sources */,
 				547EDFECC30F4FAA84D85861 /* CollectorInventoryStoreTests.swift in Sources */,
 				84017D957758306E78CE6E9B /* CollectorMachineIdentityReaderTests.swift in Sources */,
@@ -4560,6 +4567,7 @@
 				463A8FAFA960D031A3FAA921 /* ArchiveModels.swift in Sources */,
 				AC0169BE64093F99E1E03AB4 /* ArchiveSourceDescriptor.swift in Sources */,
 				8DC05F31BCC2AFCA358D4A12 /* CollectorBootstrapWalker.swift in Sources */,
+				BD2563A1E8B3B787F1816C03 /* CollectorEventCoordinator.swift in Sources */,
 				0076CCB3F7C39E277CBCD7FD /* CollectorInventoryModels.swift in Sources */,
 				C1A400351D2EF7B97D5BF1F1 /* CollectorInventoryOwner.swift in Sources */,
 				F30C2D1B7631A2C90AD1279A /* CollectorInventoryStore.swift in Sources */,

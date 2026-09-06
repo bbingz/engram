@@ -16,6 +16,7 @@ final class CollectorTargetDependencyTests: XCTestCase {
         "EngramCollectorCore/CollectorBootstrapWalker.swift",
         "EngramCollectorCore/CollectorPOSIXRootEnumerator.swift",
         "EngramCollectorCore/CollectorInventoryOwner.swift",
+        "EngramCollectorCore/CollectorEventCoordinator.swift",
         "Shared/EngramCore/Adapters/SourceName.swift",
         "Shared/EngramCore/Adapters/SourceMetadataProjection.swift",
         "Shared/EngramCore/ArchiveV2/ArchiveHash.swift",

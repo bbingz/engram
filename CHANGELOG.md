@@ -7,6 +7,135 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### N3-B1 coordinator central integration candidate (2026-09-06)
+
+Live exact-head verification now confirms `8a53174b` Tests `34013832379`,
+dependency review `34013832384` and CodeQL `34013832367` all succeeded.
+Remote Swift completed at 06:05:00 UTC and CodeQL Gate at 06:05:08 UTC.
+PR #446 remains Draft/open/unmerged; no result is attributed to an unpushed SHA.
+
+The coordinator's independent N3-B1 implementation gate is SPEC PASS / QUALITY
+APPROVED for the generic fake-stream lifecycle slice: synchronous bounded
+callback admission; restart-before-stream recovery fencing; durable checkpoints
+only after Owner commits; history completion plus the exact scan fence before
+watching; loss sealing/gap persistence; stop sealing before draining entered
+work; and no closure of the borrowed Owner. The native stream and runtime caller
+remain separate. The donor source and tests were copied into the central branch
+with verified SHA256 `5a1a3b2292d8187ba8d502d8799f035629cf87542eddb34d3ffae2581bd95725`
+and `0cd97dbceb5bc61a1c39a2b788eda0bdd89b550224024c2f6699449d986a24b9`.
+The dependency guard adds only the Coordinator source; project.yml adds that
+same explicit source and the project was regenerated, not hand-edited.
+
+The central complete Collector suite passed 196/196 with no skip, failure or
+runtime warning and actual producer exit 0. Evidence:
+`/tmp/engram-n3b-central-collector-full-v1.{log,xcresult,producer-exit}`.
+Ten script suites passed 205 cases with two existing dirty-project conditional
+skips; test typecheck, archive safety and all five invariant gates passed.
+Their logs are `/tmp/engram-n3b-tranche-{scripts,typecheck-test,archive-safety,invariants}.log`.
+Pinned staged project drift and the final integration/record gate are pending.
+App/Service/MCP/Core/Remote were not rerun for this isolated Collector-only
+source addition; no product target or shared source changed in this candidate.
+New-head CI, commit and push are separate pending gates.
+
+The first staged drift run correctly rejected project output from the default
+generator. The pinned CI generator regenerated it; comparison against HEAD
+now shows exactly eight added Coordinator source/test references, with no
+unrelated target/embedding change. After staging that generated output, drift
+v2 passed with exit 0 (`/tmp/engram-n3b-staged-drift-v2.log`); the failed first
+log is retained at `/tmp/engram-n3b-staged-drift.log`. The final candidate is
+exactly nine paths, 1,786 additions and no deletions before this record addendum.
+The complete central Collector run was then repeated against the final pinned
+project: 196/196 passed with no skips, failures or runtime warnings, producer
+exit 0; `/tmp/engram-n3b-central-collector-full-v2.{log,xcresult,producer-exit}`.
+
+T3b stays donor-only: its first fence correction passed 74/74 and complete
+Core 1,706 with one existing skip, but independent re-review found sibling
+registry and invalid-tier eligibility gaps. Four additional cases produced
+real RED among 43 tests (39 passed, four failed, no skips, producer exit 65).
+Further authority-shape cases and the narrow SQL correction are in progress;
+no blanket retry write is authorized for stale/invalid bindings. The first
+revocation test now also observes real vector deletion and verifies rollback
+of seeded semantic_chunks. These tests do not enter the N3-B1 candidate.
+A5b remains unmounted in its donor, pending its strengthened draft gate/RED.
+Full W3-W6, native callbacks, uploader and browser acceptance remain incomplete;
+no merge, deployment, provider/credential access, Docker or W7 action occurred.
+
+### T3b fence regressions and N3-B1 donor verification (2026-09-06)
+
+Exact pushed `8a53174b` now has successful Tests `34013832379` and dependency
+review `34013832384`. CodeQL `34013832367` remains in progress: its Swift
+product and TypeScript jobs passed, while the remote-server job is separate.
+The earlier pending Tests statement below is superseded by this live check.
+
+The T3b donor passed its first 35 capture FTS tests with actual producer exit 0,
+but full Core returned exit 65: 1,703 tests, 1,700 passed, one existing skip,
+and two failed Round5 source-scanner tests (three assertions). Their old scan
+stopped at the new ownership guard's early return, before the real retry and
+finalize calls. The coordinator minimally corrected those scanner boundaries
+and the expected fresh-policy finalize call; the next run passed all 36 Round5
+tests. No existing behavioral assertion was removed.
+
+Independent first-pass T3b review approved the initial implementation, but the
+coordinator added three executable regressions for policy revocation inside
+the actual readiness writer and missing/revoked registry epoch history. The
+supplemental RED executed 74 tests: 71 passed and all three new tests failed
+with eight assertions, actual producer exit 65. It directly observed a revoked
+policy still committing readiness, and invalid history remaining due at zero
+retry delay. The original 35 capture test bodies remained unchanged. A narrow
+follow-up now rechecks policy before and after finalization and requires the
+current indexed epoch-history tuple in the shared eligibility predicate;
+follow-up GREEN and independent re-review remain pending. Logs and xcresults:
+`/tmp/engram-t3b-runner-{red,green,core-full}-v1.*` and
+`/tmp/engram-t3b-runner-fence-{red,green}-v1.*`. GRDB QoS warnings remain visible.
+
+The N3-B1 donor's frozen 27-test fake-stream coordinator suite first produced
+real RED (27 failed, exit 65), then GREEN (27 passed, exit 0). The full Collector
+suite subsequently passed 196/196 with no skips, failures or runtime warnings;
+the coordinator independently inspected both raw logs and xcresult summaries.
+The only old dependency-test change is one explicit Coordinator source entry;
+the other old source/test files remain frozen. Artifacts are
+`/tmp/engram-w3-posix-red.1chyCC/collector27-n3b1-coordinator-{red-v3,green-v1}.*`
+and `collector196-n3b1-coordinator-green-v1.*` in that directory. Its independent
+implementation gate and central integration are still pending. Fake-stream
+tests do not establish native FSEvents or runtime lifecycle acceptance.
+
+A5b metadata HTTP handlers remain unmounted in a separate donor. Root draft
+review requested actual typed-reader rejection observations, metadata IPC
+roundtrips, continuation/filter/budget cases and honest cancellation evidence
+before executable RED. None of T3b, N3-B1 or A5b is in the pushed head. Full
+W3-W6 remains incomplete; no merge, deployment, credentials, provider access,
+Docker or production W7 operation occurred.
+
+### A5a/N3-A pushed after correction-head CI success (2026-09-06)
+
+Live GitHub verification confirmed all three workflows for exact correction
+`5995ad66bad8d827f311dd04fef81f287a4d70be` successful: Tests `34012392893`,
+CodeQL `34012392888` and dependency review `34012392885`. The CodeQL Gate
+completed at 05:20:30 UTC; its product and RemoteServer Swift analyses passed
+independently. The earlier pending checkpoint is superseded, not inferred
+from local Xcode-beta or from another SHA.
+
+The independent final feature gate returned SPEC PASS / QUALITY APPROVED at
+13:12 CST, verifying exactly nine staged paths (2,378 additions/four deletions),
+all five implementation/test SHA256 values, local raw/xcresult/producer gates,
+records and pinned project drift. A final coordinator read confirmed unchanged
+hashes, index/worktree equality and `git diff --cached --check` success. Normal
+commit and push both exited 0, producing
+`8a53174b182baba1c2d671dcc6b42dfdd3eaf408`; complete logs are
+`/tmp/engram-a5a-n3a-tranche-{commit,push}.log`. Pre-existing SQLite sidecars
+were not staged. The new head's dependency review `34013832384` passed;
+Tests `34013832379` and CodeQL `34013832367` are running, not yet accepted.
+
+N3-B1's two-file fake-stream coordinator/API test draft separately passed
+SPEC PASS / QUALITY APPROVED at 13:20 CST. The coordinator added its explicit
+donor-only source route and generated the donor Xcode project; executable RED
+is authorized but no GREEN or native FSEvents acceptance is recorded. T3b's
+separate 35-test draft and compile-only policy/runner seams are under independent
+review, with production processing unchanged. These donor drafts are absent
+from `8a53174b`. Runtime wiring, uploader, HTTP read routes/static reader and
+full W3-W6 acceptance remain incomplete. No merge, deployment, credentials,
+provider access, Docker or W7 operation occurred.
+
 ### A5a/N3-A final local integration and correction-head CI checkpoint (2026-09-06)
 
 The five-path test-only CI correction passed independent final SPEC PASS /

@@ -270,6 +270,43 @@ its full Xcode 16.4 Swift log independently confirms readiness 38/38 and
 Core 1,681/one existing skip/zero failures. See
 `/tmp/engram-5995-swift-unit-ci.log`. Swift CodeQL remains pending, so the
 feature push is still gated independently from successful Tests.
+That correction-head gate then completed: `5995ad66` Tests `34012392893`,
+CodeQL `34012392888` and dependency review `34012392885` all succeeded.
+A5a/N3-A independently passed the final nine-path integration/record gate;
+frozen five-file hashes, index equality and diff checks passed. It is normally
+committed/pushed as `8a53174b182baba1c2d671dcc6b42dfdd3eaf408`, with both
+producers exiting 0. New dependency review `34013832384` passed, while
+Tests `34013832379` and CodeQL `34013832367` are pending. N3-B1's two-file
+fake-stream draft independently passed; root routed the donor project for
+executable RED, not GREEN/native watch acceptance. T3b's separate 35-test
+draft is under review. Neither draft is in the pushed feature SHA; full
+W3-W6 runtime, upload and Web reader acceptance remains incomplete.
+Later live verification confirms `8a53174b` Tests `34013832379` and dependency
+review `34013832384` succeeded; CodeQL `34013832367` remains in progress.
+N3-B1 now has executable 27-test RED/GREEN and full donor Collector 196/196
+with zero skips/failures/runtime warnings. Independent implementation review
+and central integration are pending; no native FSEvents evidence is implied.
+T3b's initial 35/35 GREEN was followed by a 1,703-test Core run with two stale
+Round5 scanner failures. Their minimal assertion-range correction passed all
+36 Round5 tests in a subsequent 74-test run; all three newly added authority
+regressions failed as expected (inside-writer policy revocation and absent/
+revoked epoch history). The corresponding narrow fix is under GREEN/re-review.
+A5b remains an unmounted donor draft being strengthened before executable RED.
+These donor-only results do not close full W3-W6 or change W7 authority.
+CodeQL `34013832367` then succeeded (Gate 06:05:08 UTC), completing all
+three CI workflows for exact `8a53174b`. The coordinator independently passed
+the N3-B1 implementation gate and integrated its two frozen source/test hashes,
+one dependency-source assertion and generated routing. Central Collector
+passed 196/196 with no skips, failures or runtime warnings; scripts passed
+205/two dirty-project conditional skips and typecheck/safety/invariants passed.
+The isolated nine-path N3-B1 integration/record candidate still awaits pinned
+staged drift, final review, commit/push and new-head CI. No native stream exists
+in this slice. T3b's donor full Core passed 1,706/one skip before independent
+review found further sibling-registry/tier eligibility gaps; four new cases
+have real RED and remain excluded from the N3-B1 candidate. A5b stays donor-only.
+N3-B1 pinned staged drift v2 now passes: the first run regenerated non-pinned
+project drift, and the final project differs from HEAD only by eight added
+Coordinator source/test references. Final review/commit/push remain pending.
 The owner authorized committing/pushing W1, running CI, then autonomous staged
 implementation/review/CI through W6 on 2026-09-05. Production W7, credentials,
 network changes, and merge/release remain separate authority boundaries.
