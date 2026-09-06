@@ -1093,6 +1093,894 @@ final class CollectorInventoryOwnerTests: XCTestCase {
     }
     // End N3-A event ingress tests.
 
+    // N4a TEST-DRAFT only. Existing N2/N3 test bodies remain unchanged.
+    func testN4ClaimPreservesCandidateLimitIncludingSixtyFourAndEmptyCorpus() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let liveBefore = try fixture.snapshot(at: fixture.liveRoot)
+        defer { XCTAssertEqual(try? fixture.snapshot(at: fixture.liveRoot), liveBefore) }
+        let owner = try XCTUnwrap(fixture.open())
+        defer { try? owner.close() }
+        _ = try owner.enrollAndActivateRoot(fixture.configuration)
+        let paths = (0..<67).map { String(format: "rollout-%03d.jsonl", $0) }
+        try n4Mark(owner, fixture.configuration, paths)
+        let first = try owner.claimDirty(configuration: fixture.configuration, limit: 64, now: 0)
+        XCTAssertEqual(first.map(\.relativePath), Array(paths.prefix(64)))
+        XCTAssertTrue(first.allSatisfy { $0.rootRevision == 1 && $0.dirtyRevision == 1 && $0.claimGeneration == 1 && $0.ownerRunID == "owner-one" })
+        XCTAssertEqual(try fixture.inventoryText("SELECT claim_cursor FROM collector_roots"), paths[63])
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators WHERE claimed_dirty_revision = 1"), 64)
+        let second = try owner.claimDirty(configuration: fixture.configuration, limit: 1, now: 0)
+        XCTAssertEqual(second.map(\.relativePath), [paths[64]])
+        let last = try owner.claimDirty(configuration: fixture.configuration, limit: 2, now: 0)
+        XCTAssertEqual(last.map(\.relativePath), Array(paths.suffix(2)))
+        for claim in first + second + last {
+            XCTAssertEqual(try owner.acknowledge(claim, configuration: fixture.configuration, captureID: n4CaptureID), .acknowledged)
+        }
+        let beforeEmpty = try n4Audit(fixture)
+        XCTAssertTrue(try owner.claimDirty(configuration: fixture.configuration, limit: 64, now: 0).isEmpty)
+        XCTAssertEqual(try n4Audit(fixture), beforeEmpty, "empty work must not mint a cursor or lease")
+    }
+
+    func testN4RoundRobinCountsDeferredAndInflightCandidatesWithoutRefilling() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let liveBefore = try fixture.snapshot(at: fixture.liveRoot)
+        defer { XCTAssertEqual(try? fixture.snapshot(at: fixture.liveRoot), liveBefore) }
+        let owner = try XCTUnwrap(fixture.open())
+        defer { try? owner.close() }
+        _ = try owner.enrollAndActivateRoot(fixture.configuration)
+        try n4Mark(owner, fixture.configuration, ["a.jsonl", "b.jsonl", "c.jsonl"])
+        let a = try n4Claim(owner, fixture.configuration, path: "a.jsonl")
+        XCTAssertTrue(try owner.deferClaim(a, configuration: fixture.configuration, retryNotBefore: 100, reason: .unavailable))
+        _ = try n4Claim(owner, fixture.configuration, path: "b.jsonl")
+        _ = try n4Claim(owner, fixture.configuration, path: "c.jsonl")
+        for expectedCursor in ["a.jsonl", "b.jsonl", "c.jsonl"] {
+            XCTAssertTrue(try owner.claimDirty(configuration: fixture.configuration, limit: 1, now: 99).isEmpty)
+            XCTAssertEqual(try fixture.inventoryText("SELECT claim_cursor FROM collector_roots"), expectedCursor)
+            XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators WHERE dirty_revision > acknowledged_revision"), 3)
+            XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators WHERE claim_owner_run_id = 'owner-one'"), 2)
+        }
+        let due = try n4Claim(owner, fixture.configuration, path: "a.jsonl", now: 100)
+        XCTAssertEqual(due.claimGeneration, a.claimGeneration + 1)
+        XCTAssertEqual(due.dirtyRevision, a.dirtyRevision)
+    }
+
+    func testN4TypedDeferralPersistsOnlyFiniteCodesAndHonorsExactDueBoundary() throws {
+        let codes: [(CollectorDirtyDeferReason, String)] = [
+            (.sourceMissing, "sourceMissing"), (.rootReplaced, "rootReplaced"), (.unavailable, "unavailable"),
+        ]
+        for (reason, code) in codes {
+            XCTAssertEqual(reason.rawValue, code)
+            XCTAssertEqual(CollectorDirtyDeferReason(rawValue: code), reason)
+            let fixture = try CollectorOwnerFixture()
+            defer { fixture.remove() }
+            let liveBefore = try fixture.snapshot(at: fixture.liveRoot)
+            defer { XCTAssertEqual(try? fixture.snapshot(at: fixture.liveRoot), liveBefore) }
+            let owner = try XCTUnwrap(fixture.open())
+            defer { try? owner.close() }
+            _ = try owner.enrollAndActivateRoot(fixture.configuration)
+            try n4Mark(owner, fixture.configuration, ["a.jsonl"])
+            let claim = try n4Claim(owner, fixture.configuration)
+            XCTAssertTrue(try owner.deferClaim(claim, configuration: fixture.configuration, retryNotBefore: 100, reason: reason))
+            XCTAssertEqual(try fixture.inventoryText("SELECT last_error FROM collector_locators"), code)
+            XCTAssertEqual(try fixture.inventoryInteger("SELECT retry_not_before FROM collector_locators"), 100)
+            XCTAssertEqual(try fixture.inventoryInteger("SELECT acknowledged_revision FROM collector_locators"), 0)
+            XCTAssertNil(try fixture.inventoryText("SELECT last_capture_id FROM collector_locators"))
+            XCTAssertNil(try fixture.inventoryText("SELECT claim_owner_run_id FROM collector_locators"))
+            let beforeEarly = try n4Audit(fixture)
+            XCTAssertTrue(try owner.claimDirty(configuration: fixture.configuration, limit: 1, now: 99).isEmpty)
+            XCTAssertEqual(try n4Audit(fixture), beforeEarly)
+            let due = try n4Claim(owner, fixture.configuration, now: 100)
+            XCTAssertEqual(due.claimGeneration, claim.claimGeneration + 1)
+            XCTAssertNil(try fixture.inventoryInteger("SELECT retry_not_before FROM collector_locators"))
+            XCTAssertEqual(try owner.acknowledge(due, configuration: fixture.configuration, captureID: n4CaptureID), .acknowledged)
+            XCTAssertNil(try fixture.inventoryText("SELECT last_error FROM collector_locators"))
+        }
+        for invalid in ["", "/private/source.jsonl", "errno=2", "sourceMissing\0private", "SourceMissing", "uploaded"] {
+            XCTAssertNil(CollectorDirtyDeferReason(rawValue: invalid))
+        }
+    }
+
+    func testN4InvalidBudgetsDoNotEnterStoreOrAdvanceCursor() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let liveBefore = try fixture.snapshot(at: fixture.liveRoot)
+        defer { XCTAssertEqual(try? fixture.snapshot(at: fixture.liveRoot), liveBefore) }
+        let probe = N4CommitProbe()
+        let owner = try XCTUnwrap(fixture.open(hooks: probe.hooks))
+        defer { try? owner.close() }
+        let claim = try n4Prepare(.deferClaim, owner, fixture)
+        let before = try n4Audit(fixture)
+        probe.arm()
+        for limit in [-1, 0, 65, Int.max] {
+            XCTAssertThrowsError(try owner.claimDirty(configuration: fixture.configuration, limit: limit, now: 0)) {
+                XCTAssertEqual($0 as? CollectorInventoryError, .invalidBudget)
+            }
+            XCTAssertEqual(try n4Audit(fixture), before)
+        }
+        XCTAssertThrowsError(try owner.claimDirty(configuration: fixture.configuration, limit: 1, now: -1)) {
+            XCTAssertEqual($0 as? CollectorInventoryError, .invalidBudget)
+        }
+        XCTAssertThrowsError(try owner.deferClaim(claim, configuration: fixture.configuration, retryNotBefore: -1, reason: .unavailable)) {
+            XCTAssertEqual($0 as? CollectorInventoryError, .invalidBudget)
+        }
+        XCTAssertEqual(probe.visits, 0)
+        XCTAssertEqual(try n4Audit(fixture), before)
+        probe.disarm()
+        XCTAssertTrue(try owner.deferClaim(claim, configuration: fixture.configuration, retryNotBefore: 0, reason: .unavailable))
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT retry_not_before FROM collector_locators"), 0)
+        _ = try n4Claim(owner, fixture.configuration, now: 0)
+    }
+
+    func testN4CaptureIDMustBeExactLowercaseSHA256BeforeStoreAccess() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let liveBefore = try fixture.snapshot(at: fixture.liveRoot)
+        defer { XCTAssertEqual(try? fixture.snapshot(at: fixture.liveRoot), liveBefore) }
+        let probe = N4CommitProbe()
+        let owner = try XCTUnwrap(fixture.open(hooks: probe.hooks))
+        defer { try? owner.close() }
+        _ = try owner.enrollAndActivateRoot(fixture.configuration)
+        try n4Mark(owner, fixture.configuration, ["a.jsonl"])
+        let positive = try n4Claim(owner, fixture.configuration)
+        XCTAssertEqual(try owner.acknowledge(positive, configuration: fixture.configuration, captureID: n4CaptureID), .acknowledged)
+        try n4Mark(owner, fixture.configuration, ["a.jsonl"])
+        let claim = try n4Claim(owner, fixture.configuration)
+        let before = try n4Audit(fixture)
+        probe.arm()
+        let invalid = ["", String(repeating: "a", count: 63), String(repeating: "a", count: 65),
+                       String(repeating: "A", count: 64), String(repeating: "g", count: 64),
+                       String(repeating: "a", count: 63) + "é", n4CaptureID + "\0suffix",
+                       String(repeating: "a", count: 31) + "\0" + String(repeating: "a", count: 32),
+                       " " + n4CaptureID, n4CaptureID + "\n"]
+        for captureID in invalid {
+            XCTAssertThrowsError(try owner.acknowledge(claim, configuration: fixture.configuration, captureID: captureID)) {
+                XCTAssertEqual($0 as? CollectorInventoryOwnerError, .invalidCaptureID)
+            }
+            XCTAssertEqual(try n4Audit(fixture), before)
+        }
+        XCTAssertEqual(probe.visits, 0)
+        probe.disarm()
+        let valid = String(repeating: "0123456789abcdef", count: 4)
+        XCTAssertEqual(try owner.acknowledge(claim, configuration: fixture.configuration, captureID: valid), .acknowledged)
+        XCTAssertEqual(try fixture.inventoryText("SELECT last_capture_id FROM collector_locators"), valid)
+    }
+
+    func testN4ClaimConfigurationRootIdentityMismatchIsNotAStaleCompletion() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let liveBefore = try fixture.snapshot(at: fixture.liveRoot)
+        defer { XCTAssertEqual(try? fixture.snapshot(at: fixture.liveRoot), liveBefore) }
+        let probe = N4CommitProbe()
+        let owner = try XCTUnwrap(fixture.open(hooks: probe.hooks))
+        defer { try? owner.close() }
+        let configuration = CollectorRootConfiguration(rootID: "root-é", source: .codex, rootPath: fixture.sourceRoot.path, revision: 1)
+        let claim = try n4Prepare(.deferClaim, owner, fixture, configuration: configuration)
+        let decomposed = "root-e\u{301}"
+        XCTAssertEqual(decomposed, configuration.rootID)
+        XCTAssertNotEqual(Data(decomposed.utf8), Data(configuration.rootID.utf8))
+        let forgeries = [
+            n4Copy(claim, rootID: "other-root"),
+            n4Copy(claim, rootID: decomposed),
+            n4Copy(claim, rootID: configuration.rootID + "\0suffix"),
+            n4Copy(claim, rootRevision: 2),
+        ]
+        let before = try n4Audit(fixture)
+        probe.arm()
+        for forged in forgeries {
+            XCTAssertThrowsError(try owner.acknowledge(forged, configuration: configuration, captureID: n4CaptureID)) {
+                XCTAssertEqual($0 as? CollectorInventoryError, .unknownRoot)
+            }
+            XCTAssertThrowsError(try owner.deferClaim(forged, configuration: configuration, retryNotBefore: 0, reason: .unavailable)) {
+                XCTAssertEqual($0 as? CollectorInventoryError, .unknownRoot)
+            }
+            XCTAssertEqual(try n4Audit(fixture), before)
+        }
+        XCTAssertEqual(probe.visits, 0)
+        probe.disarm()
+        XCTAssertEqual(try owner.acknowledge(claim, configuration: configuration, captureID: n4CaptureID), .acknowledged)
+    }
+
+    func testN4AllEntriesRequireCurrentByteExactSourcePathAndRevision() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let liveBefore = try fixture.snapshot(at: fixture.liveRoot)
+        defer { XCTAssertEqual(try? fixture.snapshot(at: fixture.liveRoot), liveBefore) }
+        let nested = fixture.sourceRoot.appendingPathComponent("é")
+        try fixture.directory(nested)
+        let old = CollectorRootConfiguration(rootID: "root-é", source: .codex, rootPath: fixture.sourceRoot.path + "/é", revision: 1)
+        let current = CollectorRootConfiguration(rootID: old.rootID, source: old.source, rootPath: old.rootPath, revision: 2)
+        let owner = try XCTUnwrap(fixture.open())
+        defer { try? owner.close() }
+        _ = try owner.enrollAndActivateRoot(old)
+        _ = try owner.enrollAndActivateRoot(current)
+        let claim = try n4Prepare(.deferClaim, owner, fixture, configuration: current)
+        let decomposedPath = fixture.sourceRoot.path + "/e\u{301}"
+        XCTAssertEqual(decomposedPath, current.rootPath)
+        XCTAssertNotEqual(Data(decomposedPath.utf8), Data(current.rootPath.utf8))
+        let mismatches = [
+            old,
+            CollectorRootConfiguration(rootID: current.rootID, source: .claudeCode, rootPath: current.rootPath, revision: 2),
+            CollectorRootConfiguration(rootID: current.rootID, source: .codex, rootPath: decomposedPath, revision: 2),
+            CollectorRootConfiguration(rootID: "root-e\u{301}", source: .codex, rootPath: current.rootPath, revision: 2),
+        ]
+        let before = try n4Audit(fixture)
+        for configuration in mismatches {
+            XCTAssertThrowsError(try owner.claimDirty(configuration: configuration, limit: 1, now: 0)) {
+                XCTAssertEqual($0 as? CollectorInventoryError, .unknownRoot)
+            }
+            XCTAssertThrowsError(try owner.acknowledge(claim, configuration: configuration, captureID: n4CaptureID)) {
+                XCTAssertEqual($0 as? CollectorInventoryError, .unknownRoot)
+            }
+            XCTAssertThrowsError(try owner.deferClaim(claim, configuration: configuration, retryNotBefore: 0, reason: .unavailable)) {
+                XCTAssertEqual($0 as? CollectorInventoryError, .unknownRoot)
+            }
+            XCTAssertEqual(try n4Audit(fixture), before)
+        }
+        XCTAssertEqual(try owner.acknowledge(claim, configuration: current, captureID: n4CaptureID), .acknowledged)
+    }
+
+    func testN4AllEntriesRejectUnknownUnenrolledAndInactiveRoots() throws {
+        for variant in 0..<3 {
+            let fixture = try CollectorOwnerFixture()
+            defer { fixture.remove() }
+            let liveBefore = try fixture.snapshot(at: fixture.liveRoot)
+            defer { XCTAssertEqual(try? fixture.snapshot(at: fixture.liveRoot), liveBefore) }
+            if variant == 1 { try n3SeedRegisteredUnboundRoot(fixture) }
+            if variant == 2 {
+                let first = try XCTUnwrap(fixture.open(ownerRunID: "n4-old"))
+                _ = try first.enrollAndActivateRoot(fixture.configuration)
+                try first.close()
+            }
+            let owner = try XCTUnwrap(fixture.open(ownerRunID: "n4-current"))
+            defer { try? owner.close() }
+            let control = CollectorRootConfiguration(rootID: "positive-control", source: .codex, rootPath: fixture.sourceRoot.path, revision: 1)
+            _ = try n4Prepare(.deferClaim, owner, fixture, configuration: control)
+            let invented = CollectorDirtyClaim(rootID: fixture.configuration.rootID, rootRevision: 1, relativePath: "a.jsonl",
+                dirtyRevision: 1, ownerRunID: "n4-current", claimGeneration: 1)
+            let before = try n4Audit(fixture)
+            for operation in N4Operation.allCases {
+                XCTAssertThrowsError(try n4Perform(operation, owner, fixture.configuration, invented)) { error in
+                    switch variant {
+                    case 1: XCTAssertEqual(error as? CollectorInventoryOwnerError, .rootNotEnrolled)
+                    case 2: XCTAssertEqual(error as? CollectorInventoryOwnerError, .rootNotActivated)
+                    default: XCTAssertEqual(error as? CollectorInventoryError, .unknownRoot)
+                    }
+                }
+                XCTAssertEqual(try n4Audit(fixture), before)
+            }
+        }
+    }
+
+    func testN4ForgedAndReplayedClaimsKeepStaleNeutralResultsAndAllStoredValues() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let liveBefore = try fixture.snapshot(at: fixture.liveRoot)
+        defer { XCTAssertEqual(try? fixture.snapshot(at: fixture.liveRoot), liveBefore) }
+        let owner = try XCTUnwrap(fixture.open(ownerRunID: "run-é"))
+        defer { try? owner.close() }
+        let claim = try n4Prepare(.deferClaim, owner, fixture)
+        let before = try n4Audit(fixture)
+        let forgeries = [
+            n4Copy(claim, ownerRunID: "other-owner"),
+            n4Copy(claim, ownerRunID: "run-e\u{301}"),
+            n4Copy(claim, claimGeneration: claim.claimGeneration + 1),
+            n4Copy(claim, dirtyRevision: claim.dirtyRevision + 1),
+            n4Copy(claim, relativePath: "missing.jsonl"),
+            n4Copy(claim, relativePath: claim.relativePath + "\0suffix"),
+        ]
+        XCTAssertEqual("run-é", "run-e\u{301}")
+        XCTAssertNotEqual(Data("run-é".utf8), Data("run-e\u{301}".utf8))
+        for forged in forgeries {
+            XCTAssertEqual(try owner.acknowledge(forged, configuration: fixture.configuration, captureID: n4CaptureID), .stale)
+            XCTAssertFalse(try owner.deferClaim(forged, configuration: fixture.configuration, retryNotBefore: 99, reason: .unavailable))
+            XCTAssertEqual(try n4Audit(fixture), before)
+        }
+        XCTAssertEqual(try owner.acknowledge(claim, configuration: fixture.configuration, captureID: n4CaptureID), .acknowledged)
+        let acknowledged = try n4Audit(fixture)
+        XCTAssertEqual(try owner.acknowledge(claim, configuration: fixture.configuration, captureID: String(repeating: "b", count: 64)), .stale)
+        XCTAssertFalse(try owner.deferClaim(claim, configuration: fixture.configuration, retryNotBefore: 99, reason: .sourceMissing))
+        XCTAssertEqual(try n4Audit(fixture), acknowledged)
+    }
+
+    func testN4NewDirtyEventSurvivesOlderSuccessfulAcknowledgement() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let liveBefore = try fixture.snapshot(at: fixture.liveRoot)
+        defer { XCTAssertEqual(try? fixture.snapshot(at: fixture.liveRoot), liveBefore) }
+        let owner = try XCTUnwrap(fixture.open())
+        defer { try? owner.close() }
+        _ = try owner.enrollAndActivateRoot(fixture.configuration)
+        try n4Mark(owner, fixture.configuration, ["a.jsonl"])
+        let old = try n4Claim(owner, fixture.configuration)
+        try n4Mark(owner, fixture.configuration, ["a.jsonl"])
+        XCTAssertEqual(try owner.acknowledge(old, configuration: fixture.configuration, captureID: n4CaptureID), .newerWorkPending)
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT dirty_revision FROM collector_locators"), old.dirtyRevision + 1)
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT acknowledged_revision FROM collector_locators"), old.dirtyRevision)
+        XCTAssertEqual(try fixture.inventoryText("SELECT last_capture_id FROM collector_locators"), n4CaptureID)
+        let next = try n4Claim(owner, fixture.configuration)
+        XCTAssertEqual(next.dirtyRevision, old.dirtyRevision + 1)
+        XCTAssertEqual(next.claimGeneration, old.claimGeneration + 1)
+        let beforeStale = try n4Audit(fixture)
+        XCTAssertEqual(try owner.acknowledge(old, configuration: fixture.configuration, captureID: String(repeating: "c", count: 64)), .stale)
+        XCTAssertFalse(try owner.deferClaim(old, configuration: fixture.configuration, retryNotBefore: 99, reason: .unavailable))
+        XCTAssertEqual(try n4Audit(fixture), beforeStale)
+    }
+
+    func testN4ReopenTakesOverInflightWorkAndRejectsOldOwnerResults() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let liveBefore = try fixture.snapshot(at: fixture.liveRoot)
+        defer { XCTAssertEqual(try? fixture.snapshot(at: fixture.liveRoot), liveBefore) }
+        let first = try XCTUnwrap(fixture.open(ownerRunID: "n4-first"))
+        defer { try? first.close() }
+        let binding = try first.enrollAndActivateRoot(fixture.configuration)
+        try n4Mark(first, fixture.configuration, ["a.jsonl"])
+        let old = try n4Claim(first, fixture.configuration)
+        try first.close()
+        let second = try XCTUnwrap(fixture.open(ownerRunID: "n4-second"))
+        defer { try? second.close() }
+        XCTAssertEqual(try second.enrollAndActivateRoot(fixture.configuration).expectedIdentity, binding.expectedIdentity)
+        let next = try n4Claim(second, fixture.configuration)
+        XCTAssertEqual(next.ownerRunID, "n4-second")
+        XCTAssertEqual(next.claimGeneration, old.claimGeneration + 1)
+        XCTAssertEqual(next.dirtyRevision, old.dirtyRevision)
+        let before = try n4Audit(fixture)
+        XCTAssertEqual(try second.acknowledge(old, configuration: fixture.configuration, captureID: n4CaptureID), .stale)
+        XCTAssertFalse(try second.deferClaim(old, configuration: fixture.configuration, retryNotBefore: 99, reason: .rootReplaced))
+        XCTAssertEqual(try n4Audit(fixture), before)
+        XCTAssertThrowsError(try first.acknowledge(old, configuration: fixture.configuration, captureID: n4CaptureID)) {
+            XCTAssertEqual($0 as? CollectorInventoryOwnerError, .closed)
+        }
+        XCTAssertEqual(try second.acknowledge(next, configuration: fixture.configuration, captureID: n4CaptureID), .acknowledged)
+    }
+
+    func testN4AllEntriesAfterCloseRejectWithoutReopeningAnyFile() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let owner = try XCTUnwrap(fixture.open())
+        _ = try owner.enrollAndActivateRoot(fixture.configuration)
+        try n4Mark(owner, fixture.configuration, ["a.jsonl"])
+        let claim = try n4Claim(owner, fixture.configuration)
+        try owner.close()
+        let before = try fixture.snapshot()
+        for operation in N4Operation.allCases {
+            XCTAssertThrowsError(try n4Perform(operation, owner, fixture.configuration, claim)) {
+                XCTAssertEqual($0 as? CollectorInventoryOwnerError, .closed)
+            }
+            XCTAssertEqual(try fixture.snapshot(), before)
+        }
+        XCTAssertEqual(try collectorOwnerFixtureDescriptors(under: fixture.base), [])
+    }
+
+    func testN4ClaimAndAcknowledgementRequireFreshPhysicalRootBeforeStoreAccess() throws {
+        for operation: N4Operation in [.claim, .acknowledge] {
+            for replacement: N4Replacement in [.missing, .directory] {
+                let fixture = try CollectorOwnerFixture()
+                defer { fixture.remove() }
+                let liveBefore = try fixture.snapshot(at: fixture.liveRoot)
+                defer { XCTAssertEqual(try? fixture.snapshot(at: fixture.liveRoot), liveBefore) }
+                let probe = N4CommitProbe()
+                let owner = try XCTUnwrap(fixture.open(hooks: probe.hooks))
+                defer { try? owner.close() }
+                let claim = try n4Prepare(operation, owner, fixture)
+                let before = try n4Audit(fixture)
+                let mutation = try N4PathMutation(fixture, target: fixture.sourceRoot)
+                defer { try? mutation.restore() }
+                try mutation.install(replacement)
+                probe.arm()
+                XCTAssertThrowsError(try n4Perform(operation, owner, fixture.configuration, claim)) {
+                    XCTAssertEqual($0 as? CollectorPOSIXEnumerationError,
+                                   replacement == .missing ? .io(.openComponent, ENOENT) : .rootIdentityChanged)
+                }
+                XCTAssertEqual(probe.visits, 0, "physical validation must precede the Store write")
+                XCTAssertEqual(try n4Audit(fixture), before)
+                probe.disarm()
+                try mutation.restore()
+                try n4Perform(operation, owner, fixture.configuration, claim)
+            }
+        }
+    }
+
+    func testN4DeferralMayPersistForMissingOrReplacedRootWithoutRebinding() throws {
+        for replacement: N4Replacement in [.missing, .directory] {
+            let fixture = try CollectorOwnerFixture()
+            defer { fixture.remove() }
+            let liveBefore = try fixture.snapshot(at: fixture.liveRoot)
+            defer { XCTAssertEqual(try? fixture.snapshot(at: fixture.liveRoot), liveBefore) }
+            let owner = try XCTUnwrap(fixture.open())
+            defer { try? owner.close() }
+            let claim = try n4Prepare(.deferClaim, owner, fixture)
+            let before = try n4Audit(fixture)
+            let mutation = try N4PathMutation(fixture, target: fixture.sourceRoot)
+            defer { try? mutation.restore() }
+            try mutation.install(replacement)
+            let reason: CollectorDirtyDeferReason = replacement == .missing ? .sourceMissing : .rootReplaced
+            XCTAssertTrue(try owner.deferClaim(claim, configuration: fixture.configuration, retryNotBefore: 100, reason: reason))
+            let after = try n4Audit(fixture)
+            XCTAssertEqual(after.tables["roots"], before.tables["roots"])
+            XCTAssertEqual(after.tables["bindings"], before.tables["bindings"])
+            XCTAssertEqual(after.tables["metadata"], before.tables["metadata"])
+            XCTAssertEqual(try fixture.inventoryText("SELECT last_error FROM collector_locators"), reason.rawValue)
+            XCTAssertEqual(try fixture.inventoryInteger("SELECT retry_not_before FROM collector_locators"), 100)
+            XCTAssertEqual(try fixture.inventoryInteger("SELECT acknowledged_revision FROM collector_locators"), 1)
+            XCTAssertEqual(try fixture.inventoryText("SELECT last_capture_id FROM collector_locators"), n4CaptureID)
+            XCTAssertNil(try fixture.inventoryText("SELECT claim_owner_run_id FROM collector_locators"))
+            XCTAssertNil(try fixture.inventoryInteger("SELECT claimed_dirty_revision FROM collector_locators"))
+            try mutation.restore()
+            XCTAssertTrue(try owner.claimDirty(configuration: fixture.configuration, limit: 1, now: 99).isEmpty)
+            let due = try n4Claim(owner, fixture.configuration, now: 100)
+            XCTAssertEqual(due.dirtyRevision, claim.dirtyRevision)
+            XCTAssertEqual(due.claimGeneration, claim.claimGeneration + 1)
+        }
+    }
+
+    func testN4DeferralDoesNotTolerateSymlinkOrNonDirectoryRoot() throws {
+        for replacement: N4Replacement in [.symlink, .file] {
+            let fixture = try CollectorOwnerFixture()
+            defer { fixture.remove() }
+            let liveBefore = try fixture.snapshot(at: fixture.liveRoot)
+            defer { XCTAssertEqual(try? fixture.snapshot(at: fixture.liveRoot), liveBefore) }
+            let probe = N4CommitProbe()
+            let owner = try XCTUnwrap(fixture.open(hooks: probe.hooks))
+            defer { try? owner.close() }
+            let claim = try n4Prepare(.deferClaim, owner, fixture)
+            let before = try n4Audit(fixture)
+            let mutation = try N4PathMutation(fixture, target: fixture.sourceRoot)
+            defer { try? mutation.restore() }
+            try mutation.install(replacement)
+            probe.arm()
+            XCTAssertThrowsError(try owner.deferClaim(claim, configuration: fixture.configuration, retryNotBefore: 100, reason: .sourceMissing)) {
+                self.n4AssertUnsafeRootError($0)
+            }
+            XCTAssertEqual(probe.visits, 0)
+            XCTAssertEqual(try n4Audit(fixture), before)
+        }
+    }
+
+    func testN4DeferralRevalidatesAfterAnInitiallyToleratedRootFailure() throws {
+        for initial: N4Replacement in [.missing, .directory] {
+            for atCommit: N4Replacement in [.symlink, .file] {
+                let fixture = try CollectorOwnerFixture()
+                defer { fixture.remove() }
+                let liveBefore = try fixture.snapshot(at: fixture.liveRoot)
+                defer { XCTAssertEqual(try? fixture.snapshot(at: fixture.liveRoot), liveBefore) }
+                let probe = N4CommitProbe()
+                let owner = try XCTUnwrap(fixture.open(hooks: probe.hooks))
+                defer { try? owner.close() }
+                let claim = try n4Prepare(.deferClaim, owner, fixture)
+                let before = try n4Audit(fixture)
+                let mutation = try N4PathMutation(fixture, target: fixture.sourceRoot)
+                defer { try? mutation.restore() }
+                try mutation.install(initial)
+                probe.arm { try mutation.replaceCurrent(atCommit) }
+                XCTAssertThrowsError(try owner.deferClaim(claim, configuration: fixture.configuration, retryNotBefore: 100, reason: .unavailable)) {
+                    self.n4AssertUnsafeRootError($0)
+                }
+                XCTAssertEqual(probe.visits, 1)
+                XCTAssertEqual(probe.returnedNormally, 1, "the test hook must return; production must reject the new unsafe route")
+                XCTAssertEqual(try n4Audit(fixture), before)
+                probe.disarm()
+                try mutation.restore()
+                XCTAssertTrue(try owner.deferClaim(claim, configuration: fixture.configuration, retryNotBefore: 0, reason: .unavailable))
+            }
+        }
+    }
+
+    func testN4PrecancelledCallerDoesNotEnterStoreForAnyDirtyOperation() async throws {
+        for operation in N4Operation.allCases {
+            let fixture = try CollectorOwnerFixture()
+            defer { fixture.remove() }
+            let liveBefore = try fixture.snapshot(at: fixture.liveRoot)
+            defer { XCTAssertEqual(try? fixture.snapshot(at: fixture.liveRoot), liveBefore) }
+            let probe = N4CommitProbe()
+            let owner = try XCTUnwrap(fixture.open(hooks: probe.hooks))
+            defer { try? owner.close() }
+            let claim = try n4Prepare(operation, owner, fixture)
+            let before = try n4Audit(fixture)
+            probe.arm()
+            let task = Task {
+                try withUnsafeCurrentTask { current in
+                    XCTAssertNotNil(current)
+                    current?.cancel()
+                    XCTAssertTrue(current?.isCancelled == true)
+                    XCTAssertThrowsError(try self.n4Perform(operation, owner, fixture.configuration, claim)) {
+                        XCTAssertTrue($0 is CancellationError)
+                    }
+                }
+            }
+            try await task.value
+            XCTAssertEqual(probe.visits, 0)
+            XCTAssertEqual(try n4Audit(fixture), before)
+            probe.disarm()
+            try n4Perform(operation, owner, fixture.configuration, claim)
+        }
+    }
+
+    func testN4CallerCancellationAfterMutationRollsBackAllDirtyOperations() async throws {
+        for operation in N4Operation.allCases {
+            let fixture = try CollectorOwnerFixture()
+            defer { fixture.remove() }
+            let liveBefore = try fixture.snapshot(at: fixture.liveRoot)
+            defer { XCTAssertEqual(try? fixture.snapshot(at: fixture.liveRoot), liveBefore) }
+            let probe = N4CommitProbe()
+            let owner = try XCTUnwrap(fixture.open(hooks: probe.hooks))
+            defer { try? owner.close() }
+            let claim = try n4Prepare(operation, owner, fixture)
+            let before = try n4Audit(fixture)
+            var cancelCaller: (() -> Void)?
+            probe.arm { cancelCaller?() }
+            let task = Task {
+                try withUnsafeCurrentTask { current in
+                    XCTAssertNotNil(current)
+                    XCTAssertFalse(current?.isCancelled == true)
+                    cancelCaller = { current?.cancel() }
+                    defer { cancelCaller = nil }
+                    XCTAssertThrowsError(try self.n4Perform(operation, owner, fixture.configuration, claim)) {
+                        XCTAssertTrue($0 is CancellationError)
+                    }
+                    XCTAssertTrue(current?.isCancelled == true)
+                }
+            }
+            try await task.value
+            XCTAssertNil(cancelCaller, "the borrowed task handle must not escape the synchronous operation")
+            XCTAssertEqual(probe.visits, 1)
+            XCTAssertEqual(probe.returnedNormally, 1, "throwing CancellationError from the hook would not test the borrowed task fence")
+            XCTAssertEqual(try n4Audit(fixture), before, "cursor, lease, acknowledgement, retry and errors must all roll back")
+            probe.disarm()
+            try n4Perform(operation, owner, fixture.configuration, claim)
+        }
+    }
+
+    func testN4ClaimRootReplacementAfterMutationRollsBackCursorAndClaim() throws {
+        try n4AssertRootCommitRollback(.claim)
+    }
+
+    func testN4AcknowledgementRootReplacementAfterMutationRollsBackCaptureAndLease() throws {
+        try n4AssertRootCommitRollback(.acknowledge)
+    }
+
+    func testN4ClaimStorageReplacementAfterMutationRollsBackCursorAndClaim() throws {
+        try n4AssertStorageCommitRollback(.claim)
+    }
+
+    func testN4AcknowledgementStorageReplacementAfterMutationRollsBackCaptureAndLease() throws {
+        try n4AssertStorageCommitRollback(.acknowledge)
+    }
+
+    func testN4DeferralStorageReplacementAfterMutationRollsBackRetryErrorAndLease() throws {
+        try n4AssertStorageCommitRollback(.deferClaim)
+    }
+
+    func testN4AcknowledgementIsOnlyACallerAssertionAndCreatesNoCaptureOrPublication() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let liveBefore = try fixture.snapshot(at: fixture.liveRoot)
+        let archiveBefore = try fixture.snapshot(at: fixture.shadowCatalog)
+        let sourceBefore = try fixture.snapshot(at: fixture.sourceParent)
+        let owner = try XCTUnwrap(fixture.open())
+        defer { try? owner.close() }
+        _ = try owner.enrollAndActivateRoot(fixture.configuration)
+        // There is no source file or CAS artifact for this event-only locator.
+        try n4Mark(owner, fixture.configuration, ["not-captured.jsonl"])
+        let claim = try n4Claim(owner, fixture.configuration, path: "not-captured.jsonl")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.sourceRoot.appendingPathComponent(claim.relativePath).path))
+        let shadowNames = try FileManager.default.contentsOfDirectory(atPath: fixture.shadowRoot.path).sorted()
+        XCTAssertEqual(shadowNames, ["archive.sqlite", "collector-owner.lock", "inventory"])
+        let assertedCaptureID = String(repeating: "d", count: 64)
+        XCTAssertEqual(try owner.acknowledge(claim, configuration: fixture.configuration, captureID: assertedCaptureID), .acknowledged)
+        XCTAssertEqual(try fixture.inventoryText("SELECT last_capture_id FROM collector_locators"), assertedCaptureID)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.shadowRoot.path).sorted(), shadowNames)
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND (name LIKE '%publication%' OR name LIKE '%capture%' OR name LIKE '%upload%')"), 0)
+        try owner.close()
+        XCTAssertEqual(try fixture.snapshot(at: fixture.liveRoot), liveBefore)
+        XCTAssertEqual(try fixture.snapshot(at: fixture.shadowCatalog), archiveBefore)
+        XCTAssertEqual(try fixture.snapshot(at: fixture.sourceParent), sourceBefore)
+    }
+
+    private var n4CaptureID: String { String(repeating: "a", count: 64) }
+    private enum N4Operation: CaseIterable, Equatable { case claim, acknowledge, deferClaim }
+    private enum N4Replacement: Equatable { case missing, directory, file, symlink }
+    private enum N4StorageTarget: CaseIterable { case main, lock, wal, inventoryDirectory, shadowDirectory, liveDirectory }
+
+    private func n4Mark(_ owner: CollectorInventoryOwner, _ configuration: CollectorRootConfiguration, _ paths: [String]) throws {
+        let expected = try owner.rootState(rootID: configuration.rootID)?.eventCheckpoint
+        let next = CollectorEventCheckpoint(epoch: expected?.epoch ?? "n4-events", cursor: UUID().uuidString)
+        let result = try owner.applyEvents(configuration: configuration, expectedCheckpoint: expected,
+            nextCheckpoint: next, dirtyRelativePaths: paths, budget: n3Budget(maxIncomingPaths: max(1, paths.count)))
+        XCTAssertEqual(result, .applied(inputPathCount: paths.count, checkpoint: next))
+    }
+
+    private func n4Claim(_ owner: CollectorInventoryOwner, _ configuration: CollectorRootConfiguration,
+                         path: String = "a.jsonl", now: Int64 = 0) throws -> CollectorDirtyClaim {
+        let claims = try owner.claimDirty(configuration: configuration, limit: 1, now: now)
+        XCTAssertEqual(claims.count, 1)
+        let claim = try XCTUnwrap(claims.first)
+        XCTAssertEqual(Data(claim.rootID.utf8), Data(configuration.rootID.utf8))
+        XCTAssertEqual(claim.rootRevision, configuration.revision)
+        XCTAssertEqual(Data(claim.relativePath.utf8), Data(path.utf8))
+        return claim
+    }
+
+    private func n4Copy(_ claim: CollectorDirtyClaim, rootID: String? = nil, rootRevision: Int64? = nil,
+                        relativePath: String? = nil, dirtyRevision: Int64? = nil, ownerRunID: String? = nil,
+                        claimGeneration: Int64? = nil) -> CollectorDirtyClaim {
+        .init(rootID: rootID ?? claim.rootID, rootRevision: rootRevision ?? claim.rootRevision,
+              relativePath: relativePath ?? claim.relativePath, dirtyRevision: dirtyRevision ?? claim.dirtyRevision,
+              ownerRunID: ownerRunID ?? claim.ownerRunID, claimGeneration: claimGeneration ?? claim.claimGeneration)
+    }
+
+    private func n4Prepare(_ operation: N4Operation, _ owner: CollectorInventoryOwner,
+                           _ fixture: CollectorOwnerFixture, configuration supplied: CollectorRootConfiguration? = nil) throws -> CollectorDirtyClaim {
+        let configuration = supplied ?? fixture.configuration
+        _ = try owner.enrollAndActivateRoot(configuration)
+        try n4Mark(owner, configuration, ["a.jsonl"])
+        let first = try n4Claim(owner, configuration)
+        let acknowledged = try owner.acknowledge(first, configuration: configuration, captureID: n4CaptureID)
+        XCTAssertEqual(acknowledged, .acknowledged)
+        try n4Mark(owner, configuration, ["a.jsonl"])
+        var claim = try n4Claim(owner, configuration)
+        if operation != .acknowledge {
+            let deferred = try owner.deferClaim(claim, configuration: configuration, retryNotBefore: 0, reason: .unavailable)
+            XCTAssertTrue(deferred)
+            if operation == .deferClaim { claim = try n4Claim(owner, configuration) }
+            else {
+                // The tested claim must change the cursor from a -> b. A
+                // single-locator fixture could not prove cursor rollback.
+                try n4Mark(owner, configuration, ["b.jsonl"])
+                XCTAssertEqual(try fixture.inventoryText("SELECT claim_cursor FROM collector_roots"), "a.jsonl")
+            }
+        }
+        return claim
+    }
+
+    private func n4Perform(_ operation: N4Operation, _ owner: CollectorInventoryOwner,
+                           _ configuration: CollectorRootConfiguration, _ claim: CollectorDirtyClaim) throws {
+        switch operation {
+        case .claim:
+            let claims = try owner.claimDirty(configuration: configuration, limit: 1, now: 0)
+            XCTAssertEqual(claims.count, 1)
+        case .acknowledge:
+            let result = try owner.acknowledge(claim, configuration: configuration, captureID: String(repeating: "b", count: 64))
+            XCTAssertEqual(result, .acknowledged)
+        case .deferClaim:
+            let result = try owner.deferClaim(claim, configuration: configuration, retryNotBefore: 99, reason: .sourceMissing)
+            XCTAssertTrue(result)
+        }
+    }
+
+    private func n4AssertUnsafeRootError(_ error: Error, file: StaticString = #filePath, line: UInt = #line) {
+        guard let error = error as? CollectorPOSIXEnumerationError, case .io(let operation, let code) = error else {
+            XCTFail("Expected a non-tolerated POSIX root-open error, got \(error)", file: file, line: line)
+            return
+        }
+        XCTAssertEqual(operation, .openComponent, file: file, line: line)
+        XCTAssertTrue(code == ELOOP || code == ENOTDIR, "symlink/non-directory refusal, not ENOENT", file: file, line: line)
+    }
+
+    private func n4AssertRootCommitRollback(_ operation: N4Operation) throws {
+        for replacement: N4Replacement in [.missing, .directory] {
+            let fixture = try CollectorOwnerFixture()
+            defer { fixture.remove() }
+            let liveBefore = try fixture.snapshot(at: fixture.liveRoot)
+            defer { XCTAssertEqual(try? fixture.snapshot(at: fixture.liveRoot), liveBefore) }
+            let probe = N4CommitProbe()
+            let owner = try XCTUnwrap(fixture.open(hooks: probe.hooks))
+            defer { try? owner.close() }
+            let claim = try n4Prepare(operation, owner, fixture)
+            let before = try n4Audit(fixture)
+            let mutation = try N4PathMutation(fixture, target: fixture.sourceRoot)
+            defer { try? mutation.restore() }
+            probe.arm { try mutation.install(replacement) }
+            XCTAssertThrowsError(try n4Perform(operation, owner, fixture.configuration, claim)) {
+                XCTAssertEqual($0 as? CollectorPOSIXEnumerationError,
+                               replacement == .missing ? .io(.openComponent, ENOENT) : .rootIdentityChanged)
+            }
+            XCTAssertEqual(probe.visits, 1)
+            XCTAssertEqual(probe.returnedNormally, 1)
+            XCTAssertEqual(try n4Audit(fixture), before)
+            probe.disarm()
+            // An operation-local physical fence must not leak into the old
+            // gap-only API, which intentionally accepts a missing/replaced root.
+            let state = try XCTUnwrap(owner.rootState(rootID: fixture.configuration.rootID))
+            XCTAssertEqual(try owner.requestEventReconciliation(configuration: fixture.configuration, reason: .continuityLoss),
+                           .reconciliationRequested(reason: .continuityLoss, requestedRevision: state.requestedRevision + 1))
+            try mutation.restore()
+            try n4Perform(operation, owner, fixture.configuration, claim)
+        }
+    }
+
+    private func n4AssertStorageCommitRollback(_ operation: N4Operation) throws {
+        for target in N4StorageTarget.allCases {
+            let fixture = try CollectorOwnerFixture()
+            defer { fixture.remove() }
+            let liveBefore = try fixture.snapshot(at: fixture.liveRoot)
+            defer { XCTAssertEqual(try? fixture.snapshot(at: fixture.liveRoot), liveBefore) }
+            let probe = N4CommitProbe()
+            let owner = try XCTUnwrap(fixture.open(hooks: probe.hooks))
+            defer { try? owner.close() }
+            let claim = try n4Prepare(operation, owner, fixture)
+            let before = try n4Audit(fixture)
+            let path: URL
+            let replacement: N4Replacement
+            switch target {
+            case .main: path = fixture.inventoryURL; replacement = .file
+            case .lock: path = fixture.lockURL; replacement = .file
+            case .wal: path = URL(fileURLWithPath: fixture.inventoryURL.path + "-wal"); replacement = .file
+            case .inventoryDirectory: path = fixture.inventoryDirectory; replacement = .directory
+            case .shadowDirectory: path = fixture.shadowRoot; replacement = .directory
+            case .liveDirectory: path = fixture.liveRoot; replacement = .directory
+            }
+            let originalIdentity = try fixture.fileIdentity(path)
+            let mutation = try N4PathMutation(fixture, target: path)
+            defer { try? mutation.restore() }
+            var replacementSnapshot: [String: CollectorOwnerFixture.Snapshot]?
+            probe.arm {
+                try mutation.install(replacement)
+                XCTAssertNotEqual(try fixture.fileIdentity(path), originalIdentity)
+                replacementSnapshot = try fixture.snapshot(at: path)
+            }
+            XCTAssertThrowsError(try n4Perform(operation, owner, fixture.configuration, claim)) {
+                XCTAssertEqual($0 as? CollectorInventoryOwnerError, .unsafePath, "\(operation) / \(target)")
+            }
+            XCTAssertEqual(probe.visits, 1, "\(operation) / \(target)")
+            XCTAssertEqual(probe.returnedNormally, 1, "the replacement hook must not itself throw")
+            XCTAssertEqual(try fixture.snapshot(at: path), try XCTUnwrap(replacementSnapshot), "the replacement target must not receive inventory writes")
+            probe.disarm()
+            // Restore the ORIGINAL inode and sidecars before independent SQL
+            // observation. Reading a fresh replacement DB could fake rollback.
+            try mutation.restore()
+            XCTAssertEqual(try fixture.fileIdentity(path), originalIdentity)
+            XCTAssertEqual(try n4Audit(fixture), before, "post-commit validation would already have persisted \(operation) / \(target)")
+            // External SQLite inode replacement need not leave the original
+            // connection reusable; rollback and explicit cleanup are required.
+            try owner.close()
+            XCTAssertEqual(try collectorOwnerFixtureDescriptors(under: fixture.base), [])
+        }
+    }
+
+    private enum N4SQLCell: Equatable {
+        case null
+        case integer(Int64)
+        case bytes(Data)
+    }
+
+    private struct N4InventoryAudit: Equatable {
+        let tables: [String: [[N4SQLCell]]]
+    }
+
+    private func n4Audit(_ fixture: CollectorOwnerFixture) throws -> N4InventoryAudit {
+        var configuration = Configuration()
+        configuration.readonly = true
+        configuration.busyMode = .immediateError
+        let queue = try DatabaseQueue(path: fixture.inventoryURL.path, configuration: configuration)
+        defer { try? queue.close() }
+        // Byte projections keep the verifier independent of Swift canonical
+        // String equality. No test writer, Store, or Owner read helper is used.
+        let queries = [
+            "metadata": """
+                SELECT CAST(key AS BLOB) AS key, CAST(value AS BLOB) AS value
+                FROM collector_metadata ORDER BY key COLLATE BINARY
+                """,
+            "roots": """
+                SELECT CAST(root_id AS BLOB) AS root_id, CAST(source AS BLOB) AS source,
+                    CAST(root_path AS BLOB) AS root_path, root_revision, requested_revision, completed_revision,
+                    CAST(event_epoch AS BLOB) AS event_epoch, CAST(event_cursor AS BLOB) AS event_cursor,
+                    CAST(active_scan_id AS BLOB) AS active_scan_id, active_scan_requested_revision,
+                    CAST(last_scan_failure AS BLOB) AS last_scan_failure, CAST(claim_cursor AS BLOB) AS claim_cursor
+                FROM collector_roots ORDER BY root_id COLLATE BINARY
+                """,
+            "bindings": """
+                SELECT CAST(root_id AS BLOB) AS root_id, root_revision, device, inode, generation, birth_seconds,
+                    birth_nanoseconds, CAST(last_activated_owner_run_id AS BLOB) AS last_activated_owner_run_id
+                FROM collector_root_bindings ORDER BY root_id COLLATE BINARY, root_revision
+                """,
+            "locators": """
+                SELECT CAST(root_id AS BLOB) AS root_id, root_revision, CAST(relative_path AS BLOB) AS relative_path,
+                    CAST(observed_generation AS BLOB) AS observed_generation, CAST(last_seen_scan_id AS BLOB) AS last_seen_scan_id,
+                    dirty_revision, acknowledged_revision, CAST(last_capture_id AS BLOB) AS last_capture_id,
+                    CAST(claim_owner_run_id AS BLOB) AS claim_owner_run_id, claim_generation, claimed_dirty_revision,
+                    retry_not_before, CAST(last_error AS BLOB) AS last_error
+                FROM collector_locators ORDER BY root_id COLLATE BINARY, root_revision, relative_path COLLATE BINARY
+                """,
+            "frontier": """
+                SELECT CAST(root_id AS BLOB) AS root_id, root_revision, CAST(scan_id AS BLOB) AS scan_id,
+                    CAST(relative_directory AS BLOB) AS relative_directory, completed
+                FROM collector_frontier ORDER BY root_id COLLATE BINARY, root_revision, scan_id COLLATE BINARY, relative_directory COLLATE BINARY
+                """,
+        ]
+        return try queue.read { db in
+            var tables: [String: [[N4SQLCell]]] = [:]
+            for (name, sql) in queries {
+                tables[name] = try Row.fetchAll(db, sql: sql).map { row -> [N4SQLCell] in
+                    try row.columnNames.map { column -> N4SQLCell in
+                        switch (row[column] as DatabaseValue).storage {
+                        case .null: return .null
+                        case .int64(let value): return .integer(value)
+                        case .blob(let value): return .bytes(value)
+                        default: throw CollectorOwnerFixture.Failure.injected
+                        }
+                    }
+                }
+            }
+            return N4InventoryAudit(tables: tables)
+        }
+    }
+
+    private final class N4CommitProbe {
+        private var armed = false
+        private var action: (() throws -> Void)?
+        private(set) var visits = 0
+        private(set) var returnedNormally = 0
+        var hooks: CollectorInventoryOwnerTestHooks {
+            .init(beforeInventoryCommit: { [weak self] in
+                guard let self, self.armed else { return }
+                self.visits += 1
+                try self.action?()
+                self.returnedNormally += 1
+            })
+        }
+        func arm(_ action: (() throws -> Void)? = nil) {
+            self.action = action
+            visits = 0
+            returnedNormally = 0
+            armed = true
+        }
+        func disarm() {
+            armed = false
+            action = nil
+        }
+    }
+
+    private final class N4PathMutation {
+        private let fixture: CollectorOwnerFixture
+        private let target: URL
+        private let original: URL
+        private var installed = false
+        init(_ fixture: CollectorOwnerFixture, target: URL) throws {
+            guard target.path.hasPrefix(fixture.base.path + "/") else { throw CollectorOwnerFixture.Failure.injected }
+            self.fixture = fixture
+            self.target = target
+            original = fixture.base.appendingPathComponent("n4-preserved-\(UUID().uuidString)")
+        }
+        func install(_ replacement: N4Replacement) throws {
+            guard !installed else { throw CollectorOwnerFixture.Failure.injected }
+            _ = try fixture.fileIdentity(target) // A missing baseline is not a successful fault injection.
+            try FileManager.default.moveItem(at: target, to: original)
+            installed = true
+            try create(replacement)
+        }
+        func replaceCurrent(_ replacement: N4Replacement) throws {
+            guard installed else { throw CollectorOwnerFixture.Failure.injected }
+            try removeReplacement()
+            try create(replacement)
+        }
+        func restore() throws {
+            guard installed else { return }
+            try removeReplacement()
+            try FileManager.default.moveItem(at: original, to: target)
+            installed = false
+        }
+        private func create(_ replacement: N4Replacement) throws {
+            switch replacement {
+            case .missing: break
+            case .directory:
+                try fixture.directory(target)
+                try fixture.file(target.appendingPathComponent("replacement-sentinel"), bytes: Data("do-not-write".utf8))
+            case .file:
+                try fixture.file(target, bytes: Data("replacement-do-not-write".utf8))
+            case .symlink:
+                try FileManager.default.createSymbolicLink(at: target, withDestinationURL: original)
+            }
+        }
+        private func removeReplacement() throws {
+            var info = stat()
+            if lstat(target.path, &info) == 0 { try FileManager.default.removeItem(at: target) }
+            else if errno != ENOENT { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        }
+    }
+    // End N4a TEST-DRAFT.
+
     private func assertRejected(_ operation: () throws -> Void, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertThrowsError(try operation(), file: file, line: line) { error in
             XCTAssertNotEqual(error as? CollectorInventoryOwnerError, .notImplemented, "a RED stub is not a security rejection", file: file, line: line)

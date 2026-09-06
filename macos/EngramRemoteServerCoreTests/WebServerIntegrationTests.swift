@@ -226,11 +226,16 @@ final class WebServerIntegrationTests: XCTestCase {
         assertNoIPC(fixture)
     }
 
-    func testUnknownWebPathsWithCorrectHostGetDecorated404() async throws {
+    func testStaticViewerAndUnknownWebPathsKeepSecurityHeadersWithoutIPC() async throws {
         let fixture = try fixture()
         defer { fixture.stop() }
         try await withServer(config()) { server in
-            for path in ["/web", "/web/missing", "/web/api", "/web/api/not-a-route"] {
+            for path in ["/web", "/web/"] {
+                let response = try await server.request("GET", path)
+                XCTAssertEqual(response.status, 200, path)
+                Self.assertSecurityHeaders(response)
+            }
+            for path in ["/web/missing", "/web/api", "/web/api/not-a-route"] {
                 let response = try await server.request("GET", path)
                 XCTAssertEqual(response.status, 404, path)
                 Self.assertSecurityHeaders(response)

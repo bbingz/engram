@@ -166,6 +166,8 @@ targets:
       - target: EngramServiceCore
       - target: EngramCoreRead
       - target: EngramCoreWrite
+      - target: EngramCollectorCore
+      - target: EngramRemoteServerCore
       - package: GRDB
         product: GRDB-dynamic
     settings:

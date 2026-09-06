@@ -7,6 +7,73 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Capture-to-Web composition and reader integration (2026-09-06)
+
+Integrated the independently reviewed N4a inventory owner and T4a Service ingest
+worker, added the read-only normalized-transcript provider and wired actual
+generation admission into Web detail. The same-origin static viewer now supports
+authentication, search/filter, detail and message continuation. Existing Host,
+Origin, cookie, CSP, no-store and read-only IPC boundaries remain in force.
+The generated project adds only test dependencies for the composition fixture;
+CollectorCore still has no product-index/Service dependency.
+
+`CollectorWebDemoTests` now exercises synthetic JSONL through inventory/capture,
+privacy proof, an actual encrypted RemoteArchiveStore publication ACK/page,
+central CAS acceptance/replay, parsed commit, FTS-ready, real Unix-socket IPC
+and authenticated HTTP search/detail/messages. The source bytes remain unchanged.
+Capture/replica transfer are in-process: this is not the W6 real-binary,
+two-replica, restart/rename/resource or production acceptance gate.
+
+Evidence: executable REDs `/tmp/engram-demo-{service-red-v4,chain-red-v9,ui-red-v2}.*`
+preceded the corresponding implementations; focused Service GREEN v1 passed
+57/57, provider GREEN v1 16/16 and UI GREEN v1 7/7. Current central full
+Service v2 passed 1,009/1,010 (one existing opt-in live-offload skip), Collector
+v1 279/279, and Remote v2 398/398; each producer exited 0 and xcresult agrees.
+Service and Collector each retain one existing QoS runtime warning; Remote has
+none. Full logs/results: `/tmp/engram-demo-service-full-v2.{log,xcresult}`,
+`/tmp/engram-demo-collector-full-v1.{log,xcresult}` and
+`/tmp/engram-demo-remote-full-v2.{log,xcresult}`. Remote v1 exited 65 because its
+old unknown-route test expected `/web` to return 404; the test now separately
+proves both viewer URLs return 200 and genuine unknown routes retain 404,
+security headers and zero IPC. Production route code was not changed for this.
+Two boundary-script suites passed five tests; archive-safety, invariants and
+diff checks passed. Independent scoped source/spec review approved the provider
+and root composition; this does not certify the incomplete full W3-W6 plan.
+
+Test-environment incident: full Service v1 was stopped with exit 75. Its command
+incorrectly relied on ENGRAM_HOME, while default startup directory maintenance
+uses Foundation's process home and is not dry-run. A sampled owned test process
+was in that maintenance scan. Earlier real-provider read/rename impact is
+UNVERIFIED; no broader source inspection was authorized or performed to claim
+zero impact. The corrected runs use an existing task-private directory through
+both CFFIXED_USER_HOME and TEST_RUNNER_CFFIXED_USER_HOME. The standalone real
+XCTest preflight exited 0 and printed ENGRAM_DEMO_HOME_VERIFIED for that exact
+directory before full regression. Evidence:
+`/tmp/engram-demo-service-hang.sample`, `/tmp/engram-demo-service-full-v1.log`,
+`/tmp/engram-demo-home-preflight-v1.{log,xcresult}`. No production remediation,
+service restart, deployment or Docker operation followed this test incident.
+
+Browser evidence uses only the synthetic loopback fixture: keyboard login/search,
+actual transcript, empty search, logout and a 390px viewport were observed in
+`output/playwright/demo-*.png` (local-only). The first intentional 600-second
+hold exceeded XCTest's allowance and is not a successful test run; the fixture
+now budgets its intentional hold explicitly. Full long-message/XSS/stale/error
+browser acceptance remains W5 work, not inferred from static string checks.
+The corrected 90-second browser hold v2 exited 0 (one test, 90.305 seconds),
+with fresh keyboard login and real two-message rendering captured in
+`output/playwright/demo-transcript-v2.png`; console had zero errors before
+the fixture shut down normally. A later logout click occurred after shutdown
+and failed to connect; it is not additional logout evidence. The earlier live
+logout/cleared-screen observation remains the logout evidence. Full v2 test
+log/result: `/tmp/engram-demo-browser-v2.{log,xcresult}`.
+
+The previous head `79ee13ac` Tests, Dependency Review and CodeQL workflows were
+verified successful on PR #446; the PR remains Draft/open. This entry supersedes
+older pending-CI and donor-only checkpoints below without rewriting them. New
+head CI is separate. Next: persistent publication allocation, independent replica
+queues and real collector/central runtime composition, then full W5/W6 gates.
+W7 production, credentials and network changes remain outside authorization.
+
 Record clarification (2026-09-06): the A5d completed central Service/App/Core/MCP
 results above each older entry supersede earlier central-running/donor-only
 checkpoints retained below. The phrase "supersedes central-running above" in

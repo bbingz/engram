@@ -8,7 +8,16 @@ enum CollectorInventoryOwnerError: Error, Equatable {
     case closed
     case rootNotEnrolled
     case rootNotActivated
+    case invalidCaptureID
     case notImplemented
+}
+
+// These are local retry reasons, not capture/privacy,
+// CAS residency, publication, or remote acknowledgement classifications.
+enum CollectorDirtyDeferReason: String, Equatable {
+    case sourceMissing
+    case rootReplaced
+    case unavailable
 }
 
 struct CollectorEventIngressBudget {
@@ -70,6 +79,7 @@ final class CollectorInventoryOwner {
     private var store: CollectorInventoryStore?
     private var activeRoots: [Data: (binding: CollectorPOSIXRootBinding, walker: CollectorBootstrapWalker)] = [:]
     private var eventCommitCancellationCheck: (() throws -> Void)?
+    private var dirtyCommitFence: (() throws -> Void)?
     private var closed = false
 
     private var inventoryRoot: URL { shadowRoot.appendingPathComponent("inventory") }
@@ -184,6 +194,50 @@ final class CollectorInventoryOwner {
         try withStore { try $0.rootState(rootID: rootID) }
     }
 
+    func claimDirty(
+        configuration: CollectorRootConfiguration, limit: Int, now: Int64
+    ) throws -> [CollectorDirtyClaim] {
+        try withDirtyStore(configuration: configuration, validateInput: {
+            guard (1...64).contains(limit), now >= 0 else { throw CollectorInventoryError.invalidBudget }
+        }) { store in
+            // The limit bounds candidates, not successful claims. Do not refill
+            // an empty result: deferred/in-flight work may still be pending.
+            try store.claimDirty(configuration: configuration, limit: limit, now: now)
+        }
+    }
+
+    func acknowledge(
+        _ claim: CollectorDirtyClaim, configuration: CollectorRootConfiguration, captureID: String
+    ) throws -> CollectorClaimCompletion {
+        try withDirtyStore(configuration: configuration, validateInput: {
+            guard captureID.utf8.count == 64,
+                  captureID.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+                throw CollectorInventoryOwnerError.invalidCaptureID
+            }
+            try Self.requireClaimConfiguration(claim, configuration)
+        }) { store in
+            // A forged NUL path must not alias a locator through SQLite's text
+            // binding. Other claim authority remains the Store's responsibility.
+            guard CollectorInventoryStore.isSafeRelativePath(claim.relativePath) else { return .stale }
+            // This is only the caller's durable-capture assertion, not a CAS,
+            // privacy, publication or remote-acknowledgement verification.
+            return try store.acknowledge(claim, captureID: captureID)
+        }
+    }
+
+    func deferClaim(
+        _ claim: CollectorDirtyClaim, configuration: CollectorRootConfiguration,
+        retryNotBefore: Int64, reason: CollectorDirtyDeferReason
+    ) throws -> Bool {
+        try withDirtyStore(configuration: configuration, allowsUnavailableRoot: true, validateInput: {
+            guard retryNotBefore >= 0 else { throw CollectorInventoryError.invalidBudget }
+            try Self.requireClaimConfiguration(claim, configuration)
+        }) { store in
+            guard CollectorInventoryStore.isSafeRelativePath(claim.relativePath) else { return false }
+            return try store.deferClaim(claim, retryNotBefore: retryNotBefore, reason: reason.rawValue)
+        }
+    }
+
     func stepRoot(
         _ configuration: CollectorRootConfiguration,
         budget: CollectorBootstrapBudget
@@ -291,6 +345,65 @@ final class CollectorInventoryOwner {
                 defer { eventCommitCancellationCheck = nil }
                 return try operation(store)
             }
+        }
+    }
+
+    private func withDirtyStore<T>(
+        configuration: CollectorRootConfiguration,
+        allowsUnavailableRoot: Bool = false,
+        validateInput: () throws -> Void,
+        _ operation: (CollectorInventoryStore) throws -> T
+    ) throws -> T {
+        mutex.lock()
+        defer { mutex.unlock() }
+        guard !closed, let store else { throw CollectorInventoryOwnerError.closed }
+        try validateInput()
+        // Reject a possible SQLite text-binding alias before any Store lookup.
+        guard !configuration.rootID.contains("\0") else { throw CollectorInventoryError.unknownRoot }
+        return try withUnsafeCurrentTask { task in
+            if task?.isCancelled == true { throw CancellationError() }
+            try validateStorage()
+            let (_, binding) = try Self.requireEnrolledEventRoot(store, configuration)
+            guard let active = activeRoots[Data(configuration.rootID.utf8)],
+                  active.binding.configuration == configuration,
+                  active.binding.expectedIdentity == binding.expectedIdentity else {
+                throw CollectorInventoryOwnerError.rootNotActivated
+            }
+            try Self.validateDirtyRoot(binding, allowsUnavailableRoot: allowsUnavailableRoot)
+            // Borrowed on the caller's thread, before any synchronous queue
+            // operation. The hook may execute on GRDB's thread without a task.
+            dirtyCommitFence = { [unowned self] in
+                if task?.isCancelled == true { throw CancellationError() }
+                try self.validateStorageFilesystem()
+                try Self.validateDirtyRoot(binding, allowsUnavailableRoot: allowsUnavailableRoot)
+                if task?.isCancelled == true { throw CancellationError() }
+            }
+            // Neither the borrowed task nor this operation's physical-root
+            // policy may survive into another Owner API or a later transaction.
+            defer { dirtyCommitFence = nil }
+            if task?.isCancelled == true { throw CancellationError() }
+            let result = try operation(store)
+            try validateStorage()
+            return result
+        }
+    }
+
+    private static func requireClaimConfiguration(
+        _ claim: CollectorDirtyClaim, _ configuration: CollectorRootConfiguration
+    ) throws {
+        guard claim.rootID.utf8.elementsEqual(configuration.rootID.utf8),
+              claim.rootRevision == configuration.revision else { throw CollectorInventoryError.unknownRoot }
+    }
+
+    private static func validateDirtyRoot(
+        _ binding: CollectorPOSIXRootBinding, allowsUnavailableRoot: Bool
+    ) throws {
+        do {
+            try CollectorPOSIXRootEnumerator.validateRoot(binding: binding)
+        } catch CollectorPOSIXEnumerationError.rootIdentityChanged where allowsUnavailableRoot {
+            // Keep the old binding so capture failure can defer, never rebind.
+        } catch CollectorPOSIXEnumerationError.io(_, ENOENT) where allowsUnavailableRoot {
+            // Every entry and pre-commit call validates anew; no cached bypass.
         }
     }
 
@@ -439,12 +552,31 @@ final class CollectorInventoryOwner {
                 try self?.eventCommitCancellationCheck?()
                 try beforeCommit?()
                 try self?.eventCommitCancellationCheck?()
+                try self?.dirtyCommitFence?()
             })
         )
         try validateStorage()
     }
 
     private func validateStorage() throws {
+        try validateStorageFilesystem()
+        if inventoryDescriptor >= 0, let inventoryIdentity, let database, let mainIdentity {
+            guard let resolved = Darwin.realpath(databaseURL.path, nil) else { throw Self.posixError() }
+            let canonicalPath = String(cString: resolved)
+            Darwin.free(resolved)
+            try database.read { db in
+                try Self.validateDatabase(
+                    db, url: databaseURL, canonicalPath: canonicalPath, directory: inventoryRoot,
+                    directoryIdentity: inventoryIdentity, parent: inventoryDescriptor,
+                    mainDescriptor: mainDescriptor, mainIdentity: mainIdentity
+                )
+            }
+        }
+    }
+
+    // Queue-free: safe inside Store.beforeCommit. The complete outer validator
+    // above still checks SQLite's connection filename and HAS_MOVED state.
+    private func validateStorageFilesystem() throws {
         let shadow = try Self.openDirectory(shadowRoot)
         defer { CollectorPOSIXDirectoryAccess.close(shadow.descriptor) }
         let live = try Self.openDirectory(identityCatalog.deletingLastPathComponent())
@@ -461,18 +593,6 @@ final class CollectorInventoryOwner {
             try Self.validateDirectoryDescriptor(current.descriptor, expected: inventoryIdentity)
             _ = try Self.fileIdentity(parent: inventoryDescriptor, name: Self.databaseName, expected: mainIdentity, descriptor: mainDescriptor)
             sidecarIdentities = try Self.validateSidecars(parent: inventoryDescriptor, expected: sidecarIdentities)
-            if let database, let mainIdentity {
-                guard let resolved = Darwin.realpath(databaseURL.path, nil) else { throw Self.posixError() }
-                let canonicalPath = String(cString: resolved)
-                Darwin.free(resolved)
-                try database.read { db in
-                    try Self.validateDatabase(
-                        db, url: databaseURL, canonicalPath: canonicalPath, directory: inventoryRoot,
-                        directoryIdentity: inventoryIdentity, parent: inventoryDescriptor,
-                        mainDescriptor: mainDescriptor, mainIdentity: mainIdentity
-                    )
-                }
-            }
         }
     }
 

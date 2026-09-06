@@ -1223,3 +1223,14 @@ all source bytes, new archives, and ledgers. Stop and report on identity ambigui
 After each implemented tranche, update CHANGELOG/MEMO minimally with actual
 changed paths, RED/GREEN and independent gates, complete log paths, skipped
 checks, and remaining waves. Do not mark this full plan complete on W1 tests.
+
+### 2026-09-06 composition checkpoint
+
+N4a owner and T4a ingest worker are integrated in the central worktree. A real
+normalized-transcript read provider, HTTP/IPC composition fixture and same-origin
+viewer now prove synthetic capture-to-search/transcript behavior. Full central
+Service/Collector/Remote regression passed; see CHANGELOG for counts, RED/GREEN,
+the corrected test-home incident and local-only browser evidence. These results
+do not close W3 runtime publication allocation/dual queues, W4 Runner composition,
+full W5 browser acceptance or W6 real-binary/coverage/resource gates. Continue
+those original requirements; W7 remains separately authorized.

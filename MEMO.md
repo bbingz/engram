@@ -4,6 +4,9 @@
 
 ### 2026-09-06
 
+- [新增] 合成采集→真实归档 ACK→中央 replay/FTS→HTTP/IPC→Web 正文链已接通；中央 Service 1009过/1既有跳过、Collector279/279、Remote398/398。仍非完整 W3–W6 二进制验收，详见 `CHANGELOG.md`。
+- [排查] 首次全Service命令未隔离 Foundation home，已停止；真实源是否受影响未验证。修正后先验真实XCTest home再全量通过，未做生产补救或扩大扫描，详见 `CHANGELOG.md`。
+
 - [验证] A5d追加App/Core共2901项（1既有跳过、零失败）及MCP270/270通过，独立最终门进行中。T4a真实RED暴露12项围栏缺口，另11项测试观测/顺序已独立裁决修正，GREEN执行中，详见 `CHANGELOG.md`。
 
 - [验证] A5d中央Service935过/1既有跳过/零失败，脚本205过/2条件跳过及类型/安全门通过；最终集成门与新CI待验。T4a57项回归执行中，旧head CodeQL仍待验，详见 `CHANGELOG.md`。

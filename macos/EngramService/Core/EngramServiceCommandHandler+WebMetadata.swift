@@ -15,7 +15,12 @@ extension EngramServiceCommandHandler {
                 let input = try Self.webMetadataInput(EngramServiceWebOverviewRequest.self, from: request,
                     allowedKeys: ["limit", "snapshotId", "cursor"])
                 try Self.webMetadataCheckpoint(deadline)
-                let value = try await webMetadataProducer.overview(input, requestId: request.requestId, deadline: deadline)
+                var value = try await webMetadataProducer.overview(input, requestId: request.requestId, deadline: deadline)
+                if webTranscriptSnapshotProvider.supportsNormalizedTranscripts {
+                    value = .init(snapshotId: value.snapshotId, observedAt: value.observedAt,
+                        capabilities: .init(keywordSearch: value.capabilities.keywordSearch, transcriptRead: .available),
+                        streams: value.streams, nextCursor: value.nextCursor)
+                }
                 return try Self.webMetadataSuccess(value, requestId: request.requestId, deadline: deadline)
             case "webSessions":
                 let input = try Self.webMetadataInput(EngramServiceWebSessionsRequest.self, from: request,
@@ -27,7 +32,30 @@ extension EngramServiceCommandHandler {
                 let input = try Self.webMetadataInput(EngramServiceWebSessionDetailRequest.self, from: request,
                     allowedKeys: ["sessionId"])
                 try Self.webMetadataCheckpoint(deadline)
-                let value = try await webMetadataProducer.sessionDetail(input, requestId: request.requestId, deadline: deadline)
+                var value = try await webMetadataProducer.sessionDetail(input, requestId: request.requestId, deadline: deadline)
+                if webTranscriptSnapshotProvider.supportsNormalizedTranscripts, let detail = value.detail {
+                    var admittedGeneration: String?
+                    if let generation = detail.lastReady?.generationId {
+                        do {
+                            if let snapshot = try await webTranscriptSnapshotProvider.snapshot(
+                                sessionID: input.sessionId, generation: generation, deadline: deadline),
+                               snapshot.sessionId.utf8.elementsEqual(input.sessionId.utf8),
+                               snapshot.sessionId.utf8.elementsEqual(detail.session.sessionId.utf8),
+                               snapshot.generation == generation {
+                                admittedGeneration = generation
+                            }
+                        } catch is CancellationError {
+                            throw CancellationError()
+                        } catch {
+                            // Metadata may remain useful when transcript authority is unavailable.
+                            // Every messages request revalidates independently of this observation.
+                        }
+                    }
+                    value = .init(observedAt: value.observedAt,
+                        detail: .init(session: detail.session, lastParsed: detail.lastParsed, lastReady: detail.lastReady,
+                            transcriptAvailability: admittedGeneration == nil ? .unavailable : .available,
+                            transcriptGeneration: admittedGeneration, currentAttempt: detail.currentAttempt))
+                }
                 return try Self.webMetadataSuccess(value, requestId: request.requestId, deadline: deadline)
             default:
                 throw ServiceWebMetadataError.unavailable
