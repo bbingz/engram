@@ -385,6 +385,56 @@ network changes, and merge/release remain separate authority boundaries.
 
 ## Execution rules
 
+Final A5c checkpoint: seven-path independent staged integration/record review
+passed SPEC PASS / QUALITY APPROVED, frozen source/test hashes unchanged and
+pinned staged drift passed. Root refreshed all three successful workflows on
+prior head `843d0038`; Draft/open/unmerged PR #446 is unchanged. Normal commit/
+push is next and new-head CI remains unverified. T4a executable RED v3/v4 was
+fixture-contaminated; import/canonical temporary-root-only corrections are
+under RED v5, not GREEN authority. N4a/A5d remain TEST-DRAFT. Details and
+nonblocking warnings are recorded in CHANGELOG; no W3-W6/W7 completion claim.
+
+Latest integration checkpoint: A5c independent SPEC/QUALITY passed; exact
+2aeb1355/5c7a3843 source/tests are central, with eight pinned-generator PBX adds.
+Central full Service passed 912 with one existing opt-in skip and zero failures
+(one reader QoS warning); donor v2 separately passed 901/one skip after exact
+central old-scanner synchronization. Ten script suites passed 205/two conditional
+skips; typecheck/safety/invariants passed. Final staged/integration gate and
+new-head CI are pending. T4a final 45-test draft is executing RED; N4a and A5d
+remain TEST-DRAFT only. Runner/browser/full W3-W6/W7 remain unverified.
+
+Latest supersession: A5c full-byte NUL fixture and explicit snapshot-close
+defects have independent failing evidence; focused GREEN v4 is 38/38, zero
+skips/runtimeWarnings, actual exit 0 and no raw NULL/misuse SQLite logs.
+Full donor Service and independent source/spec review are pending. T4a second
+draft still failed root's complete gate and remains correction-only. N4a's
+amended Owner-only queue-free fence passed feasibility; its accepted contract
+below authorizes TEST-DRAFT only. Central source remains at `843d0038`.
+
+Latest checkpoint: exact `843d0038` Tests, dependency review and CodeQL all
+succeeded; PR #446 stays Draft/open/unmerged. A5c source GREEN v1 was compile-only
+failure; minimal argument-array correction is under GREEN v2 with all 37 test
+bytes unchanged. T4a initial test draft failed the independent gate and remains
+draft correction, not RED. N4a Owner claim facade is only a proposed contract.
+These states supersede earlier pending checkpoints; no full W3-W6/W7 claim.
+
+A5c RED checkpoint: corrected two-file draft passed root independent complete
+review; 37 tests are frozen at SHA256 2d535a3ee7a381cfe069c2d9b7c2d53dee860b68a5d7e2ddc6d31072f17aa41a.
+The first compile-only failure was missing donor bounded-CAS baseline, fixed
+by copying existing central bytes with A5c hashes unchanged. RED v2 executed
+37 tests, five passed/32 failed/zero skips or runtime warnings, command session
+16960 exit 65. Only producer source now has GREEN authority; handler/Runner,
+browser and complete W3-W6/W7 remain excluded. Detailed evidence is in CHANGELOG.
+
+Push follow-up: N3-B2 is normally committed/pushed as
+`843d00384ee93a99ced8942e66a511fc7e920f3d`, both command exits 0; staged drift
+v2 passed. PR #446 remains Draft/open/unmerged. New dependency review
+`34024026926` passed; Tests `34024026924` and CodeQL `34024026923` are running.
+A5c remains test-draft correction. Proposed T4a owns only one claim -> real CAS
+replay -> parsed commit step and cancel/stop join; acceptance/implementation
+are pending. Initial skip/no-job readiness and restart recovery remain T4b,
+not a completed runtime or full W3-W6/W7 result.
+
 Final N3-B2 gate follow-up: independent ten-path index/record/source review
 passed SPEC PASS / QUALITY APPROVED with six hashes unchanged; pinned staged
 drift v1 passed. Normal commit/push and new-head CI are next. Historical
@@ -672,6 +722,234 @@ delivery, normalized rather than locator text, legacy-to-capture ownership
 races, stale-authority versus genuine corruption retries, last-good/rebuild,
 future debounce ordering, skip with an actual job and cancellation fences.
 
+### N4a owner-mediated dirty work acceptance
+
+Frozen after supplemental independent SPEC PASS / QUALITY APPROVED and root
+source verification on 2026-09-06. Only the two-file TEST-DRAFT is authorized;
+root must accept it before RED and owns all builds and central integration.
+
+#### Why this is the next narrow W3 seam
+
+CollectorInventoryStore already owns bounded round-robin claimDirty,
+acknowledge and deferClaim. Its only runtime owner deliberately keeps Store
+and DatabaseQueue private. Native events and bootstrap can now mark work through
+the Owner, but stable-capture work cannot claim/finish through that boundary.
+This slice adds the value-only facade; it does not implement capture, privacy,
+publication allocation, uploader, daemon wiring or source retirement.
+
+#### Scope and API behavior
+
+Only CollectorInventoryOwner.swift and CollectorInventoryOwnerTests.swift may
+change after independent acceptance. Store, Models, bootstrap/native event
+files, old tests, project routing and all other lanes remain frozen. No new
+database/catalog/writer, migration, provider, live source or external operation.
+
+- Add value-only Owner methods to claim bounded dirty work, acknowledge a
+  capture ID and defer a claim. Receive explicit full root configuration on
+  every method, not just rootID. Do not expose Queue/Store or return closures
+  that outlive the Owner mutex. Keep exact byte identity for configuration.
+- Claim uses the existing Store round-robin API with candidate limit 1...64,
+  nonnegative Unix now, no hidden looping to refill an empty result, and no
+  claim that the queue is empty when candidates were deferred/in-flight.
+- Claim and acknowledge require the exact enrolled and active root binding
+  and a fresh physical root fence. Reject closed, unactivated, replaced,
+  missing, stale-revision or mismatched-source/path roots without silently
+  enrolling/rebinding them. All storage/owner locks remain in force.
+- Root physical validity, storage validity and caller cancellation must be
+  rechecked inside the Store's existing beforeCommit hook, after a test hook
+  can mutate state. On failure, roll back claim/cursor or acknowledgement,
+  including last_capture_id and cleared leases. Borrow UnsafeCurrentTask on
+  the calling thread and only across the synchronous locked Store operation.
+- Acknowledgement accepts a valid lowercase 64-character SHA256 capture ID,
+  checks claim rootID/rootRevision against the supplied configuration, and
+  delegates the existing owner-run/claim-generation/dirty-revision authority
+  to Store. It is a caller assertion that durable capture exists, NOT proof of
+  CAS residency, privacy eligibility or remote ACK. Never mint a publication.
+- An invalid capture ID throws CollectorInventoryOwnerError.invalidCaptureID
+  before Store access; do not conflate malformed input with a stale claim.
+  Claim/config rootID byte or revision mismatch throws unknownRoot before
+  Store access. Apply this same identity gate to deferral.
+- Deferral accepts only a typed finite local reason, not raw error text/path,
+  and a nonnegative retryNotBefore. It requires exact current configuration,
+  enrolled and active identity plus Store claim authority, but may persist a
+  retry when that root is now physically missing/replaced. Deferral never
+  acknowledges work or overwrites binding; this exception avoids stranding
+  a claim merely because capturing its source failed. Storage/cancellation
+  commit fences still apply. Pin the new Owner-local enum CollectorDirtyDeferReason
+  raw codes to sourceMissing, rootReplaced and unavailable; these describe only
+  local work deferral, not capture/CAS/privacy/upload success or classification.
+  Persist only the enum rawValue, never an error string, path or errno text.
+- Deferral still calls the POSIX root validator before its operation and in
+  its pre-commit fence. Only CollectorPOSIXEnumerationError.io(_, ENOENT) and
+  rootIdentityChanged are tolerated; unsafePath/symlink/other errors fail.
+  Do not skip the validator entirely after an earlier tolerated result.
+- Negative now/retryNotBefore or claim limit outside 1...64 throws
+  CollectorInventoryError.invalidBudget before Store access. Pass the valid
+  limit through unchanged; no refill loop. Closed owner calls still fail closed.
+- Extend the existing weak Store beforeCommit callback with an operation-local
+  fence, reset by defer on every exit. It must run AFTER beforeInventoryCommit
+  so injected cancellation/storage/root changes are checked inside the current
+  transaction. Never call today's validateStorage there: it reenters the same
+  DatabaseQueue.read at Owner.swift:468. Within Owner only, extract/reuse its
+  existing filesystem/FD/directory/lock/main/sidecar identity checks as a truly
+  queue-free storage fence. Keep the existing complete validateStorage (including
+  its SQLite connection-path check) at the outer operation entry/exit. No Store
+  API/hook signature change is needed. The pre-commit callback calls only that
+  queue-free fence and static root validators; never withStore/withEventStore,
+  any DatabaseQueue API, or another public Owner method. Borrowed task and
+  operation fence cannot survive the synchronous locked Store call.
+- Stale claims retain Store's stale/false neutral results and mutate no row.
+  Newer dirty events survive an older successful acknowledgement. Reopening
+  under a new ownerRunID allows takeover and rejects the old owner's results.
+  Completion after close throws closed and does not resurrect a writer.
+
+#### Required tests before RED
+
+Tests use the existing private temporary Owner fixture and independent
+readonly SQL observations, with positive baselines before each negative.
+Keep all existing test bodies unchanged and append cases for bounded/fair
+claims through Owner, retry due boundaries, in-flight exclusion, current-root
+and configuration fences, Unicode byte identity, exact capture-ID validation,
+stale/forged claim authority, newer-dirty survival, reopen takeover, closed
+calls, typed deferral on missing/replaced root, precancel and injected
+post-mutation/pre-commit cancellation/root replacement rollback. Read-only
+verification must include claim_cursor, owner/generation/revisions and last
+capture/retry/error values, not merely successful-return counters. Prove the
+live catalog remains unchanged. This is no native capture/upload result.
+
+The draft must independently prove post-hook storage-mutation rollback as
+well as cancellation and physical-root replacement. No GREEN or runtime
+capture/upload wiring is authorized by this contract freeze.
+
+### T4a bounded Service replay worker acceptance
+
+Frozen after the independent supplemental feasibility gate returned SPEC PASS /
+QUALITY APPROVED on 2026-09-06. This acceptance authorizes only the two-file
+test draft below, not GREEN, runtime wiring or T4b completion.
+
+#### Scope
+
+Only new `macos/EngramService/Core/ServiceCaptureIngestWorker.swift` and
+`macos/EngramServiceCoreTests/ServiceCaptureIngestWorkerTests.swift` are authorized for
+TEST-DRAFT only; root must accept the draft before executable RED. Root owns project routing. Do not edit Ledger,
+Registry, Replay, Committer, NormalizedStore, Readiness, WriterGate, Runner,
+DTOs, migrations, Web, Collector, packaging or old tests. No provider,
+credentials, production roots, network, SSH, Docker, deployment or W7.
+
+T4a integrates claim -> actual CAS replay -> parsed commit, not a scheduler.
+The existing T3b FTS runner is not wired here. Initial skip/no-job readiness
+and restart recovery are explicitly the next T4b slice, not silently complete.
+
+#### Lifecycle and concurrency
+
+- Cold construction borrows one existing ServiceWriterGate, an existing CAS,
+  a precreated staging parent, fresh synchronous parser/source policy and a
+  Unix-seconds clock. No new writer/database/catalog, schema, directory creation,
+  provider lookup, task or loop in init. Missing policy defaults OFF.
+- One actor-owned work Task per step; concurrent step attempts do not claim a
+  second item or await the first and then silently start another. Stop seals
+  future admission, cancels and joins the owned task, and is idempotent. Caller
+  cancellation also cancels and joins it. No untracked task or retained waiter.
+- Explicitly override ServiceWriterGate.preserveAcceptedWriteProducer to false
+  around worker operations: accepted Unix-socket task-local inheritance must
+  never create a detached write that escapes stop/cancel join.
+- Check cancellation and optional monotonic deadline at every worker await
+  boundary and before/after synchronous writes. These are acceptance fences,
+  not a hard-preemption guarantee for existing parser/JSON/SQLite operations.
+
+#### Selection and authority
+
+- Select at most one eligible due ledger key with scalar SQL and LIMIT 1,
+  parameterized current parser revision/enabled sources, valid matching source
+  registry/epoch/history/parse-format and deterministic ordering. Never load
+  normalized BLOBs or materialize the entire backlog. Future retry, live lease,
+  terminal, unknown/disabled/changed/unprovisioned authority stay unchanged.
+- This is scalar PRESELECTION, not full manifest eligibility. Project only
+  ledger publication_sha256/parser_revision; join publication scalar machine/
+  instance/epoch to registry source/format/approved epoch and matching history.
+  No CAS access or canonical_bytes/manifest_json/normalized_messages_json in
+  this selection. Match the ledger's pending/null-lease, due retry and expired
+  processing predicates, and order by ledger.created_at ASC then digest BINARY
+  ASC. Only the chosen claim may read its canonical publication bytes through
+  the existing Ledger API. Full Registry.eligibility requires verifiedManifest
+  and is checked only after actual replay, then again by commitParsed.
+- Within one existing gate/writer transaction: reread fresh policy, validate
+  full registry binding/history, and call CaptureIngestLedger.claim. Use its
+  existing canonical publication verification; do not reimplement claim CAS.
+  A policy race after selection must roll back the claim and attempt increment.
+- Lease duration is explicit 1...300 (default 300 seconds); retry delay explicit
+  1...3600 (default 30 seconds). Invalid inputs and overflowing clock arithmetic
+  fail closed. Never refresh a lease or synthesize a token on the caller's own.
+- Execute the real public CaptureIngestReplay.replay outside the writer gate,
+  with the accepted publication/binding/CAS/staging parent. Test-only barriers
+  may bracket it; no fabricated replay result or substituted successful parser.
+  Recheck fresh parser/source policy and complete registry identity after
+  replay, before any commit or failure write.
+- Barriers bracket the public replay call, not internal CoreWrite parse hooks.
+  Unix Int64 clock is used only for lease/backoff. Deadline uses independent
+  ContinuousClock. Derive indexedAt using the existing UTC ISO8601 snapshot
+  timestamp convention; do not invent a new wire/storage timestamp format.
+- Gate command names are captureIngestClaim, captureIngestCommit and
+  captureIngestFailure, none matching the gate's long-running classifications.
+  The actor returns an explicit busy result immediately if an owned task exists;
+  it never queues a second step behind completion.
+
+#### Writes and outcomes
+
+- Use the existing gate and actual writer.write transaction to invoke
+  CaptureIngestCommitter.commitParsed. Fresh policy, registry/history, current
+  claim and clock are checked immediately before it. After it, check fresh
+  policy/binding, cancellation/deadline and new clock before outer commit.
+  The committer clears the claim: the post-commit lease check uses the accepted
+  claimedAt <= freshNow < expiresAt, not requireCurrentClaim on a parsed row.
+- Borrow UnsafeCurrentTask before entering GRDB's synchronous callback, not
+  inside the GCD callback. It must not escape the synchronous writer call.
+  Trigger/barrier-induced cancellation, policy change and lease expiry after
+  materialization must roll back sessions, normalized data, jobs and ledger.
+- A parsed receipt is only parsed, not index_ready or visible. Preserve prior
+  ready head, user state, tier/child skip, ordering and existing job semantics.
+- Only current-authority/current-lease Replay errors receive recordFailure.
+  Explicit mappings: invalidManifest/manifestMismatch -> invalidManifest;
+  unsupportedCaptureShape/invalidReplayLayout -> unsupportedCaptureShape;
+  sourceIntegrityMismatch -> sourceIntegrityMismatch;
+  bindingMismatch/sourceMismatch -> bindingMismatch;
+  invalidNativeIdentity -> invalidNativeIdentity;
+  unsafeStaging -> retry stagingUnavailable (local safety is not bad input);
+  retry reasons retain their CAS/staging codes; parse failures retain ParserFailure.
+  Cancellation/deadline, stale policy/binding/claim/order or unknown epoch are
+  neutral: no fabricated retry/quarantine; a claimed row remains processing
+  until its existing natural lease expiry. Unexpected DB/commit/infrastructure
+  errors propagate without raw error strings or arbitrary persistent codes.
+- CancellationError/deadline MUST NOT use recordFailure, including the existing
+  retryable.interrupted case. Ledger/Registry/Committer errors never acquire a
+  made-up replay failure code. The post-call in-memory claim time bounds and
+  all policy/binding/cancel checks remain inside the outer writer transaction
+  so a thrown fence failure rolls back even after an inner savepoint committed.
+- The same fresh before/after clock/policy/binding/cancel fences surround
+  recordFailure; its claim clearing likewise requires explicit post-clock bounds.
+
+#### Required draft tests before actual RED
+
+Real migrated temporary DB + existing gate, exact canonical publication/CAS
+and real replay fixtures; selection SQL/statement-trace evidence of no BLOB/full
+backlog delivery during preselection, allowing one canonical envelope at claim.
+Use public writer.write access to install a test trace; private writer factory
+configuration need not change. Do not replace GRDB's internal authorizer for
+this worker test. Cases: cold/default OFF; eligibility variants; one item among >1;
+concurrent step; future retry/live lease/expired takeover; parser/registry
+revocation queued at gate and suspended around replay; normal exact parsed
+snapshot/job provenance; child skip stays parsed/skip with no invented ready;
+last-good remains; missing/corrupt CAS and parse/unsafe-stage classifications;
+stale claim/unknown epoch do not poison ledger; caller cancel/stop join both
+queued and replay-entered; inherited accepted-write task-local; real writer
+trigger cancellation, policy flip and fresh-clock expiry cause total rollback.
+Test barriers must actually be entered; timeouts fail tests, never OR true.
+
+Independent draft gate precedes root-owned actual RED. Only after executed
+behavioral failure may the source implementation be opened. Compile errors
+are recorded separately, not called RED. Full Service and impacted Core suites,
+invariants, project drift and independent implementation gate follow GREEN.
+
 ## W5 — native read-only Web
 
 Scope: optional RemoteServer Web module/assets/read facade/tests. Shared IPC
@@ -754,6 +1032,89 @@ Tests precede implementation; this contract is not a running producer result.
   readonly/no-BLOB behavior, envelope budgets and honest unknown observations.
   Handler extra-payload, real dispatch and Runner injection tests belong to the
   later coordinator slice, not a fake dispatcher in these provider tests.
+
+### A5d metadata IPC adapter acceptance
+
+Frozen after independent feasibility PASS / proposal quality APPROVED and
+root source verification on 2026-09-06. This authorizes only three-file
+TEST-DRAFT; root owns routing and actual RED. Deadline capture and separate
+client-versus-server cancellation evidence are part of this frozen contract.
+
+#### Narrow scope
+
+Only existing EngramServiceCommandHandler.swift, new
+EngramServiceCommandHandler+WebMetadata.swift and new WebMetadataIPCTests.swift.
+Constructor injection and actual dispatch for webOverview/webSessions/
+webSessionDetail; no new schema, writer, provider lookup or runtime process.
+Keep producer, DTO/client, Remote HTTP, transcript provider/continuation,
+capability/auth/transport, WriterGate and Runner frozen. Root owns routing.
+
+The metadata producer is injected as one retained Service-owned instance,
+defaulting to UnavailableServiceWebMetadataProducer. No per-request pool or
+producer creation. Runner composition, its policy source and stop ordering
+remain an explicit later slice: this adapter does not claim running HQ metadata.
+
+#### Behavior
+
+- Route only the three exact commands through the real handler.handle dispatch.
+  Do not substitute a fake router in tests. Preserve all existing commands.
+- Parse a JSON object with exact allowed-key sets for each command, then decode
+  the existing strict DTO. Reject missing/malformed payloads, extra command,
+  locator/path/capability/hidden/deadline/budget fields before producer entry.
+  Allowed sets are the existing DTO CodingKeys, not a new generic schema layer.
+- Supply the request ID byte-exactly and a fresh monotonic deadline no more
+  than two seconds from handler entry. Check cancellation/deadline before and
+  after awaiting the producer and encoding. The adapter does not create an
+  untracked timeout Task or promise preemption of an uncooperative provider.
+  Caller cancellation must await the producer's cooperative exit; never return
+  early while the owned producer keeps working.
+  Capture that deadline at the start of handler.handle and carry it through
+  dispatch, rather than starting a renewed budget inside the extension.
+  This join promise is Service-side only. The existing client may cancel and
+  close its FD first; tests must separately observe producer exit and server
+  drain, never infer server cleanup from client cancellation completion.
+- Encode the typed result and whole success envelope; reject any whole frame
+  above the existing 261120-byte budget. Round-trip through the existing strict
+  DTO decoder before success so injected invalid values cannot bypass wire
+  validation. Do not relax A5a client or schema validation to make this pass.
+- Symbolic safe errors only: malformed request -> InvalidRequest/never;
+  stale -> StaleCursor/never; cancellation -> Cancelled/never; unavailable,
+  response-too-large, unexpected DB/encoding/provider errors ->
+  ServiceUnavailable/safe. Never expose raw errors, SQL, roots or file paths.
+- Read-only IPC does not load a capability token or mutate the writer gate.
+  Same-UID socket admission and transport protections remain unchanged.
+  No fallback to legacy readers or successful-empty result for absent provider.
+
+#### Test-draft requirements
+
+Use the existing short temporary socket harness pattern: actual
+UnixSocketServiceServer -> handler.handle -> injected provider, with the actual
+EngramServiceWebReadClient. Verify every command, request ID/deadline/filter
+byte fidelity, default unavailable, independent extra/missing/malformed inputs,
+safe stale/cancel/oversize/unexpected failures, and no provider entry on invalid
+input. Include unknown-command behavior without changing its existing contract.
+Assert InvalidRequest/Cancelled names and retry policy using rawExchange: the
+unchanged typed client maps those server errors to malformed, while its local
+Task cancellation still throws CancellationError. Use the typed client for
+valid/stale/unavailable and local-cancellation behavior. Exact overview keys
+are limit/snapshotId/cursor; sessions keys are query/source/machineId/
+sourceInstanceId/projectKey/limit/snapshotId/cursor; detail accepts sessionId.
+Use local narrow checks, not widening the main handler's private helper access.
+
+Use thread-safe observations and cancellation-aware registration-safe barriers.
+Join/drain handlers before releasing provider/gate and deleting fixture storage.
+Independently assert gate databaseGeneration unchanged and no capability fields
+sent. Test all three endpoints with a real A5c producer against a migrated,
+temporary empty DB and valid injected policy; an empty metadata corpus is then
+measured, while the default unavailable producer is not. Add a seeded real
+capture-bound list/detail/continuation fixture if needed for endpoint authority;
+do not invent an alternate production query/decoder. Existing A5c tests remain
+unchanged and cover nonempty SQL authority/expiry/readonly/cancellation details.
+
+No browser, production Web, source coverage, transcript readiness, Runner
+composition, W6 end-to-end or W7 completion claim follows from this slice.
+Require independent feasibility before freezing TEST-DRAFT, then actual RED,
+minimal GREEN, full Service regression and independent source/spec gate.
 
 ## W6 — packages, coverage, and shadow integration
 

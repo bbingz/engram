@@ -4,6 +4,18 @@
 
 ### 2026-09-06
 
+- [验证] A5c 七路径最终独立双门与暂存漂移已过，冻结哈希未变；旧 head 三 CI 再核全过，准备正常提交推送，新 head CI 待验。T4a 前轮混有夹具错误，仅修夹具重跑 RED，未开实现，详见 `CHANGELOG.md`。
+
+- [验证] A5c 独立双门后按原哈希整合：中央 Service 912 过/1 既有跳过/零失败，1 条 reader QoS 警告；脚本205过/2条件跳过及类型/安全门通过，最终暂存门与新CI待验。T4a进入45项RED，N4a/A5d仅测试草案，详见 `CHANGELOG.md`。
+
+- [验证] A5c 修正 NUL 夹具并补快照关闭顺序真实 RED 后，38/38 GREEN、原 SQLite 重复关闭日志消失；完整 Service/独立门待验。T4a 二稿继续校正，N4a 合同过门后仅开测试草案，详见 `CHANGELOG.md`。
+
+- [验证] `843d0038` 三项 CI 全过，PR #446 仍 Draft/未合并；A5c 首轮编译类型修正后运行 GREEN v2，37 项测试未变，T4a 初稿独立门未过并继续校正，详见 `CHANGELOG.md`。
+
+- [验证] `843d0038` Tests/依赖已过，CodeQL 待验；T4a 修订合同经独立双门后冻结，仅开两个文件的 TEST-DRAFT，A5c 仍仅源码 GREEN、37 项测试冻结，详见 `CHANGELOG.md`。
+
+- [验证] A5c 校正后的 37 项草稿经独立门并实际 RED：5 过/32 失败、零 skip/运行时警告；首次仅缺旧 donor CAS 基线导致编译失败，已按中央哈希同步并单列。现仅 producer 源码进入 GREEN，测试冻结，详见 `CHANGELOG.md`。
+- [提交] N3-B2 已正常推送 `843d0038`，PR #446 仍 Draft/未合并；新依赖 CI 通过、Tests/CodeQL 运行中。A5c 继续测试草稿，T4a 单项领取/重放/parsed 原子提交仍为待审方案，无 job 的 skip 就绪另留 T4b，详见 `CHANGELOG.md`。
 - [验证] N3-B2 十路径最终独立双门及暂存漂移已过，六个实现/路由哈希未变，准备正常提交推送；记录中的数字 producer 是命令会话编号而非 OS PID，已追加澄清，新 head CI 仍单独待验，详见 `CHANGELOG.md`。
 - [验证] `18c9bc06` 三项 CI 全过；N3-B2 补充独立门后按冻结哈希进入中央，完整 Collector 255/255、脚本 205/2 条件 skip 与类型/安全/invariants 通过，保留 1 条烟测 QoS 警告。十路径最终门与新 head CI 待验，A5c 继续测试草稿校正，详见 `CHANGELOG.md`。
 - [验证] `18c9bc06` Tests/依赖 CI 已过，CodeQL 待验；N3-B2 donor 254/254 和真实临时目录烟测 1/1、合并 255/255 通过，保留前两次夹具失败与 QoS 警告，补充独立门及中央整合待验。A5c 测试草稿九组修正中，详见 `CHANGELOG.md`。

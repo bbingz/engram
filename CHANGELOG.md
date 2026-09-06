@@ -7,6 +7,178 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Metadata producer final staged gate passed (2026-09-06)
+
+Independent seven-path review returned SPEC PASS / QUALITY APPROVED with no
+blocking findings. It checked index/worktree equality, the unchanged producer
+and 38-test hashes, eight generated PBX additions, pinned staged drift,
+central/donor/focused xcresults and logs, and the four record surfaces. Root
+separately refreshed PR #446: exact prior head `843d0038` still has successful
+Tests `34024026924`, CodeQL `34024026923` and dependency review `34024026926`;
+the PR remains Draft/open/unmerged. Normal commit/push is now next; new-head
+CI remains unverified. A stale test-draft header comment and an existing
+WeakMutability warning are nonblocking and were not changed after hash freeze.
+
+T4a RED v1/v2 failed only compilation; v3/v4 executed but exposed real replay
+fixture staging-path errors, so they are not accepted as clean behavioral RED.
+The coordinator corrected only imports and the temporary-root fixture using
+the existing ReplayTests Darwin.realpath pattern; RED v5 is pending. Production
+staging defenses remain unchanged. N4a/A5d remain separate TEST-DRAFT work.
+No Runner, browser, full W3-W6, production, W7, merge or release claim follows.
+
+### Metadata producer integrated with central Service regression (2026-09-06)
+
+A5c passed independent SPEC PASS / QUALITY APPROVED and was copied into central
+with exact source/test SHA256 `2aeb1355...` / `5c7a3843...`. Coordinator's pinned
+XcodeGen 2.45.4 generation adds exactly eight PBX reference lines for these two
+files; an initial PATH-generator expansion was replaced by the pinned output
+before central testing, without hand-editing the project. No Runner, handler,
+DTO/client, Remote, Collector, App or MCP production file changed in this slice.
+
+Donor full Service v1 exposed three old IPC source scanners with five failed
+assertions, not an A5 failure. Runner already matched central; the exact three
+current central test hunks were copied into that donor. Donor full v2 then
+passed 901 with one existing live-offload opt-in skip. Central full Service
+passed 912 with the same skip, zero failures, including all 38 A5 tests. Both
+commands actually exited 0; each result has one reader QoS runtime warning,
+and neither contains the earlier NULL-connection/misuse logs. Existing
+Sendable/AppIntents build warnings remain recorded in full logs.
+Artifacts: `/tmp/engram-a5c-service-full-v{1,2}.*` and
+`/tmp/engram-a5c-central-service-full.*`; the producer-exit records distinguish
+the donor baseline failure, correction and separate central result.
+
+The ten relevant script suites passed 205 with two conditional project-drift
+skips; test typecheck, Archive V2 safety and all five invariant gates exited 0.
+Logs are `/tmp/engram-a5c-tranche-{scripts,typecheck-test,archive-safety,invariants}.log`.
+Unchanged App/Core/MCP/Collector/Remote suites were not rerun for this isolated
+Service addition. Final staged-project drift and integration/record gate are
+pending before normal commit/push; new-head CI is not yet claimed.
+
+T4a's final 45-test draft (`248ada53...`, stub `5aeffcbf...`) passed root's
+independent corrected draft gate and entered coordinator-owned executable RED;
+it remains unimplemented. N4a is a separate two-file TEST-DRAFT. The reviewed
+A5d IPC adapter contract is frozen with three-file TEST-DRAFT only, explicit
+handler-entry deadline and separate client-cancel/server-drain evidence. Runner
+policy composition, browser, full W3-W6 readiness and W7 remain incomplete.
+
+### Metadata lifecycle RED/GREEN and independent next-slice draft gates (2026-09-06)
+
+A5c GREEN v2 and v3 each ran all 37 tests but failed the same three NUL
+assertions. The decoder preserves complete TEXT metadata bytes, but GRDB's
+String fixture binding itself used NUL-terminated sqlite3_bind_text. A separate
+exact-hex fixture proof exited 65, observing `73616665` instead of
+`7361666500736563726574`. The fixture now binds Data through CAST AS TEXT and
+asserts both full stored bytes and TEXT storage, without relaxing omission
+expectations. The original 37 tests then passed.
+
+Raw SQLite logs revealed a separate lifecycle defect despite empty xcresult
+runtimeWarnings: explicit DatabaseSnapshot.close preceded its deinit COMMIT.
+An added real SQLite statement/close trace regression failed both snapshots
+with only CLOSE rather than COMMIT then CLOSE; all original 37 passed in that
+38-test RED run. The minimal source fix lets GRDB release snapshots in its
+own transaction/connection order. Focused GREEN v4 independently passed 38/38,
+zero skips/runtimeWarnings, actual exit 0, and no NULL-connection/misuse logs.
+One build-tool AppIntents metadata extraction warning remains. Frozen source
+SHA256 is `2aeb1355725b20591792d6885c7abdcffaeac8f31a4b89b0ce176de46243ef18`;
+tests are `5c7a38436dd4cbf7ccf9276b18e3460fd5180c209b34d997c678c731ae6dae99`.
+Evidence: `/tmp/engram-a5c-nul-fixture-proof.*`,
+`/tmp/engram-a5c-lifecycle-red.*`, `/tmp/engram-a5c-metadata-green-v4.*`.
+The separate full donor Service suite and independent A5c source/spec gate
+are in progress; central integration and handler/Runner wiring remain unverified.
+
+T4a's corrected 99-line stub/1420-line test draft still failed root's complete
+independent gate: associated-value syntax, contaminated selection fixtures,
+misclassified missing CAS, unkeyed/vacuous trace proof and cancellation
+registration races remain draft corrections, not executed RED. Evidence:
+`/tmp/engram-t4a-second-draft-gate.md`. N4a's amended Owner-only queue-free
+precommit storage fence passed independent feasibility and root source checks;
+the acceptance is frozen in the plan and only a two-file TEST-DRAFT is active.
+No W3-W6 completion, runtime/production change, W7, merge or release is claimed.
+
+### Native-stream CI complete; producer and worker gates remain separate (2026-09-06)
+
+Exact `843d00384ee93a99ced8942e66a511fc7e920f3d` now has all three workflows
+successful: Tests `34024026924`, dependency review `34024026926` and CodeQL
+`34024026923`, including both Swift analyses and CodeQL Gate. Watch command
+sessions 39666 and 50283 both exited 0; logs are
+`/tmp/engram-n3b2-{tests,codeql}-watch.log`. PR #446 remains Draft/open/unmerged.
+This supersedes earlier pending CI checkpoints, not full W3-W6 readiness.
+
+A5c's 965-line donor producer compiled only after one mixed-array inference
+correction to separate argument appends. GREEN v1 exited 65 before testing;
+the corrected 967-line source is SHA256
+`d93b03848c24c0563d6dde392c462b0fc018152352752572732b0920f821b35c` and GREEN
+v2 is running against the unchanged 37-test SHA `2d535a3e...`. Artifacts are
+`/tmp/engram-a5c-metadata-green-v{1,2}.*`; no GREEN result or integration yet.
+The first T4a two-file draft failed root's complete independent test-design
+gate on compile defects, unjoinable fixture barriers, incorrect pending versus
+processing rollback assertions, misleading trace checks and missing separate
+authority/cancellation cases. It remains TEST-DRAFT correction, not executable
+RED. Full findings are `/tmp/engram-t4a-initial-draft-gate.md`. N4a's Owner dirty
+claim/ack/defer proposal is a separate read-only feasibility gate; no N4 code.
+
+
+### Service worker acceptance and native-stream CI follow-up (2026-09-06)
+
+Exact N3-B2 head `843d00384ee93a99ced8942e66a511fc7e920f3d` now has successful
+Tests `34024026924` and dependency review `34024026926`; CodeQL `34024026923`
+remains in progress. Tests watch command session 39666 exited 0; its full log
+is `/tmp/engram-n3b2-tests-watch.log`. This supersedes earlier pending Tests
+checkpoints without asserting CodeQL or overall completion.
+
+The independent supplemental T4a feasibility gate returned SPEC PASS / QUALITY
+APPROVED, resolving scalar preselection versus manifest eligibility, exact
+due/order predicates, transaction-local post-claim-clear fences, cancellation
+ownership, public replay barriers and trace access through writer.write. The
+accepted contract is frozen in the implementation plan. Only two new Service
+worker source/test files enter TEST-DRAFT in the ingest donor; root owns routing
+and actual RED. T4b no-job readiness/recovery and runtime wiring remain separate.
+A5c GREEN remains source-only under its frozen 37-test contract, not completed.
+
+
+### Metadata producer corrected draft and executable RED (2026-09-06)
+
+The coordinator independently read the corrected two-file A5c draft completely
+and passed its SPEC/QUALITY test-design gate. The source still threw
+notImplemented; the 1,708-line test file freezes 37 methods with SHA256
+`2d535a3ee7a381cfe069c2d9b7c2d53dee860b68a5d7e2ddc6d31072f17aa41a`.
+The draft now tests real entered SQLite interruption/join, actual readonly/
+authorizer/trace behavior, independent WAL snapshot release and weak deinit,
+cursor binding/bounds, individually armed authority revocation, scalar-ready
+positive/negative baselines, full-string redaction and valid DTO envelope limits.
+
+First execution was compile-only failure: the Web donor lacked the existing
+bounded CAS overloads used by its synchronized Replay. Root copied only the
+already-verified central `EngramCaptureShared/ImmutableArchiveCAS.swift`, SHA256
+`d4f202b8c564ad585be7b4b686aaf11a0e8d8cfb2796d873e7f9b10989178137`, into that
+donor and verified both A5c hashes unchanged. No central source was changed.
+Corrected RED v2 then executed 37 tests: five passed, 32 failed, zero skips or
+runtime warnings, command session 16960 exit 65. The 61 assertions and 29
+unexpected errors are not the failed-test count. Failures reflect absent
+producer behavior, including unentered SQL, not fixture/schema failures.
+Artifacts are `/tmp/engram-a5c-metadata-red-v{1,2}.*`; independent gate and
+follow-up are `/tmp/engram-a5c-corrected-draft-gate.md`.
+Only the producer source now enters GREEN; tests remain frozen. No Service
+handler/Runner wiring, browser or full W3-W6/W7 result is claimed.
+
+### Native-stream push and next-slice preparation (2026-09-06)
+
+N3-B2 was normally committed/pushed as
+`843d00384ee93a99ced8942e66a511fc7e920f3d`; both commands exited 0.
+Logs are `/tmp/engram-n3b2-tranche-{commit,push}.log`; pinned staged drift v2
+also passed. Exact prior-head `18c9bc06` Tests, CodeQL and dependency review
+were all successful before push. PR #446 remains Draft/open/unmerged at the
+new SHA. Its dependency review `34024026926` passed; Tests `34024026924`
+and CodeQL `34024026923` are still running, not inherited successes.
+
+A5c remains a separate two-file test-draft correction. The proposed next T4a
+slice connects one Service-owned claim through real CAS replay to an atomic
+parsed commit, with cold construction and cancel/stop join. It is not yet
+accepted or implemented. Initial skip/no-job readiness and restart recovery
+remain a following T4b obligation. Neither proposal closes runtime wiring,
+uploader, browser, full W3-W6 or W7. No merge, deployment, production source,
+provider/credential, SSH or Docker operation occurred.
+
 ### Native-stream final candidate gate (2026-09-06)
 
 Independent ten-path index/record/source review passed SPEC PASS / QUALITY

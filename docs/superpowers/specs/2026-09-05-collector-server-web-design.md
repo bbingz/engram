@@ -33,6 +33,51 @@ its independently rejected initial test draft before RED, not running SQL.
 
 ## Problem
 
+Final A5c checkpoint: independent seven-path staged integration/record gate
+passed SPEC PASS / QUALITY APPROVED with frozen hashes and pinned drift.
+Prior-head `843d0038` CI was refreshed successfully; normal commit/push and
+new-head CI remain next. T4a v3/v4 RED exposed staging-path fixture errors;
+canonical-root/import-only corrections are under v5, not GREEN. N4a/A5d
+remain TEST-DRAFT; runtime/browser/full W3-W6/W7 remain incomplete.
+
+Latest integration checkpoint: independently approved A5c source/tests are
+central at unchanged hashes, with 912 Service tests passing, one existing skip,
+zero failures and one reader QoS warning. Donor baseline scanner correction
+and its separate 901-pass result are recorded in CHANGELOG. Final staged gate
+and new-head CI remain pending. T4a is executing 45-test RED; N4a/A5d remain
+test drafts, not runtime composition or full W3-W6/W7 acceptance.
+
+Latest supersession: A5c focused GREEN v4 passed 38/38 after a byte-verified
+NUL fixture correction and a real snapshot transaction/close RED regression;
+full donor Service and independent source/spec gate remain pending. T4a second
+draft remains correction-only; N4a passed amended feasibility and is only a
+two-file TEST-DRAFT. No new central source or runtime readiness is claimed.
+
+Latest checkpoint: `843d0038` now has all three CI workflows successful and
+PR #446 remains Draft/open/unmerged. A5c corrected source is running GREEN v2
+after a compile-only type fix; T4a's initial test draft failed independent
+review and is being corrected before RED. N4a remains a proposal. No overall
+runtime, browser, deployment or full W3-W6 result is claimed.
+
+Checkpoint supersession: exact `843d0038` Tests `34024026924` and dependency
+review succeeded; CodeQL `34024026923` is still in progress. T4a's supplemental
+independent feasibility gate passed SPEC/QUALITY; the plan now freezes its
+two-file TEST-DRAFT contract. T4b and runtime wiring remain excluded. A5c source
+GREEN is ongoing against 37 frozen tests, not a completed producer.
+
+A5c RED follow-up: the corrected 37-test draft passed independent review and
+executed with five passed/32 failed, zero skips/runtime warnings and exit 65.
+The earlier missing-CAS-baseline compile failure is retained separately.
+Only producer source now enters GREEN; tests stay frozen. See CHANGELOG for
+exact hashes/logs; Service wiring, browser and full W3-W6/W7 remain incomplete.
+
+Push follow-up: N3-B2 is `843d0038`, normally committed/pushed with exit 0
+after prior-head CI success; staged drift v2 passed. Draft/open/unmerged PR
+#446 now has new dependency review `34024026926` successful, with Tests
+`34024026924` and CodeQL `34024026923` running. A5c remains test-draft work;
+T4a claim/replay/parsed-worker acceptance is proposed only, and skip/no-job
+readiness/restart recovery remains T4b. No full W3-W6/W7 completion is implied.
+
 Final N3-B2 gate follow-up: the independent ten-path index/record/source gate
 passed SPEC PASS / QUALITY APPROVED with unchanged six hashes; pinned staged
 drift v1 passed. Normal commit/push and new-head CI remain next. CHANGELOG
