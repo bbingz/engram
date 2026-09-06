@@ -7,6 +7,98 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### T3a CI test-helper type inference correction (2026-09-06)
+
+Live Tests run `34011185057` for exact pushed `f683ff71` failed before any
+Swift unit or UI smoke assertions executed. Both jobs used the logged
+`/Applications/Xcode_16.4.app` compiler and MacOSX15.5.sdk; all fourteen
+compiler errors (seven per job) concern the same optional-array inference
+in `CaptureIngestReadinessTests.parsed`, lines 555-574. UI screenshot
+comparison subsequently failed because the build produced no test manifest.
+Node, macOS scripts/fixtures and Remote/package jobs succeeded. CodeQL is
+still separate and in progress. Full failure evidence is retained at
+`/tmp/engram-f683-tests-ci-failed.log`, especially lines 4181-4258,
+4288-4291 and 8418-8495. This is a compile-only regression, not behavioral RED.
+
+Independent correction review returned SPEC PASS / QUALITY APPROVED at
+12:36 CST. The coordinator changed exactly one test-helper declaration to
+`let messages: [NormalizedMessage] = messages ?? [...]`. All 38 test bodies,
+default fixture messages, production files, workflow and toolchain settings
+remain unchanged. Test SHA changed from `9085d40c` to `266603b7`.
+The complete local Core regression is running at
+`/tmp/engram-t3a-ci-annotation-core-full.*`. This Mac has only Xcode-beta.app;
+its passing builds cannot prove Xcode 16.4 compatibility. The correction-head
+CI is mandatory and pending. The correction commit must contain only this
+test file plus the four existing records, excluding all five A5a/N3-A
+implementation/test paths and pre-existing SQLite sidecars.
+
+Before that correction, the local A5a/N3-A combined regressions completed:
+Remote 372/0, Service 875/one existing credential skip/0, App 1,175/0,
+MCP 270/0 and Collector 169/0; all tool producers exited 0. The App scheme
+also reran Core 1,681/one existing performance skip/0, not another distinct
+population. Logs/xcresults/exits are `/tmp/engram-a5a-central-{remote,service,app,mcp}-full.*`
+and `/tmp/engram-n3a-central-collector-full.*`. Service retains the existing
+reader QoS warning. Ten scripts passed 207/207 with no skips (project routing
+is unchanged); test typecheck, archive safety and all five invariants passed
+at `/tmp/engram-a5a-n3a-tranche-{scripts,typecheck-test,archive-safety,invariants}.log`.
+These five feature files remain locally integrated but uncommitted and are
+not evidence that the failed pushed SHA or future correction SHA passed CI.
+Their final integration/record gate remains separate. New T3b/N3-B work is
+paused at read-only proposals while this CI failure takes priority.
+
+The corrected complete local Core then passed 1,681 tests, one existing
+performance skip, zero failures, tool producer 97659 exit 0 at 12:39:10 CST.
+Raw log and xcresult agree at `/tmp/engram-t3a-ci-annotation-core-full.*`.
+A byte comparison against HEAD after removing only the explicit annotation
+proved all 38 test bodies and fixture values unchanged. No Core production
+or routing source differs from the failed head. The final five-path correction
+record gate and normal commit/push follow; the authoritative Xcode 16.4
+correction-head CI remains pending, and no such pass is inferred locally.
+
+### A5a metadata and N3-A event-ingress central integration (2026-09-06)
+
+T3a was committed and pushed as `f683ff71e7e555956b4854c21174090d72981df2`;
+the normal commit/push producers exited 0 (`/tmp/engram-t3a-tranche-{commit,push}.log`).
+Draft PR #446 remains open/unmerged. At 12:28 CST its dependency review
+`34011185046` passed; Tests `34011185057` and CodeQL `34011185083` still run.
+This supersedes the earlier ready-to-commit checkpoint, not its test evidence.
+
+A5a passed independent SPEC PASS / QUALITY APPROVED at 12:18 CST. Its
+complete donor Remote suite was already harvested at 12:14:52: 372/372,
+zero failures/skips, tool producer 53830 exit 0; the reviewer independently
+confirmed that correction at 12:27. See `/tmp/engram-a5a-metadata-red.DxXICo/remote372-green.*`.
+The coordinator integrated exactly Models `3a7edfd6`, Client `570968ce`,
+and WebReadClientTests `b5a5bed3`; the full post-integration central Remote
+suite then passed 372/372, zero failures/skips, tool producer 4470 exit 0.
+Raw log and xcresult agree at `/tmp/engram-a5a-central-remote-full.*`.
+Shared Service source inclusion requires further Service/App/MCP regression;
+Service is running and the remaining combined gates are pending. The three
+existing paths require no project.yml or generated project edits.
+
+N3-A also passed independent SPEC PASS / QUALITY APPROVED at 12:27 CST.
+The first RED stopped at missing test-only `try` syntax; the second included
+a failed NFC/NFD positive-control fixture because URL.path normalized its
+spelling. Only those fixture corrections were authorized. Corrected RED v3
+passed all old 156 cases and failed only the new 13; GREEN v1 then passed
+169/169, zero failures/skips, tool producer 5005 exit 0. Full raw logs,
+xcresults and producer exits are `/tmp/engram-w3-posix-red.1chyCC/collector169-n3a-event-{red,red-v2,red-v3,green-v1}.*`.
+The coordinator read the implementation and tests, then integrated exactly
+Owner `b3a0acc0` and tests `80705fb6`. The ordinary entry fences exact enrolled
+configuration, current-owner activation and physical root identity. All four
+raw-input budgets include duplicate paths and all expected/next checkpoint
+UTF-8 segments. Oversize/gap handling persists only reconciliation; it never
+accepts a path prefix or advances the checkpoint. The borrowed cancellation
+check brackets Store's pre-commit hook so cancellation rolls back atomically.
+The central complete Collector gate remains pending; no routing change is needed.
+
+The five source/test files are the only implementation candidate. Four existing
+records carry the checkpoint; pre-existing SQLite sidecars remain excluded.
+T3b FTS consumer and N3-B native events are read-only design preparation, not
+implemented runtime wiring. Service metadata producers, HTTP read routes/static
+reader, uploader, source coverage, packages and W6 remain incomplete. No
+provider/credential access, production helper launch, Docker, deployment,
+merge/release or W7 action is authorized or claimed by this checkpoint.
+
 ### T3a complete central regression gates (2026-09-06)
 
 The coordinator independently completed the four affected full targets with

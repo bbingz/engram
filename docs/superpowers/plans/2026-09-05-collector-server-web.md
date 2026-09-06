@@ -228,6 +228,33 @@ donor Remote passed 372/372 and awaits independent implementation review.
 N3-A corrected full RED passed all old 156 and failed only the 13 new cases;
 prior compile/Unicode fixture failures are retained. Only its Owner is
 authorized GREEN; tests and other source/routing remain frozen.
+T3a is now pushed as `f683ff71e7e555956b4854c21174090d72981df2` in the
+same draft/open/unmerged PR. At 12:28 CST dependency review `34011185046`
+passed; Tests `34011185057` and CodeQL `34011185083` still run. A5a and
+N3-A passed independent implementation gates, then exact five-file central
+integration without routing changes. A5a complete donor and central Remote
+both passed 372/372 with zero failures/skips and actual producer exits 0.
+N3-A donor GREEN passed all 169 after corrected RED v3 failed only the new
+13 and preserved old 156. Central Service is running; App/MCP/Collector and
+combined record/integration gates remain pending. T3b FTS consumer and N3-B
+native events are read-only proposals, not implemented runtime or W6 proof.
+CI priority checkpoint: exact `f683ff71` Tests `34011185057` failed Swift
+unit/UI smoke compilation on Xcode 16.4 in the same readiness fixture helper;
+no assertions ran. Node, scripts/fixtures and Remote/package passed. The
+independently approved correction adds only an explicit nonoptional array
+type to that helper; all 38 bodies/default values and production/workflow
+files stay unchanged. Complete corrected local Core and correction-head CI
+are pending; local Xcode-beta is not Xcode 16.4 evidence. The correction
+commit excludes the five A5a/N3-A files. Those local combined targets now
+pass Remote 372, Service 875 (one skip), App 1,175, MCP 270 and Collector
+169, zero failures and producer exits 0; App also reran Core 1,681 (one
+skip). Scripts are 207/207, typecheck/safety/invariants pass. Their own
+integration gate/commit/CI remain separate; T3b/N3-B proposals pause for CI.
+The corrected complete local Core then passed 1,681/one existing skip/zero
+failures, producer 97659 exit 0 at 12:39:10 CST. Byte comparison proves
+all 38 test bodies/default values unchanged; only the array annotation
+differs. Final five-path correction review/commit/push and new Xcode 16.4
+CI remain pending. A5a/N3-A source stays excluded from that correction.
 The owner authorized committing/pushing W1, running CI, then autonomous staged
 implementation/review/CI through W6 on 2026-09-05. Production W7, credentials,
 network changes, and merge/release remain separate authority boundaries.

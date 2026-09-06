@@ -512,7 +512,7 @@ final class CaptureIngestReadinessTests: XCTestCase {
 
     private func parsed(nativeID: String = "native-session", messages: [NormalizedMessage]? = nil,
                         agentRole: String? = nil) throws -> Fixture {
-        let messages = messages ?? [
+        let messages: [NormalizedMessage] = messages ?? [
             .init(role: .system, content: "system-only-needle", timestamp: timestamp),
             .init(role: .user, content: "  needleunique user text  ", timestamp: timestamp),
             .init(role: .assistant, content: "Implemented the requested stable reader and verified the complete result.", timestamp: timestamp,

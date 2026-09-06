@@ -4,6 +4,9 @@
 
 ### 2026-09-06
 
+- [验证] 单行夹具注解修正后完整 Core 1,681 项／1 既有 skip／零失败，38 测试体与夹具字节未变；准备仅修正＋四记录的独立整合门及提交，Xcode 16.4 新 head CI 仍待验，A5/N3 五文件继续排除，详见 `CHANGELOG.md`。
+- [修复] `f683ff71` 的 Swift unit/UI smoke 同在 Xcode 16.4 编译夹具时失败；独立双门批准仅补 `messages` 显式数组类型，38 测试体与生产代码不动，修后完整 Core/新 head CI 待验。A5/N3 本地完整组合门已过，但五文件明确排除本次 CI 修正提交，详见 `CHANGELOG.md`。
+- [验证] T3a 已推送 `f683ff71`，依赖 CI 通过、Tests/CodeQL 待验；A5a 与 N3-A 独立双门后按五文件哈希整合，中央 Remote 372/372 零失败/跳过，Service 开跑，其他组合门仍待验。FSEvents/FTS consumer 仅方案准备，完整 W3–W6 未完成，详见 `CHANGELOG.md`。
 - [验证] T3a 八路径暂存哈希与工程漂移通过，旧 head `4216479b` 三项 CI 全过，准备授权提交；Web 完整 Remote 372/372 待独立实现门，N3 修夹具后旧 156 全过／新 13 真实 RED，现仅 Owner 允许 GREEN，详见 `CHANGELOG.md`。
 - [验证] T3a 八路径中央整合／记录独立双门通过，开始暂存固定版工程漂移门；旧 head CodeQL 与新 head CI 仍待验，未合并或部署，详见 `CHANGELOG.md`。
 - [验证] Web A5a 真实 RED 49 项／27 失败用例后，测试冻结下 DTO/client 首次 GREEN 49/49；完整 Remote 与独立实现门待验，仍 donor-only。N3 草案双门通过，仅授权可执行 RED，详见 `CHANGELOG.md`。
