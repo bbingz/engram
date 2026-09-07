@@ -2,7 +2,45 @@
 
 ## Changelog Memo
 
+### 2026-09-07
+
+- [验证] 显式三原生二进制的完整 Service 共 1148 项、4 跳过、零失败；CLI 与 rename/crash 实跑，固定版本暂存工程漂移通过，准备 57 路径源码提交。干净 revision 包、长性能及新 CI 仍未完成，详见 `CHANGELOG.md`。
+
+- [验证] 原生浏览器登录/退出竞态已过：新 cookie 被后续 DELETE 使用并在服务端撤销，退出后两种读取均 401；窄屏三消息已目视。57 路径源码集成门通过，全 Service 回归、干净 revision 包、长性能与新 CI 仍待验，详见 `CHANGELOG.md`。
+
+- [修复] 六维独立审查发现 Web 登录/退出 cookie 乱序，先 3 FAIL 再串行队列 16/16 并独立关闭；TLS 短探针区分回调缺失与端口假设，修正后 15/15、正确 pin 502/错误 pin 拒绝均实证。真实浏览器重验与 30 分钟性能仍待完成，详见 `CHANGELOG.md`。
+
+- [修复] 模板父目录 alias 已最小修复并独立通过，168 项全过；显式原生全脚本 598 项通过/2 既有跳过，lint/typecheck/build/knip/安全与不变量通过。TLS-only 复现和 W6 六维审查继续，旧 HEAD CI 不代表当前候选通过，详见 `CHANGELOG.md`。
+
+- [验证] 三角色原生安装计划与 Collector/Service wrapper dry-run 通过且未写目标；模板 164 项通过后独立发现父目录 alias 漏检，新增 4 项已 RED。首轮长测在 TLS 证书验证处失败、稳态样本为 0，已汇合自有进程并保留证据；33 项恢复/认证回归已过，详见 `CHANGELOG.md`。
+
+- [验证] 安装 dry-run/CI 合同合计 53 项通过，Remote 原生计划未写目标；新恢复两项 fixture 失败已定位修正待复跑，长测认证 TTL 缺口已先 RED，未改产品 TTL。角色模板与实际性能仍待验，详见 `CHANGELOG.md`。
+
+- [验证] 三角色原生诊断包独立 verify-only 与安全加载探针通过，包快照不变、未启动服务；17 来源退休清单已补，真实主机全为未验证。零 revision 测试包不是部署制品，启动模板/故障/性能/新 CI 仍待验，详见 `CHANGELOG.md`。
+
+- [修复] 真实浏览器发现多词查询空格变加号，单行客户端修正后 12/12 及原生 HTTPS 两项整链通过；三角色清单漏验分别 RED→Service 68、Collector/Remote 73 全过。性能统计 13 项已过但实测/故障/原生包/新 CI 未完成，详见 `CHANGELOG.md`。
+
+- [验证] Collector/Service/Remote Release 构建均退出 0；Core 1737 项（1 既有跳过）与 App 1175 项零失败。Service 打包 59 项虽全过，独立审查仍发现嵌套清单漏验；浏览器正在执行，原生包/性能/新 CI 未过门，详见 `CHANGELOG.md`。
+
+- [验证] 真实 Collector→双 Remote→HQ Service→Web IPC 两代链已过，保留字节/消息前缀与 normal 分层；Service/CLI 29 项、MCP 270 项、TLS helper 31 项通过。两次前序失败为 fixture 缺字段/单消息 skip；完整 browser、故障/性能/原生包及 CI 仍待验，详见 `CHANGELOG.md`。
+
+- [验证] Service 显式 HOME/凭据文件入口完成 RED→11/11 GREEN，生产增量独立批准；全 Service 1124 项（1 既有跳过）零失败，原生 Service 构建通过。真实二进制启动/整链与 TLS 仍待验，详见 `CHANGELOG.md`。
+
+- [验证] 原生CLI生命周期/双代双ACK已过，Worker磁盘状态34/34、Runtime透传18/18、CLI状态JSON15/15独立批准；包30项及提取后Collector282项通过，Service安全入口与真实整链仍在TDD，详见 `CHANGELOG.md`。
+
+- [验证] Collector全套282/282、后台循环16/16、Service全套1093项（1既有跳过）及CLI参数/OFF 41项通过；真实CLI正向与打包剩余绕过仍在TDD，磁盘状态/完整W3–W6未完成，详见 `CHANGELOG.md`。
+
+- [验证] Service Runner启动异常修复已独立批准，13/13通过；Collector冷WAL与双ACK重启13/13、打包真实布局21/21通过，后台错误恢复、真实CLI/包及完整W3–W6仍待验，详见 `CHANGELOG.md`。
+
 ### 2026-09-06
+
+- [验证] publication31/31、CAS29/29、catalog关闭2/2及真实Service Runner链11/11已过；独立审查仍阻断启动异常清理，Collector冷WAL启动6/12失败，打包真实GRDB布局待修，详见 `CHANGELOG.md`。
+
+- [验证] 消费器23/23、FD采集15/15、Service运行时真实handler链10/10通过；Collector原28项过、新预算与父目录丢失复现/打包symlink门待修，Runner与完整W3–W6仍未完成，详见 `CHANGELOG.md`。
+
+- [修复] 中央消费器跨轮恢复已22/22 GREEN；独立审阅另发现 parser revision 字节比较围栏缺口，追加单项复现中，尚未最终批准，详见 `CHANGELOG.md`。
+
+- [验证] `92c7e3cf` 三项 CI 已过；中央消费器原19项通过、新3项跨轮恢复真实RED待修，Web脚本9/9、长文合成链退出0；迟到200浏览器竞态与完整W3–W6仍待验，详见 `CHANGELOG.md`。
 
 - [新增] 合成采集→真实归档 ACK→中央 replay/FTS→HTTP/IPC→Web 正文链已接通；中央 Service 1009过/1既有跳过、Collector279/279、Remote398/398。仍非完整 W3–W6 二进制验收，详见 `CHANGELOG.md`。
 - [排查] 首次全Service命令未隔离 Foundation home，已停止；真实源是否受影响未验证。修正后先验真实XCTest home再全量通过，未做生产补救或扩大扫描，详见 `CHANGELOG.md`。

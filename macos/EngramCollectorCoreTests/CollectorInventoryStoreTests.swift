@@ -221,7 +221,12 @@ final class CollectorInventoryStoreTests: XCTestCase {
         // Reconstruct the frozen v1 shape before opening the migration owner.
         try database.write { db in
             try db.execute(sql: """
+                DROP TABLE IF EXISTS collector_publication_replicas;
+                DROP TABLE IF EXISTS collector_publications;
+                DROP TABLE IF EXISTS collector_capture_reservations;
+                DROP TABLE IF EXISTS collector_streams;
                 DROP TABLE IF EXISTS collector_root_bindings;
+                DELETE FROM collector_metadata WHERE key = 'publication_schema_version';
                 UPDATE collector_metadata SET value = '1' WHERE key = 'schema_version';
                 CREATE TRIGGER n1_no_locator_update BEFORE UPDATE ON collector_locators
                 BEGIN SELECT RAISE(ABORT, 'migration rewrote locators'); END;
@@ -812,7 +817,8 @@ final class CollectorInventoryStoreTests: XCTestCase {
         XCTAssertEqual(try reopened.rootState(rootID: fixture.configuration.rootID)?.configuration, fixture.configuration)
         let database = try fixture.openDatabase()
         let tables = try database.read { try String.fetchAll($0, sql: "SELECT name FROM sqlite_master WHERE type = 'table'") }
-        XCTAssertEqual(Set(tables), ["collector_metadata", "collector_roots", "collector_locators", "collector_frontier", "collector_root_bindings"])
+        XCTAssertEqual(Set(tables), ["collector_metadata", "collector_roots", "collector_locators", "collector_frontier", "collector_root_bindings",
+            "collector_streams", "collector_capture_reservations", "collector_publications", "collector_publication_replicas"])
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent("index.sqlite").path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent("archive.sqlite").path))
     }

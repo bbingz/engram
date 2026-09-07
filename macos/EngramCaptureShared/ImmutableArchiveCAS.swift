@@ -34,6 +34,7 @@ struct ImmutableArchiveCASTestHooks: Sendable {
     let beforeObjectUnlink: (@Sendable (URL) throws -> Void)?
     let beforeBoundedReadAllocation: (@Sendable (URL) throws -> Void)?
     let afterBoundedReadChunk: (@Sendable (URL, Int) throws -> Void)?
+    let afterVolumeStat: (@Sendable (_ descriptor: Int32, _ measuredBytes: Int64) throws -> Int64)?
 
     init(
         afterExistingFileVerified: (@Sendable (URL) throws -> Void)? = nil,
@@ -41,7 +42,8 @@ struct ImmutableArchiveCASTestHooks: Sendable {
         afterFinalLinkPublished: (@Sendable (URL) throws -> Void)? = nil,
         beforeObjectUnlink: (@Sendable (URL) throws -> Void)? = nil,
         beforeBoundedReadAllocation: (@Sendable (URL) throws -> Void)? = nil,
-        afterBoundedReadChunk: (@Sendable (URL, Int) throws -> Void)? = nil
+        afterBoundedReadChunk: (@Sendable (URL, Int) throws -> Void)? = nil,
+        afterVolumeStat: (@Sendable (_ descriptor: Int32, _ measuredBytes: Int64) throws -> Int64)? = nil
     ) {
         self.afterExistingFileVerified = afterExistingFileVerified
         self.afterDirectoryFsync = afterDirectoryFsync
@@ -49,6 +51,7 @@ struct ImmutableArchiveCASTestHooks: Sendable {
         self.beforeObjectUnlink = beforeObjectUnlink
         self.beforeBoundedReadAllocation = beforeBoundedReadAllocation
         self.afterBoundedReadChunk = afterBoundedReadChunk
+        self.afterVolumeStat = afterVolumeStat
     }
 }
 
@@ -123,6 +126,54 @@ public struct ImmutableArchiveCAS: Sendable {
         let staged = try stageObject(raw: raw, expectedSHA256: expectedSHA256)
         defer { try? discardStaged(staged) }
         return try publishStaged(staged)
+    }
+
+    /// Read-only capacity of this CAS root's safely opened volume descriptor.
+    /// A caller-supplied path must never substitute for the private root.
+    public func availableVolumeBytes() throws -> Int64 {
+        try Task.checkCancellation()
+        let path = root.path
+        var initial = stat()
+        guard Darwin.lstat(path, &initial) == 0 else { throw Self.io("lstat-volume-root", code: errno) }
+        guard Self.isSafeVolumeRoot(initial) else { throw ImmutableArchiveCASError.unsafeExistingPath(path) }
+        let descriptor = Darwin.open(path, O_RDONLY | O_DIRECTORY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            if errno == ELOOP || errno == ENOTDIR { throw ImmutableArchiveCASError.unsafeExistingPath(path) }
+            throw Self.io("open-volume-root", code: errno)
+        }
+        defer { _ = Darwin.close(descriptor) }
+        var opened = stat()
+        guard Darwin.fstat(descriptor, &opened) == 0 else { throw Self.io("fstat-volume-root", code: errno) }
+        guard Self.isSafeVolumeRoot(opened), opened.st_dev == initial.st_dev, opened.st_ino == initial.st_ino else {
+            throw ImmutableArchiveCASError.unsafeExistingPath(path)
+        }
+        var volume = statfs()
+        guard Darwin.fstatfs(descriptor, &volume) == 0 else { throw Self.io("fstatfs-volume-root", code: errno) }
+        guard let blocks = Int64(exactly: volume.f_bavail), let blockSize = Int64(exactly: volume.f_bsize), blockSize > 0 else {
+            throw Self.io("volume-capacity", code: EOVERFLOW)
+        }
+        let capacity = blocks.multipliedReportingOverflow(by: blockSize)
+        guard !capacity.overflow, capacity.partialValue >= 0 else { throw Self.io("volume-capacity", code: EOVERFLOW) }
+        // Tests may simulate pressure only after measuring the real safe root
+        // FD. They cannot bypass final identity, mode or cancellation checks.
+        let available = try testHooks.afterVolumeStat?(descriptor, capacity.partialValue) ?? capacity.partialValue
+        try Task.checkCancellation()
+        var finalDescriptor = stat()
+        var finalPath = stat()
+        guard Darwin.fstat(descriptor, &finalDescriptor) == 0 else { throw Self.io("fstat-volume-root-final", code: errno) }
+        guard Darwin.lstat(path, &finalPath) == 0 else { throw Self.io("lstat-volume-root-final", code: errno) }
+        guard Self.isSafeVolumeRoot(finalDescriptor), Self.isSafeVolumeRoot(finalPath),
+              finalDescriptor.st_dev == opened.st_dev, finalDescriptor.st_ino == opened.st_ino,
+              finalPath.st_dev == opened.st_dev, finalPath.st_ino == opened.st_ino else {
+            throw ImmutableArchiveCASError.unsafeExistingPath(path)
+        }
+        guard available >= 0 else { throw Self.io("volume-capacity", code: EINVAL) }
+        try Task.checkCancellation()
+        return available
+    }
+
+    private static func isSafeVolumeRoot(_ info: stat) -> Bool {
+        (info.st_mode & S_IFMT) == S_IFDIR && info.st_uid == geteuid() && (info.st_mode & 0o7777) == 0o700
     }
 
     func stageObject(raw: Data, expectedSHA256: String) throws -> StagedContent {

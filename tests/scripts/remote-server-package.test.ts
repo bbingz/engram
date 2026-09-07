@@ -552,3 +552,119 @@ describe('remote server package CI and operations documentation', () => {
     expect(archiveRunbook).toMatch(/FileVault[\s\S]{0,100}manual unlock/i);
   });
 });
+
+const remoteRevision = 'a'.repeat(40);
+
+function writeRemoteSha256Sums(bundle: string, files: string[]): void {
+  const sorted = [...files].sort();
+  const sums = sorted
+    .map((relative) => {
+      const digest = spawnSync('/usr/bin/shasum', ['-a', '256', relative], {
+        cwd: bundle,
+        encoding: 'utf8',
+      });
+      return digest.stdout.trim();
+    })
+    .join('\n');
+  writeFileSync(join(bundle, 'SHA256SUMS'), `${sums}\n`);
+  chmodSync(join(bundle, 'SHA256SUMS'), 0o600);
+}
+
+function writeSyntheticRemoteBundle(bundle: string): string[] {
+  mkdirSync(join(bundle, 'bin/swift-nio_NIOPosix.bundle'), { recursive: true });
+  mkdirSync(join(bundle, 'Frameworks'), { recursive: true });
+  mkdirSync(join(bundle, 'templates'), { recursive: true });
+  writeFileSync(
+    join(bundle, 'bin/EngramRemoteServer'),
+    'synthetic-remote-server\n',
+  );
+  chmodSync(join(bundle, 'bin/EngramRemoteServer'), 0o700);
+  writeFileSync(
+    join(bundle, 'Frameworks/libswiftCompatibilitySpan.dylib'),
+    'synthetic-span-dylib\n',
+  );
+  writeFileSync(
+    join(bundle, 'templates/run-engram-remote.zsh.template'),
+    wrapperTemplate.replace(
+      '__ENGRAM_REMOTE_SOURCE_REVISION__',
+      remoteRevision,
+    ),
+  );
+  chmodSync(join(bundle, 'templates/run-engram-remote.zsh.template'), 0o700);
+  writeFileSync(
+    join(bundle, 'templates/com.engram.remote-server.plist.template'),
+    launchAgentTemplate,
+  );
+  chmodSync(
+    join(bundle, 'templates/com.engram.remote-server.plist.template'),
+    0o600,
+  );
+  writeFileSync(
+    join(bundle, 'BUILD-METADATA.json'),
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        product: 'EngramRemoteServer',
+        configuration: 'Release',
+        architecture: 'arm64',
+        sourceRevision: remoteRevision,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  chmodSync(join(bundle, 'BUILD-METADATA.json'), 0o600);
+  const files = [
+    'BUILD-METADATA.json',
+    'bin/EngramRemoteServer',
+    'Frameworks/libswiftCompatibilitySpan.dylib',
+    'templates/com.engram.remote-server.plist.template',
+    'templates/run-engram-remote.zsh.template',
+  ];
+  writeRemoteSha256Sums(bundle, files);
+  return files;
+}
+
+describe('remote server package nested SHA256SUMS exact-set', () => {
+  it('rejects an unlisted nested SHA256SUMS at exact-set before native inspection', () => {
+    const root = makeTempRoot();
+    const bundle = join(root, 'bundle');
+    writeSyntheticRemoteBundle(bundle);
+    mkdirSync(join(bundle, 'notes'), { recursive: true });
+    writeFileSync(join(bundle, 'notes/SHA256SUMS'), 'nested-unlisted\n');
+    const beforeSums = readFileSync(join(bundle, 'SHA256SUMS'), 'utf8');
+
+    const result = runPackage(['--verify-only', bundle]);
+
+    expect(result.status).not.toBe(0);
+    expect(result.output).toMatch(
+      /SHA256SUMS does not exactly cover|extra-unlisted|omitted|extra files|notes\/SHA256SUMS/,
+    );
+    expect(result.output).not.toMatch(/lipo|codesign|Mach-O/i);
+    expect(readFileSync(join(bundle, 'SHA256SUMS'), 'utf8')).toBe(beforeSums);
+    expect(readFileSync(join(bundle, 'notes/SHA256SUMS'), 'utf8')).toBe(
+      'nested-unlisted\n',
+    );
+  });
+
+  it('lets a listed nested SHA256SUMS pass exact-set and reach the synthetic native gate', () => {
+    const root = makeTempRoot();
+    const bundle = join(root, 'bundle');
+    const files = writeSyntheticRemoteBundle(bundle);
+    mkdirSync(join(bundle, 'notes'), { recursive: true });
+    writeFileSync(join(bundle, 'notes/SHA256SUMS'), 'nested-listed\n');
+    writeRemoteSha256Sums(bundle, [...files, 'notes/SHA256SUMS']);
+    const beforeSums = readFileSync(join(bundle, 'SHA256SUMS'), 'utf8');
+
+    const result = runPackage(['--verify-only', bundle]);
+
+    expect(result.status).not.toBe(0);
+    expect(result.output).not.toMatch(
+      /SHA256SUMS does not exactly cover|omitted|extra files/,
+    );
+    // This suite had no prior synthetic native oracle; after exact-set the
+    // public verify-only path hits lipo/codesign on the text stand-in.
+    expect(result.output).toMatch(/lipo|codesign|Mach-O/i);
+    expect(readFileSync(join(bundle, 'SHA256SUMS'), 'utf8')).toBe(beforeSums);
+  });
+});

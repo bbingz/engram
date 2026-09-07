@@ -47,6 +47,7 @@ final class WebUIRoutesTests: XCTestCase {
         assertUnchangedCSP(css)
         let cssText = try await bodyText(css)
         XCTAssertFalse(containsInlineScript(cssText))
+        XCTAssertTrue(cssText.contains("overflow-wrap: anywhere"))
     }
 
     func testJavaScriptUsesTextContentAndExistingAPIsForLoginLogoutAndPaging() async throws {
@@ -66,7 +67,11 @@ final class WebUIRoutesTests: XCTestCase {
         XCTAssertFalse(js.contains(viewer))
         XCTAssertTrue(js.contains("sessionSnapshotId"))
         XCTAssertTrue(js.contains("sessionCursor"))
+        XCTAssertTrue(js.contains("sessionFilters"))
         XCTAssertTrue(js.contains("sessionQuery(more)"))
+        XCTAssertTrue(js.contains("Network unavailable"))
+        XCTAssertTrue(js.contains("messageRequest"))
+        XCTAssertTrue(js.contains("No sessions found"))
         XCTAssertFalse(js.contains("lastReady"))
         XCTAssertTrue(js.contains("transcriptGeneration"))
         XCTAssertTrue(js.contains("TextEncoder"))
@@ -86,6 +91,7 @@ final class WebUIRoutesTests: XCTestCase {
         XCTAssertTrue(js.contains("if (more && sessionSnapshotId && sessionCursor)"))
         XCTAssertTrue(js.contains("params.set(\"snapshotId\", sessionSnapshotId)"))
         XCTAssertTrue(js.contains("params.set(\"cursor\", sessionCursor)"))
+        XCTAssertTrue(js.contains("new URLSearchParams(more ? sessionFilters : \"\")"))
         XCTAssertTrue(js.contains("clearSessionPaging"))
         XCTAssertTrue(js.contains("async function loadOverview()"))
         XCTAssertFalse(js.contains("let snapshotId"))
@@ -107,6 +113,7 @@ final class WebUIRoutesTests: XCTestCase {
         XCTAssertFalse(js.contains("setText(line, (fragment.role || \"\") + \" \" + (fragment.payloadFragment"))
         XCTAssertTrue(js.contains("messageCursor"))
         XCTAssertTrue(js.contains("loadMessages(requestEpoch, messageSessionId, messageGeneration, messageCursor)"))
+        XCTAssertTrue(js.contains("if (messageRequest && messageRequest.token === token"))
     }
 
     func testOpenDetailUsesEpochToDropStalePaints() async throws {

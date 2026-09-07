@@ -11,6 +11,36 @@ import XCTest
 // perform no filesystem access; integration tests use only their own temporary
 // Owner fixture and the same FAKE native API, never a real FSEvents stream.
 final class CollectorNativeEventStreamTests: XCTestCase {
+    func testCurrentEpochUsesNativeDatabaseUUIDAndClosesWithoutCreatingStream() throws {
+        let api = NativeDraftAPI()
+        XCTAssertEqual(try CollectorNativeEventStream.currentEpoch(binding: NativeDraft.binding, api: api), NativeDraft.epoch)
+        XCTAssertEqual(api.calls, ["open", "observe", "close"])
+    }
+
+    func testCurrentEpochRejectsUnknownNoncanonicalAndMismatchedRootObservation() {
+        for observation in [NativeDraft.observation(uuid: nil), NativeDraft.observation(uuid: NativeDraft.uuid.lowercased()),
+            NativeDraft.observation(descriptor: NativeDraft.otherIdentity), NativeDraft.observation(route: NativeDraft.otherIdentity),
+            NativeDraft.observation(device: 8), NativeDraft.observation(physical: "/outside/mount")] {
+            let api = NativeDraftAPI()
+            api.observations = [observation]
+            XCTAssertThrowsError(try CollectorNativeEventStream.currentEpoch(binding: NativeDraft.binding, api: api))
+            XCTAssertEqual(api.count("close"), 1)
+            XCTAssertEqual(api.count("create"), 0)
+        }
+    }
+
+    func testCurrentEpochObservationFailureClosesDescriptorExactlyOnce() {
+        for operation in ["open", "observe"] {
+            let api = NativeDraftAPI()
+            api.failure = operation
+            XCTAssertThrowsError(try CollectorNativeEventStream.currentEpoch(binding: NativeDraft.binding, api: api)) {
+                XCTAssertEqual($0 as? NativeDraftFailure, .injected(operation))
+            }
+            XCTAssertEqual(api.count("close"), operation == "open" ? 0 : 1)
+            XCTAssertEqual(api.count("create"), 0)
+        }
+    }
+
     // 01: Cold construction and never-started stop have no native/FS effects.
     func testConstructionAndNeverStartedStopAreColdAndIdempotent() throws {
         let rig = NativeDraftRig()

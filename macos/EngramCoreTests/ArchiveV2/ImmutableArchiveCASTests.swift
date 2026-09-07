@@ -526,6 +526,142 @@ final class ImmutableArchiveCASTests: XCTestCase {
         }
     }
 
+    func testVolumeAvailabilityMeasuresOwnedRootDescriptorWithoutMutation() throws {
+        let expectedRoot = try XCTUnwrap(root)
+        let recorder = ArchiveCASEventRecorder()
+        let cas = try ImmutableArchiveCAS(root: expectedRoot, testHooks: .init(afterVolumeStat: { descriptor, measured in
+            var opened = stat()
+            var path = stat()
+            var volume = statfs()
+            XCTAssertEqual(fstat(descriptor, &opened), 0)
+            XCTAssertEqual(lstat(expectedRoot.path, &path), 0)
+            XCTAssertEqual(fstatfs(descriptor, &volume), 0)
+            XCTAssertEqual(opened.st_dev, path.st_dev)
+            XCTAssertEqual(opened.st_ino, path.st_ino)
+            XCTAssertEqual(opened.st_uid, geteuid())
+            XCTAssertEqual(opened.st_mode & 0o170777, 0o040700)
+            XCTAssertGreaterThan(volume.f_bsize, 0)
+            XCTAssertGreaterThanOrEqual(measured, 0)
+            recorder.append("actual-root-fd")
+            return 12_345
+        }))
+        let before = try fileIdentity(expectedRoot.path)
+        let children = try FileManager.default.contentsOfDirectory(atPath: expectedRoot.path).sorted()
+        XCTAssertEqual(try cas.availableVolumeBytes(), 12_345)
+        XCTAssertEqual(recorder.events, ["actual-root-fd"])
+        XCTAssertEqual(try permissions(expectedRoot.path), 0o700)
+        let after = try fileIdentity(expectedRoot.path)
+        XCTAssertEqual(after.inode, before.inode)
+        XCTAssertEqual(after.mtimeSeconds, before.mtimeSeconds)
+        XCTAssertEqual(after.mtimeNanoseconds, before.mtimeNanoseconds)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: expectedRoot.path).sorted(), children)
+    }
+
+    func testVolumeAvailabilityDoesNotRecreateMissingRoot() throws {
+        let recorder = ArchiveCASEventRecorder()
+        let cas = try ImmutableArchiveCAS(root: root, testHooks: .init(afterVolumeStat: { _, measured in
+            recorder.append("unexpected-query")
+            return measured
+        }))
+        try FileManager.default.removeItem(at: root)
+        XCTAssertThrowsError(try cas.availableVolumeBytes()) { error in
+            guard let failure = error as? ImmutableArchiveCASError, case .io(_, let code) = failure else {
+                return XCTFail("missing root must be a filesystem failure, got \(error)")
+            }
+            XCTAssertEqual(code, ENOENT)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+        XCTAssertTrue(recorder.events.isEmpty)
+    }
+
+    func testVolumeAvailabilityRejectsUnsafeModeAndSymlinkBeforeQueryWithoutRepair() throws {
+        for useSymlink in [false, true] {
+            let casRoot = root.appendingPathComponent("volume-safety-\(useSymlink)")
+            let recorder = ArchiveCASEventRecorder()
+            let cas = try ImmutableArchiveCAS(root: casRoot, testHooks: .init(afterVolumeStat: { _, measured in
+                recorder.append("unexpected-query")
+                return measured
+            }))
+            if useSymlink {
+                let saved = root.appendingPathComponent("saved-safe-volume")
+                try FileManager.default.moveItem(at: casRoot, to: saved)
+                try FileManager.default.createSymbolicLink(at: casRoot, withDestinationURL: saved)
+            } else { XCTAssertEqual(chmod(casRoot.path, 0o755), 0) }
+            XCTAssertThrowsError(try cas.availableVolumeBytes()) { error in
+                XCTAssertEqual(error as? ImmutableArchiveCASError, .unsafeExistingPath(casRoot.path))
+            }
+            XCTAssertTrue(recorder.events.isEmpty)
+            if useSymlink {
+                XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: casRoot.path),
+                    root.appendingPathComponent("saved-safe-volume").path)
+            } else { XCTAssertEqual(try permissions(casRoot.path), 0o755) }
+        }
+    }
+
+    func testVolumeAvailabilityRejectsRootReplacementAfterActualMeasurement() throws {
+        let casRoot = root.appendingPathComponent("replace-after-volume-stat")
+        let saved = root.appendingPathComponent("saved-original-volume")
+        let recorder = ArchiveCASEventRecorder()
+        let cas = try ImmutableArchiveCAS(root: casRoot, testHooks: .init(afterVolumeStat: { descriptor, measured in
+            var opened = stat()
+            var path = stat()
+            XCTAssertEqual(fstat(descriptor, &opened), 0)
+            XCTAssertEqual(lstat(casRoot.path, &path), 0)
+            XCTAssertEqual(opened.st_ino, path.st_ino)
+            XCTAssertGreaterThanOrEqual(measured, 0)
+            recorder.append("actual-measurement-before-replacement")
+            try FileManager.default.moveItem(at: casRoot, to: saved)
+            try FileManager.default.createDirectory(at: casRoot, withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700])
+            return measured
+        }))
+        XCTAssertThrowsError(try cas.availableVolumeBytes()) { error in
+            XCTAssertEqual(error as? ImmutableArchiveCASError, .unsafeExistingPath(casRoot.path))
+        }
+        XCTAssertEqual(recorder.events, ["actual-measurement-before-replacement"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: saved.path))
+        XCTAssertEqual(try permissions(casRoot.path), 0o700)
+    }
+
+    func testVolumeAvailabilityRejectsNegativeInjectedCapacityAfterActualQuery() throws {
+        let recorder = ArchiveCASEventRecorder()
+        let cas = try ImmutableArchiveCAS(root: root, testHooks: .init(afterVolumeStat: { descriptor, measured in
+            var info = stat()
+            XCTAssertEqual(fstat(descriptor, &info), 0)
+            XCTAssertGreaterThanOrEqual(measured, 0)
+            recorder.append("actual-query")
+            return -1
+        }))
+        XCTAssertThrowsError(try cas.availableVolumeBytes()) { error in
+            guard let failure = error as? ImmutableArchiveCASError, case .io(_, let code) = failure else {
+                return XCTFail("invalid capacity must fail closed, got \(error)")
+            }
+            XCTAssertEqual(code, EINVAL)
+        }
+        XCTAssertEqual(recorder.events, ["actual-query"])
+    }
+
+    func testVolumeAvailabilityPreservesCancellationBeforeAndAfterActualMeasurement() async throws {
+        for alreadyCancelled in [false, true] {
+            let recorder = ArchiveCASEventRecorder()
+            let cas = try ImmutableArchiveCAS(root: root.appendingPathComponent("cancel-volume-\(alreadyCancelled)"),
+                testHooks: .init(afterVolumeStat: { descriptor, measured in
+                    var info = stat()
+                    XCTAssertEqual(fstat(descriptor, &info), 0)
+                    recorder.append("measured")
+                    withUnsafeCurrentTask { $0?.cancel() }
+                    return measured
+                }))
+            let cancelled = await Task.detached {
+                if alreadyCancelled { withUnsafeCurrentTask { $0?.cancel() } }
+                do { _ = try cas.availableVolumeBytes(); return false }
+                catch { return error is CancellationError }
+            }.value
+            XCTAssertTrue(cancelled)
+            XCTAssertEqual(recorder.events, alreadyCancelled ? [] : ["measured"])
+        }
+    }
+
     private enum CASReadKind: CaseIterable, Sendable { case object, manifest }
 
     private static func boundedRead(_ cas: ImmutableArchiveCAS, kind: CASReadKind, digest: String, budget: Int64) throws -> Data {

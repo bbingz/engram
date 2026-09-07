@@ -194,6 +194,24 @@ describe('CI workflow hardening', () => {
     expect(testWorkflow).toContain('"$RUNNER_TEMP/actionlint"');
   });
 
+  it('runs native role launch-template contracts in the existing macOS script lane', () => {
+    const job = parsedTestWorkflow.jobs?.['macos-vitest'];
+    const commands = (job?.steps ?? [])
+      .map((step) => step.run ?? '')
+      .join('\n');
+    for (const file of [
+      'collector-package',
+      'service-package',
+      'headless-install-plan',
+    ]) {
+      expect(commands).toContain(`tests/scripts/${file}.test.ts`);
+    }
+    expect(commands).not.toContain('--passWithNoTests');
+    expect(job?.steps?.some((step) => step['continue-on-error'] === true)).toBe(
+      false,
+    );
+  });
+
   // A PR based on a feature branch used to trigger only Dependency Review and
   // report all-green, so "no Swift test ran" was indistinguishable from "every
   // Swift test passed". Dropping the base filter here is what makes a stacked

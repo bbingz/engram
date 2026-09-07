@@ -1671,7 +1671,11 @@ final class CollectorInventoryOwnerTests: XCTestCase {
         XCTAssertEqual(try owner.acknowledge(claim, configuration: fixture.configuration, captureID: assertedCaptureID), .acknowledged)
         XCTAssertEqual(try fixture.inventoryText("SELECT last_capture_id FROM collector_locators"), assertedCaptureID)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.shadowRoot.path).sorted(), shadowNames)
-        XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND (name LIKE '%publication%' OR name LIKE '%capture%' OR name LIKE '%upload%')"), 0)
+        // Schema creation is independent of an event-only acknowledgement.
+        // No reservation, publication, or upload row may be created by it.
+        for table in ["collector_capture_reservations", "collector_publications", "collector_publication_replicas"] {
+            XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM \(table)"), 0)
+        }
         try owner.close()
         XCTAssertEqual(try fixture.snapshot(at: fixture.liveRoot), liveBefore)
         XCTAssertEqual(try fixture.snapshot(at: fixture.shadowCatalog), archiveBefore)

@@ -157,7 +157,7 @@ jobs:
         run: bash scripts/check-archive-v2-safety.sh
       # Pure-rg text gates (swift-conventions, product-boundary-scripts) already run on
       # ubuntu via `npm run test:coverage`; keep macos-vitest for macOS-only scripts.
-      - run: npm test -- tests/scripts/build-release-script.test.ts tests/scripts/remote-server-package.test.ts tests/scripts/swift-boundary-scripts.test.ts tests/scripts/archive-v2-safety-gate.test.ts tests/scripts/plist-gate.test.ts tests/scripts/invariants-ledger.test.ts tests/scripts/version-guard.test.ts tests/scripts/hq-live-hardening.test.ts
+      - run: npm test -- tests/scripts/build-release-script.test.ts tests/scripts/remote-server-package.test.ts tests/scripts/collector-package.test.ts tests/scripts/service-package.test.ts tests/scripts/headless-install-plan.test.ts tests/scripts/swift-boundary-scripts.test.ts tests/scripts/archive-v2-safety-gate.test.ts tests/scripts/plist-gate.test.ts tests/scripts/invariants-ledger.test.ts tests/scripts/version-guard.test.ts tests/scripts/hq-live-hardening.test.ts
       - name: Check test fixture schema and freshness
         run: npm run check:fixtures
       - name: Check MCP contract fixture freshness

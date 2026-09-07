@@ -78,11 +78,17 @@ targets:
       - path: EngramCollectorCore/CollectorInventoryOwner.swift
       - path: EngramCollectorCore/CollectorEventCoordinator.swift
       - path: EngramCollectorCore/CollectorNativeEventStream.swift
+      - path: EngramCollectorCore/CollectorPublicationWorker.swift
+      - path: EngramCollectorCore/CollectorRuntime.swift
+      - path: Shared/Security/SecureRegularFile.swift
+      - path: Shared/Security/ExplicitCredentialFile.swift
+      - path: Shared/EngramCore/RuntimeRoleSettings.swift
       - path: Shared/EngramCore/Adapters/SourceName.swift
       - path: Shared/EngramCore/Adapters/SourceMetadataProjection.swift
       - path: Shared/EngramCore/ArchiveV2/ArchiveHash.swift
       - path: Shared/EngramCore/ArchiveV2/ArchiveCanonicalJSON.swift
       - path: Shared/EngramCore/ArchiveV2/ArchiveModels.swift
+      - path: Shared/EngramCore/ArchiveV2/CollectorPublicationModels.swift
       - path: Shared/EngramCore/ArchiveV2/ArchiveSourceDescriptor.swift
       - path: Shared/EngramCore/Database/SQLiteBusyDefaults.swift
     dependencies:
@@ -97,6 +103,26 @@ targets:
       GENERATE_INFOPLIST_FILE: YES
       CODE_SIGNING_ALLOWED: NO
       CODE_SIGN_IDENTITY: "-"
+
+  EngramCollector:
+    type: tool
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramCollector/main.swift
+    dependencies:
+      - target: EngramCollectorCore
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.engram.collector
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: "-"
+      SKIP_INSTALL: YES
+      LD_RUNPATH_SEARCH_PATHS:
+        - "@executable_path"
+        - "@executable_path/PackageFrameworks"
+        - "@executable_path/../Frameworks"
 
   EngramCollectorCoreTests:
     type: bundle.unit-test
@@ -144,6 +170,7 @@ targets:
       - path: EngramService/IPC
       - path: Shared/Service
       - path: Shared/Security/SecureRegularFile.swift
+      - path: Shared/Security/ExplicitCredentialFile.swift
     dependencies:
       - target: EngramCoreWrite
       - package: GRDB
@@ -447,6 +474,12 @@ targets:
       MACOSX_DEPLOYMENT_TARGET: "14.0"
 
 schemes:
+  EngramCollector:
+    build:
+      targets:
+        EngramCollector: all
+    run:
+      config: Debug
   EngramCollectorCore:
     build:
       targets:

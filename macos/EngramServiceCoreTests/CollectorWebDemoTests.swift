@@ -235,10 +235,15 @@ final class CollectorWebDemoTests: XCTestCase {
     }
 
     private func transcript() throws -> Data {
+        let longTranscript = ProcessInfo.processInfo.environment["ENGRAM_DEMO_LONG_TRANSCRIPT"] == "1"
+        let assistantText = longTranscript
+            ? "constellation <img src=x onerror=alert(1)> " + String(repeating: "星🙂", count: 45_000)
+                + " " + String(repeating: "W", count: 600) + " end-of-transcript"
+            : "The constellation travels from exact capture through central indexing to this Web view."
         let common: [String: Any] = ["sessionId": "demo-session", "cwd": "/synthetic/constellation", "timestamp": "2026-09-06T00:00:00Z"]
         let records: [[String: Any]] = [
             common.merging(["type": "user", "message": ["content": "Explain the constellation capture demo."]]) { _, value in value },
-            common.merging(["type": "assistant", "message": ["model": "synthetic-model", "content": [["type": "text", "text": "The constellation travels from exact capture through central indexing to this Web view."]]]]) { _, value in value },
+            common.merging(["type": "assistant", "message": ["model": "synthetic-model", "content": [["type": "text", "text": assistantText]]]]) { _, value in value },
         ]
         var bytes = Data()
         for record in records { bytes.append(try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])); bytes.append(10) }

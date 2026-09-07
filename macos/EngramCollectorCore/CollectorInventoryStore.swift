@@ -36,12 +36,16 @@ final class CollectorInventoryStore {
                version != "1", version != "2" {
                 throw CollectorInventoryError.invalidState
             }
+            if let version = try String.fetchOne(db, sql: "SELECT value FROM collector_metadata WHERE key = 'publication_schema_version'"),
+               version != "1" { throw CollectorInventoryError.invalidState }
+            try Self.createPublicationSchema(db)
             for (key, value) in [("schema_version", "2"), ("machine_id", machineID), ("active_owner_run_id", ownerRunID)] {
                 try db.execute(
                     sql: "INSERT INTO collector_metadata(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                     arguments: [key, value]
                 )
             }
+            try db.execute(sql: "INSERT OR IGNORE INTO collector_metadata(key, value) VALUES ('publication_schema_version', '1')")
             try testHooks.beforeCommit?()
         }
     }
@@ -127,6 +131,259 @@ final class CollectorInventoryStore {
 
     func rootState(rootID: String) throws -> CollectorRootState? {
         try database.read { try Self.rootState($0, rootID: rootID) }
+    }
+
+    func reserveCapture(
+        _ claim: CollectorDirtyClaim, configuration: CollectorRootConfiguration,
+        generation: ArchiveSourceGeneration
+    ) throws -> CollectorCaptureReservation? {
+        try write { db in
+            try Task.checkCancellation()
+            try requirePublicationRoot(db, configuration)
+            guard claim.rootID.utf8.elementsEqual(configuration.rootID.utf8),
+                  claim.rootRevision == configuration.revision,
+                  Self.isSafeRelativePath(claim.relativePath),
+                  let locator = try currentClaimRow(db, claim) else { return nil }
+            let acknowledged: Int64 = locator["acknowledged_revision"]
+            guard claim.dirtyRevision > acknowledged else { return nil }
+            let generationBytes = try ArchiveCanonicalJSON.encode(generation)
+            guard generationBytes.count <= 2_048, generation.mode & 0o170000 == 0o100000 else {
+                throw CollectorPublicationWorkerError.invalidCapture
+            }
+            if let pending = try Row.fetchOne(db, sql: """
+                SELECT * FROM collector_capture_reservations WHERE root_id = ? AND root_revision = ?
+                """, arguments: [configuration.rootID, configuration.revision]) {
+                let reservation = try Self.reservation(pending)
+                let owner: String = pending["dirty_claim_owner_run_id"]
+                let claimGeneration: Int64 = pending["dirty_claim_generation"]
+                guard reservation.relativePath.utf8.elementsEqual(claim.relativePath.utf8),
+                      reservation.dirtyRevision == claim.dirtyRevision, reservation.generation == generation,
+                      owner.utf8.elementsEqual(claim.ownerRunID.utf8), claimGeneration == claim.claimGeneration else { return nil }
+                return reservation
+            }
+            try db.execute(sql: """
+                INSERT OR IGNORE INTO collector_streams(root_id, root_revision, source_instance_id, collector_epoch, last_sequence)
+                VALUES (?, ?, ?, ?, 0)
+                """, arguments: [configuration.rootID, configuration.revision, UUID().uuidString, UUID().uuidString])
+            guard let stream = try Row.fetchOne(db, sql: "SELECT * FROM collector_streams WHERE root_id = ? AND root_revision = ?",
+                arguments: [configuration.rootID, configuration.revision]) else { throw CollectorInventoryError.invalidState }
+            let previous: Int64 = stream["last_sequence"]
+            let (sequence, overflow) = previous.addingReportingOverflow(1)
+            guard previous >= 0, !overflow, sequence > 0 else { throw CollectorPublicationWorkerError.sequenceExhausted }
+            let sourceInstanceID: String = stream["source_instance_id"]
+            let collectorEpoch: String = stream["collector_epoch"]
+            guard UUID(uuidString: sourceInstanceID) != nil, UUID(uuidString: collectorEpoch) != nil else {
+                throw CollectorInventoryError.invalidState
+            }
+            let reservation = CollectorCaptureReservation(id: UUID().uuidString, rootID: configuration.rootID,
+                rootRevision: configuration.revision, relativePath: claim.relativePath, dirtyRevision: claim.dirtyRevision,
+                generation: generation, sourceInstanceID: sourceInstanceID, collectorEpoch: collectorEpoch, sequence: sequence)
+            try db.execute(sql: "UPDATE collector_streams SET last_sequence = ? WHERE root_id = ? AND root_revision = ?",
+                arguments: [sequence, configuration.rootID, configuration.revision])
+            try db.execute(sql: """
+                INSERT INTO collector_capture_reservations(id, root_id, root_revision, relative_path, dirty_revision,
+                    generation_bytes, source_instance_id, collector_epoch, sequence, dirty_claim_owner_run_id, dirty_claim_generation)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, arguments: [reservation.id, reservation.rootID, reservation.rootRevision, reservation.relativePath,
+                    reservation.dirtyRevision, generationBytes, sourceInstanceID, collectorEpoch, sequence, ownerRunID, claim.claimGeneration])
+            return reservation
+        }
+    }
+
+    func captureReservations(limit: Int) throws -> [CollectorCaptureReservation] {
+        try Self.validatePublicationLimit(limit)
+        return try database.read { db in
+            try requirePublicationOwner(db)
+            return try Row.fetchAll(db, sql: """
+                SELECT reservation.* FROM collector_roots root
+                JOIN collector_capture_reservations reservation
+                    ON reservation.root_id = root.root_id AND reservation.root_revision = root.root_revision
+                ORDER BY reservation.root_id, reservation.root_revision LIMIT ?
+                """, arguments: [limit]).map(Self.reservation)
+        }
+    }
+
+    func finishCapture(
+        _ reservation: CollectorCaptureReservation, capture: ArchiveCapture
+    ) throws -> CollectorPublicationIntent? {
+        try write { db in
+            try Task.checkCancellation()
+            guard let pending = try reservationRow(db, reservation),
+                  let root = try Self.rootState(db, rootID: reservation.rootID),
+                  root.configuration.revision == reservation.rootRevision else { return nil }
+            try requirePublicationRoot(db, root.configuration)
+            try validatePublicationCapture(capture, reservation: reservation, configuration: root.configuration)
+            guard let locator = try Self.locatorRow(db, root.configuration, reservation.relativePath) else {
+                throw CollectorInventoryError.invalidState
+            }
+            let dirtyRevision: Int64 = locator["dirty_revision"]
+            guard dirtyRevision >= reservation.dirtyRevision else { throw CollectorInventoryError.invalidState }
+            let intent: CollectorPublicationIntent
+            if let existing = try Row.fetchOne(db, sql: """
+                SELECT * FROM collector_publications WHERE root_id = ? AND root_revision = ? AND capture_id = ?
+                """, arguments: [reservation.rootID, reservation.rootRevision, capture.captureID]) {
+                intent = try publicationIntent(existing)
+                guard intent.relativePath.utf8.elementsEqual(reservation.relativePath.utf8),
+                      intent.publication.manifestSHA256 == capture.unboundManifestSHA256,
+                      try Int.fetchOne(db, sql: "SELECT count(*) FROM collector_publication_replicas WHERE publication_digest = ?",
+                        arguments: [intent.digest]) == 2 else { throw CollectorInventoryError.invalidState }
+            } else {
+                let publication = try CollectorPublicationEnvelope(machineID: machineID,
+                    sourceInstanceID: reservation.sourceInstanceID, collectorEpoch: reservation.collectorEpoch,
+                    sequence: reservation.sequence, manifestSHA256: capture.unboundManifestSHA256)
+                let bytes = try ArchiveCanonicalJSON.encode(publication)
+                guard bytes.count <= CollectorPublicationProtocolLimits.maxPublicationBytes else {
+                    throw CollectorPublicationWorkerError.invalidCapture
+                }
+                let digest = ArchiveV2Hash.sha256(bytes)
+                intent = CollectorPublicationIntent(captureID: capture.captureID, rootID: reservation.rootID,
+                    rootRevision: reservation.rootRevision, relativePath: reservation.relativePath,
+                    publication: publication, canonicalBytes: bytes, digest: digest)
+                try db.execute(sql: """
+                    INSERT INTO collector_publications(publication_digest, capture_id, root_id, root_revision, relative_path,
+                        source_instance_id, collector_epoch, sequence, manifest_sha256, canonical_bytes)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, arguments: [digest, capture.captureID, reservation.rootID, reservation.rootRevision,
+                        reservation.relativePath, publication.sourceInstanceID, publication.collectorEpoch,
+                        publication.sequence, publication.manifestSHA256, bytes])
+                for replicaID in ["hq", "m1"] {
+                    try db.execute(sql: """
+                        INSERT INTO collector_publication_replicas(publication_digest, replica_id, state, claim_generation, attempts)
+                        VALUES (?, ?, 'pending', 0, 0)
+                        """, arguments: [digest, replicaID])
+                }
+            }
+            // Completing an older capture never erases a newer dirty event or
+            // another claim acquired while this reservation survived a restart.
+            try db.execute(sql: """
+                UPDATE collector_locators SET acknowledged_revision = MAX(acknowledged_revision, ?),
+                    last_capture_id = CASE WHEN acknowledged_revision <= ? THEN ? ELSE last_capture_id END
+                WHERE root_id = ? AND root_revision = ? AND relative_path = ?
+                """, arguments: [reservation.dirtyRevision, reservation.dirtyRevision, capture.captureID,
+                    reservation.rootID, reservation.rootRevision, reservation.relativePath])
+            try releaseReservedDirtyClaim(db, reservation, stored: pending)
+            try db.execute(sql: "DELETE FROM collector_capture_reservations WHERE id = ?", arguments: [reservation.id])
+            return intent
+        }
+    }
+
+    func publicationIntents(limit: Int) throws -> [CollectorPublicationIntent] {
+        try Self.validatePublicationLimit(limit)
+        return try database.read { db in
+            try requirePublicationOwner(db)
+            return try Row.fetchAll(db, sql: """
+                SELECT * FROM collector_publications ORDER BY root_id, root_revision, sequence LIMIT ?
+                """, arguments: [limit]).map(publicationIntent)
+        }
+    }
+
+    func claimPublications(replicaID: String, limit: Int, now: Int64) throws -> [CollectorPublicationClaim] {
+        try Self.validatePublicationLimit(limit)
+        guard ["hq", "m1"].contains(replicaID), now >= 0 else { throw CollectorPublicationWorkerError.invalidBudget }
+        return try write { db in
+            try Task.checkCancellation()
+            let staleBefore = now >= 600 ? now - 600 : -1
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT p.*, r.claim_generation, r.attempts
+                FROM collector_publication_replicas r
+                JOIN collector_publications p ON p.publication_digest = r.publication_digest
+                JOIN collector_roots roots ON roots.root_id = p.root_id AND roots.root_revision = p.root_revision
+                WHERE r.replica_id = ? AND (
+                    (r.state = 'pending' AND (r.retry_not_before IS NULL OR r.retry_not_before <= ?)) OR
+                    (r.state = 'inflight' AND (r.claim_owner_run_id != ? OR r.claimed_at <= ?)))
+                ORDER BY p.root_id, p.root_revision, p.sequence LIMIT ?
+                """, arguments: [replicaID, now, ownerRunID, staleBefore, limit])
+            return try rows.map { row in
+                let intent = try publicationIntent(row)
+                let generation = try Self.increment(row["claim_generation"])
+                let attempts: Int64 = row["attempts"]
+                try db.execute(sql: """
+                    UPDATE collector_publication_replicas SET state = 'inflight', claim_owner_run_id = ?,
+                        claim_generation = ?, claimed_at = ?, retry_not_before = NULL
+                    WHERE publication_digest = ? AND replica_id = ?
+                    """, arguments: [ownerRunID, generation, now, intent.digest, replicaID])
+                return CollectorPublicationClaim(intent: intent, replicaID: replicaID, ownerRunID: ownerRunID,
+                    claimGeneration: generation, attempts: attempts)
+            }
+        }
+    }
+
+    func recordPublicationACK(_ claim: CollectorPublicationClaim, canonicalBytes: Data) throws -> Bool {
+        try write { db in
+            try Task.checkCancellation()
+            guard try currentPublicationClaimRow(db, claim) != nil else { return false }
+            guard !canonicalBytes.isEmpty, canonicalBytes.count <= CollectorPublicationProtocolLimits.maxAcceptanceRecordBytes else {
+                throw CollectorPublicationWorkerError.invalidACK
+            }
+            do {
+                let ack = try ArchiveCanonicalJSON.decode(CollectorPublicationACK.self, from: canonicalBytes)
+                try ack.validate(against: claim.intent.publication, expectedServerID: claim.replicaID)
+            } catch { throw CollectorPublicationWorkerError.invalidACK }
+            try db.execute(sql: """
+                UPDATE collector_publication_replicas SET state = 'acknowledged', ack_bytes = ?,
+                    claim_owner_run_id = NULL, claimed_at = NULL, retry_not_before = NULL, last_error = NULL
+                WHERE publication_digest = ? AND replica_id = ?
+                """, arguments: [canonicalBytes, claim.intent.digest, claim.replicaID])
+            return true
+        }
+    }
+
+    func deferPublication(
+        _ claim: CollectorPublicationClaim, now: Int64, reason: CollectorPublicationDeferral
+    ) throws -> Bool {
+        guard now >= 0 else { throw CollectorPublicationWorkerError.invalidBudget }
+        return try write { db in
+            try Task.checkCancellation()
+            guard let row = try currentPublicationClaimRow(db, claim) else { return false }
+            let attempts = try Self.increment(row["attempts"])
+            let delay: Int64 = attempts >= 18 ? 86_400 : Int64(1) << Int(attempts - 1)
+            let (deadline, overflow) = now.addingReportingOverflow(delay)
+            guard !overflow, deadline > now else { throw CollectorPublicationWorkerError.invalidBudget }
+            try db.execute(sql: """
+                UPDATE collector_publication_replicas SET state = 'pending', attempts = ?, retry_not_before = ?,
+                    last_error = ?, claim_owner_run_id = NULL, claimed_at = NULL
+                WHERE publication_digest = ? AND replica_id = ?
+                """, arguments: [attempts, deadline, reason.rawValue, claim.intent.digest, claim.replicaID])
+            return true
+        }
+    }
+
+    func isPublicationClaimCurrent(_ claim: CollectorPublicationClaim) throws -> Bool {
+        try database.read { db in
+            try requirePublicationOwner(db)
+            return try currentPublicationClaimRow(db, claim) != nil
+        }
+    }
+
+    func abandonCapture(_ reservation: CollectorCaptureReservation) throws -> Bool {
+        try write { db in
+            try Task.checkCancellation()
+            guard let pending = try reservationRow(db, reservation) else { return false }
+            try releaseReservedDirtyClaim(db, reservation, stored: pending)
+            try db.execute(sql: "DELETE FROM collector_capture_reservations WHERE id = ?", arguments: [reservation.id])
+            return true
+        }
+    }
+
+    func captureRecoveryState(_ reservation: CollectorCaptureReservation) throws -> Data? {
+        try database.read { db in
+            try requirePublicationOwner(db)
+            guard let row = try reservationRow(db, reservation) else { return nil }
+            let payload: Data? = row["recovery_state"]
+            guard payload == nil || (1...2_048).contains(payload!.count) else { throw CollectorInventoryError.invalidState }
+            return payload
+        }
+    }
+
+    func storeCaptureRecoveryState(_ reservation: CollectorCaptureReservation, payload: Data?) throws -> Bool {
+        if let payload, !(1...2_048).contains(payload.count) { throw CollectorPublicationWorkerError.invalidBudget }
+        return try write { db in
+            try Task.checkCancellation()
+            guard try reservationRow(db, reservation) != nil else { return false }
+            try db.execute(sql: "UPDATE collector_capture_reservations SET recovery_state = ? WHERE id = ?",
+                arguments: [payload, reservation.id])
+            return true
+        }
     }
 
     func locator(
@@ -402,6 +659,141 @@ final class CollectorInventoryStore {
         return path.split(separator: "/").dropLast().joined(separator: "/") == directory
     }
 
+    private static func validatePublicationLimit(_ limit: Int) throws {
+        guard (1...64).contains(limit) else { throw CollectorPublicationWorkerError.invalidBudget }
+    }
+
+    private func requirePublicationOwner(_ db: Database) throws {
+        guard let active = try String.fetchOne(db, sql: "SELECT value FROM collector_metadata WHERE key = 'active_owner_run_id'"),
+              active.utf8.elementsEqual(ownerRunID.utf8) else { throw CollectorInventoryError.staleOwner }
+    }
+
+    private func requirePublicationRoot(_ db: Database, _ configuration: CollectorRootConfiguration) throws {
+        try Self.requireRoot(db, configuration)
+        guard let binding = try Self.rootBinding(db, configuration),
+              binding.lastActivatedOwnerRunID?.utf8.elementsEqual(ownerRunID.utf8) == true else {
+            throw CollectorInventoryOwnerError.rootNotActivated
+        }
+    }
+
+    private static func reservation(_ row: Row) throws -> CollectorCaptureReservation {
+        let bytes: Data = row["generation_bytes"]
+        guard bytes.count <= 2_048 else { throw CollectorInventoryError.invalidState }
+        let generation = try ArchiveCanonicalJSON.decode(ArchiveSourceGeneration.self, from: bytes)
+        let value = CollectorCaptureReservation(id: row["id"], rootID: row["root_id"], rootRevision: row["root_revision"],
+            relativePath: row["relative_path"], dirtyRevision: row["dirty_revision"], generation: generation,
+            sourceInstanceID: row["source_instance_id"], collectorEpoch: row["collector_epoch"], sequence: row["sequence"])
+        guard UUID(uuidString: value.id) != nil, !value.rootID.isEmpty, value.rootRevision > 0,
+              isSafeRelativePath(value.relativePath), value.dirtyRevision > 0, value.sequence > 0,
+              UUID(uuidString: value.sourceInstanceID) != nil, UUID(uuidString: value.collectorEpoch) != nil else {
+            throw CollectorInventoryError.invalidState
+        }
+        return value
+    }
+
+    private func reservationRow(_ db: Database, _ expected: CollectorCaptureReservation) throws -> Row? {
+        guard let row = try Row.fetchOne(db, sql: "SELECT * FROM collector_capture_reservations WHERE id = ?",
+            arguments: [expected.id]) else { return nil }
+        let stored = try Self.reservation(row)
+        guard stored == expected, stored.rootID.utf8.elementsEqual(expected.rootID.utf8),
+              stored.relativePath.utf8.elementsEqual(expected.relativePath.utf8) else { return nil }
+        return row
+    }
+
+    private func releaseReservedDirtyClaim(_ db: Database, _ reservation: CollectorCaptureReservation, stored: Row) throws {
+        let originalOwner: String = stored["dirty_claim_owner_run_id"]
+        let originalGeneration: Int64 = stored["dirty_claim_generation"]
+        try db.execute(sql: """
+            UPDATE collector_locators SET claimed_dirty_revision = NULL, claim_owner_run_id = NULL,
+                retry_not_before = NULL, last_error = NULL
+            WHERE root_id = ? AND root_revision = ? AND relative_path = ?
+                AND claim_owner_run_id = ? AND claim_generation = ? AND claimed_dirty_revision = ?
+            """, arguments: [reservation.rootID, reservation.rootRevision, reservation.relativePath,
+                originalOwner, originalGeneration, reservation.dirtyRevision])
+    }
+
+    private func publicationIntent(_ row: Row) throws -> CollectorPublicationIntent {
+        let bytes: Data = row["canonical_bytes"]
+        let digest: String = row["publication_digest"]
+        guard bytes.count <= CollectorPublicationProtocolLimits.maxPublicationBytes,
+              ArchiveV2Hash.isValidSHA256(digest), ArchiveV2Hash.sha256(bytes) == digest else {
+            throw CollectorInventoryError.invalidState
+        }
+        let publication = try ArchiveCanonicalJSON.decode(CollectorPublicationEnvelope.self, from: bytes)
+        let sourceInstance: String = row["source_instance_id"]
+        let epoch: String = row["collector_epoch"]
+        let sequence: Int64 = row["sequence"]
+        let manifest: String = row["manifest_sha256"]
+        let intent = CollectorPublicationIntent(captureID: row["capture_id"], rootID: row["root_id"],
+            rootRevision: row["root_revision"], relativePath: row["relative_path"],
+            publication: publication, canonicalBytes: bytes, digest: digest)
+        guard publication.machineID == machineID, publication.sourceInstanceID == sourceInstance,
+              publication.collectorEpoch == epoch, publication.sequence == sequence,
+              publication.manifestSHA256 == manifest, ArchiveV2Hash.isValidSHA256(intent.captureID),
+              !intent.rootID.isEmpty, intent.rootRevision > 0, Self.isSafeRelativePath(intent.relativePath) else {
+            throw CollectorInventoryError.invalidState
+        }
+        return intent
+    }
+
+    private func currentPublicationClaimRow(_ db: Database, _ claim: CollectorPublicationClaim) throws -> Row? {
+        guard claim.ownerRunID.utf8.elementsEqual(ownerRunID.utf8), ["hq", "m1"].contains(claim.replicaID),
+              let row = try Row.fetchOne(db, sql: """
+                SELECT p.*, r.state, r.claim_owner_run_id, r.claim_generation, r.attempts
+                FROM collector_publication_replicas r
+                JOIN collector_publications p ON p.publication_digest = r.publication_digest
+                JOIN collector_roots roots ON roots.root_id = p.root_id AND roots.root_revision = p.root_revision
+                WHERE r.publication_digest = ? AND r.replica_id = ?
+                """, arguments: [claim.intent.digest, claim.replicaID]) else { return nil }
+        let state: String = row["state"]
+        let claimedOwner: String? = row["claim_owner_run_id"]
+        let generation: Int64 = row["claim_generation"]
+        let attempts: Int64 = row["attempts"]
+        guard state == "inflight", claimedOwner?.utf8.elementsEqual(ownerRunID.utf8) == true,
+              generation == claim.claimGeneration, attempts == claim.attempts else { return nil }
+        let stored = try publicationIntent(row)
+        guard stored == claim.intent, stored.rootID.utf8.elementsEqual(claim.intent.rootID.utf8),
+              stored.relativePath.utf8.elementsEqual(claim.intent.relativePath.utf8) else { return nil }
+        return row
+    }
+
+    private func validatePublicationCapture(
+        _ capture: ArchiveCapture, reservation: CollectorCaptureReservation, configuration: CollectorRootConfiguration
+    ) throws {
+        guard capture.unboundManifestBytes.count <= ArchiveV2ProtocolLimits.maxManifestBytes,
+              ArchiveV2Hash.sha256(capture.unboundManifestBytes) == capture.unboundManifestSHA256,
+              capture.machineID == machineID, capture.source == configuration.source.rawValue,
+              capture.locator.utf8.elementsEqual(URL(fileURLWithPath: configuration.rootPath)
+                .appendingPathComponent(reservation.relativePath).path.utf8),
+              capture.generation == reservation.generation, capture.status == "captured" else {
+            throw CollectorPublicationWorkerError.invalidCapture
+        }
+        let manifest: ArchiveSourceManifest
+        do { manifest = try ArchiveCanonicalJSON.decode(ArchiveSourceManifest.self, from: capture.unboundManifestBytes) }
+        catch { throw CollectorPublicationWorkerError.invalidCapture }
+        guard manifest.sessionID == nil, manifest.captureID == capture.captureID,
+              manifest.machineID == capture.machineID, manifest.source == capture.source,
+              manifest.locator.utf8.elementsEqual(capture.locator.utf8), manifest.generation == capture.generation,
+              manifest.wholeSourceSHA256 == capture.wholeSourceSHA256, manifest.rawByteCount == capture.rawByteCount,
+              manifest.chunkSize == capture.chunkSize, manifest.capturedAt == capture.capturedAt else {
+            throw CollectorPublicationWorkerError.invalidCapture
+        }
+        // Match ExactSourceCapturer's existing content identity, without opening
+        // an ArchiveCatalog or turning index/session bindings into authority.
+        struct CaptureIdentity: Encodable {
+            let machineID: String
+            let source: String
+            let locator: String
+            let generation: ArchiveSourceGeneration
+            let wholeSourceSHA256: String
+        }
+        let identity = CaptureIdentity(machineID: capture.machineID, source: capture.source, locator: capture.locator,
+            generation: capture.generation, wholeSourceSHA256: capture.wholeSourceSHA256)
+        guard ArchiveV2Hash.sha256(try ArchiveCanonicalJSON.encode(identity)) == capture.captureID else {
+            throw CollectorPublicationWorkerError.invalidCapture
+        }
+    }
+
     private func write<T>(_ body: (Database) throws -> T) throws -> T {
         try database.write { db in
             guard let activeOwner = try String.fetchOne(db, sql: "SELECT value FROM collector_metadata WHERE key = 'active_owner_run_id'"),
@@ -540,6 +932,61 @@ final class CollectorInventoryStore {
         let (next, overflow) = revision.addingReportingOverflow(1)
         guard !overflow, revision >= 0 else { throw CollectorInventoryError.revisionExhausted }
         return next
+    }
+
+    private static func createPublicationSchema(_ db: Database) throws {
+        try db.execute(sql: """
+            CREATE TABLE IF NOT EXISTS collector_streams (
+                root_id TEXT NOT NULL, root_revision INTEGER NOT NULL CHECK(root_revision > 0),
+                source_instance_id TEXT NOT NULL, collector_epoch TEXT NOT NULL,
+                last_sequence INTEGER NOT NULL CHECK(typeof(last_sequence) = 'integer' AND last_sequence >= 0),
+                PRIMARY KEY(root_id, root_revision),
+                UNIQUE(root_id, root_revision, source_instance_id, collector_epoch),
+                FOREIGN KEY(root_id) REFERENCES collector_roots(root_id)
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS collector_capture_reservations (
+                id TEXT PRIMARY KEY NOT NULL, root_id TEXT NOT NULL, root_revision INTEGER NOT NULL,
+                relative_path TEXT NOT NULL, dirty_revision INTEGER NOT NULL CHECK(dirty_revision > 0),
+                generation_bytes BLOB NOT NULL CHECK(typeof(generation_bytes) = 'blob' AND length(generation_bytes) BETWEEN 1 AND 2048),
+                source_instance_id TEXT NOT NULL, collector_epoch TEXT NOT NULL,
+                sequence INTEGER NOT NULL CHECK(typeof(sequence) = 'integer' AND sequence > 0),
+                dirty_claim_owner_run_id TEXT NOT NULL, dirty_claim_generation INTEGER NOT NULL CHECK(dirty_claim_generation > 0),
+                recovery_state BLOB CHECK(recovery_state IS NULL OR (typeof(recovery_state) = 'blob' AND length(recovery_state) BETWEEN 1 AND 2048)),
+                UNIQUE(root_id, root_revision),
+                FOREIGN KEY(root_id, root_revision, source_instance_id, collector_epoch)
+                    REFERENCES collector_streams(root_id, root_revision, source_instance_id, collector_epoch),
+                FOREIGN KEY(root_id, root_revision, relative_path) REFERENCES collector_locators(root_id, root_revision, relative_path)
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS collector_publications (
+                publication_digest TEXT PRIMARY KEY NOT NULL, capture_id TEXT NOT NULL,
+                root_id TEXT NOT NULL, root_revision INTEGER NOT NULL, relative_path TEXT NOT NULL,
+                source_instance_id TEXT NOT NULL, collector_epoch TEXT NOT NULL,
+                sequence INTEGER NOT NULL CHECK(typeof(sequence) = 'integer' AND sequence > 0),
+                manifest_sha256 TEXT NOT NULL,
+                canonical_bytes BLOB NOT NULL CHECK(typeof(canonical_bytes) = 'blob' AND length(canonical_bytes) BETWEEN 1 AND 2048),
+                UNIQUE(root_id, root_revision, capture_id), UNIQUE(source_instance_id, collector_epoch, sequence),
+                FOREIGN KEY(root_id, root_revision, source_instance_id, collector_epoch)
+                    REFERENCES collector_streams(root_id, root_revision, source_instance_id, collector_epoch)
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS collector_publication_replicas (
+                publication_digest TEXT NOT NULL, replica_id TEXT NOT NULL CHECK(replica_id IN ('hq', 'm1')),
+                state TEXT NOT NULL CHECK(state IN ('pending', 'inflight', 'acknowledged')),
+                claim_owner_run_id TEXT, claimed_at INTEGER CHECK(claimed_at IS NULL OR (typeof(claimed_at) = 'integer' AND claimed_at >= 0)),
+                claim_generation INTEGER NOT NULL CHECK(typeof(claim_generation) = 'integer' AND claim_generation >= 0),
+                attempts INTEGER NOT NULL CHECK(typeof(attempts) = 'integer' AND attempts >= 0),
+                retry_not_before INTEGER CHECK(retry_not_before IS NULL OR (typeof(retry_not_before) = 'integer' AND retry_not_before > 0)),
+                last_error TEXT CHECK(last_error IN ('unavailable', 'unsupportedReplica', 'invalidACK', 'privacyWithheld', 'localContentUnavailable')),
+                ack_bytes BLOB CHECK(ack_bytes IS NULL OR (typeof(ack_bytes) = 'blob' AND length(ack_bytes) BETWEEN 1 AND 4096)),
+                PRIMARY KEY(publication_digest, replica_id),
+                FOREIGN KEY(publication_digest) REFERENCES collector_publications(publication_digest),
+                CHECK((state = 'inflight') = (claim_owner_run_id IS NOT NULL)),
+                CHECK((state = 'inflight') = (claimed_at IS NOT NULL)),
+                CHECK((state = 'acknowledged') = (ack_bytes IS NOT NULL))
+            ) WITHOUT ROWID;
+            CREATE INDEX IF NOT EXISTS collector_publication_pending
+                ON collector_publication_replicas(replica_id, state, retry_not_before, publication_digest)
+                WHERE state != 'acknowledged';
+            """)
     }
 
     private static func createSchema(_ db: Database) throws {

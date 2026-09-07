@@ -194,6 +194,94 @@ final class CollectorInventoryOwner {
         try withStore { try $0.rootState(rootID: rootID) }
     }
 
+    func reserveCapture(
+        _ claim: CollectorDirtyClaim, configuration: CollectorRootConfiguration,
+        generation: ArchiveSourceGeneration
+    ) throws -> CollectorCaptureReservation? {
+        try withDirtyStore(configuration: configuration, validateInput: {
+            try Self.requireClaimConfiguration(claim, configuration)
+            guard CollectorInventoryStore.isSafeRelativePath(claim.relativePath) else {
+                throw CollectorInventoryError.invalidRelativePath
+            }
+        }) { try $0.reserveCapture(claim, configuration: configuration, generation: generation) }
+    }
+
+    func captureReservations(limit: Int) throws -> [CollectorCaptureReservation] {
+        try withPublicationStore { try $0.captureReservations(limit: limit) }
+    }
+
+    func finishCapture(
+        _ reservation: CollectorCaptureReservation, configuration: CollectorRootConfiguration,
+        capture: ArchiveCapture
+    ) throws -> CollectorPublicationIntent? {
+        // Finishing a durable generation does not re-read a changed/missing
+        // source. Configuration, enrolled ownership and the storage commit
+        // fence remain mandatory; this never grants remote privacy authority.
+        try withDirtyStore(configuration: configuration, allowsUnavailableRoot: true, validateInput: {
+            guard reservation.rootID.utf8.elementsEqual(configuration.rootID.utf8),
+                  reservation.rootRevision == configuration.revision else {
+                throw CollectorInventoryError.unknownRoot
+            }
+            guard CollectorInventoryStore.isSafeRelativePath(reservation.relativePath),
+                  ArchiveV2Hash.isValidSHA256(capture.captureID) else {
+                throw CollectorPublicationWorkerError.invalidCapture
+            }
+        }) { try $0.finishCapture(reservation, capture: capture) }
+    }
+
+    func publicationIntents(limit: Int) throws -> [CollectorPublicationIntent] {
+        try withPublicationStore { try $0.publicationIntents(limit: limit) }
+    }
+
+    func claimPublications(replicaID: String, limit: Int, now: Int64) throws -> [CollectorPublicationClaim] {
+        try withPublicationStore { try $0.claimPublications(replicaID: replicaID, limit: limit, now: now) }
+    }
+
+    func recordPublicationACK(_ claim: CollectorPublicationClaim, canonicalBytes: Data) throws -> Bool {
+        try withPublicationStore { try $0.recordPublicationACK(claim, canonicalBytes: canonicalBytes) }
+    }
+
+    func deferPublication(
+        _ claim: CollectorPublicationClaim, now: Int64, reason: CollectorPublicationDeferral
+    ) throws -> Bool {
+        try withPublicationStore { try $0.deferPublication(claim, now: now, reason: reason) }
+    }
+
+    func isPublicationClaimCurrent(_ claim: CollectorPublicationClaim) throws -> Bool {
+        try withPublicationStore { try $0.isPublicationClaimCurrent(claim) }
+    }
+
+    func abandonCapture(_ reservation: CollectorCaptureReservation) throws -> Bool {
+        try withPublicationStore { try $0.abandonCapture(reservation) }
+    }
+
+    func captureRecoveryState(_ reservation: CollectorCaptureReservation) throws -> Data? {
+        try withPublicationStore { try $0.captureRecoveryState(reservation) }
+    }
+
+    func storeCaptureRecoveryState(_ reservation: CollectorCaptureReservation, payload: Data?) throws -> Bool {
+        try withPublicationStore { try $0.storeCaptureRecoveryState(reservation, payload: payload) }
+    }
+
+    /// Available bytes on the inventory/spool volume, not a count of source
+    /// files or a promise that an independently supplied CAS volume is healthy.
+    func availableSpoolBytes() throws -> Int64 {
+        try withPublicationStore { _ in
+            var info = statfs()
+            guard fstatfs(shadowDescriptor, &info) == 0 else { throw Self.posixError() }
+            guard let blocks = Int64(exactly: info.f_bavail),
+                  let blockSize = Int64(exactly: info.f_bsize) else {
+                throw CollectorPublicationWorkerError.invalidBudget
+            }
+            let bytes = blocks.multipliedReportingOverflow(by: blockSize)
+            return bytes.overflow ? Int64.max : max(0, bytes.partialValue)
+        }
+    }
+
+    func machineIdentity() throws -> String {
+        try withPublicationStore { _ in machineID }
+    }
+
     func claimDirty(
         configuration: CollectorRootConfiguration, limit: Int, now: Int64
     ) throws -> [CollectorDirtyClaim] {
@@ -345,6 +433,29 @@ final class CollectorInventoryOwner {
                 defer { eventCommitCancellationCheck = nil }
                 return try operation(store)
             }
+        }
+    }
+
+    /// Publication operations use immutable captured data, not a live source
+    /// root. Retain the exact same owner/storage/cancellation transaction fence
+    /// as dirty work without turning root disappearance into permission to
+    /// reopen a queue or to acknowledge an obsolete owner claim.
+    private func withPublicationStore<T>(_ operation: (CollectorInventoryStore) throws -> T) throws -> T {
+        mutex.lock()
+        defer { mutex.unlock() }
+        guard !closed, let store else { throw CollectorInventoryOwnerError.closed }
+        return try withUnsafeCurrentTask { task in
+            if task?.isCancelled == true { throw CancellationError() }
+            try validateStorage()
+            dirtyCommitFence = { [unowned self] in
+                if task?.isCancelled == true { throw CancellationError() }
+                try self.validateStorageFilesystem()
+                if task?.isCancelled == true { throw CancellationError() }
+            }
+            defer { dirtyCommitFence = nil }
+            let result = try operation(store)
+            try validateStorage()
+            return result
         }
     }
 

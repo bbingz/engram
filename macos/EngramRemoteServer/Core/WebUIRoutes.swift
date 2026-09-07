@@ -59,7 +59,7 @@ enum WebUIRoutes {
 
     static let css = """
         html { font-family: system-ui, sans-serif; line-height: 1.4; }
-        body { margin: 0 auto; max-width: 52rem; padding: 1rem; }
+        body { margin: 0 auto; max-width: 52rem; padding: 1rem; overflow-wrap: anywhere; }
         header, form, section { margin-bottom: 1rem; }
         input { margin: 0.25rem 0.25rem 0.25rem 0; }
         button { margin-right: 0.25rem; }
@@ -79,10 +79,13 @@ enum WebUIRoutes {
         const decoder = new TextDecoder("utf-8", { fatal: true });
         let sessionSnapshotId = "";
         let sessionCursor = "";
+        let sessionFilters = "";
         let messageSessionId = "";
         let messageGeneration = "";
         let messageCursor = "";
         let messageBuf = null;
+        let messageRequest = null;
+        let authWriteTail = null;
         let requestEpoch = 0;
         function bumpEpoch() {
           requestEpoch += 1;
@@ -99,65 +102,99 @@ enum WebUIRoutes {
         function clearSessionPaging() {
           sessionSnapshotId = "";
           sessionCursor = "";
+          sessionFilters = "";
         }
         function clearMessages() {
           messageSessionId = "";
           messageGeneration = "";
           messageCursor = "";
           messageBuf = null;
+          messageRequest = null;
           setText(messagesNode, "");
         }
         async function api(method, path, body) {
-          const response = await fetch(path, {
-            method: method,
-            credentials: "same-origin",
-            headers: headers(body !== undefined),
-            body: body
-          });
+          const token = requestEpoch;
+          let response;
+          try {
+            response = await fetch(path, {
+              method: method,
+              credentials: "same-origin",
+              headers: headers(body !== undefined),
+              body: body
+            });
+          } catch (error) {
+            if (token === requestEpoch) setText(statusNode, "Network unavailable");
+            throw error;
+          }
           if (!response.ok) {
-            setText(statusNode, String(response.status));
+            if (token === requestEpoch) setText(statusNode, String(response.status));
             throw new Error("request failed");
           }
           const type = response.headers.get("content-type") || "";
           if (type.indexOf("application/json") >= 0) return response.json();
           return null;
         }
+        async function authWrite(method, body) {
+          const predecessor = authWriteTail;
+          let release;
+          const completion = new Promise(resolve => { release = resolve; });
+          // Register before waiting; the first write still dispatches synchronously.
+          authWriteTail = completion;
+          try {
+            if (predecessor) await predecessor;
+            return await api(method, "/web/api/auth", body);
+          } finally {
+            if (authWriteTail === completion) authWriteTail = null;
+            release();
+          }
+        }
         async function login(event) {
           event.preventDefault();
+          const token = bumpEpoch();
           const credential = document.getElementById("credential").value;
-          await api("POST", "/web/api/auth", JSON.stringify({ credential: credential }));
+          await authWrite("POST", JSON.stringify({ credential: credential }));
+          if (token !== requestEpoch) return;
           document.getElementById("credential").value = "";
           setText(statusNode, "signed in");
           clearSessionPaging();
           clearMessages();
-          await loadOverview();
+          const overviewEpoch = await loadOverview();
+          if (overviewEpoch !== requestEpoch) return;
           await loadSessions(false);
         }
         async function logout() {
-          bumpEpoch();
-          await api("DELETE", "/web/api/auth", "{}");
-          setText(statusNode, "signed out");
+          const token = bumpEpoch();
           setText(overviewNode, "");
           setText(sessionsNode, "");
           setText(detailNode, "");
           clearSessionPaging();
           clearMessages();
+          try {
+            await authWrite("DELETE", "{}");
+            if (token === requestEpoch) setText(statusNode, "signed out");
+          } catch (error) {
+            if (token === requestEpoch) setText(statusNode, "Sign-out failed; local view cleared. Retry to revoke the server session.");
+            throw error;
+          }
         }
         function sessionQuery(more) {
-          const params = new URLSearchParams();
-          const query = document.getElementById("query").value;
-          const source = document.getElementById("source").value;
-          const machineId = document.getElementById("machineId").value;
-          const projectKey = document.getElementById("projectKey").value;
-          if (query) params.set("query", query);
-          if (source) params.set("source", source);
-          if (machineId) params.set("machineId", machineId);
-          if (projectKey) params.set("projectKey", projectKey);
+          const params = new URLSearchParams(more ? sessionFilters : "");
+          if (!more) {
+            const query = document.getElementById("query").value;
+            const source = document.getElementById("source").value;
+            const machineId = document.getElementById("machineId").value;
+            const projectKey = document.getElementById("projectKey").value;
+            if (query) params.set("query", query);
+            if (source) params.set("source", source);
+            if (machineId) params.set("machineId", machineId);
+            if (projectKey) params.set("projectKey", projectKey);
+            sessionFilters = params.toString();
+          }
           if (more && sessionSnapshotId && sessionCursor) {
             params.set("snapshotId", sessionSnapshotId);
             params.set("cursor", sessionCursor);
           }
-          const encoded = params.toString();
+          const encoded = params.toString().replaceAll("+", "%20");
           return encoded ? ("?" + encoded) : "";
         }
         async function loadOverview() {
@@ -173,6 +210,7 @@ enum WebUIRoutes {
             setText(line, machine + " " + instance);
             overviewNode.appendChild(line);
           });
+          return token;
         }
         async function loadSessions(more) {
           const token = bumpEpoch();
@@ -186,6 +224,7 @@ enum WebUIRoutes {
           if (token !== requestEpoch) return;
           sessionSnapshotId = page.snapshotId || "";
           sessionCursor = page.nextCursor || "";
+          if (!more && !(page.items || []).length) setText(sessionsNode, "No sessions found");
           (page.items || []).forEach(function (item) {
             const button = document.createElement("button");
             button.type = "button";
@@ -266,15 +305,23 @@ enum WebUIRoutes {
           }
         }
         async function loadMessages(token, sessionId, generation, cursor) {
+          if (messageRequest && messageRequest.token === token && messageRequest.sessionId === sessionId
+              && messageRequest.generation === generation && messageRequest.cursor === cursor) return;
+          const pending = { token: token, sessionId: sessionId, generation: generation, cursor: cursor };
+          messageRequest = pending;
           messageSessionId = sessionId;
           messageGeneration = generation;
           let path = "/web/api/sessions/" + encodeURIComponent(sessionId) + "/messages?generation=" + encodeURIComponent(generation);
           if (cursor) path += "&cursor=" + encodeURIComponent(cursor);
-          const page = await api("GET", path);
-          if (token !== requestEpoch) return;
-          (page.fragments || []).forEach(acceptFragment);
-          messageCursor = page.nextCursor || "";
-          if (messageBuf && !messageCursor) setText(statusNode, "incomplete message");
+          try {
+            const page = await api("GET", path);
+            if (token !== requestEpoch) return;
+            (page.fragments || []).forEach(acceptFragment);
+            messageCursor = page.nextCursor || "";
+            if (messageBuf && !messageCursor) setText(statusNode, "incomplete message");
+          } finally {
+            if (messageRequest === pending) messageRequest = null;
+          }
         }
         document.getElementById("login").addEventListener("submit", function (event) {
           login(event).catch(function () {});

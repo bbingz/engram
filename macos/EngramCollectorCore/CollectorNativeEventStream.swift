@@ -98,6 +98,23 @@ struct CollectorNativeEventStreamTestHooks {
 //   errors must still clean owned resources. Unsupported same-callback stop must
 //   fail fast without silently dropping the later external cleanup opportunity.
 final class CollectorNativeEventStream: CollectorEventStream {
+    // Read the event-history identity through the same descriptor/route fence
+    // used by start. This never creates a stream or changes a checkpoint.
+    static func currentEpoch(binding: CollectorPOSIXRootBinding, api: (any CollectorNativeEventAPI)? = nil) throws -> String {
+        try Task.checkCancellation()
+        let system = api ?? CollectorNativeSystemAPI()
+        let descriptor = try system.openRoot(binding)
+        defer { system.closeRoot(descriptor) }
+        let observation = try system.observeRoot(descriptor, binding: binding)
+        try Task.checkCancellation()
+        guard let value = observation.eventDatabaseUUID,
+              let uuid = UUID(uuidString: value), uuid.uuidString.utf8.elementsEqual(value.utf8) else {
+            throw CollectorNativeEventStreamError.invalidEpoch
+        }
+        _ = try validate(observation, binding: binding, uuid: value)
+        return "fsevents-device-v1:" + value
+    }
+
     private let request: CollectorEventStreamRequest
     private let budget: CollectorEventIngressBudget
     private let api: any CollectorNativeEventAPI
@@ -152,7 +169,7 @@ final class CollectorNativeEventStream: CollectorEventStream {
             descriptor = try api.openRoot(request.binding)
             try checkStartMayContinue()
             let before = try api.observeRoot(descriptor!, binding: request.binding)
-            let relativeRoot = try validate(before, uuid: uuid)
+            let relativeRoot = try Self.validate(before, binding: request.binding, uuid: uuid)
             rootPrefix = Array(relativeRoot.utf8)
             if !rootPrefix.isEmpty { rootPrefix.append(47) }
             try checkStartMayContinue()
@@ -179,7 +196,7 @@ final class CollectorNativeEventStream: CollectorEventStream {
             guard nativeStarted else { throw CollectorNativeEventStreamError.startFailed }
             try checkStartMayContinue()
             let after = try api.observeRoot(descriptor!, binding: request.binding)
-            _ = try validate(after, uuid: uuid)
+            _ = try Self.validate(after, binding: request.binding, uuid: uuid)
             guard before.physicalRootPath.utf8.elementsEqual(after.physicalRootPath.utf8),
                   before.volumeMountPath.utf8.elementsEqual(after.volumeMountPath.utf8),
                   before.volumeDevice == after.volumeDevice else {
@@ -299,10 +316,10 @@ final class CollectorNativeEventStream: CollectorEventStream {
         return suffix
     }
 
-    private func validate(_ observation: CollectorNativeRootObservation, uuid: String) throws -> String {
-        guard observation.descriptorIdentity == request.binding.expectedIdentity,
-              observation.routeIdentity == request.binding.expectedIdentity,
-              observation.volumeDevice == request.binding.expectedIdentity.device,
+    private static func validate(_ observation: CollectorNativeRootObservation, binding: CollectorPOSIXRootBinding, uuid: String) throws -> String {
+        guard observation.descriptorIdentity == binding.expectedIdentity,
+              observation.routeIdentity == binding.expectedIdentity,
+              observation.volumeDevice == binding.expectedIdentity.device,
               let device = Int32(exactly: observation.volumeDevice), device > 0 else {
             throw CollectorNativeEventStreamError.invalidRoot
         }

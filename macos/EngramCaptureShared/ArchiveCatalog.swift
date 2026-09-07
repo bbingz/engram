@@ -523,6 +523,12 @@ public final class ArchiveCatalog: @unchecked Sendable {
         try secureDatabaseFiles()
     }
 
+    /// Explicit lifetime fence for an independently owned capture runtime.
+    /// Call only after all producers have stopped and joined.
+    public func close() throws {
+        try pool.close()
+    }
+
     public func machineID() throws -> String {
         try pool.read { db in
             guard let value = try String.fetchOne(
