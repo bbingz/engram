@@ -924,3 +924,55 @@ describe('local build metadata and script coverage', () => {
     expect(existsSync(resolve(repoRoot, '.husky/pre-push'))).toBe(true);
   });
 });
+
+describe('Swift Service runner process-home isolation', () => {
+  it('launches the full Service suite with one private checkout-local process home and no global HOME override', () => {
+    const job = parsedTestWorkflow.jobs?.['swift-unit'];
+    const step = job?.steps?.find(
+      (candidate) => candidate.name === 'Run Swift unit tests',
+    );
+    const run = step?.run ?? '';
+    const serviceBlocks = [
+      ...run.matchAll(/^[ \t]*\(\n([\s\S]*?)^[ \t]*\)[ \t]*$/gm),
+    ].filter((match) => match[1].includes('run_xcode_tests EngramServiceCore'));
+
+    expect(serviceBlocks).toHaveLength(1);
+    expect(
+      (serviceBlocks[0]?.[1] ?? '')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean),
+    ).toEqual([
+      'SERVICE_TEST_HOME="$(mktemp -d "$GITHUB_WORKSPACE/.engram-demo-test-home.XXXXXX")"',
+      'chmod 700 "$SERVICE_TEST_HOME"',
+      'CFFIXED_USER_HOME="$SERVICE_TEST_HOME" \\',
+      'TEST_RUNNER_CFFIXED_USER_HOME="$SERVICE_TEST_HOME" \\',
+      'ENGRAM_DEMO_EXPECTED_HOME="$SERVICE_TEST_HOME" \\',
+      'TEST_RUNNER_ENGRAM_DEMO_EXPECTED_HOME="$SERVICE_TEST_HOME" \\',
+      'run_xcode_tests EngramServiceCore',
+    ]);
+    expect(
+      run.match(/^[ \t]*run_xcode_tests EngramServiceCore\b.*$/gm),
+    ).toHaveLength(1);
+    expect(step?.['continue-on-error']).not.toBe(true);
+    expect(run).not.toMatch(/\bHOME[ \t]*=/);
+
+    const isolatedKeys = [
+      'CFFIXED_USER_HOME',
+      'TEST_RUNNER_CFFIXED_USER_HOME',
+      'ENGRAM_DEMO_EXPECTED_HOME',
+      'TEST_RUNNER_ENGRAM_DEMO_EXPECTED_HOME',
+    ];
+    for (const scope of [parsedTestWorkflow, job, step]) {
+      const environment =
+        (scope as { env?: Record<string, unknown> } | undefined)?.env ?? {};
+      for (const key of ['HOME', ...isolatedKeys]) {
+        expect(environment).not.toHaveProperty(key);
+      }
+    }
+    const outsideService = run.replace(serviceBlocks[0]?.[0] ?? '', '');
+    for (const key of isolatedKeys) {
+      expect(outsideService).not.toContain(key);
+    }
+  });
+});

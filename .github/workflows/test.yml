@@ -241,7 +241,15 @@ jobs:
             exit 1
           fi
           bash scripts/release-verify.sh "$ENGRAM_APP" --hygiene-only
-          run_xcode_tests EngramServiceCore
+          (
+            SERVICE_TEST_HOME="$(mktemp -d "$GITHUB_WORKSPACE/.engram-demo-test-home.XXXXXX")"
+            chmod 700 "$SERVICE_TEST_HOME"
+            CFFIXED_USER_HOME="$SERVICE_TEST_HOME" \
+            TEST_RUNNER_CFFIXED_USER_HOME="$SERVICE_TEST_HOME" \
+            ENGRAM_DEMO_EXPECTED_HOME="$SERVICE_TEST_HOME" \
+            TEST_RUNNER_ENGRAM_DEMO_EXPECTED_HOME="$SERVICE_TEST_HOME" \
+              run_xcode_tests EngramServiceCore
+          )
           run_xcode_tests EngramMCPTests
           run_xcode_tests EngramCollectorCore
 

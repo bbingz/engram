@@ -7,6 +7,50 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Completed performance window and isolated Service CI invocation (2026-09-07)
+
+The revision-bound `9e90471b` Release measurement finished its entire 1,800.008-
+second steady window, but **failed**. Raw accounting reports 1,801 samples,
+collector CPU 2.144809% of one core (limit 2%), maximum sampled RSS 23.765625 MiB,
+and mean sampled RSS 22.148696 MiB. All 60 append attempts and all 360 reads per
+endpoint succeeded: p95 append 3.608020s, sessions 0.199356s, detail 0.193499s,
+messages 0.066965s. All three scheduled authentication attempts succeeded with
+the unchanged 900-second cookie lifetime. These are synthetic loopback results,
+not healthy-tailnet acceptance. The test exited 65 with `threshold` and
+`wrong_content`; it joined its owned children and retained the failed fixture.
+Evidence: `/tmp/engram-final-performance-9e90471b-v1.{log,xcresult}` and
+`output/native-release-9e90471b-20260907/performance-run-v1/`.
+
+Independent read-only raw-sample and SQLite inspection separated the failures:
+CPU really exceeded its budget; the final test incorrectly expected 256 normal
+sessions after all appends. Actual publication/ACK/session counts are 316/632/256,
+with 252 normal and four premium sessions. The first four active sessions reached
+ten messages and correctly satisfy the existing project-bound premium rule.
+The tier oracle needs a regression/fix; CPU needs measured diagnosis. Neither
+changing that oracle nor passing latency thresholds makes this run a PASS.
+
+Commit `7349261e` Linux coverage passed 1,757 tests with 108 skips; macOS script,
+Remote Swift and UI smoke jobs passed. Its `swift-unit` job `101613128561` failed
+two Service tests before Runner entry because `ENGRAM_DEMO_EXPECTED_HOME` was
+absent (`ServiceCaptureIngestRuntimeTests.swift:275,429`). The full downloaded
+job log is `/tmp/engram-ci-7349261e-swift-unit.log`. A new CI contract produced
+actual RED, one failure and all 39 older cases passing. The minimal workflow
+fix runs the full Service suite in a subshell with one checkout-local 0700
+temporary home and four command-scoped fixed/expected HOME variables, without
+changing HOME, other suites, product code, skips, or adding deletion.
+Root GREEN passed 40/40; targeted lint and test typecheck exited 0. Evidence:
+`/tmp/engram-ci-service-home-root-{red,green,lint,types}-v1.log`.
+The two-file independent gate passed SPEC PASS / QUALITY APPROVED, including
+exact preservation of older tests/workflow and Bash environment inheritance.
+New-head native CI remains required; old-head CI is not relabeled successful.
+
+The stale-read browser probe is still incomplete: the API re-fetch produced
+403 before a successful response could be held. Both probe logs are retained
+under `output/playwright/stale-read-20260907/`; the bounded native setup/hold/
+cleanup test passed in 303.475 seconds, which is not browser acceptance.
+Real-host enablement/root inventory, healthy-tailnet evidence and W7 remain
+unverified and are not authorized by these local checks.
+
 ### Committed native roles, revision-bound packages and CI platform correction (2026-09-07)
 
 Subsequent correction validation: five focused script files passed 279/279,
