@@ -2,6 +2,12 @@
 
 ## Changelog Memo
 
+### 2026-09-08
+
+- [验证] Same-ten HQ/M1 snapshot replay passed: nine exact-byte dual ACKs, four visible/956 verified Web messages, and 30-minute Collector mean CPU 1.36% / max sampled RSS 19.59 MiB. All trial roles stopped; old processes retained. See `CHANGELOG.md`.
+
+- [排查] Timestamp-preserving seed transfer triggers HQ preflight ctime rejection; byte-exclusive seed creation enables the bounded replay without relaxing guards. General cold-start compatibility and earlier local directory-impact uncertainty remain open. Old/new parser full-byte parity resolves the legacy-count oracle mismatch. See `CHANGELOG.md`.
+
 ### 2026-09-07
 
 - [排查] Scoped metadata review found no incident-window timestamp in 274 current Claude/Qoder/CommandCode directories; effects remain UNKNOWN without a prior baseline. See CHANGELOG and the private impact receipt.

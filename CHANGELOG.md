@@ -7,6 +7,56 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Frozen HQ/M1 Claude replay passes with explicit startup limitation (2026-09-08)
+
+This closes the same-corpus replay pending in earlier entries. Implementation
+`aff8353c88a9c189a418dc9da3dffe9c49a2af5d` passed Tests run 34129561290 and
+CodeQL run 34129561378. Collector, Service and RemoteServer Release builds passed;
+all 75 HQ and seven M1 package manifest entries and signatures were verified.
+No product source was changed during this deployment-verification turn.
+
+The unchanged ten-file, 26,100,521-byte frozen Claude corpus produced ten local
+publications. Both physical replicas independently confirmed nine publications
+and 26,080,787 exact source bytes each. The remaining capture is still withheld
+as `incompleteMetadata`. HQ has four index-ready premium sessions, four parsed
+skip sessions, and one `parse.noVisibleMessages` quarantine. Web search and all
+956 visible messages across 12 pages passed independent payload-hash checks,
+with authenticated UI pagination, safe cookie attributes, cleared credentials,
+logout then 401, zero page errors and no narrow-screen overflow. Indexed Web-read
+p95 was 121.3 ms; this is not append-to-search latency.
+
+The 1800.010-second, 359-sample live window measured Collector mean CPU at
+1.3600% of one core and maximum sampled RSS at 19.59 MiB. Publication count
+remained ten, with nine ACKs and one privacy-withheld row per replica. All seven
+trial roles were stopped and joined, trial ports were released, and the three
+legacy HQ/M1 processes retained their exact PIDs/start times/executable paths.
+Both old health probes still returned 200/ok (liveness evidence only). The ten
+frozen source hashes remained unchanged; no permanent cutover was performed.
+
+The first new shadow attempt again exited 70 and remains preserved. An isolated
+diagnostic build located a preflight ctime-equality rejection on HQ for an empty
+seed transferred with preserved timestamps: SQLite changed ctime while size and
+mtime remained stable. The successful replay exclusively created the identical
+seed bytes and fsynced them, without a SQLite pre-open or warmed helper. Product
+fences remain unchanged. The underlying OS/SQLite metadata behavior and general
+cold-start compatibility of timestamp-preserving seed transfers remain open.
+Earlier static-GRDB and marker-content hypotheses were not sustained.
+
+One historical index receipt reported 155 messages where the frozen sample has
+363. Both the c8a9cdc4 and aff8353c shipped parser frameworks were actually loaded
+and produced identical full-corpus results; all eight HQ normalized-message
+hashes match both versions. The failed legacy-count comparison is retained, but
+that receipt lacks a matching source hash/index boundary and is not a complete
+frozen-source oracle. Its coverage remains UNKNOWN. The earlier local Service
+test's possible directory-renaming effects also remain UNKNOWN after the scoped
+metadata review; no before-state baseline or justified recovery move exists.
+
+Evidence: `output/hq-claude-shadow-replay-v2-20260907/report.md`, its private
+receipts, and `output/hq-claude-shadow-replay-20260907/cold-start-adjudication.md`.
+The bounded snapshot result is not original-root discovery, natural append
+latency, all-profile coverage, full-source deployment or merge authorization.
+Documentation-head CI is recorded separately from implementation/package CI.
+
 ### Bounded local directory-impact follow-up (2026-09-07)
 
 Before replaying the frozen HQ corpus, the failed Service test's source/log path
