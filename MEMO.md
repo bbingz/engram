@@ -2,8 +2,142 @@
 
 ## Changelog Memo
 
+### 2026-09-07
+
+- [修复] Drained claims avoid writes with bounded indexed probes; RED retained, CollectorCore 289/289 and Service 1,154 tests (4 skips) passed with independent approval. Thresholds stay unchanged; new Release CPU measurement is pending. See `CHANGELOG.md`.
+
+- [验证] Final-tier oracle RED→GREEN; 33 focused and 1,154 Service tests passed (4 skips). Real late-200 browser check and `70e362fa` Tests CI passed; CPU gate, host-source inventory and healthy-tailnet evidence remain open. See `CHANGELOG.md`.
+
+- [验证] 完整 30 分钟实测未过：CPU 2.145% 超 2%，RSS/追加/Web 延迟达标；4 会话正常升 premium 暴露最终计数断言错误，失败证据保留。CI 的 Service 私有 HOME 缺项已 RED→40/40 并独立批准，新 CI 与迟到 200 浏览器检查仍待验，详见 `CHANGELOG.md`。
+
+- [修复] CI 平台修正本机 279/279（零跳过）、格式/类型检查通过，产品与测量包哈希未变；新 Linux CI 仍待验。性能稳态继续，W5 尚需补真实迟到 200 读取不重绘的浏览器证据，详见 `CHANGELOG.md`。
+
+- [提交] `9e90471b` 已推送原 Draft PR；三角色可溯源 Release 包验证/只读安装计划通过，256 文件 bootstrap 后进入 30 分钟稳态。Linux CI 暴露 13 项工具平台边界，新增 CI 合同已 RED，仅修测试与工具保障，产品冻结，详见 `CHANGELOG.md`。
+
+- [验证] 显式三原生二进制的完整 Service 共 1148 项、4 跳过、零失败；CLI 与 rename/crash 实跑，固定版本暂存工程漂移通过，准备 57 路径源码提交。干净 revision 包、长性能及新 CI 仍未完成，详见 `CHANGELOG.md`。
+
+- [验证] 原生浏览器登录/退出竞态已过：新 cookie 被后续 DELETE 使用并在服务端撤销，退出后两种读取均 401；窄屏三消息已目视。57 路径源码集成门通过，全 Service 回归、干净 revision 包、长性能与新 CI 仍待验，详见 `CHANGELOG.md`。
+
+- [修复] 六维独立审查发现 Web 登录/退出 cookie 乱序，先 3 FAIL 再串行队列 16/16 并独立关闭；TLS 短探针区分回调缺失与端口假设，修正后 15/15、正确 pin 502/错误 pin 拒绝均实证。真实浏览器重验与 30 分钟性能仍待完成，详见 `CHANGELOG.md`。
+
+- [修复] 模板父目录 alias 已最小修复并独立通过，168 项全过；显式原生全脚本 598 项通过/2 既有跳过，lint/typecheck/build/knip/安全与不变量通过。TLS-only 复现和 W6 六维审查继续，旧 HEAD CI 不代表当前候选通过，详见 `CHANGELOG.md`。
+
+- [验证] 三角色原生安装计划与 Collector/Service wrapper dry-run 通过且未写目标；模板 164 项通过后独立发现父目录 alias 漏检，新增 4 项已 RED。首轮长测在 TLS 证书验证处失败、稳态样本为 0，已汇合自有进程并保留证据；33 项恢复/认证回归已过，详见 `CHANGELOG.md`。
+
+- [验证] 安装 dry-run/CI 合同合计 53 项通过，Remote 原生计划未写目标；新恢复两项 fixture 失败已定位修正待复跑，长测认证 TTL 缺口已先 RED，未改产品 TTL。角色模板与实际性能仍待验，详见 `CHANGELOG.md`。
+
+- [验证] 三角色原生诊断包独立 verify-only 与安全加载探针通过，包快照不变、未启动服务；17 来源退休清单已补，真实主机全为未验证。零 revision 测试包不是部署制品，启动模板/故障/性能/新 CI 仍待验，详见 `CHANGELOG.md`。
+
+- [修复] 真实浏览器发现多词查询空格变加号，单行客户端修正后 12/12 及原生 HTTPS 两项整链通过；三角色清单漏验分别 RED→Service 68、Collector/Remote 73 全过。性能统计 13 项已过但实测/故障/原生包/新 CI 未完成，详见 `CHANGELOG.md`。
+
+- [验证] Collector/Service/Remote Release 构建均退出 0；Core 1737 项（1 既有跳过）与 App 1175 项零失败。Service 打包 59 项虽全过，独立审查仍发现嵌套清单漏验；浏览器正在执行，原生包/性能/新 CI 未过门，详见 `CHANGELOG.md`。
+
+- [验证] 真实 Collector→双 Remote→HQ Service→Web IPC 两代链已过，保留字节/消息前缀与 normal 分层；Service/CLI 29 项、MCP 270 项、TLS helper 31 项通过。两次前序失败为 fixture 缺字段/单消息 skip；完整 browser、故障/性能/原生包及 CI 仍待验，详见 `CHANGELOG.md`。
+
+- [验证] Service 显式 HOME/凭据文件入口完成 RED→11/11 GREEN，生产增量独立批准；全 Service 1124 项（1 既有跳过）零失败，原生 Service 构建通过。真实二进制启动/整链与 TLS 仍待验，详见 `CHANGELOG.md`。
+
+- [验证] 原生CLI生命周期/双代双ACK已过，Worker磁盘状态34/34、Runtime透传18/18、CLI状态JSON15/15独立批准；包30项及提取后Collector282项通过，Service安全入口与真实整链仍在TDD，详见 `CHANGELOG.md`。
+
+- [验证] Collector全套282/282、后台循环16/16、Service全套1093项（1既有跳过）及CLI参数/OFF 41项通过；真实CLI正向与打包剩余绕过仍在TDD，磁盘状态/完整W3–W6未完成，详见 `CHANGELOG.md`。
+
+- [验证] Service Runner启动异常修复已独立批准，13/13通过；Collector冷WAL与双ACK重启13/13、打包真实布局21/21通过，后台错误恢复、真实CLI/包及完整W3–W6仍待验，详见 `CHANGELOG.md`。
+
+### 2026-09-06
+
+- [验证] publication31/31、CAS29/29、catalog关闭2/2及真实Service Runner链11/11已过；独立审查仍阻断启动异常清理，Collector冷WAL启动6/12失败，打包真实GRDB布局待修，详见 `CHANGELOG.md`。
+
+- [验证] 消费器23/23、FD采集15/15、Service运行时真实handler链10/10通过；Collector原28项过、新预算与父目录丢失复现/打包symlink门待修，Runner与完整W3–W6仍未完成，详见 `CHANGELOG.md`。
+
+- [修复] 中央消费器跨轮恢复已22/22 GREEN；独立审阅另发现 parser revision 字节比较围栏缺口，追加单项复现中，尚未最终批准，详见 `CHANGELOG.md`。
+
+- [验证] `92c7e3cf` 三项 CI 已过；中央消费器原19项通过、新3项跨轮恢复真实RED待修，Web脚本9/9、长文合成链退出0；迟到200浏览器竞态与完整W3–W6仍待验，详见 `CHANGELOG.md`。
+
+- [新增] 合成采集→真实归档 ACK→中央 replay/FTS→HTTP/IPC→Web 正文链已接通；中央 Service 1009过/1既有跳过、Collector279/279、Remote398/398。仍非完整 W3–W6 二进制验收，详见 `CHANGELOG.md`。
+- [排查] 首次全Service命令未隔离 Foundation home，已停止；真实源是否受影响未验证。修正后先验真实XCTest home再全量通过，未做生产补救或扩大扫描，详见 `CHANGELOG.md`。
+
+- [验证] A5d追加App/Core共2901项（1既有跳过、零失败）及MCP270/270通过，独立最终门进行中。T4a真实RED暴露12项围栏缺口，另11项测试观测/顺序已独立裁决修正，GREEN执行中，详见 `CHANGELOG.md`。
+
+- [验证] A5d中央Service935过/1既有跳过/零失败，脚本205过/2条件跳过及类型/安全门通过；最终集成门与新CI待验。T4a57项回归执行中，旧head CodeQL仍待验，详见 `CHANGELOG.md`。
+
+- [验证] `9b969a9c` Tests/依赖已过，CodeQL待验；A5d donor全Service过门、三文件按哈希整合后中央回归中。N4a修正额外连接复用断言后279/279，T4a新增12项草案过门待RED；均非完整运行验收，详见 `CHANGELOG.md`。
+
+- [提交] CI 修正已推送 `9b969a9c`，新依赖过、Tests/CodeQL待验；A5d定向23/23通过、全Service运行中。N4a 276/279，三项定位为替换main后的旧连接复用；T4a新增围栏回归草案中，均未整合，详见 `CHANGELOG.md`。
+
+- [验证] CI 单点修正五路径最终独立双门已过，逆向字节比较确认仅 `self.records`，准备正常修正提交推送；新head 16.4 CI仍待验，不夹带 donor 功能，详见 `CHANGELOG.md`。
+
+- [修复] `010a2c5d` Swift CI 在 Xcode16.4 编译测试辅助类时失败；独立门批准仅补 `self.records`，38项测试体与生产代码不变。中央 Service 912过/1既有跳过/零失败；修正最终门及新head CI待验。A5d 23项真实RED后仅扩展实现，详见 `CHANGELOG.md`。
+
+- [提交] A5c 已正常推送 `010a2c5d`，PR #446 仍 Draft/未合并，新三 CI 待验。T4a 45 项与 N4a 新24项真实 RED 已确认，仅各自源文件进入 GREEN；N4a 旧255全过。A5d 23项草案过门、RED运行中，详见 `CHANGELOG.md`。
+
+- [验证] A5c 七路径最终独立双门与暂存漂移已过，冻结哈希未变；旧 head 三 CI 再核全过，准备正常提交推送，新 head CI 待验。T4a 前轮混有夹具错误，仅修夹具重跑 RED，未开实现，详见 `CHANGELOG.md`。
+
+- [验证] A5c 独立双门后按原哈希整合：中央 Service 912 过/1 既有跳过/零失败，1 条 reader QoS 警告；脚本205过/2条件跳过及类型/安全门通过，最终暂存门与新CI待验。T4a进入45项RED，N4a/A5d仅测试草案，详见 `CHANGELOG.md`。
+
+- [验证] A5c 修正 NUL 夹具并补快照关闭顺序真实 RED 后，38/38 GREEN、原 SQLite 重复关闭日志消失；完整 Service/独立门待验。T4a 二稿继续校正，N4a 合同过门后仅开测试草案，详见 `CHANGELOG.md`。
+
+- [验证] `843d0038` 三项 CI 全过，PR #446 仍 Draft/未合并；A5c 首轮编译类型修正后运行 GREEN v2，37 项测试未变，T4a 初稿独立门未过并继续校正，详见 `CHANGELOG.md`。
+
+- [验证] `843d0038` Tests/依赖已过，CodeQL 待验；T4a 修订合同经独立双门后冻结，仅开两个文件的 TEST-DRAFT，A5c 仍仅源码 GREEN、37 项测试冻结，详见 `CHANGELOG.md`。
+
+- [验证] A5c 校正后的 37 项草稿经独立门并实际 RED：5 过/32 失败、零 skip/运行时警告；首次仅缺旧 donor CAS 基线导致编译失败，已按中央哈希同步并单列。现仅 producer 源码进入 GREEN，测试冻结，详见 `CHANGELOG.md`。
+- [提交] N3-B2 已正常推送 `843d0038`，PR #446 仍 Draft/未合并；新依赖 CI 通过、Tests/CodeQL 运行中。A5c 继续测试草稿，T4a 单项领取/重放/parsed 原子提交仍为待审方案，无 job 的 skip 就绪另留 T4b，详见 `CHANGELOG.md`。
+- [验证] N3-B2 十路径最终独立双门及暂存漂移已过，六个实现/路由哈希未变，准备正常提交推送；记录中的数字 producer 是命令会话编号而非 OS PID，已追加澄清，新 head CI 仍单独待验，详见 `CHANGELOG.md`。
+- [验证] `18c9bc06` 三项 CI 全过；N3-B2 补充独立门后按冻结哈希进入中央，完整 Collector 255/255、脚本 205/2 条件 skip 与类型/安全/invariants 通过，保留 1 条烟测 QoS 警告。十路径最终门与新 head CI 待验，A5c 继续测试草稿校正，详见 `CHANGELOG.md`。
+- [验证] `18c9bc06` Tests/依赖 CI 已过，CodeQL 待验；N3-B2 donor 254/254 和真实临时目录烟测 1/1、合并 255/255 通过，保留前两次夹具失败与 QoS 警告，补充独立门及中央整合待验。A5c 测试草稿九组修正中，详见 `CHANGELOG.md`。
+- [验证] `6a33a42a` 三项 CI 全过后已推送 A5b `18c9bc06`，新依赖 CI 通过、Tests/CodeQL 待验；N3-B2 旧 196 全过／新 58 真实 RED，现仅源文件进入 GREEN。A5c 验收冻结并准备测试草案，仍未完成 W3–W6，详见 `CHANGELOG.md`。
+- [验证] A5b 九路径最终整合/记录独立双门与暂存漂移通过；`6a33a42a` Tests/依赖 CI 已过、CodeQL 仍运行，下一次推送等待其通过。原生监听新增负计数补测尚待 RED，Service producer 仍仅方案，详见 `CHANGELOG.md`。
+- [验证] T3b 已推送 `6a33a42a`，依赖 CI 通过、Tests/CodeQL 待验；A5b HTTP 补丁经独立双门按四哈希整合，donor 定向 68/68、donor/中央完整 Remote 各 391/391。Service producer、浏览器与完整 W3–W6 仍未完成，详见 `CHANGELOG.md`。
+- [验证] T3b 十路径最终整合及记录/索引独立双门通过，原四哈希未变、暂存漂移 v2 通过，准备按授权提交推送；新 head CI 单独待验，详见 `CHANGELOG.md`。
+- [验证] `5073f3f8` 三项 CI 全过；T3b App 旧调用文本扫描单行校正后全量 2,901（含 Core、1 既有 skip）零失败，MCP 270/270，保留 11 条 QoS 警告。十路径最终整合门及新提交 CI 待验，Web/原生监听草稿均未混入，详见 `CHANGELOG.md`。
+- [验证] N3-B1 已推送 `5073f3f8`，Tests/依赖 CI 通过、CodeQL 待验；T3b 补充双门后按四文件哈希整合，中央 Core 1,726、Service 875（各 1 既有 skip）零失败，App/MCP 与最终整合门待验。Web 新 13 项真实 RED、旧 49 全过，两个预算补测仍待 RED，完整 W3–W6 未完成，详见 `CHANGELOG.md`。
+- [验证] `8a53174b` 三项 CI 全过；N3-B1 独立实现门通过，按哈希整合后中央 Collector 196/196，脚本 205/2 条件 skip 与类型/安全/invariants 通过，暂存漂移与整合终门待验。T3b sibling 权威缺口另有 4 项真实 RED，继续 donor 修复，不混入本批，详见 `CHANGELOG.md`。
+- [验证] `8a53174b` Tests/依赖已通过，CodeQL remote 仍待验；N3-B1 donor 全量 196/196，独立实现门待验。T3b 原 35 GREEN 后又用 3 项真实 RED 复现写中撤权与 history 缺失零延迟待办，最小修复复测中；A5b 草稿补验收，未整合、未部署，详见 `CHANGELOG.md`。
+- [提交] `5995ad66` 三项 CI 全绿后，A5a/N3-A 九文件独立终门通过并推送 `8a53174b`；新 head 依赖通过、Tests/CodeQL 待验。N3-B1 仅 donor 测试草稿过门并获 RED 授权，T3b 草稿审阅中，完整 W3–W6 仍未完成，详见 `CHANGELOG.md`。
+- [验证] `5995ad66` 的 Tests/Swift unit/UI smoke 已全过，CI Xcode 16.4 下 readiness 38/38、Core 1,681（1 既有 skip）零失败；Swift CodeQL 仍待验，功能提交继续等待其独立门，详见 `CHANGELOG.md`。
+- [验证] CI 单行修正独立终门后已推送 `5995ad66`，新 head 依赖通过、Tests/CodeQL 待验；A5a/N3-A 五文件仍未提交，六套本地完整门零失败，等待功能整合终门及修正 head 全绿后再推送，未合并或部署，详见 `CHANGELOG.md`。
+- [验证] 单行夹具注解修正后完整 Core 1,681 项／1 既有 skip／零失败，38 测试体与夹具字节未变；准备仅修正＋四记录的独立整合门及提交，Xcode 16.4 新 head CI 仍待验，A5/N3 五文件继续排除，详见 `CHANGELOG.md`。
+- [修复] `f683ff71` 的 Swift unit/UI smoke 同在 Xcode 16.4 编译夹具时失败；独立双门批准仅补 `messages` 显式数组类型，38 测试体与生产代码不动，修后完整 Core/新 head CI 待验。A5/N3 本地完整组合门已过，但五文件明确排除本次 CI 修正提交，详见 `CHANGELOG.md`。
+- [验证] T3a 已推送 `f683ff71`，依赖 CI 通过、Tests/CodeQL 待验；A5a 与 N3-A 独立双门后按五文件哈希整合，中央 Remote 372/372 零失败/跳过，Service 开跑，其他组合门仍待验。FSEvents/FTS consumer 仅方案准备，完整 W3–W6 未完成，详见 `CHANGELOG.md`。
+- [验证] T3a 八路径暂存哈希与工程漂移通过，旧 head `4216479b` 三项 CI 全过，准备授权提交；Web 完整 Remote 372/372 待独立实现门，N3 修夹具后旧 156 全过／新 13 真实 RED，现仅 Owner 允许 GREEN，详见 `CHANGELOG.md`。
+- [验证] T3a 八路径中央整合／记录独立双门通过，开始暂存固定版工程漂移门；旧 head CodeQL 与新 head CI 仍待验，未合并或部署，详见 `CHANGELOG.md`。
+- [验证] Web A5a 真实 RED 49 项／27 失败用例后，测试冻结下 DTO/client 首次 GREEN 49/49；完整 Remote 与独立实现门待验，仍 donor-only。N3 草案双门通过，仅授权可执行 RED，详见 `CHANGELOG.md`。
+- [验证] T3a 中央 Core 1,681、Service 875（各 1 既有 skip）、App 1,175、MCP 270 全部零失败，脚本 205/2 条件 skip 与 typecheck/安全/invariants 通过；最终整合门、旧 head CodeQL 和新 head CI 仍待验。Web 草案双门后首次 RED 开跑，N3 仅测试骨架，详见 `CHANGELOG.md`。
+- [提交] N2 已推送 `4216479b`，PR #446 仍 Draft，依赖 CI 通过、Tests/CodeQL 运行中；T3a 独立实现双门后按三文件哈希整合，中央完整 Core 开跑，其他组合门待验；Web/N3 仍仅测试骨架，详见 `CHANGELOG.md`。
+- [验证] N2 十文件最终整合／记录双门与暂存工程漂移通过，准备授权提交推送；T3a 仅在 donor 过 129 项实测，独立实现门进行中，新 head CI 与完整 W3–W6 仍待验，详见 `CHANGELOG.md`。
+- [验证] N2 独立门后按哈希整合，中央 Collector 156/156、脚本 205/2 条件 skip、typecheck/安全/invariants 通过；`e94c0500` 三项 CI 全过。T3a 修正两处单消息 skip 夹具后 donor 129/129，独立实现门待验且不混入 N2；完整 W3–W6 未完成，详见 `CHANGELOG.md`。
+- [验证] N2 donor 完整 156/156 零失败／跳过，前两次特殊临时路径夹具失败保留；只修夹具，独立门／整合待验。T3a 新增 34 项测试草稿、实现仍为桩；`e94c0500` Tests／依赖通过，Swift CodeQL 待验，详见 `CHANGELOG.md`。
+- [提交] T2 已推送 `e94c0500`，Draft PR #446 未合并，新三项 CI 已启动；N2 未跑 GREEN，T3/Web 额度中断草稿均隔离保留，完整 W3–W6 仍推进中，详见 `CHANGELOG.md`。
+- [验证] T2 九文件暂存候选通过最终整合／记录双门；旧 head `9fd6db26` 三项 CI 全通过（CodeQL Gate 10:33:35），准备授权提交推送，新 head CI 待验，N2/T3/Web 草稿不在候选中，详见 `CHANGELOG.md`。
+- [验证] T2 过独立双门并按四文件哈希整合；中央 Core 1,643（1 skip）、Service 875（1 skip）、App 1,175、MCP 270 零失败，脚本 205/2 条件 skip；旧 head CodeQL product 仍待验，T3/Web 线程额度中断草稿与 N2 均未混入，详见 `CHANGELOG.md`。
+- [验证] `9fd6db26` Tests/依赖检查通过，CodeQL 仍运行；T2 有界历史 GREEN 91/0 待独立门，N2 原 155 项与补充 firmlink 单项均取得真实 RED，现仅允许最小 GREEN；首版 Web 正文要求 metadata/parsed/ready 同代，未知观测不填健康，详见 `CHANGELOG.md`。
+- [验证] N1＋A4 已提交推送 `9fd6db26`，PR #446 仍 Draft，新三项 CI 运行中；提交后漂移测试 10/10（含原 2 条件 skip）；T2 有界历史 2 项新测试待 RED、N2 骨架准备均未混入，详见 `CHANGELOG.md`。
+- [验证] N1＋A4 十一文件候选通过组合双门和暂存哈希／固定版工程漂移门；中央 Collector 126、Remote 341 全过，脚本 205/2 条件 skip，准备提交推送，新 head CI 待验；T2/N2 未混入，详见 `CHANGELOG.md`。
+- [验证] A4 独立双门通过并按哈希整合，中央 Remote 341/0；T2 donor 89/0，版本计算的全历史内存展开正补 RED 后收敛，暂未整合；现候选 archive safety/typecheck/五项 invariant 通过，详见 `CHANGELOG.md`。
+- [验证] `1523487b` 三项 CI 全通过；N1 独立双门通过并按哈希整合，中央 Collector 126/0；A4 donor 完整 Remote 341/0，独立门/整合待验；T2 89 项 GREEN 正运行，N2 仅测试骨架，未部署，详见 `CHANGELOG.md`。
+- [验证] N1 donor 完整 Collector 126/0，独立门/中央整合待验；真实 HTTP 定向 49/0，完整 341 仅既有 firmlink 测试 home 选址报错，正换工作树内隔离 home 重跑。T2 修正 fixture 后 45 项真实 RED，旧 44 全过，GREEN 实现中，详见 `CHANGELOG.md`。
+- [验证] `1523487b` 已推送，Tests/依赖检查通过，09:19 CST CodeQL 仍在运行；N1 donor 完整 Collector 124 取得真实 RED，另独立复现旧 owner Unicode 字节栅栏绕过，GREEN/真实 HTTP/T2 仍在推进，未部署，详见 `CHANGELOG.md`。
+- [验证] POSIX/T1/Web auth 已整合，六套中央完整门 Core 1,596、Service 875（各 1 既有 skip）、App 1,175、MCP 270、Collector 108、Remote 292 全部零失败；最终脚本 205/2 条件 skip，跨片双门和暂存哈希复核通过，旧 head `09de6304` 三项 CI 全通过，准备提交/新 head CI 待验；N1/T2/真实 HTTP 下一片只在 donor 写 RED，未部署，详见 `CHANGELOG.md`。
+- [验证] 入口取消修复独立双门通过并整合，中央 Collector 108/0；T1 整合后的完整 Core 1,596、Service 875（各 1 既有 skip）零失败，App/其他组合门和 Web 独立门仍在推进，详见 `CHANGELOG.md`。
+- [验证] `09de6304` 已推送，Tests/依赖检查通过、Swift CodeQL 待验；POSIX 中央 107/0，入口取消真实 RED 后 donor 108/0；T1 抢占 44/0 加并发连续 20 次通过并过独立门，Web auth donor 45/0，后续整合/真实接线与 W3–W6 未完成，详见 `CHANGELOG.md`。
+- [验证] 本轮六套完整整合门零失败：Core 1,566、Service 875（各 1 既有 skip）、App 1,175、MCP 270、Remote 247、Collector 74；路径字节身份缺口真实 RED→GREEN 并过独立门，脚本 205/2 条件 skip，新 head CI 待验，W3–W6 未完成，详见 `CHANGELOG.md`。
+- [验证] Replay5 经独立双门通过并按五文件 SHA 整合，完整 Core 1,566（1 既有性能 skip）零失败；Web logout 窄例外 RED→GREEN、安全脚本 49/49、十套脚本 203/2 条件 skip，其他组合门/HTTP 实现/新 head CI 待验，详见 `CHANGELOG.md`。
+- [验证] `1660734` 的 Tests、CodeQL、依赖检查全部通过，PR #446 仍为 Draft；下一批已整合 inventory、Web IPC、bounded CAS 和 pure builder，中央定向门 68/31/127 零失败，完整组合门与新 head CI 尚待执行，详见 `CHANGELOG.md`。
+- [设计] 真实 Chrome 同源 GET 不携带 Origin，已据官方规则修订为固定 API header 加严格 Fetch Metadata 缺省分支；存在但无效的 Origin 不得降级。仅设计与合成浏览器验证，HTTP/完整 ingest/双副本/W6 仍未完成，未部署，详见 `CHANGELOG.md`。
+- [修复] `745de11d` 的 CI 仅 macOS 脚本门失败；旧 fixture 改为明确握手，另以 TERM/INT/HUP 三条真实 RED 证明并修复 Popen 返回前的锁释放窗口。HQ 12/12、信号组连续 12 轮、脚本 195/195、typecheck/Biome 及独立双门均通过；修正 head CI 待验，原 CI 调度窗口未归因，未修改已部署脚本，详见 `CHANGELOG.md`。
+- [验证] 本批完整整合门全部通过：Core 1,521、App 1,175、Service 858、MCP 270、Remote 247、Collector 35 零失败（Core/Service 各 1 既有 skip），190 项脚本、invariants、fixture 和独立交叉门通过；准备提交推送，新 SHA CI 待验，inventory/replay/实际 Web IPC 尚在独立树，未部署，详见 `CHANGELOG.md`。
+- [验证] C1 隐私/身份源及 typed Web client 已按冻结哈希整合，worker Collector 35、Core 定向 273、client 18 均零失败并过独立门；中央完整 Service 858（1 既有 skip）零失败。Remote 全套的既有 firmlink 测试环境问题仍在复验，完整 replay/HTTP/W3–W6 尚未完成，未部署，详见 `CHANGELOG.md`。
+
 ### 2026-09-05
 
+- [验证] W4 源/epoch/解析格式 registry 已整合（worker 72/0、Grok 独立双门通过）；全文续传 14 项通过；可选 AI 解耦补获退出锁滞留真实 RED，最小 cancel/join 后 11/0 并过独立门，完整整合回归和新 head CI 待验，仍非完整 replay/Web，详见 `CHANGELOG.md`。
+- [验证] 基础提交 `248e64ab` 在 Draft PR #446 的 Tests、CodeQL Gate 和依赖检查全部通过，CollectorCore 已实际进入必需 CI；后续 registry、隐私证明、全文续传及可选 AI 解耦仍在本地 TDD/整合中，不继承旧 SHA 的 CI 结论，未合并或部署，详见 `CHANGELOG.md`。
+- [验证] W2 `874a63f1` 已通过全部必需 CI；角色/采集核心、共享 IPC、首片身份与 intake ledger 已本地整合，Core 1,482、Service 833（各 1 既有 skip）、App 1,175、MCP 270、Collector 9、Remote 229 均零失败，独立交叉门通过且补入 Collector CI，本波 CI 待验；完整 collector、中央 replay/Web 链未完成，未部署，详见 `CHANGELOG.md`。
+- [验证] W2 默认关闭的 publication/ACK 接收端已通过独立完整 Remote 回归 229/229、零失败/跳过，包含真实子进程重启恢复与旧 archive/recovery/MCP；模型与存储最终只读门 PASS/APPROVED，本波 PR CI 待验。W3 角色/采集核心与 Web IPC 基础在独立工作树推进，未部署，详见 `CHANGELOG.md`。
+- [验证] Draft PR #446 的 W1 修正 head `638a8454` 已通过 Tests、CodeQL Gate 和依赖审查；Core/App/Service/MCP/Remote 与 14 项 UI smoke 均零失败，本地 Node 1,564/1,564；完整 UI 不属于此次 PR 门。W2 接收入库继续推进，W3 角色隔离在独立工作树开发，未合并或部署，详见 `CHANGELOG.md`。
+- [提交] W1 已提交推送 `52fcc86e` 并建 Draft PR #446；CI 抓到新增 invariant 的符号反引号违反文件锚点约定，已复现并仅修文档，本地完整脚本门 135/135；待新 head CI 通过后继续 W2，未合并或部署，详见 `CHANGELOG.md`。
+- [设计] 新工作树已写完整 collector→HQ 索引/Web→独立双副本的七波实施顺序；Grok 经 Herdr 审出的 7 组合同缺口已修订并通过复核（PASS/APPROVED），W2 接收协议与 W3/W4 接口冻结；详见 `CHANGELOG.md` 及其链接设计/计划。
+- [修复] 第一波本地完成 embedding 热查询与“App 不拥有已 adopted 的外部 Service”；查询真实 VM-step RED→GREEN，启动器含退出后迟到探测竞态，未更改生产实例。
+- [验证] 两切片独立 spec/quality 门通过；Core 1,452（1 既有性能 skip）/0 失败，launcher 56/0 失败；新 collector、服务器接收协议、HQ ingest、Web 和生产切换尚未完成，不能据此宣称本机已轻量化。
 - [提交] #444 已正常合并至 `81ee3a1d`；main 完整 CI 全绿，UI 61 项/2 既有 skip/0 失败，截图 31/31；PR 与 resulting-main CodeQL 均已通过。
 - [部署] 1569 签名包安装复验通过；HQ 新 Service 已完成初扫（约 2 分 17 秒），post-scan 状态与两条 pending 队列验收通过。M1/HQ RemoteServer 与新构建二进制相同，保留健康实例，不重复部署。
 - [部署] 本机旧 Service 等待近 30 分钟后，按继续收尾确认、复核 PID/路径/备份后仅强制结束旧 PID；launchd 已自动拉起 1569，哈希/socket/MCP/live DB quick_check 通过，Live 阶段推进后复验返回 87 会话/14 秒；初扫完成与 post-scan 同步状态未冒报。

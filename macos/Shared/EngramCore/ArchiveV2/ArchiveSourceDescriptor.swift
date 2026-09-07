@@ -115,9 +115,3 @@ public struct ArchiveSourceDescriptor: Equatable, Sendable {
         return relative
     }
 }
-
-/// Conformance is the archive eligibility boundary. A regular file alone is
-/// never enough to opt an adapter into exact capture.
-public protocol ExactArchiveSourceAdapter: SessionAdapter {
-    func archiveSourceDescriptor(locator: String) async throws -> ArchiveSourceDescriptor
-}

@@ -1,25 +1,5 @@
 import Foundation
 
-public enum SourceName: String, CaseIterable, Codable, Sendable {
-    case codex
-    case claudeCode = "claude-code"
-    case copilot
-    case geminiCli = "gemini-cli"
-    case opencode
-    case iflow
-    case qwen
-    case qoder
-    case kimi
-    case minimax
-    case lobsterai
-    case commandcode
-    case cline
-    case cursor
-    case vscode
-    case antigravity
-    case windsurf
-}
-
 /// Canonical filesystem roots shared by project migration and read-only audit
 /// surfaces. Keep storage-only Codex roots here even though they are not
 /// independent adapter sources.
@@ -419,6 +399,12 @@ public protocol TailIndexingSessionAdapter: SessionAdapter {
         from parsedOffset: Int64,
         expectedBoundaryHash: String
     ) async throws -> IndexingTailScanResult
+}
+
+/// Conformance is the archive eligibility boundary. A regular file alone is
+/// never enough to opt an adapter into exact capture.
+public protocol ExactArchiveSourceAdapter: SessionAdapter {
+    func archiveSourceDescriptor(locator: String) async throws -> ArchiveSourceDescriptor
 }
 
 public extension SessionAdapter {

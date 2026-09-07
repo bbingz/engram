@@ -148,6 +148,7 @@ enum JSONLAdapterSupport {
         locator: String,
         limits: ParserLimits,
         reportFailures: Bool = false,
+        strictRecords: Bool = false,
         countsTowardMessageLimit: ((JSONObject) -> Bool)? = nil,
         beforeIdentityValidation: () -> Void = {}
     ) throws -> ([JSONObject], ParserFailure?) {
@@ -157,9 +158,18 @@ enum JSONLAdapterSupport {
             var objects: [JSONObject] = []
             var messageCount = 0
             var exceededMessageLimit = false
+            var recordFailure: ParserFailure?
+            let shouldReportFailures = reportFailures || strictRecords
 
             for line in try reader.readLines() {
-                guard let object = parseObject(line) else { continue }
+                if strictRecords {
+                    try Task.checkCancellation()
+                    if line.utf8.allSatisfy({ $0 == 0x20 || $0 == 0x09 || $0 == 0x0d || $0 == 0x0a }) { continue }
+                }
+                guard let object = parseObject(line) else {
+                    if strictRecords { recordFailure = .malformedJSON; break }
+                    continue
+                }
                 if countsTowardMessageLimit?(object) ?? true {
                     guard messageCount < limits.maxMessages else {
                         exceededMessageLimit = true
@@ -171,7 +181,7 @@ enum JSONLAdapterSupport {
             }
 
             beforeIdentityValidation()
-            let capFailure: ParserFailure? = reportFailures && exceededMessageLimit
+            let capFailure: ParserFailure? = shouldReportFailures && exceededMessageLimit
                 ? .messageLimitExceeded
                 : nil
             let after: FileIdentity
@@ -183,8 +193,9 @@ enum JSONLAdapterSupport {
             guard limits.isSameFileIdentity(before, after) else {
                 return (objects, capFailure ?? .fileModifiedDuringParse)
             }
+            if let recordFailure { return (objects, recordFailure) }
             if let capFailure { return (objects, capFailure) }
-            if reportFailures, let failure = reader.failures.first {
+            if shouldReportFailures, let failure = reader.failures.first {
                 return (objects, failure)
             }
             return (objects, nil)
@@ -794,11 +805,32 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
 
     /// Single-pass info + messages for the indexer (M7 tail-resume prep).
     func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
+        switch try Self.scanFileForIndexing(
+            physicalLocator: locator, logicalLocator: locator, limits: limits, strictRecords: false
+        ) {
+        case .success(let value): return .success(value.scan)
+        case .failure(let failure): return .failure(failure)
+        }
+    }
+
+    static func scanCapturedSource(
+        physicalLocator: String, logicalLocator: String
+    ) throws -> AdapterParseResult<CapturedSourceScan> {
+        try scanFileForIndexing(
+            physicalLocator: physicalLocator, logicalLocator: logicalLocator,
+            limits: .default, strictRecords: true
+        )
+    }
+
+    private static func scanFileForIndexing(
+        physicalLocator: String, logicalLocator: String, limits: ParserLimits, strictRecords: Bool
+    ) throws -> AdapterParseResult<CapturedSourceScan> {
         do {
             let (objects, failure) = try JSONLAdapterSupport.readObjects(
-                locator: locator,
+                locator: physicalLocator,
                 limits: limits,
                 reportFailures: true,
+                strictRecords: strictRecords,
                 countsTowardMessageLimit: { Self.message(from: $0) != nil }
             )
             if let failure, failure != .fileModifiedDuringParse { return .failure(failure) }
@@ -807,25 +839,30 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
                 return .failure(.fileModifiedDuringParse)
             }
             let info: NormalizedSessionInfo
-            switch Self.sessionInfo(from: objects, locator: locator) {
+            switch Self.sessionInfo(from: objects, locator: logicalLocator, physicalLocator: physicalLocator) {
             case .failure(let reason): return .failure(reason)
             case .success(let value): info = value
             }
             let checkpoint = failure == nil
-                ? try JSONLAdapterSupport.checkpoint(locator: locator, limits: limits)
+                ? try JSONLAdapterSupport.checkpoint(locator: physicalLocator, limits: limits)
                 : nil
             let checkpointBoundaryHash = checkpoint?.parsedOffset == info.sizeBytes
                 ? checkpoint?.boundaryHash
                 : nil
             return .success(
-                IndexingScan(
-                    info: info,
-                    messages: messages,
-                    parseFailure: failure,
-                    checkpointParsedOffset: checkpoint?.parsedOffset,
-                    checkpointBoundaryHash: checkpointBoundaryHash
+                CapturedSourceScan(
+                    scan: IndexingScan(
+                        info: info,
+                        messages: messages,
+                        parseFailure: failure,
+                        checkpointParsedOffset: checkpoint?.parsedOffset,
+                        checkpointBoundaryHash: checkpointBoundaryHash
+                    ),
+                    rawSourceSessionID: info.id
                 )
             )
+        } catch is CancellationError where strictRecords {
+            throw CancellationError()
         } catch let failure as ParserFailure {
             return .failure(failure)
         } catch {
@@ -909,9 +946,11 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
 
     private static func sessionInfo(
         from objects: [JSONLAdapterSupport.JSONObject],
-        locator: String
+        locator: String,
+        physicalLocator: String? = nil
     ) -> AdapterParseResult<NormalizedSessionInfo> {
         var meta: JSONLAdapterSupport.JSONObject?
+        var metadata = SourceMetadataProjection(format: .codex, locator: locator)
         var userCount = 0
         var assistantCount = 0
         var toolCount = 0
@@ -925,7 +964,7 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
             if let timestamp = JSONLAdapterSupport.string(object["timestamp"]) {
                 lastTimestamp = timestamp
             }
-            if JSONLAdapterSupport.string(object["type"]) == "session_meta", meta == nil {
+            if metadata.consume(object) == .codexMetadata {
                 meta = JSONLAdapterSupport.object(object["payload"])
             }
             if JSONLAdapterSupport.string(object["type"]) == "turn_context",
@@ -962,7 +1001,7 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
         }
 
         guard let meta,
-              let id = JSONLAdapterSupport.string(meta["id"]),
+              let id = metadata.nativeSessionID,
               let startTime = JSONLAdapterSupport.string(meta["timestamp"])
         else { return .failure(.malformedJSON) }
         guard userCount + assistantCount + toolCount > 0 else {
@@ -977,7 +1016,7 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
                 source: .codex,
                 startTime: startTime,
                 endTime: lastTimestamp.isEmpty ? nil : lastTimestamp,
-                cwd: JSONLAdapterSupport.string(meta["cwd"]) ?? "",
+                cwd: metadata.cwd ?? "",
                 project: nil,
                 model: detectedModel ?? turnContextModel ?? JSONLAdapterSupport.string(meta["model"]),
                 messageCount: userCount + assistantCount + toolCount,
@@ -987,7 +1026,7 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
                 systemMessageCount: systemCount,
                 summary: firstUserText.isEmpty ? nil : firstUserText,
                 filePath: locator,
-                sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
+                sizeBytes: JSONLAdapterSupport.fileSize(locator: physicalLocator ?? locator),
                 indexedAt: nil,
                 agentRole: effectiveRole,
                 originator: originator,

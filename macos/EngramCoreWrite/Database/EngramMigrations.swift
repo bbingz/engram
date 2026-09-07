@@ -550,6 +550,9 @@ enum EngramMigrations {
         try addSyncLedgerColumnsIfNeeded(db)
         try backfillFtsMapIfNeeded(db)
         try migrateAuxTablesToV2(db)
+        try CaptureIngestLedger.createSchema(db)
+        try CaptureIngestSourceRegistry.createSchema(db)
+        try CaptureIngestCommitter.createSchema(db)
     }
 
     /// Idempotently add columns to `session_index_jobs` on legacy DBs whose CREATE

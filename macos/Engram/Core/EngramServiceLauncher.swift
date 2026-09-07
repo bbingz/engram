@@ -6,6 +6,7 @@ struct EngramServiceLaunchConfiguration: Equatable {
     let socketPath: String
     let databasePath: String
     let foreground: Bool
+    var runtimeRole: EngramRuntimeRole = .local
 
     static func `default`(
         homeDirectory: URL = EngramUserDataDirectory.resolvedHomeDirectory(),
@@ -37,7 +38,6 @@ final class EngramServiceLauncher {
 
     typealias StatusProbe = @Sendable () async throws -> EngramServiceStatus
     typealias StatusSink = @MainActor @Sendable (EngramServiceStatus) -> Void
-    typealias ShutdownRequester = @Sendable (String) async -> Bool
 
     /// OBS-O2: callback invoked for each structured event the service prints to
     /// stdout (e.g. `index_error`). The status poll channel can only ever report
@@ -47,8 +47,12 @@ final class EngramServiceLauncher {
     typealias EventSink = @MainActor @Sendable (EngramServiceEvent) -> Void
 
     private var process: Process?
+    /// docs/invariants.md (External Service Ownership): a serving socket
+    /// discovered at launch belongs to its external supervisor.
+    /// Track the connection without taking ownership of its process or secrets.
     private var adoptedConfiguration: EngramServiceLaunchConfiguration?
-    private var adoptedStatusProbe: StatusProbe?
+    private var adoptedServiceAvailable = false
+    private var lifecycleGeneration = UUID()
     /// Socket path of the currently launched helper — used to scrub
     /// `ai-secrets.json` on stop (SEC-H2).
     private var processSocketPath: String?
@@ -58,22 +62,17 @@ final class EngramServiceLauncher {
     private let healthIntervalNanoseconds: UInt64
     private let startupGraceNanoseconds: UInt64
     private let maximumRestartAttempts: Int
-    private let shutdownRequester: ShutdownRequester
     private var onEvent: EventSink?
     private var onUnexpectedExit: StatusSink?
 
     init(
         healthIntervalNanoseconds: UInt64 = 5_000_000_000,
         maximumRestartAttempts: Int = 3,
-        startupGraceNanoseconds: UInt64 = 30_000_000_000,
-        shutdownRequester: @escaping ShutdownRequester = { socketPath in
-            await EngramServiceLauncher.requestShutdown(socketPath: socketPath)
-        }
+        startupGraceNanoseconds: UInt64 = 30_000_000_000
     ) {
         self.healthIntervalNanoseconds = healthIntervalNanoseconds
         self.startupGraceNanoseconds = startupGraceNanoseconds
         self.maximumRestartAttempts = maximumRestartAttempts
-        self.shutdownRequester = shutdownRequester
     }
 
     nonisolated static func arguments(for configuration: EngramServiceLaunchConfiguration) -> [String] {
@@ -218,15 +217,22 @@ final class EngramServiceLauncher {
     }
 
     var isRunning: Bool {
-        process?.isRunning == true || adoptedConfiguration != nil
+        process?.isRunning == true || (adoptedConfiguration != nil && adoptedServiceAvailable)
     }
 
     func start(configuration: EngramServiceLaunchConfiguration, onEvent: EventSink? = nil) throws {
-        if let onEvent { self.onEvent = onEvent }
-        guard process?.isRunning != true else { return }
-        guard adoptedConfiguration == nil else {
-            throw EngramServiceError.writerBusy(message: "EngramService is still shutting down")
+        guard configuration.runtimeRole == .local else {
+            throw EngramServiceError.serviceUnavailable(message: configuration.runtimeRole == .index
+                ? "EngramService is externally managed; reconnect instead of starting a helper"
+                : configuration.runtimeRole.unavailableMessage)
         }
+        if let onEvent { self.onEvent = onEvent }
+        guard adoptedConfiguration == nil else {
+            throw EngramServiceError.serviceUnavailable(
+                message: "EngramService is externally managed; reconnect instead of starting a helper"
+            )
+        }
+        guard process?.isRunning != true else { return }
         try Self.prepareIsolatedDataDirectory(configuration: configuration)
         // docs/invariants.md #1: probe the service-owned process lock before
         // spawning so a cooperatively terminating helper is not raced by a
@@ -279,7 +285,6 @@ final class EngramServiceLauncher {
         }
         try runProcess(proc, runtimeAISecretsPath: runtimeAISecretsPath)
         process = proc
-        adoptedStatusProbe = nil
         processSocketPath = configuration.socketPath
         self.stdoutPipe = stdoutPipe
         self.stderrPipe = stderrPipe
@@ -401,6 +406,18 @@ final class EngramServiceLauncher {
         onStatus: @escaping StatusSink,
         onEvent: EventSink? = nil
     ) {
+        guard configuration.runtimeRole.allowsLocalIndex else {
+            onStatus(.error(message: configuration.runtimeRole.unavailableMessage))
+            return
+        }
+        if configuration.runtimeRole == .index, adoptedConfiguration == nil {
+            guard process?.isRunning != true else {
+                onStatus(.error(message: "Cannot adopt an App-owned helper as externally managed"))
+                return
+            }
+            adoptedConfiguration = configuration
+            adoptedServiceAvailable = false
+        }
         if let onEvent { self.onEvent = onEvent }
         healthTask?.cancel()
         onUnexpectedExit = onStatus
@@ -432,7 +449,11 @@ final class EngramServiceLauncher {
 
                 do {
                     let status = try await statusProbe()
+                    guard !Task.isCancelled else { return }
                     await MainActor.run {
+                        if self?.adoptedConfiguration != nil {
+                            self?.adoptedServiceAvailable = true
+                        }
                         onStatus(status)
                     }
                     restartAttempts = 0
@@ -440,8 +461,17 @@ final class EngramServiceLauncher {
                 } catch is CancellationError {
                     return
                 } catch {
+                    guard !Task.isCancelled else { return }
                     let message = error.localizedDescription
                     guard let self else { return }
+                    if self.adoptedConfiguration != nil {
+                        self.adoptedServiceAvailable = false
+                        restartAttempts += 1
+                        onStatus(.degraded(
+                            message: "EngramService is externally managed; waiting for it to recover: \(message)"
+                        ))
+                        continue
+                    }
                     let helperIsRunning = self.isRunning
                     if Self.isWithinStartupGrace(startupGraceDeadline), helperIsRunning {
                         await MainActor.run {
@@ -529,12 +559,40 @@ final class EngramServiceLauncher {
         onStatus: @escaping StatusSink,
         onEvent: EventSink? = nil
     ) async {
+        guard !Task.isCancelled else { return }
+        let generation = UUID()
+        lifecycleGeneration = generation
+        guard configuration.runtimeRole.allowsLocalIndex else {
+            onStatus(.error(message: configuration.runtimeRole.unavailableMessage))
+            return
+        }
+        if configuration.runtimeRole == .index, adoptedConfiguration == nil {
+            guard process?.isRunning != true else {
+                onStatus(.error(message: "Cannot adopt an App-owned helper as externally managed"))
+                return
+            }
+            // Pin external ownership before the initial probe can suspend or
+            // fail. An absent socket never grants permission to spawn a writer.
+            adoptedConfiguration = configuration
+            adoptedServiceAvailable = false
+        }
+        if adoptedConfiguration != nil {
+            await restart(
+                configuration: configuration,
+                statusProbe: statusProbe,
+                onStatus: onStatus,
+                onEvent: onEvent
+            )
+            return
+        }
         if let status = try? await statusProbe() {
+            guard !Task.isCancelled, lifecycleGeneration == generation else { return }
             if let onEvent { self.onEvent = onEvent }
             if process?.isRunning != true {
                 adoptedConfiguration = configuration
-                adoptedStatusProbe = statusProbe
-                processSocketPath = configuration.socketPath
+                adoptedServiceAvailable = true
+                process = nil
+                processSocketPath = nil
             }
             onStatus(status)
             startHealthMonitor(
@@ -546,6 +604,7 @@ final class EngramServiceLauncher {
             return
         }
 
+        guard !Task.isCancelled, lifecycleGeneration == generation else { return }
         do {
             try start(configuration: configuration, onEvent: onEvent)
             onStatus(.starting)
@@ -571,14 +630,55 @@ final class EngramServiceLauncher {
     /// health monitor with a fresh startup grace. Reuses the existing
     /// stopProcessOnly/start/startHealthMonitor primitives — no new process
     /// logic. Surfaces `.starting` then `.running` on success, or `.error` if
-    /// `start()` throws (e.g. helper binary missing).
+    /// `start()` throws (e.g. helper binary missing). An externally managed
+    /// service only reconnects; its supervisor owns restart and replacement.
     func restart(
         configuration: EngramServiceLaunchConfiguration,
         statusProbe: @escaping StatusProbe,
         onStatus: @escaping StatusSink,
         onEvent: EventSink? = nil
     ) async {
-        guard await stopProcessOnly() else {
+        guard !Task.isCancelled else { return }
+        let generation = UUID()
+        lifecycleGeneration = generation
+        guard configuration.runtimeRole.allowsLocalIndex else {
+            onStatus(.error(message: configuration.runtimeRole.unavailableMessage))
+            return
+        }
+        if configuration.runtimeRole == .index, adoptedConfiguration == nil {
+            guard process?.isRunning != true else {
+                onStatus(.error(message: "Cannot adopt an App-owned helper as externally managed"))
+                return
+            }
+            adoptedConfiguration = configuration
+            adoptedServiceAvailable = false
+        }
+        if adoptedConfiguration != nil {
+            healthTask?.cancel()
+            healthTask = nil
+            do {
+                let status = try await statusProbe()
+                guard !Task.isCancelled, lifecycleGeneration == generation, adoptedConfiguration != nil else { return }
+                adoptedServiceAvailable = true
+                onStatus(status)
+            } catch {
+                guard !Task.isCancelled, lifecycleGeneration == generation, adoptedConfiguration != nil else { return }
+                adoptedServiceAvailable = false
+                onStatus(.degraded(
+                    message: "EngramService is externally managed; waiting for it to recover: \(error.localizedDescription)"
+                ))
+            }
+            startHealthMonitor(
+                configuration: configuration,
+                statusProbe: statusProbe,
+                onStatus: onStatus,
+                onEvent: onEvent
+            )
+            return
+        }
+        let stopped = await stopProcessOnly()
+        guard !Task.isCancelled, lifecycleGeneration == generation else { return }
+        guard stopped else {
             onStatus(.degraded(message: "EngramService is still shutting down; replacement not started"))
             return
         }
@@ -619,8 +719,14 @@ final class EngramServiceLauncher {
     }
 
     func stopIfOwned() {
+        lifecycleGeneration = UUID()
+        adoptedServiceAvailable = false
         healthTask?.cancel()
         healthTask = nil
+        if adoptedConfiguration != nil {
+            adoptedConfiguration = nil
+            return
+        }
         // SEC-H2: drop the plaintext AI secrets bridge as soon as we intend to
         // stop the helper. Token file cleanup is owned by the service process;
         // the bridge file is owned by the app launcher.
@@ -635,41 +741,16 @@ final class EngramServiceLauncher {
             Task { await Self.waitForExit(terminating, timeout: 2.0) }
             return
         }
-        guard let adoptedConfiguration else { return }
-        let shutdownRequester = shutdownRequester
-        Task { [weak self] in
-            if await shutdownRequester(adoptedConfiguration.socketPath) {
-                self?.adoptedConfiguration = nil
-                self?.adoptedStatusProbe = nil
-            }
-        }
     }
 
     @discardableResult
     private func stopProcessOnly() async -> Bool {
+        guard adoptedConfiguration == nil else { return false }
         if let socketPath = processSocketPath {
             scrubRuntimeAISecrets(forSocketPath: socketPath)
         }
         guard let terminating = terminateProcess() else {
-            guard let adoptedConfiguration, let adoptedStatusProbe else {
-                return process?.isRunning != true
-            }
-            let shutdownAccepted = await shutdownRequester(adoptedConfiguration.socketPath)
-            let stopped = shutdownAccepted
-                ? await Self.waitForAdoptedServiceExit(
-                    configuration: adoptedConfiguration,
-                    statusProbe: adoptedStatusProbe,
-                    timeout: Self.cooperativeRestartShutdownTimeout
-                )
-                : await Self.adoptedServiceHasExited(
-                    configuration: adoptedConfiguration,
-                    statusProbe: adoptedStatusProbe
-                )
-            if stopped {
-                self.adoptedConfiguration = nil
-                self.adoptedStatusProbe = nil
-            }
-            return stopped
+            return process?.isRunning != true
         }
         // Bounded wait so the old helper has actually released the
         // single-writer lock + socket before a restart spawns a new one;
@@ -707,81 +788,6 @@ final class EngramServiceLauncher {
             // loop between polls so a hung helper can never wedge the main actor.
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
-    }
-
-    nonisolated private static func requestShutdown(socketPath: String) async -> Bool {
-        let transport = UnixSocketEngramServiceTransport(socketPath: socketPath, connectTimeout: 2)
-        let request = EngramServiceRequestEnvelope(command: "shutdown")
-        do {
-            let response = try await transport.send(request, timeout: 2)
-            guard response.requestId == request.requestId else { return false }
-            if case .success = response { return true }
-            return false
-        } catch {
-            return false
-        }
-    }
-
-    nonisolated private static func waitForAdoptedServiceExit(
-        configuration: EngramServiceLaunchConfiguration,
-        statusProbe: @escaping StatusProbe,
-        timeout: TimeInterval
-    ) async -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if await adoptedServiceHasExited(
-                configuration: configuration,
-                statusProbe: statusProbe
-            ) {
-                return true
-            }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
-        return false
-    }
-
-    nonisolated private static func adoptedServiceHasExited(
-        configuration: EngramServiceLaunchConfiguration,
-        statusProbe: @escaping StatusProbe
-    ) async -> Bool {
-        do {
-            _ = try await statusProbe()
-            return false
-        } catch {
-            return serviceLocksAreAvailable(configuration: configuration)
-        }
-    }
-
-    nonisolated private static func serviceLocksAreAvailable(
-        configuration: EngramServiceLaunchConfiguration
-    ) -> Bool {
-        let runtimeLockPath = URL(fileURLWithPath: configuration.socketPath)
-            .deletingLastPathComponent()
-            .appendingPathComponent("engram-service.lock")
-            .path
-        let databaseLockPath = URL(fileURLWithPath: configuration.databasePath)
-            .deletingLastPathComponent()
-            .appendingPathComponent(".lock")
-            .path
-        return existingLockIsAvailable(atPath: runtimeLockPath)
-            && existingLockIsAvailable(atPath: databaseLockPath)
-    }
-
-    nonisolated private static func existingLockIsAvailable(atPath path: String) -> Bool {
-        let fd = open(path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else { return errno == ENOENT }
-        defer { close(fd) }
-        var info = stat()
-        guard fstat(fd, &info) == 0,
-              (info.st_mode & S_IFMT) == S_IFREG,
-              info.st_uid == geteuid(),
-              info.st_nlink == 1,
-              flock(fd, LOCK_EX | LOCK_NB) == 0
-        else {
-            return false
-        }
-        flock(fd, LOCK_UN)
-        return true
     }
 
     private func drain(

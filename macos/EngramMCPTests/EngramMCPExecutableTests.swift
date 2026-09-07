@@ -72,6 +72,107 @@ func makeHermeticRPCEnvironment(
 }
 
 final class EngramMCPExecutableTests: XCTestCase {
+    func testRuntimeRoleDiscoveryKeepsStaticKeywordToolsWithoutLocalCapabilities_repro() throws {
+        for document in [#"{"runtimeRole":"collector"}"#, #"{"runtimeRole":"replica"}"#, #"{"runtimeRole":null}"#] {
+            let requests = [
+                #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#,
+                #"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+                #"{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#,
+                #"{"jsonrpc":"2.0","id":4,"method":"server/discover"}"#,
+            ]
+            // The existing harness drains stdout after process exit. Keep each
+            // large tool catalog in its own process rather than filling its pipe.
+            let responses = try requests.flatMap { request in
+                try rpcSession([request], prepare: { sandbox in
+                    try self.prepareRuntimeRole(document, in: sandbox)
+                    try self.seedUsableSessionEmbeddings(at: XCTUnwrap(sandbox.environment["ENGRAM_MCP_DB_PATH"]))
+                })
+            }
+            XCTAssertEqual(responses.count, 4)
+            for id in [2, 3] {
+                let response = try XCTUnwrap(responses.first { $0["id"]?.intValue == id })
+                XCTAssertNil(response["error"])
+                XCTAssertNil(response["result"]?["isError"])
+                let tools = try XCTUnwrap(response["result"]?["tools"]?.arrayValue)
+                XCTAssertEqual(tools.count, 27)
+                let search = try XCTUnwrap(tools.first { $0["name"]?.stringValue == "search" })
+                XCTAssertEqual(search["inputSchema"]?["properties"]?["mode"]?["enum"]?.arrayValue?.compactMap(\.stringValue), ["keyword"])
+                if id == 3 {
+                    XCTAssertEqual(response["result"]?["resultType"]?.stringValue, "complete")
+                    XCTAssertNotNil(response["result"]?["ttlMs"])
+                }
+            }
+            for id in [1, 4] {
+                let response = try XCTUnwrap(responses.first { $0["id"]?.intValue == id })
+                XCTAssertTrue(response["result"]?["instructions"]?.stringValue?.contains("runtimeRole") ?? false)
+            }
+        }
+    }
+
+    func testRuntimeRoleDirectToolsAreUnavailableBeforeDatabaseAndServiceAccess_repro() throws {
+        for document in [#"{"runtimeRole":"collector"}"#, #"{"runtimeRole":"replica"}"#, #"{"runtimeRole":null}"#, "not-json"] {
+            let responses = try rpcSession([
+                #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_sessions","arguments":{"limit":1}}}"#,
+                #"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search","arguments":{"query":"authentication"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#,
+                #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"save_insight","arguments":{}}}"#,
+                #"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"project_move","arguments":{}}}"#,
+            ], prepare: { try self.prepareRuntimeRole(document, in: $0) })
+            XCTAssertEqual(responses.count, 4)
+            for response in responses {
+                XCTAssertNil(response["error"])
+                XCTAssertEqual(response["result"]?["isError"]?.boolValue, true)
+                let text = response["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue
+                XCTAssertTrue(text?.contains("runtimeRole") ?? false, text ?? "missing guidance")
+                XCTAssertNil(response["result"]?["structuredContent"]?["sessions"])
+            }
+        }
+    }
+
+    func testRuntimeRoleResourcesUseJSONRPCErrorsInBothProtocolEras_repro() throws {
+        for document in [#"{"runtimeRole":"collector"}"#, #"{"runtimeRole":"replica"}"#, #"{"runtimeRole":null}"#] {
+            let responses = try rpcSession([
+                #"{"jsonrpc":"2.0","id":1,"method":"resources/list"}"#,
+                #"{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"engram://insight/not-present"}}"#,
+                #"{"jsonrpc":"2.0","id":3,"method":"resources/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#,
+                #"{"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"uri":"engram://insight/not-present","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#,
+            ], prepare: { try self.prepareRuntimeRole(document, in: $0) })
+            XCTAssertEqual(responses.count, 4)
+            for response in responses {
+                XCTAssertNil(response["result"], "resource errors must not use the tools/call isError shape")
+                XCTAssertEqual(response["error"]?["code"]?.intValue, -32000)
+                XCTAssertTrue(response["error"]?["message"]?.stringValue?.contains("runtimeRole") ?? false)
+            }
+        }
+    }
+
+    func testRuntimeRoleUnsafeSettingsCannotFallBackToStaleLocalDatabase_repro() throws {
+        let responses = try rpcSession([
+            #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_sessions","arguments":{"limit":1}}}"#,
+        ], prepare: { sandbox in
+            try self.prepareRuntimeRole(#"{"runtimeRole":"collector"}"#, in: sandbox)
+            XCTAssertEqual(chmod(try XCTUnwrap(sandbox.environment["ENGRAM_SETTINGS_PATH"]), 0o644), 0)
+        })
+        XCTAssertEqual(responses.first?["result"]?["isError"]?.boolValue, true)
+        let text = responses.first?["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue
+        XCTAssertTrue(text?.contains("runtimeRole") ?? false)
+    }
+
+    func testRuntimeRoleLocalIndexAndMissingKeyRetainExistingMCPReads() throws {
+        for document in [#"{"runtimeRole":"local"}"#, #"{"runtimeRole":"index"}"#, #"{"unrelated":true}"#] {
+            let responses = try rpcSession([
+                #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_sessions","arguments":{"limit":1}}}"#,
+            ], prepare: { try self.prepareRuntimeRole(document, in: $0) })
+            XCTAssertNil(responses.first?["error"])
+            XCTAssertNotEqual(responses.first?["result"]?["isError"]?.boolValue, true)
+        }
+    }
+
+    private func prepareRuntimeRole(_ document: String, in sandbox: HermeticRPCEnvironment) throws {
+        let settings = URL(fileURLWithPath: try XCTUnwrap(sandbox.environment["ENGRAM_SETTINGS_PATH"]))
+        try Data(document.utf8).write(to: settings)
+        XCTAssertEqual(chmod(settings.path, 0o600), 0)
+    }
+
     private var repoRoot: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

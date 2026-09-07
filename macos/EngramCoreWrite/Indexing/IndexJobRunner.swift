@@ -21,22 +21,28 @@ public final class IndexJobRunner: StartupIndexJobRunning {
 
     private let writer: EngramDatabaseWriter
     private let adaptersBySource: [SourceName: any SessionAdapter]
+    // Capture authority is independent of legacy adapter availability and OFF by default.
+    private let capturePolicy: @Sendable () -> CaptureFTSReadinessPolicy?
+    var afterCaptureLoadForTesting: (() async throws -> Void)?
     private let log = CoreWriteLogger(category: "index-jobs")
 
     private var enabledSources: Set<SourceName> { Set(adaptersBySource.keys) }
 
     public init(
         writer: EngramDatabaseWriter,
-        adapters: [any SessionAdapter] = SessionAdapterFactory.defaultAdapters()
+        adapters: [any SessionAdapter] = SessionAdapterFactory.defaultAdapters(),
+        capturePolicy: @escaping @Sendable () -> CaptureFTSReadinessPolicy? = { nil }
     ) {
         self.writer = writer
+        self.capturePolicy = capturePolicy
         self.adaptersBySource = Dictionary(adapters.map { ($0.source, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
-    private struct PendingJob {
+    private struct PendingJob: Sendable {
         let id: String
         let sessionId: String
         let jobKind: String
+        let captureAuthority: FTSRebuildPolicy.CaptureJobAuthority?
     }
 
     private struct SessionContentSource {
@@ -86,21 +92,24 @@ public final class IndexJobRunner: StartupIndexJobRunning {
     /// write command per batch so the (potentially 100k+) drain releases the
     /// single write gate between batches and user write commands can interleave.
     public func runRecoverableJobsOnce() async throws -> (result: StartupIndexJobRecoveryResult, drained: Bool) {
-        let batch = try writer.read { db in
+        try Task.checkCancellation()
+        let batch = try readCheckingCancellation { db in
             try Self.takeRecoverableJobs(
                 db,
                 limit: Self.drainBatchSize,
-                enabledSources: enabledSources
+                enabledSources: enabledSources,
+                capturePolicy: capturePolicy()
             )
         }
         guard !batch.isEmpty else {
-            try writer.write { db in
-                try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources)
+            try writeCheckingCancellation { db in
+                try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources, capturePolicy: capturePolicy())
             }
-            let drained = try writer.read { db in
+            let drained = try readCheckingCancellation { db in
                 try FTSRebuildPolicy.recoverableFtsBacklog(
                     db,
-                    enabledSources: enabledSources
+                    enabledSources: enabledSources,
+                    capturePolicy: capturePolicy()
                 ).count == 0
             }
             return (StartupIndexJobRecoveryResult(completed: 0, notApplicable: 0), drained)
@@ -120,25 +129,27 @@ public final class IndexJobRunner: StartupIndexJobRunning {
             }
         }
 
-        try writer.write { db in
-            try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources)
+        try writeCheckingCancellation { db in
+            try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources, capturePolicy: capturePolicy())
         }
         // docs/invariants.md #5: finalization remains due-only, but service
         // scheduling must also see future debounce rows as a live backlog.
-        let drained = try writer.read { db in
+        let drained = try readCheckingCancellation { db in
             try FTSRebuildPolicy.recoverableFtsBacklog(
                 db,
-                enabledSources: enabledSources
+                enabledSources: enabledSources,
+                capturePolicy: capturePolicy()
             ).count == 0
         }
         return (StartupIndexJobRecoveryResult(completed: completed, notApplicable: notApplicable), drained)
     }
 
     public func recommendedFtsRetryDelayNanoseconds() throws -> UInt64? {
-        try writer.read { db in
+        try readCheckingCancellation { db in
             let backlog = try FTSRebuildPolicy.recoverableFtsBacklog(
                 db,
-                enabledSources: enabledSources
+                enabledSources: enabledSources,
+                capturePolicy: capturePolicy()
             )
             guard backlog.count > 0 else { return nil }
             // docs/invariants.md #5: due work is an immediate FTS-only cycle,
@@ -151,10 +162,11 @@ public final class IndexJobRunner: StartupIndexJobRunning {
     /// consuming every retry immediately. Future pending debounce rows remain
     /// eligible for the current drain after their bounded wait.
     public func shouldStopFtsDrainWave() throws -> Bool {
-        try writer.read { db in
+        try readCheckingCancellation { db in
             let backlog = try FTSRebuildPolicy.recoverableFtsBacklog(
                 db,
-                enabledSources: enabledSources
+                enabledSources: enabledSources,
+                capturePolicy: capturePolicy()
             )
             guard backlog.hasDeferredRetryable else { return false }
             // docs/invariants.md #5: a deferred retry stops this retry wave
@@ -162,7 +174,8 @@ public final class IndexJobRunner: StartupIndexJobRunning {
             return try Self.takeRecoverableJobs(
                 db,
                 limit: 1,
-                enabledSources: enabledSources
+                enabledSources: enabledSources,
+                capturePolicy: capturePolicy()
             ).isEmpty
         }
     }
@@ -191,35 +204,162 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         case retryable
     }
 
+    // Borrow the calling task BEFORE GRDB dispatches the synchronous body onto
+    // its queue. The handle remains within this call and is never retained.
+    private func readCheckingCancellation<T>(_ body: (Database) throws -> T) throws -> T {
+        try withUnsafeCurrentTask { parent in
+            try writer.read { db in
+                if parent?.isCancelled == true { throw CancellationError() }
+                let result = try body(db)
+                if parent?.isCancelled == true { throw CancellationError() }
+                return result
+            }
+        }
+    }
+
+    private func writeCheckingCancellation<T>(_ body: (Database) throws -> T) throws -> T {
+        try withUnsafeCurrentTask { parent in
+            try writer.write { db in
+                if parent?.isCancelled == true { throw CancellationError() }
+                let result = try body(db)
+                if parent?.isCancelled == true { throw CancellationError() }
+                return result
+            }
+        }
+    }
+
+    private func processCapture(
+        _ job: PendingJob, authority: FTSRebuildPolicy.CaptureJobAuthority
+    ) async throws -> JobOutcome {
+        guard let policy = capturePolicy() else { return .retryable }
+        try CaptureIngestNormalizedStore.checkpoint(policy.deadline)
+        guard try readCheckingCancellation({ db in
+            try FTSRebuildPolicy.captureJobAuthority(db, jobID: job.id, policy: policy)?.matches(authority) == true
+        }) else { return .retryable }
+
+        let writer = self.writer
+        // One joined read-only task per selected artifact, not a detached writer.
+        // Decode is bounded but cannot be hard-interrupted halfway through JSON.
+        let loading = Task.detached {
+            try withUnsafeCurrentTask { child in
+                try writer.read { db in
+                    if child?.isCancelled == true { throw CancellationError() }
+                    let snapshot = try CaptureIngestNormalizedStore.load(db, sessionID: job.sessionId,
+                        generationID: authority.generationID, expectedParserRevision: policy.parserRevision,
+                        enabledSources: policy.enabledSources, deadline: policy.deadline)
+                    if child?.isCancelled == true { throw CancellationError() }
+                    return snapshot
+                }
+            }
+        }
+        let attempt: Result<CaptureIngestNormalizedSnapshot, Error>
+        do {
+            attempt = .success(try await withTaskCancellationHandler {
+                try await loading.value
+            } onCancel: {
+                loading.cancel()
+            })
+        } catch {
+            attempt = .failure(error)
+        }
+        try Task.checkCancellation()
+        // Also runs after a failed load, so a concurrent authority change cannot
+        // be mistaken for permission to retry that earlier error.
+        try await afterCaptureLoadForTesting?()
+        try Task.checkCancellation()
+        do {
+            return try writeCheckingCancellation { db in
+                guard let currentPolicy = capturePolicy() else { return .retryable }
+                try CaptureIngestNormalizedStore.checkpoint(currentPolicy.deadline)
+                guard try FTSRebuildPolicy.captureJobAuthority(db, jobID: job.id, policy: currentPolicy)?.matches(authority) == true else {
+                    return .retryable
+                }
+                let result: JobOutcome
+                switch attempt {
+                case .success(let snapshot):
+                    let hadContent = try Self.hasNonemptyFtsContent(db, sessionId: job.sessionId)
+                    let receipt = try CaptureIngestReadiness.commit(db, snapshot: snapshot,
+                        expectedParserRevision: currentPolicy.parserRevision, enabledSources: currentPolicy.enabledSources,
+                        deadline: currentPolicy.deadline)
+                    try CaptureIngestNormalizedStore.checkpoint(currentPolicy.deadline)
+                    if receipt.disposition == .indexed, !hadContent {
+                        try Self.reenqueueEmbeddingAfterFirstFtsFill(db, sessionId: job.sessionId)
+                    }
+                    result = receipt.disposition == .skipNotApplicable ? .notApplicable : .completed
+                case .failure(let error):
+                    let code: String
+                    switch error as? CaptureIngestReadinessError {
+                    case .invalidStoredRecord: code = "capture_normalized_invalid"
+                    case .normalizedPayloadTooLarge: code = "capture_normalized_too_large"
+                    case .tooManyMessages: code = "capture_normalized_too_many_messages"
+                    default: throw error
+                    }
+                    try Self.markRetryable(db, id: job.id, error: code)
+                    result = .retryable
+                }
+                try CaptureIngestNormalizedStore.checkpoint(currentPolicy.deadline)
+                let finalPolicy = try freshCapturePolicy(matching: currentPolicy)
+                try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources, capturePolicy: finalPolicy)
+                try CaptureIngestNormalizedStore.checkpoint(currentPolicy.deadline)
+                _ = try freshCapturePolicy(matching: currentPolicy)
+                return result
+            }
+        } catch let error as CaptureIngestReadinessError {
+            if error == .deadlineExceeded { throw error }
+            // A readiness fence failure rolls back the outer writer transaction;
+            // it cannot poison or complete the superseding generation's job.
+            return .retryable
+        }
+    }
+
+    // A source/parser revocation during synchronous readiness or finalization
+    // invalidates the entire outer transaction, including embedding requeue.
+    private func freshCapturePolicy(matching expected: CaptureFTSReadinessPolicy) throws -> CaptureFTSReadinessPolicy {
+        guard let current = capturePolicy(),
+              current.parserRevision.utf8.elementsEqual(expected.parserRevision.utf8),
+              current.enabledSources == expected.enabledSources else {
+            throw CaptureIngestReadinessError.sourceDisabled
+        }
+        try CaptureIngestNormalizedStore.checkpoint(current.deadline)
+        return current
+    }
+
     private func process(_ job: PendingJob) async throws -> JobOutcome {
+        if let authority = job.captureAuthority { return try await processCapture(job, authority: authority) }
+        guard try readCheckingCancellation({ try !FTSRebuildPolicy.isCaptureOwned($0, sessionID: job.sessionId) }) else {
+            return .retryable
+        }
         if job.jobKind != IndexJobKind.fts.rawValue {
             // Unknown non-FTS kinds cannot be recovered by the Swift runner.
-            try writer.write { db in
-                try Self.markNotApplicable(db, id: job.id, enabledSources: enabledSources)
+            return try writeCheckingCancellation { db in
+                guard try !FTSRebuildPolicy.isCaptureOwned(db, sessionID: job.sessionId) else { return .retryable }
+                try Self.markNotApplicable(db, id: job.id, enabledSources: enabledSources, capturePolicy: capturePolicy())
+                return .notApplicable
             }
-            return .notApplicable
         }
 
         // Read the session's source + locator inside a read transaction.
-        let contentSource = try writer.read { db in
+        let contentSource = try readCheckingCancellation { db in
             try Self.sessionContentSource(db, sessionId: job.sessionId)
         }
 
         guard let contentSource else {
             // No readable session row: FTS content cannot be produced. Mark
             // not_applicable to stop looping.
-            try writer.write { db in
-                try Self.markNotApplicable(db, id: job.id, enabledSources: enabledSources)
+            return try writeCheckingCancellation { db in
+                guard try !FTSRebuildPolicy.isCaptureOwned(db, sessionID: job.sessionId) else { return .retryable }
+                try Self.markNotApplicable(db, id: job.id, enabledSources: enabledSources, capturePolicy: capturePolicy())
+                return .notApplicable
             }
-            return .notApplicable
         }
 
         if contentSource.tier == SessionTier.skip.rawValue {
-            try writer.write { db in
+            return try writeCheckingCancellation { db in
+                guard try !FTSRebuildPolicy.isCaptureOwned(db, sessionID: job.sessionId) else { return .retryable }
                 try FTSRebuildPolicy.purgeFtsContent(db, sessionId: job.sessionId)
-                try Self.markNotApplicable(db, id: job.id, enabledSources: enabledSources)
+                try Self.markNotApplicable(db, id: job.id, enabledSources: enabledSources, capturePolicy: capturePolicy())
+                return .notApplicable
             }
-            return .notApplicable
         }
 
         // BLOCKER guard: an offloaded session keeps ONLY a compact keyword shadow
@@ -236,12 +376,13 @@ public final class IndexJobRunner: StartupIndexJobRunning {
                 summary: contentSource.summary,
                 sessionId: job.sessionId
             )
-            var becameSkip = false
-            try writer.write { db in
+            return try writeCheckingCancellation { db in
+                guard try !FTSRebuildPolicy.isCaptureOwned(db, sessionID: job.sessionId) else { return .retryable }
+                let outcome: JobOutcome
                 if try Self.sessionTier(db, sessionId: job.sessionId) == SessionTier.skip.rawValue {
-                    becameSkip = true
                     try FTSRebuildPolicy.purgeFtsContent(db, sessionId: job.sessionId)
-                    try Self.markNotApplicable(db, id: job.id, enabledSources: enabledSources)
+                    try Self.markNotApplicable(db, id: job.id, enabledSources: enabledSources, capturePolicy: capturePolicy())
+                    outcome = .notApplicable
                 } else {
                     let hadFtsContent = try Self.hasNonemptyFtsContent(db, sessionId: job.sessionId)
                     try FTSRebuildPolicy.replaceFtsContent(db, sessionId: job.sessionId, contents: [shadow])
@@ -249,10 +390,11 @@ public final class IndexJobRunner: StartupIndexJobRunning {
                         try Self.reenqueueEmbeddingAfterFirstFtsFill(db, sessionId: job.sessionId)
                     }
                     try Self.markCompleted(db, id: job.id)
+                    outcome = .completed
                 }
-                try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources)
+                try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources, capturePolicy: capturePolicy())
+                return outcome
             }
-            return becameSkip ? .notApplicable : .completed
         }
 
         guard let sourceName = SourceName(rawValue: contentSource.source),
@@ -261,10 +403,11 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         else {
             // No readable source on disk (e.g. synced-only or unknown source):
             // FTS content cannot be produced. Mark not_applicable to stop looping.
-            try writer.write { db in
-                try Self.markNotApplicable(db, id: job.id, enabledSources: enabledSources)
+            return try writeCheckingCancellation { db in
+                guard try !FTSRebuildPolicy.isCaptureOwned(db, sessionID: job.sessionId) else { return .retryable }
+                try Self.markNotApplicable(db, id: job.id, enabledSources: enabledSources, capturePolicy: capturePolicy())
+                return .notApplicable
             }
-            return .notApplicable
         }
 
         // A known source with no adapter in this drain may simply be disabled.
@@ -275,13 +418,16 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         }
 
         do {
-            let messages = try await buildSearchContent(adapter: adapter, source: contentSource)
-            var becameSkip = false
-            try writer.write { db in
+            guard let messages = try await buildSearchContent(adapter: adapter, source: contentSource, sessionID: job.sessionId) else {
+                return .retryable
+            }
+            return try writeCheckingCancellation { db in
+                guard try !FTSRebuildPolicy.isCaptureOwned(db, sessionID: job.sessionId) else { return .retryable }
+                let outcome: JobOutcome
                 if try Self.sessionTier(db, sessionId: job.sessionId) == SessionTier.skip.rawValue {
-                    becameSkip = true
                     try FTSRebuildPolicy.purgeFtsContent(db, sessionId: job.sessionId)
-                    try Self.markNotApplicable(db, id: job.id, enabledSources: enabledSources)
+                    try Self.markNotApplicable(db, id: job.id, enabledSources: enabledSources, capturePolicy: capturePolicy())
+                    outcome = .notApplicable
                 } else {
                     let hadFtsContent = try Self.hasNonemptyFtsContent(db, sessionId: job.sessionId)
                     try FTSRebuildPolicy.replaceFtsContent(
@@ -294,24 +440,24 @@ public final class IndexJobRunner: StartupIndexJobRunning {
                         try Self.reenqueueEmbeddingAfterFirstFtsFill(db, sessionId: job.sessionId)
                     }
                     try Self.markCompleted(db, id: job.id)
+                    outcome = .completed
                 }
-                try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources)
+                try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources, capturePolicy: capturePolicy())
+                return outcome
             }
-            return becameSkip ? .notApplicable : .completed
         } catch is CancellationError {
             throw CancellationError()
         } catch {
             // Parser failures remain retryable until the bounded retry policy
             // records failed_permanent; not_applicable is reserved for jobs
             // structurally outside this runner's responsibility.
-            log.error(
-                "fts job failed: session=\(job.sessionId) error=\(String(describing: error))"
-            )
-            try writer.write { db in
+            return try writeCheckingCancellation { db in
+                guard try !FTSRebuildPolicy.isCaptureOwned(db, sessionID: job.sessionId) else { return .retryable }
+                log.error("fts job failed: session=\(job.sessionId) error=\(String(describing: error))")
                 try Self.markRetryable(db, id: job.id, error: "\(error)")
-                try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources)
+                try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources, capturePolicy: capturePolicy())
+                return .retryable
             }
-            return .retryable
         }
     }
 
@@ -321,8 +467,10 @@ public final class IndexJobRunner: StartupIndexJobRunning {
     /// independently), so message appends stay incremental.
     private func buildSearchContent(
         adapter: any SessionAdapter,
-        source: SessionContentSource
-    ) async throws -> [String] {
+        source: SessionContentSource,
+        sessionID: String
+    ) async throws -> [String]? {
+        guard try readCheckingCancellation({ try !FTSRebuildPolicy.isCaptureOwned($0, sessionID: sessionID) }) else { return nil }
         var contents: [String] = []
         // Wave 7A L05: match ParserLimits.default.maxMessages (10_000) so
         // truncate-and-succeed adapters cannot mark FTS completed with incomplete
@@ -409,27 +557,17 @@ public final class IndexJobRunner: StartupIndexJobRunning {
     private static func takeRecoverableJobs(
         _ db: Database,
         limit: Int,
-        enabledSources: Set<SourceName>
+        enabledSources: Set<SourceName>,
+        capturePolicy: CaptureFTSReadinessPolicy?
     ) throws -> [PendingJob] {
-        let knownSourcePlaceholders = Array(
-            repeating: "?",
-            count: SourceName.allCases.count
-        ).joined(separator: ", ")
-        let enabledSourceValues = enabledSources.map(\.rawValue).sorted()
-        let enabledSourcePredicate = enabledSourceValues.isEmpty
-            ? "0"
-            : "s.source IN (\(Array(repeating: "?", count: enabledSourceValues.count).joined(separator: ", ")))"
+        let eligibility = try FTSRebuildPolicy.recoverableJobEligibility(db,
+            enabledSources: enabledSources, capturePolicy: capturePolicy)
         var arguments: StatementArguments = [
             IndexJobStatus.pending.rawValue,
             IndexJobStatus.failedRetryable.rawValue,
             IndexJobKind.embedding.rawValue,
         ]
-        for value in SourceName.allCases.map(\.rawValue) {
-            arguments += [value]
-        }
-        for value in enabledSourceValues {
-            arguments += [value]
-        }
+        arguments += eligibility.arguments
         arguments += [limit]
         let rows = try Row.fetchAll(
             db,
@@ -440,13 +578,7 @@ public final class IndexJobRunner: StartupIndexJobRunning {
             WHERE j.status IN (?, ?)
               AND j.job_kind != ?
               AND (j.not_before IS NULL OR j.not_before <= datetime('now'))
-              AND (
-                j.job_kind != 'fts'
-                OR s.id IS NULL
-                OR s.tier = 'skip'
-                OR s.source NOT IN (\(knownSourcePlaceholders))
-                OR \(enabledSourcePredicate)
-              )
+              AND (\(eligibility.sql))
             ORDER BY
               CASE j.status WHEN 'pending' THEN 0 ELSE 1 END,
               CASE j.job_kind WHEN 'fts' THEN 0 ELSE 1 END,
@@ -457,8 +589,9 @@ public final class IndexJobRunner: StartupIndexJobRunning {
             """,
             arguments: arguments
         )
-        return rows.map { row in
-            PendingJob(id: row["id"], sessionId: row["session_id"], jobKind: row["job_kind"])
+        return try rows.map { row in
+            PendingJob(id: row["id"], sessionId: row["session_id"], jobKind: row["job_kind"],
+                captureAuthority: try FTSRebuildPolicy.captureJobAuthority(db, jobID: row["id"], policy: capturePolicy))
         }
     }
 
@@ -515,7 +648,8 @@ public final class IndexJobRunner: StartupIndexJobRunning {
     static func markNotApplicable(
         _ db: Database,
         id: String,
-        enabledSources: Set<SourceName>? = nil
+        enabledSources: Set<SourceName>? = nil,
+        capturePolicy: CaptureFTSReadinessPolicy? = nil
     ) throws {
         try db.execute(
             sql: """
@@ -527,7 +661,7 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         )
         // docs/invariants.md #5: every terminal FTS transition must get a
         // chance to finish the versioned shadow-table rebuild.
-        try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources)
+        try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources, capturePolicy: capturePolicy)
     }
 
     static func markRetryable(_ db: Database, id: String, error: String) throws {

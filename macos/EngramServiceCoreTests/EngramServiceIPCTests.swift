@@ -1222,18 +1222,20 @@ final class EngramServiceIPCTests: XCTestCase {
 
     // EMB-STARVE: an idle merge-only scan must still drain existing session
     // or insight embedding work instead of waiting for a future merge/restart.
-    func testRunnerPeriodicEmbeddingBackfillChecksBacklogOnIdleScan_repro() throws {
+    func testRunnerOptionalEmbeddingBackfillIsIndependentOfIdleScanCounts_repro() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
-        let cycleStart = try XCTUnwrap(source.range(of: "runOnePeriodicIndexCycle"))
-        let cycleBody = String(source[cycleStart.lowerBound...])
+        let cycleStart = try XCTUnwrap(source.range(of: "let embeddingMaintenanceTask = Task"))
+        let cycleEnd = try XCTUnwrap(source.range(of: "let liveIngestTask = Task", range: cycleStart.lowerBound..<source.endIndex))
+        let cycleBody = String(source[cycleStart.lowerBound..<cycleEnd.lowerBound])
 
         XCTAssertTrue(
-            cycleBody.contains("shouldRunEmbeddingBackfill = try await hasPendingEmbeddingBackfill(gate: gate)")
-                && cycleBody.contains("if shouldRunEmbeddingBackfill {")
-                && cycleBody.contains("periodicSessionEmbeddingBackfill")
-                && cycleBody.contains("periodicInsightEmbeddingBackfill"),
-            "idle periodic scans must use an embedding-backlog signal independent of scan.indexed"
+            cycleBody.contains("runOptionalAIMaintenanceLoop(initialScanTask: initialScanTask)")
+                && cycleBody.contains("backgroundSessionEmbeddingBackfill")
+                && cycleBody.contains("backgroundInsightEmbeddingBackfill"),
+            "bounded optional turns must drain both backlogs even when file scans are idle"
         )
+        XCTAssertFalse(cycleBody.contains("scan.indexed"))
+        XCTAssertFalse(cycleBody.contains("hasPendingEmbeddingBackfill("), "provider/backoff checks precede candidate reads")
     }
 
     func testPeriodicEmbeddingBacklogDetectsSessionAndInsightWork_repro() async throws {
@@ -1617,28 +1619,29 @@ final class EngramServiceIPCTests: XCTestCase {
         )
     }
 
-    func testRunnerInitialScanSchedulesInsightEmbeddingBackfillOutsideMainWritePhases() throws {
+    func testRunnerSchedulesInsightEmbeddingBackfillOutsideRequiredInitialScan() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
         let start = try XCTUnwrap(source.range(of: "static func runInitialScan("))
         let end = try XCTUnwrap(source.range(of: "private static func elapsedMs", options: [], range: start.lowerBound..<source.endIndex))
         let body = String(source[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(body.contains("initialInsightEmbeddingBackfill"))
-        XCTAssertTrue(body.contains("runInsightEmbeddingBackfillBestEffort("))
+        XCTAssertFalse(body.contains("runInsightEmbeddingBackfillBestEffort("))
+        XCTAssertTrue(source.contains("backgroundInsightEmbeddingBackfill"))
+        XCTAssertTrue(source.contains("runOptionalAIMaintenanceLoop(initialScanTask: initialScanTask)"))
         XCTAssertFalse(
-            body.contains(#"performWriteCommand(name: "initialInsightEmbeddingBackfill") { writer in"#),
+            source.contains(#"performWriteCommand(name: "backgroundInsightEmbeddingBackfill") { writer in"#),
             "embedding provider I/O must not run inside one long write-gate closure"
         )
     }
 
-    func testRunnerPeriodicScanSchedulesInsightEmbeddingBackfill() throws {
+    func testRunnerPeriodicScanDoesNotWaitForOptionalInsightEmbeddingBackfill() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
         let start = try XCTUnwrap(source.range(of: "static func runIndexingLoop("))
         let end = try XCTUnwrap(source.range(of: "/// V2 composition root", options: [], range: start.lowerBound..<source.endIndex))
         let body = String(source[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(body.contains("periodicInsightEmbeddingBackfill"))
-        XCTAssertTrue(body.contains("runInsightEmbeddingBackfillBestEffort("))
+        XCTAssertFalse(body.contains("runInsightEmbeddingBackfillBestEffort("))
+        XCTAssertTrue(source.contains("backgroundInsightEmbeddingBackfill"))
     }
 
     func testRunnerObservabilityRetentionLogsZeroRowCompletion() throws {
@@ -1854,13 +1857,18 @@ final class EngramServiceIPCTests: XCTestCase {
 
     func testUnixSocketClientTransportUsesCheckedSendable() throws {
         let source = try serviceCoreSource("Shared/Service/UnixSocketEngramServiceTransport.swift")
+        let shared = try serviceCoreSource("Shared/Service/EngramServiceSocketIO.swift")
 
         XCTAssertTrue(source.contains("final class UnixSocketEngramServiceTransport: EngramServiceTransport, Sendable"))
         XCTAssertFalse(
             source.contains("UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked Sendable"),
             "client transport only stores Sendable let values and must not use unchecked Sendable"
         )
-        XCTAssertTrue(source.contains("private final class FdBox: @unchecked Sendable"))
+        XCTAssertTrue(source.contains("try await EngramServiceSocketIO.exchangeLegacy("))
+        XCTAssertFalse(source.contains("private final class FdBox"))
+        XCTAssertTrue(shared.contains("private final class SocketDescriptorOwner: @unchecked Sendable"))
+        XCTAssertTrue(shared.contains("private let lock = NSLock()"))
+        XCTAssertTrue(shared.contains("private var cancelled = false"))
     }
 
     func testServerRejectsClientWhenSocketTimeoutCannotBeArmed() throws {
@@ -2054,27 +2062,34 @@ final class EngramServiceIPCTests: XCTestCase {
         // perf: SO_RCVTIMEO/SO_SNDTIMEO only bound a single syscall, so a peer
         // trickling one byte before each window can stretch a frame across
         // maximumFrameLength iterations. The transport must additionally track a
-        // wall-clock deadline for the whole frame.
+        // monotonic deadline for the whole frame. The general transport keeps
+        // its legacy frame policy while delegating I/O to the shared kernel.
         let source = try serviceCoreSource("Shared/Service/UnixSocketEngramServiceTransport.swift")
+        let shared = try serviceCoreSource("Shared/Service/EngramServiceSocketIO.swift")
         XCTAssertTrue(
-            source.contains("maximumFrameDurationSeconds"),
-            "transport must define a whole-frame wall-clock budget"
+            source.contains("maximumFrameDurationSeconds = EngramServiceSocketIO.maximumFrameDurationSeconds"),
+            "the compatibility wrapper must use the shared frame budget"
+        )
+        XCTAssertTrue(source.contains("try EngramServiceSocketIO.writeFrame("))
+        XCTAssertTrue(source.contains("try EngramServiceSocketIO.readFrame("))
+        XCTAssertTrue(
+            shared.contains("ContinuousClock.now"),
+            "the shared kernel must use a monotonic deadline"
         )
         XCTAssertTrue(
-            source.contains("checkFrameDeadline"),
-            "readExact/writeAll must check the per-frame deadline before each blocking syscall"
-        )
-        XCTAssertTrue(
-            source.contains("deadline: Date?"),
-            "the per-frame deadline must be threaded into readExact/writeAll"
+            shared.contains("try budget.check()"),
+            "frame transfers must check their deadline and cancellation budget"
         )
     }
 
     func testTransportRetriesInterruptedReadWriteSyscalls() throws {
         let source = try serviceCoreSource("Shared/Service/UnixSocketEngramServiceTransport.swift")
+        let shared = try serviceCoreSource("Shared/Service/EngramServiceSocketIO.swift")
 
-        XCTAssertTrue(source.contains("errno == EINTR"))
-        XCTAssertTrue(source.contains("continue"))
+        XCTAssertTrue(source.contains("try EngramServiceSocketIO.writeFrame("))
+        XCTAssertTrue(source.contains("try EngramServiceSocketIO.readFrame("))
+        XCTAssertTrue(shared.contains("errno == EINTR"))
+        XCTAssertTrue(shared.contains("continue"))
     }
 
     func testServiceReadsHopOffCooperativePool() throws {

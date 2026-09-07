@@ -1,6 +1,7 @@
 import Darwin
 import XCTest
 @testable import Engram
+@testable import class EngramServiceCore.UnixSocketServiceServer
 
 final class EngramServiceLauncherTests: XCTestCase {
     func testAppOpensDatabaseOffMainActor_repro() throws {
@@ -62,11 +63,11 @@ final class EngramServiceLauncherTests: XCTestCase {
             onStatus: { _ in }
         )
 
-        XCTAssertTrue(launcher.isRunning, "a serving socket adopted at app launch must remain launcher-owned state")
+        XCTAssertTrue(launcher.isRunning, "a serving socket adopted at app launch must remain observable")
         launcher.stopIfOwned()
     }
 
-    func testAdoptedServiceHasAuthenticatedShutdownAndEventRetention_repro() throws {
+    func testServiceShutdownRemainsAuthenticatedAndLauncherRetainsEvents_repro() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -91,7 +92,6 @@ final class EngramServiceLauncherTests: XCTestCase {
         XCTAssertTrue(capability.contains(#""shutdown""#))
         XCTAssertTrue(handler.contains(#"case "shutdown":"#))
         XCTAssertTrue(server.contains("onShutdown"))
-        XCTAssertTrue(launcher.contains("requestShutdown"))
         XCTAssertTrue(launcher.contains("adoptedConfiguration"))
         XCTAssertTrue(launcher.contains("onEvent: onEvent"))
     }
@@ -1363,94 +1363,277 @@ final class EngramServiceLauncherTests: XCTestCase {
     }
 
     @MainActor
-    func testRestartAdoptedServiceRequestsShutdownBeforeReplacement_repro() async {
-        let state = AdoptedServiceState()
+    func testQuitPreservesAdoptedServiceAndItsRuntimeSecrets_repro() async throws {
+        let fixture = try AdoptedServiceFixture()
+        defer { fixture.cleanup() }
         let launcher = EngramServiceLauncher(
             healthIntervalNanoseconds: 60_000_000_000,
             maximumRestartAttempts: 0,
-            startupGraceNanoseconds: 0,
-            shutdownRequester: { socketPath in
-                await state.shutdown(socketPath: socketPath)
-                return true
-            }
+            startupGraceNanoseconds: 0
         )
-        let configuration = EngramServiceLaunchConfiguration(
-            executablePath: "/tmp/engram-missing-adopted-replacement-\(UUID().uuidString)",
-            socketPath: "/tmp/engram-adopted-restart.sock",
-            databasePath: "/tmp/engram-adopted-restart.sqlite",
-            foreground: false
-        )
-        let recorder = ServiceStatusRecorder()
+        let state = fixture.state
+        let secrets = URL(fileURLWithPath: EngramServiceLauncher.runtimeAISecretsPath(
+            forSocketPath: fixture.configuration.socketPath
+        ))
+        let original = Data("external-owner-secret".utf8)
+        try original.write(to: secrets)
 
         await launcher.startOrAdopt(
-            configuration: configuration,
+            configuration: fixture.configuration,
+            statusProbe: { try await state.status() },
+            onStatus: { _ in }
+        )
+        launcher.stopIfOwned()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let requestedSockets = await state.requestedSockets()
+        XCTAssertTrue(requestedSockets.isEmpty, "quitting the app must not shut down an external service")
+        XCTAssertEqual(try Data(contentsOf: secrets), original, "external runtime credentials are not launcher-owned")
+        let status = try await state.status()
+        XCTAssertEqual(status, .running(total: 1, todayParents: 0))
+    }
+
+    @MainActor
+    func testAdoptedServiceProbeFailureRecoversWithoutShutdownOrReplacement_repro() async throws {
+        let fixture = try AdoptedServiceFixture()
+        defer { fixture.cleanup() }
+        let state = fixture.state
+        let recorder = ServiceStatusRecorder()
+        let launcher = EngramServiceLauncher(
+            healthIntervalNanoseconds: 5_000_000,
+            maximumRestartAttempts: 1,
+            startupGraceNanoseconds: 0
+        )
+        defer { launcher.stopIfOwned() }
+        await launcher.startOrAdopt(
+            configuration: fixture.configuration,
+            statusProbe: { try await state.status() },
+            onStatus: { recorder.append($0) }
+        )
+        await state.failNextProbes(2)
+
+        let recovered = await recorder.waitUntil(timeoutNanoseconds: 2_000_000_000) { statuses in
+            guard let failure = statuses.firstIndex(where: {
+                if case .degraded = $0 { return true }
+                return false
+            }) else { return false }
+            return statuses.dropFirst(failure + 1).contains(.running(total: 1, todayParents: 0))
+        }
+        XCTAssertTrue(recovered, "an external service must remain monitored through temporary probe failures")
+        let requestedSockets = await state.requestedSockets()
+        XCTAssertTrue(requestedSockets.isEmpty)
+        XCTAssertEqual(markerLineCount(fixture.marker), 0, "health checks must never replace an external service")
+        XCTAssertFalse(recorder.statuses.contains(.starting))
+    }
+
+    @MainActor
+    func testSuspendedAdoptedProbeCannotRestartAfterQuit_repro() async throws {
+        let fixture = try AdoptedServiceFixture()
+        defer { fixture.cleanup() }
+        let state = fixture.state
+        let recorder = ServiceStatusRecorder()
+        let launcher = EngramServiceLauncher(
+            healthIntervalNanoseconds: 5_000_000,
+            maximumRestartAttempts: 1,
+            startupGraceNanoseconds: 0
+        )
+        defer { launcher.stopIfOwned() }
+        await launcher.startOrAdopt(
+            configuration: fixture.configuration,
+            statusProbe: { try await state.status() },
+            onStatus: { recorder.append($0) }
+        )
+        await state.suspendNextProbe()
+        let deadline = ContinuousClock.now + .seconds(1)
+        while !(await state.hasSuspendedProbe()), ContinuousClock.now < deadline {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let suspended = await state.hasSuspendedProbe()
+        XCTAssertTrue(suspended, "the health probe must be suspended before quitting")
+        launcher.stopIfOwned()
+        let statusesAtQuit = recorder.statuses
+        await state.resumeSuspendedProbe()
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(recorder.statuses, statusesAtQuit, "a cancelled monitor must not publish a late failure")
+        XCTAssertEqual(markerLineCount(fixture.marker), 0, "a late probe failure must not spawn a helper after quit")
+        let requestedSockets = await state.requestedSockets()
+        XCTAssertTrue(requestedSockets.isEmpty)
+    }
+
+    @MainActor
+    func testRestartOfAdoptedServiceOnlyReconnects_repro() async throws {
+        let fixture = try AdoptedServiceFixture()
+        defer { fixture.cleanup() }
+        let state = fixture.state
+        let launcher = EngramServiceLauncher(
+            healthIntervalNanoseconds: 60_000_000_000,
+            maximumRestartAttempts: 0,
+            startupGraceNanoseconds: 0
+        )
+        defer { launcher.stopIfOwned() }
+        let recorder = ServiceStatusRecorder()
+        await launcher.startOrAdopt(
+            configuration: fixture.configuration,
             statusProbe: { try await state.status() },
             onStatus: { recorder.append($0) }
         )
         await launcher.restart(
-            configuration: configuration,
-            statusProbe: { try await state.status() },
-            onStatus: { recorder.append($0) }
-        )
-
-        let requestedSockets = await state.requestedSockets()
-        XCTAssertEqual(requestedSockets, [configuration.socketPath])
-        XCTAssertFalse(launcher.isRunning)
-        XCTAssertTrue(recorder.statuses.contains { status in
-            if case .error = status { return true }
-            return false
-        })
-        launcher.stopIfOwned()
-    }
-
-    @MainActor
-    func testRestartReplacesDeadAdoptedServiceWhenShutdownRequestFails_repro() async throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("engram-dead-adopted-\(UUID().uuidString)", isDirectory: true)
-        let runtime = root.appendingPathComponent("run", isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: runtime,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-        let marker = root.appendingPathComponent("replacement-started")
-        let executable = try makeCountingSleeperExecutable(marker: marker)
-        defer {
-            try? FileManager.default.removeItem(at: root)
-            try? FileManager.default.removeItem(at: executable.deletingLastPathComponent())
-        }
-        let state = AdoptedServiceState()
-        let launcher = EngramServiceLauncher(
-            healthIntervalNanoseconds: 60_000_000_000,
-            maximumRestartAttempts: 0,
-            startupGraceNanoseconds: 0,
-            shutdownRequester: { _ in false }
-        )
-        let configuration = EngramServiceLaunchConfiguration(
-            executablePath: executable.path,
-            socketPath: runtime.appendingPathComponent("engram-service.sock").path,
-            databasePath: root.appendingPathComponent("index.sqlite").path,
-            foreground: false
-        )
-        let recorder = ServiceStatusRecorder()
-
-        await launcher.startOrAdopt(
-            configuration: configuration,
+            configuration: fixture.configuration,
             statusProbe: { try await state.status() },
             onStatus: { recorder.append($0) }
         )
         await state.markStopped()
         await launcher.restart(
-            configuration: configuration,
+            configuration: fixture.configuration,
             statusProbe: { try await state.status() },
             onStatus: { recorder.append($0) }
         )
 
-        let replacementStarted = await waitForFile(at: marker, timeoutNanoseconds: 500_000_000)
-        XCTAssertTrue(replacementStarted)
+        let requestedSockets = await state.requestedSockets()
+        XCTAssertTrue(requestedSockets.isEmpty)
+        XCTAssertEqual(markerLineCount(fixture.marker), 0, "even an unavailable external service belongs to its supervisor")
+        XCTAssertFalse(recorder.statuses.contains(.starting))
+        XCTAssertTrue(recorder.statuses.contains { status in
+            if case .degraded(let message) = status { return message.contains("externally managed") }
+            return false
+        })
+    }
+    @MainActor
+    func testRuntimeRoleColdIndexCannotSpawnOrTouchLockAndSecrets_repro() async throws {
+        let fixture = try RuntimeRoleLauncherFixture(role: .index)
+        defer { fixture.cleanup() }
+        let launcher = EngramServiceLauncher(healthIntervalNanoseconds: 60_000_000_000)
+        defer { launcher.stopIfOwned() }
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(
+            socketPath: fixture.configuration.socketPath, connectTimeout: 0.05
+        ))
+        defer { client.close() }
+        let recorder = ServiceStatusRecorder()
+        await launcher.startOrAdopt(
+            configuration: fixture.configuration,
+            statusProbe: { try await client.status() },
+            onStatus: { recorder.append($0) }
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertFalse(launcher.isRunning, "an absent external socket is not a running service")
+        XCTAssertFalse(recorder.statuses.contains(.starting))
+        XCTAssertTrue(recorder.statuses.contains {
+            if case .degraded(let message) = $0 { return message.contains("externally managed") }
+            return false
+        })
+        XCTAssertEqual(markerLineCount(fixture.marker), 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.lock.path))
+        XCTAssertEqual(try? Data(contentsOf: fixture.secret), fixture.secretBytes)
+    }
+
+    @MainActor
+    func testRuntimeRoleIndexReconnectsAfterInitialFailureWithoutTakingOwnership_repro() async throws {
+        let fixture = try RuntimeRoleLauncherFixture(role: .index)
+        defer { fixture.cleanup() }
+        let launcher = EngramServiceLauncher(healthIntervalNanoseconds: 60_000_000_000)
+        defer { launcher.stopIfOwned() }
+        let state = AdoptedServiceState()
+        await state.failNextProbes(1)
+        let recorder = ServiceStatusRecorder()
+        await launcher.startOrAdopt(
+            configuration: fixture.configuration,
+            statusProbe: { try await state.status() }, onStatus: { recorder.append($0) }
+        )
+        await launcher.restart(
+            configuration: fixture.configuration,
+            statusProbe: { try await state.status() }, onStatus: { recorder.append($0) }
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertTrue(launcher.isRunning)
-        XCTAssertTrue(recorder.statuses.contains(.starting))
+        XCTAssertEqual(recorder.statuses.last, .running(total: 1, todayParents: 0))
+        XCTAssertFalse(recorder.statuses.contains(.starting))
         launcher.stopIfOwned()
+        XCTAssertEqual(markerLineCount(fixture.marker), 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.lock.path))
+        XCTAssertEqual(try? Data(contentsOf: fixture.secret), fixture.secretBytes)
+    }
+
+    @MainActor
+    func testRuntimeRoleSuspendedInitialProbeCannotStartAfterQuit_repro() async throws {
+        for role in [EngramRuntimeRole.index, .local] {
+            let fixture = try RuntimeRoleLauncherFixture(role: role)
+            defer { fixture.cleanup() }
+            let launcher = EngramServiceLauncher(healthIntervalNanoseconds: 60_000_000_000)
+            defer { launcher.stopIfOwned() }
+            let state = AdoptedServiceState()
+            await state.suspendNextProbe()
+            let recorder = ServiceStatusRecorder()
+            let task = Task { @MainActor in
+                await launcher.startOrAdopt(
+                    configuration: fixture.configuration,
+                    statusProbe: { try await state.status() }, onStatus: { recorder.append($0) }
+                )
+            }
+            let deadline = ContinuousClock.now + .seconds(1)
+            while !(await state.hasSuspendedProbe()), ContinuousClock.now < deadline {
+                try await Task.sleep(nanoseconds: 5_000_000)
+            }
+            let suspended = await state.hasSuspendedProbe()
+            XCTAssertTrue(suspended)
+            launcher.stopIfOwned()
+            let statusesAtQuit = recorder.statuses
+            await state.resumeSuspendedProbe()
+            await task.value
+            try await Task.sleep(nanoseconds: 100_000_000)
+            XCTAssertEqual(recorder.statuses, statusesAtQuit)
+            XCTAssertFalse(launcher.isRunning)
+            XCTAssertEqual(markerLineCount(fixture.marker), 0, "\(role)")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.lock.path))
+            XCTAssertEqual(try? Data(contentsOf: fixture.secret), fixture.secretBytes)
+        }
+    }
+
+    @MainActor
+    func testRuntimeRoleDirectStartRefusesNonLocalRolesBeforeAnySideEffects_repro() async throws {
+        for role in [EngramRuntimeRole.collector, .replica, .invalidSettings, .index] {
+            let fixture = try RuntimeRoleLauncherFixture(role: role)
+            defer { fixture.cleanup() }
+            let launcher = EngramServiceLauncher()
+            defer { launcher.stopIfOwned() }
+            XCTAssertThrowsError(try launcher.start(configuration: fixture.configuration))
+            try await Task.sleep(nanoseconds: 100_000_000)
+            XCTAssertEqual(markerLineCount(fixture.marker), 0, "\(role)")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.lock.path))
+            XCTAssertEqual(try? Data(contentsOf: fixture.secret), fixture.secretBytes)
+        }
+    }
+}
+
+private final class RuntimeRoleLauncherFixture {
+    let root: URL
+    let marker: URL
+    let lock: URL
+    let secret: URL
+    let secretBytes = Data("external-role-fixture-secret".utf8)
+    let configuration: EngramServiceLaunchConfiguration
+    private let executable: URL
+
+    init(role: EngramRuntimeRole) throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("e-role-\(UUID().uuidString.prefix(8))")
+        let run = root.appendingPathComponent("run")
+        try FileManager.default.createDirectory(at: run, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        marker = root.appendingPathComponent("spawned")
+        lock = run.appendingPathComponent("engram-service.lock")
+        executable = try makeCountingExitExecutable(marker: marker)
+        let socket = run.appendingPathComponent("service.sock").path
+        secret = URL(fileURLWithPath: EngramServiceLauncher.runtimeAISecretsPath(forSocketPath: socket))
+        try secretBytes.write(to: secret)
+        _ = chmod(secret.path, 0o600)
+        configuration = EngramServiceLaunchConfiguration(
+            executablePath: executable.path, socketPath: socket,
+            databasePath: root.appendingPathComponent("index.sqlite").path,
+            foreground: false, runtimeRole: role
+        )
+    }
+
+    func cleanup() {
+        try? FileManager.default.removeItem(at: root)
+        try? FileManager.default.removeItem(at: executable.deletingLastPathComponent())
     }
 }
 
@@ -1494,8 +1677,20 @@ private actor ProbeFailureGate {
 private actor AdoptedServiceState {
     private var serving = true
     private var sockets: [String] = []
+    private var remainingProbeFailures = 0
+    private var shouldSuspendNextProbe = false
+    private var suspendedProbe: CheckedContinuation<Void, Never>?
 
-    func status() throws -> EngramServiceStatus {
+    func status() async throws -> EngramServiceStatus {
+        if shouldSuspendNextProbe {
+            shouldSuspendNextProbe = false
+            await withCheckedContinuation { suspendedProbe = $0 }
+            throw EngramServiceError.serviceUnavailable(message: "late probe failure")
+        }
+        if remainingProbeFailures > 0 {
+            remainingProbeFailures -= 1
+            throw EngramServiceError.serviceUnavailable(message: "temporary probe failure")
+        }
         guard serving else {
             throw EngramServiceError.serviceUnavailable(message: "adopted service stopped")
         }
@@ -1512,6 +1707,59 @@ private actor AdoptedServiceState {
     }
 
     func requestedSockets() -> [String] { sockets }
+
+    func failNextProbes(_ count: Int) { remainingProbeFailures = count }
+
+    func suspendNextProbe() { shouldSuspendNextProbe = true }
+
+    func hasSuspendedProbe() -> Bool { suspendedProbe != nil }
+
+    func resumeSuspendedProbe() {
+        suspendedProbe?.resume()
+        suspendedProbe = nil
+    }
+}
+
+private final class AdoptedServiceFixture {
+    let root: URL
+    let marker: URL
+    let configuration: EngramServiceLaunchConfiguration
+    let state = AdoptedServiceState()
+    private let executable: URL
+    private let server: UnixSocketServiceServer
+
+    init() throws {
+        root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("e-adopt-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        marker = root.appendingPathComponent("replacement-started")
+        executable = try makeCountingSleeperExecutable(marker: marker)
+        let socketPath = root.appendingPathComponent("service.sock").path
+        configuration = EngramServiceLaunchConfiguration(
+            executablePath: executable.path,
+            socketPath: socketPath,
+            databasePath: root.appendingPathComponent("index.sqlite").path,
+            foreground: false
+        )
+        let state = state
+        server = UnixSocketServiceServer(socketPath: socketPath) { request in
+            if request.command == "shutdown" {
+                await state.shutdown(socketPath: socketPath)
+            }
+            return .success(requestId: request.requestId, result: Data("{}".utf8))
+        }
+        try server.start()
+    }
+
+    func cleanup() {
+        server.stop()
+        try? FileManager.default.removeItem(at: root)
+        try? FileManager.default.removeItem(at: executable.deletingLastPathComponent())
+    }
 }
 
 private func waitForFile(at url: URL, timeoutNanoseconds: UInt64) async -> Bool {

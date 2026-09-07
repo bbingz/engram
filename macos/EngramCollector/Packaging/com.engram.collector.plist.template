@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.engram.collector</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__ENGRAM_WRAPPER__</string>
+    <string>--package-root</string>
+    <string>__ENGRAM_PACKAGE_ROOT__</string>
+    <string>--expected-home</string>
+    <string>__ENGRAM_EXPECTED_HOME__</string>
+    <string>--settings</string>
+    <string>__ENGRAM_SETTINGS__</string>
+    <string>--credentials-file</string>
+    <string>__ENGRAM_CREDENTIALS__</string>
+  </array>
+  <key>Disabled</key>
+  <true/>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>KeepAlive</key>
+  <false/>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

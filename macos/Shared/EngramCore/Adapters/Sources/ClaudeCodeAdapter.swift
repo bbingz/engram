@@ -331,11 +331,34 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         guard let profile = profile(for: locator) else {
             return .failure(.unsupportedVirtualLocator)
         }
+        switch try Self.scanFileForIndexing(
+            physicalLocator: locator, logicalLocator: locator, projectsRoot: profile.projectsRoot,
+            forceClaudeCodeSource: profile.origin != .default, limits: limits, strictRecords: false
+        ) {
+        case .success(let value): return .success(value.scan)
+        case .failure(let failure): return .failure(failure)
+        }
+    }
+
+    static func scanCapturedSource(
+        physicalLocator: String, stagingRoot: String, logicalLocator: String, forceClaudeCodeSource: Bool
+    ) throws -> AdapterParseResult<CapturedSourceScan> {
+        try scanFileForIndexing(
+            physicalLocator: physicalLocator, logicalLocator: logicalLocator, projectsRoot: stagingRoot,
+            forceClaudeCodeSource: forceClaudeCodeSource, limits: .default, strictRecords: true
+        )
+    }
+
+    private static func scanFileForIndexing(
+        physicalLocator: String, logicalLocator: String, projectsRoot: String,
+        forceClaudeCodeSource: Bool, limits: ParserLimits, strictRecords: Bool
+    ) throws -> AdapterParseResult<CapturedSourceScan> {
         do {
             let (objects, failure) = try JSONLAdapterSupport.readObjects(
-                locator: locator,
+                locator: physicalLocator,
                 limits: limits,
                 reportFailures: true,
+                strictRecords: strictRecords,
                 countsTowardMessageLimit: {
                     Self.message(
                         from: $0,
@@ -351,33 +374,41 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             if failure == .fileModifiedDuringParse, messages.isEmpty {
                 return .failure(.fileModifiedDuringParse)
             }
+            let aggregate = Self.aggregateSessionInfo(from: objects, unknownKinds: unknownKinds)
             switch Self.sessionInfo(
                 from: objects,
-                locator: locator,
-                projectsRoot: profile.projectsRoot,
-                forceClaudeCodeSource: profile.origin != .default,
-                unknownKinds: unknownKinds
+                locator: logicalLocator,
+                projectsRoot: projectsRoot,
+                forceClaudeCodeSource: forceClaudeCodeSource,
+                unknownKinds: unknownKinds,
+                physicalLocator: physicalLocator,
+                aggregate: aggregate
             ) {
             case .failure(let reason):
                 return .failure(reason)
             case .success(let info):
                 let checkpoint = failure == nil
-                    ? try JSONLAdapterSupport.checkpoint(locator: locator, limits: limits)
+                    ? try JSONLAdapterSupport.checkpoint(locator: physicalLocator, limits: limits)
                     : nil
                 let checkpointBoundaryHash = checkpoint?.parsedOffset == info.sizeBytes
                     ? checkpoint?.boundaryHash
                     : nil
                 return .success(
-                    IndexingScan(
-                        info: info,
-                        messages: messages,
-                        parseFailure: failure,
-                        checkpointParsedOffset: checkpoint?.parsedOffset,
-                        checkpointBoundaryHash: checkpointBoundaryHash,
-                        unknownRecordKinds: unknownKinds.kinds
+                    CapturedSourceScan(
+                        scan: IndexingScan(
+                            info: info,
+                            messages: messages,
+                            parseFailure: failure,
+                            checkpointParsedOffset: checkpoint?.parsedOffset,
+                            checkpointBoundaryHash: checkpointBoundaryHash,
+                            unknownRecordKinds: unknownKinds.kinds
+                        ),
+                        rawSourceSessionID: aggregate.sessionId
                     )
                 )
             }
+        } catch is CancellationError where strictRecords {
+            throw CancellationError()
         } catch let failure as ParserFailure {
             return .failure(failure)
         } catch {
@@ -440,14 +471,16 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         locator: String,
         projectsRoot: String,
         forceClaudeCodeSource: Bool,
-        unknownKinds: UnknownRecordKindSink? = nil
+        unknownKinds: UnknownRecordKindSink? = nil,
+        physicalLocator: String? = nil,
+        aggregate suppliedAggregate: SessionInfoAggregate? = nil
     ) -> AdapterParseResult<NormalizedSessionInfo> {
-        let aggregate = aggregateSessionInfo(from: objects, unknownKinds: unknownKinds)
+        let aggregate = suppliedAggregate ?? aggregateSessionInfo(from: objects, unknownKinds: unknownKinds)
         guard aggregate.messageCount > 0 else {
             return objects.isEmpty ? .failure(.malformedJSON) : .failure(.noVisibleMessages)
         }
-        let subagent = SubagentTranscriptPath.layout(locator: locator, projectsRoot: projectsRoot)
-        guard let id = aggregate.id(locator: locator, projectsRoot: projectsRoot) else {
+        let subagent = SubagentTranscriptPath.layout(locator: physicalLocator ?? locator, projectsRoot: projectsRoot)
+        guard let id = aggregate.id(locator: physicalLocator ?? locator, projectsRoot: projectsRoot) else {
             return .failure(.malformedJSON)
         }
 
@@ -469,7 +502,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
                 systemMessageCount: aggregate.systemCount,
                 summary: aggregate.firstUserText.isEmpty ? nil : aggregate.firstUserText,
                 filePath: locator,
-                sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
+                sizeBytes: JSONLAdapterSupport.fileSize(locator: physicalLocator ?? locator),
                 indexedAt: nil,
                 agentRole: subagent == nil ? nil : "subagent",
                 originator: forceClaudeCodeSource ? "claude-code" : nil,
@@ -533,10 +566,9 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         unknownKinds: UnknownRecordKindSink?
     ) -> SessionInfoAggregate {
         var aggregate = SessionInfoAggregate()
+        var metadata = SourceMetadataProjection(format: .claudeCode(forceClaudeCodeSource: false), locator: "")
         for object in objects {
-            if aggregate.sessionId.isEmpty, let value = JSONLAdapterSupport.string(object["sessionId"]) {
-                aggregate.sessionId = value
-            }
+            metadata.consume(object)
             if aggregate.agentId.isEmpty, let value = JSONLAdapterSupport.string(object["agentId"]) {
                 aggregate.agentId = value
             }
@@ -547,9 +579,6 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
                 continue
             }
 
-            if aggregate.cwd.isEmpty, let value = JSONLAdapterSupport.string(object["cwd"]) {
-                aggregate.cwd = value
-            }
             if aggregate.startTime.isEmpty, let value = JSONLAdapterSupport.string(object["timestamp"]) {
                 aggregate.startTime = value
             }
@@ -558,10 +587,6 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             }
 
             let message = JSONLAdapterSupport.object(object["message"])
-            if aggregate.detectedModel.isEmpty, let value = JSONLAdapterSupport.string(message?["model"]) {
-                aggregate.detectedModel = value
-            }
-
             if type == "assistant" {
                 aggregate.assistantCount += 1
             } else if Self.isToolResult(message?["content"]) {
@@ -581,6 +606,9 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
                 }
             }
         }
+        aggregate.sessionId = metadata.nativeSessionID ?? ""
+        aggregate.cwd = metadata.cwd ?? ""
+        aggregate.detectedModel = metadata.model ?? ""
         return aggregate
     }
 
@@ -694,36 +722,11 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
     }
 
     static func detectSource(model: String, filePath: String? = nil) -> SourceName {
-        if let filePath, hasLobsterAIPathComponent(filePath) { return .lobsterai }
-        if model.isEmpty || model.hasPrefix("claude") || model.hasPrefix("<") {
-            return .claudeCode
-        }
-
-        let lowercased = model.lowercased()
-        if lowercased.contains("minimax") { return .minimax }
-        // Qwen/Kimi/Gemini models can be routed through Claude-compatible clients,
-        // but the session file is still owned by Claude Code's on-disk format.
-        return .claudeCode
-    }
-
-    private static func hasLobsterAIPathComponent(_ filePath: String) -> Bool {
-        filePath
-            .components(separatedBy: CharacterSet(charactersIn: "/\\"))
-            .contains { component in
-                let lowercased = component.lowercased()
-                return lowercased == "lobsterai" ||
-                    lowercased == ".lobsterai" ||
-                    lowercased.hasPrefix("lobsterai-") ||
-                    lowercased.hasPrefix("lobsterai_") ||
-                    lowercased.hasPrefix("lobsterai.") ||
-                    lowercased.hasPrefix(".lobsterai-") ||
-                    lowercased.hasPrefix(".lobsterai_") ||
-                    lowercased.hasPrefix(".lobsterai.")
-            }
+        SourceMetadataProjection.claudeSource(model: model, filePath: filePath)
     }
 
     static func detectSourceHint(locator: String) -> SourceName? {
-        if hasLobsterAIPathComponent(locator) { return .lobsterai }
+        if SourceMetadataProjection.hasLobsterAIPathComponent(locator) { return .lobsterai }
         guard let hint = sourceHint(locator: locator), hint.sawRecognizedRecord else { return nil }
         guard let model = hint.model?.trimmingCharacters(in: .whitespacesAndNewlines),
               !model.isEmpty

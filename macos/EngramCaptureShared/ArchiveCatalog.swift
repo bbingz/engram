@@ -1,6 +1,8 @@
 import Darwin
 import CSQLite
+#if !ENGRAM_COLLECTOR_CORE
 import EngramCoreRead
+#endif
 import Foundation
 import GRDB
 
@@ -519,6 +521,12 @@ public final class ArchiveCatalog: @unchecked Sendable {
             try ArchiveCatalogMigrations.migrate(db, machineID: machineIDCandidate)
         }
         try secureDatabaseFiles()
+    }
+
+    /// Explicit lifetime fence for an independently owned capture runtime.
+    /// Call only after all producers have stopped and joined.
+    public func close() throws {
+        try pool.close()
     }
 
     public func machineID() throws -> String {
@@ -3025,12 +3033,12 @@ public final class ArchiveCatalog: @unchecked Sendable {
             )
             try db.execute(sql: "PRAGMA journal_mode = WAL")
             try db.execute(
-                sql: "PRAGMA busy_timeout = \(SQLiteConnectionPolicy.busyTimeoutMilliseconds)"
+                sql: "PRAGMA busy_timeout = \(SQLiteBusyDefaults.busyTimeoutMilliseconds)"
             )
             try db.execute(sql: "PRAGMA foreign_keys = ON")
             try db.execute(sql: "PRAGMA synchronous = FULL")
             try db.execute(
-                sql: "PRAGMA wal_autocheckpoint = \(SQLiteConnectionPolicy.walAutocheckpointPages)"
+                sql: "PRAGMA wal_autocheckpoint = \(SQLiteBusyDefaults.walAutocheckpointPages)"
             )
 
             let journalMode = (

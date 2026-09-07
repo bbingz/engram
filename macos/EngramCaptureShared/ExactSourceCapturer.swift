@@ -1,6 +1,8 @@
 import CryptoKit
 import Darwin
+#if !ENGRAM_COLLECTOR_CORE
 import EngramCoreRead
+#endif
 import Foundation
 
 public enum ExactSourceCapturerError: Error, Equatable, Sendable {
@@ -8,6 +10,8 @@ public enum ExactSourceCapturerError: Error, Equatable, Sendable {
     case machineIDMismatch(expected: String, actual: String)
     case ineligible(ArchiveLocatorClassification)
     case generationChanged
+    case invalidMaximumByteCount
+    case exceededMaximumByteCount(Int64)
     case existingCaptureConflict(String)
     case io(operation: String, code: Int32)
 }
@@ -69,7 +73,9 @@ public struct ExactSourceCapturer: Sendable {
     public func capture(
         source: SourceName,
         locator: String,
-        machineID: String
+        machineID: String,
+        maximumByteCount: Int64? = nil,
+        expectedGeneration: ArchiveSourceGeneration? = nil
     ) throws -> ArchiveCaptureResult {
         try Task.checkCancellation()
         guard UUID(uuidString: machineID) != nil else {
@@ -90,7 +96,8 @@ public struct ExactSourceCapturer: Sendable {
             throw ExactSourceCapturerError.ineligible(classification)
         }
 
-        let streamed = try streamStableSource(sourceURL)
+        let streamed = try streamStableSource(sourceURL, maximumByteCount: maximumByteCount,
+            expectedGeneration: expectedGeneration)
         defer {
             for staged in streamed.stagedChunks {
                 try? cas.discardStaged(staged)
@@ -177,8 +184,15 @@ public struct ExactSourceCapturer: Sendable {
         let stagedChunks: [ImmutableArchiveCAS.StagedContent]
     }
 
-    func streamStableSource(_ sourceURL: URL) throws -> StableSourceRead {
+    func streamStableSource(
+        _ sourceURL: URL,
+        maximumByteCount: Int64? = nil,
+        expectedGeneration: ArchiveSourceGeneration? = nil
+    ) throws -> StableSourceRead {
         try Task.checkCancellation()
+        if let maximumByteCount, maximumByteCount < 0 {
+            throw ExactSourceCapturerError.invalidMaximumByteCount
+        }
         // O_NONBLOCK closes the lstat/open race where a regular file is
         // replaced by a FIFO. It has no effect on regular-file reads, and the
         // immediate fstat gate below still rejects every non-regular object.
@@ -199,6 +213,14 @@ public struct ExactSourceCapturer: Sendable {
         defer { _ = Darwin.close(fd) }
 
         let before = try Self.secureGeneration(fd: fd, path: sourceURL.path)
+        // Admission is checked against this open descriptor, before allocation
+        // or staging. A caller's earlier path stat is not a transfer budget.
+        if let expectedGeneration, before != expectedGeneration {
+            throw ExactSourceCapturerError.generationChanged
+        }
+        if let maximumByteCount, before.size > maximumByteCount {
+            throw ExactSourceCapturerError.exceededMaximumByteCount(maximumByteCount)
+        }
         var remaining = before.size
         var wholeHasher = SHA256()
         var chunks: [ArchiveChunkReference] = []

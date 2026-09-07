@@ -4,6 +4,49 @@ import GRDB
 import EngramCoreRead
 import EngramCoreWrite
 
+func engramServiceValidateExpectedHome(arguments: [String], actualHome: URL) throws {
+    guard let expected = try engramServiceStrictPath(after: "--expected-home", in: arguments) else { return }
+    guard expected.utf8.elementsEqual(actualHome.path.utf8) else {
+        throw EngramServiceError.invalidRequest(message: "explicit home does not match actual home")
+    }
+}
+
+func engramServiceCaptureCredentialLoader(
+    arguments: [String],
+    fallback: @escaping @Sendable (String) throws -> String?
+) throws -> @Sendable (String) throws -> String? {
+    guard let path = try engramServiceStrictPath(after: "--capture-credentials-file", in: arguments) else {
+        return fallback
+    }
+    let file = ExplicitCredentialFile(url: URL(fileURLWithPath: path))
+    return { reference in
+        do {
+            let token = try file.token(for: reference)
+            guard (1...4_096).contains(token.utf8.count), token.utf8.allSatisfy({ (33...126).contains($0) }) else {
+                throw EngramServiceError.invalidRequest(message: "invalid explicit capture credentials")
+            }
+            return token
+        } catch {
+            throw EngramServiceError.invalidRequest(message: "invalid explicit capture credentials")
+        }
+    }
+}
+
+private func engramServiceStrictPath(after flag: String, in arguments: [String]) throws -> String? {
+    let indices = arguments.indices.filter { arguments[$0] == flag }
+    guard let index = indices.first else { return nil }
+    guard indices.count == 1, arguments.indices.contains(index + 1) else {
+        throw EngramServiceError.invalidRequest(message: "invalid explicit launch path")
+    }
+    let path = arguments[index + 1]
+    let components = path.split(separator: "/", omittingEmptySubsequences: false)
+    guard path.hasPrefix("/"), path.utf8.count <= 4_096, !path.utf8.contains(0),
+          components.dropFirst().allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
+        throw EngramServiceError.invalidRequest(message: "invalid explicit launch path")
+    }
+    return path
+}
+
 func engramServiceAbsoluteArgumentValue(after flag: String, in arguments: [String]) throws -> String? {
     guard let index = arguments.firstIndex(of: flag) else {
         return nil
@@ -273,6 +316,28 @@ public enum EngramServiceRunner {
         arguments: [String] = Array(CommandLine.arguments.dropFirst()),
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) async throws {
+        try await run(arguments: arguments, environment: environment, testHooks: RunnerTestHooks())
+    }
+
+    struct RunnerTestHooks: Sendable {
+        var optionalAIMaintenance: (@Sendable (ServiceWriterGate) async -> Void)? = nil
+        var captureIngestCredentialLoader: (@Sendable (String) throws -> String?)? = nil
+    }
+
+    static func run(
+        arguments: [String],
+        environment: [String: String],
+        testHooks: RunnerTestHooks
+    ) async throws {
+        try engramServiceValidateExpectedHome(
+            arguments: arguments, actualHome: FileManager.default.homeDirectoryForCurrentUser
+        )
+        let captureCredentialLoader = try engramServiceCaptureCredentialLoader(
+            arguments: arguments,
+            fallback: testHooks.captureIngestCredentialLoader ?? {
+                try ArchiveCredentialStore().loadToken(replicaID: $0)
+            }
+        )
         let runtimeHome = RemoteSyncConfig.homeDirectory(environment: environment)
         let isTestProcess = environment["XCTestConfigurationFilePath"] != nil
             || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
@@ -458,12 +523,34 @@ public enum EngramServiceRunner {
         // are captured.
         let logRing = ServiceLogRing()
         ServiceLogger.installRing(logRing)
+        // Finish throwing backend construction before starting owned work.
+        // Opt-in remote session offload (default OFF). When enabled, the indexing
+        // loop drains the offload/rehydrate queues and reclaims disk via VACUUM.
+        let remoteSync = try RemoteSyncCoordinator.makeIfEnabled(gate: gate, environment: environment)
+        if remoteSync != nil {
+            ServiceLogger.info("remote offload enabled; wiring into indexing loop", category: .runner)
+        }
+        // Live ingest builds the same backend even when offload is off. Never
+        // pass this coordinator to runOnce / drainOffload (invariant 16).
+        let liveSync = try RemoteSyncCoordinator.makeLiveIfEnabled(gate: gate, environment: environment)
+        if liveSync != nil {
+            ServiceLogger.info("live ingest armed; publish/pull loop only (no offload runOnce)", category: .runner)
+        }
+        let readProvider = try SQLiteEngramServiceReadProvider(databasePath: databasePath)
+        let captureIngestRuntime = try ServiceCaptureIngestRuntime.make(
+            gate: gate, databasePath: databasePath, settingsURL: settingsURL,
+            credentialLoader: captureCredentialLoader
+        )
         let handler = EngramServiceCommandHandler(
             writerGate: gate,
             archiveV2Coordinator: archiveV2Coordinator,
             archiveTranscriptResolver: archiveTranscriptResolver,
+            webTranscriptSnapshotProvider: captureIngestRuntime?.transcriptProvider
+                ?? UnavailableServiceWebTranscriptSnapshotProvider(),
+            webMetadataProducer: captureIngestRuntime?.metadataProducer
+                ?? UnavailableServiceWebMetadataProducer(),
             claudeCodeProfileService: claudeCodeProfileService,
-            readProvider: try SQLiteEngramServiceReadProvider(databasePath: databasePath),
+            readProvider: readProvider,
             statusMonitor: statusMonitor,
             telemetry: telemetry,
             logRing: logRing
@@ -474,7 +561,13 @@ public enum EngramServiceRunner {
         ) { request in
             await handler.handle(request)
         }
-        try server.start()
+        do { try server.start() }
+        catch {
+            await captureIngestRuntime?.stop()
+            try await captureIngestRuntime?.closeReaders()
+            throw error
+        }
+        await captureIngestRuntime?.start()
 
         ServiceLogger.notice("service ready, listening on \(socketBasename)", category: .runner)
         emit(ServiceReadyEvent(socket: socketPath))
@@ -513,18 +606,6 @@ public enum EngramServiceRunner {
             }
         }
 
-        // Opt-in remote session offload (default OFF). When enabled, the indexing
-        // loop drains the offload/rehydrate queues and reclaims disk via VACUUM.
-        let remoteSync = try RemoteSyncCoordinator.makeIfEnabled(gate: gate, environment: environment)
-        if remoteSync != nil {
-            ServiceLogger.info("remote offload enabled; wiring into indexing loop", category: .runner)
-        }
-        // Live ingest builds the same backend even when offload is off. Never
-        // pass this coordinator to runOnce / drainOffload (invariant 16).
-        let liveSync = try RemoteSyncCoordinator.makeLiveIfEnabled(gate: gate, environment: environment)
-        if liveSync != nil {
-            ServiceLogger.info("live ingest armed; publish/pull loop only (no offload runOnce)", category: .runner)
-        }
         let livePublishSignal = LiveIngestPublishSignal()
 
         let indexingTask = Task {
@@ -538,6 +619,28 @@ public enum EngramServiceRunner {
                     tokenLimitsProvider: { Self.readUsageTokenLimits(environment: environment) },
                     remoteSync: remoteSync,
                     livePublishSignal: livePublishSignal
+                )
+            }
+        }
+        // Required scan/capture/FTS workers never await optional provider I/O.
+        // Each background turn remains bounded by the existing batch limits
+        // and checks provider configuration/backoff before reading candidates.
+        let embeddingMaintenanceTask = Task(priority: .background) {
+            await Self.runOptionalAIMaintenanceLoop(initialScanTask: initialScanTask) {
+                if let operation = testHooks.optionalAIMaintenance {
+                    await operation(gate)
+                    return
+                }
+                await Self.runSessionEmbeddingBackfillBestEffort(
+                    name: "backgroundSessionEmbeddingBackfill",
+                    gate: gate,
+                    environment: environment
+                )
+                guard !Task.isCancelled else { return }
+                await Self.runInsightEmbeddingBackfillBestEffort(
+                    name: "backgroundInsightEmbeddingBackfill",
+                    gate: gate,
+                    environment: environment
                 )
             }
         }
@@ -612,6 +715,7 @@ public enum EngramServiceRunner {
         defer {
             initialScanTask.cancel()
             indexingTask.cancel()
+            embeddingMaintenanceTask.cancel()
             liveIngestTask.cancel()
             archiveDrainStartTask.cancel()
             checkpointTask.cancel()
@@ -630,6 +734,7 @@ public enum EngramServiceRunner {
         // until their defers run, so the bounded drain below is observable.
         server.stop()
         await gate.beginShutdown()
+        await captureIngestRuntime?.stop()
 
         // Cancel and wait for in-flight gate write commands to unwind before the
         // gate is torn down, so the writer/process flocks are released for the
@@ -642,6 +747,7 @@ public enum EngramServiceRunner {
         // gate alive (and its locks held) past `run()` returning.
         initialScanTask.cancel()
         indexingTask.cancel()
+        embeddingMaintenanceTask.cancel()
         liveIngestTask.cancel()
         archiveDrainStartTask.cancel()
         checkpointTask.cancel()
@@ -654,6 +760,7 @@ public enum EngramServiceRunner {
         )
         await initialScanTask.value
         await indexingTask.value
+        await embeddingMaintenanceTask.value
         await liveIngestTask.value
         await archiveDrainStartTask.value
         await archiveStopTask.value
@@ -679,6 +786,12 @@ public enum EngramServiceRunner {
         // retain the single-writer lock until every such writer has left the
         // gate; otherwise main.swift can exit while SQLite is still mutating.
         await waitForShutdownWriterIdle(gate: gate)
+
+        // A timed-out client still retains its handler and reader providers.
+        // Do not close those readers underneath an undrained request.
+        if clientHandlersDrained {
+            try await captureIngestRuntime?.closeReaders()
+        }
 
         // Once every writer is gone, issue one nonblocking TRUNCATE. A live
         // reader reports busy immediately instead of delaying SIGTERM shutdown.
@@ -755,6 +868,23 @@ public enum EngramServiceRunner {
         await initialScanTask.value
         guard !Task.isCancelled else { return }
         await operation()
+    }
+
+    static func runOptionalAIMaintenanceLoop(
+        initialScanTask: Task<Void, Never>,
+        sleep: @escaping @Sendable () async throws -> Void = {
+            try await Task.sleep(nanoseconds: 900_000_000_000)
+        },
+        operation: @escaping @Sendable () async -> Void
+    ) async {
+        await runAfterInitialScan(initialScanTask: initialScanTask) {
+            while !Task.isCancelled {
+                await operation()
+                guard !Task.isCancelled else { return }
+                do { try await sleep() }
+                catch { return }
+            }
+        }
     }
 
     /// Startup indexing and maintenance intentionally create many short-lived
@@ -1473,25 +1603,6 @@ public enum EngramServiceRunner {
                 )
             }
 
-            let shouldRunEmbeddingBackfill: Bool
-            if scan.indexed > 0 {
-                shouldRunEmbeddingBackfill = true
-            } else {
-                shouldRunEmbeddingBackfill = try await hasPendingEmbeddingBackfill(gate: gate)
-            }
-            if shouldRunEmbeddingBackfill {
-                await runSessionEmbeddingBackfillBestEffort(
-                    name: "periodicSessionEmbeddingBackfill",
-                    gate: gate,
-                    environment: environment
-                )
-                await runInsightEmbeddingBackfillBestEffort(
-                    name: "periodicInsightEmbeddingBackfill",
-                    gate: gate,
-                    environment: environment
-                )
-            }
-
             if let remoteSync {
                 do {
                     let sync = try await remoteSync.runOnce()
@@ -2086,18 +2197,6 @@ private final class IndexingScheduleBox: @unchecked Sendable {
                 try? await Task.sleep(nanoseconds: retryDelay)
             }
         }
-
-        await runSessionEmbeddingBackfillBestEffort(
-            name: "initialSessionEmbeddingBackfill",
-            gate: gate,
-            environment: environment
-        )
-
-        await runInsightEmbeddingBackfillBestEffort(
-            name: "initialInsightEmbeddingBackfill",
-            gate: gate,
-            environment: environment
-        )
 
         do {
             _ = try await refreshRepoDiscovery(

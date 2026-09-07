@@ -12,6 +12,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     let writerGate: ServiceWriterGate
     let archiveV2Coordinator: ArchiveV2ServiceCoordinator?
     let archiveTranscriptResolver: ArchiveTranscriptResolver?
+    let webTranscriptSnapshotProvider: any ServiceWebTranscriptSnapshotProviding
+    let webMetadataProducer: any ServiceWebMetadataProviding
     let archiveV2CredentialProvisioner: ArchiveV2CredentialProvisioner
     private let claudeCodeProfileService: ClaudeCodeProfileService?
     private let readProvider: any EngramServiceReadProvider
@@ -57,6 +59,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         writerGate: ServiceWriterGate,
         archiveV2Coordinator: ArchiveV2ServiceCoordinator? = nil,
         archiveTranscriptResolver: ArchiveTranscriptResolver? = nil,
+        webTranscriptSnapshotProvider: any ServiceWebTranscriptSnapshotProviding = UnavailableServiceWebTranscriptSnapshotProvider(),
+        webMetadataProducer: any ServiceWebMetadataProviding = UnavailableServiceWebMetadataProducer(),
         archiveV2CredentialProvisioner: ArchiveV2CredentialProvisioner = ArchiveV2CredentialProvisioner(),
         claudeCodeProfileService: ClaudeCodeProfileService? = nil,
         readProvider: any EngramServiceReadProvider = EmptyEngramServiceReadProvider(),
@@ -75,6 +79,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         self.writerGate = writerGate
         self.archiveV2Coordinator = archiveV2Coordinator
         self.archiveTranscriptResolver = archiveTranscriptResolver
+        self.webTranscriptSnapshotProvider = webTranscriptSnapshotProvider
+        self.webMetadataProducer = webMetadataProducer
         self.archiveV2CredentialProvisioner = archiveV2CredentialProvisioner
         self.claudeCodeProfileService = claudeCodeProfileService
         self.readProvider = readProvider
@@ -88,15 +94,16 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     }
 
     func handle(_ request: EngramServiceRequestEnvelope) async -> EngramServiceResponseEnvelope {
+        let metadataDeadline = ContinuousClock.now.advanced(by: ServiceWebMetadataLimits.maximumRequestDuration)
         guard let telemetry, !Self.telemetryExcludedCommands.contains(request.command) else {
-            return await dispatch(request)
+            return await dispatch(request, metadataDeadline: metadataDeadline)
         }
         let clock = ContinuousClock()
         let started = clock.now
         // Capture the wall-clock start BEFORE dispatch so the span's `startedAt`
         // reflects when the command began, not when telemetry recorded it.
         let startedAt = Self.currentTimestamp()
-        let response = await dispatch(request)
+        let response = await dispatch(request, metadataDeadline: metadataDeadline)
         let elapsed = started.duration(to: clock.now).components
         let durationMs = Double(elapsed.seconds) * 1000
             + Double(elapsed.attoseconds) / 1e15
@@ -119,9 +126,16 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         return response
     }
 
-    private func dispatch(_ request: EngramServiceRequestEnvelope) async -> EngramServiceResponseEnvelope {
+    private func dispatch(
+        _ request: EngramServiceRequestEnvelope,
+        metadataDeadline: ContinuousClock.Instant
+    ) async -> EngramServiceResponseEnvelope {
         do {
             switch request.command {
+            case "webOverview", "webSessions", "webSessionDetail":
+                return await webMetadataResponse(request, deadline: metadataDeadline)
+            case "webMessages":
+                return await webMessagesResponse(request)
             case "claudeCodeProfilesStatus":
                 guard request.payload == nil else {
                     throw EngramServiceError.invalidRequest(

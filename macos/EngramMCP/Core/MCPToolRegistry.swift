@@ -71,8 +71,9 @@ enum MCPToolRegistry {
 
     /// tools/list + argument validation surface. Search `mode` enum is gated by
     /// `SessionVectorSearchAvailability` on the given database path.
-    static func tools(dbPath: String) -> [MCPToolDefinition] {
-        let semanticUsable = FileManager.default.fileExists(atPath: dbPath)
+    static func tools(dbPath: String, runtimeRole: EngramRuntimeRole = .local) -> [MCPToolDefinition] {
+        let semanticUsable = runtimeRole.allowsLocalIndex
+            && FileManager.default.fileExists(atPath: dbPath)
             && ((try? MCPDatabase(path: dbPath).vectorAvailabilityForAdvertising().isUsable) ?? false)
         return allToolDefinitions.compactMap { definition in
             guard !unavailableNativeProjectOperationTools.contains(definition.name) else {
@@ -878,7 +879,10 @@ enum MCPToolRegistry {
         arguments: [String: JSONValue],
         config: MCPConfig
     ) async throws -> OrderedJSONValue {
-        let catalog = tools(dbPath: config.dbPath)
+        guard config.runtimeRole.allowsLocalIndex else {
+            return .toolError(message: config.runtimeRole.unavailableMessage)
+        }
+        let catalog = tools(dbPath: config.dbPath, runtimeRole: config.runtimeRole)
         guard let definition = catalog.first(where: { $0.name == name }) else {
             return .toolError(message: "Unknown tool: \(name)")
         }
@@ -1389,6 +1393,9 @@ enum MCPToolRegistry {
     // MARK: - MCP resources & prompts (deepen the agent-facing surface)
 
     static func resourcesList(config: MCPConfig) async throws -> OrderedJSONValue {
+        guard config.runtimeRole.allowsLocalIndex else {
+            throw RuntimeRoleSettings.UnavailableError(role: config.runtimeRole)
+        }
         let database = try MCPDatabase(path: config.dbPath)
         let catalog = try database.recentResourceCatalog(sessionLimit: 15, insightLimit: 15)
         let items = catalog.map { entry -> OrderedJSONValue in
@@ -1403,6 +1410,9 @@ enum MCPToolRegistry {
     }
 
     static func resourceRead(uri: String, config: MCPConfig) async throws -> OrderedJSONValue {
+        guard config.runtimeRole.allowsLocalIndex else {
+            throw RuntimeRoleSettings.UnavailableError(role: config.runtimeRole)
+        }
         guard let parsed = parseEngramResourceURI(uri) else {
             throw MCPToolError.invalidArguments("Unsupported resource uri: \(uri)")
         }
@@ -1494,6 +1504,9 @@ enum MCPToolRegistry {
         arguments: [String: JSONValue],
         config: MCPConfig
     ) async throws -> OrderedJSONValue {
+        guard config.runtimeRole.allowsLocalIndex else {
+            throw RuntimeRoleSettings.UnavailableError(role: config.runtimeRole)
+        }
         let tool: String
         let description: String
         switch name {

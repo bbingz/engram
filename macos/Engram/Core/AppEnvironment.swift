@@ -25,21 +25,30 @@ struct AppEnvironment {
     let mockDaemon: Bool
     let showOnboarding: Bool
     let isTestMode: Bool
+    var runtimeRole: EngramRuntimeRole = .local
 
-    static let production = AppEnvironment(
-        dbPath: FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".engram/index.sqlite").path,
-        serviceSocketPath: UnixSocketEngramServiceTransport.defaultSocketPath(),
-        autoStartDaemon: false,
-        autoStartService: true,
-        networkEnabled: true,
-        fixedDate: nil,
-        popoverStandalone: false,
-        windowSize: nil,
-        mockDaemon: false,
-        showOnboarding: false,
-        isTestMode: false
-    )
+    static var production: AppEnvironment {
+        production(environment: ProcessInfo.processInfo.environment)
+    }
+
+    private static func production(environment: [String: String]) -> AppEnvironment {
+        let role = RuntimeRoleSettings.load(environment: environment)
+        let home = EngramUserDataDirectory.resolvedHomeDirectory(environment: environment)
+        return AppEnvironment(
+            dbPath: home.appendingPathComponent(".engram/index.sqlite").path,
+            serviceSocketPath: UnixSocketEngramServiceTransport.defaultSocketPath(homeDirectory: home),
+            autoStartDaemon: false,
+            autoStartService: role.allowsLocalIndex,
+            networkEnabled: role.allowsLocalIndex,
+            fixedDate: nil,
+            popoverStandalone: false,
+            windowSize: nil,
+            mockDaemon: false,
+            showOnboarding: false,
+            isTestMode: false,
+            runtimeRole: role
+        )
+    }
 
     static func test(fixturePath: String) -> AppEnvironment {
         AppEnvironment(
@@ -123,6 +132,7 @@ struct AppEnvironment {
             return .test(fixturePath: "")
         }
         if let dataDirIndex = args.firstIndex(of: "--data-dir") {
+            let role = RuntimeRoleSettings.load(environment: environment)
             let dataDir = args.indices.contains(dataDirIndex + 1)
                 ? args[dataDirIndex + 1]
                 : ""
@@ -149,7 +159,8 @@ struct AppEnvironment {
                     windowSize: nil,
                     mockDaemon: false,
                     showOnboarding: false,
-                    isTestMode: false
+                    isTestMode: false,
+                    runtimeRole: role
                 )
             }
             let dataDirectory = URL(fileURLWithPath: normalizedDataDir, isDirectory: true)
@@ -159,18 +170,19 @@ struct AppEnvironment {
                     .appendingPathComponent("run", isDirectory: true)
                     .appendingPathComponent("engram-service.sock")
                     .path,
-                autoStartDaemon: AppEnvironment.production.autoStartDaemon,
-                autoStartService: AppEnvironment.production.autoStartService,
-                networkEnabled: AppEnvironment.production.networkEnabled,
+                autoStartDaemon: false,
+                autoStartService: role.allowsLocalIndex,
+                networkEnabled: role.allowsLocalIndex,
                 fixedDate: nil,
                 popoverStandalone: false,
                 windowSize: nil,
                 mockDaemon: false,
                 showOnboarding: false,
-                isTestMode: false
+                isTestMode: false,
+                runtimeRole: role
             )
         }
-        return .production
+        return production(environment: environment)
     }
 
     func serviceLaunchConfiguration(bundle: Bundle = .main) -> EngramServiceLaunchConfiguration {
@@ -182,7 +194,8 @@ struct AppEnvironment {
             executablePath: defaultConfiguration.executablePath,
             socketPath: serviceSocketPath,
             databasePath: dbPath,
-            foreground: defaultConfiguration.foreground
+            foreground: defaultConfiguration.foreground,
+            runtimeRole: runtimeRole
         )
     }
 }

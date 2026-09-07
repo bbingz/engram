@@ -203,7 +203,7 @@ verify_manifest_file_set() {
 
   actual_paths="$(
     cd "$bundle"
-    /usr/bin/find . -type f ! -name SHA256SUMS -print |
+    /usr/bin/find . -type f ! -path ./SHA256SUMS -print |
       /usr/bin/sed 's#^\./##' |
       LC_ALL=C sort
   )"
@@ -219,7 +219,7 @@ generate_manifest() {
       relative_path="${relative_path#./}"
       /usr/bin/shasum -a 256 "$relative_path"
     done < <(
-      /usr/bin/find . -type f ! -name SHA256SUMS -print | LC_ALL=C sort
+      /usr/bin/find . -type f ! -path ./SHA256SUMS -print | LC_ALL=C sort
     )
   ) > "$bundle/SHA256SUMS"
   /bin/chmod 0600 "$bundle/SHA256SUMS"

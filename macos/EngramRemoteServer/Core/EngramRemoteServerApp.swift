@@ -26,6 +26,8 @@ public final class EngramRemoteServerApp: Sendable {
     private let store: BlobStore
     private let archiveStore: ArchiveStore?
     private let archiveTelemetry: ArchiveRemoteTelemetryStore?
+    private let webSessions: WebAuthSessionStore?
+    private let webReadSurface: WebReadRoutes.Surface?
 
     public convenience init(config: EngramRemoteServerConfig) throws {
         try self.init(
@@ -37,10 +39,22 @@ public final class EngramRemoteServerApp: Sendable {
         )
     }
 
+    convenience init(config: EngramRemoteServerConfig, webReadClientFactory: @escaping WebReadRoutes.ClientFactory) throws {
+        try self.init(
+            config: config,
+            archiveTelemetryNow: { Date() },
+            archiveTelemetrySnapshotWriter: { data, url in
+                try ArchiveRemoteTelemetryStore.defaultSnapshotWriter(data, url)
+            },
+            webReadClientFactory: webReadClientFactory
+        )
+    }
+
     init(
         config: EngramRemoteServerConfig,
         archiveTelemetryNow: @escaping @Sendable () -> Date,
-        archiveTelemetrySnapshotWriter: @escaping ArchiveRemoteTelemetryStore.SnapshotWriter
+        archiveTelemetrySnapshotWriter: @escaping ArchiveRemoteTelemetryStore.SnapshotWriter,
+        webReadClientFactory: @escaping WebReadRoutes.ClientFactory = { path in try WebReadRoutes.makeSurface(socketPath: path) }
     ) throws {
         if let archive = config.archiveV2 {
             guard EngramRemoteServerConfig.isCurrentArchiveServerID(archive.serverID) else {
@@ -63,13 +77,27 @@ public final class EngramRemoteServerApp: Sendable {
                 throw EngramRemoteServerConfig.ConfigError.mcpTokenMustBeDistinct
             }
         }
+        if let web = config.web {
+            // Config is mutable and its caller may have omitted credentials from WebConfig's constructor.
+            let credentials = [config.bearerToken, config.archiveV2?.bearerToken, config.mcp?.bearerToken].compactMap { $0 }
+            guard credentials.allSatisfy({ Data(SHA256.hash(data: Data($0.utf8))) != web.credentialDigest }) else {
+                throw EngramRemoteWebConfig.ConfigError.credentialMustBeDistinct
+            }
+            let socketPath = try EngramRemoteServerConfig.validatedWebServiceSocketPath(config.webServiceSocketPath)
+            self.webReadSurface = try webReadClientFactory(socketPath)
+            self.webSessions = WebAuthSessionStore(configuration: web)
+        } else {
+            self.webReadSurface = nil
+            self.webSessions = nil
+        }
         self.config = config
         self.store = try BlobStore(root: config.storeRoot, key: config.atRestKey)
         if let archive = config.archiveV2 {
             self.archiveStore = try ArchiveStore(
                 root: archive.root,
                 key: archive.atRestKey,
-                serverID: archive.serverID
+                serverID: archive.serverID,
+                publicationsEnabled: archive.publicationsEnabled
             )
             self.archiveTelemetry = try ArchiveRemoteTelemetryStore(
                 archiveRoot: archive.root,
@@ -228,6 +256,14 @@ public final class EngramRemoteServerApp: Sendable {
                 token: archive.bearerToken,
                 telemetry: archiveTelemetry
             )
+            if archive.publicationsEnabled {
+                ArchivePublicationRoutes.mount(
+                    on: router,
+                    store: archiveStore,
+                    token: archive.bearerToken,
+                    serverID: archive.serverID
+                )
+            }
         }
 
         if let mcp = config.mcp, let archiveStore {
@@ -239,6 +275,34 @@ public final class EngramRemoteServerApp: Sendable {
 
     private static func isCatalogManifestKey(_ key: String) -> Bool {
         key.hasPrefix("catalog.") && key.hasSuffix(".manifest") && !key.contains("..")
+    }
+
+    private func buildResponder() -> WebResponder {
+        let router = buildRouter()
+        let middleware: WebRequestBoundary.Middleware<BasicRequestContext>?
+        if let configuration = config.web, let sessions = webSessions, let surface = webReadSurface {
+            let boundary = WebRequestBoundary(configuration: configuration)
+            WebAuthRoutes.mount(on: router, boundary: boundary, sessions: sessions)
+            WebReadRoutes.mount(on: router, surface: surface)
+            WebUIRoutes.mount(on: router)
+            middleware = WebRequestBoundary.Middleware(boundary: boundary, sessions: sessions)
+        } else {
+            middleware = nil
+        }
+        return WebResponder(router: router.buildResponder(), middleware: middleware)
+    }
+
+    /// Wrap the responder itself so unknown Web routes receive the same policy and headers.
+    private struct WebResponder: HTTPResponder {
+        let router: RouterResponder<BasicRequestContext>
+        let middleware: WebRequestBoundary.Middleware<BasicRequestContext>?
+
+        func respond(to request: Request, context: BasicRequestContext) async throws -> Response {
+            guard let middleware else { return try await router.respond(to: request, context: context) }
+            return try await middleware.handle(request, context: context) { request, context in
+                try await router.respond(to: request, context: context)
+            }
+        }
     }
 
     /// Run until cancelled. `onBound` reports the actual listening port (useful
@@ -263,8 +327,22 @@ public final class EngramRemoteServerApp: Sendable {
                 }
             }
         }
+        if config.archiveV2?.publicationsEnabled == true, let archiveStore {
+            let warmLogger = logger
+            // Publication requests fail closed while this independent index is
+            // cold. A journal failure must not disable existing archive routes.
+            Task.detached(priority: .utility) {
+                do {
+                    try archiveStore.warmPublicationIndex()
+                    warmLogger.notice("collector publication index warm complete")
+                } catch {
+                    // Do not log payloads or filesystem paths from store errors.
+                    warmLogger.warning("collector publication intake unavailable")
+                }
+            }
+        }
         let app = Application(
-            router: buildRouter(),
+            responder: buildResponder(),
             configuration: ApplicationConfiguration(address: .hostname(config.host, port: config.port)),
             onServerRunning: { channel in
                 if let port = channel.localAddress?.port { onBound?(port) }

@@ -551,6 +551,74 @@ final class ExactSourceCapturerTests: XCTestCase {
         XCTAssertEqual(verifyError as? ExactSourceCapturerError, .generationChanged)
     }
 
+    func testCaptureFDBudgetRejectsBeforeStreamingOrPublishing() throws {
+        let storeRoot = root.appendingPathComponent("store-fd-budget")
+        let source = root.appendingPathComponent("budget.jsonl")
+        let bytes = Data(repeating: 0x41, count: 128)
+        try bytes.write(to: source)
+        let (cas, catalog) = try makeStore(storeRoot)
+        let descriptor = try ArchiveSourceDescriptor.singleFile(locator: source.path,
+            sourceURL: source, replayRelativePath: "budget.jsonl")
+        let capturer = ExactSourceCapturer(cas: cas, catalog: catalog, descriptor: descriptor,
+            testHooks: .init(afterStreamingBeforeFinalStat: { _ in
+                XCTFail("FD admission must reject before source streaming")
+            }))
+
+        XCTAssertThrowsError(try capturer.capture(source: .claudeCode, locator: source.path,
+            machineID: machineID, maximumByteCount: 64)) {
+            XCTAssertEqual($0 as? ExactSourceCapturerError, .exceededMaximumByteCount(64))
+        }
+        XCTAssertTrue(try catalog.unboundCaptures(limit: 10).isEmpty)
+        try assertNoCASContent(in: storeRoot)
+        XCTAssertEqual(try Data(contentsOf: source), bytes)
+    }
+
+    func testCaptureFDReservationRejectsChangedGenerationWithoutNewCASContent() throws {
+        let storeRoot = root.appendingPathComponent("store-fd-reservation")
+        let source = root.appendingPathComponent("reservation.jsonl")
+        try Data("reserved\n".utf8).write(to: source)
+        let (cas, catalog) = try makeStore(storeRoot)
+        let descriptor = try ArchiveSourceDescriptor.singleFile(locator: source.path,
+            sourceURL: source, replayRelativePath: "reservation.jsonl")
+        let capturer = ExactSourceCapturer(cas: cas, catalog: catalog, descriptor: descriptor)
+        let original = try capturer.capture(source: .claudeCode, locator: source.path, machineID: machineID)
+        let changed = Data("reserved\nappended after reservation\n".utf8)
+        try changed.write(to: source)
+
+        XCTAssertThrowsError(try capturer.capture(source: .claudeCode, locator: source.path,
+            machineID: machineID, maximumByteCount: 1024, expectedGeneration: original.manifest.generation)) {
+            XCTAssertEqual($0 as? ExactSourceCapturerError, .generationChanged)
+        }
+        XCTAssertEqual(try catalog.unboundCaptures(limit: 10).map(\.captureID), [original.capture.captureID])
+        XCTAssertEqual(try regularFileCount(in: storeRoot.appendingPathComponent("objects/sha256")), 1)
+        XCTAssertEqual(try manifestFileCount(storeRoot), 1)
+        XCTAssertEqual(try regularFileCount(in: storeRoot.appendingPathComponent("tmp")), 0)
+        XCTAssertEqual(try Data(contentsOf: source), changed)
+    }
+
+    func testCaptureFDBudgetValidationAndExactBoundaryPreserveDefaultBehavior() throws {
+        let storeRoot = root.appendingPathComponent("store-fd-boundary")
+        let source = root.appendingPathComponent("boundary.jsonl")
+        let bytes = Data("exact boundary\n".utf8)
+        try bytes.write(to: source)
+        let (cas, catalog) = try makeStore(storeRoot)
+        let descriptor = try ArchiveSourceDescriptor.singleFile(locator: source.path,
+            sourceURL: source, replayRelativePath: "boundary.jsonl")
+        let capturer = ExactSourceCapturer(cas: cas, catalog: catalog, descriptor: descriptor)
+        XCTAssertThrowsError(try capturer.capture(source: .claudeCode, locator: source.path,
+            machineID: machineID, maximumByteCount: -1)) {
+            XCTAssertEqual($0 as? ExactSourceCapturerError, .invalidMaximumByteCount)
+        }
+        XCTAssertTrue(try catalog.unboundCaptures(limit: 10).isEmpty)
+        try assertNoCASContent(in: storeRoot)
+        let original = try capturer.capture(source: .claudeCode, locator: source.path, machineID: machineID)
+        let repeated = try capturer.capture(source: .claudeCode, locator: source.path,
+            machineID: machineID, maximumByteCount: Int64(bytes.count), expectedGeneration: original.manifest.generation)
+        XCTAssertEqual(repeated, original)
+        XCTAssertEqual(try reconstruct(repeated.manifest, from: cas), bytes)
+        XCTAssertEqual(try catalog.unboundCaptures(limit: 10).count, 1)
+    }
+
     private func assertGenerationRaceDoesNotCommit(
         mutation: @escaping @Sendable (URL) throws -> Void
     ) throws {

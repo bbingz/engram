@@ -10,9 +10,9 @@ public enum SQLiteConnectionPolicyError: Error, Equatable {
 }
 
 public enum SQLiteConnectionPolicy {
-    public static let busyTimeoutMilliseconds = 30_000
+    public static let busyTimeoutMilliseconds = SQLiteBusyDefaults.busyTimeoutMilliseconds
     public static let minimumBusyTimeoutMilliseconds = 5_000
-    public static let walAutocheckpointPages = 1_000
+    public static let walAutocheckpointPages = SQLiteBusyDefaults.walAutocheckpointPages
     /// Page cache per connection. Negative = KiB (not pages), so ~16 MiB
     /// regardless of page size — larger than the default ~2 MiB to keep hot FTS
     /// b-tree pages resident across queries. This is the primary read accelerator

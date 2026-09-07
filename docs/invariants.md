@@ -54,7 +54,7 @@ Invariants are properties that must survive every change; each entry names where
 ## 8. Service Socket Security
 
 - **Statement** - The service socket uses a private runtime directory, owner-only socket permissions, capability-token authorization for mutating commands, and current-user local socket confinement.
-- **Enforced by** - `macos/Shared/Service/UnixSocketEngramServiceTransport.swift`, `macos/EngramService/Core/ServiceWriterGate.swift`, `docs/SECURITY.md`.
+- **Enforced by** - `macos/Shared/Service/UnixSocketEngramServiceTransport.swift`, `macos/Shared/Service/EngramServiceSocketIO.swift`, `macos/EngramService/Core/ServiceWriterGate.swift`, `docs/SECURITY.md`.
 - **Verified by** - `macos/EngramServiceCoreTests/ServiceSecurityHardeningTests.swift` (testDestructiveCommandWithoutTokenIsUnauthorized, testEveryMutatingCommandRequiresCapabilityToken, testCapabilityTokenFileIsWrittenWithOwnerOnlyPermissions, testClientAutoAttachedTokenAuthorizesDestructiveCommand).
 - **Gate** - `none`.
 
@@ -105,6 +105,69 @@ Invariants are properties that must survive every change; each entry names where
 - **Statement** - Stdio EngramMCP and any remote MCP surface negotiate the same dual-era protocol set, share the same tool registry era rules, and refuse unsupported protocol versions with honest errors rather than silently demoting or advertising a version they cannot serve.
 - **Enforced by** - `macos/EngramMCP/Core/MCPStdioServer.swift`, `macos/EngramMCP/Core/MCPToolRegistry.swift`, `docs/mcp-protocol-alignment-design.md`, `docs/remote-mcp-2026-07-28-design.md`.
 - **Verified by** - `macos/EngramMCPTests/EngramMCPExecutableTests.swift` (testInitializeAcceptsOlderCodexProtocolVersion, testInitializeAcceptsCurrentCodexProtocolVersion, testInitializeNegotiatesUnknownProtocolVersionToLatest, testModernRequestWithUnsupportedVersionReturnsUnsupportedProtocolVersionError, testModernMetaWithNonStringVersionIsUnsupportedProtocolVersion_repro).
+- **Gate** - `none`.
+
+## External Service Ownership
+
+- **Statement** - Once the App adopts an externally managed service, quitting, failed health probes, and manual reconnect do not signal or replace that service, acquire its writer locks, or remove its runtime secrets. Persisted index role pins external ownership before its initial probe, including an absent socket; cancelled or terminated App connection tasks cannot start later. Ordinary settings migration and user-initiated credential settings remain outside this lifecycle-only guarantee.
+- **Enforced by** - `macos/Engram/Core/EngramServiceLauncher.swift` (adoptedConfiguration, startHealthMonitor, restart, stopIfOwned), `macos/Engram/App.swift`, `macos/Shared/EngramCore/RuntimeRoleSettings.swift`.
+- **Verified by** - `macos/EngramTests/EngramServiceLauncherTests.swift` (testQuitPreservesAdoptedServiceAndItsRuntimeSecrets_repro, testAdoptedServiceProbeFailureRecoversWithoutShutdownOrReplacement_repro, testSuspendedAdoptedProbeCannotRestartAfterQuit_repro, testRestartOfAdoptedServiceOnlyReconnects_repro, testRuntimeRoleColdIndexCannotSpawnOrTouchLockAndSecrets_repro, testRuntimeRoleSuspendedInitialProbeCannotStartAfterQuit_repro), `macos/EngramTests/RuntimeRoleAppTests.swift` (testTerminatedIndexAppCannotRestartOrPublishLateStatus_repro).
+- **Gate** - `none`.
+
+## Persisted Host Role Before Local Index Access
+
+- **Statement** - The App and MCP resolve the same owner-only persisted role before local-index access. Collector, replica and invalid settings cannot open the local product DB or start a service through the App; they do not automatically migrate settings/credentials. Missing role preserves local behavior. This is a host-entry guard, not proof of a complete collector or source coverage.
+- **Enforced by** - `macos/Shared/EngramCore/RuntimeRoleSettings.swift`, `macos/Engram/Core/AppEnvironment.swift`, `macos/Engram/App.swift`, `macos/Engram/Core/Database.swift`, `macos/EngramMCP/Core/MCPConfig.swift`, `macos/EngramMCP/Core/MCPToolRegistry.swift`.
+- **Verified by** - `macos/EngramCoreTests/RuntimeRoleSettingsTests.swift`, `macos/EngramTests/RuntimeRoleAppTests.swift`, `macos/EngramTests/DatabaseManagerTests.swift`, `macos/EngramMCPTests/EngramMCPExecutableTests.swift` (runtime-role tests).
+- **Gate** - `none`.
+
+## Collector Capture Core Excludes Product Index Dependencies
+
+- **Statement** - CollectorCore compiles only explicit capture/identity/privacy sources, a narrow shared metadata projection and GRDB, with no CoreRead/CoreWrite/Service/full-parser dependencies or product index tables. CoreWrite reuses the same five capture files, not a second implementation. The archive no-delete gate scans their new location with the same global unlink limits. This foundation does not yet guarantee a complete no-index collector executable.
+- **Enforced by** - `macos/project.yml`, `macos/EngramCaptureShared/ArchiveCatalog.swift`, `macos/EngramCaptureShared/ExactSourceCapturer.swift`, `scripts/check-archive-v2-safety.sh`.
+- **Verified by** - `macos/EngramCollectorCoreTests/CollectorTargetDependencyTests.swift`, `macos/EngramCollectorCoreTests/CollectorCaptureCoreTests.swift`, `tests/scripts/archive-v2-safety-gate.test.ts`.
+- **Gate** - `none`.
+
+## Collector Publication ACK Durability
+
+- **Statement** - A collector capture ACK is issued only after one encrypted immutable acceptance record durably commits both the publication and its arrival identity. Restart rebuilds discovery from those records; uncertain storage or journal ownership fails closed. This ACK neither creates a legacy bound receipt nor proves parsing, keyword readiness, or reclamation authority. Publication intake is default OFF.
+- **Enforced by** - `macos/EngramRemoteServer/Core/ArchiveStore.swift`, `macos/EngramRemoteServer/Core/ArchiveEnvelopeCodec.swift`, `macos/EngramRemoteServer/Core/ArchivePublicationRoutes.swift`, `macos/EngramRemoteServer/Core/ArchiveRoutes.swift`, `macos/EngramRemoteServer/Core/EngramRemoteServerConfig.swift`.
+- **Verified by** - `macos/EngramRemoteServerCoreTests/ArchivePublicationStoreTests.swift` (testFirstAcceptanceIsEncryptedImmutableAndIdenticalRetryReturnsOriginalACK, testAcceptedRecordSurvivesIndependentProcessRestart, testAcceptanceDirectoryFsyncFailureReconcilesTheOneRenamedRecord, testArrivalCursorReadsLaterSmallerDigestAndRemainsReusableAtEOF), `macos/EngramRemoteServerCoreTests/ArchivePublicationRouteTests.swift`, `macos/EngramRemoteServerCoreTests/CollectorPublicationModelTests.swift`.
+- **Gate** - `none`.
+
+## Durable Collector Intake Is Not Index Readiness
+
+- **Statement** - Publication bytes, per-parser work, replica arrivals and checkpoint advancement share one inner savepoint. Identical replay cannot reset terminal work, and conflicting stream tuples quarantine nonterminal work without retracting last-good parsed/index-ready rows. Pending intake does not authorize parsing, source/epoch promotion or session/FTS writes.
+- **Enforced by** - `macos/EngramCoreWrite/CaptureIngest/CaptureIngestLedger.swift`, `macos/EngramCoreWrite/CaptureIngest/CaptureIngestIdentity.swift`, `macos/EngramCoreWrite/Database/EngramMigrations.swift`.
+- **Verified by** - `macos/EngramCoreTests/CaptureIngest/CaptureIngestLedgerTests.swift`, `macos/EngramCoreTests/CaptureIngest/CaptureIngestIdentityTests.swift`.
+- **Gate** - `none`.
+
+## Source and Epoch Authority Precedes Capture Replay
+
+- **Statement** - Capture eligibility requires an explicitly provisioned machine/source-instance/root/parse-format binding and an approved epoch. Unknown streams, overlapping roots, unsupported shapes and unapproved epochs are quarantined without promoting last-good data. Legacy NULL parse formats remain unprovisioned; epoch changes use expected-binding checks and retain the selected format. This database contract does not expose an operator command or perform replay.
+- **Enforced by** - `macos/EngramCoreWrite/CaptureIngest/CaptureIngestSourceRegistry.swift`, `macos/EngramCoreWrite/Database/EngramMigrations.swift`.
+- **Verified by** - `macos/EngramCoreTests/CaptureIngest/CaptureIngestSourceRegistryTests.swift`.
+- **Gate** - `none`.
+
+## Local Privacy Proof Binds Captured Bytes and Current Format
+
+- **Statement** - Upload eligibility uses the immutable captured generation, not a later live source read. The shared Claude/Codex metadata projection preserves parser selection while retaining conflicting evidence for conservative withholding. Proof binds capture/manifest/whole-source identity, project root, exclusion-policy revision/digest and the entire selected format; fresh policy and format are mandatory before upload. Unsupported, incomplete, conflicting or excluded evidence does not authorize transfer. This local proof neither proves an HQ replay nor retroactively removes remote bytes.
+- **Enforced by** - `macos/EngramCollectorCore/CollectorPrivacyProof.swift`, `macos/Shared/EngramCore/Adapters/SourceMetadataProjection.swift`.
+- **Verified by** - `macos/EngramCollectorCoreTests/CollectorPrivacyProofTests.swift`, `macos/EngramCoreTests/Adapters/SourceMetadataProjectionParityTests.swift`.
+- **Gate** - `none`.
+
+## Transcript Continuation Preserves Redacted UTF-8 Payloads
+
+- **Statement** - The pure Service pager redacts every string field before fragmenting normalized message JSON at UTF-8 boundaries. Cursors bind session, immutable generation, projection, redaction revision, roles, ordinal, offset and payload digest; stale or unavailable snapshots fail explicitly. Encoded envelope sizing includes Data/base64 escaping and reserves framing headroom. The pager does not itself establish snapshot authority or expose an IPC command.
+- **Enforced by** - `macos/EngramService/Core/ServiceTranscriptContinuation.swift`, `macos/Shared/Service/EngramServiceWebReadModels.swift`.
+- **Verified by** - `macos/EngramServiceCoreTests/WebTranscriptContinuationTests.swift`, `macos/EngramServiceCoreTests/WebTranscriptWireTests.swift`.
+- **Gate** - `none`.
+
+## Optional AI Maintenance Does Not Gate Required Index Readiness
+
+- **Statement** - Initial scan and periodic indexing do not await embedding providers. A separate bounded maintenance task starts after the required scan, checks provider configuration and cooldown before backlog queries, and retains existing retry/terminal semantics. Orderly shutdown explicitly cancels and joins that task before draining writers and checkpointing; optional work cannot retain writer ownership after the runner returns.
+- **Enforced by** - `macos/EngramService/Core/EngramServiceRunner.swift`.
+- **Verified by** - `macos/EngramServiceCoreTests/OptionalAIReadinessTests.swift`, `macos/EngramServiceCoreTests/EmbeddingGuardrailsTests.swift`, `macos/EngramServiceCoreTests/EngramServiceIPCTests.swift`.
 - **Gate** - `none`.
 
 ## Unverified Anchors

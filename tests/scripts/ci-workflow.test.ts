@@ -119,6 +119,14 @@ const parsedTestWorkflow = parseDocument(testWorkflow).toJS() as {
 };
 
 describe('CI workflow hardening', () => {
+  it('runs the isolated collector core tests as a required Swift unit step', () => {
+    const step = parsedTestWorkflow.jobs?.['swift-unit']?.steps?.find(
+      (candidate) => candidate.name === 'Run Swift unit tests',
+    );
+    expect(step?.run).toMatch(/^\s*run_xcode_tests EngramCollectorCore\s*$/m);
+    expect(step?.['continue-on-error']).not.toBe(true);
+  });
+
   it('parses every workflow as YAML', () => {
     for (const workflow of allWorkflows) {
       expect(parseDocument(workflow).errors).toEqual([]);
@@ -184,6 +192,24 @@ describe('CI workflow hardening', () => {
     expect(testWorkflow).toContain('Validate GitHub Actions workflows');
     expect(testWorkflow).toContain('sha256sum --check -');
     expect(testWorkflow).toContain('"$RUNNER_TEMP/actionlint"');
+  });
+
+  it('runs native role launch-template contracts in the existing macOS script lane', () => {
+    const job = parsedTestWorkflow.jobs?.['macos-vitest'];
+    const commands = (job?.steps ?? [])
+      .map((step) => step.run ?? '')
+      .join('\n');
+    for (const file of [
+      'collector-package',
+      'service-package',
+      'headless-install-plan',
+    ]) {
+      expect(commands).toContain(`tests/scripts/${file}.test.ts`);
+    }
+    expect(commands).not.toContain('--passWithNoTests');
+    expect(job?.steps?.some((step) => step['continue-on-error'] === true)).toBe(
+      false,
+    );
   });
 
   // A PR based on a feature branch used to trigger only Dependency Review and
@@ -349,6 +375,31 @@ describe('CI workflow hardening', () => {
     expect(installIndex).toBeGreaterThan(-1);
     expect(typescriptJob).toContain('sudo apt-get update');
     expect(coverageIndex).toBeGreaterThan(installIndex);
+  });
+
+  it('provides lsof independently of ripgrep before Linux coverage exercises the TLS helper', () => {
+    const steps = parsedTestWorkflow.jobs?.typescript?.steps ?? [];
+    const installIndex = steps.findIndex((step) =>
+      step.run?.includes('command -v lsof'),
+    );
+    const coverageIndex = steps.findIndex(
+      (step) => step.run === 'npm run test:coverage',
+    );
+
+    expect(installIndex).toBeGreaterThan(-1);
+    expect(coverageIndex).toBeGreaterThan(installIndex);
+    expect(
+      steps[installIndex].run
+        ?.trim()
+        .split('\n')
+        .map((line) => line.trim()),
+    ).toEqual([
+      'if ! command -v lsof >/dev/null 2>&1; then',
+      'sudo apt-get update',
+      'sudo apt-get install -y lsof',
+      'fi',
+    ]);
+    expect(steps[installIndex]['continue-on-error']).not.toBe(true);
   });
 
   it('installs ripgrep before release coverage runs the archive safety gate', () => {
@@ -871,5 +922,57 @@ describe('local build metadata and script coverage', () => {
   it('tracks the Husky pre-push shim used by core.hooksPath', () => {
     expect(gitignore).toContain('!.husky/pre-push');
     expect(existsSync(resolve(repoRoot, '.husky/pre-push'))).toBe(true);
+  });
+});
+
+describe('Swift Service runner process-home isolation', () => {
+  it('launches the full Service suite with one private checkout-local process home and no global HOME override', () => {
+    const job = parsedTestWorkflow.jobs?.['swift-unit'];
+    const step = job?.steps?.find(
+      (candidate) => candidate.name === 'Run Swift unit tests',
+    );
+    const run = step?.run ?? '';
+    const serviceBlocks = [
+      ...run.matchAll(/^[ \t]*\(\n([\s\S]*?)^[ \t]*\)[ \t]*$/gm),
+    ].filter((match) => match[1].includes('run_xcode_tests EngramServiceCore'));
+
+    expect(serviceBlocks).toHaveLength(1);
+    expect(
+      (serviceBlocks[0]?.[1] ?? '')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean),
+    ).toEqual([
+      'SERVICE_TEST_HOME="$(mktemp -d "$GITHUB_WORKSPACE/.engram-demo-test-home.XXXXXX")"',
+      'chmod 700 "$SERVICE_TEST_HOME"',
+      'CFFIXED_USER_HOME="$SERVICE_TEST_HOME" \\',
+      'TEST_RUNNER_CFFIXED_USER_HOME="$SERVICE_TEST_HOME" \\',
+      'ENGRAM_DEMO_EXPECTED_HOME="$SERVICE_TEST_HOME" \\',
+      'TEST_RUNNER_ENGRAM_DEMO_EXPECTED_HOME="$SERVICE_TEST_HOME" \\',
+      'run_xcode_tests EngramServiceCore',
+    ]);
+    expect(
+      run.match(/^[ \t]*run_xcode_tests EngramServiceCore\b.*$/gm),
+    ).toHaveLength(1);
+    expect(step?.['continue-on-error']).not.toBe(true);
+    expect(run).not.toMatch(/\bHOME[ \t]*=/);
+
+    const isolatedKeys = [
+      'CFFIXED_USER_HOME',
+      'TEST_RUNNER_CFFIXED_USER_HOME',
+      'ENGRAM_DEMO_EXPECTED_HOME',
+      'TEST_RUNNER_ENGRAM_DEMO_EXPECTED_HOME',
+    ];
+    for (const scope of [parsedTestWorkflow, job, step]) {
+      const environment =
+        (scope as { env?: Record<string, unknown> } | undefined)?.env ?? {};
+      for (const key of ['HOME', ...isolatedKeys]) {
+        expect(environment).not.toHaveProperty(key);
+      }
+    }
+    const outsideService = run.replace(serviceBlocks[0]?.[0] ?? '', '');
+    for (const key of isolatedKeys) {
+      expect(outsideService).not.toContain(key);
+    }
   });
 });

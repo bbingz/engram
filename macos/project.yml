@@ -46,6 +46,7 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: EngramCoreWrite
+      - path: EngramCaptureShared
     dependencies:
       - target: EngramCoreRead
       - package: GRDB
@@ -54,6 +55,87 @@ targets:
       PRODUCT_BUNDLE_IDENTIFIER: com.engram.core-write
       SWIFT_VERSION: "5.9"
       MACOSX_DEPLOYMENT_TARGET: "14.0"
+      GENERATE_INFOPLIST_FILE: YES
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: "-"
+
+  EngramCollectorCore:
+    type: framework
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramCaptureShared/ExactSourceCapturer.swift
+      - path: EngramCaptureShared/ImmutableArchiveCAS.swift
+      - path: EngramCaptureShared/ArchiveCatalog.swift
+      - path: EngramCaptureShared/ArchiveCatalogMigrations.swift
+      - path: EngramCaptureShared/ArchiveLocatorClassifier.swift
+      - path: EngramCollectorCore/CollectorMachineIdentityReader.swift
+      - path: EngramCollectorCore/CollectorPrivacyProof.swift
+      - path: EngramCollectorCore/CollectorInventoryModels.swift
+      - path: EngramCollectorCore/CollectorInventoryStore.swift
+      - path: EngramCollectorCore/CollectorBootstrapWalker.swift
+      - path: EngramCollectorCore/CollectorPOSIXRootEnumerator.swift
+      - path: EngramCollectorCore/CollectorInventoryOwner.swift
+      - path: EngramCollectorCore/CollectorEventCoordinator.swift
+      - path: EngramCollectorCore/CollectorNativeEventStream.swift
+      - path: EngramCollectorCore/CollectorPublicationWorker.swift
+      - path: EngramCollectorCore/CollectorRuntime.swift
+      - path: Shared/Security/SecureRegularFile.swift
+      - path: Shared/Security/ExplicitCredentialFile.swift
+      - path: Shared/EngramCore/RuntimeRoleSettings.swift
+      - path: Shared/EngramCore/Adapters/SourceName.swift
+      - path: Shared/EngramCore/Adapters/SourceMetadataProjection.swift
+      - path: Shared/EngramCore/ArchiveV2/ArchiveHash.swift
+      - path: Shared/EngramCore/ArchiveV2/ArchiveCanonicalJSON.swift
+      - path: Shared/EngramCore/ArchiveV2/ArchiveModels.swift
+      - path: Shared/EngramCore/ArchiveV2/CollectorPublicationModels.swift
+      - path: Shared/EngramCore/ArchiveV2/ArchiveSourceDescriptor.swift
+      - path: Shared/EngramCore/Database/SQLiteBusyDefaults.swift
+    dependencies:
+      - package: GRDB
+        product: GRDB-dynamic
+      - sdk: CoreServices.framework
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.engram.collector-core
+      SWIFT_VERSION: "5.9"
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) ENGRAM_COLLECTOR_CORE"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      GENERATE_INFOPLIST_FILE: YES
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: "-"
+
+  EngramCollector:
+    type: tool
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramCollector/main.swift
+    dependencies:
+      - target: EngramCollectorCore
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.engram.collector
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: "-"
+      SKIP_INSTALL: YES
+      LD_RUNPATH_SEARCH_PATHS:
+        - "@executable_path"
+        - "@executable_path/PackageFrameworks"
+        - "@executable_path/../Frameworks"
+
+  EngramCollectorCoreTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramCollectorCoreTests
+    dependencies:
+      - target: EngramCollectorCore
+      - package: GRDB
+        product: GRDB-dynamic
+    settings:
+      SWIFT_VERSION: "5.9"
       GENERATE_INFOPLIST_FILE: YES
       CODE_SIGNING_ALLOWED: NO
       CODE_SIGN_IDENTITY: "-"
@@ -88,6 +170,7 @@ targets:
       - path: EngramService/IPC
       - path: Shared/Service
       - path: Shared/Security/SecureRegularFile.swift
+      - path: Shared/Security/ExplicitCredentialFile.swift
     dependencies:
       - target: EngramCoreWrite
       - package: GRDB
@@ -110,6 +193,8 @@ targets:
       - target: EngramServiceCore
       - target: EngramCoreRead
       - target: EngramCoreWrite
+      - target: EngramCollectorCore
+      - target: EngramRemoteServerCore
       - package: GRDB
         product: GRDB-dynamic
     settings:
@@ -258,8 +343,14 @@ targets:
       - path: Shared/EngramCore/ArchiveV2/ArchiveHash.swift
       - path: Shared/EngramCore/ArchiveV2/ArchiveCanonicalJSON.swift
       - path: Shared/EngramCore/ArchiveV2/ArchiveModels.swift
+      - path: Shared/EngramCore/ArchiveV2/CollectorPublicationModels.swift
       - path: Shared/EngramCore/ArchiveV2/ArchiveRemoteTelemetry.swift
       - path: Shared/EngramCore/TranscriptRedactionPolicy.swift
+      - path: Shared/Service/EngramServiceSocketIO.swift
+      - path: Shared/Service/EngramServiceWireEnvelopes.swift
+      - path: Shared/Service/EngramServiceError.swift
+      - path: Shared/Service/EngramServiceWebReadModels.swift
+      - path: Shared/Service/EngramServiceWebReadClient.swift
     dependencies:
       - package: Hummingbird
         product: Hummingbird
@@ -383,6 +474,21 @@ targets:
       MACOSX_DEPLOYMENT_TARGET: "14.0"
 
 schemes:
+  EngramCollector:
+    build:
+      targets:
+        EngramCollector: all
+    run:
+      config: Debug
+  EngramCollectorCore:
+    build:
+      targets:
+        EngramCollectorCore: all
+        EngramCollectorCoreTests: all
+    test:
+      config: Debug
+      targets:
+        - EngramCollectorCoreTests
   Engram:
     build:
       targets:

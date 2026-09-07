@@ -76,6 +76,10 @@ final class MCPStdioServer {
         self.config = config
     }
 
+    private var runtimeInstructions: String {
+        config.runtimeRole.allowsLocalIndex ? Self.instructions : config.runtimeRole.unavailableMessage
+    }
+
     func run() async {
         do {
             for try await line in FileHandle.standardInput.bytes.lines {
@@ -234,7 +238,7 @@ final class MCPStdioServer {
                     ("protocolVersion", .string(negotiatedVersion)),
                     ("capabilities", Self.capabilitiesJSON),
                     ("serverInfo", Self.serverInfoJSON),
-                    ("instructions", .string(Self.instructions)),
+                    ("instructions", .string(runtimeInstructions)),
                 ])
             )
         case "notifications/initialized":
@@ -250,7 +254,7 @@ final class MCPStdioServer {
             emitResult(
                 id: request.id,
                 .object([
-                    ("tools", .array(MCPToolRegistry.tools(dbPath: config.dbPath).map(\.orderedJSONValue))),
+                    ("tools", .array(MCPToolRegistry.tools(dbPath: config.dbPath, runtimeRole: config.runtimeRole).map(\.orderedJSONValue))),
                 ]),
                 modern: modern,
                 cacheTTLMs: Self.toolsListTTLMs
@@ -304,6 +308,8 @@ final class MCPStdioServer {
         do {
             let result = try await operation()
             emitResult(id: id, result, modern: modern, cacheTTLMs: cacheTTLMs)
+        } catch let error as RuntimeRoleSettings.UnavailableError {
+            emitError(id: id, code: -32000, message: error.localizedDescription)
         } catch let error as MCPToolError {
             emitError(id: id, code: -32602, message: error.localizedDescription)
         } catch {
@@ -432,7 +438,7 @@ final class MCPStdioServer {
                 ("resultType", .string("complete")),
                 ("supportedVersions", .array(Self.advertisedProtocolVersions.map { .string($0) })),
                 ("capabilities", Self.capabilitiesJSON),
-                ("instructions", .string(Self.instructions)),
+                ("instructions", .string(runtimeInstructions)),
                 ("ttlMs", .int(Self.discoverTTLMs)),
                 ("cacheScope", .string(Self.cacheScope)),
                 ("_meta", .object([
