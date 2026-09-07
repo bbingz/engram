@@ -7,6 +7,57 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Committed native roles, revision-bound packages and CI platform correction (2026-09-07)
+
+Subsequent correction validation: five focused script files passed 279/279,
+zero skips, exit 0 (`/tmp/engram-ci-platform-root-green-v1.log`), with serial
+workers in 21.52 seconds during the ongoing steady measurement. Initial lint
+reported formatting only; formatting the four affected files restored targeted
+lint and test typecheck (`/tmp/engram-ci-platform-{format,lint-green,types-green}-v1.log`).
+The unformatted independent gate proved exact inverse-byte preservation of all
+older assertions; the formatted inverse-normalization review also passed
+SPEC PASS / QUALITY APPROVED. The fix guards
+exactly 12 Apple-tool cases on non-Darwin, retains their macOS execution, leaves
+Linux coverage unfiltered, and preserves all listener checks. New-head Linux
+coverage is still required. Product sources and all three measured executable
+hashes were rechecked unchanged. Existing W5 evidence reconciliation identified
+one remaining browser gap: an actual delayed successful GET after logout;
+the new auth-write ordering receipt does not substitute for that stale-read case.
+
+The authorized 57-path source tranche was normally committed and pushed as
+`9e90471b3b34cb0d8d41c236483a6278e68ceb66` to Draft/open PR #446. No private
+fixture, output artifact or SQLite sidecar was staged. Post-commit project gates
+passed 10/10 (`/tmp/engram-final-clean-project-gates-9e90471b.log`). All three
+new Release builds exited 0 from unchanged tracked sources; complete revision-
+bound packages are in `output/native-release-9e90471b-20260907/{collector,service,remote}`.
+Actual verify-only, constrained load probes and public installer dry-runs passed
+with package snapshots unchanged, private home/install targets absent, and no
+activation. Collector/Service launch-template dry-runs passed; the legacy Remote
+wrapper has no separate launch dry-run. Evidence: `/tmp/engram-final-release-*-9e90471b.log`,
+`/tmp/engram-final-package-*-9e90471b.log`,
+`/tmp/engram-final-native-{verify-load,install-plans}-9e90471b.log`, and the new
+root's `performance-build-evidence.json` with executable and package-manifest hashes.
+
+The revision-bound long performance test is running, not passed. It verified
+256 dual-replica publications and 256 HQ normal sessions after 165.594 seconds
+of bounded bootstrap, then entered the unchanged 1,800-second steady window.
+Its artifact root is `output/native-release-9e90471b-20260907/performance-run-v1`;
+producer log/result is `/tmp/engram-final-performance-9e90471b-v1.{log,xcresult}`.
+The earlier zero-revision/TLS failure remains intact. Light coordinator checks
+and normal host work continue; other work is not stopped or tuned for measurement.
+This remains synthetic loopback, not healthy-tailnet or real-host acceptance.
+
+Exact-head Node CI job `101610264349` failed coverage with 13 failures, 1,755
+passes and 96 skips; build/typecheck/lint/knip and the macOS script job passed.
+The failures are 12 Apple-tool-dependent tests admitted to Linux and one TLS
+listener test hardcoding macOS's lsof path. Independent read-only diagnosis
+confirmed the four-file boundary. A new independent-lsof CI contract produced
+actual RED, one failure with all 38 older tests passing
+(`/tmp/engram-ci-native-tools-root-red-v1.log`). Only test platform guards, trusted-
+PATH lsof lookup and independent Linux tool provisioning are being corrected;
+Swift code and measured packages remain frozen. No correction GREEN, new-head
+CI or full W6 completion is claimed yet. Production W7 remains unauthorized.
+
 ### W6 native browser auth-order acceptance and source integration gate (2026-09-07)
 
 The subsequent complete Service run with three explicit Debug binaries exited 0:

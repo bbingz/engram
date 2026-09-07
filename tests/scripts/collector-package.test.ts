@@ -790,7 +790,7 @@ describe('collector package verify-only symlink prefix bypass', () => {
 });
 
 describe('collector package dependency load-path traversal', () => {
-  it.each([
+  it.skipIf(process.platform !== 'darwin').each([
     {
       kind: '@rpath',
       loadPath: '@rpath/../../outside-sibling.txt',
@@ -826,23 +826,26 @@ describe('collector package dependency load-path traversal', () => {
     },
   );
 
-  it('rejects a /usr/lib prefix-whitelisted traversal load path', () => {
-    const root = makeTempRoot();
-    const bundle = join(root, 'bundle');
-    const probe = join(bundle, 'bin/probe');
-    const loadPath =
-      '/usr/lib/../../tmp/engram-collector-package-not-in-manifest';
-    mkdirSync(join(bundle, 'bin'), { recursive: true });
-    writeSyntheticMachOWithLoadDylibs(probe, [loadPath]);
-    assertOtoolParsesLoadPath(probe, loadPath);
+  it.skipIf(process.platform !== 'darwin')(
+    'rejects a /usr/lib prefix-whitelisted traversal load path',
+    () => {
+      const root = makeTempRoot();
+      const bundle = join(root, 'bundle');
+      const probe = join(bundle, 'bin/probe');
+      const loadPath =
+        '/usr/lib/../../tmp/engram-collector-package-not-in-manifest';
+      mkdirSync(join(bundle, 'bin'), { recursive: true });
+      writeSyntheticMachOWithLoadDylibs(probe, [loadPath]);
+      assertOtoolParsesLoadPath(probe, loadPath);
 
-    const result = runExtractedDependencyClosure(bundle, probe);
+      const result = runExtractedDependencyClosure(bundle, probe);
 
-    expect(result.status).not.toBe(0);
-    expect(result.output).toMatch(
-      /usr\/lib|non-relocatable|escapes|unsafe|absolute|traversal/,
-    );
-  });
+      expect(result.status).not.toBe(0);
+      expect(result.output).toMatch(
+        /usr\/lib|non-relocatable|escapes|unsafe|absolute|traversal/,
+      );
+    },
+  );
 });
 
 describe('collector package Versions/A directory alias', () => {
@@ -937,58 +940,65 @@ describe('collector package Frameworks directory alias', () => {
 });
 
 describe('collector package extra manifested dependencies', () => {
-  it('rejects a manifested extra text dylib that is not a mandatory versioned framework entity', () => {
-    const root = makeTempRoot();
-    const bundle = join(root, 'bundle');
-    const extra = join(bundle, 'Frameworks/extra.dylib');
-    const probe = join(bundle, 'bin/probe');
-    writeSyntheticBundle(bundle);
-    writeFileSync(extra, 'synthetic-extra-text-dylib\n');
-    chmodSync(extra, 0o644);
-    writeSha256Sums(bundle, [
-      'BUILD-METADATA.json',
-      'bin/EngramCollector',
-      ...mandatoryVersionedEntities,
-      'Frameworks/extra.dylib',
-    ]);
-    writeSyntheticMachOWithLoadDylibs(probe, ['@rpath/extra.dylib']);
-    assertOtoolParsesLoadPath(probe, '@rpath/extra.dylib');
+  it.skipIf(process.platform !== 'darwin')(
+    'rejects a manifested extra text dylib that is not a mandatory versioned framework entity',
+    () => {
+      const root = makeTempRoot();
+      const bundle = join(root, 'bundle');
+      const extra = join(bundle, 'Frameworks/extra.dylib');
+      const probe = join(bundle, 'bin/probe');
+      writeSyntheticBundle(bundle);
+      writeFileSync(extra, 'synthetic-extra-text-dylib\n');
+      chmodSync(extra, 0o644);
+      writeSha256Sums(bundle, [
+        'BUILD-METADATA.json',
+        'bin/EngramCollector',
+        ...mandatoryVersionedEntities,
+        'Frameworks/extra.dylib',
+      ]);
+      writeSyntheticMachOWithLoadDylibs(probe, ['@rpath/extra.dylib']);
+      assertOtoolParsesLoadPath(probe, '@rpath/extra.dylib');
 
-    const result = runExtractedDependencyClosure(bundle, probe);
+      const result = runExtractedDependencyClosure(bundle, probe);
 
-    expect(result.status).not.toBe(0);
-    expect(result.output).toMatch(
-      /mandatory|versioned|entity|unsafe|allowed|closure|GRDB-dynamic|EngramCollectorCore|extra/,
-    );
-    expect(readFileSync(extra, 'utf8')).toBe('synthetic-extra-text-dylib\n');
-  });
+      expect(result.status).not.toBe(0);
+      expect(result.output).toMatch(
+        /mandatory|versioned|entity|unsafe|allowed|closure|GRDB-dynamic|EngramCollectorCore|extra/,
+      );
+      expect(readFileSync(extra, 'utf8')).toBe('synthetic-extra-text-dylib\n');
+    },
+  );
 
-  it('rejects a manifested extra Mach-O with an external transitive dependency', () => {
-    const root = makeTempRoot();
-    const bundle = join(root, 'bundle');
-    const extra = join(bundle, 'Frameworks/extra.dylib');
-    const probe = join(bundle, 'bin/probe');
-    const external = '/tmp/engram-collector-package-external-transitive.dylib';
-    writeSyntheticBundle(bundle);
-    writeSyntheticMachOWithLoadDylibs(extra, [external]);
-    writeSha256Sums(bundle, [
-      'BUILD-METADATA.json',
-      'bin/EngramCollector',
-      ...mandatoryVersionedEntities,
-      'Frameworks/extra.dylib',
-    ]);
-    writeSyntheticMachOWithLoadDylibs(probe, ['@rpath/extra.dylib']);
-    assertOtoolParsesLoadPath(extra, external);
-    assertOtoolParsesLoadPath(probe, '@rpath/extra.dylib');
+  it.skipIf(process.platform !== 'darwin')(
+    'rejects a manifested extra Mach-O with an external transitive dependency',
+    () => {
+      const root = makeTempRoot();
+      const bundle = join(root, 'bundle');
+      const extra = join(bundle, 'Frameworks/extra.dylib');
+      const probe = join(bundle, 'bin/probe');
+      const external =
+        '/tmp/engram-collector-package-external-transitive.dylib';
+      writeSyntheticBundle(bundle);
+      writeSyntheticMachOWithLoadDylibs(extra, [external]);
+      writeSha256Sums(bundle, [
+        'BUILD-METADATA.json',
+        'bin/EngramCollector',
+        ...mandatoryVersionedEntities,
+        'Frameworks/extra.dylib',
+      ]);
+      writeSyntheticMachOWithLoadDylibs(probe, ['@rpath/extra.dylib']);
+      assertOtoolParsesLoadPath(extra, external);
+      assertOtoolParsesLoadPath(probe, '@rpath/extra.dylib');
 
-    const result = runExtractedDependencyClosure(bundle, probe);
+      const result = runExtractedDependencyClosure(bundle, probe);
 
-    expect(result.status).not.toBe(0);
-    expect(result.output).toMatch(
-      /mandatory|versioned|entity|unsafe|allowed|closure|GRDB-dynamic|EngramCollectorCore|extra|transitive|external/,
-    );
-    expect(lstatSync(extra).isSymbolicLink()).toBe(false);
-  });
+      expect(result.status).not.toBe(0);
+      expect(result.output).toMatch(
+        /mandatory|versioned|entity|unsafe|allowed|closure|GRDB-dynamic|EngramCollectorCore|extra|transitive|external/,
+      );
+      expect(lstatSync(extra).isSymbolicLink()).toBe(false);
+    },
+  );
 });
 
 describe('collector package nested SHA256SUMS exact-set', () => {
@@ -1017,31 +1027,34 @@ describe('collector package nested SHA256SUMS exact-set', () => {
     );
   });
 
-  it('lets a listed nested SHA256SUMS pass exact-set and reach the synthetic native gate', () => {
-    const root = makeTempRoot();
-    const bundle = join(root, 'bundle');
-    writeSyntheticBundle(bundle);
-    mkdirSync(join(bundle, 'notes'), { recursive: true });
-    writeFileSync(join(bundle, 'notes/SHA256SUMS'), 'nested-listed\n');
-    writeSha256Sums(bundle, [
-      'BUILD-METADATA.json',
-      'bin/EngramCollector',
-      ...mandatoryVersionedEntities,
-      'notes/SHA256SUMS',
-    ]);
-    const beforeSums = readFileSync(join(bundle, 'SHA256SUMS'), 'utf8');
+  it.skipIf(process.platform !== 'darwin')(
+    'lets a listed nested SHA256SUMS pass exact-set and reach the synthetic native gate',
+    () => {
+      const root = makeTempRoot();
+      const bundle = join(root, 'bundle');
+      writeSyntheticBundle(bundle);
+      mkdirSync(join(bundle, 'notes'), { recursive: true });
+      writeFileSync(join(bundle, 'notes/SHA256SUMS'), 'nested-listed\n');
+      writeSha256Sums(bundle, [
+        'BUILD-METADATA.json',
+        'bin/EngramCollector',
+        ...mandatoryVersionedEntities,
+        'notes/SHA256SUMS',
+      ]);
+      const beforeSums = readFileSync(join(bundle, 'SHA256SUMS'), 'utf8');
 
-    const result = runPackage(['--verify-only', bundle]);
+      const result = runPackage(['--verify-only', bundle]);
 
-    expect(result.status).not.toBe(0);
-    expect(result.output).not.toMatch(
-      /SHA256SUMS does not exactly cover|omitted|extra files/,
-    );
-    expect(result.output).toMatch(
-      /not a native Mach-O|cannot package a non-Mach-O/,
-    );
-    expect(readFileSync(join(bundle, 'SHA256SUMS'), 'utf8')).toBe(beforeSums);
-  });
+      expect(result.status).not.toBe(0);
+      expect(result.output).not.toMatch(
+        /SHA256SUMS does not exactly cover|omitted|extra files/,
+      );
+      expect(result.output).toMatch(
+        /not a native Mach-O|cannot package a non-Mach-O/,
+      );
+      expect(readFileSync(join(bundle, 'SHA256SUMS'), 'utf8')).toBe(beforeSums);
+    },
+  );
 });
 
 // Task-owned inert stubs only: these are not installer or native-runtime tests.
@@ -1444,31 +1457,34 @@ describe('Collector package launch-template integrity', () => {
     expect(collectorLaunchSnapshot(root)).toEqual(before);
   });
 
-  it('accepts exact owner-only manifested templates up to the synthetic native rejection', () => {
-    requireCollectorTemplates();
-    const root = makeTempRoot();
-    const bundle = makeCollectorLaunchBundle(root);
-    const manifest = readFileSync(join(bundle, 'SHA256SUMS'), 'utf8');
-    for (const [index, relative] of collectorTemplateFiles.entries()) {
-      expect(readFileSync(join(bundle, relative))).toEqual(
-        readFileSync(
-          join(collectorTemplateDirectory, collectorTemplateNames[index]),
-        ),
+  it.skipIf(process.platform !== 'darwin')(
+    'accepts exact owner-only manifested templates up to the synthetic native rejection',
+    () => {
+      requireCollectorTemplates();
+      const root = makeTempRoot();
+      const bundle = makeCollectorLaunchBundle(root);
+      const manifest = readFileSync(join(bundle, 'SHA256SUMS'), 'utf8');
+      for (const [index, relative] of collectorTemplateFiles.entries()) {
+        expect(readFileSync(join(bundle, relative))).toEqual(
+          readFileSync(
+            join(collectorTemplateDirectory, collectorTemplateNames[index]),
+          ),
+        );
+        expect(lstatSync(join(bundle, relative)).mode & 0o777).toBe(
+          index === 0 ? 0o700 : 0o600,
+        );
+        expect(manifest).toContain('  ' + relative + '\n');
+      }
+      const before = collectorLaunchSnapshot(root);
+      const result = runPackage(['--verify-only', bundle]);
+      expect(result.status).not.toBe(0);
+      expect(result.output).toMatch(/not (?:a )?native Mach-O|non-Mach-O/i);
+      expect(result.output).not.toMatch(
+        /template|alias|mode|exactly cover|verification failed/i,
       );
-      expect(lstatSync(join(bundle, relative)).mode & 0o777).toBe(
-        index === 0 ? 0o700 : 0o600,
-      );
-      expect(manifest).toContain('  ' + relative + '\n');
-    }
-    const before = collectorLaunchSnapshot(root);
-    const result = runPackage(['--verify-only', bundle]);
-    expect(result.status).not.toBe(0);
-    expect(result.output).toMatch(/not (?:a )?native Mach-O|non-Mach-O/i);
-    expect(result.output).not.toMatch(
-      /template|alias|mode|exactly cover|verification failed/i,
-    );
-    expect(collectorLaunchSnapshot(root)).toEqual(before);
-  });
+      expect(collectorLaunchSnapshot(root)).toEqual(before);
+    },
+  );
 
   it.each(collectorTemplateFiles)(
     'rejects missing, wrong-mode, aliased, modified or unlisted %s before native inspection',

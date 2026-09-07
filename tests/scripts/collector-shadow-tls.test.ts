@@ -312,7 +312,7 @@ async function waitForFirstReadyPort(
 
 function listenAddress(pid: number, port: number): string {
   const result = spawnSync(
-    '/usr/sbin/lsof',
+    'lsof',
     ['-nP', '-p', String(pid), '-a', '-iTCP', '-sTCP:LISTEN'],
     {
       encoding: 'utf8',

@@ -115,6 +115,12 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y ripgrep
           fi
+      - name: Install TLS listener inspection tool
+        run: |
+          if ! command -v lsof >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y lsof
+          fi
       - name: Build
         run: npm run build
       - name: Typecheck tests and scripts

@@ -526,16 +526,19 @@ describe('Service package synthetic rejection gates, not native package proof', 
     rejectUnchanged(root, bundle, /Frameworks|framework|missing/i);
   });
 
-  it('reaches the native gate with a complete synthetic layout but never accepts fake Mach-O', () => {
-    const root = makeRoot();
-    const bundle = writeBundle(root);
-    const before = snapshot(root);
-    const result = runPackage(root, ['--verify-only', bundle]);
-    expect(result.status).not.toBe(0);
-    expect(result.output).toMatch(nonNativeError);
-    expect(result.output).not.toMatch(/package-service: PASS/);
-    expect(snapshot(root)).toEqual(before);
-  });
+  it.skipIf(process.platform !== 'darwin')(
+    'reaches the native gate with a complete synthetic layout but never accepts fake Mach-O',
+    () => {
+      const root = makeRoot();
+      const bundle = writeBundle(root);
+      const before = snapshot(root);
+      const result = runPackage(root, ['--verify-only', bundle]);
+      expect(result.status).not.toBe(0);
+      expect(result.output).toMatch(nonNativeError);
+      expect(result.output).not.toMatch(/package-service: PASS/);
+      expect(snapshot(root)).toEqual(before);
+    },
+  );
 
   it('contains actual native verification signals without claiming these fixtures verify native closure', () => {
     const source = existsSync(packageScriptPath)
@@ -567,36 +570,39 @@ describe('Service package exact-set and build-source preflight regressions', () 
     rejectUnchanged(root, bundle, /exactly cover|manifest|SHA256SUMS|extra/i);
   });
 
-  it('accounts for a correctly listed nested SHA256SUMS and reaches the native rejection gate', () => {
-    const root = makeRoot();
-    const bundle = writeBundle(root);
-    const relative =
-      'Frameworks/EngramServiceCore.framework/Versions/A/Resources/SHA256SUMS';
-    mkdirSync(
-      join(
-        bundle,
-        'Frameworks/EngramServiceCore.framework/Versions/A/Resources',
-      ),
-      { mode: 0o700 },
-    );
-    writeFileSync(
-      join(bundle, relative),
-      'nested resource must be accounted for\n',
-      { mode: 0o600 },
-    );
-    writeManifest(bundle);
-    expect(readFileSync(join(bundle, 'SHA256SUMS'), 'utf8')).toContain(
-      `  ${relative}\n`,
-    );
-    const before = snapshot(root);
-    const result = runPackage(root, ['--verify-only', bundle]);
-    expect(result.status).not.toBe(0);
-    expect(result.output).toMatch(nonNativeError);
-    expect(result.output).not.toMatch(
-      /exactly cover|verification failed|package-service: PASS/i,
-    );
-    expect(snapshot(root)).toEqual(before);
-  });
+  it.skipIf(process.platform !== 'darwin')(
+    'accounts for a correctly listed nested SHA256SUMS and reaches the native rejection gate',
+    () => {
+      const root = makeRoot();
+      const bundle = writeBundle(root);
+      const relative =
+        'Frameworks/EngramServiceCore.framework/Versions/A/Resources/SHA256SUMS';
+      mkdirSync(
+        join(
+          bundle,
+          'Frameworks/EngramServiceCore.framework/Versions/A/Resources',
+        ),
+        { mode: 0o700 },
+      );
+      writeFileSync(
+        join(bundle, relative),
+        'nested resource must be accounted for\n',
+        { mode: 0o600 },
+      );
+      writeManifest(bundle);
+      expect(readFileSync(join(bundle, 'SHA256SUMS'), 'utf8')).toContain(
+        `  ${relative}\n`,
+      );
+      const before = snapshot(root);
+      const result = runPackage(root, ['--verify-only', bundle]);
+      expect(result.status).not.toBe(0);
+      expect(result.output).toMatch(nonNativeError);
+      expect(result.output).not.toMatch(
+        /exactly cover|verification failed|package-service: PASS/i,
+      );
+      expect(snapshot(root)).toEqual(before);
+    },
+  );
 
   it.each(['EngramService', ...frameworks])(
     'rejects missing build source %s before changing sources or an existing empty output',
@@ -1085,31 +1091,34 @@ describe('Service package launch-template integrity', () => {
     expect(serviceLaunchSnapshot(root)).toEqual(before);
   });
 
-  it('accepts exact owner-only manifested templates up to the synthetic native rejection', () => {
-    requireServiceTemplates();
-    const root = makeRoot();
-    const bundle = writeBundle(root);
-    const manifest = readFileSync(join(bundle, 'SHA256SUMS'), 'utf8');
-    for (const [index, relative] of serviceTemplateFiles.entries()) {
-      expect(readFileSync(join(bundle, relative))).toEqual(
-        readFileSync(
-          join(serviceTemplateDirectory, serviceTemplateNames[index]),
-        ),
+  it.skipIf(process.platform !== 'darwin')(
+    'accepts exact owner-only manifested templates up to the synthetic native rejection',
+    () => {
+      requireServiceTemplates();
+      const root = makeRoot();
+      const bundle = writeBundle(root);
+      const manifest = readFileSync(join(bundle, 'SHA256SUMS'), 'utf8');
+      for (const [index, relative] of serviceTemplateFiles.entries()) {
+        expect(readFileSync(join(bundle, relative))).toEqual(
+          readFileSync(
+            join(serviceTemplateDirectory, serviceTemplateNames[index]),
+          ),
+        );
+        expect(lstatSync(join(bundle, relative)).mode & 0o777).toBe(
+          index === 0 ? 0o700 : 0o600,
+        );
+        expect(manifest).toContain('  ' + relative + '\n');
+      }
+      const before = serviceLaunchSnapshot(root);
+      const result = runPackage(root, ['--verify-only', bundle]);
+      expect(result.status).not.toBe(0);
+      expect(result.output).toMatch(/not (?:a )?native Mach-O|non-Mach-O/i);
+      expect(result.output).not.toMatch(
+        /template|alias|mode|exactly cover|verification failed/i,
       );
-      expect(lstatSync(join(bundle, relative)).mode & 0o777).toBe(
-        index === 0 ? 0o700 : 0o600,
-      );
-      expect(manifest).toContain('  ' + relative + '\n');
-    }
-    const before = serviceLaunchSnapshot(root);
-    const result = runPackage(root, ['--verify-only', bundle]);
-    expect(result.status).not.toBe(0);
-    expect(result.output).toMatch(/not (?:a )?native Mach-O|non-Mach-O/i);
-    expect(result.output).not.toMatch(
-      /template|alias|mode|exactly cover|verification failed/i,
-    );
-    expect(serviceLaunchSnapshot(root)).toEqual(before);
-  });
+      expect(serviceLaunchSnapshot(root)).toEqual(before);
+    },
+  );
 
   it.each(serviceTemplateFiles)(
     'rejects missing, wrong-mode, aliased, modified or unlisted %s before native inspection',

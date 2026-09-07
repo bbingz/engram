@@ -647,24 +647,27 @@ describe('remote server package nested SHA256SUMS exact-set', () => {
     );
   });
 
-  it('lets a listed nested SHA256SUMS pass exact-set and reach the synthetic native gate', () => {
-    const root = makeTempRoot();
-    const bundle = join(root, 'bundle');
-    const files = writeSyntheticRemoteBundle(bundle);
-    mkdirSync(join(bundle, 'notes'), { recursive: true });
-    writeFileSync(join(bundle, 'notes/SHA256SUMS'), 'nested-listed\n');
-    writeRemoteSha256Sums(bundle, [...files, 'notes/SHA256SUMS']);
-    const beforeSums = readFileSync(join(bundle, 'SHA256SUMS'), 'utf8');
+  it.skipIf(process.platform !== 'darwin')(
+    'lets a listed nested SHA256SUMS pass exact-set and reach the synthetic native gate',
+    () => {
+      const root = makeTempRoot();
+      const bundle = join(root, 'bundle');
+      const files = writeSyntheticRemoteBundle(bundle);
+      mkdirSync(join(bundle, 'notes'), { recursive: true });
+      writeFileSync(join(bundle, 'notes/SHA256SUMS'), 'nested-listed\n');
+      writeRemoteSha256Sums(bundle, [...files, 'notes/SHA256SUMS']);
+      const beforeSums = readFileSync(join(bundle, 'SHA256SUMS'), 'utf8');
 
-    const result = runPackage(['--verify-only', bundle]);
+      const result = runPackage(['--verify-only', bundle]);
 
-    expect(result.status).not.toBe(0);
-    expect(result.output).not.toMatch(
-      /SHA256SUMS does not exactly cover|omitted|extra files/,
-    );
-    // This suite had no prior synthetic native oracle; after exact-set the
-    // public verify-only path hits lipo/codesign on the text stand-in.
-    expect(result.output).toMatch(/lipo|codesign|Mach-O/i);
-    expect(readFileSync(join(bundle, 'SHA256SUMS'), 'utf8')).toBe(beforeSums);
-  });
+      expect(result.status).not.toBe(0);
+      expect(result.output).not.toMatch(
+        /SHA256SUMS does not exactly cover|omitted|extra files/,
+      );
+      // This suite had no prior synthetic native oracle; after exact-set the
+      // public verify-only path hits lipo/codesign on the text stand-in.
+      expect(result.output).toMatch(/lipo|codesign|Mach-O/i);
+      expect(readFileSync(join(bundle, 'SHA256SUMS'), 'utf8')).toBe(beforeSums);
+    },
+  );
 });

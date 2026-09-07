@@ -377,6 +377,31 @@ describe('CI workflow hardening', () => {
     expect(coverageIndex).toBeGreaterThan(installIndex);
   });
 
+  it('provides lsof independently of ripgrep before Linux coverage exercises the TLS helper', () => {
+    const steps = parsedTestWorkflow.jobs?.typescript?.steps ?? [];
+    const installIndex = steps.findIndex((step) =>
+      step.run?.includes('command -v lsof'),
+    );
+    const coverageIndex = steps.findIndex(
+      (step) => step.run === 'npm run test:coverage',
+    );
+
+    expect(installIndex).toBeGreaterThan(-1);
+    expect(coverageIndex).toBeGreaterThan(installIndex);
+    expect(
+      steps[installIndex].run
+        ?.trim()
+        .split('\n')
+        .map((line) => line.trim()),
+    ).toEqual([
+      'if ! command -v lsof >/dev/null 2>&1; then',
+      'sudo apt-get update',
+      'sudo apt-get install -y lsof',
+      'fi',
+    ]);
+    expect(steps[installIndex]['continue-on-error']).not.toBe(true);
+  });
+
   it('installs ripgrep before release coverage runs the archive safety gate', () => {
     const releaseTestsJob = releaseWorkflow.slice(
       releaseWorkflow.indexOf('  release-tests:'),
