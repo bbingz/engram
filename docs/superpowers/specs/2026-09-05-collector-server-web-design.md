@@ -399,7 +399,8 @@ The current traverse-and-sort-all locator path is not a bounded implementation.
 Privacy eligibility is proved locally against the same stable generation as the
 uploaded bytes. A minimal source metadata reader establishes the normalized
 project root and source identity without building a session index. Missing,
-conflicting, truncated, or invalid identity/root evidence remains withheld.
+truncated, or invalid identity/root evidence and conflicting native/source
+identity remain withheld.
 Explicit excluded roots remain excluded. Symlinks, traversal, changing files,
 and unsafe adjacent dependencies fail closed. Eligibility is rechecked before
 upload when policy changes. Policy changes cannot retroactively erase already
@@ -415,13 +416,22 @@ shared narrow projection helper with parser-equivalence tests instead of copying
 heuristics or inferring cwd from an encoded folder name.
 
 The projection scans the immutable captured generation, recording all recognized
-cwd/source conflicts. It may be stricter than current indexing: multiple roots,
-source disagreement, malformed/truncated proof, unsupported derived source, or
-limits preventing a complete privacy assessment mean `withheld`, not upload.
-This conservative distinction is explicit and tested; it is not advertised as
-identical upload eligibility. The local proof binds manifest digest, whole-source
-SHA, stable generation, source/root result, and a revision/digest of exclusion
-policy. Revalidate the policy revision immediately before each upload. Do not
+cwd/source conflicts. Default-profile Claude with derived source `claude-code`
+may upload a multi-root generation only when every recognized nonempty cwd
+passes the existing lexical, alias and exclusion checks. First-cwd project
+selection, native identity and original bytes remain unchanged. The local privacy
+scanner retains byte-distinct roots in the same bounded pass, defaulting to at
+most 64 unique roots and 65,536 total UTF-8 bytes; exceeding either limit withholds
+the whole generation. Missing/empty cwd handling still follows the shared
+projection. Forced profiles, other derived sources and Codex retain their
+conflicting-root refusal. Source disagreement, malformed/truncated proof,
+unsupported derived source, or incomplete assessment also mean `withheld`.
+This distinction is explicit and tested, not identical parser/upload eligibility.
+The local proof binds manifest digest, whole-source SHA, stable generation,
+source/root result, and a revision/digest of exclusion policy. It retains every
+checked root and revalidates all aliases/exclusions immediately before each
+upload request. A policy revision/digest mismatch reassesses the immutable CAS
+generation. These checks do not revoke a prior replica ACK. Do not
 add proof fields to the schema-1 manifest or call a local inode proof an HQ proof.
 Privacy tests compare chosen cwd with parser output, then test later cwd changes,
 excluded prefix boundaries, missing cwd, symlinks, changing bytes, derived source

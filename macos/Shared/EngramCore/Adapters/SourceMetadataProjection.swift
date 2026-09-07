@@ -58,7 +58,7 @@ public struct SourceMetadataProjection: Sendable {
             guard type == "user" || type == "assistant" else { return .none }
             sawRecognizedRecord = true
             observeRoot(object["cwd"])
-            if cwd == nil, let value = object["cwd"] as? String, !value.isEmpty { cwd = value }
+            if cwd == nil, let value = Self.recognizedClaudeCodeCWD(from: object) { cwd = value }
             let message = object["message"] as? [String: Any]
             if let value = message?["model"] as? String, !value.isEmpty {
                 if model == nil { model = value }
@@ -86,6 +86,14 @@ public struct SourceMetadataProjection: Sendable {
             cwd = payload["cwd"] as? String
             return .codexMetadata
         }
+    }
+
+    /// Recognized Claude Code user/assistant cwd only. Missing/empty ignored; validity is separate.
+    static func recognizedClaudeCodeCWD(from object: [String: Any]) -> String? {
+        let type = object["type"] as? String
+        guard type == "user" || type == "assistant" else { return nil }
+        guard let cwd = object["cwd"] as? String, !cwd.isEmpty else { return nil }
+        return cwd
     }
 
     public static func claudeSource(model: String, filePath: String? = nil) -> SourceName {

@@ -555,6 +555,93 @@ final class CollectorPublicationWorkerTests: XCTestCase {
         }
     }
 
+    func testClaudeMultiRootHQAckThenM1PrivacyWithholdOnNonFirstRootExclusion() async throws {
+        let f = try PublicationFixture(sourceName: .claudeCode)
+        let second = f.base.appendingPathComponent("project-two")
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let original = try f.transcript(text: "first-root", cwd: f.project.path)
+            + (try f.transcript(text: "second-root", cwd: second.path))
+        try f.writeBytes(original)
+        try f.markDirty()
+        let replicas = try await replicas(for: f)
+        // Replica workers run concurrently. First defer M1 at authentication so
+        // the later policy change occurs after a verified HQ ACK.
+        var endpoints = replicas.endpoints
+        endpoints[1] = .init(replicaID: "m1", baseURL: endpoints[1].baseURL, bearerToken: "synthetic-wrong-m1-token")
+        let first = try await f.worker(endpoints).runOnce(now: 100)
+        XCTAssertEqual(first.acknowledgedHQ, 1)
+        XCTAssertEqual(first.acknowledgedM1, 0)
+        let reached = PublicationLocked(false)
+        let hooks = EngramCollectorCore.CollectorPublicationWorkerTestHooks(beforeRequest: { id, _ in
+            if id == "m1", !reached.value {
+                reached.change { $0 = true }
+                f.policy.change { $0 = try! .init(revision: 2, excludedProjectRoots: [second.path]) }
+            }
+        })
+        let cycle = try await f.worker(replicas.endpoints, hooks: hooks).runOnce(now: 200_000)
+        XCTAssertTrue(reached.value)
+        XCTAssertEqual(cycle.acknowledgedHQ, 0, "HQ was already acknowledged in the first cycle")
+        XCTAssertEqual(cycle.acknowledgedM1, 0)
+        let hqRecords = try await replicas.hq.publications()
+        let m1Records = try await replicas.m1.publications()
+        XCTAssertEqual(hqRecords.count, 1)
+        XCTAssertEqual(m1Records.count, 0)
+        let intent = try XCTUnwrap(f.owner.publicationIntents(limit: 8).first)
+        let capture = try XCTUnwrap(f.catalog.capture(captureID: intent.captureID))
+        let manifest = try Canonical.decode(EngramCollectorCore.ArchiveSourceManifest.self, from: capture.unboundManifestBytes)
+        XCTAssertFalse(manifest.chunks.isEmpty)
+        for chunk in manifest.chunks {
+            let object = try await replicas.m1.get("/v2/archive/objects/\(chunk.rawSHA256)")
+            XCTAssertEqual(object.1, 404)
+        }
+        XCTAssertEqual(try Data(contentsOf: f.source), original)
+        await replicas.stop()
+    }
+
+    func testClaudeMultiRootObjectStageSymlinkAliasForcesAllRootsIsCurrentWithhold() async throws {
+        let f = try PublicationFixture(sourceName: .claudeCode)
+        let second = f.base.appendingPathComponent("project-two")
+        let excluded = f.base.appendingPathComponent("excluded-target")
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        try FileManager.default.createDirectory(at: excluded, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        f.policy.change { $0 = try! .init(revision: 1, excludedProjectRoots: [excluded.path]) }
+        try f.writeBytes(try f.transcript(text: "first-root", cwd: f.project.path)
+            + (try f.transcript(text: "second-root", cwd: second.path)))
+        try f.markDirty()
+        let replicas = try await replicas(for: f)
+        // Isolate HQ's cached proof from an independently authorized M1 request
+        // that could otherwise precede the alias mutation.
+        var endpoints = replicas.endpoints
+        endpoints[1] = .init(replicaID: "m1", baseURL: endpoints[1].baseURL, bearerToken: "synthetic-wrong-m1-token")
+        let reached = PublicationLocked(false)
+        let hooks = EngramCollectorCore.CollectorPublicationWorkerTestHooks(beforeRequest: { id, path in
+            if id == "hq", path.hasPrefix("/v2/archive/objects/"), !reached.value {
+                reached.change { $0 = true }
+                try FileManager.default.removeItem(at: second)
+                try FileManager.default.createSymbolicLink(at: second, withDestinationURL: excluded)
+            }
+        })
+        let cycle = try await f.worker(endpoints, hooks: hooks).runOnce(now: 100)
+        XCTAssertTrue(reached.value)
+        XCTAssertEqual(cycle.acknowledgedHQ, 0)
+        XCTAssertEqual(cycle.acknowledgedM1, 0)
+        let hqRecords = try await replicas.hq.publications()
+        let m1Records = try await replicas.m1.publications()
+        XCTAssertEqual(hqRecords.count, 0)
+        XCTAssertEqual(m1Records.count, 0)
+        let intent = try XCTUnwrap(f.owner.publicationIntents(limit: 8).first)
+        let capture = try XCTUnwrap(f.catalog.capture(captureID: intent.captureID))
+        let manifest = try Canonical.decode(EngramCollectorCore.ArchiveSourceManifest.self, from: capture.unboundManifestBytes)
+        XCTAssertFalse(manifest.chunks.isEmpty)
+        for chunk in manifest.chunks {
+            let hqObject = try await replicas.hq.get("/v2/archive/objects/\(chunk.rawSHA256)")
+            let m1Object = try await replicas.m1.get("/v2/archive/objects/\(chunk.rawSHA256)")
+            XCTAssertEqual(hqObject.1, 404)
+            XCTAssertEqual(m1Object.1, 404)
+        }
+        await replicas.stop()
+    }
+
     func testPolicyIsRefreshedImmediatelyBeforeEveryHTTPStage() async throws {
         for blockedPrefix in ["/v2/archive/publication-capabilities", "/v2/archive/objects/", "/v2/archive/manifests/", "/v2/archive/publications/"] {
             let f = try PublicationFixture()
@@ -1078,6 +1165,7 @@ private final class PublicationFixture: @unchecked Sendable {
     let sourceRoot: URL
     let project: URL
     let source: URL
+    let sourceName: EngramCollectorCore.SourceName
     let catalog: EngramCollectorCore.ArchiveCatalog
     let cas: EngramCollectorCore.ImmutableArchiveCAS
     let policy: PublicationLocked<EngramCollectorCore.CollectorPrivacyPolicy>
@@ -1085,17 +1173,19 @@ private final class PublicationFixture: @unchecked Sendable {
     var owner: EngramCollectorCore.CollectorInventoryOwner!
     var rootRevision: Int64 = 1
     var configuration: EngramCollectorCore.CollectorRootConfiguration {
-        .init(rootID: "synthetic-codex-root", source: .codex, rootPath: sourceRoot.path, revision: rootRevision)
+        .init(rootID: "synthetic-codex-root", source: sourceName, rootPath: sourceRoot.path, revision: rootRevision)
     }
     var inventory: URL { shadow.appendingPathComponent("inventory/inventory.sqlite") }
 
-    init(probe: PublicationProbe = .init(), casTestHooks: EngramCollectorCore.ImmutableArchiveCASTestHooks = .init()) throws {
+    init(probe: PublicationProbe = .init(), casTestHooks: EngramCollectorCore.ImmutableArchiveCASTestHooks = .init(),
+         sourceName: EngramCollectorCore.SourceName = .codex) throws {
         if let expectedHome = ProcessInfo.processInfo.environment["ENGRAM_DEMO_EXPECTED_HOME"] {
             guard FileManager.default.homeDirectoryForCurrentUser.path == expectedHome else {
                 throw Failure.unsafeFixture
             }
         }
         self.probe = probe
+        self.sourceName = sourceName
         // Every opened root is an explicit test-owned checkout child. This does
         // not discover source paths under the real home, including on CI where
         // the optional local Foundation-home diagnostic is not configured.
@@ -1167,6 +1257,13 @@ private final class PublicationFixture: @unchecked Sendable {
     }
 
     func transcript(text: String = "synthetic capture", cwd: String? = nil) throws -> Data {
+        if sourceName == .claudeCode {
+            let row: [String: Any] = [
+                "type": "assistant", "sessionId": "native-one", "cwd": cwd ?? project.path,
+                "message": ["model": "claude-sonnet-4", "content": text],
+            ]
+            return try JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]) + Data([10])
+        }
         let rows: [[String: Any]] = [
             ["type": "session_meta", "payload": ["id": "native-one", "cwd": cwd ?? project.path]],
             ["type": "response_item", "payload": ["type": "message", "role": "user", "content": [["type": "input_text", "text": text]]]],
@@ -1196,7 +1293,7 @@ private final class PublicationFixture: @unchecked Sendable {
     func capture() throws -> CaptureResult {
         let descriptor = try EngramCollectorCore.ArchiveSourceDescriptor.singleFile(locator: source.path, sourceURL: source, replayRelativePath: "one.jsonl")
         return try EngramCollectorCore.ExactSourceCapturer(cas: cas, catalog: catalog, descriptor: descriptor)
-            .capture(source: .codex, locator: source.path, machineID: Self.machine)
+            .capture(source: sourceName, locator: source.path, machineID: Self.machine)
     }
 
     struct Prepared {

@@ -7,6 +7,158 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Bounded local directory-impact follow-up (2026-09-07)
+
+Before replaying the frozen HQ corpus, the failed Service test's source/log path
+was reconciled with current Claude profile settings. Read-only immediate metadata
+checks covered 244 Claude, eight Qoder and 22 CommandCode directories. None had
+ctime, mtime or birthtime in the 13:20:49-13:27:51 UTC incident window. No completed
+mutation receipt or before-state baseline exists, so the effect verdict remains
+UNKNOWN; no recovery move is justified. The review changed no source directories.
+See `output/hq-claude-shadow-replay-20260907/directory-impact-review.md` and the
+private metadata receipt. The five source/test/spec hashes still match the
+locally verified candidate; the approved next steps are branch CI, Release
+packaging and a separate replay of the same ten frozen files.
+
+
+### Grok-authored Claude multi-root privacy amendment verified locally (2026-09-07)
+
+Default-profile Claude captures whose derived source is `claude-code` can now
+upload multiple recognized working roots when every root passes the existing
+lexical, alias and exclusion checks. The same immutable-CAS pass retains at most
+64 byte-distinct roots and 65,536 UTF-8 bytes by default. Cached proofs retain and
+revalidate all roots before every request. First-cwd project selection, native
+identity, source classification and original bytes remain unchanged; Codex,
+forced profiles and other derived sources retain their conflict refusal. The
+design contract was amended with the code; no manifest or database schema changed.
+
+The user assigned implementation to Grok. Two broad Grok requests timed out and
+remain recorded; smaller Grok 4.5 requests authored the tests and implementation.
+The first compiled RED had two behavior failures, including one helper throw.
+Coordinator review found premature root-budget rejection of enabled MiniMax:
+23 privacy tests then had one failure, which Grok corrected by deferring the new
+limit decision until final source classification. Coordinator integration also
+corrected a missing `try`, async XCTest autoclosures and the HTTP tests' incorrect
+assumption that replica workers execute serially. Grok's final Unicode-exclusion
+allegation was refuted by actual Swift comparison behavior and four captured-CAS
+NFC/NFD exclusion cases; the raw FAIL verdict remains preserved with adjudication.
+
+Final xcresult summaries independently confirm CollectorCore 305 passed, zero
+skips/failures; Service 1,153 passed, five opt-in skips, zero failures; and four
+projection parity tests passed. The two added actual HTTP tests also pass in
+isolation and in the full Service run. The final Service invocation used all
+three newly built native Debug binaries and an explicitly isolated process HOME.
+Collector, Service and RemoteServer Debug builds passed. Collector and Service
+xcresults each contain one QoS priority-inversion runtime warning; these are not
+zero-warning runs. New Release packages, remote CI, the frozen ten-file real
+shadow replay and the 30-minute acceptance were not run for this candidate.
+
+The first full-Service invocation lacked process-home isolation and entered
+`GroupedDirReconcile` during startup maintenance. A retained process sample
+identified that path; the coordinator stopped the verified owned test runner and
+its Xcode automatic restart. That maintenance path can rename source directories,
+so effects on original local source directories remain UNVERIFIED. Do not claim
+this failed invocation preserved them. The corrected private-HOME OptionalAI
+suite passed all 11 tests. A subsequent isolated full run failed only two explicit
+HOME-location guards; using the required checkout-local `.engram-demo-test-home.`
+prefix produced the final full-Service pass. No product shutdown code was changed.
+
+Fresh synthetic CLI-first capture with a complete provisioned spool succeeded.
+Two earlier new probes omitted mandatory CAS directories and are retained as
+fixture failures; the original HQ preparation already created those directories,
+so they do not explain the earlier HQ exit 70. Its root cause remains UNVERIFIED.
+No remote operation, commit or push occurred in this implementation turn.
+
+Evidence: `output/hq-claude-multiroot-fix-20260907/summary.json`,
+`review-adjudication.md`, Grok invocation/result receipts, RED and GREEN logs and
+xcresults, `service-hang.sample.txt`, stop receipts, and CLI probe records. The
+real snapshot shadow remains NOT_READY until the same corpus is independently
+replayed with this amendment; skip/incomplete/quarantine cases must stay explicit.
+
+### HQ Claude remediation design reviewed; cold startup not reproduced (2026-09-07)
+
+Grok completed a bounded abstract design consultation; source review confirmed
+that Claude multi-root eligibility must check every recognized cwd both during
+assessment and before each upload. The reviewed proposal preserves first-root
+selection, source identity, raw bytes and existing negative cases, with bounded
+local proof storage and no protocol/schema change. Extra digests/scans and a
+dual-ACK-only end-to-end criterion were rejected. No product patch was made.
+Three fresh local empty-source Collector CLI probes exited zero with unchanged
+capture-main hashes; they do not reproduce or fix the earlier HQ exit 70.
+See `output/hq-claude-remediation-design-20260907/reviewed-plan.md`, its Grok
+invocation/result receipts and `cold-start-probes.json`. Implementation/TDD and
+same-corpus real replay remain pending; no new remote operation was performed.
+
+### HQ Claude bounded real-data shadow exposes the multi-root privacy gap (2026-09-07)
+
+The user authorized the first HQ/M1 isolated shadow transaction only: at most
+ten Claude sessions and 100 MB, with existing services and ingestion retained.
+The selected ten recent top-level Claude JSONL files total 26,100,521 bytes.
+Collector discovery currently accepts a whole projects root rather than an exact
+file allowlist, so this run used stable, hash-recorded real-source snapshots in
+an owner-only projects-layout directory. It is snapshot replay, not direct
+original-root discovery, natural append coverage, or cutover approval.
+
+HQ (`Bing-HuaQiao.local`, `100.125.101.60`) and M1 (`Bing-M1-MacMini.local`,
+`100.108.19.20`) each received a separate archive instance under
+`/Users/bing/.engram-shadow-20260907-0900/`. All 75 Release package manifest
+entries passed local and HQ verification; M1 verified its seven RemoteServer
+entries. The packages identify source revision
+`c8a9cdc4b922515e3cfe56bc15377f56df33f29c`. The real HQ machine UUID was read
+from the live archive metadata and explicitly sealed into separate identity
+markers and an independent capture catalog. Fresh task-only credentials/keys,
+private homes, a separate HQ database/socket, loopback listeners and an SSH
+HQ-to-M1 tunnel isolated the run. No existing credentials, provider settings,
+Keychain, launchd jobs, production pointers, or original session files were changed.
+
+The overall result is **SHADOW_NOT_READY**. Ten local publications were created,
+but only four received both ACKs. Independent reads from both physical replicas
+verified each manifest, chunk and whole-source hash against the frozen original
+bytes: four files and 8,801,820 bytes per replica, with different arrival journals.
+The packaged privacy assessor classified the remaining six as five
+`conflictingProjectRoots` and one `incompleteMetadata`; those generations were
+not uploaded. Do not disable privacy checks or reinterpret the six pending rows
+as completed replication. HQ parsed three generations, all `skip`, with 54,
+200 and 387 normalized messages. Their tier, role and message/human-turn counts
+match the selected original paths in the live legacy index; stored normalized
+payload hashes also validate. The fourth intake was quarantined with
+`parse.noVisibleMessages`. There are zero FTS rows and zero Web-visible sessions.
+
+Chrome 152.0.7977.76 verified actual HTTPS login 204, overview/list 200, the empty
+session view, cleared credential input, secure/HttpOnly/Strict cookie attributes,
+desktop/narrow rendering without horizontal overflow, logout 204 and a subsequent
+401. This is an authentication/empty-visibility pass, not search/transcript
+acceptance. Browser CLI attempts failed; the bounded single-process Playwright
+probe also initially used a Fetch response status method incorrectly. Those
+verifier failures remain retained; the corrected probe completed and closed its
+browser/context. No product source was modified for the trial.
+
+The first Collector CLI invocation exited 70 before enrolling roots or publishing;
+its root cause remains UNVERIFIED. A temporary helper then ran one bounded cycle
+through the same packaged Release CollectorRuntime (two captures and one ACK per
+replica), and the subsequent CLI invocation continued the same owned spool.
+Consequently, this combined corpus is not exclusively CLI-produced evidence.
+The diagnostic cycle and first failure are recorded separately rather than
+presented as a clean startup pass.
+
+All trial children were stopped and joined; the two RemoteServers terminated by
+requested SIGTERM, while Collector, HQ Service and the HQ tunnel exited zero.
+Local SSH/TLS helpers also exited and their ports were released. At 09:18:42 UTC,
+the pre-existing HQ Service/RemoteServer PIDs 30392/83925 and M1 RemoteServer PID
+3387 retained their executable paths; both original RemoteServer liveness probes
+returned 200/`ok`. This does not assert full production data health.
+No commit, push, merge, full-host activation or old-ingestion retirement occurred.
+
+Evidence is local-only under `output/hq-claude-shadow-20260907-0900/`:
+`summary.json`, `evidence-manifest.json`, `evidence/privacy-assessments.jsonl`,
+`evidence/hq/replica-verification.json`, `evidence/hq/hq-index-verification.json`,
+`evidence/browser-verification.json`, screenshots and shutdown/preservation
+receipts. Private logs and task credentials remain inside owner-only roots;
+do not publish this artifact directory. Next: specify and test multi-working-root
+privacy/identity behavior, keeping every excluded-root check, then rerun this same
+frozen corpus. Original-root incremental coverage and the 30-minute natural
+append stage remain unexecuted; initial cold-start failure remains separate.
+
 ### W6 synthetic Release performance passes; Claude binary coverage added (2026-09-07)
 
 The handed-off `c8a9cdc4b922515e3cfe56bc15377f56df33f29c` measurement completed

@@ -5,11 +5,21 @@ public struct CollectorPrivacyLimits: Equatable, Sendable {
     public let maxSourceBytes: Int64
     public let maxLineBytes: Int
     public let maxRecords: Int
+    public let maxProjectRoots: Int
+    public let maxTotalProjectRootBytes: Int
 
-    public init(maxSourceBytes: Int64 = 256 * 1024 * 1024, maxLineBytes: Int = 1024 * 1024, maxRecords: Int = 1_000_000) {
+    public init(
+        maxSourceBytes: Int64 = 256 * 1024 * 1024,
+        maxLineBytes: Int = 1024 * 1024,
+        maxRecords: Int = 1_000_000,
+        maxProjectRoots: Int = 64,
+        maxTotalProjectRootBytes: Int = 65536
+    ) {
         self.maxSourceBytes = maxSourceBytes
         self.maxLineBytes = maxLineBytes
         self.maxRecords = maxRecords
+        self.maxProjectRoots = maxProjectRoots
+        self.maxTotalProjectRootBytes = maxTotalProjectRootBytes
     }
 }
 
@@ -81,6 +91,7 @@ public struct CollectorPrivacyProof: Equatable, Sendable {
     public let projectRoot: String
     public let policyRevision: Int64
     public let policySHA256: String
+    private let observedProjectRoots: [String]
 
     public static func assess(
         capture: ArchiveCaptureResult,
@@ -93,12 +104,18 @@ public struct CollectorPrivacyProof: Equatable, Sendable {
         guard captureIsConsistent(capture) else { return .withheld(.invalidCapture) }
         let manifest = capture.manifest
         guard limits.maxSourceBytes > 0, limits.maxLineBytes > 0, limits.maxRecords > 0,
+              limits.maxProjectRoots > 0, limits.maxTotalProjectRootBytes > 0,
               manifest.rawByteCount <= limits.maxSourceBytes else { return .withheld(.limitsExceeded) }
         var projection = SourceMetadataProjection(format: format, locator: manifest.locator)
         var pendingLine = Data()
         var recordCount = 0
         var wholeHasher = SHA256()
         var totalBytes: Int64 = 0
+        let collectDefaultClaudeRoots = format == .claudeCode(forceClaudeCodeSource: false)
+        var observedRawRoots: [String] = []
+        var seenRootUTF8 = Set<Data>()
+        var totalRootBytes = 0
+        var rootLimitsExceeded = false
 
         func consumeLine(_ line: Data) -> CollectorPrivacyWithheldReason? {
             if line.allSatisfy({ $0 == 0x20 || $0 == 0x09 || $0 == 0x0D }) { return nil }
@@ -107,6 +124,20 @@ public struct CollectorPrivacyProof: Equatable, Sendable {
             return autoreleasepool {
                 guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else {
                     return .malformedMetadata
+                }
+                if collectDefaultClaudeRoots, !rootLimitsExceeded,
+                   let cwd = SourceMetadataProjection.recognizedClaudeCodeCWD(from: object) {
+                    let utf8 = Data(cwd.utf8)
+                    if !seenRootUTF8.contains(utf8) {
+                        let (remaining, overflow) = limits.maxTotalProjectRootBytes.subtractingReportingOverflow(totalRootBytes)
+                        if observedRawRoots.count >= limits.maxProjectRoots || overflow || utf8.count > remaining {
+                            rootLimitsExceeded = true
+                        } else {
+                            seenRootUTF8.insert(utf8)
+                            observedRawRoots.append(cwd)
+                            totalRootBytes += utf8.count
+                        }
+                    }
                 }
                 projection.consume(object)
                 return nil
@@ -152,7 +183,13 @@ public struct CollectorPrivacyProof: Equatable, Sendable {
         // Indexing can tolerate a final partial line. Upload authorization cannot
         // treat a prefix as complete evidence about the captured generation.
         guard pendingLine.isEmpty, projection.sawRecognizedRecord else { return .withheld(.incompleteMetadata) }
-        if projection.hasConflictingRoots { return .withheld(.conflictingProjectRoots) }
+        let allowsMultipleRoots = collectDefaultClaudeRoots && projection.source == .claudeCode
+        if rootLimitsExceeded && allowsMultipleRoots {
+            return .withheld(.limitsExceeded)
+        }
+        if projection.hasConflictingRoots, !allowsMultipleRoots {
+            return .withheld(.conflictingProjectRoots)
+        }
         guard !projection.hasConflictingIdentities, !projection.hasConflictingSources,
               projection.source.rawValue == manifest.source else { return .withheld(.conflictingSourceIdentity) }
         guard !projection.hasInvalidIdentityEvidence,
@@ -167,7 +204,22 @@ public struct CollectorPrivacyProof: Equatable, Sendable {
         }
         guard [.claudeCode, .codex, .minimax, .lobsterai].contains(projection.source),
               policy.allowedSources.contains(projection.source) else { return .withheld(.unsupportedSource) }
-        guard !policy.excludes(projectRoot) else { return .withheld(.excludedProject) }
+        let observedProjectRoots: [String]
+        if allowsMultipleRoots {
+            var roots: [String] = []
+            for raw in observedRawRoots {
+                guard let root = SourceMetadataProjection.normalizedProjectRoot(raw),
+                      URL(fileURLWithPath: root).resolvingSymlinksInPath().standardizedFileURL.path == root else {
+                    return .withheld(.invalidProjectRoot)
+                }
+                roots.append(raw)
+            }
+            guard !roots.isEmpty else { return .withheld(.invalidProjectRoot) }
+            observedProjectRoots = roots
+        } else {
+            observedProjectRoots = [projectRoot]
+        }
+        guard observedProjectRoots.allSatisfy({ !policy.excludes($0) }) else { return .withheld(.excludedProject) }
         return .eligible(CollectorPrivacyProof(
             manifestSHA256: capture.capture.unboundManifestSHA256,
             wholeSourceSHA256: manifest.wholeSourceSHA256,
@@ -177,7 +229,8 @@ public struct CollectorPrivacyProof: Equatable, Sendable {
             format: format,
             projectRoot: projectRoot,
             policyRevision: policy.revision,
-            policySHA256: try policy.sha256()
+            policySHA256: try policy.sha256(),
+            observedProjectRoots: observedProjectRoots
         ))
     }
 
@@ -198,9 +251,11 @@ public struct CollectorPrivacyProof: Equatable, Sendable {
             && policyRevision == policy.revision
             && policySHA256 == (try? policy.sha256())
             && policy.allowedSources.contains(source)
-            && SourceMetadataProjection.normalizedProjectRoot(projectRoot) != nil
-            && URL(fileURLWithPath: projectRoot).resolvingSymlinksInPath().standardizedFileURL.path == projectRoot
-            && !policy.excludes(projectRoot)
+            && observedProjectRoots.allSatisfy { root in
+                SourceMetadataProjection.normalizedProjectRoot(root) != nil
+                    && URL(fileURLWithPath: root).resolvingSymlinksInPath().standardizedFileURL.path == root
+                    && !policy.excludes(root)
+            }
     }
 
     private static func captureIsConsistent(_ result: ArchiveCaptureResult) -> Bool {

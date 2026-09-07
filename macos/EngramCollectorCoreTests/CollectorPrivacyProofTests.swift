@@ -47,12 +47,38 @@ final class CollectorPrivacyProofTests: XCTestCase {
         XCTAssertEqual(try eligible(assess(fixture, format: .codex, policy: policy)), proof)
     }
 
-    func testEveryLaterRecognizedCwdAndNativeIdentityConflictIsWithheld() throws {
+    func testDefaultClaudeAllowsMultipleSafeRecognizedCwdRoots() throws {
+        let format = SourceMetadataProjection.Format.claudeCode(forceClaudeCodeSource: false)
+        let first = try transcript(format: format, cwd: "/allowed")
+        let bytes = first + (try transcript(format: format, cwd: "/other"))
+        let fixture = try capture(bytes, source: .claudeCode)
+        let policy = try policy()
+        let proof = try eligible(assess(fixture, format: format, policy: policy))
+        XCTAssertEqual(proof.projectRoot, "/allowed")
+        XCTAssertEqual(proof.nativeSessionID, "native")
+        XCTAssertEqual(proof.wholeSourceSHA256, ArchiveV2Hash.sha256(bytes))
+        XCTAssertTrue(proof.isCurrent(for: fixture.result, policy: policy, format: format))
+    }
+
+    func testDefaultClaudeWithholdsExcludedLaterRootInsteadOfConflict() throws {
+        let format = SourceMetadataProjection.Format.claudeCode(forceClaudeCodeSource: false)
+        let bytes = try transcript(format: format, cwd: "/allowed")
+            + transcript(format: format, cwd: "/excluded/child")
+        let fixture = try capture(bytes, source: .claudeCode)
+        let policy = try policy(excluded: ["/excluded"])
+        XCTAssertEqual(try assess(fixture, format: format, policy: policy), .withheld(.excludedProject))
+    }
+
+    func testCodexLaterCwdAndAllNativeIdentityConflictsAreWithheld() throws {
         for format in [SourceMetadataProjection.Format.claudeCode(forceClaudeCodeSource: false), .codex] {
             let source: SourceName = format == .codex ? .codex : .claudeCode
             let first = try transcript(format: format, cwd: "/allowed")
             let changedRoot = try capture(first + transcript(format: format, cwd: "/excluded"), source: source)
-            XCTAssertEqual(try assess(changedRoot, format: format), .withheld(.conflictingProjectRoots))
+            if format == .codex {
+                XCTAssertEqual(try assess(changedRoot, format: format), .withheld(.conflictingProjectRoots))
+            } else {
+                XCTAssertEqual(try eligible(assess(changedRoot, format: format)).projectRoot, "/allowed")
+            }
             let changedID = try capture(first + transcript(format: format, cwd: "/allowed", id: "other"), source: source)
             XCTAssertEqual(try assess(changedID, format: format), .withheld(.conflictingSourceIdentity))
         }
@@ -208,6 +234,120 @@ final class CollectorPrivacyProofTests: XCTestCase {
         XCTAssertEqual(try eligible(assess(fixture, format: .codex, limits: limits)).projectRoot, "/allowed")
         let conflict = try capture(opening + padding + transcript(format: .codex, cwd: "/excluded"), source: .codex)
         XCTAssertEqual(try assess(conflict, format: .codex, limits: limits), .withheld(.conflictingProjectRoots))
+    }
+
+    func testDefaultClaudeMultiRootInvalidatesWhenLaterRootBecomesExcludedSymlink() throws {
+        let format = SourceMetadataProjection.Format.claudeCode(forceClaudeCodeSource: false)
+        let first = root.appendingPathComponent("allowed-root")
+        let second = root.appendingPathComponent("other-root")
+        let excluded = root.appendingPathComponent("excluded-root")
+        try FileManager.default.createDirectory(at: first, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(at: excluded, withIntermediateDirectories: false)
+        let bytes = try transcript(format: format, cwd: first.path) + transcript(format: format, cwd: second.path)
+        let fixture = try capture(bytes, source: .claudeCode)
+        let policy = try policy(excluded: [excluded.path])
+        let proof = try eligible(assess(fixture, format: format, policy: policy))
+        XCTAssertTrue(proof.isCurrent(for: fixture.result, policy: policy, format: format))
+        try FileManager.default.removeItem(at: second)
+        try FileManager.default.createSymbolicLink(at: second, withDestinationURL: excluded)
+        XCTAssertFalse(proof.isCurrent(for: fixture.result, policy: policy, format: format))
+        XCTAssertEqual(try assess(fixture, format: format, policy: policy), .withheld(.invalidProjectRoot))
+    }
+
+    func testDefaultClaudeMultiRootProofInvalidatesOnPolicyRevisionAndExcludedLaterRoot() throws {
+        let format = SourceMetadataProjection.Format.claudeCode(forceClaudeCodeSource: false)
+        let bytes = try transcript(format: format, cwd: "/allowed") + transcript(format: format, cwd: "/other")
+        let fixture = try capture(bytes, source: .claudeCode)
+        let original = try policy()
+        let proof = try eligible(assess(fixture, format: format, policy: original))
+        XCTAssertFalse(proof.isCurrent(for: fixture.result, policy: try policy(revision: 2), format: format))
+        let digested = try policy(excluded: ["/other"])
+        XCTAssertFalse(proof.isCurrent(for: fixture.result, policy: digested, format: format))
+        XCTAssertEqual(try assess(fixture, format: format, policy: digested), .withheld(.excludedProject))
+    }
+
+    func testDefaultClaudeMultiRootObservationLimitsAndByteDistinctUnicodeRoots() throws {
+        let format = SourceMetadataProjection.Format.claudeCode(forceClaudeCodeSource: false)
+        let a = try transcript(format: format, cwd: "/allowed/a")
+        let b = try transcript(format: format, cwd: "/allowed/b")
+        let fixture = try capture(a + b, source: .claudeCode)
+        XCTAssertNotNil(try eligible(assess(fixture, format: format, limits: CollectorPrivacyLimits(maxProjectRoots: 2))))
+        XCTAssertEqual(try assess(fixture, format: format, limits: CollectorPrivacyLimits(maxProjectRoots: 1)), .withheld(.limitsExceeded))
+        let repeated = try capture(a + b + a, source: .claudeCode)
+        XCTAssertNotNil(try eligible(assess(repeated, format: format, limits: CollectorPrivacyLimits(maxProjectRoots: 2))))
+        let total = "/allowed/a".utf8.count + "/allowed/b".utf8.count
+        XCTAssertNotNil(try eligible(assess(fixture, format: format, limits: CollectorPrivacyLimits(maxTotalProjectRootBytes: total))))
+        XCTAssertEqual(try assess(fixture, format: format, limits: CollectorPrivacyLimits(maxTotalProjectRootBytes: total - 1)), .withheld(.limitsExceeded))
+        let composed = "/allowed/\u{00E9}"
+        let decomposed = "/allowed/e\u{0301}"
+        XCTAssertEqual(composed, decomposed)
+        XCTAssertNotEqual(Array(composed.utf8), Array(decomposed.utf8))
+        let unicode = try capture(transcript(format: format, cwd: composed) + transcript(format: format, cwd: decomposed), source: .claudeCode)
+        XCTAssertEqual(try assess(unicode, format: format, limits: CollectorPrivacyLimits(maxProjectRoots: 1)), .withheld(.limitsExceeded))
+    }
+
+    func testDefaultClaudeLaterMalformedRowsWithholdAndIgnoresUnrecognizedCwd() throws {
+        let format = SourceMetadataProjection.Format.claudeCode(forceClaudeCodeSource: false)
+        let first = try transcript(format: format, cwd: "/allowed")
+        func row(_ object: [String: Any]) throws -> Data {
+            try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) + Data([0x0A])
+        }
+        let nonstring = try capture(first + row(["type": "user", "cwd": 1, "sessionId": "native", "message": ["content": "x"]]), source: .claudeCode)
+        XCTAssertEqual(try assess(nonstring, format: format), .withheld(.invalidProjectRoot))
+        let traversal = try capture(first + row(["type": "assistant", "cwd": "/allowed/../evil", "sessionId": "native", "message": ["model": "claude-sonnet-4", "content": "x"]]), source: .claudeCode)
+        XCTAssertEqual(try assess(traversal, format: format), .withheld(.invalidProjectRoot))
+        let partial = try capture(first + Data("{\"type\":".utf8), source: .claudeCode)
+        XCTAssertEqual(try assess(partial, format: format), .withheld(.incompleteMetadata))
+        let ignored = try capture(first + row(["type": "file-history", "cwd": "/excluded", "sessionId": "native"]), source: .claudeCode)
+        XCTAssertEqual(try eligible(assess(ignored, format: format, policy: try policy(excluded: ["/excluded"]))).projectRoot, "/allowed")
+    }
+
+    func testForcedClaudeAndEnabledMinimaxMultiRootRemainConflicts() throws {
+        let forced = SourceMetadataProjection.Format.claudeCode(forceClaudeCodeSource: true)
+        let bytes = try transcript(format: forced, cwd: "/allowed", model: "MiniMax-M2.1")
+            + transcript(format: forced, cwd: "/other", model: "MiniMax-M2.1")
+        XCTAssertEqual(try assess(capture(bytes, source: .claudeCode), format: forced), .withheld(.conflictingProjectRoots))
+        let derived = try capture(bytes, source: .minimax)
+        let enabled = try policy(sources: [.claudeCode, .codex, .minimax])
+        XCTAssertEqual(try assess(derived, policy: enabled), .withheld(.conflictingProjectRoots))
+    }
+
+    func testDefaultClaudeRootBudgetsDoNotRestrictEnabledDerivedSource() throws {
+        let bytes = try transcript(format: .claudeCode(forceClaudeCodeSource: false),
+                                   cwd: "/allowed", model: "MiniMax-M2.1")
+        let fixture = try capture(bytes, source: .minimax)
+        let enabled = try policy(sources: [.minimax])
+        let limits = CollectorPrivacyLimits(maxTotalProjectRootBytes: 1)
+        XCTAssertEqual(try eligible(assess(fixture, policy: enabled, limits: limits)).source, .minimax)
+    }
+
+    func testDefaultClaudeMultiRootKeepsComponentBoundaryAndCASBytes() throws {
+        let format = SourceMetadataProjection.Format.claudeCode(forceClaudeCodeSource: false)
+        let policy = try policy(excluded: ["/private/project"])
+        let bytes = try transcript(format: format, cwd: "/private/project-other") + transcript(format: format, cwd: "/allowed")
+        let fixture = try capture(bytes, source: .claudeCode)
+        let proof = try eligible(assess(fixture, format: format, policy: policy))
+        XCTAssertEqual(proof.projectRoot, "/private/project-other")
+        var reconstructed = Data()
+        for chunk in fixture.result.manifest.chunks {
+            reconstructed.append(try fixture.cas.readObject(sha256: chunk.rawSHA256))
+        }
+        XCTAssertEqual(reconstructed, bytes)
+        XCTAssertEqual(proof.wholeSourceSHA256, ArchiveV2Hash.sha256(bytes))
+    }
+
+    func testCanonicallyEquivalentUnicodeExclusionsApplyToLaterClaudeRoots() throws {
+        let composed = "/allowed/caf\u{00E9}"
+        let decomposed = "/allowed/cafe\u{0301}"
+        for (excluded, observed) in [(composed, decomposed), (decomposed, composed)] {
+            for suffix in ["", "/child"] {
+                let bytes = try transcript(format: .claudeCode(forceClaudeCodeSource: false), cwd: "/first")
+                    + transcript(format: .claudeCode(forceClaudeCodeSource: false), cwd: observed + suffix)
+                let fixture = try capture(bytes, source: .claudeCode)
+                XCTAssertEqual(try assess(fixture, policy: policy(excluded: [excluded])), .withheld(.excludedProject))
+            }
+        }
     }
 
     private struct Fixture: Sendable {

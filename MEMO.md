@@ -4,6 +4,16 @@
 
 ### 2026-09-07
 
+- [排查] Scoped metadata review found no incident-window timestamp in 274 current Claude/Qoder/CommandCode directories; effects remain UNKNOWN without a prior baseline. See CHANGELOG and the private impact receipt.
+
+- [修复] Grok-authored default-Claude multi-root ALL-pass proof/revalidation is locally verified: Collector 305 passed; Service 1,153 passed/5 opt-in skips; parity 4 passed; three Debug builds passed. Raw bytes, first project and other-source restrictions remain. See `CHANGELOG.md`.
+
+- [未验证] First full-suite process HOME was not isolated and entered directory maintenance; possible source-directory rename effects remain unverified. Final isolated suite passed. Original HQ exit 70 and same-ten real replay remain open. See `CHANGELOG.md` and `output/hq-claude-multiroot-fix-20260907/summary.json`.
+
+- [排查] Grok's multi-root proposal was source-reviewed: assess and revalidate every recognized cwd with bounded local proof storage; product patch pending. Three local empty-source CLI starts passed, leaving the earlier HQ exit 70 unexplained. See `CHANGELOG.md` and `output/hq-claude-remediation-design-20260907/reviewed-plan.md`.
+
+- [验证] HQ/M1 authorized real-data snapshot shadow is NOT_READY: 10 files/26.10 MB, four exact-byte dual ACKs; five multi-root and one incomplete-metadata capture withheld, three parsed sessions remain skip and one has no visible messages. Trial processes stopped; old services retained. Multi-root compatibility and the unexplained first CLI startup failure remain open. See `CHANGELOG.md` and `output/hq-claude-shadow-20260907-0900/summary.json`.
+
 - [验证] `c8a9cdc4` completed the unchanged 30-minute synthetic window: CPU 1.6484%, peak RSS 24.09 MiB, all latency/auth/content gates passed and eight children joined; exact product-head CI passed. Prior CPU failures remain preserved; this is not tailnet evidence. See `CHANGELOG.md`.
 
 - [新增] Synthetic Claude two-generation real-binary replay passed after two retained fixture-only corrections; full Service 1,156 tests/5 skips/zero failures and independent review passed. Product/profile unchanged; real host/source roots and bounded shadow authority still required. See `CHANGELOG.md`.
