@@ -7,6 +7,103 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### W6 synthetic Release performance passes; Claude binary coverage added (2026-09-07)
+
+The handed-off `c8a9cdc4b922515e3cfe56bc15377f56df33f29c` measurement completed
+naturally at 14:39:17 CST; it was not restarted or resampled. XCTest and its
+xcresult report one passed test, no skips/failures/runtime warnings. Independent
+raw-record recomputation and the existing read-only `verify-performance.mjs`
+agree: bootstrap 166.510060s, steady window 1,800.010043s, 1,801 samples,
+CPU 1.648439% of one core, maximum sampled RSS 24.093750 MiB, time-weighted
+mean RSS 23.566971 MiB. All 1,140 attempts succeeded: 60 appends and 360 reads
+each for sessions/detail/messages, with respective p95 latencies
+3.800301/0.200195/0.198147/0.075098s. All three authentications succeeded,
+including the fixed 600/1,200-second refreshes with the unchanged 900-second
+cookie lifetime. The fixed 256-file/16-directory/64-KiB corpus, eight active
+files, 1,000-ms poll, schedules, deadlines and CPU/RSS/latency limits are unchanged.
+Recorded host: arm64 MacBook Pro, macOS 27.0 build 26A5425a, ten logical CPUs
+and 64 GiB RAM. Append confirmations allow at most four concurrent operations;
+each of the three read endpoints allows one. Other host work was not stopped
+or adjusted; the measured CPU denominator is one core, not all ten.
+
+The final source hashes and exact 248 normal/two-message, four normal/nine-message,
+four premium/ten-message buckets, 316 publications and 632 ACKs are mandatory
+executed harness assertions before the final corpus receipt. Independent source
+review verified their failure propagation; raw artifacts independently show all
+256 final hashes, exactly eight changed files and eight joined owned children.
+The successful temporary fixture was removed by the runner, so these database
+facts are not an independent post-run SQLite remeasurement. Append admission
+timestamps and internal request timeouts cannot be reconstructed solely from
+the raw attempt records. Both earlier complete CPU failures (`9e90471b` and
+`87cc453c`) and their retained fixtures remain failures and were not altered.
+This PASS is synthetic loopback evidence, not healthy-tailnet or real-host proof.
+
+All 75 entries in the three complete Release package manifests were independently
+rehashed against `output/native-release-c8a9cdc4-20260907/` and its build receipt.
+Verify-only/load rejection probes and installation dry-runs passed again without
+installation or activation. CollectorCore SHA256 is
+`ab469579d709ed185fcad2258387c45c73f6c3eb9b7f65756d30e9ab2f28ab44`;
+the receipt SHA256 remains
+`562a67479dbab88732615116691f8784bdb2df60c9f08708803dee12c5726c1a`.
+Unchanged top-level executable hashes do not hide this framework change.
+Performance evidence: `/tmp/engram-performance-c8a9cdc4-v1.{log,xcresult}`,
+the package root's `performance-run-v1/`, and
+`/tmp/engram-w6-handoff-performance-independent-v1.log`.
+Package checks: `/tmp/engram-w6-handoff-{package-verify,install-plans}-v1.log`.
+
+The Claude integration test uses the same real Collector, two independent
+RemoteServers, HQ Service and Web IPC with synthetic `.claudeDefault` input.
+It checks two exact-byte/dual-ACK generations, stable native/session identity,
+changed generation, complete message prefixes, roles, timestamp strings, model,
+positive per-message and aggregate usage, and normal tier. Only authority is
+fixture-seeded; normalized messages come from actual binary replay. The original
+Codex test and all existing browser/recovery bodies remain byte-identical.
+
+First execution failed because Claude discovery deliberately rejects root-level
+JSONL: the retained inventory completed scanning with zero locators/publications.
+The Claude-only correction creates `synthetic-project/claude-session.jsonl` under
+the configured root. Second execution reached one dual-ACK/index-ready generation
+but the reused Codex append helper rejected the nested parent. A Claude-only
+append helper now retains exact prefix verification, sorted JSON/newline and
+synchronized FileHandle writing without changing the shared helper or deadlines.
+These are test-fixture failures, not product behavior RED. Both failed sources
+(`/tmp/engram-w6-claude-draft-v{1,2}.swift`), logs, xcresults and temporary fixtures
+are retained. The corrected full binary integration suite passed six tests with
+one opt-in browser-hold skip and zero failures in 15.989s; Claude actually passed
+in 2.908s. Independent review returned SPEC PASS / QUALITY APPROVED.
+Evidence: `/tmp/engram-w6-handoff-binary-shadow-v{1,2,3}.{log,xcresult}`.
+
+Full Service regression then reported 1,156 total tests: 1,151 passed, five
+opt-in/live skips and zero failures in 122.720s, with actual producer exit 0.
+The xcresult contains one reader QoS runtime warning. Claude also passed in that
+run (2.886s). The runner verified the workspace-private Foundation home; all
+three explicit `c8a9cdc4` packaged binaries and their `TEST_RUNNER_` duplicates
+were supplied. Performance, CPU-profile, TLS-probe and browser-hold opt-ins
+remained off, and live offload stayed skipped. Evidence:
+`/tmp/engram-w6-handoff-full-service-v1.{log,xcresult}`. Lint exited 0 (one
+existing warning and 40 informational diagnostics, no fixes), archive safety
+and all five invariant gates passed; logs are
+`/tmp/engram-w6-handoff-{lint,archive-safety,invariants}-v1.log`.
+
+Exact product-head Tests `34089038847`, Dependency Review `34089038897` and
+CodeQL `34089038877` all succeeded; CodeQL Gate completed at 06:42:21 UTC.
+These results belong to `c8a9cdc4`, not the later test/docs commit. The later
+candidate changes only this test and three records; product source, dependencies,
+build routing and the entire performance harness/profile remain equal to the
+measured revision. Its own PR-head CI is a separate post-push check.
+Node-job success is not a dependency-audit pass: the existing optional audit
+reported four high transitive findings and exit 1 in
+`/tmp/engram-ci-c8a9cdc4-node.log:1197-1224`; `test.yml` keeps continue-on-error.
+No dependency or workflow change is included in this tranche.
+
+The updated source-retirement checklist still blocks whole W2-W6 completion:
+W3 item 5 needs named-host enabled-source inventories and approved roots; W6
+item 3 needs healthy-tailnet latency and a separately bounded real-host shadow
+transaction. Synthetic Claude coverage does not prove actual profiles or roots.
+Old ingestion remains required for every unproved/unsupported enabled source.
+No real credentials, Keychain, provider access, SSH, network configuration,
+retirement, production installation, merge or W7 action was performed.
+
 ### Storage revalidation avoids duplicate absolute component walks (2026-09-07)
 
 Only the shadow/live revalidation opens use a private, strict-path helper with

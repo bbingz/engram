@@ -1,7 +1,8 @@
 # Collector source-retirement checklist
 
 Date: 2026-09-07. Scope: the local, synthetic W6 candidate in
-`collector-server-web-20260905`, with source coverage reviewed against `87cc453c`.
+`collector-server-web-20260905`, with source coverage reviewed against `c8a9cdc4`
+and the subsequent Claude test-only addition.
 Runtime measurement results are reported separately below.
 This is a coverage gate, not a host inventory, cutover approval, or a claim that
 any host is fully lightweight. W7 remains separately authorized.
@@ -34,6 +35,18 @@ any host is fully lightweight. W7 remains separately authorized.
   `output/playwright/binary-shadow-20260907/browser-v2-findings.md`.
   These receipts are local-only, synthetic, and do not prove any real source
   root, Claude profile, tailnet path, or production HQ record.
+- Synthetic `.claudeDefault` two-generation replay now passed using the explicit
+  complete `c8a9cdc4` packages: actual Collector, two independent RemoteServers,
+  HQ Service and Web IPC, exact bytes/ACKs, stable native/session identity,
+  roles/timestamps/model, positive per-message/aggregate usage and normal tier.
+  `/tmp/engram-w6-handoff-binary-shadow-v3.{log,xcresult}` ran six tests with
+  one opt-in browser-hold skip and zero failures; Claude itself passed in 2.908s.
+  Full Service then passed 1,156 tests with five opt-in/live skips and zero
+  failures in `/tmp/engram-w6-handoff-full-service-v1.{log,xcresult}`.
+  The two earlier attempts exposed fixture layout/append-guard mistakes; their
+  failures and temporary fixtures remain retained. Only the Claude fixture was
+  corrected; product rules, Codex/recovery bodies and deadlines are unchanged.
+  This does not establish real default or nondefault profile coverage.
 - Tests and CodeQL for exact revision `87cc453c` passed in runs `34083556529`
   and `34083556503`: https://github.com/bbingz/engram/actions/runs/34083556529
   and https://github.com/bbingz/engram/actions/runs/34083556503. Both full
@@ -45,7 +58,20 @@ any host is fully lightweight. W7 remains separately authorized.
   295 CollectorCore tests and 1,155 Service tests (five opt-in/live skips), with
   independent source/log approval. Source enablement and retirement boundaries
   are unchanged. Neither this regression nor the separately labeled CPU profile
-  replaces the failed 30-minute measurement; new Release acceptance is pending.
+  replaces the failed 30-minute measurements. The subsequent unchanged full
+  Release window at `c8a9cdc4` separately passed: 1,800.010043s, 1,801 samples,
+  CPU 1.648439% of one core, maximum sampled RSS 24.093750 MiB; p95 append
+  3.800301s and sessions/detail/messages 0.200195/0.198147/0.075098s. All 1,140
+  attempts and three authentications succeeded; eight owned children joined.
+  Independent artifact accounting passed. Final hash/316-publication/632-ACK/
+  248-4-4 session-bucket checks are executed harness assertions; the successful
+  fixture was removed, so no independent post-run SQLite check is claimed.
+  Evidence: `/tmp/engram-performance-c8a9cdc4-v1.{log,xcresult}`,
+  `output/native-release-c8a9cdc4-20260907/performance-run-v1/`, and
+  `/tmp/engram-w6-handoff-performance-independent-v1.log`.
+  Tests `34089038847`, Dependency Review `34089038897` and CodeQL `34089038877`
+  all passed for that exact product revision. A later test/docs-only revision
+  does not rename the measurement or inherit its CI result.
 
 ## Registered sources
 
@@ -57,7 +83,7 @@ No absence-of-support row may be interpreted as an absence-of-use finding.
 | Source | Factory default root or dependency | Collector discovery / representation | Privacy and parser/replay evidence | Replacement gate / unsupported reason |
 |---|---|---|---|---|
 | codex | `<home>/.codex/sessions` | Bounded inventory + native events; exact single-file generations | Generation-bound privacy component tests; synthetic two-generation native/HQ/Web receipt above | Local synthetic subset only; three runtime roots below and real capture/HQ evidence unverified |
-| claude-code | Claude profile resolver from `<home>/.engram/settings.json` | Bounded inventory + native events; exact single-file generations | Generation-bound privacy/root component tests; real-binary Claude replay not yet verified | Default and nondefault profiles need separate approved root and replay evidence |
+| claude-code | Claude profile resolver from `<home>/.engram/settings.json` | Bounded inventory + native events; exact single-file generations | Generation-bound privacy/root tests; synthetic `.claudeDefault` two-generation real-binary/HQ/Web replay above | Actual default and nondefault profiles need separate approved roots and real replay evidence |
 | minimax | Derived from resolved Claude adapter | No accepted Collector runtime root | Primitive derived-source opt-in test only; runtime policy does not enable it | Unsupported runtime source; do not relabel as claude-code |
 | lobsterai | Derived from resolved Claude adapter | No accepted Collector runtime root | Primitive allow-list entry; no Lobster-specific eligibility/replay proof | Unsupported runtime source; do not relabel as claude-code |
 | gemini-cli | `<home>/.gemini/tmp` plus `projects.json` | Not implemented in Collector runtime | No Collector replacement privacy/replay proof | Unsupported runtime source |
@@ -111,16 +137,19 @@ their real stores or infer they are unused without the bounded host transaction.
    retirement on any gap; do not change jobs/configs, mark a host lightweight,
    or use this local checklist as production transaction authority.
 
-CHECKS_RUN: current enum/factory/runtime/worker/privacy source inspection; existing
-local synthetic log receipts read. Table-to-enum coverage is checked separately.
+CHECKS_RUN: current enum/factory/runtime/worker/privacy source inspection; synthetic
+Codex/Claude real-binary and full Service regression; complete package verification;
+30-minute Release performance and independent artifact accounting; exact product-head
+CI refreshed. Table-to-enum coverage is checked separately.
 
 CHECKS_NOT_RUN: real host enablement/root inventory, all real-source capture/HQ
-checks, Claude real-binary acceptance, Grok/Pi inventory, healthy-tailnet latency,
-retirement and W7. The 30-minute Release measurement ran but failed CPU.
+checks, actual Claude profile coverage, Grok/Pi inventory, healthy-tailnet latency,
+retirement and W7. Existing browser render evidence was not rerun for this
+Claude test-only addition; its hold is explicitly skipped in normal regression.
 
 WHY_NOT: host operations require the separately authorized bounded transaction;
 synthetic/component evidence is intentionally not promoted into real coverage.
 
 EVIDENCE_PATH: the source and test/log paths above; governing design section 3
-at `docs/superpowers/specs/2026-09-05-collector-server-web-design.md:430` and W6
+at `docs/superpowers/specs/2026-09-05-collector-server-web-design.md:391` and W6
 at `docs/superpowers/plans/2026-09-05-collector-server-web.md:1184`.

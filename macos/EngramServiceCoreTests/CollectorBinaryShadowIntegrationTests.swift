@@ -11,7 +11,7 @@ private typealias ShadowPublication = EngramCollectorCore.CollectorPublicationEn
 private typealias ShadowPage = EngramCollectorCore.CollectorPublicationPage
 private typealias ShadowManifest = EngramCollectorCore.ArchiveSourceManifest
 
-/// One synthetic Codex happy path across real executables. This proves neither
+/// Synthetic Codex and Claude happy paths across real executables. This proves neither
 /// HTTPS/browser acceptance nor full W6 source, crash, rename or resource gates.
 /// The supplied Service must already enforce expected-home and explicit-file
 /// credentials without Keychain fallback; older binaries are unsafe to use.
@@ -119,9 +119,12 @@ private final class BinaryShadowScope: @unchecked Sendable {
     private static let firstTimestamp = "2026-09-07T00:00:00Z"
     private static let firstReplyTimestamp = "2026-09-07T00:00:01Z"
     private static let secondTimestamp = "2026-09-07T00:00:02Z"
+    private static let claudeNativeID = "binary-shadow-claude"
+    private static let claudeModel = "claude-sonnet-4-20250514"
     let fixture: RuntimeFixture
     let socketRoot: URL
-    var source: URL { fixture.sources.appendingPathComponent("rollout-one.jsonl") }
+    var source: URL { fixture.sources.appendingPathComponent(sourceKind == .claudeCode ? "synthetic-project/claude-session.jsonl" : "rollout-one.jsonl") }
+    private let sourceKind: EngramCoreRead.SourceName
     private let binaries: ShadowBinaries
     private let collectorRole: ShadowRole
     private let hqRole: ShadowRole
@@ -136,8 +139,10 @@ private final class BinaryShadowScope: @unchecked Sendable {
     private var socket: String { socketRoot.appendingPathComponent("service.sock").path }
     private var hqDatabase: URL { hqRole.root.appendingPathComponent("index.sqlite") }
 
-    init(binaries: ShadowBinaries) throws {
+    init(binaries: ShadowBinaries, sourceKind: EngramCoreRead.SourceName = .codex) throws {
+        guard sourceKind == .codex || sourceKind == .claudeCode else { throw BinaryShadowFailure.fixture }
         self.binaries = binaries
+        self.sourceKind = sourceKind
         fixture = try RuntimeFixture()
         var template = Array("/private/tmp/eg-cbs-XXXXXX".utf8CString)
         guard let path = template.withUnsafeMutableBufferPointer({ mkdtemp($0.baseAddress!) }) else {
@@ -238,6 +243,10 @@ private final class BinaryShadowScope: @unchecked Sendable {
     func startCollector() throws {
         var document = fixture.document()
         var collector = try XCTUnwrap(document["collector"] as? [String: Any])
+        if sourceKind == .claudeCode {
+            collector["roots"] = [["rootID": "runtime-claude", "source": sourceKind.rawValue,
+                "rootPath": fixture.sources.path, "revision": 1]]
+        }
         collector["replicas"] = replicas.map {
             ["serverID": $0.id, "baseURL": $0.baseURL.absoluteString, "credentialID": "\($0.id)-reference"]
         }
@@ -297,7 +306,7 @@ private final class BinaryShadowScope: @unchecked Sendable {
             try EngramCoreWrite.EngramMigrationRunner.migrate(db)
             _ = try EngramCoreWrite.CaptureIngestSourceRegistry.provision(db,
                 machineID: publication.machineID, sourceInstanceID: publication.sourceInstanceID,
-                source: .codex, parseFormat: .codex, configuredRoot: fixture.sources.path,
+                source: sourceKind, parseFormat: sourceKind == .claudeCode ? .claudeDefault : .codex, configuredRoot: fixture.sources.path,
                 initialEpoch: publication.collectorEpoch)
             for table in ["sessions", "capture_ingest_publications", "capture_ingest_ledger",
                           "capture_ingest_identity_bindings", "capture_ingest_generations",
@@ -323,7 +332,7 @@ private final class BinaryShadowScope: @unchecked Sendable {
         let credentials = hqRole.root.appendingPathComponent("capture-credentials.json")
         let aiSecrets = hqRole.root.appendingPathComponent("empty-ai-secrets.json")
         let allSources = EngramCoreRead.SourceName.allCases.map(\.rawValue)
-        try writeJSON(["runtimeRole": "index", "disabledSources": allSources.filter { $0 != "codex" },
+        try writeJSON(["runtimeRole": "index", "disabledSources": allSources.filter { $0 != sourceKind.rawValue },
             "archivedDefaultOffSourcesMigrated": true, "aiProtocol": "disabled", "titleProvider": "native",
             "remoteOffloadEnabled": false, "livePublishEnabled": false, "liveIngestEnabled": false,
             "captureIngest": ["enabled": true, "serverID": "hq", "baseURL": replicas[0].baseURL.absoluteString,
@@ -348,7 +357,7 @@ private final class BinaryShadowScope: @unchecked Sendable {
 
     func awaitWebIPC(_ publication: ShadowPublication, query: String, expectedGenerations: Int? = nil) async throws -> WebRead {
         let client = try EngramServiceWebReadClient(socketPath: socket, totalTimeout: 0.5)
-        let request = try EngramServiceWebSessionsRequest(query: query, source: "codex",
+        let request = try EngramServiceWebSessionsRequest(query: query, source: sourceKind.rawValue,
             machineId: publication.machineID, sourceInstanceId: publication.sourceInstanceID)
         let digest = try publication.sha256()
         while true {
@@ -415,7 +424,11 @@ private final class BinaryShadowScope: @unchecked Sendable {
         do {
             try database.read { db in
                 XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT count(*) FROM sessions"), 1)
-                XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT count(*) FROM sessions WHERE source = 'codex'"), 1)
+                if sourceKind == .claudeCode {
+                    XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT count(*) FROM sessions WHERE source = 'claude-code'"), 1)
+                } else {
+                    XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT count(*) FROM sessions WHERE source = 'codex'"), 1)
+                }
                 XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT count(*) FROM sessions WHERE tier = 'normal'"), 1)
                 XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT count(*) FROM capture_ingest_publications"), expectedGenerations)
                 XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT count(*) FROM capture_ingest_generations"), expectedGenerations)
@@ -1192,5 +1205,134 @@ private extension BinaryShadowScope {
             try database.close()
             return result
         } catch { try? database.close(); throw error }
+    }
+}
+
+extension CollectorBinaryShadowIntegrationTests {
+    /// Synthetic Claude append replay only; real host/profile roots remain unverified.
+    func testRealCollectorAndIndependentReplicasReachHQWebIPCForTwoClaudeGenerations() async throws {
+        let binaries = try ShadowBinaries.explicitEnvironment()
+        let scope = try BinaryShadowScope(binaries: binaries, sourceKind: .claudeCode)
+        var bodyFailure: Error?
+        do {
+            try await scope.startReplicas()
+            let firstBytes = try scope.writeInitialClaudeSource()
+            try scope.startCollector()
+            let first = try await scope.awaitDualPublications(count: 1)
+            let firstPublication = try XCTUnwrap(first.first)
+            XCTAssertEqual(firstPublication.sequence, 1)
+            try await scope.assertReplicaBytes(firstPublication, expected: firstBytes)
+            try scope.provisionHQ(firstPublication)
+            try scope.startHQ()
+            let firstRead = try await scope.awaitWebIPC(firstPublication, query: BinaryShadowScope.firstText)
+            try scope.assertClaudeMessagesAndMetadata(firstRead, secondGeneration: false)
+
+            let secondBytes = try scope.appendClaudeReply(to: firstBytes)
+            let second = try await scope.awaitDualPublications(count: 2)
+            let secondPublication = second[1]
+            XCTAssertEqual(second[0], firstPublication)
+            XCTAssertEqual(secondPublication.sequence, 2)
+            XCTAssertEqual(secondPublication.machineID, firstPublication.machineID)
+            XCTAssertEqual(secondPublication.sourceInstanceID, firstPublication.sourceInstanceID)
+            XCTAssertEqual(secondPublication.collectorEpoch, firstPublication.collectorEpoch)
+            XCTAssertNotEqual(secondPublication.manifestSHA256, firstPublication.manifestSHA256)
+            try await scope.assertReplicaBytes(secondPublication, expected: secondBytes)
+            let secondRead = try await scope.awaitWebIPC(secondPublication, query: BinaryShadowScope.secondText)
+            XCTAssertEqual(secondRead.sessionID, firstRead.sessionID)
+            XCTAssertNotEqual(secondRead.generation, firstRead.generation)
+            try scope.assertClaudeMessagesAndMetadata(secondRead, secondGeneration: true)
+            XCTAssertEqual(Array(secondRead.messages.prefix(firstRead.messages.count)), firstRead.messages)
+            XCTAssertEqual(try Data(contentsOf: scope.source), secondBytes)
+            try scope.assertHQContainsOnlyBinaryProducedRows()
+            try scope.assertCollectorHasNoProductIndex()
+        } catch { bodyFailure = error }
+
+        let retain = bodyFailure != nil || (testRun?.failureCount ?? 0) > 0
+        let cleanup = Task { try await scope.close(retainFixture: retain) }
+        do { try await cleanup.value }
+        catch {
+            XCTFail("Binary Claude shadow cleanup failed; retained fixture: \(scope.fixture.base.path), socket root: \(scope.socketRoot.path)")
+            throw error
+        }
+        if retain {
+            print("BINARY_SHADOW_CLAUDE_RETAINED fixture=\(scope.fixture.base.path) socketRoot=\(scope.socketRoot.path)")
+        }
+        if let bodyFailure { throw bodyFailure }
+    }
+}
+
+private extension BinaryShadowScope {
+    func writeInitialClaudeSource() throws -> Data {
+        guard sourceKind == .claudeCode else { throw BinaryShadowFailure.fixture }
+        // Claude discovery expects a project directory below the configured root.
+        try Self.directory(source.deletingLastPathComponent())
+        let records: [[String: Any]] = [
+            ["type": "user", "sessionId": Self.claudeNativeID, "cwd": fixture.project.path,
+             "timestamp": Self.firstTimestamp, "message": ["content": Self.firstText]],
+            claudeReplyRecord(second: false),
+        ]
+        let bytes = try records.reduce(into: Data()) { data, record in
+            data.append(try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])); data.append(10)
+        }
+        try writePrivate(bytes, to: source)
+        return bytes
+    }
+
+    func appendClaudeReply(to first: Data) throws -> Data {
+        guard sourceKind == .claudeCode else { throw BinaryShadowFailure.fixture }
+        XCTAssertEqual(try Data(contentsOf: source), first)
+        var append = try JSONSerialization.data(withJSONObject: claudeReplyRecord(second: true), options: [.sortedKeys])
+        append.append(10)
+        let handle = try FileHandle(forWritingTo: source)
+        do { try handle.seekToEnd(); try handle.write(contentsOf: append); try handle.synchronize(); try handle.close() }
+        catch { try? handle.close(); throw error }
+        var result = first; result.append(append)
+        return result
+    }
+
+    func claudeReplyRecord(second: Bool) -> [String: Any] {
+        ["type": "assistant", "sessionId": Self.claudeNativeID, "cwd": fixture.project.path,
+         "timestamp": second ? Self.secondTimestamp : Self.firstReplyTimestamp,
+         "message": ["id": second ? "claude-reply-two" : "claude-reply-one", "model": Self.claudeModel,
+             "content": [["type": "text", "text": second ? Self.secondText : Self.firstReplyText]],
+             "usage": ["input_tokens": second ? 40 : 100, "output_tokens": second ? 9 : 7,
+                 "cache_read_input_tokens": second ? 10 : 20, "cache_creation_input_tokens": second ? 3 : 5]]]
+    }
+
+    func assertClaudeMessagesAndMetadata(_ read: WebRead, secondGeneration: Bool) throws {
+        XCTAssertEqual(read.messages.map(\.content), secondGeneration ? [Self.firstText, Self.firstReplyText, Self.secondText] : [Self.firstText, Self.firstReplyText])
+        XCTAssertEqual(read.messages.map(\.role), secondGeneration ? [.user, .assistant, .assistant] : [.user, .assistant])
+        let timestamps = secondGeneration ? [Self.firstTimestamp, Self.firstReplyTimestamp, Self.secondTimestamp] : [Self.firstTimestamp, Self.firstReplyTimestamp]
+        XCTAssertEqual(read.messages.map(\.timestamp), timestamps.map { Optional($0) })
+        XCTAssertNil(try XCTUnwrap(read.messages.first).usage)
+        let assistants = read.messages.filter { $0.role == .assistant }
+        XCTAssertEqual(try XCTUnwrap(assistants.first).usage,
+            EngramServiceWebTokenUsage(inputTokens: 100, outputTokens: 7, cacheReadTokens: 20, cacheCreationTokens: 5))
+        if secondGeneration {
+            XCTAssertEqual(try XCTUnwrap(assistants.last).usage,
+                EngramServiceWebTokenUsage(inputTokens: 40, outputTokens: 9, cacheReadTokens: 10, cacheCreationTokens: 3))
+        }
+        // Model and aggregate costs are not fields in the Web message projection.
+        // Read the binary-produced rows; the fixture seeds authority only.
+        try readHQ { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT count(*) FROM capture_ingest_identity_bindings WHERE stored_session_id = ? AND native_id = ?",
+                arguments: [read.sessionID, Self.claudeNativeID]), 1)
+            let session = try XCTUnwrap(Row.fetchOne(db, sql: "SELECT * FROM sessions WHERE id = ?", arguments: [read.sessionID]))
+            XCTAssertEqual(session["source"] as String, "claude-code")
+            XCTAssertEqual(session["model"] as String?, Self.claudeModel)
+            XCTAssertEqual(session["tier"] as String?, "normal")
+            XCTAssertEqual(session["cwd"] as String, fixture.project.path)
+            XCTAssertEqual(session["start_time"] as String, Self.firstTimestamp)
+            XCTAssertEqual(session["end_time"] as String?, secondGeneration ? Self.secondTimestamp : Self.firstReplyTimestamp)
+            XCTAssertEqual(session["message_count"] as Int, secondGeneration ? 3 : 2)
+            XCTAssertEqual(session["user_message_count"] as Int, 1)
+            XCTAssertEqual(session["assistant_message_count"] as Int, secondGeneration ? 2 : 1)
+            let cost = try XCTUnwrap(Row.fetchOne(db, sql: "SELECT * FROM session_costs WHERE session_id = ?", arguments: [read.sessionID]))
+            XCTAssertEqual(cost["model"] as String?, Self.claudeModel)
+            XCTAssertEqual(cost["input_tokens"] as Int, secondGeneration ? 140 : 100)
+            XCTAssertEqual(cost["output_tokens"] as Int, secondGeneration ? 16 : 7)
+            XCTAssertEqual(cost["cache_read_tokens"] as Int, secondGeneration ? 30 : 20)
+            XCTAssertEqual(cost["cache_creation_tokens"] as Int, secondGeneration ? 8 : 5)
+        }
     }
 }

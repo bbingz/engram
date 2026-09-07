@@ -4,6 +4,10 @@
 
 ### 2026-09-07
 
+- [验证] `c8a9cdc4` completed the unchanged 30-minute synthetic window: CPU 1.6484%, peak RSS 24.09 MiB, all latency/auth/content gates passed and eight children joined; exact product-head CI passed. Prior CPU failures remain preserved; this is not tailnet evidence. See `CHANGELOG.md`.
+
+- [新增] Synthetic Claude two-generation real-binary replay passed after two retained fixture-only corrections; full Service 1,156 tests/5 skips/zero failures and independent review passed. Product/profile unchanged; real host/source roots and bounded shadow authority still required. See `CHANGELOG.md`.
+
 - [修复] Two storage revalidation routes passed strict RED→GREEN (76 opens to 8); CollectorCore 295/295, Service 1,155 tests (5 skips) and independent safety review passed. Ancestor/DB/fence checks remain; new 30-minute Release acceptance is pending. See `CHANGELOG.md`.
 
 - [排查] Synthetic 120-second hold and bounded external sample completed with joined cleanup; storage-path validation is the next TDD candidate. Diagnostic-only, not acceptance; both CPU failures remain. See `CHANGELOG.md`.
