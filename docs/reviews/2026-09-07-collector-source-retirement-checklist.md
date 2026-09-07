@@ -1,7 +1,8 @@
 # Collector source-retirement checklist
 
 Date: 2026-09-07. Scope: the local, synthetic W6 candidate in
-`collector-server-web-20260905`, based on `92c7e3cf` plus uncommitted changes.
+`collector-server-web-20260905`, based on `70e362fa` plus the current drained-queue
+optimization and final-session oracle changes. This is not a measured Release revision.
 This is a coverage gate, not a host inventory, cutover approval, or a claim that
 any host is fully lightweight. W7 remains separately authorized.
 
@@ -33,6 +34,12 @@ any host is fully lightweight. W7 remains separately authorized.
   `output/playwright/binary-shadow-20260907/browser-v2-findings.md`.
   These receipts are local-only, synthetic, and do not prove any real source
   root, Claude profile, tailnet path, or production HQ record.
+- Tests CI for exact revision `70e362fa` passed in run `34081472925`:
+  https://github.com/bbingz/engram/actions/runs/34081472925. This does not cover
+  later uncommitted performance changes. The `9e90471b` full 30-minute synthetic
+  window failed CPU (2.144809% of one core versus 2%); the optimized Release
+  window and healthy-tailnet measurement remain unverified. See `CHANGELOG.md`
+  for retained failure evidence and current local regression results.
 
 ## Registered sources
 
@@ -102,7 +109,8 @@ CHECKS_RUN: current enum/factory/runtime/worker/privacy source inspection; exist
 local synthetic log receipts read. Table-to-enum coverage is checked separately.
 
 CHECKS_NOT_RUN: real host enablement/root inventory, all real-source capture/HQ
-checks, Claude real-binary acceptance, Grok/Pi inventory, retirement and W7.
+checks, Claude real-binary acceptance, Grok/Pi inventory, optimized 30-minute
+Release measurement, healthy-tailnet latency, retirement and W7.
 
 WHY_NOT: host operations require the separately authorized bounded transaction;
 synthetic/component evidence is intentionally not promoted into real coverage.

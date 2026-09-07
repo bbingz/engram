@@ -4,6 +4,10 @@
 
 ### 2026-09-07
 
+- [修复] Drained claims avoid writes with bounded indexed probes; RED retained, CollectorCore 289/289 and Service 1,154 tests (4 skips) passed with independent approval. Thresholds stay unchanged; new Release CPU measurement is pending. See `CHANGELOG.md`.
+
+- [验证] Final-tier oracle RED→GREEN; 33 focused and 1,154 Service tests passed (4 skips). Real late-200 browser check and `70e362fa` Tests CI passed; CPU gate, host-source inventory and healthy-tailnet evidence remain open. See `CHANGELOG.md`.
+
 - [验证] 完整 30 分钟实测未过：CPU 2.145% 超 2%，RSS/追加/Web 延迟达标；4 会话正常升 premium 暴露最终计数断言错误，失败证据保留。CI 的 Service 私有 HOME 缺项已 RED→40/40 并独立批准，新 CI 与迟到 200 浏览器检查仍待验，详见 `CHANGELOG.md`。
 
 - [修复] CI 平台修正本机 279/279（零跳过）、格式/类型检查通过，产品与测量包哈希未变；新 Linux CI 仍待验。性能稳态继续，W5 尚需补真实迟到 200 读取不重绘的浏览器证据，详见 `CHANGELOG.md`。

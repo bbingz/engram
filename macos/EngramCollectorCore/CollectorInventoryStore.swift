@@ -280,6 +280,17 @@ final class CollectorInventoryStore {
     func claimPublications(replicaID: String, limit: Int, now: Int64) throws -> [CollectorPublicationClaim] {
         try Self.validatePublicationLimit(limit)
         guard ["hq", "m1"].contains(replicaID), now >= 0 else { throw CollectorPublicationWorkerError.invalidBudget }
+        try Task.checkCancellation()
+        let hasPending = try database.read { db in
+            try requirePublicationOwner(db)
+            // Only a fully drained replica skips the original selection transaction.
+            return try Int.fetchOne(db, sql: """
+                SELECT 1 FROM collector_publication_replicas
+                WHERE replica_id = ? AND state != 'acknowledged' LIMIT 1
+                """, arguments: [replicaID]) != nil
+        }
+        try Task.checkCancellation()
+        guard hasPending else { return [] }
         return try write { db in
             try Task.checkCancellation()
             let staleBefore = now >= 600 ? now - 600 : -1
@@ -429,6 +440,18 @@ final class CollectorInventoryStore {
         now: Int64
     ) throws -> [CollectorDirtyClaim] {
         guard limit >= 0 else { throw CollectorInventoryError.invalidBudget }
+        try Task.checkCancellation()
+        let hasPending = try database.read { db in
+            try requirePublicationOwner(db)
+            try Self.requireRoot(db, configuration)
+            guard limit > 0 else { return false }
+            return try Int.fetchOne(db, sql: """
+                SELECT 1 FROM collector_locators INDEXED BY collector_pending_locators
+                WHERE root_id = ? AND root_revision = ? AND dirty_revision > acknowledged_revision LIMIT 1
+                """, arguments: [configuration.rootID, configuration.revision]) != nil
+        }
+        try Task.checkCancellation()
+        guard hasPending else { return [] }
         return try write { db in
             try Self.requireRoot(db, configuration)
             guard limit > 0 else { return [] }

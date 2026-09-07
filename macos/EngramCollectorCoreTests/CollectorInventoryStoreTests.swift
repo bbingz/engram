@@ -1184,6 +1184,9 @@ private final class CollectorCandidateQueryTrace {
     }
     private(set) var queries: [Query] = []
     private var indexes: [OpaquePointer: Int] = [:]
+    private let prefix: String
+
+    init(prefix: String = "select * from collector_locators ") { self.prefix = prefix }
 
     func reset() { queries = []; indexes = [:] }
 
@@ -1210,7 +1213,7 @@ private final class CollectorCandidateQueryTrace {
         if mask == UInt32(SQLITE_TRACE_STMT) {
             guard let rawSQL = sqlite3_sql(statement) else { return }
             let sql = String(cString: rawSQL).split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased()
-            guard sql.hasPrefix("select * from collector_locators ") else { return }
+            guard sql.hasPrefix(prefix) else { return }
             indexes[statement] = queries.count
             queries.append(Query(sql: sql))
             for counter in [SQLITE_STMTSTATUS_VM_STEP, SQLITE_STMTSTATUS_FULLSCAN_STEP, SQLITE_STMTSTATUS_SORT] {
@@ -1296,6 +1299,332 @@ final class CollectorInventoryTestFixture {
             try FileManager.default.removeItem(at: root)
         } catch {
             XCTFail("Could not close fixture queues and remove their directory: \(error)")
+        }
+    }
+}
+
+extension CollectorInventoryStoreTests {
+    func testDrainedClaimQueuesAndZeroDirtyBudgetDoNotCommit() throws {
+        let fixture = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        var commits = 0
+        let store = try fixture.openRegistered(hooks: .init(beforeCommit: { commits += 1 }))
+        let database = try fixture.openDatabase()
+        let before = try fixture.claimSnapshot(in: database)
+        commits = 0
+        for _ in 0..<5 {
+            XCTAssertTrue(try store.claimDirty(configuration: fixture.configuration, limit: 1, now: 10).isEmpty)
+            for replica in ["hq", "m1"] {
+                XCTAssertTrue(try store.claimPublications(replicaID: replica, limit: 1, now: 10).isEmpty)
+            }
+        }
+        XCTAssertEqual(commits, 0, "fully idle claims must not enter the write transaction fence")
+        XCTAssertEqual(try fixture.claimSnapshot(in: database), before)
+
+        try store.markDirty(configuration: fixture.configuration, relativePath: "ready.jsonl")
+        let pending = try fixture.claimSnapshot(in: database)
+        commits = 0
+        XCTAssertTrue(try store.claimDirty(configuration: fixture.configuration, limit: 0, now: 10).isEmpty)
+        XCTAssertEqual(commits, 0, "a zero dirty budget validates the root without advancing its cursor")
+        XCTAssertEqual(try fixture.claimSnapshot(in: database), pending)
+    }
+
+    func testDrainedLargeQueuesUseBoundedNonVacuousAvailabilityQueries() throws {
+        let fixture = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        let database = try fixture.openDatabase()
+        var commits = 0
+        let store = try CollectorInventoryStore(database: database, machineID: fixture.machineID,
+            ownerRunID: "run-1", testHooks: .init(beforeCommit: { commits += 1 }))
+        try store.registerRoot(fixture.configuration)
+        let count = 2_048
+        try fixture.seedPublications(in: database, count: count, acknowledgedReplicas: ["hq", "m1"])
+        try database.write { db in
+            for index in 0..<count {
+                try db.execute(sql: """
+                    INSERT INTO collector_locators(root_id, root_revision, relative_path,
+                        dirty_revision, acknowledged_revision, claim_generation)
+                    VALUES (?, ?, ?, 1, 1, 0)
+                    """, arguments: [fixture.configuration.rootID, fixture.configuration.revision, "acked-\(index).jsonl"])
+            }
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT count(*) FROM collector_locators"), count)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT count(*) FROM collector_publication_replicas WHERE state = 'acknowledged'"), 2 * count)
+        }
+        let before = try fixture.claimSnapshot(in: database)
+        let trace = CollectorCandidateQueryTrace(prefix: "select 1 from collector_")
+        try database.writeWithoutTransaction { try trace.install(on: $0) }
+        defer { database.writeWithoutTransaction { trace.uninstall(from: $0) } }
+        commits = 0
+        for _ in 0..<3 {
+            trace.reset()
+            XCTAssertTrue(try store.claimDirty(configuration: fixture.configuration, limit: 7, now: 10).isEmpty)
+            XCTAssertTrue(try store.claimPublications(replicaID: "hq", limit: 7, now: 10).isEmpty)
+            XCTAssertTrue(try store.claimPublications(replicaID: "m1", limit: 7, now: 10).isEmpty)
+            let queries = trace.queries
+            XCTAssertEqual(queries.count, 3, "observe each real probe; absent SQL must not pass vacuously")
+            XCTAssertEqual(queries.filter { $0.sql.hasPrefix("select 1 from collector_locators ") }.count, 1)
+            XCTAssertEqual(queries.filter { $0.sql.hasPrefix("select 1 from collector_publication_replicas ") }.count, 2)
+            for query in queries {
+                XCTAssertTrue(query.profiled)
+                XCTAssertGreaterThan(query.vmSteps, 0)
+                XCTAssertLessThanOrEqual(query.vmSteps, 128, "fixed bound independent of the 2,048-row queue")
+                XCTAssertEqual(query.rows, 0)
+                XCTAssertEqual(query.fullScanSteps, 0)
+                XCTAssertEqual(query.sorts, 0)
+                XCTAssertTrue(query.sql.hasSuffix(" limit 1"))
+                XCTAssertFalse(query.sql.contains(" join "))
+                XCTAssertFalse(query.sql.contains("retry_not_before"))
+                XCTAssertFalse(query.sql.contains("claim_owner_run_id"))
+                if query.sql.hasPrefix("select 1 from collector_locators ") {
+                    XCTAssertTrue(query.sql.contains("root_id = ?"))
+                    XCTAssertTrue(query.sql.contains("root_revision = ?"))
+                    XCTAssertTrue(query.sql.contains("dirty_revision > acknowledged_revision"))
+                } else {
+                    XCTAssertTrue(query.sql.contains("replica_id = ?"))
+                    XCTAssertTrue(query.sql.contains("state != 'acknowledged'"))
+                }
+            }
+        }
+        XCTAssertEqual(commits, 0)
+        trace.uninstallSafely(database)
+        XCTAssertEqual(try fixture.claimSnapshot(in: database), before)
+    }
+
+    func testDirtyAvailabilityProbeKeepsDeferredAndInFlightCursorTransactions() throws {
+        let fixture = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        var commits = 0
+        let store = try fixture.openRegistered(hooks: .init(beforeCommit: { commits += 1 }))
+        let database = try fixture.openDatabase()
+        for path in ["a-busy.jsonl", "b-deferred.jsonl"] {
+            try store.markDirty(configuration: fixture.configuration, relativePath: path)
+        }
+        let claims = try store.claimDirty(configuration: fixture.configuration, limit: 2, now: 10)
+        XCTAssertEqual(claims.count, 2)
+        let deferred = try XCTUnwrap(claims.last)
+        XCTAssertTrue(try store.deferClaim(deferred, retryNotBefore: 1_000, reason: "deferred"))
+        let busyBefore = try store.locator(configuration: fixture.configuration, relativePath: "a-busy.jsonl")
+        let deferredBefore = try store.locator(configuration: fixture.configuration, relativePath: "b-deferred.jsonl")
+        commits = 0
+        for (index, expectedCursor) in ["a-busy.jsonl", "b-deferred.jsonl"].enumerated() {
+            XCTAssertTrue(try store.claimDirty(configuration: fixture.configuration, limit: 1, now: 10).isEmpty)
+            XCTAssertEqual(commits, index + 1, "an empty selection is not an empty dirty queue")
+            XCTAssertEqual(try database.read {
+                try String.fetchOne($0, sql: "SELECT claim_cursor FROM collector_roots WHERE root_id = ?",
+                    arguments: [fixture.configuration.rootID])
+            }, expectedCursor)
+        }
+        XCTAssertEqual(try store.locator(configuration: fixture.configuration, relativePath: "a-busy.jsonl"), busyBefore)
+        XCTAssertEqual(try store.locator(configuration: fixture.configuration, relativePath: "b-deferred.jsonl"), deferredBefore)
+    }
+
+    func testPublicationAvailabilityProbeKeepsNonAcknowledgedTransactionsAndReplicaIsolation() throws {
+        for scenario in ["future-retry", "own-inflight", "old-root-revision"] {
+            let fixture = try CollectorInventoryTestFixture()
+            defer { fixture.remove() }
+            var commits = 0
+            let store = try fixture.openRegistered(hooks: .init(beforeCommit: { commits += 1 }))
+            let database = try fixture.openDatabase()
+            try fixture.seedPublications(in: database)
+            if scenario == "old-root-revision" {
+                try store.registerRoot(fixture.configuration(revision: 2))
+            } else {
+                let claim = try XCTUnwrap(store.claimPublications(replicaID: "hq", limit: 1, now: 10).first)
+                if scenario == "future-retry" {
+                    XCTAssertTrue(try store.deferPublication(claim, now: 10, reason: .unavailable))
+                }
+            }
+            let before = try fixture.claimSnapshot(in: database)
+            commits = 0
+            XCTAssertTrue(try store.claimPublications(replicaID: "hq", limit: 1, now: 10).isEmpty, scenario)
+            XCTAssertEqual(commits, 1, "any non-ACK row must keep the original selection transaction: \(scenario)")
+            XCTAssertEqual(try fixture.claimSnapshot(in: database), before, scenario)
+        }
+
+        let fixture = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        var commits = 0
+        let store = try fixture.openRegistered(hooks: .init(beforeCommit: { commits += 1 }))
+        let database = try fixture.openDatabase()
+        try fixture.seedPublications(in: database, acknowledgedReplicas: ["hq"])
+        commits = 0
+        XCTAssertTrue(try store.claimPublications(replicaID: "hq", limit: 1, now: 10).isEmpty)
+        XCTAssertEqual(commits, 0, "another replica's pending work cannot force an HQ write")
+        XCTAssertEqual(try store.claimPublications(replicaID: "m1", limit: 1, now: 10).count, 1)
+        XCTAssertEqual(commits, 1, "M1 must still select its pending publication")
+    }
+
+    func testEmptyClaimFastPathsStillRejectStaleOwnersRootsAndInvalidArguments() throws {
+        for owners in [["run-é", "run-e\u{301}"], ["run-e\u{301}", "run-é"]] {
+            let fixture = try CollectorInventoryTestFixture()
+            defer { fixture.remove() }
+            var commits = 0
+            let old = try fixture.openRegistered(owner: owners[0], hooks: .init(beforeCommit: { commits += 1 }))
+            let current = try fixture.open(owner: owners[1])
+            commits = 0
+            for limit in [0, 1] {
+                XCTAssertThrowsError(try old.claimDirty(configuration: fixture.configuration, limit: limit, now: 10)) {
+                    XCTAssertEqual($0 as? CollectorInventoryError, .staleOwner)
+                }
+            }
+            for replica in ["hq", "m1"] {
+                XCTAssertThrowsError(try old.claimPublications(replicaID: replica, limit: 1, now: 10)) {
+                    XCTAssertEqual($0 as? CollectorInventoryError, .staleOwner)
+                }
+            }
+            XCTAssertEqual(commits, 0)
+            withExtendedLifetime(current) {}
+        }
+
+        let fixture = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        var commits = 0
+        let store = try fixture.openRegistered(hooks: .init(beforeCommit: { commits += 1 }))
+        let missing = CollectorRootConfiguration(rootID: "missing", source: .codex, rootPath: fixture.root.path, revision: 1)
+        for configuration in [missing, fixture.configuration(revision: 2)] {
+            for limit in [0, 1] {
+                XCTAssertThrowsError(try store.claimDirty(configuration: configuration, limit: limit, now: 10)) {
+                    XCTAssertEqual($0 as? CollectorInventoryError, .unknownRoot)
+                }
+            }
+        }
+        try store.registerRoot(fixture.configuration(revision: 2))
+        commits = 0
+        for limit in [0, 1] {
+            XCTAssertThrowsError(try store.claimDirty(configuration: fixture.configuration, limit: limit, now: 10)) {
+                XCTAssertEqual($0 as? CollectorInventoryError, .unknownRoot)
+            }
+        }
+        XCTAssertThrowsError(try store.claimDirty(configuration: fixture.configuration(revision: 2), limit: -1, now: 10)) {
+            XCTAssertEqual($0 as? CollectorInventoryError, .invalidBudget)
+        }
+        for limit in [-1, 0, 65] {
+            XCTAssertThrowsError(try store.claimPublications(replicaID: "hq", limit: limit, now: 10)) {
+                XCTAssertEqual($0 as? CollectorPublicationWorkerError, .invalidBudget)
+            }
+        }
+        for replica in ["HQ", "unknown"] {
+            XCTAssertThrowsError(try store.claimPublications(replicaID: replica, limit: 1, now: 10)) {
+                XCTAssertEqual($0 as? CollectorPublicationWorkerError, .invalidBudget)
+            }
+        }
+        XCTAssertThrowsError(try store.claimPublications(replicaID: "hq", limit: 1, now: -1)) {
+            XCTAssertEqual($0 as? CollectorPublicationWorkerError, .invalidBudget)
+        }
+        XCTAssertEqual(commits, 0)
+    }
+
+    func testCancelledEmptyClaimsNeverCommit() async throws {
+        let task = Task {
+            let fixture = try CollectorInventoryTestFixture()
+            defer { fixture.remove() }
+            var commits = 0
+            let store = try fixture.openRegistered(hooks: .init(beforeCommit: { commits += 1 }))
+            commits = 0
+            withUnsafeCurrentTask { $0?.cancel() }
+            for limit in [0, 1] {
+                XCTAssertThrowsError(try store.claimDirty(configuration: fixture.configuration, limit: limit, now: 10)) {
+                    XCTAssertTrue($0 is CancellationError)
+                }
+            }
+            for replica in ["hq", "m1"] {
+                XCTAssertThrowsError(try store.claimPublications(replicaID: replica, limit: 1, now: 10)) {
+                    XCTAssertTrue($0 is CancellationError)
+                }
+            }
+            XCTAssertEqual(commits, 0)
+        }
+        try await task.value
+    }
+
+    func testNonemptyClaimTransactionsStillRollbackAtCommitFence() throws {
+        let fixture = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        var shouldFail = false
+        var commits = 0
+        let store = try fixture.openRegistered(hooks: .init(beforeCommit: {
+            commits += 1
+            if shouldFail { throw CollectorInventoryInjectedFailure.beforeCommit }
+        }))
+        let database = try fixture.openDatabase()
+        try store.markDirty(configuration: fixture.configuration, relativePath: "ready.jsonl")
+        try fixture.seedPublications(in: database)
+        let before = try fixture.claimSnapshot(in: database)
+        commits = 0
+        shouldFail = true
+        XCTAssertThrowsError(try store.claimDirty(configuration: fixture.configuration, limit: 1, now: 10)) {
+            XCTAssertEqual($0 as? CollectorInventoryInjectedFailure, .beforeCommit)
+        }
+        XCTAssertEqual(try fixture.claimSnapshot(in: database), before)
+        for replica in ["hq", "m1"] {
+            XCTAssertThrowsError(try store.claimPublications(replicaID: replica, limit: 1, now: 10)) {
+                XCTAssertEqual($0 as? CollectorInventoryInjectedFailure, .beforeCommit)
+            }
+            XCTAssertEqual(try fixture.claimSnapshot(in: database), before)
+        }
+        XCTAssertEqual(commits, 3, "all nonempty paths must reach the original commit fence")
+        shouldFail = false
+        XCTAssertEqual(try store.claimDirty(configuration: fixture.configuration, limit: 1, now: 10).count, 1)
+        for replica in ["hq", "m1"] {
+            XCTAssertEqual(try store.claimPublications(replicaID: replica, limit: 1, now: 10).count, 1)
+        }
+    }
+}
+
+private extension CollectorInventoryTestFixture {
+    // Pure Store rows, not capture/replica runtime evidence. Real canonical
+    // envelopes and ACKs keep selection and state checks meaningful.
+    func seedPublications(
+        in database: DatabaseQueue, count: Int = 1, acknowledgedReplicas: Set<String> = []
+    ) throws {
+        let sourceInstance = "22222222-3333-4444-5555-666666666666"
+        let epoch = "33333333-4444-5555-6666-777777777777"
+        try database.write { db in
+            try db.execute(sql: """
+                INSERT INTO collector_streams(root_id, root_revision, source_instance_id, collector_epoch, last_sequence)
+                VALUES (?, ?, ?, ?, ?)
+                """, arguments: [configuration.rootID, configuration.revision, sourceInstance, epoch, count])
+            for index in 1...count {
+                let publication = try CollectorPublicationEnvelope(machineID: machineID,
+                    sourceInstanceID: sourceInstance, collectorEpoch: epoch, sequence: Int64(index),
+                    manifestSHA256: ArchiveV2Hash.sha256(Data("manifest-\(index)".utf8)))
+                let bytes = try ArchiveCanonicalJSON.encode(publication)
+                let digest = ArchiveV2Hash.sha256(bytes)
+                let intent = CollectorPublicationIntent(captureID: ArchiveV2Hash.sha256(Data("capture-\(index)".utf8)),
+                    rootID: configuration.rootID, rootRevision: configuration.revision,
+                    relativePath: "publication-\(index).jsonl", publication: publication, canonicalBytes: bytes, digest: digest)
+                try db.execute(sql: """
+                    INSERT INTO collector_publications(publication_digest, capture_id, root_id, root_revision, relative_path,
+                        source_instance_id, collector_epoch, sequence, manifest_sha256, canonical_bytes)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, arguments: [digest, intent.captureID, intent.rootID, intent.rootRevision, intent.relativePath,
+                        sourceInstance, epoch, publication.sequence, publication.manifestSHA256, bytes])
+                for replica in ["hq", "m1"] {
+                    var ackBytes: Data?
+                    if acknowledgedReplicas.contains(replica) {
+                        let ack = try CollectorPublicationACK(serverID: replica,
+                            journalID: "44444444-5555-6666-7777-888888888888", arrivalOrdinal: Int64(index),
+                            publicationSHA256: digest, manifestSHA256: publication.manifestSHA256,
+                            storedAt: "2026-09-07T00:00:00.000Z")
+                        try ack.validate(against: publication, expectedServerID: replica)
+                        ackBytes = try ArchiveCanonicalJSON.encode(ack)
+                    }
+                    try db.execute(sql: """
+                        INSERT INTO collector_publication_replicas(publication_digest, replica_id, state,
+                            claim_generation, attempts, ack_bytes) VALUES (?, ?, ?, 0, 0, ?)
+                        """, arguments: [digest, replica, ackBytes == nil ? "pending" : "acknowledged", ackBytes])
+                }
+            }
+        }
+    }
+
+    func claimSnapshot(in database: DatabaseQueue) throws -> [[Row]] {
+        try database.read { db in
+            try [
+                Row.fetchAll(db, sql: "SELECT * FROM collector_roots ORDER BY root_id"),
+                Row.fetchAll(db, sql: "SELECT * FROM collector_locators ORDER BY root_id, root_revision, relative_path"),
+                Row.fetchAll(db, sql: "SELECT * FROM collector_publication_replicas ORDER BY publication_digest, replica_id"),
+            ]
         }
     }
 }

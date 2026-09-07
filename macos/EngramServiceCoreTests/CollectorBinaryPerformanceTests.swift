@@ -215,6 +215,119 @@ final class CollectorBinaryPerformanceContractTests: XCTestCase {
     }
 }
 
+final class CollectorBinaryPerformanceFinalSessionContractTests: XCTestCase {
+    func testFixedSchedulePinsTheCompleteFinalSessionBuckets() throws {
+        let schedule = try CollectorPerformanceAccounting.schedule(.syntheticLoopback)
+        let expected = try PerformanceFinalSessionOracle.expectedBuckets(schedule)
+        XCTAssertEqual(expected, [
+            .init(source: "codex", tier: "normal", messageCount: 2): 248,
+            .init(source: "codex", tier: "normal", messageCount: 9): 4,
+            .init(source: "codex", tier: "premium", messageCount: 10): 4,
+        ])
+        XCTAssertEqual(expected.values.reduce(0, +), 256)
+    }
+
+    func testFinalOracleAcceptsTheFourScheduledPremiumPromotions() throws {
+        XCTAssertTrue(try matches(validRows()))
+    }
+
+    func testFinalOracleRejectsAllNormalEvenWithExactly256Sessions() throws {
+        let rows = validRows().map {
+            PerformanceFinalSessionBucket(source: $0.source, tier: "normal", messageCount: $0.messageCount)
+        }
+        XCTAssertFalse(try matches(rows))
+    }
+
+    func testFinalOracleRejectsSwappedTiersEvenWith252NormalAndFourPremium() throws {
+        var rows = validRows()
+        rows[0] = .init(source: "codex", tier: "premium", messageCount: 2)
+        rows[255] = .init(source: "codex", tier: "normal", messageCount: 10)
+        XCTAssertEqual(rows.filter { $0.tier == "normal" }.count, 252)
+        XCTAssertEqual(rows.filter { $0.tier == "premium" }.count, 4)
+        XCTAssertFalse(try matches(rows))
+    }
+
+    func testFinalOracleRejectsWrongSourceSkipLiteAndWrongMessageCount() throws {
+        for replacement in [
+            PerformanceFinalSessionBucket(source: "claude-code", tier: "normal", messageCount: 2),
+            .init(source: "codex", tier: "skip", messageCount: 2),
+            .init(source: "codex", tier: "lite", messageCount: 2),
+            .init(source: "codex", tier: "normal", messageCount: 3),
+        ] {
+            var rows = validRows()
+            rows[0] = replacement
+            XCTAssertFalse(try matches(rows), "Unexpectedly accepted \(replacement)")
+        }
+    }
+
+    func testFinalOracleRejectsMissingExtraAndEmptyRows() throws {
+        XCTAssertFalse(try matches(Array(validRows().dropLast())))
+        XCTAssertFalse(try matches(validRows() + [.init(source: "codex", tier: "normal", messageCount: 2)]))
+        XCTAssertFalse(try matches([]))
+    }
+
+    private func validRows() -> [PerformanceFinalSessionBucket] {
+        // Independent literals: do not populate the SQL fixture from the oracle.
+        Array(repeating: .init(source: "codex", tier: "normal", messageCount: 2), count: 248)
+            + Array(repeating: .init(source: "codex", tier: "normal", messageCount: 9), count: 4)
+            + Array(repeating: .init(source: "codex", tier: "premium", messageCount: 10), count: 4)
+    }
+
+    private func matches(_ rows: [PerformanceFinalSessionBucket]) throws -> Bool {
+        let queue = try DatabaseQueue()
+        defer { try? queue.close() }
+        try queue.write { db in
+            try db.execute(sql: "CREATE TABLE sessions (source TEXT NOT NULL, tier TEXT NOT NULL, message_count INTEGER NOT NULL)")
+            for row in rows {
+                try db.execute(sql: "INSERT INTO sessions (source, tier, message_count) VALUES (?, ?, ?)",
+                    arguments: [row.source, row.tier, row.messageCount])
+            }
+        }
+        let schedule = try CollectorPerformanceAccounting.schedule(.syntheticLoopback)
+        return try queue.read { try PerformanceFinalSessionOracle.matches($0, schedule: schedule) }
+    }
+}
+
+private struct PerformanceFinalSessionBucket: Hashable {
+    let source: String
+    let tier: String
+    let messageCount: Int
+}
+
+private enum PerformanceFinalSessionOracle {
+    static func expectedBuckets(_ schedule: CollectorPerformanceSchedule) throws -> [PerformanceFinalSessionBucket: Int] {
+        var messageCounts = Array(repeating: 2, count: CollectorPerformanceProfile.syntheticLoopback.fileCount)
+        for append in schedule.appends {
+            guard messageCounts.indices.contains(append.fileOrdinal) else { throw PerformanceRunError.configuration }
+            messageCounts[append.fileOrdinal] += 1
+        }
+        var expected: [PerformanceFinalSessionBucket: Int] = [:]
+        for (ordinal, count) in messageCounts.enumerated() {
+            // The declared corpus has one user, then assistants, a project,
+            // no preamble/noise, and timestamps spanning less than two minutes.
+            let tier = SessionTier.compute(TierInput(messageCount: count,
+                filePath: "/synthetic/performance/rollout-\(ordinal).jsonl", project: "/synthetic/performance/project",
+                startTime: "2026-09-07T00:00:00Z", endTime: "2026-09-07T00:01:01Z", source: "codex",
+                assistantCount: count - 1, toolCount: 0))
+            expected[.init(source: "codex", tier: tier.rawValue, messageCount: count), default: 0] += 1
+        }
+        return expected
+    }
+
+    static func matches(_ db: Database, schedule: CollectorPerformanceSchedule) throws -> Bool {
+        let expected = try expectedBuckets(schedule)
+        let rows = try Row.fetchAll(db, sql: "SELECT source, tier, message_count, COUNT(*) AS row_count FROM sessions GROUP BY source, tier, message_count")
+        var observed: [PerformanceFinalSessionBucket: Int] = [:]
+        for row in rows {
+            guard let source = String.fromDatabaseValue(row["source"]), let tier = String.fromDatabaseValue(row["tier"]),
+                  let messageCount = Int.fromDatabaseValue(row["message_count"]), let count = Int.fromDatabaseValue(row["row_count"]),
+                  messageCount >= 0, count > 0 else { return false }
+            observed[.init(source: source, tier: tier, messageCount: messageCount)] = count
+        }
+        return observed == expected
+    }
+}
+
 final class CollectorBinaryPerformanceAuthenticationContractTests: XCTestCase {
     func testTwoAbsoluteRefreshesCoverTheWindowWithoutExtendingTheNineHundredSecondCookieLifetime() throws {
         let schedule = try PerformanceAuthenticationSchedule.syntheticLoopback()
@@ -1648,6 +1761,15 @@ private final class PerformanceScope: @unchecked Sendable {
         } catch { try? queue.close(); throw error }
     }
 
+    private func finalSessionTiersMatch(_ schedule: CollectorPerformanceSchedule) throws -> Bool {
+        var configuration = Configuration(); configuration.readonly = true
+        let queue = try DatabaseQueue(path: database.path, configuration: configuration)
+        do {
+            let result = try queue.read { try PerformanceFinalSessionOracle.matches($0, schedule: schedule) }
+            try queue.close(); return result
+        } catch { try? queue.close(); throw error }
+    }
+
     private func login(timeout: Double = 5) async throws {
         let web = try XCTUnwrap(web)
         let response = try await web.request(path: "/web/api/auth", method: "POST",
@@ -1883,7 +2005,7 @@ private final class PerformanceScope: @unchecked Sendable {
         }
         guard try fixture.publications().count == 316,
               try fixture.integer("SELECT count(*) FROM collector_publication_replicas WHERE state = 'acknowledged'") == 632,
-              try integer("SELECT count(*) FROM sessions WHERE source = 'codex' AND tier = 'normal'") == 256 else {
+              try finalSessionTiersMatch(schedule) else {
             throw PerformanceRunError.wrongContent
         }
         try privateJSON(sources.map { ["ordinal": $0.ordinal, "relativePath": $0.relativePath,

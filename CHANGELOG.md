@@ -7,6 +7,71 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Drained collector claim queues avoid write transactions (2026-09-07)
+
+Two bounded read-only availability probes now skip the original claim transaction
+only for a fully drained dirty queue or replica queue (and validated zero dirty
+budget). Caller-thread cancellation checks surround the read; exact owner and
+dirty-root checks share its snapshot. Any non-ACK publication, including deferred,
+in-flight or old-root work, retains the unchanged original selection transaction.
+The positive write bodies, cursor behavior, schema and commit fences are unchanged.
+
+Seven added Store tests cover idle/zero-budget commits, real SQL VM counters over
+2,048 ACK locators and 4,096 ACK replica rows, busy/deferred cursor behavior,
+replica isolation, stale owners/roots/invalid input, pre-cancellation and rollback.
+The corrected fixture produced RED: 46 tests, 17 assertion failures and no
+unexpected errors, with all 39 older tests passing. First implementation retained
+three VM-budget failures: the dirty query selected the primary key and used
+10,252 steps despite LIMIT 1. Specifying the existing matching partial index
+fixed this without schema changes or relaxed thresholds. The complete native
+CollectorCore suite then passed 289 tests, including all 46 Store cases, with
+zero skips/failures. Evidence: `/tmp/engram-collector-idle-probe-root-red-v2`,
+`/tmp/engram-collector-idle-probe-root-green-v1`, and
+`/tmp/engram-collector-full-idle-probe-root-green-v2`, each `.log`/`.xcresult`.
+These establish bounded query behavior, not a measured CPU improvement. A new
+revision-bound Release window is still required; old failed artifacts are kept.
+Independent review of the exact Store/test pair returned SPEC PASS and QUALITY
+APPROVED after reading the v2 test results. Three explicit Debug products rebuilt
+successfully (`/tmp/engram-idle-probe-debug-{Collector,Service,RemoteServer}-v1.log`).
+The subsequent full Service suite passed 1,154 tests with four opt-in/live skips
+and no failures in 115.693 seconds, with explicit Collector/Service/RemoteServer
+and Node fixture binaries (`/tmp/engram-service-full-idle-probe-v1.{log,xcresult}`).
+Post-probe cancellation is statically checked; the new dynamic cancellation test
+covers pre-cancellation only. The retirement checklist metadata was refreshed
+without changing any real-host/source/runtime UNVERIFIED field.
+
+### Final-session oracle and late-response browser verification (2026-09-07)
+
+The final performance oracle now checks all source/tier/message-count buckets,
+not a filtered count of normal sessions. Six independent fixture contracts first
+produced two failures with the old predicate, then passed with the fixed query:
+248 Codex normal sessions with two messages, four normal with nine messages,
+and four premium with ten messages. All original workload, CPU/RSS/latency,
+source-hash and 316-publication/632-ACK assertions remain unchanged. Root gates:
+33 focused tests passed, followed by 1,154 Service tests with four opt-in/live
+skips and no failures. Independent exact-diff review returned SPEC PASS and
+QUALITY APPROVED. Evidence: `/tmp/engram-performance-tier-root-{red,green}-v1`
+and `/tmp/engram-service-full-tier-fix-v1`, each with `.log` and `.xcresult`.
+This fixes an oracle defect; the old measured CPU failure remains a failure.
+
+The real-browser stale-read check now passes using response-stage Chromium
+interception of the original successful sessions request, not a re-fetch or
+fabricated response. The original GET was held at 200 with real private items;
+the real logout returned 204 and cleared UI/cookies before unchanged response
+delivery. The original handler then completed successfully without any private
+DOM repaint, and a subsequent browser read returned 401. The owned browser was
+closed before the fixture's normal stop; native cleanup exited 0. Evidence:
+`output/playwright/stale-read-20260907/{browser-stale-read-cdp-v1.log,findings.md}`,
+its signed-out screenshot, and `/tmp/engram-browser-stale-read-root-v2.{log,xcresult}`.
+Earlier re-fetch probes returning 403 remain failed diagnostics.
+
+Revision `70e362fa` Tests workflow `34081472925` completed successfully, including
+CI Gate. Its formerly failing Service cases passed in job `101617489065`; the
+full CI Service suite ran 1,148 tests with 26 skips and no failures. Local opt-in
+evidence and CI skips remain distinct. Evidence: `/tmp/engram-ci-70e362fa-swift-unit.log`
+and https://github.com/bbingz/engram/actions/runs/34081472925.
+CodeQL Swift jobs were still running at the last check; no all-CI claim is made.
+
 ### Completed performance window and isolated Service CI invocation (2026-09-07)
 
 The revision-bound `9e90471b` Release measurement finished its entire 1,800.008-
