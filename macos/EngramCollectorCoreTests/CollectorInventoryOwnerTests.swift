@@ -2228,3 +2228,308 @@ private func collectorOwnerFixtureDescriptors(under root: URL) throws -> [Int32]
         return path == root.path || path.hasPrefix(root.path + "/") ? descriptor : nil
     }.sorted()
 }
+
+extension CollectorInventoryOwnerTests {
+    func testStorageValidationUsesOneActualOpenPerRouteAndKeepsBothRootStateFences() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        // Measure an accepted canonical owner; existing alias-refusal tests stay separate.
+        XCTAssertEqual(try fixture.mode(fixture.shadowRoot) & S_IFMT, S_IFDIR)
+        let probe = StorageValidationDescriptorProbe()
+        let owner = try XCTUnwrap(fixture.open(hooks: .init(storageValidationOpenHooks: probe.hooks)))
+        defer { try? owner.close() }
+        let expected = try [fixture.fileIdentity(fixture.shadowRoot), fixture.fileIdentity(fixture.liveRoot)]
+        probe.arm()
+        for _ in 0..<2 { XCTAssertNil(try owner.rootState(rootID: "not-enrolled")) }
+        XCTAssertEqual(probe.opened, 8, "two real opens per validation, before AND after each rootState read")
+        XCTAssertEqual(probe.closed, 8)
+        XCTAssertEqual(probe.identities, Array(repeating: expected, count: 4).flatMap { $0 })
+        XCTAssertLessThanOrEqual(probe.maximumLive, 2)
+        XCTAssertTrue(probe.live.isEmpty)
+        XCTAssertTrue(probe.allDirectories && probe.allReadOnly && probe.allCloseOnExec)
+        probe.disarm()
+        try owner.close()
+        XCTAssertEqual(try collectorOwnerFixtureDescriptors(under: fixture.base), [])
+    }
+
+    func testStorageValidationRejectsSameInodeLeafAndAncestorSymlinksAtEntryAndCommit() throws {
+        for atCommit in [false, true] {
+            for route in ["shadow-leaf", "shadow-parent", "live-leaf", "live-parent"] {
+                let fixture = try CollectorOwnerFixture()
+                defer { fixture.remove() }
+                let live = try storageValidationLiveRoot(fixture)
+                let commit = N4CommitProbe()
+                let owner = try XCTUnwrap(fixture.open(identityCatalog: live.appendingPathComponent("archive.sqlite"), hooks: commit.hooks))
+                defer { try? owner.close() }
+                let claim = try n4Prepare(.claim, owner, fixture)
+                let before = try n4Audit(fixture)
+                let liveBefore = try fixture.snapshot(at: live)
+                let target: URL
+                switch route {
+                case "shadow-leaf": target = fixture.shadowRoot
+                case "shadow-parent": target = fixture.shadowRoot.deletingLastPathComponent()
+                case "live-leaf": target = live
+                default: target = live.deletingLastPathComponent()
+                }
+                let expected = try fixture.fileIdentity(target)
+                let mutation = try N4PathMutation(fixture, target: target)
+                defer { try? mutation.restore() }
+                let install = {
+                    try mutation.install(.symlink)
+                    XCTAssertEqual(try fixture.mode(target) & S_IFMT, S_IFLNK)
+                    var info = stat()
+                    XCTAssertEqual(fstatat(AT_FDCWD, target.path, &info, 0), 0)
+                    XCTAssertEqual(CollectorOwnerFixture.Identity(device: info.st_dev, inode: info.st_ino), expected,
+                        "the alias must still resolve to the original inode")
+                }
+                if atCommit { commit.arm(install) } else { try install() }
+                XCTAssertThrowsError(try {
+                    if atCommit { try self.n4Perform(.claim, owner, fixture.configuration, claim) }
+                    else { _ = try owner.rootState(rootID: fixture.configuration.rootID) }
+                }()) { self.storageAssertNoFollowError($0) }
+                if atCommit {
+                    XCTAssertEqual(commit.visits, 1)
+                    XCTAssertEqual(commit.returnedNormally, 1, "the real storage fence, not the mutation hook, must reject")
+                }
+                commit.disarm()
+                try mutation.restore()
+                XCTAssertEqual(try fixture.fileIdentity(target), expected)
+                XCTAssertEqual(try n4Audit(fixture), before, "\(route), commit=\(atCommit)")
+                XCTAssertEqual(try fixture.snapshot(at: live), liveBefore)
+                try owner.close()
+                XCTAssertEqual(try collectorOwnerFixtureDescriptors(under: fixture.base), [])
+            }
+        }
+    }
+
+    func testStorageValidationKeepsAncestorReadPermissionChecksAtEntryAndCommit() throws {
+        try XCTSkipIf(geteuid() == 0, "root bypasses the owned fixture's DAC read denial")
+        for atCommit in [false, true] {
+            for shadowRoute in [false, true] {
+                let fixture = try CollectorOwnerFixture()
+                defer { fixture.remove() }
+                let live = try storageValidationLiveRoot(fixture)
+                let commit = N4CommitProbe()
+                let owner = try XCTUnwrap(fixture.open(identityCatalog: live.appendingPathComponent("archive.sqlite"), hooks: commit.hooks))
+                defer { try? owner.close() }
+                let claim = try n4Prepare(.claim, owner, fixture)
+                let before = try n4Audit(fixture)
+                let liveBefore = try fixture.snapshot(at: live)
+                let leaf = shadowRoute ? fixture.shadowRoot : live
+                let parent = leaf.deletingLastPathComponent()
+                let originalMode = try fixture.mode(parent) & 0o7777
+                let expected = try fixture.fileIdentity(leaf)
+                XCTAssertEqual(originalMode, 0o700)
+                defer { XCTAssertEqual(chmod(parent.path, originalMode), 0) }
+                let denyRead = {
+                    guard chmod(parent.path, 0o300) == 0 else { throw POSIXError(.EACCES) }
+                    var info = stat()
+                    XCTAssertEqual(fstatat(AT_FDCWD, leaf.path, &info, 0), 0, "search permission must still reach the unchanged leaf")
+                    XCTAssertEqual(CollectorOwnerFixture.Identity(device: info.st_dev, inode: info.st_ino), expected)
+                    XCTAssertEqual(info.st_mode & 0o7777, 0o700)
+                    let descriptor = openat(AT_FDCWD, parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                    let code = errno
+                    if descriptor >= 0 { _ = Darwin.close(descriptor) }
+                    XCTAssertEqual(descriptor, -1, "positive control: this owned ancestor denies O_RDONLY")
+                    XCTAssertEqual(code, EACCES)
+                    guard descriptor < 0, code == EACCES else { throw CollectorOwnerFixture.Failure.injected }
+                }
+                if atCommit { commit.arm(denyRead) } else { try denyRead() }
+                XCTAssertThrowsError(try {
+                    if atCommit { try self.n4Perform(.claim, owner, fixture.configuration, claim) }
+                    else { _ = try owner.rootState(rootID: fixture.configuration.rootID) }
+                }()) { XCTAssertEqual($0 as? CollectorPOSIXEnumerationError, .io(.openComponent, EACCES)) }
+                if atCommit {
+                    XCTAssertEqual(commit.visits, 1)
+                    XCTAssertEqual(commit.returnedNormally, 1)
+                }
+                commit.disarm()
+                // Restoring the mode precedes every SQL or directory snapshot.
+                XCTAssertEqual(chmod(parent.path, originalMode), 0)
+                XCTAssertEqual(try fixture.mode(parent) & 0o7777, originalMode)
+                XCTAssertEqual(try fixture.fileIdentity(leaf), expected)
+                XCTAssertEqual(try n4Audit(fixture), before)
+                XCTAssertEqual(try fixture.snapshot(at: live), liveBefore)
+                try owner.close()
+                XCTAssertEqual(try collectorOwnerFixtureDescriptors(under: fixture.base), [])
+            }
+        }
+    }
+
+    func testStorageValidationPreservesPathLimitsAndRejectsMissingOrNonDirectoryRoutes() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let before = try fixture.snapshot()
+        var visits = 0
+        let hooks = CollectorInventoryOwnerTestHooks(beforeFilesystemAccess: { visits += 1 })
+        let invalid = [
+            try XCTUnwrap(URL(string: "https://invalid.example/shadow")),
+            URL(fileURLWithPath: "/"),
+            URL(fileURLWithPath: "/" + Array(repeating: "a", count: 33).joined(separator: "/")),
+            URL(fileURLWithPath: "/" + String(repeating: "x", count: Int(MAXPATHLEN))),
+        ]
+        for path in invalid {
+            XCTAssertThrowsError(try fixture.open(shadowRoot: path, hooks: hooks))
+            XCTAssertEqual(visits, 0, "invalid supplied path must fail before filesystem access: \(path.path.debugDescription)")
+        }
+        // Raw-byte primitive regression: Foundation URL.path can preserve %00 literally.
+        let nulPath = "/invalid/nul\0name"
+        XCTAssertTrue(nulPath.utf8.contains(0))
+        XCTAssertThrowsError(try CollectorPOSIXDirectoryAccess.components(nulPath)) {
+            XCTAssertEqual($0 as? CollectorPOSIXEnumerationError, .invalidBinding)
+        }
+        XCTAssertEqual(try fixture.snapshot(), before)
+        for replacement in [N4Replacement.missing, .file] {
+            for shadowRoute in [false, true] {
+                let owned = try CollectorOwnerFixture()
+                defer { owned.remove() }
+                let owner = try XCTUnwrap(owned.open())
+                defer { try? owner.close() }
+                let original = try n4Audit(owned)
+                let mutation = try N4PathMutation(owned, target: shadowRoute ? owned.shadowRoot : owned.liveRoot)
+                defer { try? mutation.restore() }
+                try mutation.install(replacement)
+                XCTAssertThrowsError(try owner.rootState(rootID: "not-enrolled")) { error in
+                    guard let value = error as? CollectorPOSIXEnumerationError,
+                          case .io(.openComponent, let code) = value else {
+                        return XCTFail("Expected a real pathname error: \(error)")
+                    }
+                    XCTAssertEqual(code, replacement == .missing ? ENOENT : ENOTDIR)
+                }
+                try mutation.restore()
+                XCTAssertEqual(try n4Audit(owned), original)
+                try owner.close()
+                XCTAssertEqual(try collectorOwnerFixtureDescriptors(under: owned.base), [])
+            }
+        }
+    }
+
+    func testStorageValidationPreAndPostOpenCancellationClosesEveryObservedDescriptor() async throws {
+        for afterOpen in [false, true] {
+            let fixture = try CollectorOwnerFixture()
+            defer { fixture.remove() }
+            let probe = StorageValidationDescriptorProbe()
+            let owner = try XCTUnwrap(fixture.open(hooks: .init(storageValidationOpenHooks: probe.hooks)))
+            defer { try? owner.close() }
+            let before = try n4Audit(fixture)
+            probe.arm()
+            let task = Task {
+                try withUnsafeCurrentTask { current in
+                    XCTAssertNotNil(current)
+                    if afterOpen { probe.afterOpen = { current?.cancel() } }
+                    else { current?.cancel() }
+                    defer { probe.afterOpen = nil }
+                    XCTAssertThrowsError(try owner.rootState(rootID: "not-enrolled")) { XCTAssertTrue($0 is CancellationError) }
+                    XCTAssertTrue(current?.isCancelled == true)
+                }
+            }
+            try await task.value
+            XCTAssertEqual(probe.opened, afterOpen ? 1 : 0)
+            XCTAssertEqual(probe.closed, probe.opened)
+            XCTAssertTrue(probe.live.isEmpty)
+            XCTAssertTrue(probe.allDirectories && probe.allReadOnly && probe.allCloseOnExec)
+            probe.disarm()
+            XCTAssertEqual(try n4Audit(fixture), before)
+            // The joined child owns cancellation; close runs on the uncancelled parent.
+            try owner.close()
+            XCTAssertEqual(try collectorOwnerFixtureDescriptors(under: fixture.base), [])
+        }
+    }
+
+    func testStorageValidationOpenHookFailureClosesAnAlreadyAcquiredDescriptor() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let probe = StorageValidationDescriptorProbe()
+        let owner = try XCTUnwrap(fixture.open(hooks: .init(storageValidationOpenHooks: probe.hooks)))
+        defer { try? owner.close() }
+        let before = try n4Audit(fixture)
+        probe.arm()
+        probe.beforeOpen = {
+            if probe.opened > 0 { throw CollectorOwnerFixture.Failure.injected }
+        }
+        XCTAssertThrowsError(try owner.rootState(rootID: "not-enrolled")) {
+            XCTAssertTrue($0 is CollectorOwnerFixture.Failure)
+        }
+        XCTAssertGreaterThan(probe.opened, 0, "a real successful open must precede the injected fault")
+        XCTAssertEqual(probe.opened, probe.closed)
+        XCTAssertTrue(probe.live.isEmpty)
+        probe.disarm()
+        XCTAssertEqual(try n4Audit(fixture), before)
+        try owner.close()
+        XCTAssertEqual(try collectorOwnerFixtureDescriptors(under: fixture.base), [])
+    }
+
+    private func storageValidationLiveRoot(_ fixture: CollectorOwnerFixture) throws -> URL {
+        let parent = fixture.base.appendingPathComponent("storage-validation-live")
+        let root = parent.appendingPathComponent("catalog-root")
+        try fixture.directory(parent)
+        try fixture.directory(root)
+        try fixture.catalog(root.appendingPathComponent("archive.sqlite"))
+        return root
+    }
+
+    private func storageAssertNoFollowError(_ error: Error) {
+        guard let value = error as? CollectorPOSIXEnumerationError,
+              case .io(.openComponent, let code) = value, code == ELOOP || code == ENOTDIR else {
+            return XCTFail("Expected kernel no-follow refusal: \(error)")
+        }
+    }
+}
+
+private final class StorageValidationDescriptorProbe {
+    private var armed = false
+    private(set) var opened = 0
+    private(set) var closed = 0
+    private(set) var maximumLive = 0
+    private(set) var live: [Int32: CollectorOwnerFixture.Identity] = [:]
+    private(set) var identities: [CollectorOwnerFixture.Identity] = []
+    private(set) var allDirectories = true
+    private(set) var allReadOnly = true
+    private(set) var allCloseOnExec = true
+    var beforeOpen: (() throws -> Void)?
+    var afterOpen: (() -> Void)?
+
+    var hooks: CollectorPOSIXRootEnumeratorTestHooks {
+        .init(beforeOpenComponent: { [weak self] _ in
+            guard let self, self.armed else { return }
+            try self.beforeOpen?()
+        }, didOpenDescriptor: { [weak self] descriptor in
+            guard let self, self.armed else { return }
+            var info = stat()
+            XCTAssertEqual(fstat(descriptor, &info), 0)
+            let identity = CollectorOwnerFixture.Identity(device: info.st_dev, inode: info.st_ino)
+            XCTAssertNil(self.live.updateValue(identity, forKey: descriptor))
+            self.identities.append(identity)
+            self.opened += 1
+            self.maximumLive = max(self.maximumLive, self.live.count)
+            self.allDirectories = self.allDirectories && info.st_mode & S_IFMT == S_IFDIR
+            let flags = fcntl(descriptor, F_GETFL)
+            self.allReadOnly = self.allReadOnly && flags >= 0 && flags & O_ACCMODE == O_RDONLY
+            let descriptorFlags = fcntl(descriptor, F_GETFD)
+            self.allCloseOnExec = self.allCloseOnExec && descriptorFlags >= 0 && descriptorFlags & FD_CLOEXEC != 0
+            self.afterOpen?()
+        }, didCloseDescriptor: { [weak self] descriptor, viaStream in
+            guard let self, self.armed else { return }
+            XCTAssertFalse(viaStream)
+            let expected = self.live.removeValue(forKey: descriptor)
+            XCTAssertNotNil(expected)
+            self.closed += 1
+            var info = stat()
+            if fstat(descriptor, &info) == 0 {
+                XCTAssertNotEqual(CollectorOwnerFixture.Identity(device: info.st_dev, inode: info.st_ino), expected)
+            } else { XCTAssertEqual(errno, EBADF) }
+        })
+    }
+
+    func arm() {
+        XCTAssertTrue(live.isEmpty)
+        opened = 0; closed = 0; maximumLive = 0; identities = []
+        allDirectories = true; allReadOnly = true; allCloseOnExec = true
+        beforeOpen = nil; afterOpen = nil; armed = true
+    }
+
+    func disarm() {
+        XCTAssertTrue(live.isEmpty)
+        armed = false; beforeOpen = nil; afterOpen = nil
+    }
+}

@@ -1,8 +1,8 @@
 # Collector source-retirement checklist
 
 Date: 2026-09-07. Scope: the local, synthetic W6 candidate in
-`collector-server-web-20260905`, based on `70e362fa` plus the current drained-queue
-optimization and final-session oracle changes. This is not a measured Release revision.
+`collector-server-web-20260905`, with source coverage reviewed against `87cc453c`.
+Runtime measurement results are reported separately below.
 This is a coverage gate, not a host inventory, cutover approval, or a claim that
 any host is fully lightweight. W7 remains separately authorized.
 
@@ -34,12 +34,18 @@ any host is fully lightweight. W7 remains separately authorized.
   `output/playwright/binary-shadow-20260907/browser-v2-findings.md`.
   These receipts are local-only, synthetic, and do not prove any real source
   root, Claude profile, tailnet path, or production HQ record.
-- Tests CI for exact revision `70e362fa` passed in run `34081472925`:
-  https://github.com/bbingz/engram/actions/runs/34081472925. This does not cover
-  later uncommitted performance changes. The `9e90471b` full 30-minute synthetic
-  window failed CPU (2.144809% of one core versus 2%); the optimized Release
-  window and healthy-tailnet measurement remain unverified. See `CHANGELOG.md`
-  for retained failure evidence and current local regression results.
+- Tests and CodeQL for exact revision `87cc453c` passed in runs `34083556529`
+  and `34083556503`: https://github.com/bbingz/engram/actions/runs/34083556529
+  and https://github.com/bbingz/engram/actions/runs/34083556503. Both full
+  30-minute synthetic windows failed CPU: `9e90471b` at 2.144809%, `87cc453c`
+  at 2.120649%, each versus 2% of one core. All other second-window metrics
+  and final content passed. Healthy-tailnet measurement remains unverified.
+  See `CHANGELOG.md` for retained failure evidence and local regression results.
+- A subsequent two-route storage-open optimization passed actual RED/GREEN,
+  295 CollectorCore tests and 1,155 Service tests (five opt-in/live skips), with
+  independent source/log approval. Source enablement and retirement boundaries
+  are unchanged. Neither this regression nor the separately labeled CPU profile
+  replaces the failed 30-minute measurement; new Release acceptance is pending.
 
 ## Registered sources
 
@@ -109,8 +115,8 @@ CHECKS_RUN: current enum/factory/runtime/worker/privacy source inspection; exist
 local synthetic log receipts read. Table-to-enum coverage is checked separately.
 
 CHECKS_NOT_RUN: real host enablement/root inventory, all real-source capture/HQ
-checks, Claude real-binary acceptance, Grok/Pi inventory, optimized 30-minute
-Release measurement, healthy-tailnet latency, retirement and W7.
+checks, Claude real-binary acceptance, Grok/Pi inventory, healthy-tailnet latency,
+retirement and W7. The 30-minute Release measurement ran but failed CPU.
 
 WHY_NOT: host operations require the separately authorized bounded transaction;
 synthetic/component evidence is intentionally not promoted into real coverage.

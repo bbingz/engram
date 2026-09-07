@@ -48,6 +48,7 @@ struct CollectorInventoryOwnerTestHooks {
     var afterDatabaseOpened: (() throws -> Void)?
     var beforeRootActivation: (() throws -> Void)?
     var beforeInventoryCommit: (() throws -> Void)?
+    var storageValidationOpenHooks: CollectorPOSIXRootEnumeratorTestHooks?
 }
 
 // Only values escape this owner. Its mutex covers each operation and close;
@@ -688,10 +689,11 @@ final class CollectorInventoryOwner {
     // Queue-free: safe inside Store.beforeCommit. The complete outer validator
     // above still checks SQLite's connection filename and HAS_MOVED state.
     private func validateStorageFilesystem() throws {
-        let shadow = try Self.openDirectory(shadowRoot)
-        defer { CollectorPOSIXDirectoryAccess.close(shadow.descriptor) }
-        let live = try Self.openDirectory(identityCatalog.deletingLastPathComponent())
-        defer { CollectorPOSIXDirectoryAccess.close(live.descriptor) }
+        let openHooks = testHooks.storageValidationOpenHooks ?? .init()
+        let shadow = try Self.openStorageValidationDirectory(shadowRoot, testHooks: openHooks)
+        defer { CollectorPOSIXDirectoryAccess.close(shadow.descriptor, testHooks: openHooks) }
+        let live = try Self.openStorageValidationDirectory(identityCatalog.deletingLastPathComponent(), testHooks: openHooks)
+        defer { CollectorPOSIXDirectoryAccess.close(live.descriptor, testHooks: openHooks) }
         try Self.validateDirectoryDescriptor(shadowDescriptor, expected: shadowIdentity)
         try Self.validateDirectoryDescriptor(shadow.descriptor, expected: shadowIdentity)
         try Self.validateDirectoryDescriptor(live.descriptor, expected: liveRootIdentity)
@@ -717,6 +719,30 @@ final class CollectorInventoryOwner {
     private static func openDirectory(_ url: URL) throws -> (descriptor: Int32, info: stat) {
         let components = try CollectorPOSIXDirectoryAccess.components(url.path)
         return try CollectorPOSIXDirectoryAccess.openAbsolute(components: components)
+    }
+
+    // Only shadow/live revalidation uses one absolute no-symlink open.
+    // Here beforeOpenComponent receives the full absolute path, once per route.
+    private static func openStorageValidationDirectory(
+        _ url: URL, testHooks: CollectorPOSIXRootEnumeratorTestHooks
+    ) throws -> (descriptor: Int32, info: stat) {
+        let path = url.path
+        _ = try CollectorPOSIXDirectoryAccess.components(path)
+        try Task.checkCancellation()
+        try testHooks.beforeOpenComponent?(path)
+        let descriptor = path.withCString {
+            openat(AT_FDCWD, $0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW_ANY | O_CLOEXEC)
+        }
+        guard descriptor >= 0 else { throw CollectorPOSIXEnumerationError.io(.openComponent, errno) }
+        testHooks.didOpenDescriptor?(descriptor)
+        do {
+            try Task.checkCancellation()
+            let info = try CollectorPOSIXDirectoryAccess.directoryStat(descriptor)
+            return (descriptor, info)
+        } catch {
+            CollectorPOSIXDirectoryAccess.close(descriptor, testHooks: testHooks)
+            throw error
+        }
     }
 
     private static func requirePrivateDirectory(_ info: stat) throws {

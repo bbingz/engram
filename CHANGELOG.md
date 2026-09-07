@@ -7,6 +7,108 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Storage revalidation avoids duplicate absolute component walks (2026-09-07)
+
+Only the shadow/live revalidation opens use a private, strict-path helper with
+one `openat(O_RDONLY | O_DIRECTORY | O_NOFOLLOW_ANY | O_CLOEXEC)` each. It retains
+caller cancellation checks, real descriptor observation, fstat validation and
+failure closure. Initial opens, generic primitives, inventory/database identity,
+both physical ancestor walks, permission refusal, commit fences and rollback
+remain byte-identical outside the narrow seam. This is not whole-validator
+atomicity, a total-syscall budget, or a cache of filesystem identities.
+
+Six appended tests preserve every old test byte. The first attempted run failed
+to compile two test-only `stat` calls; replacing them with following `fstatat`
+controls allowed execution. The next run identified two incorrect fixture
+assumptions: an existing rejected Data alias was treated as an accepted owner,
+and Foundation's literal `%00` path was mistaken for a zero byte. Test-only
+corrections kept the real eight-open budget, existing alias refusals and raw-NUL
+primitive rejection; no production contract was widened.
+
+Final RED ran 73 Owner tests: only the budget test failed, with four expected
+assertions (76 opens/closes instead of eight, intermediate identities and three
+live descriptors instead of at most two), zero unexpected errors. The minimal
+implementation then passed the complete CollectorCore suite: 295 tests, zero
+skips/failures, including all 73 Owner tests. New safety cases cover same-inode
+leaf/ancestor symlinks, actual `EACCES` parent-read revocation at entry/commit,
+rollback, missing/non-directory routes, joined pre/post-open cancellation and
+failure cleanup. Startup-invalid-URL and raw-NUL primitive coverage are reported
+separately from runtime revalidation. Independent source/actual-log review
+returned SPEC PASS and QUALITY APPROVED; inverse transforms reproduced both
+the RED source and original HEAD bytes exactly.
+
+Evidence: `/tmp/engram-storage-validation-root-red-v{1,2,3}.{log,xcresult}` and
+`/tmp/engram-storage-validation-root-green-v1.{log,xcresult}`. Three Debug
+products rebuilt successfully in
+`/tmp/engram-storage-validation-debug-{Collector,Service,RemoteServer}-v1.log`.
+The full Service regression then passed 1,155 tests with five opt-in/live skips
+and zero failures in 110.018s, using all three explicit Debug binaries and the
+private expected home (`/tmp/engram-storage-validation-full-service-v1.{log,xcresult}`).
+The new diagnostic correctly skips without its explicit opt-in. A new
+clean-revision Release package and unchanged 30-minute acceptance window are
+still required. Existing CPU failures are retained and remain failures.
+
+### Synthetic CPU profile isolates storage-path validation candidate (2026-09-07)
+
+An explicitly opted-in diagnostic reuses the unchanged 256-file bootstrap,
+then holds a quiescent corpus for 120 seconds without scheduled append/Web/SQL
+traffic. It does not execute performance acceptance or replace either retained
+30-minute failure. The existing performance path is byte-identical after
+removing the 121 added diagnostic lines. Independent source review approved
+that separation before execution.
+
+The real Release `87cc453c` diagnostic passed one test in 286.413s, including
+bootstrap and joined cleanup of eight owned children. Root checked the ready
+receipt, executable hash/path, PID/start identity and bounded hold window before
+sampling only that owned Collector for 30 seconds. The sampler completed before
+the hold ended; the result records `diagnosticOnly=true`,
+`performanceMeasured=false`, `acceptanceEvaluated=false`, and successful cleanup.
+Evidence: `/tmp/engram-cpu-idle-profile-87cc453c-v1.{log,xcresult}`,
+`/tmp/engram-cpu-sample-87cc453c-v1.log`, and
+`output/native-release-87cc453c-20260907/cpu-idle-profile-v1/`.
+
+Active sample stacks repeatedly traverse `validateStorageFilesystem` directory
+opens and the separate-storage ancestor walks. Most wall samples are waiting;
+stack counts are not CPU percentages or proof of causal improvement. The next
+TDD candidate is limited to the two shadow/live validation opens. Initial
+opening, inventory/database validation, both physical ancestor walks, permission
+refusal, commit fences and rollback must remain intact. No performance gate has
+passed and no real-host or production authority is implied.
+
+### Second full Release window still fails CPU; exact-head CI passes (2026-09-07)
+
+Committed/pushed `87cc453c` contains the bounded drained-queue optimization,
+final-tier oracle and evidence updates. Three Release builds, complete packages,
+verify-only/load probes and installation dry-runs passed from clean tracked
+source in `output/native-release-87cc453c-20260907/`. The Collector executable
+is unchanged; its dynamically linked CollectorCore changed (SHA-256
+`cc70f650cbd46495855965ede78b44c23b51aa7378533030dbfb868f218c0cb1`), and the complete
+package manifest was verified. No installation or production process was started.
+
+The unchanged 256-file/16-directory/64-KiB/1,000-ms synthetic profile completed
+bootstrap in 166.227953s and the entire steady window in 1,800.006246s, but CPU
+still failed: 38.1718205 CPU seconds, 2.120649% of one core, exceeding the budget
+by 2.171696 CPU seconds. Maximum sampled RSS was 23.890625 MiB. All 60 appends
+and 360 reads per endpoint succeeded: p95 append 3.837440s, sessions 0.209764s,
+detail 0.208502s, messages 0.073711s. Three authentications succeeded. Independent
+raw accounting and read-only SQLite checks confirmed 256 sessions in the expected
+248/4/4 source-tier-message buckets, 316 publications and 632 ACKs. Both recorded
+`threshold` entries describe the same CPU failure; no final-content failure remains.
+All eight owned children joined. Failed fixture and artifacts remain intact.
+Evidence: `/tmp/engram-performance-87cc453c-v1.{log,xcresult}`,
+`/tmp/engram-performance-87cc453c-independent-failure.log`, and the new package
+root's `performance-run-v1/`. This is not a PASS or evidence of causal speedup.
+
+Exact-head Tests `34083556529`, CodeQL `34083556503` and Dependency Review
+`34083556461` all passed. CI Service ran 1,154 tests with 26 skips and no failures;
+CollectorCore ran 289 with no failures. Evidence:
+`/tmp/engram-ci-87cc453c-swift-unit.log`,
+https://github.com/bbingz/engram/actions/runs/34083556529 and
+https://github.com/bbingz/engram/actions/runs/34083556503.
+Next: separately labeled synthetic CPU profiling before another implementation
+change. Per-host source inventory, healthy-tailnet measurements and W7 remain
+unverified and require their separate authority.
+
 ### Drained collector claim queues avoid write transactions (2026-09-07)
 
 Two bounded read-only availability probes now skip the original claim transaction

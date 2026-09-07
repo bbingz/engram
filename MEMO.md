@@ -4,6 +4,12 @@
 
 ### 2026-09-07
 
+- [修复] Two storage revalidation routes passed strict RED→GREEN (76 opens to 8); CollectorCore 295/295, Service 1,155 tests (5 skips) and independent safety review passed. Ancestor/DB/fence checks remain; new 30-minute Release acceptance is pending. See `CHANGELOG.md`.
+
+- [排查] Synthetic 120-second hold and bounded external sample completed with joined cleanup; storage-path validation is the next TDD candidate. Diagnostic-only, not acceptance; both CPU failures remain. See `CHANGELOG.md`.
+
+- [验证] `87cc453c` Tests/CodeQL passed, but the second full 30-minute Release window still fails CPU (2.121%); all other metrics and final content passed. Evidence retained; dedicated synthetic profiling is next. See `CHANGELOG.md`.
+
 - [修复] Drained claims avoid writes with bounded indexed probes; RED retained, CollectorCore 289/289 and Service 1,154 tests (4 skips) passed with independent approval. Thresholds stay unchanged; new Release CPU measurement is pending. See `CHANGELOG.md`.
 
 - [验证] Final-tier oracle RED→GREEN; 33 focused and 1,154 Service tests passed (4 skips). Real late-200 browser check and `70e362fa` Tests CI passed; CPU gate, host-source inventory and healthy-tailnet evidence remain open. See `CHANGELOG.md`.

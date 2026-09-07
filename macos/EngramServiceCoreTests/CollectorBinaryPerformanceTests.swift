@@ -838,6 +838,28 @@ private final class PerformanceEvidence: @unchecked Sendable {
     private var metrics: [String: Any] = [:]
     var shouldAbort: Bool { lock.withLock { !failures.isEmpty } }
 
+    init(cpuProfileInputs inputs: PerformanceInputs) throws {
+        root = inputs.artifactRoot
+        if !FileManager.default.fileExists(atPath: root.path) { try PerformanceFiles.directory(root) }
+        try PerformanceFiles.write(Data(), to: root.appendingPathComponent("lifecycle.jsonl"))
+        let binaryJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(inputs.binaries))
+        let nodeJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(inputs.node))
+        try PerformanceFiles.write(PerformanceFiles.json([
+            "schemaVersion": 1, "runID": inputs.runID, "runKind": "collector-idle-cpu-profile-diagnostic",
+            "createdAt": ISO8601DateFormatter().string(from: Date()),
+            "diagnosticOnly": true, "performanceMeasured": false, "acceptanceEvaluated": false,
+            "networkScope": "synthetic-loopback-not-tailnet", "binaries": binaryJSON, "node": nodeJSON,
+            "tlsHelperSHA256": inputs.helperSHA256, "bootstrapDeadlineSeconds": 600, "holdSeconds": 120,
+            "corpus": ["fileCount": 256, "directoryCount": 16, "initialFileBytes": 65_536],
+            "collectorBudgets": PerformanceScope.budgets,
+            "bootstrap": "The full existing dual-replica and HQ/Web corpus validation precedes the hold",
+            "hold": "Quiescent corpus; no scheduled source appends or Web requests; one lifetime check per second",
+            "samplerLaunchedByTest": false, "externalSamplerMaximumSeconds": 30,
+            "limitations": ["Not the active 1800-second workload", "No CPU, RSS or latency threshold verdict"],
+        ]), to: root.appendingPathComponent("cpu-profile-inputs.json"), synchronize: true)
+        print("COLLECTOR_CPU_PROFILE_ARTIFACTS path=\(root.path)")
+    }
+
     init(tlsProbeInputs inputs: PerformanceInputs) throws {
         root = inputs.artifactRoot
         if !FileManager.default.fileExists(atPath: root.path) { try PerformanceFiles.directory(root) }
@@ -2483,5 +2505,104 @@ extension PerformanceScope {
         try FileManager.default.removeItem(at: socketRoot)
         fixture.remove()
         guard !FileManager.default.fileExists(atPath: fixture.base.path) else { throw PerformanceRunError.cleanup }
+    }
+}
+
+/// An explicitly requested stack-sampling window, never performance acceptance.
+/// The sampler is launched and joined separately by the root operator.
+final class CollectorBinaryCPUProfileTests: XCTestCase {
+    func testReleaseCollectorQuiescentCorpusForExternalCPUProfile() async throws {
+        guard ProcessInfo.processInfo.environment["ENGRAM_COLLECTOR_CPU_PROFILE"] == "1" else {
+            throw XCTSkip("CPU profile requires explicit opt-in; no files or processes were created")
+        }
+        let inputs = try PerformanceInputs.preflight(ProcessInfo.processInfo.environment)
+        executionTimeAllowance = 780 // Existing 600-second bootstrap, 120-second hold, then owned cleanup.
+        let evidence = try PerformanceEvidence(cpuProfileInputs: inputs)
+        var scope: PerformanceScope?
+        var failure: Error?
+        var holdCompleted = false
+        do {
+            let owned = try PerformanceScope(inputs: inputs, evidence: evidence)
+            scope = owned
+            try await owned.runIdleCPUProfile()
+            holdCompleted = true
+        } catch {
+            failure = error
+            evidence.fail(PerformanceRunError.code(error))
+        }
+        let retaining = failure != nil
+        let ownedScope = scope
+        let cleanup = Task.detached { try await ownedScope?.close(retainFixture: retaining) }
+        var cleanupPassed = false
+        var cleanupErrorCode: String?
+        do { try await cleanup.value; cleanupPassed = true }
+        catch {
+            cleanupErrorCode = PerformanceRunError.code(error)
+            evidence.fail("cleanup_failed")
+            if failure == nil { failure = error }
+        }
+        var result: [String: Any] = [
+            "schemaVersion": 1, "runID": inputs.runID, "runKind": "collector-idle-cpu-profile-diagnostic",
+            "completedAt": ISO8601DateFormatter().string(from: Date()),
+            "diagnosticOnly": true, "performanceMeasured": false, "acceptanceEvaluated": false,
+            "status": failure == nil && holdCompleted && cleanupPassed ? "completed" : "failed",
+            "holdSeconds": 120, "holdCompleted": holdCompleted, "cleanupPassed": cleanupPassed,
+            "fixtureRetentionRequested": retaining, "fixtureMayRemain": retaining || !cleanupPassed,
+            "samplerLaunchedByTest": false,
+        ]
+        if let failure { result["errorCode"] = PerformanceRunError.code(failure) }
+        if let cleanupErrorCode { result["cleanupErrorCode"] = cleanupErrorCode }
+        // This is written only after the detached cleanup task has joined.
+        try PerformanceFiles.write(PerformanceFiles.json(result),
+            to: evidence.root.appendingPathComponent("cpu-profile-result.json"), synchronize: true)
+        if let failure { throw failure }
+        guard holdCompleted, cleanupPassed else { throw PerformanceRunError.cleanup }
+    }
+}
+
+private extension PerformanceScope {
+    func runIdleCPUProfile() async throws {
+        try evidence.lifecycle("cpu_profile_bootstrap_begin", values: ["deadlineSeconds": 600])
+        try await startReplicas(); try writeCorpus(); try startCollector()
+        try startService(await awaitFirstPublication())
+        try await awaitBootstrap()
+        let sampler = try XCTUnwrap(sampler)
+        let collector = try XCTUnwrap(inputs.binaries.first(where: { $0.product == "EngramCollector" }))
+        let (first, start) = try sampler.sample()
+        let holdSeconds = 120
+        let end = start.advanced(by: .seconds(holdSeconds))
+        let readyAt = Date()
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let ready = evidence.root.appendingPathComponent("cpu-profile-ready.json")
+        try PerformanceFiles.write(PerformanceFiles.json([
+            "schemaVersion": 1, "runID": inputs.runID, "runKind": "collector-idle-cpu-profile-diagnostic",
+            "diagnosticOnly": true, "performanceMeasured": false, "acceptanceEvaluated": false,
+            "processID": first.processID, "processStartMachTicks": first.processStartMachTicks,
+            "executablePath": collector.executablePath, "sha256": collector.sha256,
+            "sourceRevision": collector.sourceRevision, "holdSeconds": holdSeconds,
+            "holdStartMonotonicNanoseconds": first.monotonicNanoseconds,
+            "holdDeadlineMonotonicNanoseconds": try clock.nanoseconds(at: end),
+            "readyAt": formatter.string(from: readyAt),
+            "holdDeadlineAt": formatter.string(from: readyAt.addingTimeInterval(TimeInterval(holdSeconds))),
+            "wallClockTimestampsAreInformational": true, "externalSamplerMaximumSeconds": 30,
+            "samplerLaunchedByTest": false, "scheduledAppendsDuringHold": 0, "scheduledWebRequestsDuringHold": 0,
+        ]), to: ready, synchronize: true)
+        print("COLLECTOR_CPU_PROFILE_READY path=\(ready.path)")
+        try evidence.lifecycle("cpu_profile_hold_begin", values: ["processID": first.processID,
+            "processStartMachTicks": first.processStartMachTicks, "monotonicNanoseconds": first.monotonicNanoseconds,
+            "holdSeconds": holdSeconds])
+        for second in 1...holdSeconds {
+            try await ContinuousClock().sleep(until: start.advanced(by: .seconds(second)), tolerance: .milliseconds(10))
+            try requireRunning()
+        }
+        let (last, _) = try sampler.sample()
+        guard last.processID == first.processID, last.processStartMachTicks == first.processStartMachTicks,
+              last.processExitMachTicks == 0, last.monotonicNanoseconds >= first.monotonicNanoseconds,
+              last.monotonicNanoseconds - first.monotonicNanoseconds >= 120_000_000_000 else {
+            throw PerformanceRunError.sampling
+        }
+        try evidence.lifecycle("cpu_profile_hold_completed", values: ["processID": last.processID,
+            "processStartMachTicks": last.processStartMachTicks, "monotonicNanoseconds": last.monotonicNanoseconds])
     }
 }
