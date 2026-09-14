@@ -1,3 +1,4 @@
+import CoreFoundation
 import Darwin
 import Foundation
 import GRDB
@@ -16,7 +17,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     let webMetadataProducer: any ServiceWebMetadataProviding
     let archiveV2CredentialProvisioner: ArchiveV2CredentialProvisioner
     private let claudeCodeProfileService: ClaudeCodeProfileService?
-    private let readProvider: any EngramServiceReadProvider
+    let readProvider: any EngramServiceReadProvider
     private let statusMonitor: ServiceStatusMonitor
     private let telemetry: ServiceTelemetryCollector?
     private let logRing: ServiceLogRing?
@@ -132,10 +133,21 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     ) async -> EngramServiceResponseEnvelope {
         do {
             switch request.command {
-            case "webOverview", "webSessions", "webSessionDetail":
+            case "webOverview", "webSessions", "webSessionDetail", "webFacets", "webStats", "webSettings",
+                 "webSearchStatus", "webCosts", "webCostSessions", "webChildren", "webToolAnalytics",
+                 "webFileActivity", "webRepos", "webUsage",
+                 "webAiAudit", "webAiAuditDetail", "webAiStats", "webInsightDetail",
+                 "webProjectCwds":
                 return await webMetadataResponse(request, deadline: metadataDeadline)
+            case "webSearch":
+                return await webSearchResponse(
+                    request,
+                    deadline: ContinuousClock.now.advanced(by: ServiceWebMetadataLimits.maximumSearchDuration)
+                )
             case "webMessages":
                 return await webMessagesResponse(request)
+            case "webTimeline":
+                return await webTimelineResponse(request)
             case "claudeCodeProfilesStatus":
                 guard request.payload == nil else {
                     throw EngramServiceError.invalidRequest(
@@ -433,6 +445,249 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     requestId: request.requestId,
                     result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
+                )
+            case "webSourceSettings":
+                guard request.payload == nil else {
+                    throw EngramServiceError.invalidRequest(message: "webSourceSettings does not accept a payload")
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(try Self.webSourceSettings())
+                )
+            case "webAiSettings":
+                guard request.payload == nil else {
+                    throw EngramServiceError.invalidRequest(message: "webAiSettings does not accept a payload")
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(try Self.webAiSettings())
+                )
+            case "webProjectMigrations":
+                try requireAllowedPayloadKeys(
+                    request,
+                    required: [],
+                    optional: ["state", "limit"]
+                )
+                let payload = try decodePayload(EngramServiceWebProjectMigrationsRequest.self, from: request)
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(try await Self.webProjectMigrations(payload, readProvider: readProvider))
+                )
+            case "webProjectMove":
+                try requireAllowedPayloadKeys(
+                    request,
+                    required: ["src", "dst", "dry_run", "operation_id"],
+                    optional: ["force", "audit_note"]
+                )
+                let payload = try decodePayload(EngramServiceWebProjectMoveRequest.self, from: request)
+                let result = try await Self.webProjectMove(payload, writerGate: writerGate)
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "webProjectArchive":
+                try requireAllowedPayloadKeys(
+                    request,
+                    required: ["src", "dry_run", "operation_id"],
+                    optional: ["archive_to", "force", "audit_note"]
+                )
+                let payload = try decodePayload(EngramServiceWebProjectArchiveRequest.self, from: request)
+                let result = try await Self.webProjectArchive(payload, writerGate: writerGate)
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "webProjectUndo":
+                try requireAllowedPayloadKeys(
+                    request,
+                    required: ["migration_id", "operation_id"],
+                    optional: ["force"]
+                )
+                let payload = try decodePayload(EngramServiceWebProjectUndoRequest.self, from: request)
+                let result = try await Self.webProjectUndo(payload, writerGate: writerGate)
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "webProjectMoveBatch":
+                try requireAllowedPayloadKeys(
+                    request,
+                    required: ["yaml", "dry_run", "operation_id"],
+                    optional: ["force"]
+                )
+                let payload = try decodePayload(EngramServiceWebProjectMoveBatchRequest.self, from: request)
+                let result = try await Self.webProjectMoveBatch(payload, writerGate: writerGate)
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "webCancelProjectMoveBatch":
+                try requireExactPayloadKeys(request, allowed: [["operation_id"]])
+                let payload = try decodePayload(EngramServiceWebCancelProjectMoveBatchRequest.self, from: request)
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(try Self.webCancelProjectMoveBatch(payload))
+                )
+            case "webPatchAiSettings":
+                try requireAllowedPayloadKeys(
+                    request,
+                    required: [],
+                    optional: EngramServiceWebAiSettingsValidation.patchKeys
+                )
+                guard let object = try? JSONSerialization.jsonObject(with: request.payload ?? Data()) as? [String: Any],
+                      !object.isEmpty else {
+                    throw EngramServiceError.invalidRequest(message: "Invalid payload for \(request.command)")
+                }
+                let payload = try decodePayload(EngramServiceWebPatchAiSettingsRequest.self, from: request)
+                let settingsURL = EngramServiceRunner.engramSettingsURL(
+                    environment: ProcessInfo.processInfo.environment
+                )
+                let result = try await writerGate.performWriteCommand(name: request.command) { _ in
+                    try Self.webPatchAiSettings(payload, settingsURL: settingsURL)
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "webSetSourceEnabled":
+                try requireExactPayloadKeys(request, allowed: [["source", "enabled"]])
+                let payload = try decodePayload(EngramServiceWebSetSourceEnabledRequest.self, from: request)
+                let settingsURL = EngramServiceRunner.engramSettingsURL(
+                    environment: ProcessInfo.processInfo.environment
+                )
+                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
+                    try Self.webSetSourceEnabled(payload, writer: writer, settingsURL: settingsURL)
+                }
+                if payload.enabled, let source = SourceName(rawValue: payload.source) {
+                    await archiveV2Coordinator?.resumePendingIndexLocators(for: source)
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "webAddProjectAlias":
+                try requireExactPayloadKeys(request, allowed: [["canonical", "alias"]])
+                let payload = try decodePayload(EngramServiceWebAddAliasRequest.self, from: request)
+                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
+                    try self.addWebProjectAlias(payload, writer: writer)
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "webRemoveProjectAlias":
+                try requireExactPayloadKeys(request, allowed: [["alias", "canonical"]])
+                let payload = try decodePayload(EngramServiceWebRemoveAliasRequest.self, from: request)
+                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
+                    try self.removeWebProjectAlias(payload, writer: writer)
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "webLinkSession":
+                try requireExactPayloadKeys(request, allowed: [["sessionId", "parentId"]])
+                let payload = try decodePayload(EngramServiceWebLinkRequest.self, from: request)
+                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
+                    try Self.webLinkSession(payload, writer: writer)
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "webUnlinkSession":
+                try requireExactPayloadKeys(request, allowed: [["sessionId"]])
+                let payload = try decodePayload(EngramServiceWebUnlinkRequest.self, from: request)
+                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
+                    try Self.webUnlinkSession(payload, writer: writer)
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "webConfirmSuggestion":
+                try requireExactPayloadKeys(request, allowed: [["sessionId", "suggestedParentId"]])
+                let payload = try decodePayload(EngramServiceWebConfirmSuggestionRequest.self, from: request)
+                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
+                    try Self.webConfirmSuggestion(payload, writer: writer)
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "webDismissSuggestion":
+                try requireExactPayloadKeys(request, allowed: [["sessionId", "suggestedParentId"]])
+                let payload = try decodePayload(EngramServiceWebDismissSuggestionRequest.self, from: request)
+                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
+                    try Self.webDismissSuggestion(payload, writer: writer)
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "webSaveInsight":
+                try requireAllowedPayloadKeys(
+                    request,
+                    required: ["content"],
+                    optional: ["wing", "room", "importance", "sourceSessionId"]
+                )
+                let payload = try decodePayload(EngramServiceWebSaveInsightRequest.self, from: request)
+                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
+                    try Self.webSaveInsight(payload, writer: writer)
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "webGenerateSummary":
+                try requireExactPayloadKeys(request, allowed: [["sessionId", "generation"]])
+                let payload = try decodePayload(EngramServiceWebGenerateSummaryRequest.self, from: request)
+                let result = try await Self.webGenerateSummary(
+                    payload,
+                    writerGate: writerGate,
+                    snapshotProvider: webTranscriptSnapshotProvider
+                )
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "webGenerateTitle":
+                try requireExactPayloadKeys(request, allowed: [["sessionId", "generation"]])
+                let payload = try decodePayload(EngramServiceWebGenerateTitleRequest.self, from: request)
+                let result = try await Self.webGenerateTitle(
+                    payload,
+                    writerGate: writerGate,
+                    snapshotProvider: webTranscriptSnapshotProvider
+                )
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "webRegenerateTitles":
+                try requireExactPayloadKeys(request, allowed: [[]])
+                _ = try decodePayload(EngramServiceWebRegenerateTitlesRequest.self, from: request)
+                let result = try await Self.webRegenerateTitles(
+                    writerGate: writerGate,
+                    snapshotProvider: webTranscriptSnapshotProvider
+                )
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result)
                 )
             case "resumeCommand":
                 let payload = try decodePayload(EngramServiceResumeCommandRequest.self, from: request)
@@ -904,6 +1159,21 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         }
     }
 
+    private func requireAllowedPayloadKeys(
+        _ request: EngramServiceRequestEnvelope,
+        required: Set<String>,
+        optional: Set<String>
+    ) throws {
+        guard let payload = request.payload,
+              let object = try? JSONSerialization.jsonObject(with: payload) as? [String: Any] else {
+            throw EngramServiceError.invalidRequest(message: "Invalid payload for \(request.command)")
+        }
+        let keys = Set(object.keys)
+        guard required.isSubset(of: keys), keys.isSubset(of: required.union(optional)) else {
+            throw EngramServiceError.invalidRequest(message: "Invalid payload for \(request.command)")
+        }
+    }
+
     /// L02: map JSON `DecodingError` to structured InvalidRequest only.
     /// Other errors from custom `Decodable` types rethrow unchanged.
     static func decodeJSONPayload<T: Decodable>(
@@ -999,21 +1269,36 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 return EngramServiceLinkResponse(ok: false, error: validation)
             }
 
-            try db.execute(
-                sql: """
-                    UPDATE sessions
-                    SET parent_session_id = ?,
-                        link_source = 'manual',
-                        link_checked_at = datetime('now'),
-                        suggested_parent_id = NULL,
-                        suggestion_status = NULL,
-                        suggestion_candidates = NULL
-                    WHERE id = ?
-                """,
-                arguments: [suggestedParentId, request.sessionId]
+            _ = try applySetParentSession(
+                db, sessionId: request.sessionId, parentId: suggestedParentId
             )
             return EngramServiceLinkResponse(ok: true, error: nil)
         }
+    }
+
+    /// Shared confirmed-parent UPDATE. Native callers omit the suggestion match;
+    /// Web confirm passes `requiredSuggestedParentId` so a newer suggestion is not overwritten.
+    static func applySetParentSession(
+        _ db: GRDB.Database,
+        sessionId: String,
+        parentId: String,
+        requiredSuggestedParentId: String? = nil
+    ) throws -> Int {
+        try db.execute(
+            sql: """
+                UPDATE sessions
+                SET parent_session_id = ?,
+                    link_source = 'manual',
+                    suggested_parent_id = NULL,
+                    suggestion_status = NULL,
+                    suggestion_candidates = NULL,
+                    link_checked_at = datetime('now')
+                WHERE id = ?
+                  AND (? IS NULL OR suggested_parent_id = ?)
+                """,
+            arguments: [parentId, sessionId, requiredSuggestedParentId, requiredSuggestedParentId]
+        )
+        return db.changesCount
     }
 
     private static func setParentSession(
@@ -1028,18 +1313,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             guard validation == "ok" else {
                 return EngramServiceLinkResponse(ok: false, error: validation)
             }
-            try db.execute(
-                sql: """
-                    UPDATE sessions
-                    SET parent_session_id = ?,
-                        link_source = 'manual',
-                        suggested_parent_id = NULL,
-                        suggestion_status = NULL,
-                        suggestion_candidates = NULL,
-                        link_checked_at = datetime('now')
-                    WHERE id = ?
-                """,
-                arguments: [request.parentId, request.sessionId]
+            _ = try applySetParentSession(
+                db, sessionId: request.sessionId, parentId: request.parentId
             )
             return EngramServiceLinkResponse(ok: true, error: nil)
         }
@@ -1050,22 +1325,26 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         writer: EngramDatabaseWriter
     ) throws -> EngramServiceLinkResponse {
         try writer.write { db in
-            let changed = try db.executeAndCountChanges(
-                sql: """
-                    UPDATE sessions
-                    SET parent_session_id = NULL,
-                        link_source = 'manual',
-                        link_checked_at = datetime('now'),
-                        tier = CASE
-                            WHEN agent_role IN ('subagent', 'dispatched') THEN 'skip'
-                            ELSE tier
-                        END
-                    WHERE id = ?
-                """,
-                arguments: [request.sessionId]
-            )
+            let changed = try applyClearParentSession(db, sessionId: request.sessionId)
             return EngramServiceLinkResponse(ok: changed > 0, error: changed > 0 ? nil : "session-not-found")
         }
+    }
+
+    static func applyClearParentSession(_ db: GRDB.Database, sessionId: String) throws -> Int {
+        try db.executeAndCountChanges(
+            sql: """
+                UPDATE sessions
+                SET parent_session_id = NULL,
+                    link_source = 'manual',
+                    link_checked_at = datetime('now'),
+                    tier = CASE
+                        WHEN agent_role IN ('subagent', 'dispatched') THEN 'skip'
+                        ELSE tier
+                    END
+                WHERE id = ?
+                """,
+            arguments: [sessionId]
+        )
     }
 
     private static func dismissSuggestion(
@@ -1075,21 +1354,32 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         try writer.write { db in
             // Wave 7B M17: sticky dismiss — mark manual so resetStaleDetections
             // and suggested-parent backfills do not recreate the suggestion.
-            try db.execute(
-                sql: """
-                    UPDATE sessions
-                    SET suggested_parent_id = NULL,
-                        suggestion_status = NULL,
-                        suggestion_candidates = NULL,
-                        link_source = 'manual',
-                        link_checked_at = datetime('now')
-                    WHERE id = ?
-                      AND suggested_parent_id = ?
-                """,
-                arguments: [request.sessionId, request.suggestedParentId]
+            _ = try applyDismissSuggestion(
+                db, sessionId: request.sessionId, suggestedParentId: request.suggestedParentId
             )
         }
         return EmptyEncodableResult()
+    }
+
+    static func applyDismissSuggestion(
+        _ db: GRDB.Database,
+        sessionId: String,
+        suggestedParentId: String
+    ) throws -> Int {
+        try db.execute(
+            sql: """
+                UPDATE sessions
+                SET suggested_parent_id = NULL,
+                    suggestion_status = NULL,
+                    suggestion_candidates = NULL,
+                    link_source = 'manual',
+                    link_checked_at = datetime('now')
+                WHERE id = ?
+                  AND suggested_parent_id = ?
+                """,
+            arguments: [sessionId, suggestedParentId]
+        )
+        return db.changesCount
     }
 
     private static func dismissAmbiguousSuggestion(
@@ -1274,7 +1564,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     /// of NEW sessions resumes on the next service scan. Settings are updated
     /// read-modify-write so all other keys are preserved; the file is created
     /// with a minimal object when absent.
-    private static func setSourceEnabled(
+    static func setSourceEnabled(
         _ request: EngramServiceSetSourceEnabledRequest,
         writer: EngramDatabaseWriter,
         settingsURL: URL = EngramServiceRunner.engramSettingsURL(
@@ -1677,7 +1967,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         """)
     }
 
-    private static func validateParentLink(
+    static func validateParentLink(
         _ db: GRDB.Database,
         sessionId: String,
         parentId: String
@@ -1881,9 +2171,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         return EngramServiceHandoffResponse(brief: brief, sessionCount: rows.count)
     }
 
-    private static func generateSummary(
+    static func generateSummary(
         _ request: EngramServiceGenerateSummaryRequest,
-        writerGate: ServiceWriterGate
+        writerGate: ServiceWriterGate,
+        summaryConfig: @autoclosure () -> ServiceAISettings.ChatConfig? = ServiceAISettings.read().summaryConfig,
+        summarize: (@Sendable (AIContext, ServiceAISettings.ChatConfig) async throws -> String)? = nil
     ) async throws -> ServiceWriterGateResult<EngramServiceGenerateSummaryResponse> {
         let context = try readAIContext(sessionId: request.sessionId, databasePath: writerGate.databasePath)
         // docs/invariants.md #3: skip-tier artifacts are not user-visible work
@@ -1894,26 +2186,30 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         guard !context.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw EngramServiceError.invalidRequest(message: "Cannot summarize a session without transcript content")
         }
-        let settings = ServiceAISettings.read()
-        let summary: String
-        if let config = settings.summaryConfig {
-            summary = try await ServiceAIClient.summarize(context: context, config: config)
+        let persisted: String
+        if let config = summaryConfig() {
+            let summarize = summarize ?? { context, config in
+                try await ServiceAIClient.summarize(
+                    context: context, config: config,
+                    audit: ServiceAIAuditRecorder(writerGate: writerGate)
+                )
+            }
+            persisted = try persistedSummary(try await summarize(context, config))
         } else {
-            summary = context.nativeSummary
+            persisted = TranscriptRedactionPolicy.redactedSummary(context.nativeSummary)
         }
-        let persistedSummary = TranscriptRedactionPolicy.redactedSummary(summary)
         return try await writerGate.performWriteCommand(name: "generateSummary") { writer in
             try writer.write { db in
                 try db.execute(
                     sql: "UPDATE sessions SET summary = ?, summary_message_count = ? WHERE id = ?",
                     arguments: [
-                        persistedSummary,
+                        persisted,
                         context.messageCount,
                         request.sessionId
                     ]
                 )
             }
-            return EngramServiceGenerateSummaryResponse(summary: persistedSummary)
+            return EngramServiceGenerateSummaryResponse(summary: persisted)
         }
     }
 
@@ -1942,10 +2238,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         _ request: EngramServiceGenerateProjectWorkTitlesRequest,
         writerGate: ServiceWriterGate,
         titleConfig: ServiceAISettings.ChatConfig? = ServiceAISettings.read().titleConfig,
-        generateTitle: @escaping @Sendable (String, String, ServiceAISettings.ChatConfig) async throws -> String
-            = { intent, outcome, config in
-                try await ServiceAIClient.workItemTitle(intent: intent, outcome: outcome, config: config)
-            }
+        generateTitle: (@Sendable (String, String, ServiceAISettings.ChatConfig) async throws -> String)? = nil
     ) async throws -> ServiceWriterGateResult<EngramServiceGenerateProjectWorkTitlesResponse> {
         let project = request.project
         let displayedItems = try readProjectWorkItems(
@@ -2013,6 +2306,12 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             return ServiceWriterGateResult(
                 value: EngramServiceGenerateProjectWorkTitlesResponse(titles: titles),
                 databaseGeneration: 0
+            )
+        }
+        let generateTitle = generateTitle ?? { intent, outcome, config in
+            try await ServiceAIClient.workItemTitle(
+                intent: intent, outcome: outcome, config: config,
+                audit: ServiceAIAuditRecorder(writerGate: writerGate)
             )
         }
 
@@ -2114,11 +2413,14 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         }
     }
 
-    private static func saveInsight(
+    static func saveInsight(
         _ request: EngramServiceSaveInsightRequest,
-        writer: EngramDatabaseWriter
+        writer: EngramDatabaseWriter,
+        prepare: ((Database) throws -> Void)? = nil,
+        shouldSupersede: ((Database, String?) throws -> Bool)? = nil
     ) throws -> EngramServiceJSONValue {
         try writer.write { db in
+            try prepare?(db)
             try ensureInsightTables(db)
 
             let content = request.content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2163,7 +2465,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 """,
                 arguments: StatementArguments(arguments)
             )
+            var supersededId: String?
             for duplicate in superseded {
+                if let shouldSupersede, try !shouldSupersede(db, duplicate.sourceSessionId) {
+                    continue
+                }
                 try db.execute(
                     sql: """
                     UPDATE insights
@@ -2179,6 +2485,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     """,
                     arguments: [id, duplicate.id]
                 )
+                if supersededId == nil { supersededId = duplicate.id }
             }
             try db.execute(sql: "DELETE FROM insights_fts WHERE insight_id = ?", arguments: [id])
             try db.execute(
@@ -2193,8 +2500,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 room: room,
                 importance: importance,
                 type: insightType,
-                supersededId: superseded.first?.id,
-                warning: superseded.isEmpty
+                supersededId: supersededId,
+                warning: supersededId == nil
                     ? "Saved without embedding; keyword search is available immediately"
                     : "Saved and superseded a matching active insight; keyword search is available immediately"
             )
@@ -2467,6 +2774,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         let wing: String?
         let room: String?
         let importance: Int
+        let sourceSessionId: String?
         let isActive: Bool
     }
 
@@ -2479,7 +2787,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         let rows = try Row.fetchAll(
             db,
             sql: """
-                SELECT id, content, wing, room, importance, superseded_by
+                SELECT id, content, wing, room, importance, source_session_id, superseded_by
                 FROM insights
                 WHERE ((? IS NULL AND wing IS NULL) OR wing = ?)
                   AND ((? IS NULL AND room IS NULL) OR room = ?)
@@ -2506,6 +2814,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 wing: row["wing"] as String?,
                 room: row["room"] as String?,
                 importance: row["importance"] as Int? ?? 5,
+                sourceSessionId: row["source_session_id"] as String?,
                 isActive: (row["superseded_by"] as String?) == nil
             )
         }
@@ -2548,6 +2857,12 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             let generatedTitles = try await generateTitlesForContexts(
                 contexts: contexts,
                 titleConfig: titleConfig,
+                titleProvider: { context, config in
+                    try await ServiceAIClient.title(
+                        context: context, config: config,
+                        audit: ServiceAIAuditRecorder(writerGate: writerGate)
+                    )
+                },
                 progress: { completed, total in
                     if completed == total || completed % 10 == 0 {
                         ServiceLogger.notice(
@@ -2830,11 +3145,33 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         }
     }
 
-    static func homeDirectoryPath() -> String {
-        URL(
-            fileURLWithPath: ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory(),
-            isDirectory: true
-        ).standardizedFileURL.path
+    static func homeDirectoryPath(
+        environment: [String: String]? = nil
+    ) -> String {
+        let environment = environment ?? liveHomeEnvironment()
+        let isTestProcess = environment["XCTestConfigurationFilePath"] != nil
+            || getenv("XCTestConfigurationFilePath") != nil
+        let raw: String
+        if isTestProcess, let fixed = environment["CFFIXED_USER_HOME"], !fixed.isEmpty {
+            raw = fixed
+        } else {
+            raw = environment["HOME"] ?? NSHomeDirectory()
+        }
+        return URL(fileURLWithPath: raw, isDirectory: true).standardizedFileURL.path
+    }
+
+    private static func liveHomeEnvironment() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        if let value = getenv("CFFIXED_USER_HOME") {
+            environment["CFFIXED_USER_HOME"] = String(cString: value)
+        }
+        if let value = getenv("HOME") {
+            environment["HOME"] = String(cString: value)
+        }
+        if let value = getenv("XCTestConfigurationFilePath") {
+            environment["XCTestConfigurationFilePath"] = String(cString: value)
+        }
+        return environment
     }
 
     static func homeDirectoryURL() -> URL {
@@ -3034,7 +3371,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         }
     }
 
-    private static func readOnlyPool(path: String) throws -> DatabasePool {
+    static func readOnlyPool(path: String) throws -> DatabasePool {
         // Use the hardened reader policy (busy_timeout, cache_size, WAL/FK guards)
         // shared with the main service read pool, not a bare Configuration.
         try DatabasePool(path: path, configuration: ServiceSQLiteConnectionPolicy.readerConfiguration())
@@ -3361,8 +3698,22 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             var summaryTruncateChars: Int = 500
         }
 
+        struct AuditConfig: Sendable, Equatable {
+            var enabled: Bool
+            var logBodies: Bool
+            var maxBodySize: Int
+            static let `default` = AuditConfig(enabled: true, logBodies: false, maxBodySize: 10_000)
+        }
+
         let summaryConfig: ChatConfig?
         let titleConfig: ChatConfig?
+        let auditConfig: AuditConfig
+
+        init(summaryConfig: ChatConfig?, titleConfig: ChatConfig?, auditConfig: AuditConfig = .default) {
+            self.summaryConfig = summaryConfig
+            self.titleConfig = titleConfig
+            self.auditConfig = auditConfig
+        }
 
         static func read(
             settingsPath: URL? = nil,
@@ -3397,8 +3748,40 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             }
             return ServiceAISettings(
                 summaryConfig: summaryConfig(from: object, keychainReader: secretReader),
-                titleConfig: titleConfig(from: object, keychainReader: secretReader)
+                titleConfig: titleConfig(from: object, keychainReader: secretReader),
+                auditConfig: auditConfig(from: object)
             )
+        }
+
+        /// Audit flags only. Does not read keychain or resolve chat credentials.
+        static func readAuditConfig(
+            settingsPath: URL? = nil,
+            environment: [String: String] = ProcessInfo.processInfo.environment
+        ) -> AuditConfig {
+            auditConfig(from: settingsObject(settingsPath: settingsPath, environment: environment))
+        }
+
+        private static func settingsObject(
+            settingsPath: URL?,
+            environment: [String: String]
+        ) -> [String: Any] {
+            let settingsPath = settingsPath
+                ?? environment["ENGRAM_SETTINGS_PATH"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+                ?? defaultSettingsPath(environment: environment)
+            var info = stat()
+            if lstat(settingsPath.path, &info) == 0 {
+                guard let data = SecureRegularFile.read(
+                    atPath: settingsPath.path,
+                    maximumBytes: 1024 * 1024,
+                    repairPermissions: true
+                ),
+                    let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else {
+                    return [:]
+                }
+                return parsed
+            }
+            return [:]
         }
 
         static func defaultSettingsPath(environment: [String: String]) -> URL {
@@ -3445,6 +3828,16 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 summarySampleFirst: int(object["summarySampleFirst"]) ?? 20,
                 summarySampleLast: int(object["summarySampleLast"]) ?? 30,
                 summaryTruncateChars: int(object["summaryTruncateChars"]) ?? 500
+            )
+        }
+
+        private static func auditConfig(from object: [String: Any]) -> AuditConfig {
+            let audit = object["aiAudit"] as? [String: Any] ?? [:]
+            let maxBody = int(audit["maxBodySize"]) ?? 10_000
+            return AuditConfig(
+                enabled: bool(audit["enabled"]) ?? true,
+                logBodies: bool(audit["logBodies"]) ?? false,
+                maxBodySize: min(1_000_000, max(1, maxBody))
             )
         }
 
@@ -3550,6 +3943,10 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             return nil
         }
 
+        private static func bool(_ value: Any?) -> Bool? {
+            value as? Bool
+        }
+
         private static func double(_ value: Any?) -> Double? {
             if let value = value as? Double { return value }
             if let value = value as? Int { return Double(value) }
@@ -3605,7 +4002,12 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 .joined(separator: "\n")
         }
 
-        static func summarize(context: AIContext, config: ServiceAISettings.ChatConfig) async throws -> String {
+        static func summarize(
+            context: AIContext,
+            config: ServiceAISettings.ChatConfig,
+            urlSession: URLSession = .shared,
+            audit: ServiceAIAuditRecording? = nil
+        ) async throws -> String {
             let source = boundedTranscript(context, config: config)
             let system = renderSummaryPrompt(
                 language: config.summaryLanguage,
@@ -3617,10 +4019,15 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             return try await chat(purpose: "summary", sessionID: context.id, config: config, messages: [
                 ["role": "system", "content": system],
                 ["role": "user", "content": user]
-            ])
+            ], urlSession: urlSession, audit: audit)
         }
 
-        static func title(context: AIContext, config: ServiceAISettings.ChatConfig) async throws -> String {
+        static func title(
+            context: AIContext,
+            config: ServiceAISettings.ChatConfig,
+            urlSession: URLSession = .shared,
+            audit: ServiceAIAuditRecording? = nil
+        ) async throws -> String {
             let source = boundedTranscript(context, limit: 4_000)
             let prompt = """
             Generate a concise title (30 characters or fewer) for this AI coding conversation.
@@ -3630,7 +4037,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             Conversation:
             \(source)
             """
-            let raw = try await chat(purpose: "title", sessionID: context.id, config: config, messages: [["role": "user", "content": prompt]])
+            let raw = try await chat(purpose: "title", sessionID: context.id, config: config,
+                messages: [["role": "user", "content": prompt]], urlSession: urlSession, audit: audit)
             return cleanTitle(raw)
         }
 
@@ -3642,7 +4050,9 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         static func workItemTitle(
             intent: String,
             outcome: String,
-            config: ServiceAISettings.ChatConfig
+            config: ServiceAISettings.ChatConfig,
+            urlSession: URLSession = .shared,
+            audit: ServiceAIAuditRecording? = nil
         ) async throws -> String {
             // Generate a concise title for what was built or fixed, matching input language.
             let prompt = """
@@ -3657,7 +4067,9 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 purpose: "workItemTitle",
                 sessionID: "workItem",
                 config: config,
-                messages: [["role": "user", "content": prompt]]
+                messages: [["role": "user", "content": prompt]],
+                urlSession: urlSession,
+                audit: audit
             )
             return cleanTitle(raw)
         }
@@ -3666,7 +4078,9 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             purpose: String,
             sessionID: String,
             config: ServiceAISettings.ChatConfig,
-            messages: [[String: String]]
+            messages: [[String: String]],
+            urlSession: URLSession = .shared,
+            audit: ServiceAIAuditRecording? = nil
         ) async throws -> String {
             let url = try chatCompletionsURL(baseURL: config.baseURL)
             var request = URLRequest(url: url)
@@ -3694,15 +4108,34 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 category: .ai
             )
             let started = Date()
+            let requestJSON = String(data: request.httpBody ?? Data(), encoding: .utf8)
+            let storedSession: String? = {
+                if purpose == "workItemTitle" || sessionID == "workItem" { return nil }
+                let trimmed = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }()
+            func record(status: Int64?, data: Data?, error: String?) async {
+                let durationMs = Int64((Date().timeIntervalSince(started) * 1000).rounded())
+                let usage = tokenUsage(from: data)
+                await audit?.record(ServiceAIAuditEntry(
+                    caller: purpose, operation: "chat", method: "POST",
+                    url: redactedHost(config.baseURL), statusCode: status, durationMs: durationMs,
+                    model: config.model, provider: config.provider,
+                    promptTokens: usage.prompt, completionTokens: usage.completion, totalTokens: usage.total,
+                    error: error, sessionId: storedSession, requestBody: requestJSON,
+                    responseBody: data.flatMap { String(data: $0, encoding: .utf8) }
+                ))
+            }
             let (data, response): (Data, URLResponse)
             do {
-                (data, response) = try await URLSession.shared.data(for: request)
+                (data, response) = try await urlSession.data(for: request)
             } catch {
                 ServiceLogger.error(
                     "LLM request failed purpose=\(purpose) session=\(sessionID) provider=\(config.provider) model=\(config.model) url=\(redactedHost(config.baseURL))",
                     category: .ai,
                     error: error
                 )
+                await record(status: nil, data: nil, error: "AI request transport failed: \(error.localizedDescription)")
                 let nsError = error as NSError
                 throw EngramServiceError.commandFailed(
                     name: "AIRequestTransportFailed",
@@ -3724,6 +4157,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     "LLM request failed purpose=\(purpose) session=\(sessionID) status=\(status) provider=\(config.provider) model=\(config.model) url=\(redactedHost(config.baseURL)) durationMs=\(durationMs)",
                     category: .ai
                 )
+                await record(status: Int64(status), data: data, error: "AI request failed with status \(status)")
                 throw EngramServiceError.commandFailed(
                     name: "AIRequestFailed",
                     message: "AI request failed with status \(status)",
@@ -3736,7 +4170,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     ]
                 )
             }
-            guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+            guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                   let choices = object["choices"] as? [[String: Any]],
                   let message = choices.first?["message"] as? [String: Any],
                   let content = message["content"] as? String
@@ -3745,6 +4179,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     "LLM request failed purpose=\(purpose) session=\(sessionID) status=\(status) provider=\(config.provider) model=\(config.model) url=\(redactedHost(config.baseURL)) durationMs=\(durationMs) reason=invalid-response",
                     category: .ai
                 )
+                await record(status: Int64(status), data: data,
+                    error: "AI response did not contain choices[0].message.content")
                 throw EngramServiceError.commandFailed(
                     name: "AIResponseInvalid",
                     message: "AI response did not contain choices[0].message.content",
@@ -3758,6 +4194,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     "LLM request failed purpose=\(purpose) session=\(sessionID) status=\(status) provider=\(config.provider) model=\(config.model) url=\(redactedHost(config.baseURL)) durationMs=\(durationMs) reason=empty-content",
                     category: .ai
                 )
+                await record(status: Int64(status), data: data, error: "AI response content was empty")
                 throw EngramServiceError.commandFailed(
                     name: "AIResponseEmpty",
                     message: "AI response content was empty",
@@ -3769,7 +4206,35 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 "LLM request succeeded purpose=\(purpose) session=\(sessionID) status=\(status) provider=\(config.provider) model=\(config.model) url=\(redactedHost(config.baseURL)) durationMs=\(durationMs) outputChars=\(trimmed.count)",
                 category: .ai
             )
+            await record(status: Int64(status), data: data, error: nil)
             return trimmed
+        }
+
+        private static func tokenUsage(from data: Data?) -> (prompt: Int64?, completion: Int64?, total: Int64?) {
+            guard let data,
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let usage = object["usage"] as? [String: Any] else { return (nil, nil, nil) }
+            func number(_ key: String) -> Int64? {
+                guard let raw = usage[key] else { return nil }
+                let value: Double
+                if let number = raw as? NSNumber {
+                    if CFGetTypeID(number) == CFBooleanGetTypeID() { return nil }
+                    value = number.doubleValue
+                } else if let int = raw as? Int {
+                    value = Double(int)
+                } else if let int64 = raw as? Int64 {
+                    value = Double(int64)
+                } else if let double = raw as? Double {
+                    value = double
+                } else {
+                    return nil
+                }
+                let maximum = Double(EngramServiceWebMetadataValidation.maximumCount)
+                guard value.isFinite, value >= 0, value <= maximum,
+                      value == value.rounded(.towardZero) else { return nil }
+                return Int64(value)
+            }
+            return (number("prompt_tokens"), number("completion_tokens"), number("total_tokens"))
         }
 
         static func chatCompletionsURL(baseURL: String) throws -> URL {
@@ -3854,6 +4319,12 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             }
             return title
         }
+    }
+
+    static func startTitleRegeneration(
+        _ operation: @escaping @Sendable () async -> Void
+    ) async -> Bool {
+        await titleRegenerationCoordinator.start(operation)
     }
 }
 

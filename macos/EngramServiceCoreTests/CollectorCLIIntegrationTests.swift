@@ -7,8 +7,50 @@ import XCTest
 
 /// Real executable boundaries only. An absent explicit binary opts out before
 /// any fixture, listener, credential file, or process is created. The existing
-/// RuntimeFixture owns all databases; this file never provisions a second copy.
+/// RuntimeFixture owns all temporary storage, including explicit initialization
+/// tests that create a new spool using the native executable.
 final class CollectorCLIIntegrationTests: XCTestCase {
+    func testInitializeCreatesFreshSpoolWithoutCredentialsAndRuntimeCanOpenIt() async throws {
+        try await withFixture { scope in
+            let target = scope.fixture.base.appendingPathComponent("new-collector")
+            var document = scope.fixture.document()
+            var block = try XCTUnwrap(document["collector"] as? [String: Any])
+            block["shadowRoot"] = target.path
+            document["collector"] = block
+            try scope.fixture.writeSettings(document)
+            let identityBefore = try Data(contentsOf: scope.fixture.identity)
+            let child = try scope.launch(once: false, initialize: true)
+            let result = try await child.waitForExit(seconds: 5)
+            XCTAssertEqual(result.status, 0)
+            XCTAssertEqual(result.stdout, "engram-collector: initialized\n")
+            XCTAssertEqual(result.stderr, "")
+            scope.assertNoPrivateOutput(result)
+            XCTAssertEqual(try Data(contentsOf: scope.fixture.identity), identityBefore)
+            guard result.status == 0 else { return }
+            XCTAssertEqual(try CollectorMachineIdentityReader.read(from: target.appendingPathComponent("archive.sqlite")), RuntimeFixture.machineID)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: target.appendingPathComponent("inventory").path))
+            let runtime = try XCTUnwrap(CollectorRuntime.open(settingsURL: scope.fixture.settings, secretLoader: { reference in
+                reference == "hq-reference" ? "synthetic-hq-runtime-token" : "synthetic-m1-runtime-token"
+            }))
+            try await runtime.stop()
+            try scope.fixture.assertNoProductIndex()
+        }
+    }
+
+    func testInitializeRejectsExistingSpoolWithoutChangingItsMarker() async throws {
+        try await withFixture { scope in
+            try scope.fixture.writeSettings(scope.fixture.document())
+            let marker = scope.fixture.shadow.appendingPathComponent("archive.sqlite")
+            let before = try Data(contentsOf: marker)
+            let child = try scope.launch(once: false, initialize: true)
+            let result = try await child.waitForExit(seconds: 5)
+            XCTAssertEqual(result.status, 70)
+            XCTAssertEqual(try Data(contentsOf: marker), before)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: scope.fixture.inventory.path))
+            scope.assertNoPrivateOutput(result)
+        }
+    }
+
     func testColdOnceRunsOneBoundedCycleReportsActualCountsAndReleasesOwner() async throws {
         try await withFixture { scope in
             let replicas = try await scope.startReplicas()
@@ -430,9 +472,11 @@ private final class CLIIntegrationScope: @unchecked Sendable {
         return result
     }
 
-    func launch(once: Bool, credentialsURL: URL? = nil) throws -> CLIIntegrationChild {
+    func launch(once: Bool, credentialsURL: URL? = nil, initialize: Bool = false) throws -> CLIIntegrationChild {
         guard child == nil else { throw CLIIntegrationFailure.fixture }
-        var arguments = ["--settings", fixture.settings.path, "--credentials-file", (credentialsURL ?? credentials).path]
+        var arguments = ["--settings", fixture.settings.path]
+        if initialize { arguments.append("--initialize") }
+        else { arguments += ["--credentials-file", (credentialsURL ?? credentials).path] }
         if once { arguments.append("--once") }
         let result = try CLIIntegrationChild(binary: binary, arguments: arguments, root: fixture.base, home: home, temporary: temporary)
         child = result
@@ -527,7 +571,7 @@ final class CLIIntegrationChild: @unchecked Sendable {
     private let stderrURL: URL
     private let stdoutHandle: FileHandle
     private let stderrHandle: FileHandle
-    private let deadline = Date().addingTimeInterval(30)
+    private let deadline: Date
     private var outputClosed = false
     var isRunning: Bool { termination.snapshot == nil }
 
@@ -543,7 +587,8 @@ final class CLIIntegrationChild: @unchecked Sendable {
     ]
 
     init(binary: URL, arguments: [String], root: URL, home: URL, temporary: URL,
-         roleEnvironment: [String: String] = [:]) throws {
+         roleEnvironment: [String: String] = [:], lifetimeTimeout: TimeInterval = 30) throws {
+        deadline = Date().addingTimeInterval(lifetimeTimeout)
         guard Set(roleEnvironment.keys).isSubset(of: Self.allowedRoleEnvironment),
               roleEnvironment.values.allSatisfy({ !$0.utf8.contains(0) }) else { throw CLIIntegrationFailure.fixture }
         stdoutURL = root.appendingPathComponent("cli.stdout")

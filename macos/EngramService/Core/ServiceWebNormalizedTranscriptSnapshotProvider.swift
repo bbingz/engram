@@ -23,12 +23,58 @@ final class ServiceWebNormalizedTranscriptSnapshotProvider: ServiceWebTranscript
 
     func snapshot(sessionID: String, generation: String,
                   deadline: ContinuousClock.Instant) async throws -> ServiceTranscriptContinuation.Snapshot? {
+        try await snapshot(sessionID: sessionID, generation: generation, request: nil, deadline: deadline)
+    }
+
+    func snapshot(request: EngramServiceWebMessagesRequest,
+                  deadline: ContinuousClock.Instant) async throws -> ServiceTranscriptContinuation.Snapshot? {
+        _ = try ServiceTranscriptContinuation.startingOrdinal(for: request)
+        return try await snapshot(sessionID: request.sessionId, generation: request.generation,
+                                  request: request, deadline: deadline)
+    }
+
+    func timeline(request: EngramServiceWebTimelineRequest,
+                  deadline: ContinuousClock.Instant) async throws -> EngramServiceWebTimelineResponse {
+        let window = try await window(
+            sessionID: request.sessionId, generation: request.generation,
+            admission: .timeline(offset: request.offset, limit: request.limit), deadline: deadline)
+        guard let window else { throw EngramServiceWebReadError.staleCursor }
+        return try ServiceWebTimelineProjection.response(request: request, loaded: window)
+    }
+
+    fileprivate struct Loaded: Equatable, Sendable {
+        let snapshot: CaptureIngestNormalizedSnapshot
+        let ordinals: [Int]
+        let hasMore: Bool
+    }
+
+    private func snapshot(sessionID: String, generation: String, request: EngramServiceWebMessagesRequest?,
+                          deadline: ContinuousClock.Instant) async throws -> ServiceTranscriptContinuation.Snapshot? {
+        let admission = request.map { Admission.messages($0) } ?? .complete
+        let prepared = try await window(sessionID: sessionID, generation: generation,
+                                        admission: admission, deadline: deadline)
+        guard let prepared else { return nil }
+        var result = ServiceTranscriptContinuation.Snapshot(
+            sessionId: prepared.snapshot.sessionID, generation: prepared.snapshot.generationID,
+            messages: prepared.snapshot.messages)
+        result.messageOrdinals = prepared.ordinals
+        result.totalMessageCount = prepared.snapshot.totalMessageCount
+        if prepared.hasMore {
+            guard prepared.ordinals.count >= 2 else { throw ServiceWebTranscriptSnapshotError.unavailable }
+            result.maximumPageFragments = prepared.ordinals.count - 1
+        }
+        return result
+    }
+
+    private func window(sessionID: String, generation: String, admission: Admission,
+                        deadline: ContinuousClock.Instant) async throws -> Loaded? {
         do {
             try Self.checkpoint(deadline)
             let policy = try currentPolicy()
             try Self.checkpoint(deadline)
             let prepared = try await read { db in
-                try Self.load(db, sessionID: sessionID, generation: generation, policy: policy, deadline: deadline)
+                try Self.load(db, sessionID: sessionID, generation: generation, policy: policy,
+                              admission: admission, deadline: deadline)
             }
             try Self.checkpoint(deadline)
             let current = try currentPolicy()
@@ -40,16 +86,19 @@ final class ServiceWebNormalizedTranscriptSnapshotProvider: ServiceWebTranscript
             // authority reader with fresh policy before releasing its messages;
             // neither a cached readiness scalar nor an earlier page authorizes it.
             let fresh = try await read { db in
-                try Self.load(db, sessionID: sessionID, generation: generation, policy: current, deadline: deadline)
+                try Self.load(db, sessionID: sessionID, generation: generation, policy: current,
+                              admission: admission, deadline: deadline)
             }
             try Self.checkpoint(deadline)
             guard Self.samePolicy(current, try currentPolicy()), let fresh, fresh == prepared else {
                 throw ServiceWebTranscriptSnapshotError.unavailable
             }
             try Self.checkpoint(deadline)
-            return .init(sessionId: fresh.sessionID, generation: fresh.generationID, messages: fresh.messages)
+            return fresh
         } catch is CancellationError {
             throw CancellationError()
+        } catch let error as CaptureIngestReadinessError where error == .invalidArgument && admission.isBounded {
+            throw EngramServiceWebReadError.invalidCursor
         } catch {
             try Task.checkCancellation()
             throw ServiceWebTranscriptSnapshotError.unavailable
@@ -72,8 +121,22 @@ final class ServiceWebNormalizedTranscriptSnapshotProvider: ServiceWebTranscript
         guard ContinuousClock.now < deadline else { throw ServiceWebTranscriptSnapshotError.unavailable }
     }
 
+    private enum Admission: Equatable, Sendable {
+        case messages(EngramServiceWebMessagesRequest)
+        case timeline(offset: Int, limit: Int)
+        case complete
+
+        var isBounded: Bool {
+            switch self {
+            case .messages, .timeline: return true
+            case .complete: return false
+            }
+        }
+    }
+
     private static func load(_ db: Database, sessionID: String, generation: String,
-                             policy: ServiceWebMetadataPolicy, deadline: ContinuousClock.Instant) throws -> CaptureIngestNormalizedSnapshot? {
+                             policy: ServiceWebMetadataPolicy, admission: Admission,
+                             deadline: ContinuousClock.Instant) throws -> Loaded? {
         try checkpoint(deadline)
         // Visibility follows the metadata read surface. Ready is stricter:
         // parsed, ready and requested heads must agree with the ready ledger.
@@ -88,11 +151,30 @@ final class ServiceWebNormalizedTranscriptSnapshotProvider: ServiceWebTranscript
                 AND i.last_parsed_generation_id = g.generation_id COLLATE BINARY
                 AND i.last_ready_generation_id = g.generation_id COLLATE BINARY
                 AND l.status = 'index_ready'
-                AND s.hidden_at IS NULL AND s.parent_session_id IS NULL AND s.suggested_parent_id IS NULL
+                AND s.hidden_at IS NULL
                 AND s.tier IN ('lite', 'normal', 'premium')
             """, arguments: [sessionID, generation]) == 1 else { return nil }
-        let snapshot = try CaptureIngestNormalizedStore.load(db, sessionID: sessionID, generationID: generation,
-            expectedParserRevision: policy.parserRevision, enabledSources: policy.enabledSources, deadline: deadline)
+        let loaded: Loaded
+        switch admission {
+        case .messages(let request):
+            let roles = Set(request.roles.compactMap { NormalizedMessageRole(rawValue: $0.rawValue) })
+            let page = try CaptureIngestNormalizedStore.loadPage(db, sessionID: sessionID, generationID: generation,
+                expectedParserRevision: policy.parserRevision, enabledSources: policy.enabledSources,
+                fromOrdinal: ServiceTranscriptContinuation.startingOrdinal(for: request),
+                maximumMessages: request.maxFragments + 1, roles: roles, deadline: deadline)
+            loaded = Loaded(snapshot: page.snapshot, ordinals: page.ordinals, hasMore: page.hasMore)
+        case .timeline(let offset, let limit):
+            let page = try CaptureIngestNormalizedStore.loadPage(db, sessionID: sessionID, generationID: generation,
+                expectedParserRevision: policy.parserRevision, enabledSources: policy.enabledSources,
+                fromOrdinal: offset, maximumMessages: limit + 1,
+                roles: [.user, .assistant, .system, .tool], deadline: deadline)
+            loaded = Loaded(snapshot: page.snapshot, ordinals: page.ordinals, hasMore: page.hasMore)
+        case .complete:
+            let snapshot = try CaptureIngestNormalizedStore.load(db, sessionID: sessionID, generationID: generation,
+                expectedParserRevision: policy.parserRevision, enabledSources: policy.enabledSources, deadline: deadline)
+            loaded = Loaded(snapshot: snapshot, ordinals: Array(snapshot.messages.indices), hasMore: false)
+        }
+        let snapshot = loaded.snapshot
         try checkpoint(deadline)
         // Readiness.commit requires this exact completed FTS job for a visible
         // generation. A later edit of ready scalars cannot replace that proof.
@@ -110,7 +192,7 @@ final class ServiceWebNormalizedTranscriptSnapshotProvider: ServiceWebTranscript
             throw ServiceWebTranscriptSnapshotError.unavailable
         }
         try checkpoint(deadline)
-        return snapshot
+        return loaded
     }
 
     /// Like other Service read facades, join the blocking SQLite read before
@@ -123,5 +205,103 @@ final class ServiceWebNormalizedTranscriptSnapshotProvider: ServiceWebTranscript
                 catch { continuation.resume(throwing: error) }
             }
         }
+    }
+}
+
+enum ServiceWebTimelineProjection {
+    fileprivate static func response(request: EngramServiceWebTimelineRequest,
+                                     loaded: ServiceWebNormalizedTranscriptSnapshotProvider.Loaded
+    ) throws -> EngramServiceWebTimelineResponse {
+        let total = loaded.snapshot.totalMessageCount
+        guard Data(loaded.snapshot.sessionID.utf8) == Data(request.sessionId.utf8),
+              loaded.snapshot.generationID == request.generation,
+              loaded.ordinals.count == loaded.snapshot.messages.count,
+              (0...EngramServiceWebReadLimits.maximumMessages).contains(total) else {
+            throw ServiceWebTranscriptSnapshotError.unavailable
+        }
+        if loaded.hasMore {
+            guard loaded.ordinals.count >= 2 else { throw ServiceWebTranscriptSnapshotError.unavailable }
+        }
+        let keep: Int
+        if loaded.hasMore || loaded.ordinals.count > request.limit {
+            keep = min(request.limit, max(0, loaded.ordinals.count - 1))
+        } else {
+            keep = loaded.ordinals.count
+        }
+        let returned = Array(loaded.snapshot.messages.prefix(keep))
+        let ordinals = Array(loaded.ordinals.prefix(keep))
+        let sentinel = keep < loaded.snapshot.messages.count ? loaded.snapshot.messages[keep] : nil
+        let nextOffset: Int?
+        if let next = loaded.ordinals.dropFirst(keep).first {
+            nextOffset = next
+        } else if loaded.hasMore, let last = ordinals.last {
+            nextOffset = last + 1
+        } else {
+            nextOffset = nil
+        }
+        var entries: [EngramServiceWebTimelineEntry] = []
+        entries.reserveCapacity(returned.count)
+        for index in returned.indices {
+            let message = returned[index]
+            let following = index + 1 < returned.count ? returned[index + 1] : sentinel
+            entries.append(try entry(ordinal: ordinals[index], message: message, next: following))
+        }
+        return EngramServiceWebTimelineResponse(
+            sessionId: request.sessionId, generation: request.generation,
+            totalEntries: total, entries: entries, nextOffset: nextOffset)
+    }
+
+    static func entry(ordinal: Int, message: NormalizedMessage, next: NormalizedMessage?) throws -> EngramServiceWebTimelineEntry {
+        guard let role = EngramServiceWebMessageRole(rawValue: message.role.rawValue) else {
+            throw ServiceWebTranscriptSnapshotError.unavailable
+        }
+        let toolCalls = message.toolCalls ?? []
+        let type: EngramServiceWebTimelineEntryType
+        if message.role == .tool {
+            type = .tool_result
+        } else if !toolCalls.isEmpty {
+            type = .tool_use
+        } else {
+            type = .message
+        }
+        let toolName = toolCalls.first.map { TranscriptRedactionPolicy.redact($0.name) }
+            .flatMap { $0.isEmpty ? nil : $0 }
+        let timestamp = message.timestamp.map(TranscriptRedactionPolicy.redact)
+            .flatMap { $0.isEmpty ? nil : $0 }
+        let tokens = message.usage.map {
+            EngramServiceWebTimelineTokens(input: $0.inputTokens, output: $0.outputTokens)
+        }
+        return EngramServiceWebTimelineEntry(
+            index: ordinal, role: role, type: type,
+            preview: preview(message.content), timestamp: timestamp, toolName: toolName,
+            tokens: tokens, durationToNextMs: durationToNextMs(from: message.timestamp, to: next?.timestamp))
+    }
+
+    static func preview(_ content: String) -> String {
+        let redacted = TranscriptRedactionPolicy.redact(content)
+        if redacted.count <= EngramServiceWebReadLimits.maximumTimelinePreviewCharacters { return redacted }
+        return String(redacted.prefix(EngramServiceWebReadLimits.maximumTimelinePreviewCharacters))
+    }
+
+    static func durationToNextMs(from: String?, to: String?) -> Int? {
+        guard let start = parseISO(from), let end = parseISO(to) else { return nil }
+        return max(0, Int((end.timeIntervalSince(start) * 1000).rounded()))
+    }
+
+    private static let isoFractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let isoPlain: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    private static func parseISO(_ value: String?) -> Date? {
+        guard let value else { return nil }
+        return isoFractional.date(from: value) ?? isoPlain.date(from: value)
     }
 }

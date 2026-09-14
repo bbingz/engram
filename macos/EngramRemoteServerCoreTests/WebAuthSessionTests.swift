@@ -6,6 +6,44 @@ import XCTest
 final class WebAuthSessionTests: XCTestCase {
     private let viewer = "test-only-viewer-credential"
 
+    func testEditorAuthorityIsBoundToItsOwnSessionAndRevokedOnLogoutOrExpiry() async throws {
+        let clock = WebTestClock()
+        let random = WebTestRandom()
+        let config = try EngramRemoteWebConfig(origin: "https://viewer.example", viewerCredential: viewer,
+            serverBearerCredentials: ["fixture-service"], editorCredential: "fixture-editor")
+        let store = WebAuthSessionStore(configuration: config, now: { clock.now }, randomBytes: { try random.next() })
+        guard let viewerToken = token(await store.login(credential: viewer)),
+              let editorToken = token(await store.login(credential: "fixture-editor")) else { return }
+        let viewerCanWrite = await store.canWrite(sessionToken: viewerToken)
+        let editorCanWrite = await store.canWrite(sessionToken: editorToken)
+        XCTAssertFalse(viewerCanWrite)
+        XCTAssertTrue(editorCanWrite)
+        for rawCredential in [viewer, "fixture-editor", "fixture-service", "", String(repeating: "A", count: 43)] {
+            let canWrite = await store.canWrite(sessionToken: rawCredential)
+            XCTAssertFalse(canWrite)
+        }
+        await store.logout(sessionToken: editorToken)
+        let revokedCanWrite = await store.canWrite(sessionToken: editorToken)
+        let viewerStillValid = await store.isAuthenticated(sessionToken: viewerToken)
+        XCTAssertFalse(revokedCanWrite)
+        XCTAssertTrue(viewerStillValid)
+        guard let secondEditor = token(await store.login(credential: "fixture-editor")) else { return }
+        clock.advance(seconds: 900)
+        let expiredCanWrite = await store.canWrite(sessionToken: secondEditor)
+        let expiredCanRead = await store.isAuthenticated(sessionToken: secondEditor)
+        XCTAssertFalse(expiredCanWrite)
+        XCTAssertFalse(expiredCanRead)
+    }
+
+    func testViewerOnlyConfigurationNeverGrantsWriteAuthority() async throws {
+        let store = try makeStore()
+        guard let session = token(await store.login(credential: viewer)) else { return }
+        let canWrite = await store.canWrite(sessionToken: session)
+        XCTAssertFalse(canWrite)
+        let outcome = await store.login(credential: "fixture-editor")
+        XCTAssertEqual(outcome, .unauthorized)
+    }
+
     private func makeStore(
         clock: WebTestClock = WebTestClock(),
         random: WebTestRandom = WebTestRandom()

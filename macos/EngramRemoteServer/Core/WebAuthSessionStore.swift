@@ -19,10 +19,14 @@ actor WebAuthSessionStore {
     private let configuration: EngramRemoteWebConfig
     private let now: @Sendable () -> UInt64
     private let randomBytes: @Sendable () throws -> Data
-    private var expirations: [Data: UInt64] = [:]
+    private struct Session: Sendable {
+        let expiresAt: UInt64
+        let canWrite: Bool
+    }
+    private var sessions: [Data: Session] = [:]
     private var attemptTimes: [UInt64] = []
     private var lastObservedTime: UInt64 = 0
-    var sessionDigests: Set<Data> { Set(expirations.keys) }
+    var sessionDigests: Set<Data> { Set(sessions.keys) }
 
     init(
         configuration: EngramRemoteWebConfig,
@@ -52,8 +56,10 @@ actor WebAuthSessionStore {
         attemptTimes.append(instant)
 
         let submittedDigest = Data(SHA256.hash(data: Data(credential.utf8)))
-        guard constantTimeEqual(submittedDigest, configuration.credentialDigest) else { return .unauthorized }
-        guard expirations.count < Self.capacity else { return .unavailable }
+        let isViewer = constantTimeEqual(submittedDigest, configuration.credentialDigest)
+        let isEditor = configuration.editorCredentialDigest.map { constantTimeEqual(submittedDigest, $0) } ?? false
+        guard isViewer || isEditor else { return .unauthorized }
+        guard sessions.count < Self.capacity else { return .unavailable }
         let bytes: Data
         do { bytes = try randomBytes() } catch { return .unavailable }
         guard bytes.count == 32 else { return .unavailable }
@@ -62,21 +68,29 @@ actor WebAuthSessionStore {
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
         let digest = Self.sessionDigest(token)
-        guard expirations[digest] == nil else { return .unavailable }
-        expirations[digest] = expiresAt
+        guard sessions[digest] == nil else { return .unavailable }
+        sessions[digest] = Session(expiresAt: expiresAt, canWrite: isEditor)
         return .authenticated(sessionToken: token)
     }
 
     func isAuthenticated(sessionToken: String) -> Bool {
+        validSession(sessionToken: sessionToken) != nil
+    }
+
+    func canWrite(sessionToken: String) -> Bool {
+        validSession(sessionToken: sessionToken)?.canWrite ?? false
+    }
+
+    private func validSession(sessionToken: String) -> Session? {
         let instant = monotonicNow()
         purgeExpired(at: instant)
-        guard Self.isWellFormedToken(sessionToken) else { return false }
-        return expirations[Self.sessionDigest(sessionToken)] != nil
+        guard Self.isWellFormedToken(sessionToken) else { return nil }
+        return sessions[Self.sessionDigest(sessionToken)]
     }
 
     func logout(sessionToken: String) {
         guard Self.isWellFormedToken(sessionToken) else { return }
-        expirations.removeValue(forKey: Self.sessionDigest(sessionToken))
+        sessions.removeValue(forKey: Self.sessionDigest(sessionToken))
     }
 
     static func isWellFormedToken(_ token: String) -> Bool {
@@ -95,7 +109,7 @@ actor WebAuthSessionStore {
     }
 
     private func purgeExpired(at instant: UInt64) {
-        expirations = expirations.filter { $0.value > instant }
+        sessions = sessions.filter { $0.value.expiresAt > instant }
     }
 
     private func constantTimeEqual(_ lhs: Data, _ rhs: Data) -> Bool {

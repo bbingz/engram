@@ -874,8 +874,8 @@ final class ArchiveConfigTests: XCTestCase {
         XCTAssertTrue(target.contains("Shared/EngramCore/ArchiveV2/ArchiveCanonicalJSON.swift"))
         XCTAssertTrue(target.contains("Shared/EngramCore/ArchiveV2/ArchiveModels.swift"))
         XCTAssertTrue(target.contains("Shared/EngramCore/ArchiveV2/CollectorPublicationModels.swift"))
+        XCTAssertTrue(target.contains("Shared/EngramCore/ArchiveV2/ArchiveSourceDescriptor.swift"))
         XCTAssertFalse(target.contains("Shared/EngramCore/ArchiveV2\n"))
-        XCTAssertFalse(target.contains("ArchiveSourceDescriptor.swift"))
         XCTAssertFalse(target.contains("target: EngramCoreRead"))
         XCTAssertFalse(target.contains("target: EngramCoreWrite"))
     }

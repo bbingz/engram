@@ -1262,10 +1262,21 @@ public struct ArchiveStore: Sendable {
             let bytes = try readDurableEnvelope(digest: publication.manifestSHA256, kind: .manifest)
             let manifest = try decodedManifest(bytes, expectedDigest: publication.manifestSHA256)
             guard manifest.sessionID == nil,
-                  manifest.source == "codex" || manifest.source == "claude-code",
                   UUID(uuidString: manifest.machineID) == UUID(uuidString: publication.machineID),
-                  manifest.replayLayout.strategy == .singleFile,
-                  manifest.replayLayout.relativePaths.count == 1 else {
+                  (["codex", "claude-code", "minimax", "lobsterai", "qwen", "qoder", "iflow", "commandcode", "pi"].contains(manifest.source)
+                    && manifest.replayLayout.strategy == .singleFile
+                    && manifest.replayLayout.relativePaths.count == 1)
+                    || ArchiveSourceDescriptor.isVSCodeFileSet(manifest)
+                    || ArchiveSourceDescriptor.isClineFileSet(manifest)
+                    || ArchiveSourceDescriptor.isCopilotFileSet(manifest)
+                    || ArchiveSourceDescriptor.isCursorModernFileSet(manifest)
+                    || ArchiveSourceDescriptor.isCursorLegacySession(manifest)
+                    || ArchiveSourceDescriptor.isGeminiFileSet(manifest)
+                    || ArchiveSourceDescriptor.isKimiFileSet(manifest)
+                    || ArchiveSourceDescriptor.isGrokFileSet(manifest)
+                    || ArchiveSourceDescriptor.isOpenCodeSessionImage(manifest)
+                    || ArchiveSourceDescriptor.isAntigravityCLITranscript(manifest)
+                    || ArchiveSourceDescriptor.isWindsurfHookTranscript(manifest) else {
                 throw ArchivePublicationStoreError.invalidPublication
             }
             _ = try validatedManifest(
@@ -1595,10 +1606,19 @@ public struct ArchiveStore: Sendable {
         let manifest = try decodedManifest(bytes, expectedDigest: expectedDigest)
 
         var wholeHasher = SHA256()
+        var memberVerifier: ArchiveFileSetByteVerifier?
+        if manifest.replayLayout.strategy == .fileSet {
+            do { memberVerifier = try ArchiveFileSetByteVerifier(layout: manifest.replayLayout) }
+            catch { throw ArchiveStoreError.invalidManifest }
+        }
         for chunk in manifest.chunks {
             let object = try chunkObject(chunk, durableReferences: durableReferences)
             wholeHasher.update(data: object)
+            do { try memberVerifier?.append(object) }
+            catch { throw ArchiveStoreError.invalidManifest }
         }
+        do { try memberVerifier?.finish() }
+        catch { throw ArchiveStoreError.invalidManifest }
         let wholeDigest = Data(wholeHasher.finalize())
             .map { String(format: "%02x", $0) }
             .joined()

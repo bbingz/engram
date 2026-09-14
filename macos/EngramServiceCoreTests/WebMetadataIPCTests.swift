@@ -107,7 +107,8 @@ final class WebMetadataIPCTests: XCTestCase {
                 XCTAssertTrue(provider.observations.isEmpty, "\(command)/\(key) entered producer")
             }
             var crossed = try command.object()
-            crossed[command == .sessions ? "sessionId" : "query"] = "cross_command_field"
+            // sessionId is a legal webSessions filter; use a key none of these commands accept.
+            crossed["kind"] = "cross_command_field"
             assertFailure(try await fixture.raw(command, payload: JSONSerialization.data(withJSONObject: crossed)).envelope,
                           name: "InvalidRequest", retry: "never")
         }

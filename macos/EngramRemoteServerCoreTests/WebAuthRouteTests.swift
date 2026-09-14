@@ -62,6 +62,45 @@ final class WebAuthRouteTests: XCTestCase {
         }
     }
 
+    func testAuthStatusReportsOnlyTheCurrentCookieWritePermission() async throws {
+        let config = try EngramRemoteWebConfig(origin: origin, viewerCredential: viewer,
+            serverBearerCredentials: ["test-v1-bearer"], editorCredential: "fixture-editor")
+        let harness = try WebRouteHarness(configuration: config)
+        guard let viewerToken = await issuedToken(harness) else { return }
+        let viewerStatus = try await harness.respond(request(path: "/web/api/auth",
+            headers: metadataHeaders + [("Cookie", "__Host-engram_web=\(viewerToken)"), ("X-Engram-Editor", "1")]))
+        XCTAssertEqual(viewerStatus.status, .ok)
+        let viewerBody = try await webResponseText(viewerStatus)
+        XCTAssertEqual(viewerBody, "{\"canWrite\":false}")
+        XCTAssertNil(viewerStatus.headers[.setCookie])
+        assertSecurityHeaders(viewerStatus)
+        let login = try await harness.respond(request(.post, path: "/web/api/auth", headers: loginHeaders,
+            body: "{\"credential\":\"fixture-editor\"}"))
+        XCTAssertEqual(login.status, .noContent)
+        let cookie = try XCTUnwrap(login.headers[.setCookie]?.split(separator: ";").first.map(String.init))
+        let editorStatus = try await harness.respond(request(path: "/web/api/auth", headers: metadataHeaders + [("Cookie", cookie)]))
+        XCTAssertEqual(editorStatus.status, .ok)
+        let editorBody = try await webResponseText(editorStatus)
+        XCTAssertEqual(editorBody, "{\"canWrite\":true}")
+        assertSecurityHeaders(editorStatus)
+        let logout = try await harness.respond(request(.delete, path: "/web/api/auth", headers: loginHeaders + [("Cookie", cookie)], body: "{}"))
+        XCTAssertEqual(logout.status, .noContent)
+        let revoked = try await harness.respond(request(path: "/web/api/auth", headers: metadataHeaders + [("Cookie", cookie)]))
+        XCTAssertEqual(revoked.status, .unauthorized)
+    }
+
+    func testAuthStatusRejectsMissingCookieAndCrossOriginRequests() async throws {
+        let harness = try WebRouteHarness(configuration: configuration())
+        let missing = try await harness.respond(request(path: "/web/api/auth", headers: metadataHeaders))
+        XCTAssertEqual(missing.status, .unauthorized)
+        guard let token = await issuedToken(harness) else { return }
+        let forbidden = try await harness.respond(request(path: "/web/api/auth", headers: [
+            ("X-Engram-Web", "1"), ("Origin", "https://evil.example"), ("Cookie", "__Host-engram_web=\(token)")]))
+        XCTAssertEqual(forbidden.status, .forbidden)
+        assertSecurityHeaders(missing)
+        assertSecurityHeaders(forbidden)
+    }
+
     func testExactAuthorityAndOptionalMatchingRawHostAreAccepted() throws {
         let boundary = WebRequestBoundary(configuration: try configuration())
         XCTAssertTrue(boundary.validateHost(request()))
@@ -302,7 +341,7 @@ final class WebAuthRouteTests: XCTestCase {
             (.put, "/web/api/sessions/id"), (.patch, "/web/api/sessions/id"), (.delete, "/web/api/sessions/id"),
             (HTTPRequest.Method(rawValue: "TRACE")!, "/web/api/overview"),
             (.get, "/web/api/resumeCommand"), (.get, "/web/api/memoryFileContent"), (.get, "/web/api/exportSession"),
-            (.get, "/web/api/shutdown"), (.get, "/web/api/unknown"), (.get, "/web/api/auth"),
+            (.get, "/web/api/shutdown"), (.get, "/web/api/unknown"), (.put, "/web/api/auth"),
             (.get, "/web/api/sessions/id/resumeCommand"), (.get, "/web/api/%6fverview"),
             (.get, "/web/api/sessions/../overview"),
             (.head, "/web"), (.options, "/web/assets/app.js"),

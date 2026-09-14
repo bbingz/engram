@@ -12,6 +12,9 @@ enum ServiceTranscriptContinuation {
         var totalKnownComplete: Bool = true
         var truncatedAt: Int?
         var parseFailure: ParserFailure?
+        var messageOrdinals: [Int]?
+        var totalMessageCount: Int?
+        var maximumPageFragments: Int?
     }
 
     static func redactedPayload(for message: NormalizedMessage) throws -> Data {
@@ -46,7 +49,14 @@ enum ServiceTranscriptContinuation {
               snapshot.generation == request.generation else {
             throw EngramServiceWebReadError.staleCursor
         }
-        guard snapshot.messages.count <= EngramServiceWebReadLimits.maximumMessages else {
+        let ordinals = snapshot.messageOrdinals ?? Array(snapshot.messages.indices)
+        let total = snapshot.totalMessageCount ?? snapshot.messages.count
+        let maxFragments = min(request.maxFragments, snapshot.maximumPageFragments ?? request.maxFragments)
+        guard maxFragments > 0,
+              (0...EngramServiceWebReadLimits.maximumMessages).contains(total),
+              ordinals.count == snapshot.messages.count,
+              ordinals.allSatisfy({ (0..<total).contains($0) }),
+              zip(ordinals, ordinals.dropFirst()).allSatisfy({ $0.0 < $0.1 }) else {
             throw EngramServiceWebReadError.invalidField("messages")
         }
         guard maximumEnvelopeBytes > 0,
@@ -54,18 +64,10 @@ enum ServiceTranscriptContinuation {
             throw EngramServiceWebReadError.responseTooLarge
         }
         let sessionSHA256 = sha256(Data(request.sessionId.utf8))
-        let cursor = try request.cursor.map(Cursor.decode)
+        let cursor = try validatedCursor(for: request)
         if let cursor {
-            guard cursor.version == 1, cursor.sessionSHA256 == sessionSHA256,
-                  cursor.generation == request.generation,
-                  cursor.projection == EngramServiceWebReadLimits.projection,
-                  cursor.redactionRevision == EngramServiceWebReadLimits.redactionRevision,
-                  cursor.roles == request.roles else {
-                throw EngramServiceWebReadError.staleCursor
-            }
-            guard snapshot.messages.indices.contains(cursor.messageOrdinal),
-                  request.roles.contains(where: { $0.rawValue == snapshot.messages[cursor.messageOrdinal].role.rawValue }),
-                  cursor.utf8Offset >= 0 else {
+            guard let index = ordinals.firstIndex(of: cursor.messageOrdinal),
+                  request.roles.contains(where: { $0.rawValue == snapshot.messages[index].role.rawValue }) else {
                 throw EngramServiceWebReadError.invalidCursor
             }
         }
@@ -105,10 +107,10 @@ enum ServiceTranscriptContinuation {
 
         func position(_ ordinal: Int, _ offset: Int, _ digest: String) -> Cursor {
             Cursor(sessionSHA256: sessionSHA256, generation: request.generation, roles: request.roles,
-                   messageOrdinal: ordinal, utf8Offset: offset, payloadSHA256: digest)
+                   messageOrdinal: ordinals[ordinal], utf8Offset: offset, payloadSHA256: digest)
         }
 
-        var ordinal = cursor?.messageOrdinal ?? nextOrdinal(from: 0)
+        var ordinal = cursor.flatMap { ordinals.firstIndex(of: $0.messageOrdinal) } ?? nextOrdinal(from: 0)
         var offset = cursor?.utf8Offset ?? 0
         var fragments: [EngramServiceWebMessageFragment] = []
         var accepted: EngramServiceWebMessagesResponse?
@@ -133,7 +135,7 @@ enum ServiceTranscriptContinuation {
             guard offset < bytes.count, isBoundary(offset, in: bytes) else {
                 throw EngramServiceWebReadError.invalidCursor
             }
-            if let cursor, current == cursor.messageOrdinal, cursor.payloadSHA256 != digest {
+            if let cursor, ordinals[current] == cursor.messageOrdinal, cursor.payloadSHA256 != digest {
                 throw EngramServiceWebReadError.staleCursor
             }
             guard let role = EngramServiceWebMessageRole(rawValue: snapshot.messages[current].role.rawValue) else {
@@ -146,7 +148,7 @@ enum ServiceTranscriptContinuation {
                 guard let text = String(bytes: bytes[offset..<end], encoding: .utf8) else {
                     throw EngramServiceWebReadError.invalidCursor
                 }
-                return try .init(messageOrdinal: current, role: role, payloadSHA256: digest,
+                return try .init(messageOrdinal: ordinals[current], role: role, payloadSHA256: digest,
                                  utf8Offset: offset, payloadFragment: text, isLastFragment: end == bytes.count)
             }
 
@@ -158,7 +160,7 @@ enum ServiceTranscriptContinuation {
                 if try fits(candidate) {
                     fragments = candidate.fragments
                     accepted = candidate
-                    if fragments.count == request.maxFragments || following == nil { return candidate }
+                    if fragments.count == maxFragments || following == nil { return candidate }
                     ordinal = following
                     offset = 0
                     prepared = nextPayload
@@ -195,6 +197,23 @@ enum ServiceTranscriptContinuation {
         let empty = try response([], next: nil)
         guard try fits(empty) else { throw EngramServiceWebReadError.responseTooLarge }
         return empty
+    }
+
+    static func startingOrdinal(for request: EngramServiceWebMessagesRequest) throws -> Int {
+        try validatedCursor(for: request)?.messageOrdinal ?? 0
+    }
+
+    private static func validatedCursor(for request: EngramServiceWebMessagesRequest) throws -> Cursor? {
+        guard let encoded = request.cursor else { return nil }
+        let cursor = try Cursor.decode(encoded)
+        guard cursor.version == 1, cursor.sessionSHA256 == sha256(Data(request.sessionId.utf8)),
+              cursor.generation == request.generation,
+              cursor.projection == EngramServiceWebReadLimits.projection,
+              cursor.redactionRevision == EngramServiceWebReadLimits.redactionRevision,
+              cursor.roles == request.roles else { throw EngramServiceWebReadError.staleCursor }
+        guard (0..<EngramServiceWebReadLimits.maximumMessages).contains(cursor.messageOrdinal),
+              cursor.utf8Offset >= 0 else { throw EngramServiceWebReadError.invalidCursor }
+        return cursor
     }
 
     private struct Cursor: Codable {

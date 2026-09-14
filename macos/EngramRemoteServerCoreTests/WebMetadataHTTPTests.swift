@@ -180,6 +180,94 @@ final class WebMetadataHTTPTests: XCTestCase {
         XCTAssertTrue(recorders.detail.values.isEmpty)
     }
 
+    func testSessionsParsesCommaSeparatedPluralFiltersAndRejectsConflicts_repro() async throws {
+        let fixture = try fixture()
+        defer { fixture.stop() }
+        let recorders = A5bRouteRecorders()
+        try await withServer(surface: recordingSurface(recorders: recorders)) { server in
+            let cookie = try await Self.login(server)
+            let accepted = "/web/api/sessions?sources=codex,claude-code&projectKeys=project_2,project_1"
+                + "&sessionId=old-uuid&agents=only&limit=2"
+            let response = try await server.request("GET", accepted, headers: Self.originHeaders + [("Cookie", cookie)])
+            XCTAssertEqual(response.status, 200)
+            for rejected in [
+                "source=codex&sources=codex",
+                "projectKey=project_1&projectKeys=project_1",
+                "sources=",
+                "sources=codex,codex",
+                "agents=visible",
+                "sources=codex&sources=claude-code",
+                "sessionIds=old-uuid",
+            ] {
+                let failure = try await server.request(
+                    "GET", "/web/api/sessions?" + rejected,
+                    headers: Self.originHeaders + [("Cookie", cookie)]
+                )
+                XCTAssertEqual(failure.status, 400, rejected)
+            }
+        }
+        XCTAssertEqual(recorders.sessions.values.count, 1)
+        let recorded = try XCTUnwrap(recorders.sessions.values.first)
+        XCTAssertEqual(recorded.sources, ["claude-code", "codex"])
+        XCTAssertEqual(recorded.projectKeys, ["project_1", "project_2"])
+        XCTAssertEqual(recorded.sessionId, "old-uuid")
+        XCTAssertEqual(recorded.agents, .only)
+        XCTAssertNil(recorded.source)
+        XCTAssertNil(recorded.projectKey)
+    }
+
+    func testSessionsRejectsInvalidDateToolQueryAndPreservesOptionalTotalCount_repro() async throws {
+        let fixture = try fixture()
+        defer { fixture.stop() }
+        let recorders = A5bRouteRecorders()
+        try await withServer(surface: recordingSurface(recorders: recorders, sessions: { request in
+            if request.tools == .hide {
+                return EngramServiceWebSessionsResponse(
+                    snapshotId: request.snapshotId ?? Self.snapshot, observedAt: 1,
+                    items: [EngramServiceWebSessionSummary(
+                        sessionId: "session-a", source: "claude-code",
+                        captureIdentity: .init(machineId: Self.machine, sourceInstanceId: Self.instance),
+                        metadataGeneration: String(repeating: "a", count: 64), title: nil,
+                        projectKey: "project_1", projectLabel: "engram",
+                        startedAt: 1_757_246_400, isAgent: false)],
+                    nextCursor: nil, totalCount: 4)
+            }
+            return Self.sessionsPage(request)
+        })) { server in
+            let cookie = try await Self.login(server)
+            let headers = Self.originHeaders + [("Cookie", cookie)]
+            for rejected in [
+                "since=2026-9-07", "since=2026-02-30", "since=2026-09-13&until=2026-09-07",
+                "tools=yes", "tools=", "tools=all&tools=hide", "unknown=1",
+            ] {
+                let response = try await server.request(
+                    "GET", "/web/api/sessions?" + rejected, headers: headers)
+                XCTAssertEqual(response.status, 400, rejected)
+                Self.assertSecurityHeaders(response)
+            }
+            let absent = try await server.request("GET", "/web/api/sessions?limit=1", headers: headers)
+            XCTAssertEqual(absent.status, 200)
+            let absentBody: EngramServiceWebSessionsResponse = try JSONDecoder().decode(
+                EngramServiceWebSessionsResponse.self, from: absent.body)
+            XCTAssertNil(absentBody.totalCount)
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: absent.body) as? [String: Any])
+            XCTAssertNil(object["totalCount"], "HTTP must preserve absent totalCount")
+            let accepted = try await server.request(
+                "GET",
+                "/web/api/sessions?since=2026-09-07&until=2026-09-13&tools=hide&limit=2",
+                headers: headers)
+            XCTAssertEqual(accepted.status, 200)
+            let acceptedBody: EngramServiceWebSessionsResponse = try JSONDecoder().decode(
+                EngramServiceWebSessionsResponse.self, from: accepted.body)
+            XCTAssertEqual(acceptedBody.totalCount, 4)
+        }
+        XCTAssertEqual(recorders.sessions.values.map(\.since), [nil, "2026-09-07"])
+        XCTAssertEqual(recorders.sessions.values.map(\.until), [nil, "2026-09-13"])
+        XCTAssertEqual(recorders.sessions.values.map(\.tools), [.all, .hide])
+        XCTAssertTrue(recorders.overview.values.isEmpty)
+        XCTAssertTrue(recorders.detail.values.isEmpty)
+    }
+
     func testMakeSurfaceSocketRoundTripForOverviewSessionsAndDetailDTOs() async throws {
         let fixture = try metadataFixture()
         defer { fixture.stop() }
@@ -236,6 +324,218 @@ final class WebMetadataHTTPTests: XCTestCase {
         XCTAssertEqual(Data(detailRequest.sessionId.utf8), Data(sessionID.utf8))
     }
 
+    func testFacetsRejectsInvalidQueryBeforeReaderAndAcceptsExactContract_repro() async throws {
+        let fixture = try fixture()
+        defer { fixture.stop() }
+        let recorders = A5bRouteRecorders()
+        try await withServer(surface: recordingSurface(recorders: recorders)) { server in
+            let cookie = try await Self.login(server)
+            let headers = Self.originHeaders + [("Cookie", cookie)]
+            for rejected in [
+                "", "kind=sources", "kind=project&kind=source", "kind=source&query=%20foo",
+                "kind=source&query=foo%20", "kind=source&query=", "kind=source&agents=visible",
+                "kind=source&limit=0", "kind=source&limit=101", "kind=source&cursor=next",
+                "kind=source&snapshotId=\(Self.snapshot)", "kind=source&sessionIds=old-uuid",
+                "kind=source&unknown=1", "sessionIds=old-uuid",
+            ] {
+                let path = rejected.isEmpty ? "/web/api/facets" : "/web/api/facets?" + rejected
+                let response = try await server.request("GET", path, headers: headers)
+                XCTAssertEqual(response.status, 400, path)
+                Self.assertSecurityHeaders(response)
+            }
+            let source = try await server.request("GET", "/web/api/facets?kind=source", headers: headers)
+            XCTAssertEqual(source.status, 200)
+            let sourceBody: EngramServiceWebFacetsResponse = try JSONDecoder().decode(EngramServiceWebFacetsResponse.self, from: source.body)
+            XCTAssertEqual(sourceBody.items.map(\.key), ["claude-code"])
+            let project = try await server.request(
+                "GET", "/web/api/facets?kind=project&query=engram&agents=only&limit=2",
+                headers: headers)
+            XCTAssertEqual(project.status, 200)
+            let projectBody: EngramServiceWebFacetsResponse = try JSONDecoder().decode(EngramServiceWebFacetsResponse.self, from: project.body)
+            XCTAssertEqual(projectBody.items.first?.label, "engram")
+            let continued = try await server.request(
+                "GET", "/web/api/facets?kind=source&limit=2&snapshotId=\(Self.snapshot)&cursor=next",
+                headers: headers)
+            XCTAssertEqual(continued.status, 200)
+        }
+        XCTAssertEqual(recorders.facets.values.map(\.kind), [.source, .project, .source])
+        XCTAssertEqual(recorders.facets.values.map(\.query), [nil, "engram", nil])
+        XCTAssertEqual(recorders.facets.values.map(\.agents), [.hide, .only, .hide])
+        XCTAssertEqual(recorders.facets.values.map(\.limit), [50, 2, 2])
+        XCTAssertEqual(recorders.facets.values[2].snapshotId, Self.snapshot)
+        XCTAssertEqual(recorders.facets.values[2].cursor, "next")
+        XCTAssertTrue(recorders.overview.values.isEmpty)
+        XCTAssertTrue(recorders.sessions.values.isEmpty)
+        XCTAssertTrue(recorders.detail.values.isEmpty)
+        XCTAssertTrue(fixture.requests.isEmpty)
+    }
+
+    func testMakeSurfaceSocketRoundTripForFacetsDTO_repro() async throws {
+        let fixture = try metadataFixture()
+        defer { fixture.stop() }
+        try await withServer(factory: { path in
+            try WebReadRoutes.makeSurface(socketPath: path)
+        }) { server in
+            let cookie = try await Self.login(server)
+            let response = try await server.request(
+                "GET", "/web/api/facets?kind=project&query=engram&agents=only&limit=2",
+                headers: Self.originHeaders + [("Cookie", cookie)])
+            XCTAssertEqual(response.status, 200)
+            let body: EngramServiceWebFacetsResponse = try JSONDecoder().decode(EngramServiceWebFacetsResponse.self, from: response.body)
+            XCTAssertEqual(body.snapshotId, Self.snapshot)
+            XCTAssertEqual(body.items.first?.label, "engram")
+            XCTAssertEqual(body.items.first?.sessionCount, 1)
+        }
+        XCTAssertEqual(fixture.requests.map(\.command), ["webFacets"])
+        let request = try JSONDecoder().decode(EngramServiceWebFacetsRequest.self, from: try XCTUnwrap(fixture.requests.first?.payload))
+        XCTAssertEqual(request.kind, .project)
+        XCTAssertEqual(request.query, "engram")
+        XCTAssertEqual(request.agents, .only)
+        XCTAssertEqual(request.limit, 2)
+        XCTAssertNil(request.snapshotId)
+        XCTAssertNil(request.cursor)
+    }
+
+    func testStatsRejectsInvalidQueryBeforeReaderAndAcceptsExactContract_repro() async throws {
+        let fixture = try fixture()
+        defer { fixture.stop() }
+        let recorders = A5bRouteRecorders()
+        try await withServer(surface: recordingSurface(recorders: recorders)) { server in
+            let cookie = try await Self.login(server)
+            let headers = Self.originHeaders + [("Cookie", cookie)]
+            for rejected in [
+                "groupBy=month", "groupBy=source&groupBy=day", "since=2026-9-07", "since=2026-02-30",
+                "since=2026-09-13&until=2026-09-07", "excludeNoise=yes", "excludeNoise=1",
+                "agents=visible", "limit=0", "limit=101", "cursor=next",
+                "snapshotId=\(Self.snapshot)", "unknown=1",
+            ] {
+                let response = try await server.request("GET", "/web/api/stats?" + rejected, headers: headers)
+                XCTAssertEqual(response.status, 400, rejected)
+                Self.assertSecurityHeaders(response)
+            }
+            let source = try await server.request("GET", "/web/api/stats", headers: headers)
+            XCTAssertEqual(source.status, 200)
+            let sourceBody: EngramServiceWebStatsResponse = try JSONDecoder().decode(
+                EngramServiceWebStatsResponse.self, from: source.body)
+            XCTAssertEqual(sourceBody.groupBy, .source)
+            XCTAssertEqual(sourceBody.items.map(\.key), ["claude-code"])
+            let ranged = try await server.request(
+                "GET", "/web/api/stats?groupBy=day&since=2026-09-07&until=2026-09-13&excludeNoise=true&agents=only&limit=2",
+                headers: headers)
+            XCTAssertEqual(ranged.status, 200)
+            let continued = try await server.request(
+                "GET", "/web/api/stats?limit=2&snapshotId=\(Self.snapshot)&cursor=next",
+                headers: headers)
+            XCTAssertEqual(continued.status, 200)
+        }
+        XCTAssertEqual(recorders.stats.values.map(\.groupBy), [.source, .day, .source])
+        XCTAssertEqual(recorders.stats.values.map(\.since), [nil, "2026-09-07", nil])
+        XCTAssertEqual(recorders.stats.values.map(\.until), [nil, "2026-09-13", nil])
+        XCTAssertEqual(recorders.stats.values.map(\.excludeNoise), [false, true, false])
+        XCTAssertEqual(recorders.stats.values.map(\.agents), [.hide, .only, .hide])
+        XCTAssertEqual(recorders.stats.values.map(\.limit), [50, 2, 2])
+        XCTAssertEqual(recorders.stats.values[2].snapshotId, Self.snapshot)
+        XCTAssertEqual(recorders.stats.values[2].cursor, "next")
+        XCTAssertTrue(recorders.overview.values.isEmpty)
+        XCTAssertTrue(recorders.sessions.values.isEmpty)
+        XCTAssertTrue(recorders.detail.values.isEmpty)
+        XCTAssertTrue(recorders.facets.values.isEmpty)
+        XCTAssertTrue(fixture.requests.isEmpty)
+    }
+
+    func testMakeSurfaceSocketRoundTripForStatsDTO_repro() async throws {
+        let fixture = try metadataFixture()
+        defer { fixture.stop() }
+        try await withServer(factory: { path in
+            try WebReadRoutes.makeSurface(socketPath: path)
+        }) { server in
+            let cookie = try await Self.login(server)
+            let response = try await server.request(
+                "GET", "/web/api/stats?groupBy=project&excludeNoise=true&limit=2",
+                headers: Self.originHeaders + [("Cookie", cookie)])
+            XCTAssertEqual(response.status, 200)
+            let body: EngramServiceWebStatsResponse = try JSONDecoder().decode(
+                EngramServiceWebStatsResponse.self, from: response.body)
+            XCTAssertEqual(body.snapshotId, Self.snapshot)
+            XCTAssertEqual(body.groupBy, .project)
+            XCTAssertEqual(body.items.first?.key, "project_1")
+            XCTAssertEqual(body.totals.sessionCount, 1)
+        }
+        XCTAssertEqual(fixture.requests.map(\.command), ["webStats"])
+        let request = try JSONDecoder().decode(EngramServiceWebStatsRequest.self, from: try XCTUnwrap(fixture.requests.first?.payload))
+        XCTAssertEqual(request.groupBy, .project)
+        XCTAssertEqual(request.excludeNoise, true)
+        XCTAssertEqual(request.limit, 2)
+        XCTAssertNil(request.snapshotId)
+        XCTAssertNil(request.cursor)
+    }
+
+    func testSettingsRejectsInvalidQueryBeforeReaderAndAcceptsExactContract_repro() async throws {
+        let fixture = try fixture()
+        defer { fixture.stop() }
+        let recorders = A5bRouteRecorders()
+        try await withServer(surface: recordingSurface(recorders: recorders)) { server in
+            let cookie = try await Self.login(server)
+            let headers = Self.originHeaders + [("Cookie", cookie)]
+            for rejected in [
+                "limit=0", "limit=101", "limit=01", "cursor=next",
+                "snapshotId=\(Self.snapshot)", "unknown=1", "port=3457",
+            ] {
+                let response = try await server.request("GET", "/web/api/settings?" + rejected, headers: headers)
+                XCTAssertEqual(response.status, 400, rejected)
+                Self.assertSecurityHeaders(response)
+            }
+            let first = try await server.request("GET", "/web/api/settings", headers: headers)
+            XCTAssertEqual(first.status, 200)
+            let body: EngramServiceWebSettingsResponse = try JSONDecoder().decode(
+                EngramServiceWebSettingsResponse.self, from: first.body)
+            XCTAssertEqual(body.sources.map(\.key), ["claude-code"])
+            XCTAssertEqual(body.totalSessions, 1)
+            XCTAssertEqual(body.nodeName.availability, .unavailable)
+            XCTAssertEqual(body.port.availability, .unavailable)
+            let continued = try await server.request(
+                "GET", "/web/api/settings?limit=2&snapshotId=\(Self.snapshot)&cursor=next",
+                headers: headers)
+            XCTAssertEqual(continued.status, 200)
+        }
+        XCTAssertEqual(recorders.settings.values.map(\.limit), [50, 2])
+        XCTAssertEqual(recorders.settings.values[1].snapshotId, Self.snapshot)
+        XCTAssertEqual(recorders.settings.values[1].cursor, "next")
+        XCTAssertTrue(recorders.overview.values.isEmpty)
+        XCTAssertTrue(recorders.sessions.values.isEmpty)
+        XCTAssertTrue(recorders.detail.values.isEmpty)
+        XCTAssertTrue(recorders.facets.values.isEmpty)
+        XCTAssertTrue(recorders.stats.values.isEmpty)
+        XCTAssertTrue(fixture.requests.isEmpty)
+    }
+
+    func testMakeSurfaceSocketRoundTripForSettingsDTO_repro() async throws {
+        let fixture = try metadataFixture()
+        defer { fixture.stop() }
+        try await withServer(factory: { path in
+            try WebReadRoutes.makeSurface(socketPath: path)
+        }) { server in
+            let cookie = try await Self.login(server)
+            let response = try await server.request(
+                "GET", "/web/api/settings?limit=2",
+                headers: Self.originHeaders + [("Cookie", cookie)])
+            XCTAssertEqual(response.status, 200)
+            let body: EngramServiceWebSettingsResponse = try JSONDecoder().decode(
+                EngramServiceWebSettingsResponse.self, from: response.body)
+            XCTAssertEqual(body.snapshotId, Self.snapshot)
+            XCTAssertEqual(body.sources.map(\.key), ["claude-code"])
+            XCTAssertEqual(body.aliases.first?.alias, "old_keep")
+            XCTAssertEqual(body.aliases.first?.aliasLabel, "old_keep")
+            XCTAssertEqual(body.aliases.first?.canonicalLabel, "project_1")
+            XCTAssertEqual(body.port.availability, .unavailable)
+        }
+        XCTAssertEqual(fixture.requests.map(\.command), ["webSettings"])
+        let request = try JSONDecoder().decode(EngramServiceWebSettingsRequest.self, from: try XCTUnwrap(fixture.requests.first?.payload))
+        XCTAssertEqual(request.limit, 2)
+        XCTAssertNil(request.snapshotId)
+        XCTAssertNil(request.cursor)
+    }
+
     func testSessionDetailRejectsNonemptyQueryWith400BeforeReader() async throws {
         let fixture = try fixture()
         defer { fixture.stop() }
@@ -282,18 +582,240 @@ final class WebMetadataHTTPTests: XCTestCase {
         XCTAssertTrue(fixture.requests.isEmpty)
     }
 
-    func testSearchPathIsNotARouteAndDoesNotInvokeReaders() async throws {
+    func testSearchAndStatusParseFiltersAndRejectInvalidMode_repro() async throws {
         let fixture = try fixture()
         defer { fixture.stop() }
         let recorders = A5bRouteRecorders()
         try await withServer(surface: recordingSurface(recorders: recorders)) { server in
             let cookie = try await Self.login(server)
-            let response = try await server.request("GET", "/web/api/search?query=foo", headers: Self.originHeaders + [("Cookie", cookie)])
-            XCTAssertEqual(response.status, 404)
-            Self.assertSecurityHeaders(response)
+            let headers = Self.originHeaders + [("Cookie", cookie)]
+            for rejected in [
+                "", "mode=semantic", "query=foo&mode=both", "query=foo&mode=keyword&mode=semantic",
+                "query=foo&tools=yes", "query=foo&limit=51", "query=foo&unknown=1",
+                "query=foo&snapshotId=\(Self.snapshot)", "query=foo&cursor=next",
+            ] {
+                let path = rejected.isEmpty ? "/web/api/search" : "/web/api/search?" + rejected
+                let response = try await server.request("GET", path, headers: headers)
+                XCTAssertEqual(response.status, 400, path)
+                Self.assertSecurityHeaders(response)
+            }
+            let accepted = try await server.request(
+                "GET",
+                "/web/api/search?query=foo+bar&since=2026-09-07&until=2026-09-13&tools=hide&mode=semantic&limit=25",
+                headers: headers)
+            XCTAssertEqual(accepted.status, 200)
+            let body: EngramServiceWebSearchResponse = try JSONDecoder().decode(
+                EngramServiceWebSearchResponse.self, from: accepted.body)
+            XCTAssertEqual(body.query, "foo+bar")
+            XCTAssertNil(body.warning)
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: accepted.body) as? [String: Any])
+            XCTAssertNil(object["totalCount"])
+            XCTAssertNil(object["nextCursor"])
+            let statusRejected = try await server.request(
+                "GET", "/web/api/search/status?query=foo", headers: headers)
+            XCTAssertEqual(statusRejected.status, 400)
+            let status = try await server.request(
+                "GET", "/web/api/search/status?since=2026-09-07&tools=hide", headers: headers)
+            XCTAssertEqual(status.status, 200)
+            let statusBody: EngramServiceWebSearchStatusResponse = try JSONDecoder().decode(
+                EngramServiceWebSearchStatusResponse.self, from: status.body)
+            XCTAssertEqual(statusBody.eligibleSessionCount, 2)
+            XCTAssertEqual(statusBody.embeddedSessionCount, 1)
+            XCTAssertEqual(statusBody.progressPercent, 50)
+            XCTAssertEqual(statusBody.model, "probe")
+        }
+        XCTAssertEqual(recorders.search.values.count, 1)
+        let recorded = try XCTUnwrap(recorders.search.values.first)
+        XCTAssertEqual(recorded.query, "foo+bar")
+        XCTAssertEqual(recorded.since, "2026-09-07")
+        XCTAssertEqual(recorded.until, "2026-09-13")
+        XCTAssertEqual(recorded.tools, .hide)
+        XCTAssertEqual(recorded.mode, .semantic)
+        XCTAssertEqual(recorded.limit, 25)
+        XCTAssertEqual(recorders.searchStatus.values.map(\.since), ["2026-09-07"])
+        XCTAssertEqual(recorders.searchStatus.values.map(\.tools), [.hide])
+        XCTAssertTrue(recorders.sessions.values.isEmpty)
+        XCTAssertTrue(fixture.requests.isEmpty)
+    }
+
+    func testSearchSemanticAliasAndPrefixedPathsStayClosed_repro() async throws {
+        let fixture = try fixture()
+        defer { fixture.stop() }
+        let recorders = A5bRouteRecorders()
+        try await withServer(surface: recordingSurface(recorders: recorders)) { server in
+            let cookie = try await Self.login(server)
+            for path in ["/web/api/search/", "/web/api/search/semantic", "/web/api/search/status/"] {
+                let response = try await server.request(
+                    "GET", path, headers: Self.originHeaders + [("Cookie", cookie)])
+                XCTAssertEqual(response.status, 404, path)
+                Self.assertSecurityHeaders(response)
+            }
         }
         recorders.assertIdle()
         XCTAssertTrue(fixture.requests.isEmpty)
+    }
+
+    func testMakeSurfaceSocketRoundTripForSearchAndStatusDTOs_repro() async throws {
+        let fixture = try metadataFixture()
+        defer { fixture.stop() }
+        try await withServer(factory: { path in
+            try WebReadRoutes.makeSurface(socketPath: path)
+        }) { server in
+            let cookie = try await Self.login(server)
+            let headers = Self.originHeaders + [("Cookie", cookie)]
+            let search = try await server.request(
+                "GET", "/web/api/search?query=foo&limit=10", headers: headers)
+            XCTAssertEqual(search.status, 200)
+            let searchBody: EngramServiceWebSearchResponse = try JSONDecoder().decode(
+                EngramServiceWebSearchResponse.self, from: search.body)
+            XCTAssertEqual(searchBody.query, "foo")
+            XCTAssertEqual(searchBody.items.first?.matchType, "keyword")
+            let searchObject = try XCTUnwrap(JSONSerialization.jsonObject(with: search.body) as? [String: Any])
+            XCTAssertNil(searchObject["totalCount"])
+            let omitted = try await server.request("GET", "/web/api/search/status", headers: headers)
+            XCTAssertEqual(omitted.status, 200)
+            let omittedBody: EngramServiceWebSearchStatusResponse = try JSONDecoder().decode(
+                EngramServiceWebSearchStatusResponse.self, from: omitted.body)
+            XCTAssertNil(omittedBody.eligibleSessionCount)
+            XCTAssertNil(omittedBody.embeddedSessionCount)
+            XCTAssertNil(omittedBody.progressPercent)
+            let omittedObject = try XCTUnwrap(JSONSerialization.jsonObject(with: omitted.body) as? [String: Any])
+            XCTAssertNil(omittedObject["eligibleSessionCount"])
+            XCTAssertNil(omittedObject["embeddedSessionCount"])
+            XCTAssertNil(omittedObject["progressPercent"])
+            XCTAssertNil(omittedObject["model"])
+        }
+        XCTAssertEqual(fixture.requests.map(\.command), ["webSearch", "webSearchStatus"])
+    }
+
+    func testCostsRejectsInvalidQueryBeforeReaderAndAcceptsExactContract_repro() async throws {
+        let fixture = try fixture()
+        defer { fixture.stop() }
+        let recorders = A5bRouteRecorders()
+        try await withServer(surface: recordingSurface(recorders: recorders)) { server in
+            let cookie = try await Self.login(server)
+            let headers = Self.originHeaders + [("Cookie", cookie)]
+            for rejected in [
+                "groupBy=week", "groupBy=model&groupBy=source", "since=2026-9-07", "since=2026-02-30",
+                "since=2026-09-13&until=2026-09-07", "agents=visible", "limit=0", "limit=101",
+                "cursor=next", "snapshotId=\(Self.snapshot)", "unknown=1", "query=foo", "mode=keyword",
+            ] {
+                let response = try await server.request("GET", "/web/api/costs?" + rejected, headers: headers)
+                XCTAssertEqual(response.status, 400, rejected)
+                Self.assertSecurityHeaders(response)
+            }
+            let omitted = try await server.request("GET", "/web/api/costs", headers: headers)
+            XCTAssertEqual(omitted.status, 200)
+            let omittedBody: EngramServiceWebCostsResponse = try JSONDecoder().decode(
+                EngramServiceWebCostsResponse.self, from: omitted.body)
+            XCTAssertEqual(omittedBody.groupBy, .model)
+            XCTAssertEqual(omittedBody.timeZone, "Asia/Shanghai")
+            XCTAssertEqual(omittedBody.totals.sessionCount, 2)
+            let ranged = try await server.request(
+                "GET",
+                "/web/api/costs?groupBy=day&since=2026-09-07&until=2026-09-13&tools=hide&agents=only&limit=2",
+                headers: headers)
+            XCTAssertEqual(ranged.status, 200)
+            let continued = try await server.request(
+                "GET", "/web/api/costs?limit=2&snapshotId=\(Self.snapshot)&cursor=next",
+                headers: headers)
+            XCTAssertEqual(continued.status, 200)
+        }
+        XCTAssertEqual(recorders.costs.values.map(\.groupBy), [.model, .day, .model])
+        XCTAssertEqual(recorders.costs.values.map(\.since), [nil, "2026-09-07", nil])
+        XCTAssertEqual(recorders.costs.values.map(\.until), [nil, "2026-09-13", nil])
+        XCTAssertEqual(recorders.costs.values.map(\.tools), [.all, .hide, .all])
+        XCTAssertEqual(recorders.costs.values.map(\.agents), [.hide, .only, .hide])
+        XCTAssertEqual(recorders.costs.values.map(\.limit), [50, 2, 2])
+        XCTAssertEqual(recorders.costs.values[2].snapshotId, Self.snapshot)
+        XCTAssertEqual(recorders.costs.values[2].cursor, "next")
+        XCTAssertTrue(recorders.costSessions.values.isEmpty)
+        XCTAssertTrue(recorders.search.values.isEmpty)
+        XCTAssertTrue(fixture.requests.isEmpty)
+    }
+
+    func testCostSessionsRejectsCursorGroupByAndAcceptsTopN_repro() async throws {
+        let fixture = try fixture()
+        defer { fixture.stop() }
+        let recorders = A5bRouteRecorders()
+        try await withServer(surface: recordingSurface(recorders: recorders)) { server in
+            let cookie = try await Self.login(server)
+            let headers = Self.originHeaders + [("Cookie", cookie)]
+            for rejected in [
+                "groupBy=model", "snapshotId=\(Self.snapshot)", "cursor=next",
+                "limit=0", "limit=101", "unknown=1", "query=foo",
+            ] {
+                let response = try await server.request(
+                    "GET", "/web/api/costs/sessions?" + rejected, headers: headers)
+                XCTAssertEqual(response.status, 400, rejected)
+                Self.assertSecurityHeaders(response)
+            }
+            let accepted = try await server.request(
+                "GET",
+                "/web/api/costs/sessions?since=2026-09-07&until=2026-09-13&tools=hide&limit=20",
+                headers: headers)
+            XCTAssertEqual(accepted.status, 200)
+            let body: EngramServiceWebCostSessionsResponse = try JSONDecoder().decode(
+                EngramServiceWebCostSessionsResponse.self, from: accepted.body)
+            XCTAssertEqual(body.items.count, 1)
+            XCTAssertEqual(body.items.first?.session.sessionId, "session-a")
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: accepted.body) as? [String: Any])
+            XCTAssertNil(object["totalCount"])
+            XCTAssertNil(object["nextCursor"])
+            let defaulted = try await server.request("GET", "/web/api/costs/sessions", headers: headers)
+            XCTAssertEqual(defaulted.status, 200)
+        }
+        XCTAssertEqual(recorders.costSessions.values.map(\.limit), [20, 20])
+        XCTAssertEqual(recorders.costSessions.values.map(\.since), ["2026-09-07", nil])
+        XCTAssertEqual(recorders.costSessions.values.map(\.tools), [.hide, .all])
+        XCTAssertTrue(recorders.costs.values.isEmpty)
+        XCTAssertTrue(fixture.requests.isEmpty)
+    }
+
+    func testCostsPrefixedPathsStayClosed_repro() async throws {
+        let fixture = try fixture()
+        defer { fixture.stop() }
+        let recorders = A5bRouteRecorders()
+        try await withServer(surface: recordingSurface(recorders: recorders)) { server in
+            let cookie = try await Self.login(server)
+            for path in ["/web/api/costs/", "/web/api/costs/day", "/web/api/costs/sessions/"] {
+                let response = try await server.request(
+                    "GET", path, headers: Self.originHeaders + [("Cookie", cookie)])
+                XCTAssertEqual(response.status, 404, path)
+                Self.assertSecurityHeaders(response)
+            }
+        }
+        recorders.assertIdle()
+        XCTAssertTrue(fixture.requests.isEmpty)
+    }
+
+    func testMakeSurfaceSocketRoundTripForCostsDTOs_repro() async throws {
+        let fixture = try metadataFixture()
+        defer { fixture.stop() }
+        try await withServer(factory: { path in
+            try WebReadRoutes.makeSurface(socketPath: path)
+        }) { server in
+            let cookie = try await Self.login(server)
+            let headers = Self.originHeaders + [("Cookie", cookie)]
+            let costs = try await server.request(
+                "GET", "/web/api/costs?groupBy=project&limit=2", headers: headers)
+            XCTAssertEqual(costs.status, 200)
+            let costsBody: EngramServiceWebCostsResponse = try JSONDecoder().decode(
+                EngramServiceWebCostsResponse.self, from: costs.body)
+            XCTAssertEqual(costsBody.groupBy, .project)
+            XCTAssertEqual(costsBody.items.first?.key, "project_1")
+            XCTAssertEqual(costsBody.totals.sessionCount, 2)
+            let sessions = try await server.request(
+                "GET", "/web/api/costs/sessions?limit=20", headers: headers)
+            XCTAssertEqual(sessions.status, 200)
+            let sessionsBody: EngramServiceWebCostSessionsResponse = try JSONDecoder().decode(
+                EngramServiceWebCostSessionsResponse.self, from: sessions.body)
+            XCTAssertEqual(sessionsBody.items.first?.costUsd, 1.25)
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: sessions.body) as? [String: Any])
+            XCTAssertNil(object["totalCount"])
+            XCTAssertNil(object["nextCursor"])
+        }
+        XCTAssertEqual(fixture.requests.map(\.command), ["webCosts", "webCostSessions"])
     }
 
     func testOtherwiseValidEncodedQueryAccepts4096ButRejects4097BeforeReader() async throws {
@@ -381,10 +903,12 @@ final class WebMetadataHTTPTests: XCTestCase {
         defer { fixture.stop() }
         let recorders = A5bRouteRecorders()
         try await withServer(surface: recordingSurface(recorders: recorders)) { server in
-            for path in ["/web/api/overview", "/web/api/sessions", "/web/api/sessions/session-a"] {
+            let cookie = try await Self.login(server)
+            for path in ["/web/api/overview", "/web/api/sessions", "/web/api/sessions/session-a",
+                         "/web/api/settings", "/web/api/search", "/web/api/search/status",
+                         "/web/api/costs", "/web/api/costs/sessions"] {
                 let unauthorized = try await server.request("GET", path, headers: Self.originHeaders)
                 XCTAssertEqual(unauthorized.status, 401, path)
-                let cookie = try await Self.login(server)
                 let missingHeader = try await server.request("GET", path, headers: [("Origin", Self.origin), ("Cookie", cookie)])
                 XCTAssertEqual(missingHeader.status, 403, path)
                 for method in ["POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] {
@@ -542,7 +1066,14 @@ final class WebMetadataHTTPTests: XCTestCase {
         recorders: A5bRouteRecorders,
         overview: (@Sendable (EngramServiceWebOverviewRequest) async throws -> EngramServiceWebOverviewResponse)? = nil,
         sessions: (@Sendable (EngramServiceWebSessionsRequest) async throws -> EngramServiceWebSessionsResponse)? = nil,
-        detail: (@Sendable (EngramServiceWebSessionDetailRequest) async throws -> EngramServiceWebSessionDetailResponse)? = nil
+        detail: (@Sendable (EngramServiceWebSessionDetailRequest) async throws -> EngramServiceWebSessionDetailResponse)? = nil,
+        facets: (@Sendable (EngramServiceWebFacetsRequest) async throws -> EngramServiceWebFacetsResponse)? = nil,
+        stats: (@Sendable (EngramServiceWebStatsRequest) async throws -> EngramServiceWebStatsResponse)? = nil,
+        settings: (@Sendable (EngramServiceWebSettingsRequest) async throws -> EngramServiceWebSettingsResponse)? = nil,
+        search: (@Sendable (EngramServiceWebSearchRequest) async throws -> EngramServiceWebSearchResponse)? = nil,
+        searchStatus: (@Sendable (EngramServiceWebSearchStatusRequest) async throws -> EngramServiceWebSearchStatusResponse)? = nil,
+        costs: (@Sendable (EngramServiceWebCostsRequest) async throws -> EngramServiceWebCostsResponse)? = nil,
+        costSessions: (@Sendable (EngramServiceWebCostSessionsRequest) async throws -> EngramServiceWebCostSessionsResponse)? = nil
     ) -> WebReadRoutes.Surface {
         WebReadRoutes.Surface(
             messages: { _ in throw EngramServiceWebReadClientError.unavailable },
@@ -560,6 +1091,41 @@ final class WebMetadataHTTPTests: XCTestCase {
                 recorders.detail.append(request.sessionId)
                 if let detail { return try await detail(request) }
                 return Self.detailPage(request.sessionId)
+            },
+            facets: { request in
+                recorders.facets.append(request)
+                if let facets { return try await facets(request) }
+                return Self.facetsPage(request)
+            },
+            stats: { request in
+                recorders.stats.append(request)
+                if let stats { return try await stats(request) }
+                return Self.statsPage(request)
+            },
+            settings: { request in
+                recorders.settings.append(request)
+                if let settings { return try await settings(request) }
+                return Self.settingsPage(request)
+            },
+            search: { request in
+                recorders.search.append(request)
+                if let search { return try await search(request) }
+                return Self.searchPage(request)
+            },
+            searchStatus: { request in
+                recorders.searchStatus.append(request)
+                if let searchStatus { return try await searchStatus(request) }
+                return Self.searchStatusPage(request)
+            },
+            costs: { request in
+                recorders.costs.append(request)
+                if let costs { return try await costs(request) }
+                return Self.costsPage(request)
+            },
+            costSessions: { request in
+                recorders.costSessions.append(request)
+                if let costSessions { return try await costSessions(request) }
+                return Self.costSessionsPage(request)
             }
         )
     }
@@ -599,6 +1165,27 @@ final class WebMetadataHTTPTests: XCTestCase {
             case "webSessionDetail":
                 let input = try JSONDecoder().decode(EngramServiceWebSessionDetailRequest.self, from: try XCTUnwrap(request.payload))
                 return try Self.success(Self.detailPage(input.sessionId), id: request.requestId)
+            case "webFacets":
+                let input = try JSONDecoder().decode(EngramServiceWebFacetsRequest.self, from: try XCTUnwrap(request.payload))
+                return try Self.success(Self.facetsPage(input), id: request.requestId)
+            case "webStats":
+                let input = try JSONDecoder().decode(EngramServiceWebStatsRequest.self, from: try XCTUnwrap(request.payload))
+                return try Self.success(Self.statsPage(input), id: request.requestId)
+            case "webSettings":
+                let input = try JSONDecoder().decode(EngramServiceWebSettingsRequest.self, from: try XCTUnwrap(request.payload))
+                return try Self.success(Self.settingsPage(input), id: request.requestId)
+            case "webSearch":
+                let input = try JSONDecoder().decode(EngramServiceWebSearchRequest.self, from: try XCTUnwrap(request.payload))
+                return try Self.success(Self.searchPage(input), id: request.requestId)
+            case "webSearchStatus":
+                let input = try JSONDecoder().decode(EngramServiceWebSearchStatusRequest.self, from: try XCTUnwrap(request.payload))
+                return try Self.success(Self.searchStatusPage(input, includeCounts: false), id: request.requestId)
+            case "webCosts":
+                let input = try JSONDecoder().decode(EngramServiceWebCostsRequest.self, from: try XCTUnwrap(request.payload))
+                return try Self.success(Self.costsPage(input), id: request.requestId)
+            case "webCostSessions":
+                let input = try JSONDecoder().decode(EngramServiceWebCostSessionsRequest.self, from: try XCTUnwrap(request.payload))
+                return try Self.success(Self.costSessionsPage(input), id: request.requestId)
             default:
                 throw A5bFailure("Unexpected metadata command \(request.command)")
             }
@@ -626,14 +1213,143 @@ final class WebMetadataHTTPTests: XCTestCase {
     }
 
     private static func sessionsPage(_ request: EngramServiceWebSessionsRequest) -> EngramServiceWebSessionsResponse {
-        EngramServiceWebSessionsResponse(
+        let isAgent: Bool?
+        switch request.agents {
+        case .hide: isAgent = false
+        case .only: isAgent = true
+        case .all: isAgent = nil
+        }
+        return EngramServiceWebSessionsResponse(
             snapshotId: request.snapshotId ?? snapshot, observedAt: 1,
-            items: [.init(sessionId: "session-a", source: request.source ?? "claude-code",
+            items: [.init(sessionId: request.sessionId ?? "session-a",
+                          source: request.resolvedSources?.first ?? "claude-code",
                           captureIdentity: .init(machineId: request.machineId ?? machine,
                                                  sourceInstanceId: request.sourceInstanceId ?? instance),
                           metadataGeneration: String(repeating: "a", count: 64), title: nil,
-                          projectKey: request.projectKey, projectLabel: nil, startedAt: 1)],
+                          projectKey: request.resolvedProjectKeys?.first, projectLabel: nil, startedAt: 1,
+                          isAgent: isAgent, nativeId: request.sessionId)],
             nextCursor: request.cursor == nil ? nil : "after"
+        )
+    }
+
+    private static func facetsPage(_ request: EngramServiceWebFacetsRequest) -> EngramServiceWebFacetsResponse {
+        let key = request.kind == .source ? "claude-code" : "project_1"
+        return EngramServiceWebFacetsResponse(
+            snapshotId: request.snapshotId ?? snapshot, observedAt: 1,
+            items: [.init(key: key, label: request.query ?? key, sessionCount: 1)],
+            nextCursor: request.cursor == nil ? nil : "after"
+        )
+    }
+
+    private static func settingsPage(_ request: EngramServiceWebSettingsRequest) -> EngramServiceWebSettingsResponse {
+        EngramServiceWebSettingsResponse(
+            snapshotId: request.snapshotId ?? snapshot, observedAt: 1,
+            sources: [.init(key: "claude-code", label: "claude-code")],
+            totalSessions: 1,
+            aliases: [.init(alias: "old_keep", canonical: "project_1",
+                            aliasLabel: "old_keep", canonicalLabel: "project_1")],
+            nextCursor: request.cursor == nil ? nil : "after",
+            nodeName: .init(), peers: .init(), port: .init()
+        )
+    }
+
+    private static func statsPage(_ request: EngramServiceWebStatsRequest) -> EngramServiceWebStatsResponse {
+        let key: String
+        switch request.groupBy {
+        case .source: key = "claude-code"
+        case .project: key = "project_1"
+        case .day, .week: key = request.since ?? "2026-09-07"
+        }
+        let item = EngramServiceWebStatsItem(key: key, label: key, sessionCount: 1, messageCount: 2,
+            userMessageCount: 1, assistantMessageCount: 1, toolMessageCount: 0)
+        return EngramServiceWebStatsResponse(
+            snapshotId: request.snapshotId ?? snapshot, observedAt: 1, groupBy: request.groupBy,
+            timeZone: "Asia/Shanghai",
+            totals: .init(sessionCount: 1, messageCount: 2, userMessageCount: 1,
+                          assistantMessageCount: 1, toolMessageCount: 0),
+            items: [item], nextCursor: request.cursor == nil ? nil : "after"
+        )
+    }
+
+    private static func searchPage(_ request: EngramServiceWebSearchRequest) -> EngramServiceWebSearchResponse {
+        let isAgent: Bool?
+        switch request.agents {
+        case .hide: isAgent = false
+        case .only: isAgent = true
+        case .all: isAgent = nil
+        }
+        let session = EngramServiceWebSessionSummary(
+            sessionId: request.sessionId ?? "session-a",
+            source: request.resolvedSources?.first ?? "claude-code",
+            captureIdentity: .init(machineId: request.machineId ?? machine,
+                                   sourceInstanceId: request.sourceInstanceId ?? instance),
+            metadataGeneration: String(repeating: "a", count: 64), title: nil,
+            projectKey: request.resolvedProjectKeys?.first, projectLabel: nil,
+            startedAt: 1_757_246_400, isAgent: isAgent, nativeId: request.sessionId)
+        return EngramServiceWebSearchResponse(
+            observedAt: 1, query: request.query,
+            items: [.init(session: session, snippet: "hit", matchType: "keyword", score: 1)],
+            searchModes: request.mode == .keyword ? ["keyword"] : [request.mode.rawValue],
+            warning: nil, warningCode: nil
+        )
+    }
+
+    private static func costsPage(_ request: EngramServiceWebCostsRequest) -> EngramServiceWebCostsResponse {
+        let key: String
+        switch request.groupBy {
+        case .model: key = "claude-sonnet"
+        case .source: key = "claude-code"
+        case .project: key = "project_1"
+        case .day: key = request.since ?? "2026-09-07"
+        }
+        let item = EngramServiceWebCostItem(
+            key: key, label: key, costUsd: 1.25, inputTokens: 10, outputTokens: 4,
+            cacheReadTokens: 1, cacheCreationTokens: 2, sessionCount: 1)
+        return EngramServiceWebCostsResponse(
+            snapshotId: request.snapshotId ?? snapshot, observedAt: 1, groupBy: request.groupBy,
+            timeZone: "Asia/Shanghai",
+            totals: .init(costUsd: 2.5, inputTokens: 20, outputTokens: 8,
+                          cacheReadTokens: 2, cacheCreationTokens: 4, sessionCount: 2),
+            items: [item], nextCursor: request.cursor == nil ? nil : "after",
+            unpricedUnattributedSessions: 0, unpricedNoPriceSessions: 0,
+            unpricedUnattributedTokens: 0, unpricedNoPriceTokens: 0)
+    }
+
+    private static func costSessionsPage(_ request: EngramServiceWebCostSessionsRequest) -> EngramServiceWebCostSessionsResponse {
+        let isAgent: Bool?
+        switch request.agents {
+        case .hide: isAgent = false
+        case .only: isAgent = true
+        case .all: isAgent = nil
+        }
+        let session = EngramServiceWebSessionSummary(
+            sessionId: request.sessionId ?? "session-a",
+            source: request.resolvedSources?.first ?? "claude-code",
+            captureIdentity: .init(machineId: request.machineId ?? machine,
+                                   sourceInstanceId: request.sourceInstanceId ?? instance),
+            metadataGeneration: String(repeating: "a", count: 64), title: nil,
+            projectKey: request.resolvedProjectKeys?.first, projectLabel: nil,
+            startedAt: 1_757_246_400, isAgent: isAgent, nativeId: request.sessionId)
+        return EngramServiceWebCostSessionsResponse(
+            observedAt: 1,
+            items: [.init(session: session, costUsd: 1.25, model: "claude-sonnet",
+                          inputTokens: 10, outputTokens: 4, cacheReadTokens: 1, cacheCreationTokens: 2)]
+        )
+    }
+
+    private static func searchStatusPage(
+        _ request: EngramServiceWebSearchStatusRequest,
+        includeCounts: Bool = true
+    ) -> EngramServiceWebSearchStatusResponse {
+        EngramServiceWebSearchStatusResponse(
+            observedAt: 1, keyword: .available, semantic: .unavailable, hybrid: .unavailable,
+            warning: "Semantic search unavailable: embedding provider is not configured; returning keyword results only.",
+            warningCode: "embeddingProviderUnavailable",
+            model: includeCounts ? "probe" : nil,
+            dimension: includeCounts ? 3 : nil,
+            eligibleSessionCount: includeCounts ? 2 : nil,
+            embeddedSessionCount: includeCounts ? 1 : nil,
+            progressPercent: includeCounts ? 50 : nil
         )
     }
 
@@ -736,11 +1452,25 @@ private final class A5bRouteRecorders: @unchecked Sendable {
     let overview = A5bRecorder<EngramServiceWebOverviewRequest>()
     let sessions = A5bRecorder<EngramServiceWebSessionsRequest>()
     let detail = A5bRecorder<String>()
+    let facets = A5bRecorder<EngramServiceWebFacetsRequest>()
+    let stats = A5bRecorder<EngramServiceWebStatsRequest>()
+    let settings = A5bRecorder<EngramServiceWebSettingsRequest>()
+    let search = A5bRecorder<EngramServiceWebSearchRequest>()
+    let searchStatus = A5bRecorder<EngramServiceWebSearchStatusRequest>()
+    let costs = A5bRecorder<EngramServiceWebCostsRequest>()
+    let costSessions = A5bRecorder<EngramServiceWebCostSessionsRequest>()
 
     func assertIdle(file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertTrue(overview.values.isEmpty, "overview reader must not run", file: file, line: line)
         XCTAssertTrue(sessions.values.isEmpty, "sessions reader must not run", file: file, line: line)
         XCTAssertTrue(detail.values.isEmpty, "detail reader must not run", file: file, line: line)
+        XCTAssertTrue(facets.values.isEmpty, "facets reader must not run", file: file, line: line)
+        XCTAssertTrue(stats.values.isEmpty, "stats reader must not run", file: file, line: line)
+        XCTAssertTrue(settings.values.isEmpty, "settings reader must not run", file: file, line: line)
+        XCTAssertTrue(search.values.isEmpty, "search reader must not run", file: file, line: line)
+        XCTAssertTrue(searchStatus.values.isEmpty, "search status reader must not run", file: file, line: line)
+        XCTAssertTrue(costs.values.isEmpty, "costs reader must not run", file: file, line: line)
+        XCTAssertTrue(costSessions.values.isEmpty, "cost sessions reader must not run", file: file, line: line)
     }
 }
 

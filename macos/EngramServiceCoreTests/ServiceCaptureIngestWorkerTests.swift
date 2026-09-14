@@ -85,6 +85,49 @@ final class ServiceCaptureIngestWorkerTests: XCTestCase {
         XCTAssertEqual(try count("sessions"), 0)
     }
 
+    func testSameBatchGenerationsParseInSequenceDespiteReversedDigestOrder() async throws {
+        let raw = try claudeBytes(nativeID: "native-session")
+        let first = try publishCAS(raw: raw, source: .claudeCode, root: logicalRoot,
+            relative: "project/session.jsonl", instanceID: instance, epoch: epoch,
+            publishObjects: true, manifestMachine: nil, sequence: 1,
+            captureID: String(repeating: "a", count: 64))
+        var reversed: (publication: CollectorPublicationEnvelope, manifest: ArchiveSourceManifest)?
+        for nonce in 1...64 {
+            let candidate = try publishCAS(raw: raw, source: .claudeCode, root: logicalRoot,
+                relative: "project/session.jsonl", instanceID: instance, epoch: epoch,
+                publishObjects: true, manifestMachine: nil, sequence: 2,
+                captureID: String(format: "%064x", nonce))
+            if try candidate.publication.sha256() < first.publication.sha256() {
+                reversed = candidate
+                break
+            }
+        }
+        let second = try XCTUnwrap(reversed, "fixed fixture must contain a reversed digest pair")
+        XCTAssertLessThan(try second.publication.sha256(), try first.publication.sha256(),
+            "fixture must make digest ordering disagree with stream sequence")
+        try accept(first.publication, parser: revision)
+        try accept(second.publication, parser: revision)
+        try writer.write { db in
+            try db.execute(sql: "UPDATE capture_ingest_ledger SET created_at = '2026-09-06 00:00:00'")
+        }
+        let worker = makeWorker()
+        guard case .parsed(let firstReceipt) = try await worker.step() else {
+            return XCTFail("first generation must parse")
+        }
+        XCTAssertEqual(try writer.read { db in
+            try Int.fetchOne(db, sql: "SELECT sequence FROM capture_ingest_generations WHERE generation_id = ?",
+                arguments: [firstReceipt.generationID])
+        }, 1)
+        guard case .parsed(let secondReceipt) = try await worker.step() else {
+            return XCTFail("second generation must parse")
+        }
+        XCTAssertEqual(firstReceipt.sessionID, secondReceipt.sessionID)
+        XCTAssertEqual(try count("capture_ingest_generations"), 2)
+        XCTAssertEqual(try writer.read { db in
+            try Int.fetchOne(db, sql: "SELECT count(*) FROM capture_ingest_ledger WHERE status = 'parsed'")
+        }, 2)
+    }
+
     func testDefaultOffPolicySelectsNothingWithoutWorkerSQL() async throws {
         let seeded = try await seedEligible()
         policyBox.set(nil)
@@ -112,6 +155,88 @@ final class ServiceCaptureIngestWorkerTests: XCTestCase {
         XCTAssertEqual(try work(seeded).status, .parsed)
         try assertExactParsed(seeded, receipt: receipt, independent: independent)
         try assertScalarPreselection(sql, chosen: seeded.digest)
+    }
+
+    func testOlderArrivalStopsRetryingWithoutChangingCurrentGeneration() async throws {
+        try await assertObsoleteGenerationRetained(retryFirst: false)
+    }
+
+    func testOlderCASRetryStopsAfterNewerGenerationWithoutLosingArchive() async throws {
+        try await assertObsoleteGenerationRetained(retryFirst: true)
+    }
+
+    func testOlderArrivalPreservesReadyTranscriptAndFTS() async throws {
+        try await assertObsoleteGenerationRetained(retryFirst: false, readyLatest: true)
+    }
+
+    private func assertObsoleteGenerationRetained(retryFirst: Bool, readyLatest: Bool = false) async throws {
+        let raw = try claudeBytes(nativeID: "native-session", model: "old-model")
+        let worker = makeWorker()
+        var older: Seeded?
+        if retryFirst {
+            older = try await seedEligible(sequence: 1, publishObjects: false, bytes: raw)
+            let result = try await worker.step()
+            XCTAssertEqual(result, .recordedFailure)
+            XCTAssertEqual(try work(XCTUnwrap(older)).status, .retryableFailure)
+        }
+        let latest = try await seedEligible(sequence: 2)
+        let independent = try await CaptureIngestReplay.replay(publication: latest.publication,
+            bindingSnapshot: latest.binding, cas: cas, stagingParent: stagingParent)
+        guard case .parsed(let receipt) = try await worker.step() else { return XCTFail("latest must parse") }
+        try assertExactParsed(latest, receipt: receipt, independent: independent)
+        if readyLatest {
+            try writer.write { db in
+                let snapshot = try CaptureIngestNormalizedStore.load(db, sessionID: receipt.sessionID,
+                    generationID: receipt.generationID, expectedParserRevision: revision, enabledSources: [.claudeCode])
+                _ = try CaptureIngestReadiness.commit(db, snapshot: snapshot,
+                    expectedParserRevision: revision, enabledSources: [.claudeCode])
+            }
+            XCTAssertEqual(try work(latest).status, .indexReady)
+            XCTAssertEqual(try writer.read { db in
+                try Int.fetchOne(db, sql: "SELECT count(*) FROM sessions_fts WHERE sessions_fts MATCH 'Working' AND session_id = ?",
+                    arguments: [receipt.sessionID])
+            }, 1)
+        }
+        func productRows() throws -> [[Row]] {
+            try writer.read { db in
+                try ["sessions", "capture_ingest_identity_bindings", "capture_ingest_generations",
+                     "sessions_fts", "session_index_jobs"].map { table in
+                    try Row.fetchAll(db, sql: "SELECT * FROM \(table)")
+                }
+            }
+        }
+        let productBefore = try productRows()
+        let sessionBefore = try session(receipt.sessionID)
+        if retryFirst {
+            _ = try cas.publishObject(raw: raw, expectedSHA256: ArchiveV2Hash.sha256(raw))
+            clock.set(1031)
+        } else {
+            older = try await seedEligible(sequence: 1, bytes: raw)
+        }
+        let old = try XCTUnwrap(older)
+        let result = try await worker.step()
+        XCTAssertEqual(result, .recordedFailure)
+        let row = try work(old)
+        XCTAssertEqual(row.status, .quarantined)
+        XCTAssertEqual(row.failureCode, "quarantine.obsolete_generation")
+        XCTAssertNil(row.token)
+        XCTAssertNil(row.retryAfter)
+        XCTAssertEqual(row.attempt, retryFirst ? 2 : 1)
+        XCTAssertEqual(try session(receipt.sessionID), sessionBefore)
+        XCTAssertEqual(try productRows(), productBefore)
+        XCTAssertEqual(try count("capture_ingest_generations"), 1)
+        XCTAssertEqual(try count("capture_ingest_publications"), 2)
+        let retained = try await CaptureIngestReplay.replay(publication: old.publication,
+            bindingSnapshot: old.binding, cas: cas, stagingParent: stagingParent)
+        XCTAssertEqual(retained.scan.info.model, "old-model")
+        clock.set(2000)
+        let idle = try await worker.step()
+        XCTAssertEqual(idle, .idle)
+        XCTAssertEqual(try work(old), row, "obsolete work must not reacquire expired claims")
+        let unrelated = try await seedEligible(relative: "project/other.jsonl", nativeID: "other", sequence: 3)
+        guard case .parsed = try await worker.step() else { return XCTFail("unrelated work must continue") }
+        XCTAssertEqual(try work(unrelated).status, .parsed)
+        XCTAssertEqual(try session(receipt.sessionID), sessionBefore)
     }
 
     func testAbsentRegistryIsNotSelectedAndPositiveBaselineParses() async throws {
@@ -245,7 +370,7 @@ final class ServiceCaptureIngestWorkerTests: XCTestCase {
         XCTAssertEqual(try work(later).status, .pending)
     }
 
-    func testEqualTimeBinaryDigestTiePicksLesserDigest() async throws {
+    func testEqualTimeSameStreamPicksEarlierSequenceAcrossNativeSessions() async throws {
         let a = try await seedEligible(relative: "project/tie-a.jsonl", nativeID: "tie-a")
         let b = try await seedEligible(relative: "project/tie-b.jsonl", nativeID: "tie-b")
         try writer.write { db in
@@ -254,12 +379,11 @@ final class ServiceCaptureIngestWorkerTests: XCTestCase {
                 WHERE publication_sha256 IN (?, ?)
                 """, arguments: [a.digest, b.digest])
         }
-        let winner = a.digest.utf8.lexicographicallyPrecedes(b.digest.utf8) ? a : b
-        let loser = winner.digest == a.digest ? b : a
+        XCTAssertLessThan(a.publication.sequence, b.publication.sequence)
         let tied = try await makeWorker().step()
-        guard case .parsed(_) = tied else { return XCTFail("BINARY digest tie must pick the lesser digest, got \(tied)") }
-        XCTAssertEqual(try work(winner).status, .parsed)
-        XCTAssertEqual(try work(loser).status, .pending)
+        guard case .parsed(_) = tied else { return XCTFail("same-stream time tie must pick the earlier sequence, got \(tied)") }
+        XCTAssertEqual(try work(a).status, .parsed)
+        XCTAssertEqual(try work(b).status, .pending)
     }
 
     func testOtherParserRevisionIsNotSelected() async throws {
@@ -1254,7 +1378,8 @@ final class ServiceCaptureIngestWorkerTests: XCTestCase {
 
     private func publishCAS(
         raw: Data, source: SourceName, root: String, relative: String, instanceID: String,
-        epoch: String, publishObjects: Bool, manifestMachine: String?, sequence: Int64
+        epoch: String, publishObjects: Bool, manifestMachine: String?, sequence: Int64,
+        captureID: String? = nil
     ) throws -> (publication: CollectorPublicationEnvelope, manifest: ArchiveSourceManifest) {
         let hash = ArchiveV2Hash.sha256(raw)
         var chunks: [ArchiveChunkReference] = []
@@ -1268,7 +1393,7 @@ final class ServiceCaptureIngestWorkerTests: XCTestCase {
             offset = end
         }
         let manifest = try ArchiveSourceManifest(
-            captureID: ArchiveV2Hash.sha256(Data(UUID().uuidString.utf8)),
+            captureID: captureID ?? ArchiveV2Hash.sha256(Data(UUID().uuidString.utf8)),
             machineID: manifestMachine ?? machine, source: source.rawValue,
             locator: root + "/" + relative, sessionID: nil, capturedAt: "2026-09-06T00:00:00Z",
             generation: ArchiveSourceGeneration(device: 1, inode: 2, size: Int64(raw.count), mtimeNs: 3, ctimeNs: 4, mode: 0o100600),

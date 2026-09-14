@@ -191,7 +191,7 @@ private struct CaptureIngestWork: Sendable {
         case .success(let value):
             replay = value
         case .failure(let error):
-            return try await recordMappedFailure(claim: picked.0, binding: picked.1, error: error)
+            return try await recordFailure(claim: picked.0, binding: picked.1, failure: mapReplay(error))
         }
         do {
             let receipt = try await write(ServiceCaptureIngestWorker.commitCommandName, { writer in
@@ -223,6 +223,11 @@ private struct CaptureIngestWork: Sendable {
             switch error {
             case .parserRevisionChanged, .bindingChanged:
                 return .idle
+            case .obsoleteGeneration:
+                // Retain the original publication/CAS without retrying a snapshot
+                // that must never replace the newer parsed or ready head.
+                return try await recordFailure(claim: picked.0, binding: picked.1,
+                    failure: .quarantined(.obsoleteGeneration))
             default:
                 throw error
             }
@@ -231,10 +236,9 @@ private struct CaptureIngestWork: Sendable {
         }
     }
 
-    private func recordMappedFailure(
-        claim: CaptureIngestClaim, binding: CaptureIngestSourceBinding, error: CaptureIngestReplayError
+    private func recordFailure(
+        claim: CaptureIngestClaim, binding: CaptureIngestSourceBinding, failure: CaptureIngestWorkFailure
     ) async throws -> ServiceCaptureIngestStepResult {
-        let failure = mapReplay(error)
         do {
             try await write(ServiceCaptureIngestWorker.failureCommandName, { writer in
                 try self.withBorrowedTask { task in
@@ -334,7 +338,9 @@ private struct CaptureIngestWork: Sendable {
                  AND l.claim_token IS NOT NULL
                  AND typeof(l.claim_expires_at) = 'integer' AND l.claim_expires_at <= ?)
               )
-            ORDER BY l.created_at ASC, l.publication_sha256 COLLATE BINARY ASC
+            ORDER BY l.created_at ASC, p.machine_id COLLATE BINARY ASC,
+                p.source_instance_id COLLATE BINARY ASC, p.collector_epoch COLLATE BINARY ASC,
+                p.sequence ASC, l.publication_sha256 COLLATE BINARY ASC
             LIMIT 1
             """
         guard let row = try Row.fetchOne(db, sql: sql, arguments: StatementArguments(arguments)) else {

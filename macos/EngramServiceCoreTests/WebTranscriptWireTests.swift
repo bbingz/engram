@@ -33,7 +33,7 @@ final class WebTranscriptWireTests: XCTestCase {
     }
 
     func testFragmentRejectsInvalidIdentityBoundsAndEmptyProgress() throws {
-        for ordinal in [-1, 10_000, Int.max] {
+        for ordinal in [-1, 100_000, Int.max] {
             XCTAssertThrowsError(try fragment(ordinal: ordinal))
         }
         XCTAssertThrowsError(try fragment(offset: -1))

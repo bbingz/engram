@@ -28,6 +28,7 @@ public final class EngramRemoteServerApp: Sendable {
     private let archiveTelemetry: ArchiveRemoteTelemetryStore?
     private let webSessions: WebAuthSessionStore?
     private let webReadSurface: WebReadRoutes.Surface?
+    private let webWriteSurface: WebWriteRoutes.Surface?
 
     public convenience init(config: EngramRemoteServerConfig) throws {
         try self.init(
@@ -50,11 +51,28 @@ public final class EngramRemoteServerApp: Sendable {
         )
     }
 
+    convenience init(
+        config: EngramRemoteServerConfig,
+        webReadClientFactory: @escaping WebReadRoutes.ClientFactory,
+        webWriteClientFactory: @escaping WebWriteRoutes.ClientFactory
+    ) throws {
+        try self.init(
+            config: config,
+            archiveTelemetryNow: { Date() },
+            archiveTelemetrySnapshotWriter: { data, url in
+                try ArchiveRemoteTelemetryStore.defaultSnapshotWriter(data, url)
+            },
+            webReadClientFactory: webReadClientFactory,
+            webWriteClientFactory: webWriteClientFactory
+        )
+    }
+
     init(
         config: EngramRemoteServerConfig,
         archiveTelemetryNow: @escaping @Sendable () -> Date,
         archiveTelemetrySnapshotWriter: @escaping ArchiveRemoteTelemetryStore.SnapshotWriter,
-        webReadClientFactory: @escaping WebReadRoutes.ClientFactory = { path in try WebReadRoutes.makeSurface(socketPath: path) }
+        webReadClientFactory: @escaping WebReadRoutes.ClientFactory = { path in try WebReadRoutes.makeSurface(socketPath: path) },
+        webWriteClientFactory: @escaping WebWriteRoutes.ClientFactory = { path in try WebWriteRoutes.makeSurface(socketPath: path) }
     ) throws {
         if let archive = config.archiveV2 {
             guard EngramRemoteServerConfig.isCurrentArchiveServerID(archive.serverID) else {
@@ -85,9 +103,11 @@ public final class EngramRemoteServerApp: Sendable {
             }
             let socketPath = try EngramRemoteServerConfig.validatedWebServiceSocketPath(config.webServiceSocketPath)
             self.webReadSurface = try webReadClientFactory(socketPath)
+            self.webWriteSurface = try webWriteClientFactory(socketPath)
             self.webSessions = WebAuthSessionStore(configuration: web)
         } else {
             self.webReadSurface = nil
+            self.webWriteSurface = nil
             self.webSessions = nil
         }
         self.config = config
@@ -280,10 +300,12 @@ public final class EngramRemoteServerApp: Sendable {
     private func buildResponder() -> WebResponder {
         let router = buildRouter()
         let middleware: WebRequestBoundary.Middleware<BasicRequestContext>?
-        if let configuration = config.web, let sessions = webSessions, let surface = webReadSurface {
+        if let configuration = config.web, let sessions = webSessions, let surface = webReadSurface,
+           let writeSurface = webWriteSurface {
             let boundary = WebRequestBoundary(configuration: configuration)
             WebAuthRoutes.mount(on: router, boundary: boundary, sessions: sessions)
             WebReadRoutes.mount(on: router, surface: surface)
+            WebWriteRoutes.mount(on: router, surface: writeSurface)
             WebUIRoutes.mount(on: router)
             middleware = WebRequestBoundary.Middleware(boundary: boundary, sessions: sessions)
         } else {

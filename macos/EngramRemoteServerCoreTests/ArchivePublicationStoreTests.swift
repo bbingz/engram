@@ -2,6 +2,7 @@ import CryptoKit
 import Darwin
 import Dispatch
 import Foundation
+import GRDB
 @testable import EngramRemoteServerCore
 import XCTest
 
@@ -25,6 +26,140 @@ final class ArchivePublicationStoreTests: XCTestCase {
     override func tearDownWithError() throws {
         if let root { try? FileManager.default.removeItem(at: root) }
         try super.tearDownWithError()
+    }
+
+    func testCursorLegacyBodiesAreDurableOnIndependentStoresAcrossReopen() throws {
+        let generation = try ArchiveSourceGeneration(device: 1, inode: 2, size: 819200,
+            mtimeNs: 3, ctimeNs: 4, mode: 0o100600)
+        for serverID in ["hq", "m1"] {
+            let directory = root.appendingPathComponent("legacy-" + serverID)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700])
+            var store: ArchiveStore? = try ArchiveStore(root: directory, key: key, serverID: serverID, publicationsEnabled: true)
+            try store?.warmPublicationIndex()
+            var expected: [(String, Data, String, Data)] = []
+            for sequence in 1...2 {
+                let body = try ArchiveCursorLegacySession(logicalDatabaseLocator: "/offline/globalStorage/state.vscdb",
+                    composerID: "owned", cwd: "/offline/project-\(sequence)", databaseGeneration: generation,
+                    walGeneration: nil, composer: .init(rowID: 1, key: "composerData:owned",
+                        value: Data(#"{"composerId":"owned","conversation":[{"type":1,"text":"durable"}]}"#.utf8)), bubbles: [])
+                let raw = try body.encodeCanonical()
+                let hash = ArchiveV2Hash.sha256(raw)
+                _ = try XCTUnwrap(store).putObject(digest: hash, raw: raw)
+                let manifest = try ArchiveSourceManifest(schemaVersion: 6,
+                    captureID: ArchiveV2Hash.sha256(Data("legacy-generation-\(sequence)".utf8)),
+                    machineID: machineID, source: "cursor", locator: body.logicalLocator, sessionID: nil,
+                    capturedAt: timestamp, generation: generation, wholeSourceSHA256: hash, rawByteCount: Int64(raw.count),
+                    chunks: [ArchiveChunkReference(ordinal: 0, rawSHA256: hash, rawByteCount: Int64(raw.count))],
+                    replayLayout: ArchiveReplayLayout(strategy: .singleFile, relativePaths: ["session.cursor-legacy.json"],
+                        cursorLegacySession: ArchiveCursorLegacyContext(session: body)))
+                let bytes = try ArchiveCanonicalJSON.encode(manifest)
+                let digest = ArchiveV2Hash.sha256(bytes)
+                _ = try XCTUnwrap(store).putManifest(digest: digest, canonicalBytes: bytes)
+                let publication = try makePublication(manifestDigest: digest, sequence: Int64(sequence))
+                let first = try accept(XCTUnwrap(store), publication)
+                XCTAssertEqual(first.record.ack.serverID, serverID)
+                XCTAssertEqual(first.record.ack.manifestSHA256, digest)
+                XCTAssertEqual(try accept(XCTUnwrap(store), publication).record, first.record)
+                expected.append((digest, bytes, hash, raw))
+            }
+            store = nil
+            store = try ArchiveStore(root: directory, key: key, serverID: serverID, publicationsEnabled: true)
+            try store?.warmPublicationIndex()
+            for (digest, bytes, hash, raw) in expected {
+                XCTAssertEqual(try XCTUnwrap(store).getManifest(digest: digest), bytes)
+                XCTAssertEqual(try XCTUnwrap(store).getObject(digest: hash), raw)
+            }
+            XCTAssertEqual(try XCTUnwrap(store).listPublications(cursor: nil, limit: 8).items.count, 2)
+        }
+    }
+
+    func testSchemaFourOpenCodeImagesAreDurableOnIndependentHQAndM1Stores() throws {
+        let imageFile = root.appendingPathComponent("session.sqlite")
+        let database = try DatabaseQueue(path: imageFile.path)
+        try database.write {
+            try $0.execute(sql: "CREATE TABLE session(id TEXT, directory TEXT); INSERT INTO session VALUES ('ses-one','/offline/project')")
+        }
+        try database.close()
+        let image = try Data(contentsOf: imageFile)
+        let imageHash = ArchiveV2Hash.sha256(image)
+        let generation = try ArchiveSourceGeneration(device: 1, inode: 2, size: 819200,
+            mtimeNs: 3, ctimeNs: 4, mode: 0o100600)
+        for serverID in ["hq", "m1"] {
+            let directory = root.appendingPathComponent(serverID)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700])
+            let store = try ArchiveStore(root: directory, key: key, serverID: serverID, publicationsEnabled: true)
+            try store.warmPublicationIndex()
+            _ = try store.putObject(digest: imageHash, raw: image)
+            for sequence in 1...2 {
+                let wal = try ArchiveSourceGeneration(device: 1, inode: 5, size: Int64(sequence * 8192),
+                    mtimeNs: Int64(sequence + 5), ctimeNs: Int64(sequence + 6), mode: 0o100600)
+                let context = try ArchiveSQLiteSessionContext(databaseLocator: "/offline/opencode.db",
+                    nativeSessionID: "ses-one", nativePayloadByteCount: 0, walGeneration: wal)
+                let manifest = try ArchiveSourceManifest(schemaVersion: 4,
+                    captureID: ArchiveV2Hash.sha256(Data("image-generation-\(sequence)".utf8)),
+                    machineID: machineID, source: "opencode", locator: "/offline/opencode.db::ses-one",
+                    sessionID: nil, capturedAt: timestamp, generation: generation,
+                    wholeSourceSHA256: imageHash, rawByteCount: Int64(image.count),
+                    chunks: [ArchiveChunkReference(ordinal: 0, rawSHA256: imageHash, rawByteCount: Int64(image.count))],
+                    replayLayout: ArchiveReplayLayout(strategy: .singleFile, relativePaths: ["session.sqlite"], sqliteSession: context))
+                let bytes = try ArchiveCanonicalJSON.encode(manifest)
+                let digest = ArchiveV2Hash.sha256(bytes)
+                _ = try store.putManifest(digest: digest, canonicalBytes: bytes)
+                let publication = try makePublication(manifestDigest: digest, sequence: Int64(sequence))
+                let first = try accept(store, publication)
+                XCTAssertEqual(first.record.ack.serverID, serverID)
+                XCTAssertEqual(first.record.ack.manifestSHA256, digest)
+                XCTAssertEqual(try accept(store, publication).record, first.record)
+                XCTAssertEqual(try store.getManifest(digest: digest), bytes)
+                XCTAssertEqual(try store.getObject(digest: imageHash), image)
+            }
+            XCTAssertEqual(try store.listPublications(cursor: nil, limit: 8).items.count, 2)
+        }
+    }
+
+    func testSchemaFiveKimiContextOnlyVersionsAreDurableOnIndependentStores() throws {
+        let raw = Data("{\"role\":\"user\",\"content\":\"native Kimi\"}\n".utf8)
+        let hash = ArchiveV2Hash.sha256(raw)
+        let primary = "workspace/session-one/context.jsonl"
+        let generation = try ArchiveSourceGeneration(device: 1, inode: 2, size: Int64(raw.count),
+            mtimeNs: 3, ctimeNs: 4, mode: 0o100600)
+        for serverID in ["hq", "m1"] {
+            let directory = root.appendingPathComponent(serverID)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700])
+            let store = try ArchiveStore(root: directory, key: key, serverID: serverID, publicationsEnabled: true)
+            try store.warmPublicationIndex()
+            _ = try store.putObject(digest: hash, raw: raw)
+            for sequence in 1...2 {
+                let context = try ArchiveKimiProjectContext(workspaceName: "workspace", nativeSessionID: "session-one",
+                    cwd: "/offline/kimi-\(sequence)", registryLocator: "/offline/kimi.json",
+                    registryGeneration: generation, registrySHA256: ArchiveV2Hash.sha256(Data("registry-\(sequence)".utf8)))
+                let manifest = try ArchiveSourceManifest(schemaVersion: 5,
+                    captureID: ArchiveV2Hash.sha256(Data("kimi-generation-\(sequence)".utf8)),
+                    machineID: machineID, source: "kimi", locator: "/offline/sessions/" + primary,
+                    sessionID: nil, capturedAt: timestamp, generation: generation, wholeSourceSHA256: hash,
+                    rawByteCount: Int64(raw.count),
+                    chunks: [ArchiveChunkReference(ordinal: 0, rawSHA256: hash, rawByteCount: Int64(raw.count))],
+                    replayLayout: ArchiveReplayLayout(strategy: .fileSet, relativePaths: [primary],
+                        entrypointRelativePath: primary,
+                        files: [ArchiveFileSetEntry(relativePath: primary, byteOffset: 0, rawByteCount: Int64(raw.count),
+                            wholeSourceSHA256: hash, generation: generation)],
+                        absentRelativePaths: ["workspace/session-one/wire.jsonl"], kimiProjectContext: context))
+                let bytes = try ArchiveCanonicalJSON.encode(manifest)
+                let digest = ArchiveV2Hash.sha256(bytes)
+                _ = try store.putManifest(digest: digest, canonicalBytes: bytes)
+                let publication = try makePublication(manifestDigest: digest, sequence: Int64(sequence))
+                let first = try accept(store, publication)
+                XCTAssertEqual(first.record.ack.serverID, serverID)
+                XCTAssertEqual(first.record.ack.manifestSHA256, digest)
+                XCTAssertEqual(try accept(store, publication).record, first.record)
+                XCTAssertEqual(try store.getManifest(digest: digest), bytes)
+                XCTAssertEqual(try store.getObject(digest: hash), raw)
+            }
+            XCTAssertEqual(try store.listPublications(cursor: nil, limit: 8).items.count, 2)
+        }
     }
 
     func testDefaultOffDoesNotCreatePublicationPathsAndLegacyObjectsStillWork() throws {
@@ -323,6 +458,484 @@ final class ArchivePublicationStoreTests: XCTestCase {
             )
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: publicationRoot.path))
+    }
+
+    func testVSCodeSchemaSevenPublicationPreservesFrozenWorkspaceAbsenceAndIdempotentACK() throws {
+        let store = try makeStore()
+        try store.warmPublicationIndex()
+        let raw = Data("AAAA".utf8)
+        let hash = ArchiveV2Hash.sha256(raw)
+        let generation = try ArchiveSourceGeneration(device: 1, inode: 2, size: 4, mtimeNs: 3, ctimeNs: 4, mode: 0o100600)
+        let primary = "ws/chatSessions/session.jsonl"
+        let layout = try ArchiveReplayLayout(strategy: .fileSet, relativePaths: [primary],
+            entrypointRelativePath: primary, files: [ArchiveFileSetEntry(relativePath: primary,
+                byteOffset: 0, rawByteCount: 4, wholeSourceSHA256: hash, generation: generation)],
+            absentRelativePaths: ["ws/workspace.json"], vscodeWorkspaceContext: ArchiveVSCodeWorkspaceContext())
+        let manifest = try ArchiveSourceManifest(schemaVersion: 7, captureID: hash, machineID: machineID,
+            source: "vscode", locator: "/fixture/storage/" + primary, sessionID: nil, capturedAt: timestamp,
+            generation: generation, wholeSourceSHA256: hash, rawByteCount: 4,
+            chunks: [ArchiveChunkReference(ordinal: 0, rawSHA256: hash, rawByteCount: 4)], replayLayout: layout)
+        let bytes = try ArchiveCanonicalJSON.encode(manifest)
+        let digest = ArchiveV2Hash.sha256(bytes)
+        _ = try store.putObject(digest: hash, raw: raw)
+        _ = try store.putManifest(digest: digest, canonicalBytes: bytes)
+        let publication = try makePublication(manifestDigest: digest)
+        let accepted = try accept(store, publication)
+        XCTAssertEqual(accepted.result, .published)
+        XCTAssertEqual(try accept(store, publication).record, accepted.record)
+        XCTAssertEqual(try store.getManifest(digest: digest), bytes)
+        XCTAssertEqual(try store.listPublications(cursor: nil, limit: 50).items, [accepted.record])
+        var downgraded = try JSONSerialization.jsonObject(with: bytes) as! [String: Any]
+        downgraded["schemaVersion"] = 2
+        var oldLayout = downgraded["replayLayout"] as! [String: Any]
+        oldLayout.removeValue(forKey: "vscodeWorkspaceContext")
+        downgraded["replayLayout"] = oldLayout
+        let oldModel = try JSONDecoder().decode(ArchiveSourceManifest.self,
+            from: JSONSerialization.data(withJSONObject: downgraded))
+        let oldBytes = try ArchiveCanonicalJSON.encode(oldModel)
+        let oldDigest = ArchiveV2Hash.sha256(oldBytes)
+        _ = try store.putManifest(digest: oldDigest, canonicalBytes: oldBytes)
+        assertPublicationError(.invalidPublication) {
+            try self.accept(store, self.makePublication(manifestDigest: oldDigest, sequence: 2))
+        }
+    }
+
+    func testMiniMaxPublicationRetainsItsExplicitSourceAndIdempotentACK() throws {
+        try assertAdditionalSourcePublication("minimax")
+    }
+
+    func testLobsterAIPublicationRetainsItsExplicitSourceAndIdempotentACK() throws {
+        try assertAdditionalSourcePublication("lobsterai")
+    }
+
+    func testIflowPublicationReturnsDurableIdempotentACKWithExactManifestBytes() throws {
+        try assertAdditionalSourcePublication("iflow")
+    }
+
+    func testQwenPublicationReturnsDurableIdempotentACKWithExactManifestBytes() throws {
+        let store = try makeStore()
+        try store.warmPublicationIndex()
+        let digest = try publishManifest(store: store, source: "qwen")
+        let original = try store.getManifest(digest: digest)
+        let publication = try makePublication(manifestDigest: digest)
+        let accepted = try accept(store, publication)
+        XCTAssertEqual(accepted.result, .published)
+        XCTAssertEqual(try accept(store, publication).record, accepted.record)
+        XCTAssertEqual(try store.getManifest(digest: digest), original)
+        XCTAssertEqual(try store.listPublications(cursor: nil, limit: 50).items, [accepted.record])
+        let bound = try publishManifest(store: store, source: "qwen", sessionID: "bound")
+        assertPublicationError(.invalidPublication) {
+            try self.accept(store, self.makePublication(manifestDigest: bound, sequence: 2))
+        }
+    }
+
+    func testQoderPublicationIsAcceptedWithoutRelabeling() throws {
+        try assertAdditionalSourcePublication("qoder")
+    }
+
+    func testPiPublicationIsAcceptedWithoutRelabeling() throws {
+        try assertAdditionalSourcePublication("pi")
+    }
+
+    func testCommandCodePublicationIsAcceptedWithoutRelabeling() throws {
+        try assertAdditionalSourcePublication("commandcode")
+    }
+
+    func testGrokFileSetPublicationIsAcceptedAndSingleFileGrokIsRejected_repro() throws {
+        let store = try makeStore()
+        try store.warmPublicationIndex()
+        let bytes = try grokManifestBytes()
+        let manifest = try ArchiveCanonicalJSON.decode(ArchiveSourceManifest.self, from: bytes)
+        XCTAssertTrue(ArchiveSourceDescriptor.isGrokFileSet(manifest))
+        let raw = Data(repeating: 0x41, count: Int(manifest.rawByteCount))
+        _ = try store.putObject(digest: ArchiveV2Hash.sha256(raw), raw: raw)
+        let digest = ArchiveV2Hash.sha256(bytes)
+        _ = try store.putManifest(digest: digest, canonicalBytes: bytes)
+        let publication = try makePublication(manifestDigest: digest)
+        let accepted = try accept(store, publication)
+        XCTAssertEqual(accepted.result, .published)
+        XCTAssertEqual(try accept(store, publication).record, accepted.record)
+        XCTAssertEqual(try store.getManifest(digest: digest), bytes)
+
+        let single = try publishManifest(store: store, source: "grok")
+        assertPublicationError(.invalidPublication) {
+            try self.accept(store, self.makePublication(manifestDigest: single, sequence: 2))
+        }
+    }
+
+    func testCopilotFileSetPublicationPreservesMembersAndReturnsIdempotentACK() throws {
+        let store = try makeStore()
+        try store.warmPublicationIndex()
+        for (index, checkpoint) in [false, true].enumerated() {
+            let bytes = try copilotManifestBytes(checkpoint: checkpoint)
+            let manifest = try ArchiveCanonicalJSON.decode(ArchiveSourceManifest.self, from: bytes)
+            let raw = Data(repeating: 0x41, count: Int(manifest.rawByteCount))
+            _ = try store.putObject(digest: ArchiveV2Hash.sha256(raw), raw: raw)
+            let digest = ArchiveV2Hash.sha256(bytes)
+            _ = try store.putManifest(digest: digest, canonicalBytes: bytes)
+            let publication = try makePublication(manifestDigest: digest, sequence: Int64(index + 1))
+            let accepted = try accept(store, publication)
+            XCTAssertEqual(accepted.result, .published)
+            XCTAssertEqual(try accept(store, publication).record, accepted.record)
+            XCTAssertEqual(try store.getManifest(digest: digest), bytes)
+        }
+        XCTAssertEqual(try store.listPublications(cursor: nil, limit: 50).items.count, 2)
+    }
+
+    func testCopilotManifestRejectsWrongMemberHashWithCorrectAggregateHash() throws {
+        let store = try makeStore()
+        var object = try JSONSerialization.jsonObject(with: copilotManifestBytes(checkpoint: false)) as! [String: Any]
+        var layout = object["replayLayout"] as! [String: Any]
+        var files = layout["files"] as! [[String: Any]]
+        files[1]["wholeSourceSHA256"] = String(repeating: "b", count: 64)
+        layout["files"] = files
+        object["replayLayout"] = layout
+        let model = try JSONDecoder().decode(ArchiveSourceManifest.self, from: JSONSerialization.data(withJSONObject: object))
+        let bytes = try ArchiveCanonicalJSON.encode(model)
+        let raw = Data(repeating: 0x41, count: Int(model.rawByteCount))
+        _ = try store.putObject(digest: ArchiveV2Hash.sha256(raw), raw: raw)
+        assertLegacyError(.invalidManifest) {
+            try store.putManifest(digest: ArchiveV2Hash.sha256(bytes), canonicalBytes: bytes)
+        }
+    }
+
+    func testCopilotPublicationRejectsCrossSessionMembersAndMissingAbsenceWitnesses() throws {
+        let store = try makeStore()
+        try store.warmPublicationIndex()
+        for crossSession in [false, true] {
+            var object = try JSONSerialization.jsonObject(with: copilotManifestBytes(checkpoint: crossSession)) as! [String: Any]
+            var layout = object["replayLayout"] as! [String: Any]
+            if crossSession {
+                var files = layout["files"] as! [[String: Any]]
+                files[0]["relativePath"] = "s0/checkpoints/other-session.md"
+                layout["files"] = files
+                layout["relativePaths"] = files.map { $0["relativePath"]! }
+            } else {
+                layout["absentRelativePaths"] = [String]()
+            }
+            object["replayLayout"] = layout
+            let model = try JSONDecoder().decode(ArchiveSourceManifest.self, from: JSONSerialization.data(withJSONObject: object))
+            let bytes = try ArchiveCanonicalJSON.encode(model)
+            let raw = Data(repeating: 0x41, count: Int(model.rawByteCount))
+            _ = try store.putObject(digest: ArchiveV2Hash.sha256(raw), raw: raw)
+            let digest = ArchiveV2Hash.sha256(bytes)
+            _ = try store.putManifest(digest: digest, canonicalBytes: bytes)
+            assertPublicationError(.invalidPublication) {
+                try self.accept(store, self.makePublication(manifestDigest: digest))
+            }
+        }
+        XCTAssertTrue(try store.listPublications(cursor: nil, limit: 50).items.isEmpty)
+    }
+
+    func testCursorModernFileSetPublicationIsDurableAndIdempotentOnIndependentStores() throws {
+        let fixture = try cursorModernPairedBytes()
+        let manifest = try ArchiveCanonicalJSON.decode(ArchiveSourceManifest.self, from: fixture.bytes)
+        XCTAssertTrue(ArchiveSourceDescriptor.isCursorModernFileSet(manifest))
+        XCTAssertEqual(manifest.schemaVersion, 2)
+        XCTAssertEqual(manifest.source, "cursor")
+        XCTAssertEqual(manifest.replayLayout.entrypointRelativePath, fixture.primary)
+        let rawHash = ArchiveV2Hash.sha256(fixture.raw)
+        for serverID in ["hq", "m1"] {
+            let directory = root.appendingPathComponent("cursor-" + serverID)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700])
+            let store = try ArchiveStore(root: directory, key: key, serverID: serverID, publicationsEnabled: true)
+            try store.warmPublicationIndex()
+            _ = try store.putObject(digest: rawHash, raw: fixture.raw)
+            let digest = ArchiveV2Hash.sha256(fixture.bytes)
+            _ = try store.putManifest(digest: digest, canonicalBytes: fixture.bytes)
+            let publication = try makePublication(manifestDigest: digest)
+            let first = try accept(store, publication)
+            XCTAssertEqual(first.result, .published)
+            XCTAssertEqual(first.record.ack.serverID, serverID)
+            XCTAssertEqual(first.record.ack.manifestSHA256, digest)
+            XCTAssertEqual(try accept(store, publication).record, first.record)
+            XCTAssertEqual(try store.getManifest(digest: digest), fixture.bytes)
+            let stored = try store.getObject(digest: rawHash)
+            XCTAssertEqual(stored, fixture.raw)
+            for file in try XCTUnwrap(manifest.replayLayout.files) {
+                let member = stored.subdata(in: Int(file.byteOffset)..<Int(file.byteOffset + file.rawByteCount))
+                XCTAssertEqual(member, fixture.members[file.relativePath])
+                XCTAssertEqual(ArchiveV2Hash.sha256(member), file.wholeSourceSHA256)
+            }
+            XCTAssertEqual(try store.listPublications(cursor: nil, limit: 8).items.count, 1)
+        }
+    }
+
+    func testCursorPublicationRejectsLegacySharedDatabaseAndMismatchedSessionFileSet() throws {
+        let store = try makeStore()
+        try store.warmPublicationIndex()
+        for bytes in [try cursorLegacySharedDatabaseBytes(), try cursorMismatchedSessionFileSetBytes()] {
+            let manifest = try ArchiveCanonicalJSON.decode(ArchiveSourceManifest.self, from: bytes)
+            XCTAssertFalse(ArchiveSourceDescriptor.isCursorModernFileSet(manifest))
+            let raw = Data(repeating: 0x41, count: Int(manifest.rawByteCount))
+            _ = try store.putObject(digest: ArchiveV2Hash.sha256(raw), raw: raw)
+            let digest = ArchiveV2Hash.sha256(bytes)
+            _ = try store.putManifest(digest: digest, canonicalBytes: bytes)
+            assertPublicationError(.invalidPublication) {
+                try self.accept(store, self.makePublication(manifestDigest: digest))
+            }
+        }
+        XCTAssertTrue(try store.listPublications(cursor: nil, limit: 50).items.isEmpty)
+    }
+
+    func testWindsurfHookReplicaAcceptsExactLayoutAndRejectsCacheOrReboundPaths() throws {
+        let store = try makeStore()
+        try store.warmPublicationIndex()
+        let body = "immutable raw transcript"
+        let raw = Data(body.utf8)
+        _ = try store.putObject(digest: ArchiveV2Hash.sha256(raw), raw: raw)
+        let relative = "native.jsonl"
+        let variants = [relative, ".hidden.jsonl", "native/cache/transcript.jsonl", "extra/" + relative]
+        for (index, path) in variants.enumerated() {
+            var object = try JSONSerialization.jsonObject(with: manifestBytes(body: body, source: "windsurf")) as! [String: Any]
+            object["locator"] = "/fixture/transcripts/" + path
+            // Preserve the protocol's strategy spelling from its encoder.
+            let original = try JSONSerialization.jsonObject(with: manifestBytes(body: body, source: "windsurf")) as! [String: Any]
+            var layout = original["replayLayout"] as! [String: Any]
+            layout["relativePaths"] = [path]
+            object["replayLayout"] = layout
+            let model = try JSONDecoder().decode(ArchiveSourceManifest.self, from: JSONSerialization.data(withJSONObject: object))
+            let bytes = try ArchiveCanonicalJSON.encode(model)
+            let digest = ArchiveV2Hash.sha256(bytes)
+            _ = try store.putManifest(digest: digest, canonicalBytes: bytes)
+            let publication = try makePublication(manifestDigest: digest, sequence: Int64(index + 1))
+            if index == 0 {
+                let accepted = try accept(store, publication)
+                XCTAssertEqual(accepted.result, .published)
+                XCTAssertEqual(try accept(store, publication).record, accepted.record)
+                XCTAssertEqual(try store.getManifest(digest: digest), bytes)
+            } else {
+                assertPublicationError(.invalidPublication) { try self.accept(store, publication) }
+            }
+        }
+        XCTAssertEqual(try store.listPublications(cursor: nil, limit: 50).items.count, 1)
+    }
+
+    func testAntigravityCLIReplicaAcceptsExactLayoutAndRejectsCacheOrReboundPaths() throws {
+        let store = try makeStore()
+        try store.warmPublicationIndex()
+        let body = "immutable raw transcript"
+        let raw = Data(body.utf8)
+        _ = try store.putObject(digest: ArchiveV2Hash.sha256(raw), raw: raw)
+        let relative = "native/.system_generated/logs/transcript.jsonl"
+        let variants = [relative, "transcript.jsonl", "native/cache/transcript.jsonl", "extra/" + relative]
+        for (index, path) in variants.enumerated() {
+            var object = try JSONSerialization.jsonObject(with: manifestBytes(body: body, source: "antigravity")) as! [String: Any]
+            object["locator"] = "/fixture/brain/" + path
+            // Preserve the protocol's strategy spelling from its encoder.
+            let original = try JSONSerialization.jsonObject(with: manifestBytes(body: body, source: "antigravity")) as! [String: Any]
+            var layout = original["replayLayout"] as! [String: Any]
+            layout["relativePaths"] = [path]
+            object["replayLayout"] = layout
+            let model = try JSONDecoder().decode(ArchiveSourceManifest.self, from: JSONSerialization.data(withJSONObject: object))
+            let bytes = try ArchiveCanonicalJSON.encode(model)
+            let digest = ArchiveV2Hash.sha256(bytes)
+            _ = try store.putManifest(digest: digest, canonicalBytes: bytes)
+            let publication = try makePublication(manifestDigest: digest, sequence: Int64(index + 1))
+            if index == 0 {
+                let accepted = try accept(store, publication)
+                XCTAssertEqual(accepted.result, .published)
+                XCTAssertEqual(try accept(store, publication).record, accepted.record)
+                XCTAssertEqual(try store.getManifest(digest: digest), bytes)
+            } else {
+                assertPublicationError(.invalidPublication) { try self.accept(store, publication) }
+            }
+        }
+        XCTAssertEqual(try store.listPublications(cursor: nil, limit: 50).items.count, 1)
+    }
+
+    func testGeminiNativeAndRegistryProjectionPublicationsReturnIdempotentACK() throws {
+        let store = try makeStore()
+        try store.warmPublicationIndex()
+        for (index, registryOnly) in [false, true].enumerated() {
+            let bytes = try geminiManifestBytes(registryOnly: registryOnly)
+            let manifest = try ArchiveCanonicalJSON.decode(ArchiveSourceManifest.self, from: bytes)
+            let raw = Data(repeating: 0x41, count: Int(manifest.rawByteCount))
+            _ = try store.putObject(digest: ArchiveV2Hash.sha256(raw), raw: raw)
+            let digest = ArchiveV2Hash.sha256(bytes)
+            _ = try store.putManifest(digest: digest, canonicalBytes: bytes)
+            let publication = try makePublication(manifestDigest: digest, sequence: Int64(index + 1))
+            let accepted = try accept(store, publication)
+            XCTAssertEqual(accepted.result, .published)
+            XCTAssertEqual(try accept(store, publication).record, accepted.record)
+            XCTAssertEqual(try store.getManifest(digest: digest), bytes)
+        }
+        XCTAssertEqual(try store.listPublications(cursor: nil, limit: 50).items.count, 2)
+    }
+
+    func testGeminiPublicationRejectsMissingRootWitnessAndForeignSidecar() throws {
+        let store = try makeStore()
+        try store.warmPublicationIndex()
+        for foreign in [false, true] {
+            var object = try JSONSerialization.jsonObject(with: geminiManifestBytes(registryOnly: true)) as! [String: Any]
+            var layout = object["replayLayout"] as! [String: Any]
+            layout["absentRelativePaths"] = foreign
+                ? ["other/chats/native.engram.json", "project/.project_root"]
+                : ["project/chats/native.engram.json"]
+            object["replayLayout"] = layout
+            let model = try JSONDecoder().decode(ArchiveSourceManifest.self, from: JSONSerialization.data(withJSONObject: object))
+            let bytes = try ArchiveCanonicalJSON.encode(model)
+            let raw = Data(repeating: 0x41, count: Int(model.rawByteCount))
+            _ = try store.putObject(digest: ArchiveV2Hash.sha256(raw), raw: raw)
+            let digest = ArchiveV2Hash.sha256(bytes)
+            _ = try store.putManifest(digest: digest, canonicalBytes: bytes)
+            assertPublicationError(.invalidPublication) {
+                try self.accept(store, self.makePublication(manifestDigest: digest))
+            }
+        }
+        XCTAssertTrue(try store.listPublications(cursor: nil, limit: 50).items.isEmpty)
+    }
+
+    private func geminiManifestBytes(registryOnly: Bool) throws -> Data {
+        let primary = "project/chats/stem.json"
+        let paths = registryOnly ? [primary] : ["project/.project_root", primary]
+        let payload = Data("AAAA".utf8)
+        let entries = try paths.enumerated().map { index, path in
+            try ArchiveFileSetEntry(relativePath: path, byteOffset: Int64(index * 4), rawByteCount: 4,
+                wholeSourceSHA256: ArchiveV2Hash.sha256(payload), generation: ArchiveSourceGeneration(
+                    device: 1, inode: Int64(index + 2), size: 4, mtimeNs: 3, ctimeNs: 4, mode: 0o100600))
+        }
+        let raw = Data(repeating: 0x41, count: entries.count * 4)
+        let hash = ArchiveV2Hash.sha256(raw)
+        let context = try registryOnly ? ArchiveGeminiProjectContext(projectName: "project", cwd: "/repo/gemini",
+            registryLocator: "/fixture/projects.json", registryGeneration: entries[0].generation,
+            registrySHA256: ArchiveV2Hash.sha256(payload)) : nil
+        return try ArchiveCanonicalJSON.encode(ArchiveSourceManifest(schemaVersion: registryOnly ? 3 : 2,
+            captureID: hash, machineID: machineID, source: "gemini-cli", locator: "/fixture/tmp/" + primary,
+            sessionID: nil, capturedAt: timestamp, generation: XCTUnwrap(entries.first { $0.relativePath == primary }).generation,
+            wholeSourceSHA256: hash, rawByteCount: Int64(raw.count),
+            chunks: [ArchiveChunkReference(ordinal: 0, rawSHA256: hash, rawByteCount: Int64(raw.count))],
+            replayLayout: ArchiveReplayLayout(strategy: .fileSet, relativePaths: paths, entrypointRelativePath: primary,
+                files: entries, absentRelativePaths: registryOnly
+                    ? ["project/.project_root", "project/chats/native.engram.json"] : ["project/chats/native.engram.json"],
+                geminiProjectContext: context)))
+    }
+
+    private func grokManifestBytes() throws -> Data {
+        let prefix = "%2FUsers%2Ftest%2Fproject/019dd6e3-91d1-7326-8299-314858773a0e/"
+        let paths = [prefix + "chat_history.jsonl", prefix + "prompt_context.json", prefix + "summary.json"]
+        let payload = Data("AAAA".utf8)
+        let entries = try paths.enumerated().map { index, path in
+            try ArchiveFileSetEntry(relativePath: path, byteOffset: Int64(index * 4), rawByteCount: 4,
+                wholeSourceSHA256: ArchiveV2Hash.sha256(payload), generation: ArchiveSourceGeneration(
+                    device: 1, inode: Int64(index + 2), size: 4, mtimeNs: 3, ctimeNs: 4, mode: 0o100600))
+        }
+        let raw = Data(repeating: 0x41, count: entries.count * 4)
+        let hash = ArchiveV2Hash.sha256(raw)
+        let primary = paths[0]
+        return try ArchiveCanonicalJSON.encode(ArchiveSourceManifest(schemaVersion: 2,
+            captureID: hash, machineID: machineID, source: "grok", locator: "/fixture/grok/" + primary,
+            sessionID: nil, capturedAt: timestamp, generation: XCTUnwrap(entries.first { $0.relativePath == primary }).generation,
+            wholeSourceSHA256: hash, rawByteCount: Int64(raw.count),
+            chunks: [ArchiveChunkReference(ordinal: 0, rawSHA256: hash, rawByteCount: Int64(raw.count))],
+            replayLayout: ArchiveReplayLayout(strategy: .fileSet, relativePaths: paths, entrypointRelativePath: primary,
+                files: entries, absentRelativePaths: [prefix + "compaction/INDEX.md", prefix + "updates.jsonl"])))
+    }
+
+    private func copilotManifestBytes(checkpoint: Bool) throws -> Data {
+        let paths = checkpoint ? ["s1/checkpoints/001.md", "s1/checkpoints/index.md", "s1/events.jsonl", "s1/workspace.yaml"]
+            : ["s1/events.jsonl", "s1/workspace.yaml"]
+        let primary = checkpoint ? "s1/checkpoints/index.md" : "s1/events.jsonl"
+        let payload = Data("AAAA".utf8)
+        let entries = try paths.enumerated().map { index, path in
+            try ArchiveFileSetEntry(relativePath: path, byteOffset: Int64(index * 4), rawByteCount: 4,
+                wholeSourceSHA256: ArchiveV2Hash.sha256(payload), generation: ArchiveSourceGeneration(
+                    device: 1, inode: Int64(index + 2), size: 4, mtimeNs: 3, ctimeNs: 4, mode: 0o100600))
+        }
+        let raw = Data(repeating: 0x41, count: entries.count * 4)
+        let hash = ArchiveV2Hash.sha256(raw)
+        return try ArchiveCanonicalJSON.encode(ArchiveSourceManifest(schemaVersion: 2,
+            captureID: hash, machineID: machineID, source: "copilot", locator: "/fixture/session-state/" + primary,
+            sessionID: nil, capturedAt: timestamp, generation: XCTUnwrap(entries.first { $0.relativePath == primary }).generation,
+            wholeSourceSHA256: hash, rawByteCount: Int64(raw.count),
+            chunks: [ArchiveChunkReference(ordinal: 0, rawSHA256: hash, rawByteCount: Int64(raw.count))],
+            replayLayout: ArchiveReplayLayout(strategy: .fileSet, relativePaths: paths, entrypointRelativePath: primary,
+                files: entries, absentRelativePaths: checkpoint ? [] : ["s1/checkpoints/index.md"])))
+    }
+
+    private func cursorModernPairedBytes() throws -> (
+        bytes: Data, raw: Data, primary: String, members: [String: Data]
+    ) {
+        let ordered = [
+            ("chats/ws/sid/meta.json", Data("META".utf8)),
+            ("chats/ws/sid/store.db", Data("STORE".utf8)),
+            ("chats/ws/sid/store.db-wal", Data("WAL!".utf8)),
+            ("projects/proj/agent-transcripts/sid/sid.jsonl", Data("JSONL\n".utf8)),
+        ]
+        var offset: Int64 = 0
+        var raw = Data()
+        let entries = try ordered.enumerated().map { index, member in
+            let entry = try ArchiveFileSetEntry(relativePath: member.0, byteOffset: offset,
+                rawByteCount: Int64(member.1.count), wholeSourceSHA256: ArchiveV2Hash.sha256(member.1),
+                generation: ArchiveSourceGeneration(device: 1, inode: Int64(index + 2),
+                    size: Int64(member.1.count), mtimeNs: 3, ctimeNs: 4, mode: 0o100600))
+            raw.append(member.1)
+            offset += Int64(member.1.count)
+            return entry
+        }
+        let primary = "projects/proj/agent-transcripts/sid/sid.jsonl"
+        let hash = ArchiveV2Hash.sha256(raw)
+        let bytes = try ArchiveCanonicalJSON.encode(ArchiveSourceManifest(schemaVersion: 2,
+            captureID: hash, machineID: machineID, source: "cursor", locator: "/offline/cursor/" + primary,
+            sessionID: nil, capturedAt: timestamp,
+            generation: XCTUnwrap(entries.first { $0.relativePath == primary }).generation,
+            wholeSourceSHA256: hash, rawByteCount: Int64(raw.count),
+            chunks: [ArchiveChunkReference(ordinal: 0, rawSHA256: hash, rawByteCount: Int64(raw.count))],
+            replayLayout: ArchiveReplayLayout(strategy: .fileSet, relativePaths: ordered.map(\.0),
+                entrypointRelativePath: primary, files: entries, absentRelativePaths: [])))
+        return (bytes, raw, primary, Dictionary(uniqueKeysWithValues: ordered))
+    }
+
+    private func cursorLegacySharedDatabaseBytes() throws -> Data {
+        let raw = Data(repeating: 0x41, count: 4)
+        let hash = ArchiveV2Hash.sha256(raw)
+        return try ArchiveCanonicalJSON.encode(ArchiveSourceManifest(
+            captureID: hash, machineID: machineID, source: "cursor",
+            locator: "/offline/Cursor/User/globalStorage/state.vscdb?composer=legacy",
+            sessionID: nil, capturedAt: timestamp,
+            generation: ArchiveSourceGeneration(device: 1, inode: 2, size: 4, mtimeNs: 3, ctimeNs: 4, mode: 0o100600),
+            wholeSourceSHA256: hash, rawByteCount: 4,
+            chunks: [ArchiveChunkReference(ordinal: 0, rawSHA256: hash, rawByteCount: 4)],
+            replayLayout: ArchiveReplayLayout(strategy: .singleFile, relativePaths: ["state.vscdb"])))
+    }
+
+    private func cursorMismatchedSessionFileSetBytes() throws -> Data {
+        let paths = ["chats/ws/sid/store.db", "projects/proj/agent-transcripts/other/other.jsonl"]
+        let payload = Data("AAAA".utf8)
+        let entries = try paths.enumerated().map { index, path in
+            try ArchiveFileSetEntry(relativePath: path, byteOffset: Int64(index * 4), rawByteCount: 4,
+                wholeSourceSHA256: ArchiveV2Hash.sha256(payload), generation: ArchiveSourceGeneration(
+                    device: 1, inode: Int64(index + 2), size: 4, mtimeNs: 3, ctimeNs: 4, mode: 0o100600))
+        }
+        let raw = Data(repeating: 0x41, count: 8)
+        let hash = ArchiveV2Hash.sha256(raw)
+        let primary = paths[1]
+        return try ArchiveCanonicalJSON.encode(ArchiveSourceManifest(schemaVersion: 2,
+            captureID: hash, machineID: machineID, source: "cursor", locator: "/offline/cursor/" + primary,
+            sessionID: nil, capturedAt: timestamp, generation: entries[1].generation,
+            wholeSourceSHA256: hash, rawByteCount: 8,
+            chunks: [ArchiveChunkReference(ordinal: 0, rawSHA256: hash, rawByteCount: 8)],
+            replayLayout: ArchiveReplayLayout(strategy: .fileSet, relativePaths: paths,
+                entrypointRelativePath: primary, files: entries,
+                absentRelativePaths: ["chats/ws/sid/meta.json", "chats/ws/sid/store.db-wal"])))
+    }
+
+    private func assertAdditionalSourcePublication(_ source: String) throws {
+        let store = try makeStore()
+        try store.warmPublicationIndex()
+        let digest = try publishManifest(store: store, source: source)
+        let bytes = try store.getManifest(digest: digest)
+        let publication = try makePublication(manifestDigest: digest)
+        let accepted = try accept(store, publication)
+        XCTAssertEqual(accepted.result, .published)
+        XCTAssertEqual(try accept(store, publication).record, accepted.record)
+        XCTAssertEqual(try store.getManifest(digest: digest), bytes)
+        XCTAssertEqual(try store.listPublications(cursor: nil, limit: 50).items, [accepted.record])
+        let bound = try publishManifest(store: store, source: source, sessionID: "bound")
+        assertPublicationError(.invalidPublication) {
+            try self.accept(store, self.makePublication(manifestDigest: bound, sequence: 2))
+        }
     }
 
     func testOnlyUnboundClaudeCodexWithMatchingMachineMayBeAccepted() throws {

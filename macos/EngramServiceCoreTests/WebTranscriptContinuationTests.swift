@@ -8,6 +8,42 @@ final class WebTranscriptContinuationTests: XCTestCase {
     private let generation = String(repeating: "a", count: 64)
     private let sessionID = "central/session"
 
+    func testNecessaryPrefixFilterPreservesEverySecretFamilyAndUnicodeCaseFolding() throws {
+        let secrets = [
+            "-----BEGIN PRIVATE KEY-----\nbody\n-----END PRIVATE KEY-----",
+            "password=Abcd!1234", "PASSWORD: 'Abcd!1234'", "paſſword=abcdefghijk",
+            "sudo 密码是Abcd!1234", "口令：Abcd!1234", "api_key=abcdefghijk",
+            "api-Key=abcdefghijk", "ſecret=abcdefghijk", "credential=abcdefghijk",
+            "token=abcdefghijk", "Bearer=abcdefghijk", "Authorization: Bearer abcdefghijk",
+            "sk-abcdefghijk", "ghp_abcdefghijk", "xoxb-abcdefghijk",
+            "github_pat_abcdefghijklmnopqrstuv", "gho_abcdefghijklmnopqrstuv",
+            "ghu_abcdefghijklmnopqrstuv", "ghs_abcdefghijklmnopqrstuv", "ghr_abcdefghijklmnopqrstuv",
+            "AKIA1234567890ABCDEF", "ASIA1234567890ABCDEF", "npm_abcdefghijk", "xoxe-abcdefghijk",
+        ]
+        for secret in secrets {
+            let text = "before " + secret + " after"
+            XCTAssertEqual(TranscriptRedactionPolicy.redact(text), "before [REDACTED] after")
+            let ranges = TranscriptRedactionPolicy.sensitiveUTF8Ranges(in: text)
+            XCTAssertEqual(ranges, [7..<(7 + secret.utf8.count)])
+        }
+        XCTAssertEqual(TranscriptRedactionPolicy.redact("How do I change my password?"), "How do I change my password?")
+    }
+
+    func testNineMiBPlainMessageProjectionLeavesTimeForAuthorityAndIPC_repro() throws {
+        let message = NormalizedMessage(role: .assistant,
+            content: "The constellation snapshot is ready. " + String(repeating: "x", count: 9 * 1024 * 1024))
+        let start = ContinuousClock.now
+        let page = try ServiceTranscriptContinuation.page(snapshot: snapshot([message]),
+            request: EngramServiceWebMessagesRequest(sessionId: sessionID, generation: generation), requestId: "large-message")
+        let elapsed = start.duration(to: .now)
+        print("NINE_MIB_FIRST_PAGE elapsed=\(elapsed)")
+        XCTAssertLessThan(elapsed, .seconds(1))
+        XCTAssertFalse(page.isComplete)
+        XCTAssertNotNil(page.nextCursor)
+        XCTAssertEqual(page.fragments.first?.messageOrdinal, 0)
+        XCTAssertEqual(page.fragments.first?.utf8Offset, 0)
+    }
+
     func testCompleteProjectionPreservesEveryNormalizedFieldAndRole() throws {
         let messages = [
             NormalizedMessage(role: .system, content: ""),
@@ -38,7 +74,7 @@ final class WebTranscriptContinuationTests: XCTestCase {
         try assertReconstruction(pages, messages: [message])
         for page in pages {
             XCTAssertEqual(page.projection, "redacted-normalized-message-json-v1")
-            XCTAssertEqual(page.redactionRevision, "transcript-redaction-v1")
+            XCTAssertEqual(page.redactionRevision, "transcript-redaction-v2")
         }
     }
 
@@ -60,6 +96,23 @@ final class WebTranscriptContinuationTests: XCTestCase {
         }
         XCTAssertTrue(wire.contains("[REDACTED]"))
         try assertReconstruction(pages, messages: [message])
+    }
+
+    func testNaturalLanguageAndPunctuationPasswordsAreRedactedBeforePaging() throws {
+        let text = "说明 sudo 密码是Example#4821，请继续。 password=Example!4821"
+        XCTAssertEqual(TranscriptRedactionPolicy.redact(text), "说明 [REDACTED]，请继续。 [REDACTED]")
+        let bytes = Array(text.utf8)
+        let ranges = TranscriptRedactionPolicy.sensitiveUTF8Ranges(in: text)
+        XCTAssertEqual(ranges.map { String(decoding: bytes[$0], as: UTF8.self) },
+            ["sudo 密码是Example#4821", "password=Example!4821"])
+        XCTAssertEqual(TranscriptRedactionPolicy.redact("无需提供密码；sudo does not require a password."),
+            "无需提供密码；sudo does not require a password.")
+        let messages = [NormalizedMessage(role: .user, content: String(repeating: "prefix ", count: 300) + text)]
+        let pages = try collect(snapshot(messages), budget: 2400)
+        let wire = pages.flatMap(\.fragments).map(\.payloadFragment).joined()
+        XCTAssertFalse(wire.contains("Example"))
+        XCTAssertTrue(wire.contains("[REDACTED]"))
+        try assertReconstruction(pages, messages: messages)
     }
 
     func testRoleFilterKeepsOriginalOrdinalsAndCanonicalOrderAcrossPages() throws {
@@ -146,6 +199,67 @@ final class WebTranscriptContinuationTests: XCTestCase {
     func testTinyEnvelopeBudgetFailsInsteadOfReturningTruncatedOrOversizedSuccess() throws {
         assertError(.responseTooLarge) {
             try self.page(self.snapshot([.init(role: .user, content: "hello")]), self.request(), budget: 64)
+        }
+    }
+
+    func testLongHistoryCanContinuePastTenThousandWithOriginalOrdinals() throws {
+        var messages = Array(repeating: NormalizedMessage(role: .tool, content: "unselected"), count: 10_001)
+        messages[0] = .init(role: .user, content: "first visible")
+        messages[10_000] = .init(role: .user, content: "last visible")
+        let first = try page(snapshot(messages), request(roles: [.user], maxFragments: 1))
+        XCTAssertEqual(first.fragments.map(\.messageOrdinal), [0])
+        let second = try page(snapshot(messages), request(roles: [.user], cursor: XCTUnwrap(first.nextCursor), maxFragments: 1))
+        XCTAssertEqual(second.fragments.map(\.messageOrdinal), [10_000])
+        XCTAssertTrue(second.isComplete)
+        XCTAssertNil(second.nextCursor)
+    }
+
+    func testSparsePageWindowKeepsGlobalCursorAndDoesNotConsumeLookahead() throws {
+        let firstMessage = NormalizedMessage(role: .user, content: "first")
+        let lastMessage = NormalizedMessage(role: .user, content: "last")
+        var window = snapshot([firstMessage, lastMessage])
+        window.messageOrdinals = [0, 10_000]
+        window.totalMessageCount = 10_001
+        window.maximumPageFragments = 1
+        let first = try page(window, request(roles: [.user]))
+        XCTAssertEqual(first.fragments.map(\.messageOrdinal), [0])
+        XCTAssertFalse(first.isComplete)
+        let continuation = try request(roles: [.user], cursor: XCTUnwrap(first.nextCursor))
+        XCTAssertEqual(try ServiceTranscriptContinuation.startingOrdinal(for: continuation), 10_000)
+        var tail = snapshot([lastMessage])
+        tail.messageOrdinals = [10_000]
+        tail.totalMessageCount = 10_001
+        let last = try page(tail, continuation)
+        XCTAssertEqual(last.fragments.map(\.messageOrdinal), [10_000])
+        XCTAssertTrue(last.isComplete)
+    }
+
+    func testSparseLargeMessageFragmentsRetainGlobalOrdinalAndPayloadDigest() throws {
+        let messages = [NormalizedMessage(role: .assistant, content: String(repeating: "界🌍", count: 2000)),
+                        NormalizedMessage(role: .user, content: "last")]
+        var source = snapshot(messages)
+        source.messageOrdinals = [400, 99_999]
+        source.totalMessageCount = 100_000
+        source.maximumPageFragments = 1
+        let pages = try collect(source, budget: 2400)
+        let fragments = Dictionary(grouping: pages.flatMap(\.fragments), by: \.messageOrdinal)
+        XCTAssertEqual(Set(fragments.keys), [400, 99_999])
+        for (index, ordinal) in [400, 99_999].enumerated() {
+            let pieces = try XCTUnwrap(fragments[ordinal])
+            let actual = Data(pieces.map(\.payloadFragment).joined().utf8)
+            let expected = try canonicalExpected(messages[index])
+            XCTAssertTrue(actual == expected)
+            XCTAssertEqual(Set(pieces.map(\.payloadSHA256)).count, 1)
+        }
+        XCTAssertTrue(try XCTUnwrap(pages.last).isComplete)
+    }
+
+    func testSparsePageRejectsInvalidOrdinalMappings() throws {
+        for ordinals in [[3, 3], [4, 3], [1], [-1, 3], [3, 5]] {
+            var source = snapshot([.init(role: .user, content: "one"), .init(role: .user, content: "two")])
+            source.messageOrdinals = ordinals
+            source.totalMessageCount = 5
+            assertError(.invalidField("messages")) { try self.page(source, self.request()) }
         }
     }
 

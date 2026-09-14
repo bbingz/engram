@@ -371,6 +371,9 @@ public enum EngramServiceRunner {
                 .appendingPathComponent("index.sqlite")
                 .path
         let settingsURL = engramSettingsURL(environment: environment)
+        let sourceAuthorityEntries = try engramServiceStrictPath(
+            after: "--capture-source-authority-file", in: arguments
+        ).map { try ServiceCaptureSourceAuthority.load(url: URL(fileURLWithPath: $0)) }
 
         let runtimeDirectory: URL
         let usesDedicatedRuntime = socketPath == implicitSocketPath
@@ -441,6 +444,13 @@ public enum EngramServiceRunner {
             ServiceLogger.error("fatal: schema migration failed", category: .runner, error: error)
             emit(ServiceFatalEvent(stage: "migrate", error: error.localizedDescription))
             exit(70) // EX_SOFTWARE
+        }
+
+        // Explicit operator authority is committed before any intake or read loop starts.
+        if let sourceAuthorityEntries {
+            try await ServiceCaptureSourceAuthority.provision(
+                entries: sourceAuthorityEntries, gate: gate, settingsURL: settingsURL
+            )
         }
 
         // Archive V2 has one process-wide coordinator. Its default-off factory
@@ -536,7 +546,12 @@ public enum EngramServiceRunner {
         if liveSync != nil {
             ServiceLogger.info("live ingest armed; publish/pull loop only (no offload runOnce)", category: .runner)
         }
-        let readProvider = try SQLiteEngramServiceReadProvider(databasePath: databasePath)
+        let readProvider = try SQLiteEngramServiceReadProvider(
+            databasePath: databasePath,
+            embeddingProviderFactory: { config in
+                Self.defaultGuardedEmbeddingProvider(config: config, audit: ServiceAIAuditRecorder(writerGate: gate))
+            }
+        )
         let captureIngestRuntime = try ServiceCaptureIngestRuntime.make(
             gate: gate, databasePath: databasePath, settingsURL: settingsURL,
             credentialLoader: captureCredentialLoader
@@ -2364,10 +2379,26 @@ private final class IndexingScheduleBox: @unchecked Sendable {
     /// Default factory: OpenAI-compatible client wrapped by the process-shared
     /// embedding circuit breaker (N=5, 60s cooldown). Tests inject their own
     /// factory (often unguarded mocks) via the `providerFactory` parameter.
-    static func defaultGuardedEmbeddingProvider(config: EmbeddingConfig) -> any EmbeddingProvider {
+    static func defaultGuardedEmbeddingProvider(
+        config: EmbeddingConfig,
+        audit: (any ServiceAIAuditRecording)? = nil,
+        session: URLSession = .shared
+    ) -> any EmbeddingProvider {
         GuardedEmbeddingProvider(
             config: config,
-            breaker: EmbeddingGuardrails.sharedBreaker
+            breaker: EmbeddingGuardrails.sharedBreaker,
+            session: session,
+            observeRequest: { observation in
+                await audit?.record(ServiceAIAuditEntry(
+                    caller: "embedding", operation: "embed", method: "POST",
+                    url: EngramServiceCommandHandler.ServiceAIClient.redactedHost(config.baseURL + "/embeddings"),
+                    statusCode: observation.statusCode, durationMs: observation.durationMs,
+                    model: config.model, provider: "openai-compatible",
+                    promptTokens: observation.promptTokens, completionTokens: nil,
+                    totalTokens: observation.totalTokens, error: observation.error, sessionId: nil,
+                    requestBody: observation.requestBody, responseBody: observation.responseBody
+                ))
+            }
         )
     }
 
@@ -2384,9 +2415,7 @@ private final class IndexingScheduleBox: @unchecked Sendable {
     static func backfillSessionEmbeddingsOnce(
         gate: ServiceWriterGate,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        providerFactory: @escaping @Sendable (EmbeddingConfig) -> any EmbeddingProvider = {
-            EngramServiceRunner.defaultGuardedEmbeddingProvider(config: $0)
-        },
+        providerFactory: (@Sendable (EmbeddingConfig) -> any EmbeddingProvider)? = nil,
         backoff: EmbeddingMaintenanceBackoff = .shared,
         limit: Int = 4,
         phaseName: String = "sessionEmbeddingBackfill"
@@ -2400,7 +2429,9 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             )
             return 0
         }
-        let provider = providerFactory(config)
+        let provider = providerFactory?(config) ?? defaultGuardedEmbeddingProvider(
+            config: config, audit: ServiceAIAuditRecorder(writerGate: gate)
+        )
         let pending = try await gate.performReadCommand(name: "\(phaseName)Read") { writer in
             return try SessionEmbeddingBackfill.pendingSessions(writer: writer, limit: limit)
         }.value
@@ -2499,9 +2530,7 @@ private final class IndexingScheduleBox: @unchecked Sendable {
     static func backfillInsightEmbeddingsOnce(
         gate: ServiceWriterGate,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        providerFactory: @escaping @Sendable (EmbeddingConfig) -> any EmbeddingProvider = {
-            EngramServiceRunner.defaultGuardedEmbeddingProvider(config: $0)
-        },
+        providerFactory: (@Sendable (EmbeddingConfig) -> any EmbeddingProvider)? = nil,
         backoff: EmbeddingMaintenanceBackoff = .shared,
         limit: Int = 16,
         phaseName: String = "insightEmbeddingBackfill"
@@ -2515,7 +2544,9 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             )
             return 0
         }
-        let provider = providerFactory(config)
+        let provider = providerFactory?(config) ?? defaultGuardedEmbeddingProvider(
+            config: config, audit: ServiceAIAuditRecorder(writerGate: gate)
+        )
         let pending = try await gate.performReadCommand(name: "\(phaseName)Read") { writer in
             return try InsightEmbeddingBackfill.pendingInsights(writer: writer, limit: limit)
         }.value

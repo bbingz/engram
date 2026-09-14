@@ -81,7 +81,8 @@ final class EngramServiceIPCTests: XCTestCase {
     func testReadTitleContextsRegeneratesTitledNormalSessionsAndExcludesSkipTier() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceCommandHandler.swift")
         let start = try XCTUnwrap(source.range(of: "static func readTitleContexts"))
-        let end = try XCTUnwrap(source.range(of: "private static func readOnlyPool"))
+        // D15 un-privatized readOnlyPool for CFFIXED test-home visibility; title-context SQL is unchanged.
+        let end = try XCTUnwrap(source.range(of: "static func readOnlyPool"))
         let body = String(source[start.lowerBound..<end.lowerBound])
 
         XCTAssertTrue(body.contains("COALESCE(tier, 'normal') != 'skip'"))
@@ -3704,7 +3705,10 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(response.items.map(\.id), ["s2"])
         XCTAssertEqual(response.searchModes, ["semantic"])
         XCTAssertEqual(reader.normalReadCount, 0, "hybrid fusion must not use the 30-second reader")
-        XCTAssertEqual(reader.immediateReadCount, 5)
+        // Reads: snapshot, chunk page, empty terminator, hydrate, keyword fusion
+        // (busy at [5]), then the D11 post-search insight read (`withInsightResults`),
+        // which runs even when fusion was swallowed as BUSY.
+        XCTAssertEqual(reader.immediateReadCount, 6)
     }
 
     func testSemanticHydrationBusyKeepsRankedHitsWithoutSlowRetry_repro() async throws {
@@ -4173,6 +4177,141 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertLessThan(
             snippet.count, filler.count,
             "snippet must be a match-centered window, not the full content"
+        )
+    }
+
+    // Web parity closeout (docs/superpowers/plans/2026-09-13-web-native-parity.md):
+    // `/web/api/search` timed out at the 8s deadline on the HQ corpus because
+    // CJK terms of any length took the LIKE content scan and MATCH terms ran
+    // correlated per-session subqueries. Terms of >= 3 scalars — CJK included —
+    // now use trigram MATCH, so CJK results are relevance-ranked and get FTS5
+    // snippet() highlights instead of start_time order; sub-trigram terms keep
+    // the LIKE fallback.
+    func testSQLiteReadProviderCJKTrigramTermsRankByRelevance_repro() async throws {
+        XCTAssertTrue(CJKText.usesTrigramMatch("需要修复"))
+        XCTAssertTrue(CJKText.usesTrigramMatch("修复了"))
+        XCTAssertTrue(CJKText.usesTrigramMatch("fix"))
+        XCTAssertFalse(CJKText.usesTrigramMatch("测试"))
+        XCTAssertFalse(CJKText.usesTrigramMatch("go"))
+
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            // s2 is newer but mentions the term once; s1 is older and is
+            // dominated by it. LIKE routing (rank 0, start_time DESC) would put
+            // s2 first; bm25 ranking puts s1 first.
+            try db.execute(sql: "UPDATE sessions SET suggested_parent_id = NULL WHERE id = 's2'")
+            try db.execute(sql: "DELETE FROM sessions_fts")
+            try db.execute(
+                sql: "INSERT INTO sessions_fts(session_id, content) VALUES ('s1', ?), ('s2', ?)",
+                arguments: [
+                    "需要修复 需要修复 需要修复 需要修复 测试",
+                    "今天讨论了很多别的事情，最后提到需要修复，然后继续测试其他内容",
+                ]
+            )
+        }
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+
+        let ranked = try await provider.search(
+            EngramServiceSearchRequest(query: "需要修复", mode: "keyword", limit: 10)
+        )
+        XCTAssertEqual(ranked.items.map(\.id), ["s1", "s2"])
+        for item in ranked.items {
+            XCTAssertTrue(
+                item.snippet?.contains("<mark>需要修复</mark>") ?? false,
+                "expected highlighted CJK match for \(item.id), got: \(item.snippet ?? "")"
+            )
+        }
+
+        // Two-scalar CJK still has no trigram and must keep matching via LIKE.
+        let short = try await provider.search(
+            EngramServiceSearchRequest(query: "测试", mode: "keyword", limit: 10)
+        )
+        XCTAssertEqual(Set(short.items.map(\.id)), ["s1", "s2"])
+        XCTAssertEqual(short.items.map(\.id), ["s2", "s1"], "LIKE fallback keeps start_time DESC")
+
+        // Mixed MATCH + LIKE terms stay a session-level conjunction with both
+        // snippets concatenated when they come from the same row.
+        let mixed = try await provider.search(
+            EngramServiceSearchRequest(query: "需要修复 测试", mode: "keyword", limit: 10)
+        )
+        XCTAssertEqual(mixed.items.map(\.id), ["s1", "s2"])
+    }
+
+    // Web parity closeout: the HQ index carries the owned FTS layout plus the
+    // covering `idx_sessions_fts_content_identity` index, which the search now
+    // uses to resolve hit -> session_id without seeking content rows. Results
+    // must be identical with and without that index.
+    func testSQLiteReadProviderKeywordSearchIdentityIndexLayoutMatchesFallback_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: "UPDATE sessions SET suggested_parent_id = NULL WHERE id = 's2'")
+            try db.execute(sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, model, message_count,
+                  user_message_count, assistant_message_count, file_path, size_bytes, indexed_at
+                ) VALUES
+                  ('s3', 'claude-code', '2026-04-23T03:00:00Z', '/tmp/engram', 'engram', 'sonnet', 2, 1, 1, '/tmp/s3.jsonl', 44, '2026-04-23T03:00:00Z'),
+                  ('hidden', 'codex', '2026-04-23T04:00:00Z', '/tmp/engram', 'engram', 'gpt-5.4', 2, 1, 1, '/tmp/hidden.jsonl', 45, '2026-04-23T04:00:00Z'),
+                  ('lite', 'codex', '2026-04-23T05:00:00Z', '/tmp/engram', 'engram', 'gpt-5.4', 2, 1, 1, '/tmp/lite.jsonl', 46, '2026-04-23T05:00:00Z');
+                UPDATE sessions SET hidden_at = '2026-04-23T04:30:00Z' WHERE id = 'hidden';
+                UPDATE sessions SET tier = 'lite' WHERE id = 'lite';
+                DELETE FROM sessions_fts;
+                INSERT INTO sessions_fts(session_id, content) VALUES
+                  ('s1', 'first message about the usage monitor'),
+                  ('s1', 'second message: ship the monitor, fix a bug in the parser'),
+                  ('s2', 'monitor mentioned once in a much longer message that keeps going on and on about unrelated matters before it ends, and go is short'),
+                  ('s3', 'usage monitor usage monitor usage monitor go go go'),
+                  ('hidden', 'usage monitor go'),
+                  ('lite', 'usage monitor go');
+                """)
+        }
+        let queries = ["monitor", "usage monitor", "monitor go", "go", "parser fix"]
+
+        func run() async throws -> [String: [(String, String?)]] {
+            let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+            var results: [String: [(String, String?)]] = [:]
+            for query in queries {
+                let response = try await provider.search(
+                    EngramServiceSearchRequest(query: query, mode: "keyword", limit: 10)
+                )
+                results[query] = response.items.map { ($0.id, $0.snippet) }
+            }
+            return results
+        }
+
+        let fallbackLayout = try await queue.read { db in try FTSRebuildPolicy.hasOwnedContentIdentityIndex(db) }
+        XCTAssertFalse(fallbackLayout, "fixture starts without the identity index")
+        let fallback = try await run()
+
+        try await queue.write { db in try FTSRebuildPolicy.ensureOwnedContentIdentityIndex(db) }
+        let indexedLayout = try await queue.read { db in try FTSRebuildPolicy.hasOwnedContentIdentityIndex(db) }
+        XCTAssertTrue(indexedLayout, "fixture must exercise the identity-indexed hit path")
+        let indexed = try await run()
+
+        for query in queries {
+            XCTAssertEqual(
+                fallback[query]?.map(\.0), indexed[query]?.map(\.0), "ids differ for query=\(query)"
+            )
+            XCTAssertEqual(
+                fallback[query]?.map(\.1), indexed[query]?.map(\.1), "snippets differ for query=\(query)"
+            )
+        }
+        // Ranking, filters and conjunction semantics on the indexed layout.
+        XCTAssertEqual(indexed["monitor"]?.map(\.0), ["s3", "s1", "s2"])
+        XCTAssertEqual(indexed["usage monitor"]?.map(\.0), ["s3", "s1"])
+        XCTAssertEqual(indexed["monitor go"]?.map(\.0), ["s3", "s2"])
+        XCTAssertEqual(Set(indexed["go"]?.map(\.0) ?? []), ["s2", "s3"])
+        XCTAssertEqual(indexed["parser fix"]?.map(\.0), ["s1"])
+        let parserSnippet = try XCTUnwrap(indexed["parser fix"]?.first?.1)
+        XCTAssertTrue(parserSnippet.contains("<mark>parser</mark>"), parserSnippet)
+        XCTAssertTrue(parserSnippet.contains("<mark>fix</mark>"), parserSnippet)
+        XCTAssertFalse(
+            parserSnippet.contains("\n…\n"),
+            "both terms hit the same row, so the second snippet is not appended: \(parserSnippet)"
         )
     }
 
@@ -8684,6 +8823,79 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(explicitSkip.sessionCount, 1, "explicit by-id handoff must remain unfiltered")
     }
 
+    func testConfiguredAIFullSummarySurvivesNativeGenerateSummary_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let long = Array(repeating: "Generated constellation summary.", count: 10).joined(separator: " ")
+        XCTAssertGreaterThan(long.count, 200)
+        XCTAssertEqual(TranscriptRedactionPolicy.redactedSummary(long).count, 200)
+        let calls = NativeSummaryCallFlag()
+        let saved = try await EngramServiceCommandHandler.generateSummary(
+            EngramServiceGenerateSummaryRequest(sessionId: "s1"),
+            writerGate: gate,
+            summaryConfig: Self.nativeSummaryConfig,
+            summarize: { context, _ in
+                calls.mark()
+                XCTAssertTrue(context.transcript.contains("hello from swift service"))
+                return long
+            }
+        ).value
+        XCTAssertTrue(calls.seen)
+        XCTAssertEqual(saved.summary, long)
+        XCTAssertGreaterThan(saved.summary.count, 200)
+        let stored = try await DatabaseQueue(path: paths.database.path).read { db in
+            try String.fetchOne(db, sql: "SELECT summary FROM sessions WHERE id = 's1'")
+        }
+        XCTAssertEqual(stored, long)
+    }
+
+    func testNativeSummaryRejectsSkipBeforeLoadingProviderSettings() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: "UPDATE sessions SET tier = 'skip' WHERE id = 's1'")
+        }
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let settingsRead = NativeSummaryCallFlag()
+        do {
+            _ = try await EngramServiceCommandHandler.generateSummary(
+                EngramServiceGenerateSummaryRequest(sessionId: "s1"), writerGate: gate,
+                summaryConfig: { settingsRead.mark(); return Self.nativeSummaryConfig }(),
+                summarize: { _, _ in XCTFail("Rejected sessions must not call the provider"); return "unused" })
+            XCTFail("Skip session must be rejected")
+        } catch {
+            XCTAssertEqual(error as? EngramServiceError, .invalidRequest(message: "Cannot summarize a skip-tier session"))
+        }
+        XCTAssertFalse(settingsRead.seen, "Admission must precede provider settings and credential lookup")
+    }
+
+    func testNativeGenerateSummaryWithoutProviderKeepsPreviewTruncation() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let context = try EngramServiceCommandHandler.readAIContext(
+            sessionId: "s1", databasePath: paths.database.path
+        )
+        let expected = TranscriptRedactionPolicy.redactedSummary(context.nativeSummary)
+        let saved = try await EngramServiceCommandHandler.generateSummary(
+            EngramServiceGenerateSummaryRequest(sessionId: "s1"),
+            writerGate: gate,
+            summaryConfig: nil,
+            summarize: { _, _ in
+                XCTFail("Missing provider must not call the model")
+                return "should-not-persist"
+            }
+        ).value
+        XCTAssertEqual(saved.summary, expected)
+        XCTAssertLessThanOrEqual(saved.summary.count, 200)
+        let stored = try await DatabaseQueue(path: paths.database.path).read { db in
+            try String.fetchOne(db, sql: "SELECT summary FROM sessions WHERE id = 's1'")
+        }
+        XCTAssertEqual(stored, expected)
+    }
+
     func testGenerateSummaryRejectsSkipAndEmptyTranscriptWithoutPersistingMetadata_repro() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
@@ -8816,6 +9028,11 @@ final class EngramServiceIPCTests: XCTestCase {
     private static let fakeTitleConfig = EngramServiceCommandHandler.ServiceAISettings.ChatConfig(
         provider: "custom", baseURL: "http://localhost", apiKey: "",
         model: "test-model", maxTokens: 120, temperature: 0.3
+    )
+
+    private static let nativeSummaryConfig = EngramServiceCommandHandler.ServiceAISettings.ChatConfig(
+        provider: "openai", baseURL: "http://127.0.0.1", apiKey: "test",
+        model: "test-model", maxTokens: 200, temperature: 0.3
     )
 
     /// Migrated DB with one human-driven session and two work items (wk-a, wk-b)
@@ -9667,6 +9884,21 @@ private struct WrongDimensionInsightEmbeddingProvider: EmbeddingProvider {
     let dimension = 3
     func embed(_ texts: [String]) async throws -> [[Float]] {
         texts.map { _ in [1, 0] }
+    }
+}
+
+private final class NativeSummaryCallFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func mark() {
+        lock.lock()
+        value = true
+        lock.unlock()
+    }
+    var seen: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
     }
 }
 

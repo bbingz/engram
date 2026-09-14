@@ -178,6 +178,30 @@ final class ServiceCaptureIngestRuntimeTests: XCTestCase {
         XCTAssertEqual(try writer.read { try String.fetchOne($0, sql: "SELECT approved_epoch FROM capture_ingest_source_registry") }, epoch)
     }
 
+    func testBoundedStartupRepairsWeakReviewSkipWithoutBlockingReadyPath_repro() async throws {
+        try await startUnavailableReplica()
+        try writeSettings(settings())
+        let sessionID = try seedFalseSkipWeakReview(nativeID: "runtime-weak-review")
+        XCTAssertEqual(try writer.read { try String.fetchOne($0, sql: "SELECT tier FROM sessions WHERE id = ?",
+                                                              arguments: [sessionID]) }, "skip")
+        XCTAssertNil(try writer.read { try String.fetchOne($0, sql: """
+            SELECT required_fts_job_id FROM capture_ingest_generations WHERE stored_session_id = ?
+            """, arguments: [sessionID]) })
+        guard let runtime = try makeRuntime() else { return XCTFail("valid runtime factory is required") }
+        await runtime.start()
+        guard try await waitForReady(1) else { return XCTFail("bounded startup repair must bind FTS and reach index_ready") }
+        XCTAssertEqual(try writer.read { try String.fetchOne($0, sql: "SELECT tier FROM sessions WHERE id = ?",
+                                                              arguments: [sessionID]) }, "premium")
+        XCTAssertEqual(try writer.read { try String.fetchOne($0, sql: "SELECT custom_name FROM sessions WHERE id = ?",
+                                                              arguments: [sessionID]) }, "User title")
+        XCTAssertEqual(try writer.read { try String.fetchOne($0, sql: "SELECT generated_title FROM sessions WHERE id = ?",
+                                                              arguments: [sessionID]) }, "Generated title")
+        let page = try await runtime.metadataProducer.sessions(try .init(query: "Review P2 tests"),
+            requestId: UUID().uuidString, deadline: .now.advanced(by: .seconds(2)))
+        XCTAssertEqual(page.items.count, 1)
+        XCTAssertEqual(page.items.first?.sessionId, sessionID)
+    }
+
     func testMissingCredentialDoesNotStarveAlreadyAcceptedReplayAndReadiness() async throws {
         try await startUnavailableReplica()
         try writeSettings(settings())
@@ -553,6 +577,86 @@ final class ServiceCaptureIngestRuntimeTests: XCTestCase {
         serving = Task { try await app.run() }
         await fulfillment(of: [bound], timeout: 5)
         baseURL = URL(string: "http://127.0.0.1:\(try XCTUnwrap(port.value))")!
+    }
+
+    @discardableResult
+    private func seedFalseSkipWeakReview(nativeID: String) throws -> String {
+        let revision = ServiceCaptureIngestRuntime.parserRevision
+        let timestamp = "2026-09-06T01:02:03.000Z"
+        var messages: [NormalizedMessage] = [
+            .init(role: .user, content: "Review P2 tests for correctness and summarize the result.", timestamp: timestamp)
+        ]
+        while messages.count < 20 {
+            let index = messages.count
+            messages.append(.init(
+                role: index.isMultiple(of: 2) ? .user : .assistant,
+                content: index.isMultiple(of: 2)
+                    ? "Continue the ordinary runtime turn \(index)."
+                    : "Continued the ordinary runtime turn \(index).",
+                timestamp: timestamp
+            ))
+        }
+        let binding = try writer.write { db in
+            if let existing = try CaptureIngestSourceRegistry.binding(db, machineID: machine, sourceInstanceID: instance) {
+                return existing
+            }
+            return try CaptureIngestSourceRegistry.provision(db, machineID: machine, sourceInstanceID: instance,
+                source: .claudeCode, parseFormat: .claudeDefault, configuredRoot: logicalRoot, initialEpoch: epoch)
+        }
+        let raw = try ArchiveCanonicalJSON.encode(messages)
+        let rawHash = ArchiveV2Hash.sha256(raw)
+        let relative = "runtime/\(nativeID).jsonl"
+        let manifest = try ArchiveSourceManifest(
+            captureID: ArchiveV2Hash.sha256(Data("runtime-weak-\(nativeID)".utf8)), machineID: machine,
+            source: "claude-code", locator: logicalRoot + "/" + relative, sessionID: nil, capturedAt: timestamp,
+            generation: .init(device: 1, inode: 9, size: Int64(raw.count), mtimeNs: 3, ctimeNs: 4, mode: 0o100600),
+            wholeSourceSHA256: rawHash, rawByteCount: Int64(raw.count),
+            chunks: [try .init(ordinal: 0, rawSHA256: rawHash, rawByteCount: Int64(raw.count))],
+            replayLayout: .init(strategy: .singleFile, relativePaths: [relative]))
+        let publication = try CollectorPublicationEnvelope(machineID: machine, sourceInstanceID: instance,
+            collectorEpoch: binding.approvedEpoch, sequence: 9, manifestSHA256: ArchiveV2Hash.sha256(ArchiveCanonicalJSON.encode(manifest)))
+        let digest = try publication.sha256()
+        let ack = try CollectorPublicationACK(serverID: "hq", journalID: journal, arrivalOrdinal: 9,
+            publicationSHA256: digest, manifestSHA256: publication.manifestSHA256, storedAt: timestamp)
+        let page = try CollectorPublicationPage(items: [try .init(publication: publication, ack: ack)],
+            afterCursor: CollectorPublicationCursor(journalID: journal, afterArrivalOrdinal: 9).encoded(), hasMore: false)
+        let claim = try writer.write { db in
+            try CaptureIngestLedger.accept(db, page: page, requestedCursor: CaptureIngestLedger.checkpoint(db, serverID: "hq"),
+                serverID: "hq", parserRevision: revision)
+            return try XCTUnwrap(CaptureIngestLedger.claim(db, publicationSHA256: digest, parserRevision: revision, now: 100,
+                                                           leaseDuration: 10))
+        }
+        let identity = try CaptureIngestIdentity(machineID: machine, sourceInstanceID: instance, source: .claudeCode,
+                                                 nativeID: nativeID)
+        let info = NormalizedSessionInfo(id: nativeID, source: .claudeCode, startTime: timestamp, endTime: timestamp,
+            cwd: "/synthetic/runtime-project", project: "runtime-project", model: "synthetic-model",
+            messageCount: messages.count, userMessageCount: messages.filter { $0.role == .user }.count,
+            assistantMessageCount: messages.filter { $0.role == .assistant }.count,
+            toolMessageCount: 0, systemMessageCount: 0, summary: "Runtime weak-review fixture",
+            displayTitle: "Generated title", filePath: manifest.locator, sizeBytes: manifest.rawByteCount,
+            originator: "claude-code")
+        let replay = CaptureIngestReplayResult(publicationSHA256: digest, verifiedManifest: manifest,
+            bindingSnapshot: binding, scan: .init(info: info, messages: messages), rawSourceSessionID: nativeID,
+            nativeIdentity: identity, parentIdentity: nil, suggestedParentIdentity: nil)
+        return try writer.write { db in
+            let receipt = try CaptureIngestCommitter.commitParsed(db, claim: claim, replay: replay,
+                expectedParserRevision: revision, now: 101, indexedAt: timestamp)
+            try db.execute(sql: """
+                UPDATE sessions SET tier = 'skip', custom_name = 'User title', generated_title = 'Generated title'
+                WHERE id = ?
+                """, arguments: [receipt.sessionID])
+            try db.execute(sql: "UPDATE capture_ingest_generations SET required_fts_job_id = NULL WHERE generation_id = ?",
+                           arguments: [receipt.generationID])
+            try db.execute(sql: "DELETE FROM session_index_jobs WHERE session_id = ?", arguments: [receipt.sessionID])
+            try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = ?", arguments: [receipt.sessionID])
+            try db.execute(sql: """
+                UPDATE capture_ingest_ledger SET status = 'parsed' WHERE publication_sha256 = ? AND parser_revision = ?
+                """, arguments: [digest, revision])
+            try db.execute(sql: """
+                UPDATE capture_ingest_identity_bindings SET last_ready_generation_id = NULL WHERE stored_session_id = ?
+                """, arguments: [receipt.sessionID])
+            return receipt.sessionID
+        }
     }
 
     @discardableResult

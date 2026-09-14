@@ -10,14 +10,34 @@ protocol ServiceWebTranscriptSnapshotProviding: Sendable {
     var supportsNormalizedTranscripts: Bool { get }
 
     func snapshot(
+        request: EngramServiceWebMessagesRequest,
+        deadline: ContinuousClock.Instant
+    ) async throws -> ServiceTranscriptContinuation.Snapshot?
+
+    func snapshot(
         sessionID: String,
         generation: String,
         deadline: ContinuousClock.Instant
     ) async throws -> ServiceTranscriptContinuation.Snapshot?
+
+    func timeline(
+        request: EngramServiceWebTimelineRequest,
+        deadline: ContinuousClock.Instant
+    ) async throws -> EngramServiceWebTimelineResponse
 }
 
 extension ServiceWebTranscriptSnapshotProviding {
     var supportsNormalizedTranscripts: Bool { false }
+
+    func snapshot(request: EngramServiceWebMessagesRequest,
+                  deadline: ContinuousClock.Instant) async throws -> ServiceTranscriptContinuation.Snapshot? {
+        try await snapshot(sessionID: request.sessionId, generation: request.generation, deadline: deadline)
+    }
+
+    func timeline(request: EngramServiceWebTimelineRequest,
+                  deadline: ContinuousClock.Instant) async throws -> EngramServiceWebTimelineResponse {
+        throw ServiceWebTranscriptSnapshotError.unavailable
+    }
 }
 
 enum ServiceWebTranscriptSnapshotError: Error, Equatable, Sendable {

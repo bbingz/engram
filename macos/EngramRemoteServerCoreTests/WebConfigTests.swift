@@ -43,6 +43,20 @@ final class WebConfigTests: XCTestCase {
         XCTAssertFalse(String(reflecting: config).contains(viewer))
     }
 
+    func testOptionalEditorCredentialIsDistinctAndStoredOnlyAsDigest() throws {
+        let viewerOnly = try XCTUnwrap(EngramRemoteWebConfig.fromEnvironment(enabled, serverBearerCredentials: bearers))
+        XCTAssertNil(viewerOnly.editorCredentialDigest)
+        var environment = enabled
+        environment["ENGRAM_REMOTE_WEB_EDITOR_CREDENTIAL"] = "fixture-editor-secret"
+        let config = try XCTUnwrap(EngramRemoteWebConfig.fromEnvironment(environment, serverBearerCredentials: bearers))
+        XCTAssertEqual(config.editorCredentialDigest, Data(SHA256.hash(data: Data("fixture-editor-secret".utf8))))
+        XCTAssertFalse(String(reflecting: config).contains("fixture-editor-secret"))
+        for invalid in ["", " \n", viewer] + bearers {
+            environment["ENGRAM_REMOTE_WEB_EDITOR_CREDENTIAL"] = invalid
+            XCTAssertThrowsError(try EngramRemoteWebConfig.fromEnvironment(environment, serverBearerCredentials: bearers))
+        }
+    }
+
     func testMissingOriginAndCredentialFailClosed() {
         for key in ["ENGRAM_REMOTE_WEB_ORIGIN", "ENGRAM_REMOTE_WEB_VIEWER_CREDENTIAL"] {
             for missing in [true, false] {

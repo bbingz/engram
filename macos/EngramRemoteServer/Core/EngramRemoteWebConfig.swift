@@ -7,6 +7,7 @@ public struct EngramRemoteWebConfig: Sendable {
     public let origin: String
     public let authority: String
     let credentialDigest: Data
+    let editorCredentialDigest: Data?
     let cookieName: String
     let isSecure: Bool
 
@@ -16,6 +17,7 @@ public struct EngramRemoteWebConfig: Sendable {
         case invalidOrigin
         case missingCredential
         case credentialMustBeDistinct
+        case invalidEditorCredential
 
         public var description: String {
             switch self {
@@ -24,14 +26,15 @@ public struct EngramRemoteWebConfig: Sendable {
             case .invalidOrigin: "Web origin must be a canonical HTTPS origin."
             case .missingCredential: "Web requires a dedicated viewer credential."
             case .credentialMustBeDistinct: "Web viewer and server bearer credentials must be distinct."
+            case .invalidEditorCredential: "Web editor requires a nonempty credential distinct from viewer and server credentials."
             }
         }
     }
 
-    public init(origin: String, viewerCredential: String, serverBearerCredentials: [String]) throws {
+    public init(origin: String, viewerCredential: String, serverBearerCredentials: [String], editorCredential: String? = nil) throws {
         try self.init(
             origin: origin, viewerCredential: viewerCredential,
-            serverBearerCredentials: serverBearerCredentials, loopbackHTTPForTesting: false
+            serverBearerCredentials: serverBearerCredentials, editorCredential: editorCredential, loopbackHTTPForTesting: false
         )
     }
 
@@ -39,6 +42,7 @@ public struct EngramRemoteWebConfig: Sendable {
         origin: String,
         viewerCredential: String,
         serverBearerCredentials: [String],
+        editorCredential: String?,
         loopbackHTTPForTesting: Bool
     ) throws {
         guard !origin.isEmpty else { throw ConfigError.missingOrigin }
@@ -48,6 +52,12 @@ public struct EngramRemoteWebConfig: Sendable {
         guard serverBearerCredentials.allSatisfy({ $0 != viewerCredential }) else {
             throw ConfigError.credentialMustBeDistinct
         }
+        if let editorCredential {
+            guard !editorCredential.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  editorCredential != viewerCredential,
+                  !serverBearerCredentials.contains(editorCredential) else { throw ConfigError.invalidEditorCredential }
+        }
+        self.editorCredentialDigest = editorCredential.map { Data(SHA256.hash(data: Data($0.utf8))) }
         self.authority = try Self.canonicalAuthority(origin, loopbackHTTPForTesting: loopbackHTTPForTesting)
         self.origin = origin
         self.credentialDigest = Data(SHA256.hash(data: Data(viewerCredential.utf8)))
@@ -70,7 +80,8 @@ public struct EngramRemoteWebConfig: Sendable {
         guard let credential = environment["ENGRAM_REMOTE_WEB_VIEWER_CREDENTIAL"] else {
             throw ConfigError.missingCredential
         }
-        return try Self(origin: origin, viewerCredential: credential, serverBearerCredentials: serverBearerCredentials)
+        return try Self(origin: origin, viewerCredential: credential, serverBearerCredentials: serverBearerCredentials,
+                        editorCredential: environment["ENGRAM_REMOTE_WEB_EDITOR_CREDENTIAL"])
     }
 
     /// Internal test-only escape hatch; no environment flag can enable HTTP.
@@ -81,7 +92,7 @@ public struct EngramRemoteWebConfig: Sendable {
     ) throws -> Self {
         try Self(
             origin: origin, viewerCredential: viewerCredential,
-            serverBearerCredentials: serverBearerCredentials, loopbackHTTPForTesting: true
+            serverBearerCredentials: serverBearerCredentials, editorCredential: nil, loopbackHTTPForTesting: true
         )
     }
 

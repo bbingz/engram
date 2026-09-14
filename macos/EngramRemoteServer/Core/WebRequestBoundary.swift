@@ -61,8 +61,74 @@ struct WebRequestBoundary: Sendable {
         return values.count == 1 ? values[0] : nil
     }
 
+    private static func isWritePath(_ path: String) -> Bool {
+        if path == "/web/api/settings/aliases"
+            || path == "/web/api/insights"
+            || path == "/web/api/titles/regenerate"
+            || path == "/web/api/projects/move"
+            || path == "/web/api/projects/archive"
+            || path == "/web/api/projects/undo"
+            || path == "/web/api/projects/move-batch"
+            || path == "/web/api/projects/move-batch/cancel" {
+            return true
+        }
+        return sessionWriteKind(path) != nil
+    }
+
+    private static func sessionWriteKind(_ path: String) -> String? {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 6,
+              parts[0].isEmpty, parts[1] == "web", parts[2] == "api", parts[3] == "sessions",
+              let sessionID = String(parts[4]).removingPercentEncoding,
+              !sessionID.isEmpty, sessionID != ".", sessionID != "..",
+              !sessionID.contains("/"), !sessionID.contains("\\"),
+              !sessionID.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+            return nil
+        }
+        let suffix = String(parts[5])
+        switch suffix {
+        case "link", "confirm-suggestion", "suggestion", "summary", "title":
+            return suffix
+        default:
+            return nil
+        }
+    }
+
+    private static func allowsWriteMethod(_ path: String, method: HTTPRequest.Method) -> Bool {
+        if path == "/web/api/insights"
+            || path == "/web/api/titles/regenerate"
+            || path == "/web/api/projects/move"
+            || path == "/web/api/projects/archive"
+            || path == "/web/api/projects/undo"
+            || path == "/web/api/projects/move-batch"
+            || path == "/web/api/projects/move-batch/cancel" {
+            return method == .post
+        }
+        if path == "/web/api/settings/aliases" {
+            return method == .post || method == .delete
+        }
+        switch sessionWriteKind(path) {
+        case "link":
+            return method == .post || method == .delete
+        case "confirm-suggestion", "summary", "title":
+            return method == .post
+        case "suggestion":
+            return method == .delete
+        default:
+            return false
+        }
+    }
+
     private static func isReadPath(_ path: String) -> Bool {
-        if path == "/web/api/overview" || path == "/web/api/sessions" { return true }
+        if path == "/web/api/overview" || path == "/web/api/sessions"
+            || path == "/web/api/facets" || path == "/web/api/stats"
+            || path == "/web/api/settings" || path == "/web/api/search"
+            || path == "/web/api/search/status" || path == "/web/api/costs"
+            || path == "/web/api/costs/sessions" || path == "/web/api/tool-analytics"
+            || path == "/web/api/file-activity" || path == "/web/api/repos"
+            || path == "/web/api/usage" || path == "/web/api/ai/audit"
+            || path == "/web/api/ai/stats" || path == "/web/api/projects/cwds" { return true }
+        if isAiAuditDetailPath(path) || isInsightDetailPath(path) { return true }
         let parts = path.split(separator: "/", omittingEmptySubsequences: false)
         guard parts.count == 5 || parts.count == 6,
               parts[0].isEmpty, parts[1] == "web", parts[2] == "api", parts[3] == "sessions",
@@ -70,7 +136,33 @@ struct WebRequestBoundary: Sendable {
               !sessionID.isEmpty, sessionID != ".", sessionID != "..",
               !sessionID.contains("/"), !sessionID.contains("\\"),
               !sessionID.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return false }
-        return parts.count == 5 || parts[5] == "messages"
+        return parts.count == 5 || parts[5] == "messages" || parts[5] == "children" || parts[5] == "timeline"
+    }
+
+    private static func isInsightDetailPath(_ path: String) -> Bool {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 5,
+              parts[0].isEmpty, parts[1] == "web", parts[2] == "api", parts[3] == "insights" else {
+            return false
+        }
+        let id = String(parts[5 - 1])
+        return !id.isEmpty && id.utf8.count <= 128
+            && id.utf8.allSatisfy {
+                (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0)
+                    || $0 == 45 || $0 == 95
+            }
+    }
+
+    private static func isAiAuditDetailPath(_ path: String) -> Bool {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 6,
+              parts[0].isEmpty, parts[1] == "web", parts[2] == "api", parts[3] == "ai", parts[4] == "audit" else {
+            return false
+        }
+        let id = String(parts[5])
+        return !id.isEmpty && id.utf8.count <= 19 && id.utf8.first != 48
+            && id.utf8.allSatisfy { (48...57).contains($0) }
+            && Int64(id).map { $0 > 0 } == true
     }
 
     struct Middleware<Context: RequestContext>: RouterMiddleware {
@@ -89,10 +181,67 @@ struct WebRequestBoundary: Sendable {
             guard boundary.validateHost(request) else { return boundary.decorate(Response(status: .forbidden)) }
             if path == "/web/api" || path.hasPrefix("/web/api/") {
                 if path == "/web/api/auth" {
-                    guard request.method == .post || request.method == .delete else {
+                    guard request.method == .get || request.method == .post || request.method == .delete else {
+                        return boundary.decorate(Response(status: .methodNotAllowed))
+                    }
+                    guard boundary.validateAPI(request, requiresOrigin: request.method != .get) else {
+                        return boundary.decorate(Response(status: .forbidden))
+                    }
+                    if request.method == .get {
+                        guard let token = boundary.sessionToken(in: request),
+                              await sessions.isAuthenticated(sessionToken: token) else {
+                            return boundary.decorate(Response(status: .unauthorized))
+                        }
+                    }
+                } else if path == "/web/api/migrations" {
+                    guard request.method == .get else {
+                        return boundary.decorate(Response(status: .methodNotAllowed))
+                    }
+                    guard boundary.validateAPI(request, requiresOrigin: false) else {
+                        return boundary.decorate(Response(status: .forbidden))
+                    }
+                    guard let token = boundary.sessionToken(in: request),
+                          await sessions.isAuthenticated(sessionToken: token) else {
+                        return boundary.decorate(Response(status: .unauthorized))
+                    }
+                    guard await sessions.canWrite(sessionToken: token) else {
+                        return boundary.decorate(Response(status: .forbidden))
+                    }
+                } else if path == "/web/api/settings/sources" || path == "/web/api/settings/ai" {
+                    if request.method == .get {
+                        guard boundary.validateAPI(request, requiresOrigin: false) else {
+                            return boundary.decorate(Response(status: .forbidden))
+                        }
+                        guard let token = boundary.sessionToken(in: request),
+                              await sessions.isAuthenticated(sessionToken: token) else {
+                            return boundary.decorate(Response(status: .unauthorized))
+                        }
+                    } else if request.method == .post {
+                        guard boundary.validateAPI(request, requiresOrigin: true) else {
+                            return boundary.decorate(Response(status: .forbidden))
+                        }
+                        guard let token = boundary.sessionToken(in: request),
+                              await sessions.isAuthenticated(sessionToken: token) else {
+                            return boundary.decorate(Response(status: .unauthorized))
+                        }
+                        guard await sessions.canWrite(sessionToken: token) else {
+                            return boundary.decorate(Response(status: .forbidden))
+                        }
+                    } else {
+                        return boundary.decorate(Response(status: .methodNotAllowed))
+                    }
+                } else if WebRequestBoundary.isWritePath(path) {
+                    guard WebRequestBoundary.allowsWriteMethod(path, method: request.method) else {
                         return boundary.decorate(Response(status: .methodNotAllowed))
                     }
                     guard boundary.validateAPI(request, requiresOrigin: true) else {
+                        return boundary.decorate(Response(status: .forbidden))
+                    }
+                    guard let token = boundary.sessionToken(in: request),
+                          await sessions.isAuthenticated(sessionToken: token) else {
+                        return boundary.decorate(Response(status: .unauthorized))
+                    }
+                    guard await sessions.canWrite(sessionToken: token) else {
                         return boundary.decorate(Response(status: .forbidden))
                     }
                 } else {

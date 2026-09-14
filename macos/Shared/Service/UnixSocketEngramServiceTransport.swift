@@ -128,11 +128,7 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, Sendable {
     }
 
     static func defaultSocketPath(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> String {
-        homeDirectory
-            .appendingPathComponent(".engram", isDirectory: true)
-            .appendingPathComponent("run", isDirectory: true)
-            .appendingPathComponent("engram-service.sock")
-            .path
+        ServiceCapabilityToken.defaultServiceSocketPath(homeDirectory: homeDirectory)
     }
 
     static func resolvedSocketPath(

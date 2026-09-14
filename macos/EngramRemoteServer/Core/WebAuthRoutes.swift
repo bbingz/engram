@@ -10,6 +10,17 @@ enum WebAuthRoutes {
         boundary: WebRequestBoundary,
         sessions: WebAuthSessionStore
     ) {
+        router.get("/web/api/auth") { request, _ in
+            guard boundary.validateAPI(request, requiresOrigin: false) else {
+                return boundary.decorate(Response(status: .forbidden))
+            }
+            guard let token = boundary.sessionToken(in: request), await sessions.isAuthenticated(sessionToken: token) else {
+                return boundary.decorate(Response(status: .unauthorized))
+            }
+            let body = await sessions.canWrite(sessionToken: token) ? "{\"canWrite\":true}" : "{\"canWrite\":false}"
+            return boundary.decorate(Response(status: .ok, headers: [.contentType: "application/json"],
+                body: ResponseBody(byteBuffer: ByteBuffer(string: body))))
+        }
         router.post("/web/api/auth") { request, _ in
             await login(request, boundary: boundary, sessions: sessions)
         }

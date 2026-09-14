@@ -65,11 +65,29 @@ final class WebReadClientTests: XCTestCase {
         }
         XCTAssertGreaterThan(commands.count, 60)
         XCTAssertTrue(Set(["resumeCommand", "memoryFileContent", "exportSession", "shutdown"]).isSubset(of: commands))
-        XCTAssertEqual(EngramServiceWebReadClient.allowedCommands, ["webMessages", "webOverview", "webSessions", "webSessionDetail"])
+        XCTAssertEqual(EngramServiceWebReadClient.allowedCommands,
+                       ["webMessages", "webOverview", "webSessions", "webSessionDetail", "webFacets", "webStats",
+                        "webSettings", "webSearch", "webSearchStatus", "webCosts", "webCostSessions",
+                        "webSourceSettings", "webChildren", "webTimeline", "webToolAnalytics",
+                        "webFileActivity", "webRepos", "webUsage",
+                        "webAiAudit", "webAiAuditDetail", "webAiStats", "webInsightDetail", "webAiSettings",
+                        "webProjectCwds"])
         XCTAssertNoThrow(try EngramServiceWebReadClient.validateCommand("webMessages"))
+        XCTAssertNoThrow(try EngramServiceWebReadClient.validateCommand("webSearch"))
+        XCTAssertNoThrow(try EngramServiceWebReadClient.validateCommand("webSearchStatus"))
+        XCTAssertNoThrow(try EngramServiceWebReadClient.validateCommand("webCosts"))
+        XCTAssertNoThrow(try EngramServiceWebReadClient.validateCommand("webCostSessions"))
+        XCTAssertNoThrow(try EngramServiceWebReadClient.validateCommand("webSourceSettings"))
+        XCTAssertNoThrow(try EngramServiceWebReadClient.validateCommand("webChildren"))
+        XCTAssertNoThrow(try EngramServiceWebReadClient.validateCommand("webTimeline"))
+        XCTAssertNoThrow(try EngramServiceWebReadClient.validateCommand("webAiAudit"))
+        XCTAssertNoThrow(try EngramServiceWebReadClient.validateCommand("webAiAuditDetail"))
+        XCTAssertNoThrow(try EngramServiceWebReadClient.validateCommand("webAiStats"))
+        XCTAssertNoThrow(try EngramServiceWebReadClient.validateCommand("webInsightDetail"))
+        XCTAssertNoThrow(try EngramServiceWebReadClient.validateCommand("webAiSettings"))
         let server = try WebReadFixture(path: socketPath()) { _, _ in XCTFail("Policy checks must not perform IPC") }
         defer { server.stop() }
-        for command in commands.subtracting(["webMessages", "webOverview", "webSessions", "webSessionDetail"]).union(["", "webMessages\0shutdown", "WEBMESSAGES", "futureWrite"]) {
+        for command in commands.subtracting(["webMessages", "webOverview", "webSessions", "webSessionDetail", "webFacets", "webStats", "webSettings", "webSearch", "webSearchStatus", "webCosts", "webCostSessions", "webSourceSettings", "webChildren", "webTimeline", "webToolAnalytics", "webFileActivity", "webRepos", "webUsage", "webAiAudit", "webAiAuditDetail", "webAiStats", "webInsightDetail", "webAiSettings", "webProjectCwds"]).union(["", "webMessages\0shutdown", "WEBMESSAGES", "futureWrite"]) {
             XCTAssertThrowsError(try EngramServiceWebReadClient.validateCommand(command)) {
                 XCTAssertEqual($0 as? EngramServiceWebReadClientError, .unsupported)
             }
@@ -91,6 +109,20 @@ final class WebReadClientTests: XCTestCase {
         }
         XCTAssertNoThrow(try EngramServiceWebReadClient(socketPath: socketPath(), totalTimeout: 0.05))
         XCTAssertNoThrow(try EngramServiceWebReadClient(socketPath: socketPath(), totalTimeout: 2))
+    }
+
+    func testRejectsInvalidSearchDeadlinesWithoutRaisingMetadataCap() throws {
+        XCTAssertEqual(EngramServiceWebReadClient.maximumTotalTimeout, 2)
+        XCTAssertEqual(EngramServiceWebReadClient.maximumSearchTimeout, 8)
+        for invalid in [0.0, -1, 8.001, .nan, .infinity, -.infinity] {
+            XCTAssertThrowsError(try EngramServiceWebReadClient(
+                socketPath: socketPath(), searchTimeout: invalid
+            )) {
+                XCTAssertEqual($0 as? EngramServiceWebReadClientError, .malformed)
+            }
+        }
+        XCTAssertNoThrow(try EngramServiceWebReadClient(socketPath: socketPath(), totalTimeout: 2, searchTimeout: 0.05))
+        XCTAssertNoThrow(try EngramServiceWebReadClient(socketPath: socketPath(), totalTimeout: 2, searchTimeout: 8))
     }
 
     func testRejectsWrongMissingFrameKindRequestIDAndAmbiguousEnvelope() async throws {
@@ -423,12 +455,18 @@ final class WebReadClientTests: XCTestCase {
         let end = try XCTUnwrap(project.range(of: "\n  EngramRemoteServer:\n", range: start.upperBound..<project.endIndex))
         let target = String(project[start.upperBound..<end.lowerBound])
         let expected = Set(["EngramServiceSocketIO.swift", "EngramServiceWireEnvelopes.swift", "EngramServiceError.swift",
-                            "EngramServiceWebReadModels.swift", "EngramServiceWebReadClient.swift"])
+                            "EngramServiceWebReadModels.swift", "EngramServiceWebReadClient.swift",
+                            "EngramServiceWebUsageModels.swift",
+                            "EngramServiceWebWriteModels.swift", "EngramServiceWebWriteClient.swift",
+                            "EngramServiceWebAiSettingsModels.swift",
+                            "EngramServiceProjectModels.swift",
+                            "EngramServiceWebProjectModels.swift",
+                            "ServiceCapabilityToken.swift"])
         let serviceFiles = target.split(separator: "\n").filter { $0.contains("path: Shared/Service/") }
             .compactMap { $0.split(separator: "/").last.map(String.init) }
         XCTAssertEqual(Set(serviceFiles), expected)
         for forbidden in ["EngramCoreRead", "EngramCoreWrite", "GRDB", "EngramServiceModels.swift",
-                          "EngramServiceClient.swift", "UnixSocketEngramServiceTransport.swift", "ServiceCapabilityToken.swift"] {
+                          "EngramServiceClient.swift", "UnixSocketEngramServiceTransport.swift"] {
             XCTAssertFalse(target.contains(forbidden), forbidden)
         }
         let client = try String(contentsOf: root.appendingPathComponent("macos/Shared/Service/EngramServiceWebReadClient.swift"), encoding: .utf8)
@@ -648,6 +686,504 @@ final class WebMetadataClientTests: XCTestCase {
         if let directory { try FileManager.default.removeItem(at: directory) }
     }
 
+    func testSearchRequestResponseBoundsAndOmittedUnknownFields_repro() throws {
+        guard let omitted = decode(EngramServiceWebSearchRequest.self, ["query": "alpha"]) else { return }
+        XCTAssertEqual(omitted.mode, .keyword)
+        XCTAssertEqual(omitted.tools, .all)
+        XCTAssertEqual(omitted.limit, 10)
+        XCTAssertEqual(omitted.agents, .hide)
+        let encoded = try JSONEncoder().encode(omitted)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertNil(object["mode"])
+        XCTAssertNil(object["tools"])
+        XCTAssertEqual((object["limit"] as? NSNumber)?.intValue, 10)
+        invalid(EngramServiceWebSearchRequest.self, ["query": "alpha", "mode": "both"])
+        invalid(EngramServiceWebSearchRequest.self, ["query": "alpha", "limit": 51])
+        invalid(EngramServiceWebSearchRequest.self, ["query": "alpha", "tools": "yes"])
+        invalid(EngramServiceWebSearchRequest.self, ["mode": "semantic"])
+        guard let dated = decode(EngramServiceWebSearchRequest.self, [
+            "query": "alpha", "since": "2026-09-07", "until": "2026-09-13", "tools": "hide",
+            "mode": "semantic", "limit": 25,
+        ]) else { return }
+        XCTAssertEqual(dated.mode, .semantic)
+        XCTAssertEqual(dated.tools, .hide)
+        XCTAssertEqual(dated.limit, 25)
+        guard let status = decode(EngramServiceWebSearchStatusResponse.self, Self.searchStatusPage()) else { return }
+        XCTAssertEqual(status.eligibleSessionCount, 2)
+        XCTAssertEqual(status.embeddedSessionCount, 1)
+        XCTAssertEqual(status.progressPercent, 50)
+        XCTAssertEqual(status.model, "probe")
+        guard let omittedCounts = decode(EngramServiceWebSearchStatusResponse.self, [
+            "observedAt": Self.now, "keyword": "available", "semantic": "unavailable", "hybrid": "unavailable",
+        ]) else { return }
+        XCTAssertNil(omittedCounts.eligibleSessionCount)
+        XCTAssertNil(omittedCounts.embeddedSessionCount)
+        XCTAssertNil(omittedCounts.progressPercent)
+        XCTAssertNil(omittedCounts.model)
+        invalid(EngramServiceWebSearchStatusResponse.self, [
+            "observedAt": Self.now, "keyword": "available", "semantic": "unavailable", "hybrid": "unavailable",
+            "progressPercent": 10,
+        ])
+        guard let search = decode(EngramServiceWebSearchResponse.self, Self.searchPage()) else { return }
+        XCTAssertEqual(search.items.first?.matchType, "keyword")
+        XCTAssertEqual(search.items.first?.session.sessionId, "session-a")
+        XCTAssertEqual(search.insightResults, [])
+        let searchObject = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(search)) as? [String: Any])
+        XCTAssertNil(searchObject["totalCount"])
+        XCTAssertNil(searchObject["nextCursor"])
+        guard let withInsight = decode(EngramServiceWebSearchResponse.self, Self.searchPage(insights: [[
+            "id": "insight-global", "content": "library note", "matchType": "keyword",
+        ]])) else { return }
+        XCTAssertEqual(withInsight.insightResults.map(\.id), ["insight-global"])
+        XCTAssertNil(withInsight.insightResults.first?.sourceSessionId)
+        var tooLong = Self.searchPage(insights: [[
+            "id": "insight-global", "content": String(repeating: "é", count: 601), "matchType": "keyword",
+        ]])
+        invalid(EngramServiceWebSearchResponse.self, tooLong)
+        invalid(EngramServiceWebSearchResponse.self, Self.searchPage(insights: [
+            ["id": "insight-global", "content": "a", "matchType": "hybrid"],
+        ]))
+        XCTAssertNoThrow(try EngramServiceWebInsightDetailRequest(id: "insight-global"))
+        XCTAssertThrowsError(try EngramServiceWebInsightDetailRequest(id: "insight-global", offset: 1))
+        XCTAssertThrowsError(try EngramServiceWebInsightDetailRequest(id: "insight-global", limit: 0))
+        guard let detail = decode(EngramServiceWebInsightDetailResponse.self, [
+            "id": "insight-global", "revision": Self.generation, "offset": 0, "totalLength": 4,
+            "content": "note",
+        ]) else { return }
+        XCTAssertEqual(detail.content, "note")
+        XCTAssertNil(detail.nextOffset)
+        invalid(EngramServiceWebInsightDetailRequest.self, ["id": "insight-global", "offset": 1])
+        invalid(EngramServiceWebInsightDetailResponse.self, [
+            "id": "insight-global", "revision": Self.generation, "offset": 0, "totalLength": 4,
+            "content": "note", "nextOffset": 2,
+        ])
+    }
+
+    func testCostsRequestResponseBoundsAndOmittedUnknownFields_repro() throws {
+        guard let omitted = decode(EngramServiceWebCostsRequest.self, [:]) else { return }
+        XCTAssertEqual(omitted.groupBy, .model)
+        XCTAssertEqual(omitted.tools, .all)
+        XCTAssertEqual(omitted.limit, 50)
+        XCTAssertEqual(omitted.agents, .hide)
+        let encoded = try JSONEncoder().encode(omitted)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertNil(object["groupBy"])
+        XCTAssertNil(object["tools"])
+        XCTAssertEqual((object["limit"] as? NSNumber)?.intValue, 50)
+        invalid(EngramServiceWebCostsRequest.self, ["groupBy": "week"])
+        invalid(EngramServiceWebCostsRequest.self, ["limit": 101])
+        invalid(EngramServiceWebCostsRequest.self, ["limit": 0])
+        invalid(EngramServiceWebCostsRequest.self, ["cursor": "next"])
+        guard let dated = decode(EngramServiceWebCostsRequest.self, [
+            "groupBy": "day", "since": "2026-09-07", "until": "2026-09-13", "tools": "hide", "limit": 2,
+        ]) else { return }
+        XCTAssertEqual(dated.groupBy, .day)
+        XCTAssertEqual(dated.tools, .hide)
+        XCTAssertEqual(dated.limit, 2)
+        guard let sessions = decode(EngramServiceWebCostSessionsRequest.self, [:]) else { return }
+        XCTAssertEqual(sessions.limit, 20)
+        XCTAssertEqual(sessions.tools, .all)
+        let sessionsEncoded = try JSONEncoder().encode(sessions)
+        let sessionsObject = try XCTUnwrap(JSONSerialization.jsonObject(with: sessionsEncoded) as? [String: Any])
+        XCTAssertNil(sessionsObject["tools"])
+        XCTAssertEqual((sessionsObject["limit"] as? NSNumber)?.intValue, 20)
+        invalid(EngramServiceWebCostSessionsRequest.self, ["limit": 101])
+        invalid(EngramServiceWebCostSessionsRequest.self, ["limit": 0])
+        guard let page = decode(EngramServiceWebCostsResponse.self, Self.costsPage()) else { return }
+        XCTAssertEqual(page.groupBy, .model)
+        XCTAssertEqual(page.totals.sessionCount, 2)
+        XCTAssertEqual(page.unpricedUnattributedSessions, 0)
+        guard let omittedUnpriced = decode(EngramServiceWebCostsResponse.self, Self.costsPage(unpriced: false)) else { return }
+        XCTAssertNil(omittedUnpriced.unpricedUnattributedSessions)
+        let omittedObject = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(omittedUnpriced)) as? [String: Any])
+        XCTAssertNil(omittedObject["unpricedUnattributedSessions"])
+        guard let top = decode(EngramServiceWebCostSessionsResponse.self, Self.costSessionsPage()) else { return }
+        XCTAssertEqual(top.items.first?.costUsd, 1.25)
+        XCTAssertEqual(top.items.first?.session.sessionId, "session-a")
+        let topObject = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(top)) as? [String: Any])
+        XCTAssertNil(topObject["totalCount"])
+        XCTAssertNil(topObject["nextCursor"])
+        invalid(EngramServiceWebCostsResponse.self, Self.replacing(Self.costsPage(), "groupBy", "week"))
+    }
+
+    func testCostsCoverAcceptsRawSubCentGroupSums_repro() throws {
+        var page = Self.costsPage()
+        page["totals"] = [
+            "costUsd": 0.012, "inputTokens": 20, "outputTokens": 8,
+            "cacheReadTokens": 2, "cacheCreationTokens": 4, "sessionCount": 2,
+        ]
+        page["items"] = [
+            Self.costsItem(key: "a-model", costUsd: 0.006),
+            Self.costsItem(key: "b-model", costUsd: 0.006),
+        ]
+        guard let decoded = decode(EngramServiceWebCostsResponse.self, page) else { return }
+        XCTAssertEqual(decoded.totals.costUsd, 0.012, accuracy: 1e-12)
+        XCTAssertEqual(decoded.items.map(\.costUsd), [0.006, 0.006])
+        XCTAssertNotEqual(decoded.totals.costUsd, 0.02, accuracy: 1e-9)
+        var rounded = page
+        rounded["totals"] = [
+            "costUsd": 0.01, "inputTokens": 20, "outputTokens": 8,
+            "cacheReadTokens": 2, "cacheCreationTokens": 4, "sessionCount": 2,
+        ]
+        rounded["items"] = [
+            Self.costsItem(key: "a-model", costUsd: 0.01),
+            Self.costsItem(key: "b-model", costUsd: 0.01),
+        ]
+        invalid(EngramServiceWebCostsResponse.self, rounded)
+    }
+
+    func testCostsAndCostSessionsRoundTripTypedCommands_repro() async throws {
+        let request = try EngramServiceWebCostsRequest(groupBy: .project, limit: 2)
+        let path = metadataSocketPath()
+        let server = try WebReadFixture(path: path) { fd, received in
+            let envelope = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: received)
+            XCTAssertEqual(envelope.command, "webCosts")
+            XCTAssertNil(envelope.capabilityToken)
+            let payload = try JSONDecoder().decode(EngramServiceWebCostsRequest.self, from: XCTUnwrap(envelope.payload))
+            XCTAssertEqual(payload.groupBy, .project)
+            XCTAssertEqual(payload.limit, 2)
+            let encoded = try JSONEncoder().encode(payload)
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+            XCTAssertNil(object["tools"])
+            try EngramServiceSocketIO.writeFrame(
+                Self.metadataEnvelope(Self.costsPage(groupBy: "project", key: "project_1"),
+                                      requestId: envelope.requestId),
+                to: fd, requestTimeout: 1)
+        }
+        defer { server.stop() }
+        let actual = try await EngramServiceWebReadClient(socketPath: path).costs(request)
+        XCTAssertEqual(actual.groupBy, .project)
+        XCTAssertEqual(actual.items.first?.key, "project_1")
+        XCTAssertEqual(server.requestCount, 1)
+
+        let sessionsPath = metadataSocketPath()
+        let sessionsServer = try WebReadFixture(path: sessionsPath) { fd, received in
+            let envelope = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: received)
+            XCTAssertEqual(envelope.command, "webCostSessions")
+            let payload = try JSONDecoder().decode(
+                EngramServiceWebCostSessionsRequest.self, from: XCTUnwrap(envelope.payload))
+            XCTAssertEqual(payload.limit, 20)
+            try EngramServiceSocketIO.writeFrame(
+                Self.metadataEnvelope(Self.costSessionsPage(), requestId: envelope.requestId),
+                to: fd, requestTimeout: 1)
+        }
+        defer { sessionsServer.stop() }
+        let sessions = try await EngramServiceWebReadClient(socketPath: sessionsPath)
+            .costSessions(try EngramServiceWebCostSessionsRequest())
+        XCTAssertEqual(sessions.items.first?.costUsd, 1.25)
+        XCTAssertEqual(sessionsServer.requestCount, 1)
+    }
+
+    func testUsageRoundTripReturnsObservationTimeAndBasisWithoutCapability() async throws {
+        let path = metadataSocketPath()
+        let server = try WebReadFixture(path: path) { fd, received in
+            let envelope = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: received)
+            XCTAssertEqual(envelope.command, "webUsage")
+            XCTAssertNil(envelope.capabilityToken)
+            try EngramServiceSocketIO.writeFrame(Self.metadataEnvelope([
+                "observedAt": Self.now, "scope": "server", "items": [[
+                    "source": "claude-code", "metric": "5h token total", "value": 800,
+                    "unit": "tokens", "limit": 2000, "status": "normal",
+                    "collectedAt": "2026-09-13T08:00:00Z", "basis": "indexedSessions",
+                ]],
+            ], requestId: envelope.requestId), to: fd, requestTimeout: 1)
+        }
+        defer { server.stop() }
+        let page = try await EngramServiceWebReadClient(socketPath: path).usage()
+        XCTAssertEqual(page.items.first?.value, 800)
+        XCTAssertEqual(page.items.first?.basis, .indexedSessions)
+        XCTAssertEqual(page.items.first?.collectedAt, "2026-09-13T08:00:00Z")
+    }
+
+    func testToolAnalyticsRoundTripRetainsFullTotals() async throws {
+        let path = metadataSocketPath()
+        let server = try WebReadFixture(path: path) { fd, received in
+            let envelope = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: received)
+            XCTAssertEqual(envelope.command, "webToolAnalytics")
+            XCTAssertNil(envelope.capabilityToken)
+            let payload = try JSONDecoder().decode(EngramServiceWebToolAnalyticsRequest.self, from: XCTUnwrap(envelope.payload))
+            XCTAssertEqual(payload.project, "alpha")
+            XCTAssertEqual(payload.groupBy, .session)
+            try EngramServiceSocketIO.writeFrame(
+                Self.metadataEnvelope([
+                    "snapshotId": Self.snapshot, "observedAt": Self.now,
+                    "groupBy": "session", "totalCalls": 12, "groupCount": 2,
+                    "items": [["key": "session-a", "label": "First session", "sessionId": "session-a",
+                               "callCount": 8, "sessionCount": 1, "toolCount": 2]],
+                    "nextCursor": "next-page",
+                ], requestId: envelope.requestId), to: fd, requestTimeout: 1)
+        }
+        defer { server.stop() }
+        let page = try await EngramServiceWebReadClient(socketPath: path)
+            .toolAnalytics(.init(project: "alpha", groupBy: .session, limit: 1))
+        XCTAssertEqual(page.totalCalls, 12)
+        XCTAssertEqual(page.groupCount, 2)
+        XCTAssertEqual(page.items.first?.sessionId, "session-a")
+        XCTAssertEqual(page.nextCursor, "next-page")
+    }
+
+    func testFileActivityRoundTripRetainsFullTotals() async throws {
+        let path = metadataSocketPath()
+        let server = try WebReadFixture(path: path) { fd, received in
+            let envelope = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: received)
+            XCTAssertEqual(envelope.command, "webFileActivity")
+            XCTAssertNil(envelope.capabilityToken)
+            let payload = try JSONDecoder().decode(EngramServiceWebFileActivityRequest.self, from: XCTUnwrap(envelope.payload))
+            XCTAssertEqual(payload.project, "alpha")
+            XCTAssertEqual(payload.limit, 1)
+            try EngramServiceSocketIO.writeFrame(
+                Self.metadataEnvelope([
+                    "snapshotId": Self.snapshot, "observedAt": Self.now,
+                    "totalFiles": 2, "totalOperations": 12,
+                    "items": [["key": "p." + String(repeating: "ab", count: 32), "label": "macos › Core › App.swift",
+                               "readCount": 8, "editCount": 2, "writeCount": 2, "sessionCount": 3]],
+                    "nextCursor": "next-page",
+                ], requestId: envelope.requestId), to: fd, requestTimeout: 1)
+        }
+        defer { server.stop() }
+        let page = try await EngramServiceWebReadClient(socketPath: path)
+            .fileActivity(.init(project: "alpha", limit: 1))
+        XCTAssertEqual(page.totalFiles, 2)
+        XCTAssertEqual(page.totalOperations, 12)
+        XCTAssertEqual(page.items.first?.label, "macos › Core › App.swift")
+        XCTAssertEqual(page.nextCursor, "next-page")
+    }
+
+    func testReposRoundTripRetainsFullCountAndServerFilesystemScope() async throws {
+        let path = metadataSocketPath()
+        let key = "p." + String(repeating: "cd", count: 32)
+        let server = try WebReadFixture(path: path) { fd, received in
+            let envelope = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: received)
+            XCTAssertEqual(envelope.command, "webRepos")
+            XCTAssertNil(envelope.capabilityToken)
+            let payload = try JSONDecoder().decode(EngramServiceWebReposRequest.self, from: XCTUnwrap(envelope.payload))
+            XCTAssertEqual(payload.limit, 1)
+            try EngramServiceSocketIO.writeFrame(
+                Self.metadataEnvelope([
+                    "snapshotId": Self.snapshot, "observedAt": Self.now,
+                    "scope": "serverFilesystem", "totalRepos": 2,
+                    "items": [["key": key, "name": "alpha", "branch": "feat/foo",
+                               "dirtyCount": 1, "untrackedCount": 2, "unpushedCount": 3,
+                               "lastCommitHash": "abcdef1234567", "lastCommitMessage": "fix paging",
+                               "lastCommitAt": Self.now, "sessionCount": 4, "probedAt": Self.now]],
+                    "nextCursor": "next-page",
+                ], requestId: envelope.requestId), to: fd, requestTimeout: 1)
+        }
+        defer { server.stop() }
+        let page = try await EngramServiceWebReadClient(socketPath: path).repos(.init(limit: 1))
+        XCTAssertEqual(page.scope, "serverFilesystem")
+        XCTAssertEqual(page.totalRepos, 2)
+        XCTAssertEqual(page.items.first?.name, "alpha")
+        XCTAssertEqual(page.items.first?.branch, "feat/foo")
+        XCTAssertEqual(page.nextCursor, "next-page")
+    }
+
+    func testAiAuditRoundTripAcceptsSlashColonModelAndFlagsOnlyDetail() async throws {
+        XCTAssertNoThrow(try EngramServiceWebAiAuditRequest(model: "provider/model:variant"))
+        let accepted = EngramServiceWebAiAuditItem(
+            id: "1", at: Self.now, caller: "summary", operation: "chat",
+            method: "POST", url: "https://engram-ai.test/v1", statusCode: 200, durationMs: 12,
+            model: "provider/model:variant", provider: "synthetic",
+            promptTokens: 120, completionTokens: 30, totalTokens: 150,
+            hasError: false, error: nil, sessionId: "session-a")
+        XCTAssertEqual(accepted.model, "provider/model:variant")
+        let path = metadataSocketPath()
+        let server = try WebReadFixture(path: path) { fd, received in
+            let envelope = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: received)
+            XCTAssertEqual(envelope.command, "webAiAudit")
+            XCTAssertNil(envelope.capabilityToken)
+            let payload = try JSONDecoder().decode(EngramServiceWebAiAuditRequest.self, from: XCTUnwrap(envelope.payload))
+            XCTAssertEqual(payload.model, "provider/model:variant")
+            XCTAssertEqual(payload.limit, 50)
+            try EngramServiceSocketIO.writeFrame(
+                Self.metadataEnvelope([
+                    "snapshotId": Self.snapshot, "observedAt": Self.now, "total": 1,
+                    "items": [[
+                        "id": "1", "at": Self.now, "caller": "summary", "operation": "chat",
+                        "method": "POST", "url": "https://engram-ai.test/v1", "statusCode": 200,
+                        "durationMs": 12, "model": "provider/model:variant", "provider": "synthetic",
+                        "promptTokens": 120, "completionTokens": 30, "totalTokens": 150,
+                        "hasError": false, "sessionId": "session-a",
+                    ]],
+                ], requestId: envelope.requestId), to: fd, requestTimeout: 1)
+        }
+        defer { server.stop() }
+        let page = try await EngramServiceWebReadClient(socketPath: path)
+            .aiAudit(.init(model: "provider/model:variant"))
+        XCTAssertEqual(page.total, 1)
+        XCTAssertEqual(page.items.first?.model, "provider/model:variant")
+
+        let detailPath = metadataSocketPath()
+        let detailServer = try WebReadFixture(path: detailPath) { fd, received in
+            let envelope = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: received)
+            XCTAssertEqual(envelope.command, "webAiAuditDetail")
+            try EngramServiceSocketIO.writeFrame(
+                Self.metadataEnvelope([
+                    "observedAt": Self.now,
+                    "item": [
+                        "id": "1", "at": Self.now, "caller": "summary", "operation": "chat",
+                        "hasError": false,
+                    ],
+                    "hasRequestBody": false, "hasResponseBody": false,
+                ], requestId: envelope.requestId), to: fd, requestTimeout: 1)
+        }
+        defer { detailServer.stop() }
+        let detail = try await EngramServiceWebReadClient(socketPath: detailPath)
+            .aiAuditDetail(.init(id: "1"))
+        XCTAssertEqual(detail.item.id, "1")
+        XCTAssertFalse(detail.hasRequestBody)
+        let encoded = String(decoding: try JSONEncoder().encode(detail), as: UTF8.self)
+        XCTAssertFalse(encoded.contains("\"requestBody\""))
+        XCTAssertFalse(encoded.contains("\"responseBody\""))
+
+        let statsPath = metadataSocketPath()
+        let statsServer = try WebReadFixture(path: statsPath) { fd, received in
+            let envelope = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: received)
+            XCTAssertEqual(envelope.command, "webAiStats")
+            let payload = try JSONDecoder().decode(EngramServiceWebAiStatsRequest.self, from: XCTUnwrap(envelope.payload))
+            XCTAssertEqual(payload.from, "2026-09-01")
+            try EngramServiceSocketIO.writeFrame(
+                Self.metadataEnvelope([
+                    "observedAt": Self.now,
+                    "timeRange": ["from": "2026-09-01T00:00:00Z", "to": "2026-09-13T00:00:00Z"],
+                    "totals": ["requests": 1, "errors": 0, "promptTokens": 120,
+                               "completionTokens": 30, "avgDurationMs": 12],
+                    "byCaller": [["key": "summary", "requests": 1, "errors": 0,
+                                  "promptTokens": 120, "completionTokens": 30]],
+                    "byModel": [["key": "provider/model:variant", "requests": 1,
+                                 "promptTokens": 120, "completionTokens": 30]],
+                    "hourly": [["hour": "2026-09-12T17:00", "requests": 1, "tokens": 150]],
+                ], requestId: envelope.requestId), to: fd, requestTimeout: 1)
+        }
+        defer { statsServer.stop() }
+        let stats = try await EngramServiceWebReadClient(socketPath: statsPath)
+            .aiStats(.init(from: "2026-09-01"))
+        XCTAssertEqual(stats.totals.promptTokens, 120)
+        XCTAssertEqual(stats.byModel.first?.key, "provider/model:variant")
+    }
+
+    func testChildrenAndTimelineRoundTripTypedCommands() async throws {
+        let generation = String(repeating: "ab", count: 32)
+        let childrenPath = metadataSocketPath()
+        let childrenServer = try WebReadFixture(path: childrenPath) { fd, received in
+            let envelope = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: received)
+            XCTAssertEqual(envelope.command, "webChildren")
+            XCTAssertNil(envelope.capabilityToken)
+            let payload = try JSONDecoder().decode(EngramServiceWebChildrenRequest.self, from: XCTUnwrap(envelope.payload))
+            XCTAssertEqual(payload.sessionId, "parent-a")
+            XCTAssertEqual(payload.limit, 20)
+            try EngramServiceSocketIO.writeFrame(
+                Self.metadataEnvelope([
+                    "sessionId": "parent-a", "snapshotId": Self.snapshot, "observedAt": Self.now,
+                    "items": [[
+                        "relationship": "confirmed",
+                        "session": Self.summary(),
+                    ]],
+                ], requestId: envelope.requestId),
+                to: fd, requestTimeout: 1)
+        }
+        defer { childrenServer.stop() }
+        let children = try await EngramServiceWebReadClient(socketPath: childrenPath)
+            .children(try EngramServiceWebChildrenRequest(sessionId: "parent-a"))
+        XCTAssertEqual(children.items.first?.relationship, .confirmed)
+        XCTAssertEqual(childrenServer.requestCount, 1)
+
+        let timelinePath = metadataSocketPath()
+        let timelineServer = try WebReadFixture(path: timelinePath) { fd, received in
+            let envelope = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: received)
+            XCTAssertEqual(envelope.command, "webTimeline")
+            XCTAssertNil(envelope.capabilityToken)
+            let payload = try JSONDecoder().decode(EngramServiceWebTimelineRequest.self, from: XCTUnwrap(envelope.payload))
+            XCTAssertEqual(payload.offset, 0)
+            XCTAssertEqual(payload.limit, 100)
+            try EngramServiceSocketIO.writeFrame(
+                Self.metadataEnvelope([
+                    "sessionId": "session-a", "generation": generation, "totalEntries": 1,
+                    "entries": [[
+                        "index": 0, "role": "user", "type": "message", "preview": "hello",
+                    ]],
+                ], requestId: envelope.requestId),
+                to: fd, requestTimeout: 1)
+        }
+        defer { timelineServer.stop() }
+        let timeline = try await EngramServiceWebReadClient(socketPath: timelinePath)
+            .timeline(try EngramServiceWebTimelineRequest(sessionId: "session-a", generation: generation))
+        XCTAssertEqual(timeline.entries.first?.type, .message)
+        XCTAssertEqual(timelineServer.requestCount, 1)
+    }
+
+    func testSearchAndStatusRoundTripTypedCommands_repro() async throws {
+        let request = try EngramServiceWebSearchRequest(query: "alpha searchable", mode: .hybrid, limit: 25)
+        let expected = try XCTUnwrap(decode(EngramServiceWebSearchResponse.self, Self.searchPage(query: request.query)))
+        let path = metadataSocketPath()
+        let server = try WebReadFixture(path: path) { fd, received in
+            let envelope = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: received)
+            XCTAssertEqual(envelope.command, "webSearch")
+            XCTAssertNil(envelope.capabilityToken)
+            let payload = try JSONDecoder().decode(EngramServiceWebSearchRequest.self, from: XCTUnwrap(envelope.payload))
+            XCTAssertEqual(payload.query, "alpha searchable")
+            XCTAssertEqual(payload.mode, .hybrid)
+            XCTAssertEqual(payload.limit, 25)
+            let encoded = try JSONEncoder().encode(payload)
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+            XCTAssertNil(object["tools"])
+            try EngramServiceSocketIO.writeFrame(
+                Self.metadataEnvelope(Self.searchPage(query: payload.query), requestId: envelope.requestId),
+                to: fd, requestTimeout: 1)
+        }
+        defer { server.stop() }
+        let actual = try await EngramServiceWebReadClient(socketPath: path).search(request)
+        XCTAssertEqual(actual.query, expected.query)
+        XCTAssertEqual(actual.items.first?.matchType, "keyword")
+        XCTAssertEqual(actual.insightResults, [])
+        XCTAssertEqual(server.requestCount, 1)
+
+        let insightPath = metadataSocketPath()
+        let insightServer = try WebReadFixture(path: insightPath) { fd, received in
+            let envelope = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: received)
+            XCTAssertEqual(envelope.command, "webInsightDetail")
+            XCTAssertNil(envelope.capabilityToken)
+            let payload = try JSONDecoder().decode(
+                EngramServiceWebInsightDetailRequest.self, from: XCTUnwrap(envelope.payload))
+            XCTAssertEqual(payload.id, "insight-global")
+            XCTAssertEqual(payload.offset, 0)
+            XCTAssertEqual(payload.limit, 8000)
+            try EngramServiceSocketIO.writeFrame(
+                Self.metadataEnvelope([
+                    "id": "insight-global", "revision": Self.generation, "offset": 0,
+                    "totalLength": 4, "content": "note",
+                ], requestId: envelope.requestId),
+                to: fd, requestTimeout: 1)
+        }
+        defer { insightServer.stop() }
+        let detail = try await EngramServiceWebReadClient(socketPath: insightPath)
+            .insightDetail(try EngramServiceWebInsightDetailRequest(id: "insight-global"))
+        XCTAssertEqual(detail.id, "insight-global")
+        XCTAssertEqual(detail.content, "note")
+        XCTAssertNil(detail.nextOffset)
+        XCTAssertEqual(insightServer.requestCount, 1)
+
+        let statusPath = metadataSocketPath()
+        let statusServer = try WebReadFixture(path: statusPath) { fd, received in
+            let envelope = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: received)
+            XCTAssertEqual(envelope.command, "webSearchStatus")
+            let payload = try JSONDecoder().decode(
+                EngramServiceWebSearchStatusRequest.self, from: XCTUnwrap(envelope.payload))
+            XCTAssertEqual(payload.tools, .all)
+            try EngramServiceSocketIO.writeFrame(
+                Self.metadataEnvelope(Self.searchStatusPage(counts: false), requestId: envelope.requestId),
+                to: fd, requestTimeout: 1)
+        }
+        defer { statusServer.stop() }
+        let status = try await EngramServiceWebReadClient(socketPath: statusPath)
+            .searchStatus(try EngramServiceWebSearchStatusRequest())
+        XCTAssertNil(status.eligibleSessionCount)
+        XCTAssertNil(status.embeddedSessionCount)
+        XCTAssertNil(status.progressPercent)
+        XCTAssertEqual(status.warningCode, "embeddingProviderUnavailable")
+        XCTAssertEqual(statusServer.requestCount, 1)
+    }
+
     func testUnknownObservationsRemainNilWhileMeasuredZerosRemainZero() {
         guard let page = decode(EngramServiceWebOverviewResponse.self, Self.overview()) else { return }
         XCTAssertEqual(page.capabilities.keywordSearch, .unknown)
@@ -695,9 +1231,16 @@ final class WebMetadataClientTests: XCTestCase {
             XCTAssertEqual(sessions.limit, 50)
             XCTAssertNil(sessions.query)
             XCTAssertNil(sessions.source)
+            XCTAssertNil(sessions.sources)
             XCTAssertNil(sessions.machineId)
             XCTAssertNil(sessions.sourceInstanceId)
             XCTAssertNil(sessions.projectKey)
+            XCTAssertNil(sessions.projectKeys)
+            XCTAssertNil(sessions.sessionId)
+            XCTAssertEqual(sessions.agents, .hide)
+            XCTAssertNil(sessions.since)
+            XCTAssertNil(sessions.until)
+            XCTAssertEqual(sessions.tools, .all)
             XCTAssertNil(sessions.cursor)
             XCTAssertNil(sessions.snapshotId)
             for limit in [1, 100] {
@@ -784,12 +1327,275 @@ final class WebMetadataClientTests: XCTestCase {
                 invalid(EngramServiceWebStreamOverview.self, Self.replacing(Self.stream(), field, uuid))
             }
         }
-        for key in ["p", "opaque_-09", String(repeating: "k", count: 128)] {
+        for key in ["p", "opaque_-09", String(repeating: "k", count: 128),
+                    "p." + String(repeating: "a", count: 64)] {
             _ = decode(EngramServiceWebSessionsRequest.self, ["projectKey": key, "limit": 1])
         }
-        for key in ["", "/private/project", "file:project", "p.q", "é", "a\0b", String(repeating: "k", count: 129)] {
+        for key in ["", "/private/project", "file:project", "p.q",
+                    "p." + String(repeating: "A", count: 64), "é", "a\0b", String(repeating: "k", count: 129)] {
             invalid(EngramServiceWebSessionsRequest.self, ["projectKey": key, "limit": 1])
             invalid(EngramServiceWebSessionSummary.self, Self.replacing(Self.summary(), "projectKey", key))
+        }
+    }
+
+    func testPluralFilterBoundsCanonicalOrderAndSingularConflict_repro() {
+        guard let sources = decode(EngramServiceWebSessionsRequest.self,
+                                   ["sources": ["codex", "claude-code"], "limit": 1]) else { return }
+        XCTAssertEqual(sources.sources, ["claude-code", "codex"])
+        XCTAssertNil(sources.source)
+        guard let projects = decode(EngramServiceWebSessionsRequest.self,
+                                    ["projectKeys": ["project_2", "project_1"], "limit": 1]) else { return }
+        XCTAssertEqual(projects.projectKeys, ["project_1", "project_2"])
+        guard let id = decode(EngramServiceWebSessionsRequest.self,
+                              ["sessionId": "old-uuid", "limit": 1]) else { return }
+        XCTAssertEqual(id.sessionId, "old-uuid")
+        guard let omitted = decode(EngramServiceWebSessionsRequest.self, ["limit": 1]) else { return }
+        XCTAssertEqual(omitted.agents, .hide)
+        XCTAssertNil(omitted.sources)
+        invalid(EngramServiceWebSessionsRequest.self, ["source": "codex", "sources": ["codex"], "limit": 1])
+        invalid(EngramServiceWebSessionsRequest.self, ["projectKey": "project_1", "projectKeys": ["project_1"], "limit": 1])
+        invalid(EngramServiceWebSessionsRequest.self, ["sources": [] as [String], "limit": 1])
+        invalid(EngramServiceWebSessionsRequest.self, ["sources": ["codex", "codex"], "limit": 1])
+        invalid(EngramServiceWebSessionsRequest.self,
+                ["sources": (0..<33).map { "s\($0)" }, "limit": 1])
+        invalid(EngramServiceWebSessionsRequest.self, ["agents": "visible", "limit": 1])
+        invalid(EngramServiceWebSessionsRequest.self, ["sessionId": "", "limit": 1])
+        invalid(EngramServiceWebSessionsRequest.self, ["since": "2026-9-07", "limit": 1])
+        invalid(EngramServiceWebSessionsRequest.self, ["since": "2026-02-30", "limit": 1])
+        invalid(EngramServiceWebSessionsRequest.self, ["since": "2026-09-13", "until": "2026-09-07", "limit": 1])
+        invalid(EngramServiceWebSessionsRequest.self, ["tools": "yes", "limit": 1])
+        guard let dated = decode(EngramServiceWebSessionsRequest.self,
+                                 ["since": "2026-09-07", "until": "2026-09-13", "tools": "hide", "limit": 1]) else { return }
+        XCTAssertEqual(dated.since, "2026-09-07")
+        XCTAssertEqual(dated.until, "2026-09-13")
+        XCTAssertEqual(dated.tools, .hide)
+        XCTAssertEqual(omitted.tools, .all)
+        XCTAssertNil(omitted.since)
+        guard let summary = decode(EngramServiceWebSessionSummary.self, Self.summary()) else { return }
+        XCTAssertNil(summary.isAgent)
+        XCTAssertNil(summary.userMessageCount)
+        XCTAssertNil(summary.assistantMessageCount)
+        XCTAssertNil(summary.systemMessageCount)
+        XCTAssertNil(summary.nativeId)
+        _ = decode(EngramServiceWebSessionSummary.self, Self.replacing(Self.summary(), "isAgent", true))
+        _ = decode(EngramServiceWebSessionSummary.self, Self.replacing(Self.summary(), "userMessageCount", 0))
+        _ = decode(EngramServiceWebSessionSummary.self, Self.replacing(Self.summary(), "nativeId", "old-uuid"))
+        invalid(EngramServiceWebSessionSummary.self, Self.replacing(Self.summary(), "userMessageCount", -1))
+        invalid(EngramServiceWebSessionSummary.self,
+                Self.replacing(Self.summary(), "assistantMessageCount", EngramServiceWebReadLimits.maximumMessages + 1))
+        invalid(EngramServiceWebSessionSummary.self, Self.replacing(Self.summary(), "nativeId", ""))
+    }
+
+    func testFacetsRequestItemBoundsAndOpaqueProjectIdentity_repro() {
+        guard let omitted = decode(EngramServiceWebFacetsRequest.self, ["kind": "source"]) else { return }
+        XCTAssertEqual(omitted.limit, 50)
+        XCTAssertEqual(omitted.agents, .hide)
+        XCTAssertNil(omitted.query)
+        invalid(EngramServiceWebFacetsRequest.self, [:] as [String: Any])
+        invalid(EngramServiceWebFacetsRequest.self, ["kind": "sources"])
+        invalid(EngramServiceWebFacetsRequest.self, ["kind": "source", "query": " engram"])
+        invalid(EngramServiceWebFacetsRequest.self, ["kind": "source", "agents": "visible"])
+        let digest = String(repeating: "a", count: 64)
+        let opaque = "p." + digest
+        _ = decode(EngramServiceWebFacetsRequest.self, ["kind": "project", "query": "Engram", "limit": 1])
+        _ = decode(EngramServiceWebSessionsRequest.self, ["projectKey": opaque, "limit": 1])
+        _ = decode(EngramServiceWebFacetItem.self, ["key": opaque, "label": "My Project", "sessionCount": 1])
+        _ = decode(EngramServiceWebSessionSummary.self, Self.replacing(Self.summary(), "projectKey", opaque))
+        _ = decode(EngramServiceWebFacetsResponse.self, [
+            "snapshotId": Self.snapshot, "observedAt": Self.now,
+            "items": [["key": opaque, "label": "My Project", "sessionCount": 1]],
+        ])
+        invalid(EngramServiceWebFacetItem.self, ["key": "p.q", "label": "My Project", "sessionCount": 1])
+        invalid(EngramServiceWebFacetItem.self, ["key": "", "label": "My Project", "sessionCount": 1])
+        invalid(EngramServiceWebFacetItem.self, ["key": "project_1", "label": "", "sessionCount": 1])
+        invalid(EngramServiceWebFacetItem.self, ["key": "project_1", "label": "My Project", "sessionCount": -1])
+        invalid(EngramServiceWebFacetsResponse.self, [
+            "snapshotId": Self.snapshot, "observedAt": Self.now,
+            "items": [
+                ["key": "project_1", "label": "A", "sessionCount": 1],
+                ["key": "project_1", "label": "B", "sessionCount": 1],
+            ],
+        ])
+    }
+
+    func testFacetsClientRejectsMismatchedKindQueryOrderAndAcceptsCaseInsensitiveQuery_repro() async throws {
+        let accepted = try await facetsExchange(input: ["kind": "project", "query": "engram", "limit": 50]) { incoming in
+            try Self.metadataEnvelope([
+                "snapshotId": Self.snapshot, "observedAt": Self.now,
+                "items": [["key": "project_1", "label": "Engram", "sessionCount": 1]],
+            ], requestId: incoming.requestId)
+        }
+        XCTAssertEqual(accepted.items.first?.label, "Engram")
+        for mutation in ["query", "sourceKey", "order"] {
+            await expectMetadata(.malformed) {
+                _ = try await self.facetsExchange(input: ["kind": mutation == "sourceKey" ? "source" : "project",
+                                                     "query": "engram", "limit": 50]) { incoming in
+                    var items: [[String: Any]]
+                    switch mutation {
+                    case "query":
+                        items = [["key": "project_1", "label": "Other", "sessionCount": 1]]
+                    case "sourceKey":
+                        items = [["key": "Claude-Code", "label": "engram", "sessionCount": 1]]
+                    default:
+                        items = [
+                            ["key": "project_2", "label": "engram", "sessionCount": 1],
+                            ["key": "project_1", "label": "Engram", "sessionCount": 1],
+                        ]
+                    }
+                    return try Self.metadataEnvelope([
+                        "snapshotId": Self.snapshot, "observedAt": Self.now, "items": items,
+                    ], requestId: incoming.requestId)
+                }
+                return Data()
+            }
+        }
+    }
+
+    func testStatsRequestItemBoundsUnknownIdentityAndInclusiveDates_repro() {
+        guard let omitted = decode(EngramServiceWebStatsRequest.self, [:] as [String: Any]) else { return }
+        XCTAssertEqual(omitted.groupBy, .source)
+        XCTAssertEqual(omitted.excludeNoise, false)
+        XCTAssertEqual(omitted.agents, .hide)
+        XCTAssertEqual(omitted.limit, 50)
+        XCTAssertNil(omitted.since)
+        _ = decode(EngramServiceWebStatsRequest.self, ["groupBy": "week", "since": "2026-09-07",
+                                                      "until": "2026-09-13", "excludeNoise": true, "limit": 1])
+        invalid(EngramServiceWebStatsRequest.self, ["groupBy": "month"])
+        invalid(EngramServiceWebStatsRequest.self, ["since": "2026-9-07"])
+        invalid(EngramServiceWebStatsRequest.self, ["since": "2026-02-30"])
+        invalid(EngramServiceWebStatsRequest.self, ["since": "2026-09-13", "until": "2026-09-07"])
+        invalid(EngramServiceWebStatsRequest.self, ["excludeNoise": "true"])
+        invalid(EngramServiceWebStatsRequest.self, ["cursor": "next"])
+        let totals: [String: Any] = ["sessionCount": 2, "messageCount": 4, "userMessageCount": 1,
+                                     "assistantMessageCount": 2, "toolMessageCount": 1]
+        let item: [String: Any] = ["key": "claude-code", "label": "claude-code", "sessionCount": 1,
+                                   "messageCount": 2, "userMessageCount": 1, "assistantMessageCount": 1,
+                                   "toolMessageCount": 0]
+        _ = decode(EngramServiceWebStatsResponse.self, [
+            "snapshotId": Self.snapshot, "observedAt": Self.now, "groupBy": "source",
+            "timeZone": "Asia/Shanghai", "totals": totals, "items": [item],
+        ])
+        _ = decode(EngramServiceWebStatsItem.self, [
+            "key": EngramServiceWebMetadataValidation.unknownProjectKey, "label": "Unknown",
+            "sessionCount": 1, "messageCount": 0, "userMessageCount": 0, "assistantMessageCount": 0,
+            "toolMessageCount": 0,
+        ])
+        _ = decode(EngramServiceWebStatsItem.self, [
+            "key": "2026-09-07", "label": "2026-09-07", "sessionCount": 1, "messageCount": 0,
+            "userMessageCount": 0, "assistantMessageCount": 0, "toolMessageCount": 0,
+        ])
+        invalid(EngramServiceWebStatsResponse.self, [
+            "snapshotId": Self.snapshot, "observedAt": Self.now, "groupBy": "source",
+            "timeZone": "Asia/Shanghai",
+            "totals": ["sessionCount": 0, "messageCount": 0, "userMessageCount": 0,
+                       "assistantMessageCount": 0, "toolMessageCount": 0],
+            "items": [item],
+        ])
+        invalid(EngramServiceWebStatsItem.self, [
+            "key": "", "label": "claude-code", "sessionCount": 1, "messageCount": 0,
+            "userMessageCount": 0, "assistantMessageCount": 0, "toolMessageCount": 0,
+        ])
+    }
+
+    func testSettingsRequestAliasBoundsAndRetiredFields_repro() {
+        guard let omitted = decode(EngramServiceWebSettingsRequest.self, [:] as [String: Any]) else { return }
+        XCTAssertEqual(omitted.limit, 50)
+        XCTAssertNil(omitted.snapshotId)
+        _ = decode(EngramServiceWebSettingsRequest.self, ["limit": 1, "snapshotId": Self.snapshot, "cursor": "next"])
+        invalid(EngramServiceWebSettingsRequest.self, ["limit": 0])
+        invalid(EngramServiceWebSettingsRequest.self, ["cursor": "next"])
+        let opaque = "p." + String(repeating: "a", count: 64)
+        _ = decode(EngramServiceWebSettingsAlias.self, [
+            "alias": opaque, "canonical": "project_1", "aliasLabel": "engram", "canonicalLabel": "project_1",
+        ])
+        invalid(EngramServiceWebSettingsAlias.self, [
+            "alias": "/tmp/absolute", "canonical": "project_1", "aliasLabel": "absolute", "canonicalLabel": "project_1",
+        ])
+        invalid(EngramServiceWebSettingsAlias.self, [
+            "alias": "old_keep", "canonical": "project_1",
+        ])
+        invalid(EngramServiceWebSettingsResponse.self, [
+            "snapshotId": Self.snapshot, "observedAt": Self.now,
+            "sources": [["key": "claude-code", "label": "claude-code"]],
+            "totalSessions": 1,
+            "aliases": [[
+                "alias": "old_keep", "canonical": "project_1",
+                "aliasLabel": "old_keep", "canonicalLabel": "project_1",
+            ]],
+            "nodeName": ["availability": "unavailable", "value": "unnamed"],
+            "peers": ["availability": "unavailable"],
+            "port": ["availability": "unavailable"],
+        ])
+        invalid(EngramServiceWebSettingsResponse.self, [
+            "snapshotId": Self.snapshot, "observedAt": Self.now,
+            "sources": [["key": "claude-code", "label": "claude-code"]],
+            "totalSessions": 1, "aliases": [],
+            "nodeName": ["availability": "unavailable"],
+            "peers": ["availability": "unavailable"],
+            "port": ["availability": "available", "value": 3457],
+        ])
+        _ = decode(EngramServiceWebSettingsResponse.self, [
+            "snapshotId": Self.snapshot, "observedAt": Self.now,
+            "sources": [["key": "claude-code", "label": "claude-code"]],
+            "totalSessions": 1,
+            "aliases": [[
+                "alias": opaque, "canonical": "project_1",
+                "aliasLabel": "engram", "canonicalLabel": "project_1",
+            ]],
+            "nodeName": ["availability": "unavailable"],
+            "peers": ["availability": "unavailable"],
+            "port": ["availability": "unavailable"],
+        ])
+    }
+
+    func testSettingsClientRejectsInventedPortAndAliasOrder_repro() async throws {
+        let accepted = try await settingsExchange(input: ["limit": 50]) { incoming in
+            try Self.metadataEnvelope(Self.settingsPage(), requestId: incoming.requestId)
+        }
+        XCTAssertEqual(accepted.aliases.first?.aliasLabel, "old_keep")
+        XCTAssertEqual(accepted.port.availability, .unavailable)
+        for mutation in ["order", "port"] {
+            await expectMetadata(.malformed) {
+                _ = try await self.settingsExchange(input: ["limit": 50]) { incoming in
+                    var object = Self.settingsPage()
+                    if mutation == "order" {
+                        object["aliases"] = [
+                            Self.settingsAlias(alias: "old_keep", canonical: "zeta"),
+                            Self.settingsAlias(alias: "beta", canonical: "project_1"),
+                        ]
+                    } else {
+                        object["port"] = ["availability": "unavailable", "value": 3457]
+                    }
+                    return try Self.metadataEnvelope(object, requestId: incoming.requestId)
+                }
+                return Data()
+            }
+        }
+    }
+
+    func testStatsClientRejectsMismatchedGroupByOrderAndAcceptsTotalsCoveringPage_repro() async throws {
+        let accepted = try await statsExchange(input: ["groupBy": "day", "since": "2026-09-07", "limit": 50]) { incoming in
+            try Self.metadataEnvelope(Self.statsPage(groupBy: "day", key: "2026-09-07", extra: 1),
+                                      requestId: incoming.requestId)
+        }
+        XCTAssertEqual(accepted.groupBy, .day)
+        XCTAssertEqual(accepted.totals.sessionCount, 2)
+        for mutation in ["groupBy", "order", "range"] {
+            await expectMetadata(.malformed) {
+                _ = try await self.statsExchange(input: ["groupBy": "day", "since": "2026-09-07", "limit": 50]) { incoming in
+                    var object = Self.statsPage(groupBy: mutation == "groupBy" ? "source" : "day",
+                                                key: mutation == "range" ? "2026-09-06" : "2026-09-07")
+                    if mutation == "order" {
+                        object["items"] = [
+                            Self.statsItem(key: "2026-09-14"),
+                            Self.statsItem(key: "2026-09-07"),
+                        ]
+                        object["totals"] = Self.statsTotals(sessionCount: 2)
+                    }
+                    return try Self.metadataEnvelope(object, requestId: incoming.requestId)
+                }
+                return Data()
+            }
         }
     }
 
@@ -929,10 +1735,10 @@ final class WebMetadataClientTests: XCTestCase {
             invalid(EngramServiceWebSessionAttempt.self, Self.replacing(Self.attempt(), "publicationSHA256", hash))
             invalid(EngramServiceWebSessionDetail.self, Self.replacing(Self.detail(), "transcriptGeneration", hash))
         }
-        for count in [0, 10_000] {
+        for count in [0, EngramServiceWebReadLimits.maximumMessages] {
             _ = decode(EngramServiceWebGenerationSummary.self, Self.replacing(Self.generationSummary(), "normalizedMessageCount", count))
         }
-        for count: Any in [-1, 10_001, 1.5, true] {
+        for count: Any in [-1, EngramServiceWebReadLimits.maximumMessages + 1, 1.5, true] {
             invalid(EngramServiceWebGenerationSummary.self, Self.replacing(Self.generationSummary(), "normalizedMessageCount", count))
         }
     }
@@ -1025,6 +1831,21 @@ final class WebMetadataClientTests: XCTestCase {
                 Self.replacing(Self.sessions(), "items", (0..<101).map { Self.summary(id: "session-\($0)") }))
         invalid(EngramServiceWebOverviewResponse.self, Self.replacing(Self.overview(), "streams", [Self.stream(), Self.stream()]))
         invalid(EngramServiceWebSessionsResponse.self, Self.replacing(Self.sessions(), "items", [Self.summary(), Self.summary()]))
+        guard let omittedTotal = decode(EngramServiceWebSessionsResponse.self, Self.sessions()) else { return }
+        XCTAssertNil(omittedTotal.totalCount, "missing totalCount is unknown, not items.count")
+        var continued = Self.sessions()
+        continued["nextCursor"] = "after"
+        continued["items"] = (0..<50).map { Self.summary(id: "session-\($0)") }
+        guard let unknownTotal = decode(EngramServiceWebSessionsResponse.self, continued) else { return }
+        XCTAssertNil(unknownTotal.totalCount)
+        XCTAssertEqual(unknownTotal.items.count, 50)
+        invalid(EngramServiceWebSessionsResponse.self, Self.replacing(Self.sessions(), "totalCount", -1))
+        invalid(EngramServiceWebSessionsResponse.self,
+                Self.replacing(Self.replacing(Self.sessions(), "items", [Self.summary(), Self.summary(id: "session-b")]),
+                               "totalCount", 1))
+        guard let counted = decode(EngramServiceWebSessionsResponse.self,
+                                   Self.replacing(Self.sessions(), "totalCount", 9)) else { return }
+        XCTAssertEqual(counted.totalCount, 9)
         let distinct = [Self.summary(id: "cafe\u{301}"), Self.summary(id: "caf\u{e9}")]
         guard let page = decode(EngramServiceWebSessionsResponse.self, Self.replacing(Self.sessions(), "items", distinct)) else { return }
         XCTAssertEqual(page.items.count, 2)
@@ -1115,7 +1936,8 @@ final class WebMetadataClientTests: XCTestCase {
         let cases: [(String, EngramServiceWebReadClientError)] = [
             ("StaleCursor", .stale), ("staleCursor", .stale), ("UnsupportedCommand", .unsupported),
             ("unsupportedCommand", .unsupported), ("ServiceUnavailable", .unavailable),
-            ("serviceUnavailable", .unavailable), ("/private/secret-name", .malformed),
+            ("serviceUnavailable", .unavailable), ("NotFound", .notFound), ("notFound", .notFound),
+            ("/private/secret-name", .malformed),
         ]
         for kind in MetadataKind.allCases {
             for (name, expected) in cases {
@@ -1191,6 +2013,52 @@ final class WebMetadataClientTests: XCTestCase {
         }
         let result = try JSONDecoder().decode(EngramServiceWebSessionDetailResponse.self, from: bytes)
         XCTAssertEqual(Data(try XCTUnwrap(result.detail?.session.sessionId).utf8), Data(id.utf8))
+    }
+
+    func testSessionListRejectsMismatchedPluralFiltersAndAgentVisibility_repro() async throws {
+        let request: [String: Any] = ["limit": 50, "sources": ["claude-code"], "projectKeys": ["project_1"],
+                                     "sessionId": "session-a", "agents": "hide"]
+        for mutation in ["source", "project", "agent"] {
+            await expectMetadata(.malformed) {
+                try await self.metadataExchange(.sessions, input: request) { incoming in
+                    var item = Self.summary()
+                    switch mutation {
+                    case "source": item["source"] = "codex"
+                    case "project": item["projectKey"] = "different_project"
+                    default: item["isAgent"] = true
+                    }
+                    return try Self.metadataEnvelope(Self.replacing(Self.sessions(), "items", [item]), requestId: incoming.requestId)
+                }
+            }
+        }
+        let accepted = try await metadataExchange(.sessions, input: request) { incoming in
+            var item = Self.summary()
+            item["isAgent"] = false
+            return try Self.metadataEnvelope(Self.replacing(Self.sessions(), "items", [item]), requestId: incoming.requestId)
+        }
+        let page = try JSONDecoder().decode(EngramServiceWebSessionsResponse.self, from: accepted)
+        XCTAssertEqual(page.items.first?.sessionId, "session-a")
+
+        let nativeRequest: [String: Any] = ["limit": 50, "sessionId": "old-uuid"]
+        for mutation in ["missingNative", "wrongNative"] {
+            await expectMetadata(.malformed) {
+                try await self.metadataExchange(.sessions, input: nativeRequest) { incoming in
+                    var item = Self.summary(id: "canonical")
+                    if mutation == "wrongNative" { item["nativeId"] = "different" }
+                    return try Self.metadataEnvelope(Self.replacing(Self.sessions(), "items", [item]),
+                                                     requestId: incoming.requestId)
+                }
+            }
+        }
+        let acceptedNative = try await metadataExchange(.sessions, input: nativeRequest) { incoming in
+            var item = Self.summary(id: "canonical")
+            item["nativeId"] = "old-uuid"
+            return try Self.metadataEnvelope(Self.replacing(Self.sessions(), "items", [item]),
+                                             requestId: incoming.requestId)
+        }
+        let nativePage = try JSONDecoder().decode(EngramServiceWebSessionsResponse.self, from: acceptedNative)
+        XCTAssertEqual(nativePage.items.first?.sessionId, "canonical")
+        XCTAssertEqual(nativePage.items.first?.nativeId, "old-uuid")
     }
 
     func testMetadataClientRejectsOutOfOrderStableListAndOverviewPages() async throws {
@@ -1338,7 +2206,11 @@ final class WebMetadataClientTests: XCTestCase {
     }
 
     private static func input(_ kind: MetadataKind) -> [String: Any] {
-        kind == .detail ? ["sessionId": "session-a"] : ["limit": 50]
+        switch kind {
+        case .detail: ["sessionId": "session-a"]
+        case .sessions: ["limit": 50, "agents": "hide"]
+        case .overview: ["limit": 50]
+        }
     }
 
     private static func page(_ kind: MetadataKind) -> [String: Any] {
@@ -1373,6 +2245,105 @@ final class WebMetadataClientTests: XCTestCase {
             server.stop()
         }
         return try await Self.invoke(kind, client: EngramServiceWebReadClient(socketPath: path, totalTimeout: 0.5), input: input ?? Self.input(kind))
+    }
+
+    private func facetsExchange(
+        input: [String: Any],
+        response: @escaping @Sendable (EngramServiceRequestEnvelope) throws -> Data
+    ) async throws -> EngramServiceWebFacetsResponse {
+        let path = metadataSocketPath()
+        let server = try WebReadFixture(path: path) { fd, bytes in
+            let incoming = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: bytes)
+            XCTAssertEqual(incoming.command, "webFacets")
+            try EngramServiceSocketIO.writeFrame(response(incoming), to: fd, requestTimeout: 1)
+        }
+        defer {
+            XCTAssertEqual(server.requestCount, 1, "Every protocol result, including unsupported, must originate from actual IPC")
+            server.stop()
+        }
+        let request = try JSONDecoder().decode(
+            EngramServiceWebFacetsRequest.self,
+            from: JSONSerialization.data(withJSONObject: input)
+        )
+        return try await EngramServiceWebReadClient(socketPath: path, totalTimeout: 0.5).facets(request)
+    }
+
+    private func statsExchange(
+        input: [String: Any],
+        response: @escaping @Sendable (EngramServiceRequestEnvelope) throws -> Data
+    ) async throws -> EngramServiceWebStatsResponse {
+        let path = metadataSocketPath()
+        let server = try WebReadFixture(path: path) { fd, bytes in
+            let incoming = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: bytes)
+            XCTAssertEqual(incoming.command, "webStats")
+            try EngramServiceSocketIO.writeFrame(response(incoming), to: fd, requestTimeout: 1)
+        }
+        defer {
+            XCTAssertEqual(server.requestCount, 1, "Every protocol result, including unsupported, must originate from actual IPC")
+            server.stop()
+        }
+        let request = try JSONDecoder().decode(
+            EngramServiceWebStatsRequest.self,
+            from: JSONSerialization.data(withJSONObject: input)
+        )
+        return try await EngramServiceWebReadClient(socketPath: path, totalTimeout: 0.5).stats(request)
+    }
+
+    private func settingsExchange(
+        input: [String: Any],
+        response: @escaping @Sendable (EngramServiceRequestEnvelope) throws -> Data
+    ) async throws -> EngramServiceWebSettingsResponse {
+        let path = metadataSocketPath()
+        let server = try WebReadFixture(path: path) { fd, bytes in
+            let incoming = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: bytes)
+            XCTAssertEqual(incoming.command, "webSettings")
+            try EngramServiceSocketIO.writeFrame(response(incoming), to: fd, requestTimeout: 1)
+        }
+        defer {
+            XCTAssertEqual(server.requestCount, 1, "Every protocol result, including unsupported, must originate from actual IPC")
+            server.stop()
+        }
+        let request = try JSONDecoder().decode(
+            EngramServiceWebSettingsRequest.self,
+            from: JSONSerialization.data(withJSONObject: input)
+        )
+        return try await EngramServiceWebReadClient(socketPath: path, totalTimeout: 0.5).settings(request)
+    }
+
+    private static func settingsAlias(alias: String, canonical: String,
+                                      aliasLabel: String? = nil, canonicalLabel: String? = nil) -> [String: Any] {
+        ["alias": alias, "canonical": canonical,
+         "aliasLabel": aliasLabel ?? alias, "canonicalLabel": canonicalLabel ?? canonical]
+    }
+
+    private static func settingsPage() -> [String: Any] {
+        [
+            "snapshotId": snapshot, "observedAt": now,
+            "sources": [["key": "claude-code", "label": "claude-code"]],
+            "totalSessions": 1,
+            "aliases": [settingsAlias(alias: "old_keep", canonical: "project_1")],
+            "nodeName": ["availability": "unavailable"],
+            "peers": ["availability": "unavailable"],
+            "port": ["availability": "unavailable"],
+        ]
+    }
+
+    private static func statsItem(key: String, sessionCount: Int64 = 1) -> [String: Any] {
+        ["key": key, "label": key, "sessionCount": sessionCount, "messageCount": 0,
+         "userMessageCount": 0, "assistantMessageCount": 0, "toolMessageCount": 0]
+    }
+
+    private static func statsTotals(sessionCount: Int64) -> [String: Any] {
+        ["sessionCount": sessionCount, "messageCount": 0, "userMessageCount": 0,
+         "assistantMessageCount": 0, "toolMessageCount": 0]
+    }
+
+    private static func statsPage(groupBy: String, key: String, extra: Int64 = 0) -> [String: Any] {
+        [
+            "snapshotId": snapshot, "observedAt": now, "groupBy": groupBy, "timeZone": "Asia/Shanghai",
+            "totals": statsTotals(sessionCount: 1 + extra),
+            "items": [statsItem(key: key)],
+        ]
     }
 
     private static func metadataEnvelope(_ object: [String: Any], requestId: String) throws -> Data {
@@ -1480,6 +2451,78 @@ final class WebMetadataClientTests: XCTestCase {
     }
     private static func sessions() -> [String: Any] {
         ["snapshotId": snapshot, "observedAt": now, "items": [summary()]]
+    }
+
+    private static func costsItem(key: String, costUsd: Double = 1.25, sessionCount: Int64 = 1) -> [String: Any] {
+        ["key": key, "label": key, "costUsd": costUsd, "inputTokens": 10, "outputTokens": 4,
+         "cacheReadTokens": 1, "cacheCreationTokens": 2, "sessionCount": sessionCount]
+    }
+
+    private static func costsTotals() -> [String: Any] {
+        ["costUsd": 2.5, "inputTokens": 20, "outputTokens": 8,
+         "cacheReadTokens": 2, "cacheCreationTokens": 4, "sessionCount": 2]
+    }
+
+    private static func costsPage(groupBy: String = "model", key: String = "claude-sonnet",
+                                  unpriced: Bool = true) -> [String: Any] {
+        var object: [String: Any] = [
+            "snapshotId": snapshot, "observedAt": now, "groupBy": groupBy, "timeZone": "Asia/Shanghai",
+            "totals": costsTotals(),
+            "items": [costsItem(key: key)],
+        ]
+        if unpriced {
+            object["unpricedUnattributedSessions"] = 0
+            object["unpricedNoPriceSessions"] = 0
+            object["unpricedUnattributedTokens"] = 0
+            object["unpricedNoPriceTokens"] = 0
+        }
+        return object
+    }
+
+    private static func costSessionsPage() -> [String: Any] {
+        [
+            "observedAt": now,
+            "items": [[
+                "session": summary(),
+                "costUsd": 1.25,
+                "model": "claude-sonnet",
+                "inputTokens": 10,
+                "outputTokens": 4,
+                "cacheReadTokens": 1,
+                "cacheCreationTokens": 2,
+            ]],
+        ]
+    }
+
+    private static func searchPage(query: String = "alpha", insights: [[String: Any]] = []) -> [String: Any] {
+        var object: [String: Any] = [
+            "observedAt": now, "query": query,
+            "items": [[
+                "session": summary(),
+                "snippet": "alpha hit",
+                "matchType": "keyword",
+                "score": 1,
+            ]],
+            "searchModes": ["keyword"],
+        ]
+        if !insights.isEmpty { object["insightResults"] = insights }
+        return object
+    }
+
+    private static func searchStatusPage(counts: Bool = true) -> [String: Any] {
+        var object: [String: Any] = [
+            "observedAt": now, "keyword": "available", "semantic": "unavailable", "hybrid": "unavailable",
+            "warning": "Semantic search unavailable: embedding provider is not configured; returning keyword results only.",
+            "warningCode": "embeddingProviderUnavailable",
+        ]
+        if counts {
+            object["model"] = "probe"
+            object["dimension"] = 3
+            object["eligibleSessionCount"] = 2
+            object["embeddedSessionCount"] = 1
+            object["progressPercent"] = 50
+        }
+        return object
     }
     private static func generationSummary() -> [String: Any] {
         ["generationId": generation, "publicationSHA256": generation, "parserRevision": "parser-v1",

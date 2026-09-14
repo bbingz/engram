@@ -88,6 +88,8 @@ actor ServiceCaptureIngestRuntime {
         loops = [
             Self.loop(interval: .seconds(2)) { _ = try await consumer.runOnce() },
             Self.loop(interval: .milliseconds(250)) { _ = try await replay.step() },
+            Self.boundedWeakReviewRepair(gate: gate, settingsURL: settingsURL),
+            Self.boundedFileActivityRepair(gate: gate, settingsURL: settingsURL),
             Self.loop(interval: .milliseconds(250)) {
                 guard Self.policy(at: settingsURL) != nil else { return }
                 _ = try await gate.performWriteCommand(name: "captureIngestFTSReadiness") { writer in
@@ -124,6 +126,73 @@ actor ServiceCaptureIngestRuntime {
         if !transcriptClosed {
             try normalizedReader.stop()
             transcriptClosed = true
+        }
+    }
+
+    /// Finite startup correction for already-ingested current heads that never
+    /// received `session_files`. Same writer-gate write as other ingest
+    /// maintenance. Each tick attempts at most 4 heads and is bounded by a 2s
+    /// deadline. Continue while `shouldContinueStartup` (attempted this tick
+    /// and not exhausted). Do not stop on `repaired == 0` alone: a corrupt
+    /// first head must not starve later candidates. Stop after one full
+    /// traversal. Disabled sources are omitted until the next process start
+    /// after they are enabled; corrupt heads stay unmarked for that start.
+    private static func boundedFileActivityRepair(gate: ServiceWriterGate, settingsURL: URL) -> Task<Void, Never> {
+        Task {
+            await ServiceWriterGate.$preserveAcceptedWriteProducer.withValue(false) {
+                while !Task.isCancelled {
+                    guard Self.policy(at: settingsURL) != nil else { return }
+                    do {
+                        let batch = try await gate.performWriteCommand(name: "captureFileActivityRepair") { writer in
+                            guard let policy = Self.policy(at: settingsURL) else {
+                                return CaptureIngestFileActivityRepairBatch(
+                                    repaired: 0, attempted: 0, exhausted: true)
+                            }
+                            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+                            return try writer.write { db in
+                                try CaptureIngestFileActivity.repairCurrentGenerations(
+                                    db, expectedParserRevision: policy.parserRevision,
+                                    enabledSources: policy.enabledSources, deadline: deadline, limit: 4)
+                            }
+                        }
+                        if !batch.value.shouldContinueStartup { return }
+                    } catch {
+                        return
+                    }
+                }
+            }
+        }
+    }
+
+    /// Finite startup correction. Each gate write attempts at most 4 heads and
+    /// is bounded by a 2s deadline. The task returns once a batch repairs and
+    /// reviews nothing. A later process start resumes remaining unmarked heads;
+    /// disabled/stale/corrupt/truncated windows stay unmarked.
+    private static func boundedWeakReviewRepair(gate: ServiceWriterGate, settingsURL: URL) -> Task<Void, Never> {
+        Task {
+            await ServiceWriterGate.$preserveAcceptedWriteProducer.withValue(false) {
+                while !Task.isCancelled {
+                    guard Self.policy(at: settingsURL) != nil else { return }
+                    do {
+                        let batch = try await gate.performWriteCommand(name: "captureWeakReviewSkipRepair") { writer in
+                            guard let policy = Self.policy(at: settingsURL) else {
+                                return CaptureWeakReviewSkipRepairBatch(repaired: 0, reviewedUnchanged: 0)
+                            }
+                            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+                            return try writer.write { db in
+                                try CaptureIngestReadiness.repairWeakReviewSkips(
+                                    db, expectedParserRevision: policy.parserRevision,
+                                    enabledSources: policy.enabledSources, deadline: deadline, limit: 4)
+                            }
+                        }
+                        if batch.value.repaired + batch.value.reviewedUnchanged == 0 { return }
+                    } catch {
+                        // Deadline, cancel, and unexpected errors end this startup.
+                        // Unmarked heads remain for the next process start.
+                        return
+                    }
+                }
+            }
         }
     }
 
