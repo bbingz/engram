@@ -246,18 +246,35 @@ final class CollectorNativeEventStreamTests: XCTestCase {
         }
     }
 
-    // 17: A moved-in populated directory cannot become one ordinary locator.
-    func testDirectoryAndUnknownTypeEventsRequireReconciliation() throws {
-        for flags in [FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir | kFSEventStreamEventFlagItemRenamed),
-                      FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir | kFSEventStreamEventFlagItemCreated),
-                      FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir),
-                      FSEventStreamEventFlags(kFSEventStreamEventFlagItemRenamed), 0] {
+    // 17: Directory create/rename become bounded subtree discovery; remove and
+    // untyped events still force reconciliation.
+    func testDirectoryCreatedOrRenamedStayOrdinaryAndPreserveSameCallbackFiles() throws {
+        let created = FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir | kFSEventStreamEventFlagItemCreated)
+        let renamed = FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir | kFSEventStreamEventFlagItemRenamed)
+        for flags in [created, renamed, FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir)] {
+            let rig = NativeDraftRig()
+            defer { try? rig.stream.stop() }
+            try rig.start()
+            rig.api.emit([
+                NativeDraft.event("newdir", 11, flags: flags),
+                NativeDraft.event("newdir/visible.jsonl", 12, flags: NativeDraft.file),
+            ])
+            XCTAssertTrue(rig.inbox.losses.isEmpty, "\(flags)")
+            XCTAssertEqual(rig.inbox.batches.count, 1, "\(flags)")
+            XCTAssertEqual(rig.inbox.batches.first?.dirtyRelativeDirectories, ["newdir"])
+            XCTAssertEqual(rig.inbox.batches.first?.dirtyRelativePaths, ["newdir/visible.jsonl"])
+        }
+    }
+
+    func testDirectoryRemovedAndUnknownTypeEventsRequireReconciliation() throws {
+        let removed = FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir | kFSEventStreamEventFlagItemRemoved)
+        for flags in [removed, FSEventStreamEventFlags(kFSEventStreamEventFlagItemRenamed), 0] {
             let rig = NativeDraftRig()
             defer { try? rig.stream.stop() }
             try rig.start()
             rig.api.emit([NativeDraft.event("directory", 11, flags: flags)])
-            XCTAssertEqual(rig.inbox.losses, [.continuityLoss])
-            XCTAssertTrue(rig.inbox.batches.isEmpty)
+            XCTAssertEqual(rig.inbox.losses, [.continuityLoss], "\(flags)")
+            XCTAssertTrue(rig.inbox.batches.isEmpty, "\(flags)")
         }
     }
 
@@ -698,8 +715,9 @@ final class CollectorNativeEventStreamTests: XCTestCase {
         XCTAssertEqual(commits.value, commitCount + 1)
     }
 
-    // 51: Structural loss preserves old durable checkpoint and latches one gap.
-    func testCoordinatorDirectoryMoveInKeepsCheckpointRequestsOneReconciliationAndNeverWatches() throws {
+    // 51: A moved-in directory stays ordinary; recovery still ignores the batch
+    // until watching, then bounded discovery runs without a revision bump.
+    func testCoordinatorDirectoryMoveInStaysOrdinaryAndWatches() throws {
         let fixture = try NativeDraftOwnerFixture()
         defer { fixture.remove() }
         let owner = try fixture.open()
@@ -713,14 +731,34 @@ final class CollectorNativeEventStreamTests: XCTestCase {
         let directory = NativeDraft.event("populated", 11,
             flags: FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir | kFSEventStreamEventFlagItemRenamed))
         api.emit([directory, NativeDraft.historyEvent])
-        api.emit([directory])
-        XCTAssertEqual(try fixture.state(owner), before)
-        for _ in 0..<4 { _ = try coordinator.step(budget: NativeDraft.scanBudget) }
+        XCTAssertEqual(try fixture.state(owner).eventCheckpoint, before.eventCheckpoint)
+        XCTAssertEqual(try fixture.state(owner).requestedRevision, before.requestedRevision)
+        XCTAssertEqual(try coordinator.snapshot().phase, .recovering)
+        try fixture.finishRecovery(coordinator)
+        XCTAssertEqual(try coordinator.snapshot().phase, .watching)
+        XCTAssertTrue(try coordinator.snapshot().historyDone)
+        try FileManager.default.createDirectory(
+            at: fixture.source.appendingPathComponent("populated"),
+            withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700]
+        )
+        try Data("fixture".utf8).write(to: fixture.source.appendingPathComponent("populated/rollout-child.jsonl"))
+        guard chmod(fixture.source.appendingPathComponent("populated/rollout-child.jsonl").path, 0o600) == 0 else {
+            throw POSIXError(.EACCES)
+        }
+        _ = try coordinator.step(budget: NativeDraft.scanBudget)
+        for _ in 0..<8 {
+            if try fixture.state(owner).activeScan == nil { break }
+            _ = try coordinator.step(budget: NativeDraft.scanBudget)
+        }
         let after = try fixture.state(owner)
-        XCTAssertEqual(after.eventCheckpoint, before.eventCheckpoint)
-        XCTAssertEqual(after.requestedRevision, before.requestedRevision + 1)
-        XCTAssertEqual(try coordinator.snapshot().phase, .recoveryRequired)
-        XCTAssertFalse(try coordinator.snapshot().historyDone)
+        XCTAssertEqual(after.eventCheckpoint, .init(epoch: NativeDraft.epoch, cursor: "11"))
+        XCTAssertEqual(after.requestedRevision, before.requestedRevision)
+        XCTAssertEqual(after.completedRevision, before.requestedRevision)
+        XCTAssertNil(after.activeScan)
+        XCTAssertEqual(try coordinator.snapshot().phase, .watching)
+        try coordinator.stop()
+        try owner.close()
+        XCTAssertEqual(try fixture.locatorCount("populated/rollout-child.jsonl"), 1)
     }
 
     // 52: Synthetic baseline completion does not fabricate Owner persistence.

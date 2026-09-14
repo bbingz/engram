@@ -39,6 +39,8 @@ final class MigrationRunnerTests: XCTestCase {
         XCTAssertTrue(sessionIndexes.contains("idx_sessions_last_accessed"))
         // Partial index backing the visible-session COUNT refreshed on the status poll.
         XCTAssertTrue(sessionIndexes.contains("idx_sessions_visible"))
+        XCTAssertTrue(sessionIndexes.contains("idx_sessions_web_list_keys"))
+        XCTAssertTrue(sessionIndexes.contains("idx_sessions_fts_content_identity"))
         XCTAssertTrue(sessionIndexes.contains("idx_metrics_ts"))
         XCTAssertTrue(sessionIndexes.contains("idx_migration_log_state_started"))
 
@@ -208,6 +210,168 @@ final class MigrationRunnerTests: XCTestCase {
         XCTAssertFalse(
             plan.contains { $0.contains("USE TEMP B-TREE FOR ORDER BY") },
             "updated-desc browse must not filesort the visible session set; plan=\(plan)"
+        )
+    }
+
+    func testWebListKeysIndexIsAddedOnExistingRowsAndFollowsPartialPredicate_repro() throws {
+        let writer = try EngramDatabaseWriter(path: databasePath("web-list-keys-existing.sqlite"))
+        try writer.migrate()
+        try writer.write { db in
+            try db.execute(sql: "DROP INDEX IF EXISTS idx_sessions_web_list_keys")
+            try db.execute(sql: """
+                INSERT INTO sessions(
+                    id, source, start_time, file_path, authoritative_node, tier, parent_session_id)
+                VALUES
+                    ('keep', 'codex', '2026-09-03 12:00:00', '/tmp/keep.jsonl', 'node', 'normal', NULL),
+                    ('weird', 'codex', 'not-a-date', '/tmp/weird.jsonl', 'node', 'normal', NULL),
+                    ('epoch', 'codex', '0000-00-00 00:00:00', '/tmp/epoch.jsonl', 'node', 'normal', NULL),
+                    ('future', 'codex', '9999-99-99T99:99:99Z', '/tmp/future.jsonl', 'node', 'normal', NULL),
+                    ('to-hide', 'codex', '2026-09-01 00:00:00', '/tmp/hide.jsonl', 'node', 'normal', NULL),
+                    ('to-skip', 'codex', '2026-09-01 00:00:00', '/tmp/skip.jsonl', 'node', 'normal', NULL),
+                    ('to-child', 'codex', '2026-09-01 00:00:00', '/tmp/child.jsonl', 'node', 'normal', NULL),
+                    ('already-skip', 'codex', '2026-09-01 00:00:00', '/tmp/askip.jsonl', 'node', 'skip', NULL),
+                    ('already-child', 'codex', '2026-09-01 00:00:00', '/tmp/achild.jsonl', 'node', 'normal', 'keep')
+                """)
+        }
+        let before = try writer.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT id, start_time, hidden_at, tier, parent_session_id, suggested_parent_id
+                FROM sessions ORDER BY id COLLATE BINARY
+                """)
+        }
+        XCTAssertNil(try writer.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_sessions_web_list_keys'"
+            )
+        })
+
+        try writer.migrate()
+        try writer.migrate()
+        let indexSQL = try XCTUnwrap(try writer.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_sessions_web_list_keys'"
+            )
+        })
+        XCTAssertTrue(indexSQL.contains("hidden_at, parent_session_id, suggested_parent_id, tier, start_time, id, source, authoritative_node"))
+        XCTAssertTrue(indexSQL.contains("hidden_at IS NULL"))
+        XCTAssertTrue(indexSQL.contains("parent_session_id IS NULL"))
+        XCTAssertTrue(indexSQL.contains("suggested_parent_id IS NULL"))
+        XCTAssertTrue(indexSQL.contains("(tier IS NULL OR tier != 'skip')"))
+        XCTAssertFalse(indexSQL.contains("strftime"))
+
+        let afterMigrate = try writer.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT id, start_time, hidden_at, tier, parent_session_id, suggested_parent_id
+                FROM sessions ORDER BY id COLLATE BINARY
+                """)
+        }
+        XCTAssertEqual(afterMigrate.count, before.count)
+        XCTAssertEqual(
+            afterMigrate.map { $0["id"] as String },
+            before.map { $0["id"] as String }
+        )
+        XCTAssertEqual(
+            afterMigrate.map { $0["start_time"] as String },
+            before.map { $0["start_time"] as String }
+        )
+
+        func indexedIDs(_ db: Database) throws -> [String] {
+            try String.fetchAll(db, sql: """
+                SELECT id FROM sessions INDEXED BY idx_sessions_web_list_keys
+                WHERE hidden_at IS NULL
+                  AND parent_session_id IS NULL
+                  AND suggested_parent_id IS NULL
+                  AND (tier IS NULL OR tier != 'skip')
+                ORDER BY id COLLATE BINARY
+                """)
+        }
+        XCTAssertEqual(
+            try writer.read(indexedIDs),
+            ["epoch", "future", "keep", "to-child", "to-hide", "to-skip", "weird"]
+        )
+
+        try writer.write { db in
+            try db.execute(sql: "UPDATE sessions SET hidden_at = '2026-09-12 00:00:00' WHERE id = 'to-hide'")
+            try db.execute(sql: "UPDATE sessions SET tier = 'skip' WHERE id = 'to-skip'")
+            try db.execute(sql: "UPDATE sessions SET parent_session_id = 'keep' WHERE id = 'to-child'")
+        }
+        XCTAssertEqual(
+            try writer.read(indexedIDs),
+            ["epoch", "future", "keep", "weird"]
+        )
+        let rowsAfterTransition = try writer.read { db in
+            try Int.fetchOne(db, sql: "SELECT count(*) FROM sessions")
+        }
+        XCTAssertEqual(rowsAfterTransition, before.count)
+
+        try writer.write { db in
+            try db.execute(sql: "UPDATE sessions SET hidden_at = NULL WHERE id = 'to-hide'")
+            try db.execute(sql: "UPDATE sessions SET tier = 'normal' WHERE id = 'to-skip'")
+            try db.execute(sql: "UPDATE sessions SET parent_session_id = NULL WHERE id = 'to-child'")
+        }
+        XCTAssertEqual(
+            try writer.read(indexedIDs),
+            ["epoch", "future", "keep", "to-child", "to-hide", "to-skip", "weird"]
+        )
+        try writer.migrate()
+        XCTAssertEqual(
+            try writer.read(indexedIDs),
+            ["epoch", "future", "keep", "to-child", "to-hide", "to-skip", "weird"]
+        )
+    }
+
+    func testFTSContentIdentityIndexIsAddedWithoutChangingRowsOrDroppingUnexpectedSQL_repro() throws {
+        let writer = try EngramDatabaseWriter(path: databasePath("fts-identity-existing.sqlite"))
+        try writer.migrate()
+        try writer.write { db in
+            try db.execute(sql: "DROP INDEX IF EXISTS idx_sessions_fts_content_identity")
+            try db.execute(sql: """
+                INSERT INTO sessions(id, source, start_time, file_path)
+                VALUES ('keep', 'codex', '2026-09-03 12:00:00', '/tmp/keep.jsonl')
+                """)
+            try db.execute(sql: "INSERT INTO sessions_fts(session_id, content) VALUES ('keep', 'hello searchable')")
+        }
+        let before = try writer.read { db in
+            try String.fetchAll(db, sql: "SELECT session_id || ':' || content FROM sessions_fts ORDER BY rowid")
+        }
+        XCTAssertFalse(try writer.read { db in try FTSRebuildPolicy.hasOwnedContentIdentityIndex(db) })
+
+        try writer.migrate()
+        try writer.migrate()
+        XCTAssertTrue(try writer.read { db in try FTSRebuildPolicy.hasOwnedContentIdentityIndex(db) })
+        XCTAssertEqual(
+            try writer.read { db in
+                try String.fetchAll(db, sql: "SELECT session_id || ':' || content FROM sessions_fts ORDER BY rowid")
+            },
+            before
+        )
+
+        try writer.write { db in
+            try db.execute(sql: "DROP INDEX idx_sessions_fts_content_identity")
+            try db.execute(sql: "CREATE INDEX idx_sessions_fts_content_identity ON sessions_fts_content(c0)")
+        }
+        let unexpected = try XCTUnwrap(try writer.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_sessions_fts_content_identity'"
+            )
+        })
+        try writer.migrate()
+        let afterUnexpected = try XCTUnwrap(try writer.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_sessions_fts_content_identity'"
+            )
+        })
+        XCTAssertEqual(afterUnexpected, unexpected)
+        XCTAssertFalse(try writer.read { db in try FTSRebuildPolicy.hasOwnedContentIdentityIndex(db) })
+        XCTAssertEqual(
+            try writer.read { db in
+                try String.fetchAll(db, sql: "SELECT session_id || ':' || content FROM sessions_fts ORDER BY rowid")
+            },
+            before
         )
     }
 

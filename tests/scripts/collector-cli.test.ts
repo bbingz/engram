@@ -99,7 +99,7 @@ function homeSnapshot(home: string): string[] {
   return entries;
 }
 
-function runCLI(fixture: Fixture, args: string[]) {
+function runCLI(fixture: Fixture, args: string[], allowIdentity = false) {
   if (binary === undefined || !isAbsolute(binary)) {
     throw new Error(
       'ENGRAM_COLLECTOR_BINARY requires an explicit absolute path',
@@ -126,7 +126,7 @@ function runCLI(fixture: Fixture, args: string[]) {
   expect(result.signal).toBeNull();
   expect(homeSnapshot(fixture.home)).toEqual(before);
   expect(existsSync(fixture.shadow)).toBe(false);
-  expect(existsSync(dirname(fixture.identity))).toBe(false);
+  if (!allowIdentity) expect(existsSync(dirname(fixture.identity))).toBe(false);
   expect(existsSync(fixture.sources)).toBe(false);
   const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
   for (const privateValue of [canary, privateRef, fixture.root]) {
@@ -222,7 +222,13 @@ describe.skipIf(binary === undefined)(
       const result = runCLI(fixture, ['--help']);
       expect(result.status).toBe(0);
       expect(result.stderr).toBe('');
-      for (const flag of ['--settings', '--credentials-file', '--once']) {
+      for (const flag of [
+        '--settings',
+        '--credentials-file',
+        '--once',
+        '--initialize',
+        '--initialize-identity',
+      ]) {
         expect(result.stdout).toContain(flag);
       }
       expect(result.stdout).toContain(
@@ -230,14 +236,88 @@ describe.skipIf(binary === undefined)(
       );
     });
 
+    it('explicitly creates only a new identity catalog and refuses a second mint', () => {
+      const fixture = makeFixture();
+      const args = ['--initialize-identity', fixture.identity];
+      const first = runCLI(fixture, args, true);
+      expect(first.status).toBe(0);
+      expect(first.stdout).toBe('engram-collector: identity initialized\n');
+      expect(first.stderr).toBe('');
+      expect(readdirSync(dirname(fixture.identity))).toEqual([
+        'archive.sqlite',
+      ]);
+      expect(lstatSync(fixture.identity).mode & 0o777).toBe(0o600);
+      expect(lstatSync(dirname(fixture.identity)).mode & 0o777).toBe(0o700);
+      const before = readFileSync(fixture.identity);
+      const second = runCLI(fixture, args, true);
+      expect(second.status).toBe(70);
+      expect(second.stderr).toBe(
+        'engram-collector: identity initialization failed\n',
+      );
+      expect(readFileSync(fixture.identity)).toEqual(before);
+    });
+
     const argumentCases: {
       name: string;
       args: (fixture: Fixture) => string[];
     }[] = [
       { name: 'no arguments', args: () => [] },
+      { name: 'identity without path', args: () => ['--initialize-identity'] },
+      {
+        name: 'identity relative path',
+        args: () => ['--initialize-identity', 'archive.sqlite'],
+      },
+      {
+        name: 'identity with collection',
+        args: (f) => ['--initialize-identity', f.identity, '--once'],
+      },
+      {
+        name: 'identity with settings',
+        args: (f) => [
+          '--settings',
+          f.settings,
+          '--initialize-identity',
+          f.identity,
+        ],
+      },
+      {
+        name: 'identity aliased path',
+        args: (f) => [
+          '--initialize-identity',
+          `${dirname(f.identity)}/../archive.sqlite`,
+        ],
+      },
+      {
+        name: 'identity with credentials',
+        args: (f) => [
+          '--initialize-identity',
+          f.identity,
+          '--credentials-file',
+          f.credentials,
+        ],
+      },
       { name: 'unknown argument', args: () => [`--${canary}`] },
       { name: 'missing settings value', args: () => ['--settings'] },
       { name: 'once without settings', args: () => ['--once'] },
+      { name: 'initialize without settings', args: () => ['--initialize'] },
+      {
+        name: 'initialize combined with once',
+        args: (f) => ['--settings', f.settings, '--initialize', '--once'],
+      },
+      {
+        name: 'initialize combined with credentials',
+        args: (f) => [
+          '--settings',
+          f.settings,
+          '--initialize',
+          '--credentials-file',
+          f.credentials,
+        ],
+      },
+      {
+        name: 'duplicate initialize',
+        args: (f) => ['--settings', f.settings, '--initialize', '--initialize'],
+      },
       {
         name: 'relative settings',
         args: () => ['--settings', `${canary}.json`],

@@ -152,10 +152,32 @@ enum JSONLAdapterSupport {
         countsTowardMessageLimit: ((JSONObject) -> Bool)? = nil,
         beforeIdentityValidation: () -> Void = {}
     ) throws -> ([JSONObject], ParserFailure?) {
+        var objects: [JSONObject] = []
+        let failure = try consumeObjects(
+            locator: locator,
+            limits: limits,
+            reportFailures: reportFailures,
+            strictRecords: strictRecords,
+            countsTowardMessageLimit: countsTowardMessageLimit,
+            beforeIdentityValidation: beforeIdentityValidation
+        ) { objects.append($0) }
+        return (objects, failure)
+    }
+
+    /// Same gates as `readObjects`, but yields one decoded record at a time
+    /// so captured Codex/Claude replay does not retain every raw JSON object.
+    static func consumeObjects(
+        locator: String,
+        limits: ParserLimits,
+        reportFailures: Bool = false,
+        strictRecords: Bool = false,
+        countsTowardMessageLimit: ((JSONObject) -> Bool)? = nil,
+        beforeIdentityValidation: () -> Void = {},
+        consume: (JSONObject) throws -> Void
+    ) throws -> ParserFailure? {
         try autoreleasepool {
             let (url, before) = try prepareFile(locator: locator, limits: limits)
             let reader = try StreamingLineReader(fileURL: url, maxLineBytes: limits.maxLineBytes)
-            var objects: [JSONObject] = []
             var messageCount = 0
             var exceededMessageLimit = false
             var recordFailure: ParserFailure?
@@ -177,7 +199,7 @@ enum JSONLAdapterSupport {
                     }
                     messageCount += 1
                 }
-                objects.append(object)
+                try consume(object)
             }
 
             beforeIdentityValidation()
@@ -188,17 +210,17 @@ enum JSONLAdapterSupport {
             do {
                 after = try limits.fileIdentity(for: url)
             } catch {
-                return (objects, capFailure ?? .fileModifiedDuringParse)
+                return capFailure ?? .fileModifiedDuringParse
             }
             guard limits.isSameFileIdentity(before, after) else {
-                return (objects, capFailure ?? .fileModifiedDuringParse)
+                return capFailure ?? .fileModifiedDuringParse
             }
-            if let recordFailure { return (objects, recordFailure) }
-            if let capFailure { return (objects, capFailure) }
+            if let recordFailure { return recordFailure }
+            if let capFailure { return capFailure }
             if shouldReportFailures, let failure = reader.failures.first {
-                return (objects, failure)
+                return failure
             }
-            return (objects, nil)
+            return nil
         }
     }
 
@@ -818,7 +840,7 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
     ) throws -> AdapterParseResult<CapturedSourceScan> {
         try scanFileForIndexing(
             physicalLocator: physicalLocator, logicalLocator: logicalLocator,
-            limits: .default, strictRecords: true
+            limits: .capturedJSONL, strictRecords: true
         )
     }
 
@@ -826,20 +848,25 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
         physicalLocator: String, logicalLocator: String, limits: ParserLimits, strictRecords: Bool
     ) throws -> AdapterParseResult<CapturedSourceScan> {
         do {
-            let (objects, failure) = try JSONLAdapterSupport.readObjects(
+            var infoBuild = SessionInfoBuild(locator: logicalLocator, physicalLocator: physicalLocator)
+            var messageBuild = MessageBuild()
+            let failure = try JSONLAdapterSupport.consumeObjects(
                 locator: physicalLocator,
                 limits: limits,
                 reportFailures: true,
                 strictRecords: strictRecords,
                 countsTowardMessageLimit: { Self.message(from: $0) != nil }
-            )
+            ) { object in
+                infoBuild.consume(object)
+                messageBuild.consume(object)
+            }
             if let failure, failure != .fileModifiedDuringParse { return .failure(failure) }
-            let messages = Self.messages(from: objects)
+            let messages = messageBuild.finish()
             if failure == .fileModifiedDuringParse, messages.isEmpty {
                 return .failure(.fileModifiedDuringParse)
             }
             let info: NormalizedSessionInfo
-            switch Self.sessionInfo(from: objects, locator: logicalLocator, physicalLocator: physicalLocator) {
+            switch infoBuild.finish() {
             case .failure(let reason): return .failure(reason)
             case .success(let value): info = value
             }
@@ -944,13 +971,11 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
         JSONLAdapterSupport.fileExists(locator)
     }
 
-    private static func sessionInfo(
-        from objects: [JSONLAdapterSupport.JSONObject],
-        locator: String,
-        physicalLocator: String? = nil
-    ) -> AdapterParseResult<NormalizedSessionInfo> {
+    private struct SessionInfoBuild {
+        let locator: String
+        let physicalLocator: String?
         var meta: JSONLAdapterSupport.JSONObject?
-        var metadata = SourceMetadataProjection(format: .codex, locator: locator)
+        var metadata: SourceMetadataProjection
         var userCount = 0
         var assistantCount = 0
         var toolCount = 0
@@ -960,7 +985,13 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
         var detectedModel: String?
         var turnContextModel: String?
 
-        for object in objects {
+        init(locator: String, physicalLocator: String?) {
+            self.locator = locator
+            self.physicalLocator = physicalLocator
+            self.metadata = SourceMetadataProjection(format: .codex, locator: locator)
+        }
+
+        mutating func consume(_ object: JSONLAdapterSupport.JSONObject) {
             if let timestamp = JSONLAdapterSupport.string(object["timestamp"]) {
                 lastTimestamp = timestamp
             }
@@ -975,19 +1006,19 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
             }
             guard JSONLAdapterSupport.string(object["type"]) == "response_item",
                   let payload = JSONLAdapterSupport.object(object["payload"])
-            else { continue }
+            else { return }
             if detectedModel == nil, let model = JSONLAdapterSupport.string(payload["model"]) {
                 detectedModel = model
             }
             let payloadType = JSONLAdapterSupport.string(payload["type"])
             if payloadType == "message", JSONLAdapterSupport.string(payload["role"]) == "user" {
-                let rawText = extractText(JSONLAdapterSupport.array(payload["content"]))
-                let normalized = normalizeUserText(rawText)
+                let rawText = CodexAdapter.extractText(JSONLAdapterSupport.array(payload["content"]))
+                let normalized = CodexAdapter.normalizeUserText(rawText)
                 if normalized.strippedSystemContent { systemCount += 1 }
                 if let text = normalized.userText {
                     userCount += 1
                     if firstUserText.isEmpty { firstUserText = text }
-                } else if !normalized.strippedSystemContent, isSystemInjection(rawText) {
+                } else if !normalized.strippedSystemContent, CodexAdapter.isSystemInjection(rawText) {
                     systemCount += 1
                 }
             } else if payloadType == "message", JSONLAdapterSupport.string(payload["role"]) == "assistant" {
@@ -1000,81 +1031,74 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
             }
         }
 
-        guard let meta,
-              let id = metadata.nativeSessionID,
-              let startTime = JSONLAdapterSupport.string(meta["timestamp"])
-        else { return .failure(.malformedJSON) }
-        guard userCount + assistantCount + toolCount > 0 else {
-            return .failure(.noVisibleMessages)
-        }
-        let explicitRole = JSONLAdapterSupport.string(meta["agent_role"])
-        let originator = JSONLAdapterSupport.string(meta["originator"])
-        let effectiveRole = explicitRole ?? (OriginatorClassifier.isClaudeCode(originator) ? "dispatched" : nil)
-        return .success(
-            NormalizedSessionInfo(
-                id: id,
-                source: .codex,
-                startTime: startTime,
-                endTime: lastTimestamp.isEmpty ? nil : lastTimestamp,
-                cwd: metadata.cwd ?? "",
-                project: nil,
-                model: detectedModel ?? turnContextModel ?? JSONLAdapterSupport.string(meta["model"]),
-                messageCount: userCount + assistantCount + toolCount,
-                userMessageCount: userCount,
-                assistantMessageCount: assistantCount,
-                toolMessageCount: toolCount,
-                systemMessageCount: systemCount,
-                summary: firstUserText.isEmpty ? nil : firstUserText,
-                filePath: locator,
-                sizeBytes: JSONLAdapterSupport.fileSize(locator: physicalLocator ?? locator),
-                indexedAt: nil,
-                agentRole: effectiveRole,
-                originator: originator,
-                origin: nil,
-                summaryMessageCount: nil,
-                tier: nil,
-                qualityScore: nil,
-                parentSessionId: nil,
-                suggestedParentId: nil
+        func finish() -> AdapterParseResult<NormalizedSessionInfo> {
+            guard let meta,
+                  let id = metadata.nativeSessionID,
+                  let startTime = JSONLAdapterSupport.string(meta["timestamp"])
+            else { return .failure(.malformedJSON) }
+            guard userCount + assistantCount + toolCount > 0 else {
+                return .failure(.noVisibleMessages)
+            }
+            let explicitRole = JSONLAdapterSupport.string(meta["agent_role"])
+            let originator = JSONLAdapterSupport.string(meta["originator"])
+            let effectiveRole = explicitRole ?? (OriginatorClassifier.isClaudeCode(originator) ? "dispatched" : nil)
+            return .success(
+                NormalizedSessionInfo(
+                    id: id,
+                    source: .codex,
+                    startTime: startTime,
+                    endTime: lastTimestamp.isEmpty ? nil : lastTimestamp,
+                    cwd: metadata.cwd ?? "",
+                    project: nil,
+                    model: detectedModel ?? turnContextModel ?? JSONLAdapterSupport.string(meta["model"]),
+                    messageCount: userCount + assistantCount + toolCount,
+                    userMessageCount: userCount,
+                    assistantMessageCount: assistantCount,
+                    toolMessageCount: toolCount,
+                    systemMessageCount: systemCount,
+                    summary: firstUserText.isEmpty ? nil : firstUserText,
+                    filePath: locator,
+                    sizeBytes: JSONLAdapterSupport.fileSize(locator: physicalLocator ?? locator),
+                    indexedAt: nil,
+                    agentRole: effectiveRole,
+                    originator: originator,
+                    origin: nil,
+                    summaryMessageCount: nil,
+                    tier: nil,
+                    qualityScore: nil,
+                    parentSessionId: nil,
+                    suggestedParentId: nil
+                )
             )
-        )
+        }
     }
 
-    private static func messages(
-        from objects: [JSONLAdapterSupport.JSONObject]
-    ) -> [NormalizedMessage] {
+    private struct MessageBuild {
         var messages: [NormalizedMessage] = []
         var pendingMessage: NormalizedMessage?
         var pendingUsageCameFromTokenCount = false
         var pendingUsage: TokenUsage?
         var lastTokenCountSnapshot: [Int?]?
 
-        func flushPendingMessage() {
-            guard let message = pendingMessage else { return }
-            messages.append(message)
-            pendingMessage = nil
-            pendingUsageCameFromTokenCount = false
-        }
-
-        for object in objects {
+        mutating func consume(_ object: JSONLAdapterSupport.JSONObject) {
             if JSONLAdapterSupport.string(object["type"]) == "response_item" {
                 lastTokenCountSnapshot = nil
             }
-            if let tokenCount = tokenCountUsage(from: object) {
-                if tokenCount.snapshot == lastTokenCountSnapshot { continue }
+            if let tokenCount = CodexAdapter.tokenCountUsage(from: object) {
+                if tokenCount.snapshot == lastTokenCountSnapshot { return }
                 lastTokenCountSnapshot = tokenCount.snapshot
                 if var message = pendingMessage, message.role != .user {
                     if pendingUsageCameFromTokenCount || message.usage == nil {
-                        message.usage = mergeUsage(message.usage, tokenCount.usage)
+                        message.usage = CodexAdapter.mergeUsage(message.usage, tokenCount.usage)
                         pendingUsageCameFromTokenCount = true
                         pendingMessage = message
                     }
                 } else {
-                    pendingUsage = mergeUsage(pendingUsage, tokenCount.usage)
+                    pendingUsage = CodexAdapter.mergeUsage(pendingUsage, tokenCount.usage)
                 }
-                continue
+                return
             }
-            guard var message = message(from: object) else { continue }
+            guard var message = CodexAdapter.message(from: object) else { return }
             flushPendingMessage()
             if message.role != .user, let usage = pendingUsage {
                 if message.usage == nil { message.usage = usage }
@@ -1083,8 +1107,40 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
             pendingMessage = message
             pendingUsageCameFromTokenCount = false
         }
-        flushPendingMessage()
-        return messages
+
+        mutating func flushPendingMessage() {
+            guard let message = pendingMessage else { return }
+            messages.append(message)
+            pendingMessage = nil
+            pendingUsageCameFromTokenCount = false
+        }
+
+        mutating func finish() -> [NormalizedMessage] {
+            flushPendingMessage()
+            return messages
+        }
+    }
+
+    private static func sessionInfo(
+        from objects: [JSONLAdapterSupport.JSONObject],
+        locator: String,
+        physicalLocator: String? = nil
+    ) -> AdapterParseResult<NormalizedSessionInfo> {
+        var build = SessionInfoBuild(locator: locator, physicalLocator: physicalLocator)
+        for object in objects {
+            build.consume(object)
+        }
+        return build.finish()
+    }
+
+    private static func messages(
+        from objects: [JSONLAdapterSupport.JSONObject]
+    ) -> [NormalizedMessage] {
+        var build = MessageBuild()
+        for object in objects {
+            build.consume(object)
+        }
+        return build.finish()
     }
 
     private static func expandSessionRoots(_ root: URL) -> [URL] {

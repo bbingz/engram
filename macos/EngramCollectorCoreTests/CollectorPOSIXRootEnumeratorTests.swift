@@ -4,12 +4,74 @@ import XCTest
 @testable import EngramCollectorCore
 
 final class CollectorPOSIXRootEnumeratorTests: XCTestCase {
-    func testConstructorRejectsUnsupportedUnsafeAndUnboundedBindingsWithoutSourceIO() throws {
+    func testWindsurfHookSelectsOnlyDirectVisibleJSONL() throws {
+        let f = try CollectorPOSIXFixture(source: .windsurf); defer { f.remove() }
+        let expected = ["session.jsonl", "other.jsonl"]
+        let excluded = [".hidden.jsonl", "nested/session.jsonl", "session.pb", "session.json", "cache/session.jsonl"]
+        for path in expected + excluded { try f.file(path) }
+        try FileManager.default.createSymbolicLink(at: f.url("linked.jsonl"), withDestinationURL: f.url("session.jsonl"))
+        XCTAssertEqual(Set(try f.enumerateSelectedFiles()), Set(expected))
+        XCTAssertTrue(f.descriptors.live.isEmpty)
+    }
+
+    func testAntigravityCLISelectsOnlyExactHiddenTranscriptLayout() throws {
+        let f = try CollectorPOSIXFixture(source: .antigravity); defer { f.remove() }
+        let expected = ["session/.system_generated/logs/transcript.jsonl", "other/.system_generated/logs/transcript.jsonl"]
+        let excluded = ["session/cache/transcript.jsonl", "session/.system_generated/logs/other.jsonl",
+            "session/.system_generated/logs/nested/transcript.jsonl", "session/conversation.pb",
+            "transcript.jsonl", ".hidden/.system_generated/logs/transcript.jsonl"]
+        for path in expected + excluded { try f.file(path) }
+        try FileManager.default.createSymbolicLink(at: f.url("linked"), withDestinationURL: f.url("session"))
+        XCTAssertEqual(Set(try f.enumerateSelectedFiles()), Set(expected))
+        XCTAssertTrue(f.descriptors.live.isEmpty)
+    }
+
+    func testVSCodeBootstrapSelectsOnlyWorkspaceChatJournals() throws {
+        let f = try CollectorPOSIXFixture(source: .vscode); defer { f.remove() }
+        let expected = ["ws/chatSessions/a.jsonl", "other/chatSessions/b.jsonl"]
+        let excluded = ["ws/workspace.json", "ws/state.vscdb", "ws/cache/c.jsonl", "root.jsonl",
+            "ws/chatSessions/nested/d.jsonl", ".hidden/chatSessions/e.jsonl", "ws/chatSessions/a.json"]
+        for path in expected + excluded { try f.file(path) }
+        XCTAssertEqual(Set(try f.enumerateSelectedFiles()), Set(expected))
+        XCTAssertTrue(f.descriptors.live.isEmpty)
+    }
+
+    func testExplicitCursorLegacyBootstrapSelectsOnlyDatabaseAndFencesLayout() throws {
+        let f = try CollectorPOSIXFixture(source: .cursor, cursorLegacy: true)
+        defer { f.remove() }
+        for path in ["state.vscdb", "state.vscdb-wal", "state.vscdb-shm", "state.vscdb-journal",
+                     "chats/ws/id/store.db", "workspaceStorage/ws/workspace.json", "other.jsonl"] {
+            try f.file(path)
+        }
+        XCTAssertEqual(try f.enumerateSelectedFiles(), ["state.vscdb"])
+        let enumerator = try f.enumerator()
+        let modern = CollectorRootConfiguration(rootID: f.configuration().rootID, source: .cursor,
+            rootPath: f.sourceRoot.path, revision: 1)
+        XCTAssertThrowsError(try enumerator.open(configuration: modern, relativeDirectory: "")) {
+            XCTAssertEqual($0 as? CollectorPOSIXEnumerationError, .configurationMismatch)
+        }
+        XCTAssertTrue(f.descriptors.live.isEmpty)
+    }
+
+    func testCursorBootstrapSelectsModernPrimariesWithoutSidecarsOrHiddenSessions() throws {
+        let fixture = try CollectorPOSIXFixture(source: .cursor); defer { fixture.remove() }
+        let expected = ["chats/ws/sid/store.db", "projects/proj/agent-transcripts/sid/sid.jsonl"]
+        let excluded = ["chats/ws/sid/store.db-wal", "chats/ws/sid/meta.json", "chats/ws/sid/store.db-shm",
+            "chats/ws/sid/store.db-journal", "chats/ws/sid/notes.jsonl", "state.vscdb",
+            "projects/proj/agent-transcripts/sid/other.jsonl", "projects/proj/cache/sid.jsonl",
+            "chats/.hidden/secret/store.db", "chats/ws/.secret/store.db", "projects/.hidden/agent-transcripts/sid/sid.jsonl",
+            "chats/flagged/sid/store.db"]
+        for path in expected + excluded { try fixture.file(path) }
+        XCTAssertEqual(chflags(fixture.url("chats/flagged").path, UInt32(UF_HIDDEN)), 0)
+        XCTAssertEqual(Set(try fixture.enumerateSelectedFiles()), Set(expected))
+        XCTAssertTrue(fixture.descriptors.live.isEmpty)
+    }
+
+    func testConstructorRejectsUnsafeAndUnboundedBindingsWithoutSourceIO() throws {
         let fixture = try CollectorPOSIXFixture()
         defer { fixture.remove() }
         let identity = try fixture.identity()
         let invalid = [
-            fixture.configuration(source: .cursor),
             fixture.configuration(rootID: ""),
             fixture.configuration(revision: 0),
             fixture.configuration(path: "relative/root"),
@@ -258,6 +320,185 @@ final class CollectorPOSIXRootEnumeratorTests: XCTestCase {
         let result = try fixture.enumerateSelectedFiles()
         XCTAssertEqual(Set(result), Set(expected))
         XCTAssertTrue(fixture.descriptors.live.isEmpty)
+    }
+
+    func testQwenEnumeratesOnlyDirectProjectChatsJSONLWithoutFollowingLinks() throws {
+        let fixture = try CollectorPOSIXFixture(source: .qwen)
+        defer { fixture.remove() }
+        let expected = ["project/chats/session.jsonl", "second/chats/another.jsonl"]
+        let excluded = ["root.jsonl", "project/session.jsonl", "project/cache/session.jsonl",
+            "project/chats/nested/session.jsonl", "project/chats/session.json", "project/chats/.hidden.jsonl",
+            ".hidden-project/chats/session.jsonl", "project/session/subagents/agent-one.jsonl"]
+        for path in expected + excluded { try fixture.file(path) }
+        try FileManager.default.createSymbolicLink(at: fixture.url("project/chats/link.jsonl"),
+            withDestinationURL: fixture.url(expected[0]))
+        try FileManager.default.createSymbolicLink(at: fixture.url("linked-project"),
+            withDestinationURL: fixture.url("project"))
+        XCTAssertEqual(Set(try fixture.enumerateSelectedFiles()), Set(expected))
+        XCTAssertFalse(fixture.descriptors.openedPaths.contains { $0.contains("/cache") || $0.contains("/nested") })
+        XCTAssertTrue(fixture.descriptors.live.isEmpty)
+    }
+
+    func testGrokEnumeratesPreferredPrimaryAndSummaryOnlyWithoutFollowingLinksOrHidden_repro() throws {
+        let fixture = try CollectorPOSIXFixture(source: .grok)
+        defer { fixture.remove() }
+        let expected = [
+            "project/session/chat_history.jsonl",
+            "summary-only/session/summary.json",
+        ]
+        let excluded = [
+            "project/session/updates.jsonl",
+            "project/session/summary.json",
+            "project/session/prompt_context.json",
+            "project/session/compaction/INDEX.md",
+            "project/session/compaction/segment_000.md",
+            "project/session/events.jsonl",
+            ".hidden-project/session/chat_history.jsonl",
+            "project/.hidden-session/chat_history.jsonl",
+            "root.jsonl",
+        ]
+        for path in expected + excluded { try fixture.file(path) }
+        try FileManager.default.createSymbolicLink(
+            at: fixture.url("project/session/chat-link.jsonl"),
+            withDestinationURL: fixture.url(expected[0])
+        )
+        try FileManager.default.createSymbolicLink(
+            at: fixture.url("linked-project"),
+            withDestinationURL: fixture.url("project")
+        )
+        XCTAssertEqual(Set(try fixture.enumerateSelectedFiles()), Set(expected))
+        XCTAssertFalse(fixture.descriptors.openedPaths.contains {
+            $0.contains("/.hidden") || $0.contains("/linked-project") || $0.contains("/compaction")
+        })
+        XCTAssertTrue(fixture.descriptors.live.isEmpty)
+    }
+
+    func testPiEnumeratesNestedSessionJSONLWithoutFollowingLinksOrHidden_repro() throws {
+        let fixture = try CollectorPOSIXFixture(source: .pi)
+        defer { fixture.remove() }
+        let expected = [
+            "root-session.jsonl",
+            "--Users-test--project--/2026-04-29T01-00-00-000Z_019dd6e3-91d1-7326-8299-314858773a0e.jsonl",
+            "project/session.jsonl",
+            "project/chats/session.jsonl",
+            "nested/deep/session.jsonl",
+        ]
+        let excluded = [
+            "session.json",
+            "project/.hidden.jsonl",
+            ".hidden-project/session.jsonl",
+            "project/notes.txt",
+        ]
+        for path in expected + excluded { try fixture.file(path) }
+        try FileManager.default.createSymbolicLink(
+            at: fixture.url("project/link.jsonl"),
+            withDestinationURL: fixture.url(expected[2])
+        )
+        try FileManager.default.createSymbolicLink(
+            at: fixture.url("linked-project"),
+            withDestinationURL: fixture.url("project")
+        )
+        XCTAssertEqual(Set(try fixture.enumerateSelectedFiles()), Set(expected))
+        XCTAssertFalse(fixture.descriptors.openedPaths.contains { $0.contains("/.hidden") || $0.contains("/linked-project") })
+        XCTAssertTrue(fixture.descriptors.live.isEmpty)
+    }
+
+    func testQoderDiscoveryMatchesDirectProjectAndTwoSubagentLayouts() throws {
+        let fixture = try CollectorPOSIXFixture(source: .qoder)
+        defer { fixture.remove() }
+        let expected = ["project/session.jsonl", "project/subagents/child.jsonl", "project/parent/subagents/child.jsonl",
+            "project/subagents/subagents/nested.jsonl"]
+        let excluded = ["session.jsonl", "project/chats/session.jsonl", "project/cache/session.jsonl",
+            "project/parent/subagents/workflows/wf_one/agent-worker.jsonl", ".hidden/session.jsonl",
+            "project/subagents/.hidden.jsonl", "project/parent/other/child.jsonl"]
+        for path in expected + excluded { try fixture.file(path) }
+        try FileManager.default.createSymbolicLink(at: fixture.url("project/subagents/link.jsonl"),
+            withDestinationURL: fixture.url(expected[0]))
+        XCTAssertEqual(Set(try fixture.enumerateSelectedFiles()), Set(expected))
+        XCTAssertTrue(fixture.descriptors.live.isEmpty)
+    }
+
+    func testClineDiscoverySelectsOnlyDirectTaskPrimaryCandidates() throws {
+        let fixture = try CollectorPOSIXFixture(source: .cline)
+        defer { fixture.remove() }
+        let expected = ["task/ui_messages.json", "task/claude_messages.json", "other/claude_messages.json"]
+        let excluded = ["ui_messages.json", "task/api_conversation_history.json", "task/notes.json",
+            "task/nested/ui_messages.json", ".hidden/ui_messages.json"]
+        for path in expected + excluded { try fixture.file(path) }
+        XCTAssertEqual(Set(try fixture.enumerateSelectedFiles()), Set(expected))
+        XCTAssertTrue(fixture.descriptors.live.isEmpty)
+    }
+
+    func testIflowDiscoverySelectsOnlyDirectProjectSessionJSONL() throws {
+        let fixture = try CollectorPOSIXFixture(source: .iflow)
+        defer { fixture.remove() }
+        let expected = ["project/session-one.jsonl", "other/session-two.jsonl"]
+        let excluded = ["session-root.jsonl", "project/notes.jsonl", "project/session-one.json",
+            "project/deep/session-child.jsonl", ".hidden/session-secret.jsonl", "project/.session-hidden.jsonl"]
+        for path in expected + excluded { try fixture.file(path) }
+        try FileManager.default.createSymbolicLink(at: fixture.url("project/session-link.jsonl"),
+            withDestinationURL: fixture.url(expected[0]))
+        XCTAssertEqual(Set(try fixture.enumerateSelectedFiles()), Set(expected))
+        XCTAssertTrue(fixture.descriptors.live.isEmpty)
+    }
+
+    func testCommandCodeDiscoveryExcludesCheckpointFilesAndNestedSessions() throws {
+        let fixture = try CollectorPOSIXFixture(source: .commandcode)
+        defer { fixture.remove() }
+        let expected = ["-repo-project/session.jsonl"]
+        let excluded = ["root.jsonl", "-repo-project/session.checkpoints.jsonl", "-repo-project/nested/session.jsonl",
+            "-repo-project/.hidden.jsonl", ".hidden/session.jsonl"]
+        for path in expected + excluded { try fixture.file(path) }
+        XCTAssertEqual(try fixture.enumerateSelectedFiles(), expected)
+        XCTAssertTrue(fixture.descriptors.live.isEmpty)
+    }
+
+    func testCopilotDiscoveryListsCandidatesWithoutPayloadSelectionAfterLargePrefix() throws {
+        let fixture = try CollectorPOSIXFixture(source: .copilot)
+        defer { fixture.remove() }
+        let metadata = try JSONSerialization.data(withJSONObject: ["type": "session.info",
+            "data": ["content": String(repeating: "p", count: 70_000)]]) + Data([10])
+        let message = Data("{\"type\":\"user.message\",\"data\":{\"content\":\"later conversation\"}}\n".utf8)
+        try fixture.file("s1/events.jsonl", bytes: metadata + message)
+        try fixture.file("s1/checkpoints/index.md", bytes: Data("| 1 | Checkpoint | 001.md |\n".utf8))
+        XCTAssertEqual(try fixture.enumerateSelectedFiles().sorted(), ["s1/checkpoints/index.md", "s1/events.jsonl"],
+            "discovery must remain stat-only; Runtime tests prove native preference")
+    }
+
+    func testCopilotDiscoveryDoesNotHideLateCheckpointCandidate() throws {
+        let fixture = try CollectorPOSIXFixture(source: .copilot)
+        defer { fixture.remove() }
+        let metadata = try JSONSerialization.data(withJSONObject: ["type": "session.info",
+            "data": ["content": String(repeating: "p", count: 70_000)]]) + Data([10])
+        try fixture.file("s1/events.jsonl", bytes: metadata)
+        let index = String(repeating: "Header text.\n", count: 6_000) + "| 1 | Checkpoint | 001.md |\n"
+        try fixture.file("s1/checkpoints/index.md", bytes: Data(index.utf8))
+        XCTAssertEqual(try fixture.enumerateSelectedFiles().sorted(), ["s1/checkpoints/index.md", "s1/events.jsonl"],
+            "budgeted publication, not directory discovery, decides the native primary")
+    }
+
+    func testCopilotDependencySnapshotChangesWithoutChangingPrimaryGeneration() throws {
+        let fixture = try CollectorPOSIXFixture(source: .copilot)
+        defer { fixture.remove() }
+        try fixture.file("s1/events.jsonl", bytes: Data("{\"type\":\"user.message\",\"data\":{\"content\":\"hello\"}}\n".utf8))
+        try fixture.file("s1/workspace.yaml", bytes: Data("id: one\ncwd: /repo/one\n".utf8))
+        let original = try CollectorCopilotSource.observe(rootPath: fixture.sourceRoot.path, primaryRelative: "s1/events.jsonl")
+        XCTAssertEqual(original.snapshot.absentRelativePaths, ["s1/checkpoints/index.md"])
+        try fixture.file("s1/workspace.yaml", bytes: Data("id: one\ncwd: /repo/two\n".utf8))
+        let changed = try CollectorCopilotSource.observe(rootPath: fixture.sourceRoot.path, primaryRelative: "s1/events.jsonl")
+        XCTAssertEqual(original.generation, changed.generation)
+        XCTAssertNotEqual(original.snapshot, changed.snapshot)
+        try fixture.file("s1/checkpoints/index.md", bytes: Data("| 1 | Added | .hidden.md |\n".utf8))
+        try fixture.file("s1/checkpoints/.hidden.md", bytes: Data("hidden body is a native dependency".utf8))
+        try fixture.file("s1/checkpoints/UPPER.MD", bytes: Data("uppercase extension is also native".utf8))
+        let added = try CollectorCopilotSource.observe(rootPath: fixture.sourceRoot.path, primaryRelative: "s1/events.jsonl")
+        XCTAssertEqual(original.generation, added.generation)
+        XCTAssertNotEqual(changed.snapshot, added.snapshot)
+        XCTAssertEqual(added.snapshot.present.map(\.relativePath),
+            ["s1/checkpoints/.hidden.md", "s1/checkpoints/UPPER.MD", "s1/checkpoints/index.md", "s1/events.jsonl", "s1/workspace.yaml"])
+        XCTAssertTrue(added.snapshot.absentRelativePaths.isEmpty)
+        XCTAssertEqual(CollectorCopilotSource.owningPrimary(rootPath: fixture.sourceRoot.path,
+            dirtyRelative: "s1/checkpoints/.hidden.md"), "s1/events.jsonl")
     }
 
     func testCodexOnlyEnumeratesExplicitRootWithoutArchiveSiblingOrHiddenDescent() throws {
@@ -793,10 +1034,12 @@ private final class CollectorPOSIXFixture {
     let base: URL
     let sourceRoot: URL
     let source: SourceName
+    let cursorLegacy: Bool
     let descriptors = CollectorPOSIXDescriptorProbe()
 
-    init(source: SourceName = .codex) throws {
+    init(source: SourceName = .codex, cursorLegacy: Bool = false) throws {
         self.source = source
+        self.cursorLegacy = cursorLegacy
         // Only the synthetic temp parent is resolved. The adapter itself must
         // not resolve symlinks in any configured root.
         guard let physicalTemp = realpath(FileManager.default.temporaryDirectory.path, nil) else {
@@ -805,7 +1048,7 @@ private final class CollectorPOSIXFixture {
         defer { free(physicalTemp) }
         base = URL(fileURLWithPath: String(cString: physicalTemp), isDirectory: true)
             .appendingPathComponent("cp-\(UUID().uuidString.prefix(8))", isDirectory: true)
-        sourceRoot = base.appendingPathComponent(source == .claudeCode ? "projects" : "sessions", isDirectory: true)
+        sourceRoot = base.appendingPathComponent(cursorLegacy ? "globalStorage" : (source == .claudeCode ? "projects" : "sessions"), isDirectory: true)
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         do {
             try FileManager.default.createDirectory(at: sourceRoot, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
@@ -821,7 +1064,7 @@ private final class CollectorPOSIXFixture {
         revision: Int64 = 1,
         path: String? = nil
     ) -> CollectorRootConfiguration {
-        .init(rootID: rootID, source: source ?? self.source, rootPath: path ?? sourceRoot.path, revision: revision)
+        .init(rootID: rootID, source: source ?? self.source, rootPath: path ?? sourceRoot.path, revision: revision, cursorLegacy: cursorLegacy)
     }
 
     func identity() throws -> CollectorPOSIXDirectoryIdentity {

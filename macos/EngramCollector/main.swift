@@ -7,11 +7,13 @@ private struct Options {
     let settings: URL
     let credentials: URL?
     let once: Bool
+    let initialize: Bool
 
     init(arguments: [String]) throws {
         var settings: String?
         var credentials: String?
         var once = false
+        var initialize = false
         var index = 0
         while index < arguments.count {
             let argument = arguments[index]
@@ -32,17 +34,22 @@ private struct Options {
                 guard !once else { throw ArgumentsError.invalid }
                 once = true
                 index += 1
+            case "--initialize":
+                guard !initialize else { throw ArgumentsError.invalid }
+                initialize = true
+                index += 1
             default:
                 throw ArgumentsError.invalid
             }
         }
-        guard let settings else { throw ArgumentsError.invalid }
+        guard let settings, !initialize || (!once && credentials == nil) else { throw ArgumentsError.invalid }
         self.settings = URL(fileURLWithPath: settings)
         self.credentials = credentials.map { URL(fileURLWithPath: $0) }
         self.once = once
+        self.initialize = initialize
     }
 
-    private static func validAbsolutePath(_ path: String) -> Bool {
+    static func validAbsolutePath(_ path: String) -> Bool {
         guard path.hasPrefix("/"), path.utf8.count <= 4096,
               !path.utf8.contains(0) else { return false }
         return path.dropFirst().split(separator: "/", omittingEmptySubsequences: false)
@@ -54,14 +61,36 @@ private enum ArgumentsError: Error { case invalid }
 
 private let usage = """
 usage: EngramCollector --settings ABS [--credentials-file ABS] [--once]
+       EngramCollector --settings ABS --initialize
+       EngramCollector --initialize-identity ABS
        EngramCollector --help
 --once runs one bounded cycle; it does not wait for bootstrap or replica acknowledgements.
+--initialize creates a new private spool using the configured existing machine identity; it never starts collection.
+--initialize-identity creates a new identity catalog only; use only after confirming this host has no existing identity.
 """
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 if arguments == ["--help"] {
     print(usage)
     exit(0)
+}
+
+// First-machine provisioning is deliberately separate from runtime settings,
+// credentials, spool initialization, and collection. Existing hosts borrow their
+// catalog through --initialize instead of allocating another identity.
+if arguments.first == "--initialize-identity" {
+    guard arguments.count == 2, Options.validAbsolutePath(arguments[1]) else {
+        FileHandle.standardError.write(Data("engram-collector: invalid arguments\n".utf8))
+        exit(64)
+    }
+    do {
+        _ = try CollectorIdentityInitializer.create(at: URL(fileURLWithPath: arguments[1]))
+        print("engram-collector: identity initialized")
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data("engram-collector: identity initialization failed\n".utf8))
+        exit(70)
+    }
 }
 
 private let options: Options
@@ -81,6 +110,16 @@ termination.attach(collectorTask)
 withExtendedLifetime(termination) { dispatchMain() }
 
 private func runCollector(_ options: Options) async -> Int32 {
+    if options.initialize {
+        do {
+            try CollectorRuntime.initialize(settingsURL: options.settings)
+            print("engram-collector: initialized")
+            return 0
+        } catch {
+            FileHandle.standardError.write(Data("engram-collector: initialization failed\n".utf8))
+            return 70
+        }
+    }
     let credentials = ExplicitCredentialFile(url: options.credentials)
     var runtime: CollectorRuntime?
     var failed = false

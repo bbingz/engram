@@ -1408,6 +1408,114 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(streamed.map(\.content), ["request from mutation log", "answer from mutation log"])
     }
 
+    func testVsCodeCapturedReplayUsesFrozenExternalWorkspaceAfterSourceDeletion() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = root.appendingPathComponent("original")
+        let chat = original.appendingPathComponent("storage/ws/chatSessions/native-name.jsonl")
+        let config = original.appendingPathComponent("projects/example.code-workspace")
+        try FileManager.default.createDirectory(at: chat.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: config.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let workspaceData = try JSONSerialization.data(withJSONObject: ["configuration": config.absoluteString])
+        let configurationData = try JSONSerialization.data(withJSONObject: ["folders": ["ignored", ["path": "../project with spaces"], ["path": "/unselected"]]])
+        try workspaceData.write(to: chat.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("workspace.json"))
+        try configurationData.write(to: config)
+        let request: [String: Any] = [
+            "timestamp": 1_700_000_005_000,
+            "message": ["text": "frozen question"],
+            "response": [["value": ["kind": "markdownContent", "content": ["value": "frozen answer"]]]],
+            "model": "must-not-be-invented", "usage": ["inputTokens": 99],
+        ]
+        let entries: [[String: Any]] = [
+            ["kind": 0, "v": ["sessionId": "discarded", "creationDate": 1_700_000_000_000, "requests": []]],
+            ["kind": 1, "k": ["sessionId"], "v": "temporary"],
+            ["kind": 3, "k": ["sessionId"]],
+            ["kind": 2, "k": ["requests"], "v": [request]],
+        ]
+        let bytes = Data((try entries.map(jsonLine).joined(separator: "\n") + "\n").utf8)
+        try bytes.write(to: chat)
+        let live = try sessionInfo(await VsCodeAdapter(workspaceStorageDir: original.appendingPathComponent("storage").path)
+            .scanForIndexing(locator: chat.path))
+        XCTAssertEqual(live.info.id, "native-name")
+        XCTAssertEqual(live.info.cwd, original.appendingPathComponent("project with spaces").standardizedFileURL.path)
+        try FileManager.default.removeItem(at: original)
+        for stagingName in ["first", "second"] {
+            let staged = root.appendingPathComponent(stagingName + "/wrong-workspace/chatSessions/renamed.jsonl")
+            try FileManager.default.createDirectory(at: staged.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try bytes.write(to: staged)
+            try Data(#"{"folder":"file:///must-not-read-live-workspace"}"#.utf8).write(
+                to: staged.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("workspace.json"))
+            let captured = try sessionInfo(await VsCodeAdapter.scanCapturedSource(
+                physicalLocator: staged.path, logicalLocator: chat.path,
+                workspaceData: workspaceData, configurationData: configurationData))
+            XCTAssertEqual(captured.rawSourceSessionID, live.info.id)
+            XCTAssertEqual(captured.scan.info.id, live.info.id)
+            XCTAssertEqual(captured.scan.info.cwd, live.info.cwd)
+            XCTAssertEqual(captured.scan.info.filePath, chat.path)
+            XCTAssertEqual(captured.scan.info.sizeBytes, Int64(bytes.count))
+            XCTAssertEqual(captured.scan.messages.map(\.content), live.messages.map(\.content))
+            XCTAssertEqual(captured.scan.info.startTime, live.info.startTime)
+            XCTAssertEqual(captured.scan.info.endTime, live.info.endTime)
+            XCTAssertNil(captured.scan.info.model)
+            XCTAssertTrue(captured.scan.messages.allSatisfy { $0.usage == nil && $0.toolCalls == nil })
+        }
+    }
+
+    func testVsCodeCapturedReplayFreezesAbsentWorkspaceAndRejectsMalformedRecords() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chat = root.appendingPathComponent("ws/chatSessions/session.jsonl")
+        try FileManager.default.createDirectory(at: chat.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"folder":"file:///must-not-read-live-workspace"}"#.utf8).write(
+            to: chat.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("workspace.json"))
+        let entry: [String: Any] = ["kind": 0, "v": ["sessionId": "id", "creationDate": 1_700_000_000_000,
+            "requests": [["message": ["text": "question"]]]]]
+        let line = try jsonLine(entry) + "\n"
+        try line.write(to: chat, atomically: true, encoding: .utf8)
+        let absent = try sessionInfo(await VsCodeAdapter.scanCapturedSource(
+            physicalLocator: chat.path, logicalLocator: "/source/ws/chatSessions/session.jsonl",
+            workspaceData: nil, configurationData: nil))
+        XCTAssertEqual(absent.scan.info.cwd, "")
+        try (line + "{malformed}\n").write(to: chat, atomically: true, encoding: .utf8)
+        switch try await VsCodeAdapter.scanCapturedSource(
+            physicalLocator: chat.path, logicalLocator: "/source/ws/chatSessions/session.jsonl",
+            workspaceData: nil, configurationData: nil) {
+        case .success: XCTFail("Immutable replay must reject malformed records")
+        case .failure: break
+        }
+    }
+
+    func testVsCodeCapturedWorkspaceRetainsNativePrecedenceWithoutLiveFallback() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chat = root.appendingPathComponent("ws/chatSessions/session.jsonl")
+        let config = root.appendingPathComponent("workspace.code-workspace")
+        try FileManager.default.createDirectory(at: chat.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"folders":[{"path":"/live-must-not-be-read"}]}"#.utf8).write(to: config)
+        let entry: [String: Any] = ["kind": 0, "v": ["sessionId": "native-id", "creationDate": 1_700_000_000_000,
+            "requests": [["message": ["text": "question"]]]]]
+        try (jsonLine(entry) + "\n").write(to: chat, atomically: true, encoding: .utf8)
+        let configuration = ["configuration": config.absoluteString]
+        let cases: [([String: Any], [String: Any]?, String)] = [
+            (["folder": "file://localhost/project%20one", "configuration": config.absoluteString],
+                ["folders": [["path": "/ignored"]]], "/project one"),
+            (["folder": "", "configuration": config.absoluteString],
+                ["folders": [["path": "/ignored"]]], ""),
+            (configuration, ["folders": [["uri": "file:///uri%20folder", "path": "/ignored"]]], "/uri folder"),
+            (configuration, ["folders": [["uri": "", "path": "/ignored"], ["path": "/also-ignored"]]], ""),
+            (configuration, ["folders": [7, ["path": "/absolute"], ["path": "/ignored"]]], "/absolute"),
+            (configuration, nil, ""),
+        ]
+        for (workspace, configObject, expectedCwd) in cases {
+            let captured = try sessionInfo(await VsCodeAdapter.scanCapturedSource(
+                physicalLocator: chat.path, logicalLocator: "/source/ws/chatSessions/original.jsonl",
+                workspaceData: JSONSerialization.data(withJSONObject: workspace),
+                configurationData: try configObject.map { try JSONSerialization.data(withJSONObject: $0) }))
+            XCTAssertEqual(captured.scan.info.cwd, expectedCwd)
+            XCTAssertEqual(captured.rawSourceSessionID, "native-id")
+        }
+    }
+
     func testVsCodeRejectsDeepMutationPaths() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -2645,6 +2753,39 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(info.userMessageCount, 2)
         XCTAssertEqual(info.assistantMessageCount, 1)
         XCTAssertEqual(streamed.map(\.content), ["main question", "visible answer", "follow-up from shard"])
+    }
+
+    func testKimiMixedFamilyShardsPreserveBothFilesInNumericThenFilenameOrder_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("workspace-1/kimi-mixed-family", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        let contextFile = sessionDir.appendingPathComponent("context.jsonl")
+        try (try jsonLine(["role": "user", "content": "primary turn"]) + "\n")
+            .write(to: contextFile, atomically: true, encoding: .utf8)
+        let subBytes = Data((try jsonLine(["role": "assistant", "content": "sub family turn"]) + "\n").utf8)
+        let rotationBytes = Data((try jsonLine(["role": "assistant", "content": "rotation family turn"]) + "\n").utf8)
+        let laterBytes = Data((try jsonLine(["role": "assistant", "content": "later numeric shard"]) + "\n").utf8)
+        try subBytes.write(to: sessionDir.appendingPathComponent("context_sub_1.jsonl"))
+        try laterBytes.write(to: sessionDir.appendingPathComponent("context_10.jsonl"))
+        try rotationBytes.write(to: sessionDir.appendingPathComponent("context_1.jsonl"))
+        XCTAssertEqual(try Data(contentsOf: sessionDir.appendingPathComponent("context_1.jsonl")), rotationBytes)
+        XCTAssertEqual(try Data(contentsOf: sessionDir.appendingPathComponent("context_sub_1.jsonl")), subBytes)
+
+        let adapter = KimiAdapter(
+            sessionsRoot: root.path,
+            kimiJsonPath: root.appendingPathComponent("kimi.json").path
+        )
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: contextFile.path))
+        let streamed = try await drain(adapter, locator: contextFile.path)
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 3)
+        XCTAssertEqual(info.messageCount, streamed.count)
+        XCTAssertEqual(
+            streamed.map(\.content),
+            ["primary turn", "rotation family turn", "sub family turn", "later numeric shard"],
+            "primary first, numeric shard index, then UTF8 filename tie-break; not mtime"
+        )
     }
 
     // Audit KIMI-001: agentic turns must preserve tools and bind one wire turn per user turn.
@@ -8038,6 +8179,116 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(failure, .noVisibleMessages)
     }
 
+    func testWindsurfCapturedHookRetainsStepsAfterSourceDeletion() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sources = root.appendingPathComponent("sources")
+        let logical = sources.appendingPathComponent("transcripts/trajectory-1.jsonl")
+        try FileManager.default.createDirectory(at: logical.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let objects: [[String: Any]] = [
+            ["type": "user_input", "status": "done", "user_input": ["user_response": "Create a file"]],
+            ["type": "planner_response", "status": "done", "planner_response": ["response": "Creating"]],
+            ["type": "code_action", "status": "done", "code_action": ["path": "/repo/a.py", "new_content": "print('hello')\n"]],
+            ["type": "planner_response", "status": "done", "planner_response": ["response": "Created"]],
+            ["type": "future_step", "status": "done", "future_step": ["result": "Keep unknown evidence"]],
+        ]
+        let bytes = Data(try objects.map(jsonLine).joined(separator: "\n").appending("\n").utf8)
+        try bytes.write(to: logical)
+        let physical = root.appendingPathComponent("frozen-cas-bytes")
+        try bytes.write(to: physical)
+        try FileManager.default.removeItem(at: sources)
+        let result = try await WindsurfAdapter.scanCapturedHookTranscript(physicalLocator: physical.path, logicalLocator: logical.path)
+        guard case .success(let captured) = result else { return XCTFail("Expected captured hook replay, got \(result)") }
+        XCTAssertEqual(captured.rawSourceSessionID, "trajectory-1")
+        XCTAssertEqual(captured.scan.info.id, "trajectory-1")
+        XCTAssertEqual(captured.scan.info.source, .windsurf)
+        XCTAssertEqual(captured.scan.info.filePath, logical.path)
+        XCTAssertEqual(captured.scan.info.startTime, "")
+        XCTAssertEqual(captured.scan.info.cwd, "")
+        XCTAssertEqual(captured.scan.info.messageCount, 5)
+        XCTAssertEqual(captured.scan.info.toolMessageCount, 2)
+        XCTAssertEqual(captured.scan.info.sizeBytes, Int64(bytes.count))
+        XCTAssertNil(captured.scan.info.parentSessionId)
+        XCTAssertNil(captured.scan.info.suggestedParentId)
+        XCTAssertNil(captured.scan.info.model)
+        XCTAssertEqual(captured.scan.messages.map(\.role), [.user, .assistant, .tool, .assistant, .tool])
+        XCTAssertEqual(captured.scan.messages[0].content, "Create a file")
+        XCTAssertTrue(captured.scan.messages[2].content.contains("print('hello')"))
+        XCTAssertTrue(captured.scan.messages[2].content.contains("/repo/a.py"))
+        XCTAssertTrue(captured.scan.messages[4].content.contains("Keep unknown evidence"))
+        XCTAssertTrue(captured.scan.messages.allSatisfy { $0.usage == nil })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sources.path))
+    }
+
+    func testWindsurfCapturedHookRejectsMalformedRecordsAndLayouts() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let physical = root.appendingPathComponent("frozen")
+        let logical = root.appendingPathComponent("transcripts/native.jsonl").path
+        for text in ["{bad}\n", "[]\n", "{}\n", #"{"type":"","status":"done"}"# + "\n",
+                     #"{"type":"user_input","status":"done","user_input":42}"# + "\n",
+                     #"{"type":"planner_response","status":"done","planner_response":{}}"# + "\n"] {
+            try text.write(to: physical, atomically: true, encoding: .utf8)
+            let result = try await WindsurfAdapter.scanCapturedHookTranscript(physicalLocator: physical.path, logicalLocator: logical)
+            XCTAssertEqual(try parseFailure(result), .malformedJSON)
+        }
+        try #"{"type":"user_input","status":"done","user_input":{"user_response":"hello"}}"#
+            .appending("\n").write(to: physical, atomically: true, encoding: .utf8)
+        for path in ["relative/transcripts/native.jsonl", root.path + "/cache/native.jsonl",
+                     root.path + "/transcripts/.hidden.jsonl", root.path + "/transcripts/native.pb",
+                     root.path + "/transcripts/../transcripts/native.jsonl"] {
+            let result = try await WindsurfAdapter.scanCapturedHookTranscript(physicalLocator: physical.path, logicalLocator: path)
+            XCTAssertEqual(try parseFailure(result), .malformedJSON)
+        }
+    }
+
+    func testWindsurfCapturedHookBudgetsIncludeToolRecords() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let physical = root.appendingPathComponent("frozen")
+        let logical = root.appendingPathComponent("transcripts/native.jsonl").path
+        let line = #"{"type":"future_tool","status":"done","future_tool":{"output":"retained"}}"# + "\n"
+        try (line + line).write(to: physical, atomically: true, encoding: .utf8)
+        for (limits, expected) in [(ParserLimits(maxMessages: 1), ParserFailure.messageLimitExceeded),
+                                   (ParserLimits(maxFileBytes: 8), .fileTooLarge),
+                                   (ParserLimits(maxLineBytes: 8), .lineTooLarge)] {
+            let result = try await WindsurfAdapter.scanCapturedHookTranscript(physicalLocator: physical.path, logicalLocator: logical, limits: limits)
+            XCTAssertEqual(try parseFailure(result), expected)
+        }
+        try "".write(to: physical, atomically: true, encoding: .utf8)
+        let empty = try await WindsurfAdapter.scanCapturedHookTranscript(physicalLocator: physical.path, logicalLocator: logical)
+        XCTAssertEqual(try parseFailure(empty), .noVisibleMessages)
+    }
+
+    func testWindsurfCapturedHookPreservesWholeToolEnvelope_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let physical = root.appendingPathComponent("frozen")
+        let objects: [[String: Any]] = [
+            ["type": "code_action", "status": "error", "code_action": ["path": "/repo/a", "new_content": "body"], "error": "permission denied"],
+            ["type": "future_step", "status": "done", "future_step": ["result": "data"], "sequence": 17],
+        ]
+        try objects.map(jsonLine).joined(separator: "\n").appending("\n").write(to: physical, atomically: true, encoding: .utf8)
+        let captured = try sessionInfo(await WindsurfAdapter.scanCapturedHookTranscript(
+            physicalLocator: physical.path, logicalLocator: root.appendingPathComponent("transcripts/native.jsonl").path))
+        for (message, original) in zip(captured.scan.messages, objects) {
+            let decoded = try JSONSerialization.jsonObject(with: Data(message.content.utf8)) as? [String: Any]
+            XCTAssertEqual(decoded.map { NSDictionary(dictionary: $0) }, NSDictionary(dictionary: original))
+        }
+        XCTAssertEqual(captured.scan.messages.count, 2)
+    }
+
+    func testWindsurfCapturedHookBoundsMalformedObjectAccumulation() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let physical = root.appendingPathComponent("frozen")
+        try "{}\n{}\n".write(to: physical, atomically: true, encoding: .utf8)
+        let result = try await WindsurfAdapter.scanCapturedHookTranscript(
+            physicalLocator: physical.path, logicalLocator: root.appendingPathComponent("transcripts/native.jsonl").path,
+            limits: ParserLimits(maxMessages: 1))
+        XCTAssertEqual(try parseFailure(result), .messageLimitExceeded)
+    }
+
     // MARK: - Antigravity
 
     func testAntigravityAdapterListsEveryDocumentedBrainRoot_repro() async throws {
@@ -8071,6 +8322,115 @@ final class AdapterMessageCountTests: XCTestCase {
             Set(locators.map(FileSystemPathIdentity.realpathPath)),
             Set(expected)
         )
+    }
+
+    func testAntigravityCapturedCLIReplaysAllBrainAliasesAfterSourceDeletion() async throws {
+        for alias in ["antigravity-cli", "antigravity", "antigravity-ide"] {
+            let root = tempDir()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let gemini = root.appendingPathComponent(".gemini")
+            let logical = gemini.appendingPathComponent("\(alias)/brain/native-session/.system_generated/logs/transcript.jsonl")
+            try FileManager.default.createDirectory(at: logical.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let objects: [[String: Any]] = [
+                ["type": "USER_INPUT", "created_at": "2026-09-10T00:00:00Z", "content": "Inspect /repo/project/src/a.swift"],
+                ["type": "PLANNER_RESPONSE", "created_at": "2026-09-10T00:00:01Z", "thinking": "Inspecting the file",
+                 "tool_calls": [["name": "read_file", "args": ["path": "/repo/project/src/a.swift", "padding": String(repeating: "x", count: 600)]]]],
+                ["type": "RUN_COMMAND", "created_at": "2026-09-10T00:00:02Z", "content": "command output"],
+                ["type": "ERROR_MESSAGE", "created_at": "2026-09-10T00:00:03Z", "error": "command failed"],
+            ]
+            let bytes = Data(try objects.map(jsonLine).joined(separator: "\n").appending("\n").utf8)
+            try bytes.write(to: logical)
+            let adapter = AntigravityAdapter(cacheDir: root.appendingPathComponent("cache").path,
+                conversationsDir: root.appendingPathComponent("conversations").path,
+                cliBrainDir: gemini.appendingPathComponent("antigravity-cli/brain").path)
+            let native = try sessionInfo(await adapter.scanForIndexing(locator: logical.path))
+            let physical = root.appendingPathComponent("arbitrary-cas-object.jsonl")
+            try bytes.write(to: physical)
+            try FileManager.default.removeItem(at: gemini)
+            let replay = try sessionInfo(await AntigravityAdapter.scanCapturedCLITranscript(
+                physicalLocator: physical.path, logicalLocator: logical.path))
+            XCTAssertEqual(replay.rawSourceSessionID, "native-session")
+            XCTAssertEqual(replay.scan.info, native.info)
+            XCTAssertEqual(replay.scan.messages, native.messages)
+            XCTAssertEqual(replay.scan.messages.map(\.role), [.user, .assistant, .tool, .tool])
+            XCTAssertEqual(replay.scan.info.cwd, "/repo/project/src")
+            XCTAssertEqual(replay.scan.info.sizeBytes, Int64(bytes.count))
+            XCTAssertTrue(replay.scan.messages.allSatisfy { $0.usage == nil })
+            XCTAssertNil(replay.scan.info.parentSessionId)
+            XCTAssertNil(replay.scan.info.suggestedParentId)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: logical.path))
+        }
+    }
+
+    func testAntigravityCapturedCLIRejectsMalformedAndNonObjectRecords() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let physical = root.appendingPathComponent("capture")
+        let first = Data((try jsonLine(["type": "USER_INPUT", "content": "visible"]) + "\n").utf8)
+        for suffix in [Data("[]\n".utf8), Data("{broken}\n".utf8), Data("{\"type\":".utf8), Data([0xff, 10])] {
+            try (first + suffix).write(to: physical)
+            let result = try await AntigravityAdapter.scanCapturedCLITranscript(physicalLocator: physical.path,
+                logicalLocator: "/offline/brain/native-session/.system_generated/logs/transcript.jsonl")
+            if case .success = result { XCTFail("immutable replay must not silently omit a malformed record") }
+        }
+    }
+
+    func testAntigravityCapturedCLIHonorsNativeLimits() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let physical = root.appendingPathComponent("capture")
+        let bytes = Data((try jsonLine(["type": "USER_INPUT", "content": "first"]) + "\n"
+            + jsonLine(["type": "PLANNER_RESPONSE", "content": "second"]) + "\n").utf8)
+        try bytes.write(to: physical)
+        let cases: [(ParserLimits, ParserFailure)] = [(.init(maxFileBytes: 1), .fileTooLarge),
+            (.init(maxLineBytes: 5), .lineTooLarge), (.init(maxMessages: 1), .messageLimitExceeded)]
+        for (limits, expected) in cases {
+            let result = try await AntigravityAdapter.scanCapturedCLITranscript(
+                physicalLocator: physical.path,
+                logicalLocator: "/offline/brain/native-session/.system_generated/logs/transcript.jsonl", limits: limits)
+            XCTAssertEqual(try parseFailure(result), expected)
+        }
+    }
+
+    func testAntigravityCapturedCLIToolOnlyAndEmptyDisposition() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let physical = root.appendingPathComponent("capture")
+        let logical = "/offline/brain/native-session/.system_generated/logs/transcript.jsonl"
+        try Data((try jsonLine(["type": "FUTURE_TOOL", "content": "preserved output"]) + "\n").utf8).write(to: physical)
+        let replay = try sessionInfo(await AntigravityAdapter.scanCapturedCLITranscript(
+            physicalLocator: physical.path, logicalLocator: logical))
+        XCTAssertEqual(replay.scan.info.toolMessageCount, 1)
+        XCTAssertEqual(replay.scan.messages.map(\.content), ["preserved output"])
+        try Data((try jsonLine(["type": "FUTURE_TOOL", "content": ""]) + "\n").utf8).write(to: physical)
+        let empty = try await AntigravityAdapter.scanCapturedCLITranscript(
+            physicalLocator: physical.path, logicalLocator: logical)
+        XCTAssertEqual(try parseFailure(empty), .noVisibleMessages)
+    }
+
+    func testAntigravityCapturedCLIRejectsNonTranscriptLogicalLayouts() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let physical = root.appendingPathComponent("capture")
+        try Data((try jsonLine(["type": "USER_INPUT", "content": "visible"]) + "\n").utf8).write(to: physical)
+        for logical in ["relative/session/.system_generated/logs/transcript.jsonl", "/offline/cache/session.jsonl",
+            "/offline/session/.system_generated/logs/other.jsonl", "/offline/session/logs/transcript.jsonl"] {
+            let result = try await AntigravityAdapter.scanCapturedCLITranscript(
+                physicalLocator: physical.path, logicalLocator: logical)
+            XCTAssertEqual(try parseFailure(result), .malformedJSON)
+        }
+    }
+
+    func testAntigravityCapturedCLICWDUsesOnlyNativeRawBytePrefix() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let physical = root.appendingPathComponent("capture")
+        let longText = String(repeating: "界", count: 17_000) + " /late/project/file.swift"
+        try Data((try jsonLine(["type": "USER_INPUT", "content": longText]) + "\n").utf8).write(to: physical)
+        let replay = try sessionInfo(await AntigravityAdapter.scanCapturedCLITranscript(physicalLocator: physical.path,
+            logicalLocator: "/offline/brain/native-session/.system_generated/logs/transcript.jsonl"))
+        XCTAssertEqual(replay.scan.info.cwd, "")
+        XCTAssertTrue(replay.scan.messages.first?.content == longText, "cwd budget must not truncate message content")
     }
 
     func testAntigravityCliPreservesCatchAllToolAndErrorMessages_repro() async throws {
@@ -8374,5 +8734,338 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertFalse(inferredCWD.contains("String(contentsOfFile:"))
         XCTAssertTrue(inferredCWD.contains("FileHandle(forReadingFrom:"))
         XCTAssertTrue(inferredCWD.contains("read(upToCount: Self.cwdInferenceByteLimit)"))
+    }
+
+    func testStreamingLongLineDoesNotRescanEveryPriorChunk() throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("long-line.txt")
+        let text = String(repeating: "x", count: 26 * 1024 * 1024)
+        try (text + "\nlast\n").write(to: file, atomically: true, encoding: .utf8)
+        let start = ContinuousClock.now
+        let reader = try StreamingLineReader(fileURL: file, maxLineBytes: 32 * 1024 * 1024)
+        let lines = Array(try reader.readLines())
+        XCTAssertEqual(lines, [text, "last"])
+        XCTAssertTrue(reader.failures.isEmpty)
+        XCTAssertLessThan(start.duration(to: .now), .seconds(10),
+            "a 26 MiB line must not rescan its full prefix after each 64 KiB read")
+    }
+
+    // MARK: - Captured Codex/Claude JSONL replay limits
+
+    private static let legacyCapturedFileBytes: Int64 = 100 * 1024 * 1024
+    private static let legacyCapturedLineBytes = 8 * 1024 * 1024
+    private static let legacyCapturedVisibleMessages = 10_000
+    private static let capturedJSONLFileBytes: Int64 = 1024 * 1024 * 1024
+
+    func testOrdinaryJSONLAdaptersKeepLegacyFileLineAndMessageCaps_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let codexOverCount = root.appendingPathComponent("rollout-local-message-cap.jsonl")
+        try writeCodexVisibleTranscript(to: codexOverCount, id: "local-codex-cap", texts: localCapTexts())
+        let localCapResult1 = try await CodexAdapter(sessionsRoot: root.path).parseSessionInfo(locator: codexOverCount.path)
+        XCTAssertEqual(try parseFailure(localCapResult1), .messageLimitExceeded)
+
+        let claudeProject = root.appendingPathComponent("-tmp-local-cap", isDirectory: true)
+        let claudeOverCount = claudeProject.appendingPathComponent("local-cap.jsonl")
+        try writeClaudeVisibleTranscript(to: claudeOverCount, sessionId: "local-claude-cap", texts: localCapTexts())
+        let localCapResult2 = try await ClaudeCodeAdapter(projectsRoot: root.path).parseSessionInfo(locator: claudeOverCount.path)
+        XCTAssertEqual(try parseFailure(localCapResult2), .messageLimitExceeded)
+
+        let oversizedLine = String(repeating: "x", count: Self.legacyCapturedLineBytes + 1)
+        let codexLine = root.appendingPathComponent("rollout-local-line-cap.jsonl")
+        try writeCodexVisibleTranscript(to: codexLine, id: "local-codex-line", texts: ["first", oversizedLine])
+        let localCapResult3 = try await CodexAdapter(sessionsRoot: root.path).parseSessionInfo(locator: codexLine.path)
+        XCTAssertEqual(try parseFailure(localCapResult3), .lineTooLarge)
+        let claudeLine = claudeProject.appendingPathComponent("local-line.jsonl")
+        try writeClaudeVisibleTranscript(to: claudeLine, sessionId: "local-claude-line", texts: ["first", oversizedLine])
+        let localCapResult4 = try await ClaudeCodeAdapter(projectsRoot: root.path).parseSessionInfo(locator: claudeLine.path)
+        XCTAssertEqual(try parseFailure(localCapResult4), .lineTooLarge)
+
+        let sparse = root.appendingPathComponent("rollout-local-file-cap.jsonl")
+        try writeCodexVisibleTranscript(to: sparse, id: "local-codex-file", texts: ["first", "last"])
+        let handle = try FileHandle(forUpdating: sparse)
+        try handle.truncate(atOffset: UInt64(Self.legacyCapturedFileBytes + 1))
+        try handle.close()
+        let localCapResult5 = try await CodexAdapter(sessionsRoot: root.path).parseSessionInfo(locator: sparse.path)
+        XCTAssertEqual(try parseFailure(localCapResult5), .fileTooLarge)
+    }
+
+    func testCapturedCodexAndClaudeReplayExceedLegacyMessageCapAndKeepEnds_repro() async throws {
+        let texts = ["captured-first"] + (1...Self.legacyCapturedVisibleMessages - 1).map { "mid-\($0)" } + ["captured-last"]
+        XCTAssertEqual(texts.count, Self.legacyCapturedVisibleMessages + 1)
+        try await assertCapturedReplayKeepsEnds(id: "captured-jsonl-messages", texts: texts)
+    }
+
+    func testCapturedCodexAndClaudeReplayExceedLegacyLineCapWithoutTruncating_repro() async throws {
+        let oversized = String(repeating: "x", count: Self.legacyCapturedLineBytes + 1)
+        XCTAssertEqual(oversized.utf8.count, Self.legacyCapturedLineBytes + 1)
+        try await assertCapturedReplayKeepsEnds(id: "captured-jsonl-line", texts: ["captured-first", oversized])
+    }
+
+    func testCapturedCodexAndClaudeReplayExceedLegacyFileCapAndKeepEnds_repro() async throws {
+        let chunk = String(repeating: "y", count: 26 * 1024 * 1024)
+        let texts = ["captured-first", chunk, chunk, chunk, chunk, "captured-last"]
+        try await assertCapturedReplayKeepsEnds(id: "captured-jsonl-file", texts: texts) { file in
+            let size = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber).int64Value
+            XCTAssertGreaterThan(size, Self.legacyCapturedFileBytes)
+            XCTAssertLessThan(size, Self.capturedJSONLFileBytes)
+        }
+    }
+
+    func testCapturedCodexAndClaudeReplayMatchesLocalIdentityUsageAndNoiseRules_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let codex = root.appendingPathComponent("rollout-captured-parity.jsonl")
+        try writeJSONL(to: codex, objects: [
+            [
+                "timestamp": "2026-09-11T00:00:00Z", "type": "session_meta",
+                "payload": [
+                    "id": "codex-parity", "timestamp": "2026-09-11T00:00:00Z",
+                    "cwd": "/tmp/codex-parity", "originator": "codex",
+                ],
+            ],
+            [
+                "timestamp": "2026-09-11T00:00:01Z", "type": "event_msg",
+                "payload": ["type": "token_count"],
+            ],
+            [
+                "timestamp": "2026-09-11T00:00:02Z", "type": "response_item",
+                "payload": [
+                    "type": "message", "role": "user",
+                    "content": [[
+                        "type": "input_text",
+                        "text": "<system-reminder>generated reminder</system-reminder>",
+                    ]],
+                ],
+            ],
+            [
+                "timestamp": "2026-09-11T00:00:03Z", "type": "response_item",
+                "payload": [
+                    "type": "message", "role": "user",
+                    "content": [["type": "input_text", "text": "real Codex task"]],
+                ],
+            ],
+            [
+                "timestamp": "2026-09-11T00:00:04Z", "type": "response_item",
+                "payload": [
+                    "type": "message", "role": "assistant",
+                    "content": [["type": "output_text", "text": "Codex reply"]],
+                ],
+            ],
+            [
+                "timestamp": "2026-09-11T00:00:05Z", "type": "event_msg",
+                "payload": [
+                    "type": "token_count",
+                    "info": [
+                        "last_token_usage": [
+                            "input_tokens": 1_000,
+                            "cached_input_tokens": 400,
+                            "output_tokens": 25,
+                            "total_tokens": 1_025,
+                        ],
+                    ],
+                ],
+            ],
+        ])
+        let localCodex = try sessionInfo(await CodexAdapter(sessionsRoot: root.path).scanForIndexing(locator: codex.path))
+        let capturedCodex = try await capturedReplay(
+            physical: codex, staging: root,
+            logical: "/offline-client/.codex/sessions/2026/09/11/rollout-captured-parity.jsonl",
+            format: .codex
+        )
+        XCTAssertEqual(capturedCodex.rawSourceSessionID, "codex-parity")
+        XCTAssertEqual(capturedCodex.scan.info.id, localCodex.info.id)
+        XCTAssertEqual(capturedCodex.scan.info.cwd, localCodex.info.cwd)
+        XCTAssertEqual(capturedCodex.scan.info.messageCount, localCodex.info.messageCount)
+        XCTAssertEqual(capturedCodex.scan.messages.map(\.content), ["real Codex task", "Codex reply"])
+        XCTAssertEqual(capturedCodex.scan.messages, localCodex.messages)
+        XCTAssertEqual(
+            capturedCodex.scan.messages.last?.usage,
+            TokenUsage(inputTokens: 600, outputTokens: 25, cacheReadTokens: 400, cacheCreationTokens: 0)
+        )
+
+        let claudeProject = root.appendingPathComponent("-tmp-parity", isDirectory: true)
+        let claude = claudeProject.appendingPathComponent("parity.jsonl")
+        try writeJSONL(to: claude, objects: [
+            ["type": "progress", "sessionId": "claude-parity", "timestamp": "2026-09-11T00:00:00Z"],
+            [
+                "type": "user", "sessionId": "claude-parity", "cwd": "/tmp/claude-parity",
+                "timestamp": "2026-09-11T00:00:01Z",
+                "message": ["role": "user", "content": "<system-reminder>noise</system-reminder>"],
+            ],
+            [
+                "type": "user", "sessionId": "claude-parity", "cwd": "/tmp/claude-parity",
+                "timestamp": "2026-09-11T00:00:02Z",
+                "message": ["role": "user", "content": "real Claude task"],
+            ],
+            [
+                "type": "assistant", "sessionId": "claude-parity", "timestamp": "2026-09-11T00:00:03Z",
+                "message": [
+                    "id": "usage-once", "role": "assistant", "model": "claude-test",
+                    "content": [["type": "text", "text": "Claude reply"]],
+                    "usage": ["input_tokens": 7, "output_tokens": 3, "cache_read_input_tokens": 2],
+                ],
+            ],
+            [
+                "type": "assistant", "sessionId": "claude-parity", "timestamp": "2026-09-11T00:00:04Z",
+                "message": [
+                    "id": "usage-once", "role": "assistant", "model": "claude-test",
+                    "content": [["type": "text", "text": "Claude follow-up"]],
+                    "usage": ["input_tokens": 7, "output_tokens": 3],
+                ],
+            ],
+            [
+                "type": "user", "sessionId": "claude-parity", "timestamp": "2026-09-11T00:00:05Z",
+                "message": [
+                    "role": "user",
+                    "content": [["type": "tool_result", "tool_use_id": "t1", "content": "User has answered: proceed"]],
+                ],
+            ],
+            ["type": "future-lifecycle", "sessionId": "claude-parity"],
+        ])
+        let localClaude = try sessionInfo(await ClaudeCodeAdapter(projectsRoot: root.path).scanForIndexing(locator: claude.path))
+        let capturedClaude = try await capturedReplay(
+            physical: claude, staging: root,
+            logical: "/offline-client/.claude/projects/-tmp-parity/parity.jsonl",
+            format: .claudeCode(forceClaudeCodeSource: false)
+        )
+        XCTAssertEqual(capturedClaude.rawSourceSessionID, "claude-parity")
+        XCTAssertEqual(capturedClaude.scan.info.id, localClaude.info.id)
+        XCTAssertEqual(capturedClaude.scan.info.cwd, localClaude.info.cwd)
+        XCTAssertEqual(capturedClaude.scan.info.messageCount, localClaude.info.messageCount)
+        XCTAssertEqual(capturedClaude.scan.messages.map(\.role), [.user, .assistant, .assistant, .tool])
+        XCTAssertEqual(capturedClaude.scan.messages.map(\.content), localClaude.messages.map(\.content))
+        XCTAssertEqual(capturedClaude.scan.messages, localClaude.messages)
+        XCTAssertEqual(capturedClaude.scan.messages[1].usage, localClaude.messages[1].usage)
+        XCTAssertNil(capturedClaude.scan.messages[2].usage)
+        XCTAssertEqual(capturedClaude.scan.unknownRecordKinds, localClaude.unknownRecordKinds)
+    }
+
+    private func localCapTexts() -> [String] {
+        ["local-first"] + (1...Self.legacyCapturedVisibleMessages - 1).map { "mid-\($0)" } + ["local-last"]
+    }
+
+    private func assertCapturedReplayKeepsEnds(
+        id: String,
+        texts: [String],
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        extraFileCheck: ((URL) throws -> Void)? = nil
+    ) async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = try XCTUnwrap(texts.first)
+        let last = try XCTUnwrap(texts.last)
+
+        let codex = root.appendingPathComponent("rollout-\(id).jsonl")
+        try writeCodexVisibleTranscript(to: codex, id: id, texts: texts)
+        try extraFileCheck?(codex)
+        let capturedCodex = try await capturedReplay(
+            physical: codex, staging: root,
+            logical: "/offline-client/.codex/sessions/2026/09/11/rollout-\(id).jsonl",
+            format: .codex
+        )
+        XCTAssertEqual(capturedCodex.rawSourceSessionID, id, file: file, line: line)
+        XCTAssertEqual(capturedCodex.scan.messages.count, texts.count, file: file, line: line)
+        XCTAssertEqual(capturedCodex.scan.messages.first?.content, first, file: file, line: line)
+        XCTAssertEqual(capturedCodex.scan.messages.last?.content, last, file: file, line: line)
+        XCTAssertEqual(capturedCodex.scan.messages.last?.content.count, last.count, file: file, line: line)
+
+        let claudeProject = root.appendingPathComponent("-tmp-\(id)", isDirectory: true)
+        let claude = claudeProject.appendingPathComponent("\(id).jsonl")
+        try writeClaudeVisibleTranscript(to: claude, sessionId: id, texts: texts)
+        try extraFileCheck?(claude)
+        let capturedClaude = try await capturedReplay(
+            physical: claude, staging: root,
+            logical: "/offline-client/.claude/projects/-tmp-\(id)/\(id).jsonl",
+            format: .claudeCode(forceClaudeCodeSource: false)
+        )
+        XCTAssertEqual(capturedClaude.rawSourceSessionID, id, file: file, line: line)
+        XCTAssertEqual(capturedClaude.scan.messages.count, texts.count, file: file, line: line)
+        XCTAssertEqual(capturedClaude.scan.messages.first?.content, first, file: file, line: line)
+        XCTAssertEqual(capturedClaude.scan.messages.last?.content, last, file: file, line: line)
+        XCTAssertEqual(capturedClaude.scan.messages.last?.content.count, last.count, file: file, line: line)
+    }
+
+    private func capturedReplay(
+        physical: URL,
+        staging: URL,
+        logical: String,
+        format: SourceMetadataProjection.Format
+    ) async throws -> CapturedSourceScan {
+        try sessionInfo(await SessionAdapterFactory.scanCapturedSource(
+            physicalLocator: physical.path,
+            stagingRoot: staging.path,
+            logicalLocator: logical,
+            format: format
+        ))
+    }
+
+    private func writeCodexVisibleTranscript(to url: URL, id: String, texts: [String]) throws {
+        try prepareJSONLFile(url)
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.write(contentsOf: jsonlLine([
+            "timestamp": "2026-09-11T00:00:00Z", "type": "session_meta",
+            "payload": [
+                "id": id, "timestamp": "2026-09-11T00:00:00Z",
+                "cwd": "/tmp/\(id)", "originator": "codex",
+            ],
+        ]))
+        for (index, text) in texts.enumerated() {
+            let isUser = index.isMultiple(of: 2)
+            try handle.write(contentsOf: jsonlLine([
+                "timestamp": "2026-09-11T00:00:0\(min(index + 1, 9))Z",
+                "type": "response_item",
+                "payload": [
+                    "type": "message",
+                    "role": isUser ? "user" : "assistant",
+                    "content": [[
+                        "type": isUser ? "input_text" : "output_text",
+                        "text": text,
+                    ]],
+                ],
+            ]))
+        }
+    }
+
+    private func writeClaudeVisibleTranscript(to url: URL, sessionId: String, texts: [String]) throws {
+        try prepareJSONLFile(url)
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        for (index, text) in texts.enumerated() {
+            let isUser = index.isMultiple(of: 2)
+            try handle.write(contentsOf: jsonlLine([
+                "type": isUser ? "user" : "assistant",
+                "sessionId": sessionId,
+                "cwd": "/tmp/\(sessionId)",
+                "timestamp": "2026-09-11T00:00:0\(min(index, 9))Z",
+                "message": [
+                    "role": isUser ? "user" : "assistant",
+                    "content": text,
+                ],
+            ]))
+        }
+    }
+
+    private func writeJSONL(to url: URL, objects: [[String: Any]]) throws {
+        try prepareJSONLFile(url)
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        for object in objects {
+            try handle.write(contentsOf: jsonlLine(object))
+        }
+    }
+
+    private func prepareJSONLFile(_ url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+    }
+
+    private func jsonlLine(_ object: [String: Any]) throws -> Data {
+        try JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes]) + Data([0x0a])
     }
 }

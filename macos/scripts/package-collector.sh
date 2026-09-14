@@ -507,6 +507,65 @@ thin_macho_to_arm64() {
   /usr/bin/lipo "$binary" -verify_arch arm64 >/dev/null
 }
 
+assert_system_swift_concurrency_install_name() {
+  local name='/usr/lib/swift/libswift_Concurrency.dylib'
+  local canonical info
+  if [[ -e "$name" || -L "$name" ]]; then
+    canonical="$(canonical_existing_path "$name")" ||
+      fail "unsafe system Swift Concurrency path: $name"
+    [[ "$canonical" == "$name" ]] ||
+      fail "system Swift Concurrency escaped $name -> $canonical"
+    return
+  fi
+  info="$(/usr/bin/dyld_info -platform "$name")" ||
+    fail "system Swift Concurrency is not in the dyld shared cache: $name"
+  [[ "$info" == "$name"* ]] ||
+    fail "dyld_info did not attest $name"
+}
+
+normalize_copied_system_swift_concurrency() {
+  local binary="$1"
+  local dependency needs_change=0 found_system=0
+  [[ -f "$binary" && ! -L "$binary" ]] ||
+    fail "copied Mach-O is missing or aliased: $binary"
+  while IFS= read -r dependency; do
+    [[ -n "$dependency" ]] || continue
+    case "$dependency" in
+      @rpath/libswift_Concurrency.dylib) needs_change=1 ;;
+      @rpath/libswift*)
+        fail "unsupported copied Swift rpath dylib: $dependency"
+        ;;
+    esac
+  done < <(
+    /usr/bin/otool -L "$binary" |
+      /usr/bin/tail -n +2 |
+      /usr/bin/sed -E 's/^[[:space:]]*([^[:space:]]+).*/\1/'
+  )
+  if [[ "$needs_change" -eq 0 ]]; then
+    return
+  fi
+  assert_system_swift_concurrency_install_name
+  /usr/bin/install_name_tool -change \
+    '@rpath/libswift_Concurrency.dylib' \
+    '/usr/lib/swift/libswift_Concurrency.dylib' \
+    "$binary"
+  while IFS= read -r dependency; do
+    [[ -n "$dependency" ]] || continue
+    case "$dependency" in
+      @rpath/libswift_Concurrency.dylib)
+        fail "copied Swift Concurrency rpath survived rewrite: $binary"
+        ;;
+      /usr/lib/swift/libswift_Concurrency.dylib) found_system=1 ;;
+    esac
+  done < <(
+    /usr/bin/otool -L "$binary" |
+      /usr/bin/tail -n +2 |
+      /usr/bin/sed -E 's/^[[:space:]]*([^[:space:]]+).*/\1/'
+  )
+  [[ "$found_system" -eq 1 ]] ||
+    fail "copied Swift Concurrency rewrite did not produce $binary system install name"
+}
+
 package_collector() {
   verify_source_templates
   local derived_data="$1"
@@ -541,6 +600,9 @@ package_collector() {
   thin_macho_to_arm64 "$output/bin/EngramCollector"
   thin_macho_to_arm64 "$core_entity"
   thin_macho_to_arm64 "$grdb_entity"
+  normalize_copied_system_swift_concurrency "$output/bin/EngramCollector"
+  normalize_copied_system_swift_concurrency "$core_entity"
+  normalize_copied_system_swift_concurrency "$grdb_entity"
   /usr/bin/codesign --force --sign - "$dest_grdb"
   /usr/bin/codesign --force --sign - "$dest_core"
   /usr/bin/codesign --force --sign - "$output/bin/EngramCollector"

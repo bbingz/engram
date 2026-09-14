@@ -76,7 +76,8 @@ final class IndexerParseOnceTests: XCTestCase {
 
         XCTAssertFalse(body.contains("parseSessionInfo(locator:"))
         XCTAssertFalse(body.contains("Self.messages(\n            locator:"))
-        XCTAssertTrue(body.contains("JSONLAdapterSupport.readObjects("))
+        // Single-parse now streams via consumeObjects inside scanFileForIndexing (still one read path).
+        XCTAssertTrue(body.contains("JSONLAdapterSupport.consumeObjects("))
     }
 
     func testCopilotScanForIndexingDoesNotDelegateToTwoReadPaths_repro() throws {

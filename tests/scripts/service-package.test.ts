@@ -1335,3 +1335,169 @@ describe('Service source-template preflight before output mutation', () => {
     },
   );
 });
+
+const serviceScript = existsSync(packageScriptPath)
+  ? readFileSync(packageScriptPath, 'utf8')
+  : '';
+const rpathSwiftConcurrency = '@rpath/libswift_Concurrency.dylib';
+const systemSwiftConcurrency = '/usr/lib/swift/libswift_Concurrency.dylib';
+
+function extractShellFunction(source: string, name: string): string {
+  const signature = `${name}() {`;
+  const start = source.indexOf(signature);
+  if (start < 0) {
+    throw new Error(`missing shell function ${name}`);
+  }
+  let depth = 0;
+  for (let index = start; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === '{') {
+      depth += 1;
+    } else if (character === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(start, index + 1);
+      }
+    }
+  }
+  throw new Error(`unclosed shell function ${name}`);
+}
+
+function bashSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function compileRpathSwiftDylib(
+  directory: string,
+  installName: string,
+): string {
+  const stubC = join(directory, 'stub.c');
+  const probeC = join(directory, 'probe.c');
+  const stub = join(directory, 'libstub.dylib');
+  const probe = join(directory, 'probe.dylib');
+  writeFileSync(stubC, 'void engram_package_probe_stub(void) {}\n');
+  writeFileSync(probeC, 'void engram_package_probe(void) {}\n');
+  const stubBuild = spawnSync(
+    '/usr/bin/clang',
+    ['-dynamiclib', '-o', stub, stubC, '-install_name', installName],
+    { encoding: 'utf8' },
+  );
+  expect(stubBuild.status, stubBuild.stderr).toBe(0);
+  const probeBuild = spawnSync(
+    '/usr/bin/clang',
+    ['-dynamiclib', '-o', probe, probeC, stub, '-Wl,-rpath,/usr/lib/swift'],
+    { encoding: 'utf8' },
+  );
+  expect(probeBuild.status, probeBuild.stderr).toBe(0);
+  const otool = spawnSync('/usr/bin/otool', ['-L', probe], {
+    encoding: 'utf8',
+  });
+  expect(otool.status).toBe(0);
+  expect(otool.stdout).toContain(installName);
+  return probe;
+}
+
+function runExtractedConcurrencyNormalize(binary: string): {
+  status: number | null;
+  output: string;
+} {
+  const script = [
+    'set -euo pipefail',
+    'fail() { echo "package-service: ERROR: $*" >&2; exit 1; }',
+    extractShellFunction(serviceScript, 'canonical_existing_path'),
+    extractShellFunction(
+      serviceScript,
+      'assert_system_swift_concurrency_install_name',
+    ),
+    extractShellFunction(
+      serviceScript,
+      'normalize_copied_system_swift_concurrency',
+    ),
+    `normalize_copied_system_swift_concurrency ${bashSingleQuote(binary)}`,
+  ].join('\n\n');
+  const result = spawnSync('/bin/bash', ['-s'], {
+    encoding: 'utf8',
+    env: { ...process.env, LC_ALL: 'C' },
+    input: script,
+  });
+  return {
+    status: result.status,
+    output: `${result.stdout ?? ''}${result.stderr ?? ''}`,
+  };
+}
+
+describe('service package copied system Swift Concurrency install name', () => {
+  it('rewrites copied Concurrency rpath before stripping /usr/lib/swift rpaths', () => {
+    const packaging = extractShellFunction(serviceScript, 'package_service');
+    const thin = packaging.indexOf('thin_macho_to_arm64 "$binary"');
+    const normalize = packaging.indexOf(
+      'normalize_copied_system_swift_concurrency "$binary"',
+    );
+    const strip = packaging.indexOf('normalize_copied_rpaths "$binary"');
+    const sign = packaging.indexOf(
+      'codesign --force --sign - "$output/Frameworks/$name.framework"',
+    );
+    expect(thin).toBeGreaterThan(-1);
+    expect(normalize).toBeGreaterThan(thin);
+    expect(strip).toBeGreaterThan(normalize);
+    expect(sign).toBeGreaterThan(strip);
+    const executableThin = packaging.indexOf(
+      'thin_macho_to_arm64 "$output/bin/EngramService"',
+    );
+    const executableNormalize = packaging.indexOf(
+      'normalize_copied_system_swift_concurrency "$output/bin/EngramService"',
+    );
+    const executableStrip = packaging.indexOf(
+      'normalize_copied_rpaths "$output/bin/EngramService"',
+    );
+    expect(executableNormalize).toBeGreaterThan(executableThin);
+    expect(executableStrip).toBeGreaterThan(executableNormalize);
+    expect(serviceScript).toContain('install_name_tool -change');
+    expect(serviceScript).toContain(rpathSwiftConcurrency);
+    expect(serviceScript).toContain(systemSwiftConcurrency);
+    expect(serviceScript).toContain('dyld_info');
+    expect(serviceScript).not.toMatch(/@rpath\/\*\)\s*candidate=.*libswift/);
+  });
+
+  it.skipIf(process.platform !== 'darwin' || !existsSync('/usr/bin/clang'))(
+    'changes only @rpath/libswift_Concurrency.dylib to the attested OS install name (repro)',
+    () => {
+      const root = makeRoot();
+      const probe = compileRpathSwiftDylib(root, rpathSwiftConcurrency);
+      const copy = join(root, 'copied.dylib');
+      writeFileSync(copy, readFileSync(probe));
+      chmodSync(copy, 0o700);
+
+      const result = runExtractedConcurrencyNormalize(copy);
+
+      expect(result.status, result.output).toBe(0);
+      const otool = spawnSync('/usr/bin/otool', ['-L', copy], {
+        encoding: 'utf8',
+      });
+      expect(otool.status).toBe(0);
+      expect(otool.stdout).toContain(systemSwiftConcurrency);
+      expect(otool.stdout).not.toContain(rpathSwiftConcurrency);
+    },
+  );
+
+  it.skipIf(process.platform !== 'darwin' || !existsSync('/usr/bin/clang'))(
+    'refuses an arbitrary @rpath/libswift dylib instead of rewriting it',
+    () => {
+      const root = makeRoot();
+      const probe = compileRpathSwiftDylib(root, '@rpath/libswiftFoo.dylib');
+      const copy = join(root, 'copied.dylib');
+      writeFileSync(copy, readFileSync(probe));
+      chmodSync(copy, 0o700);
+
+      const result = runExtractedConcurrencyNormalize(copy);
+
+      expect(result.status).not.toBe(0);
+      expect(result.output).toMatch(/unsupported copied Swift rpath dylib/);
+      const otool = spawnSync('/usr/bin/otool', ['-L', copy], {
+        encoding: 'utf8',
+      });
+      expect(otool.stdout).toContain('@rpath/libswiftFoo.dylib');
+      expect(otool.stdout).not.toContain(systemSwiftConcurrency);
+    },
+  );
+});

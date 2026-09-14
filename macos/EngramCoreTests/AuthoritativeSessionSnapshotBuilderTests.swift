@@ -245,6 +245,59 @@ final class AuthoritativeSessionSnapshotBuilderTests: XCTestCase {
         XCTAssertEqual(snapshot.summaryMessageCount, 2)
     }
 
+    /// Weak P-number / "tests " scope must not skip a large ordinary review
+    /// that lacks no tools / use only / snippets / diff: (StartupBackfills parity).
+    func testJoinedReviewBlockingAndPNumberIsNotPreambleSkip_repro() {
+        var scan = makeScan(messages: [
+            .init(role: .user, content: "Please review the blocking migration path for p1 before we continue."),
+            .init(role: .user, content: "Here is the second turn of the same ordinary session."),
+            .init(role: .user, content: "And a third ordinary user turn without scoped probe language."),
+            .init(role: .assistant, content: "Continuing the ordinary implementation.")
+        ])
+        scan.info.messageCount = 20
+        XCTAssertEqual(build(scan).tier, .premium)
+    }
+
+    /// Same weak marker as testBackfillPolycliRequiresStrongReviewProbeMarker_repro.
+    func testWeakP2TestsReviewIsNotPreambleSkip_repro() {
+        let scan = makeScan(messages: [
+            .init(role: .user, content: "Review P2 tests for correctness and summarize the result."),
+            .init(role: .assistant, content: "Summarized the test result.")
+        ])
+        XCTAssertNotEqual(build(scan).tier, .skip)
+    }
+
+    func testLegacyWeakReviewOnlyMatchesPNumberAndTestsScope_repro() {
+        let weak = AuthoritativeSessionSnapshotBuilder.firstSubstantiveUserTexts(from: [
+            .init(role: .user, content: "# AGENTS.md instructions for /repo"),
+            .init(role: .user, content: "Review P2 tests for correctness and summarize the result."),
+            .init(role: .assistant, content: "Summarized the test result.")
+        ])
+        XCTAssertEqual(weak, ["Review P2 tests for correctness and summarize the result."])
+        XCTAssertTrue(AuthoritativeSessionSnapshotBuilder.isLegacyWeakReviewOnlySkip(weak))
+        XCTAssertFalse(AuthoritativeSessionSnapshotBuilder.isCurrentPreambleSkip(weak))
+        let joined = AuthoritativeSessionSnapshotBuilder.firstSubstantiveUserTexts(from: [
+            .init(role: .user, content: "Please review the blocking migration path for p1 before we continue."),
+            .init(role: .user, content: "Here is the second turn of the same ordinary session."),
+            .init(role: .user, content: "And a third ordinary user turn without scoped probe language.")
+        ])
+        XCTAssertTrue(AuthoritativeSessionSnapshotBuilder.isLegacyWeakReviewOnlySkip(joined))
+        XCTAssertFalse(AuthoritativeSessionSnapshotBuilder.isCurrentPreambleSkip(joined))
+    }
+
+    func testCurrentExplicitProbeIsNotLegacyWeakOnly() {
+        for prompt in [
+            "Review these snippets. Report only blocking correctness findings.",
+            "No tools. Stage 1 verified facts and diff: no change.",
+            "ping",
+            "Reply with POLYCLI_HEALTH_OK only."
+        ] {
+            let texts = [prompt]
+            XCTAssertTrue(AuthoritativeSessionSnapshotBuilder.isCurrentPreambleSkip(texts), prompt)
+            XCTAssertFalse(AuthoritativeSessionSnapshotBuilder.isLegacyWeakReviewOnlySkip(texts), prompt)
+        }
+    }
+
     func testCursorSummaryVersionIsAbsentWhileOtherSourcesUseSearchableCount() {
         for source in [SourceName.claudeCode, .codex, .cursor, .copilot] {
             var scan = makeScan()

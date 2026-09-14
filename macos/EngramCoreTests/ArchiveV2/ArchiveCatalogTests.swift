@@ -794,6 +794,45 @@ final class ArchiveCatalogTests: XCTestCase {
         XCTAssertEqual(status.ignoredEmpty, 1)
     }
 
+    func testRecoveryCandidateFiltersApplyBeforeLimitAndRetainFrozenPagination() throws {
+        let catalog = try migratedCatalog()
+        let locator = "/tmp/Keep%_é.jsonl"
+        let first = try manifest(captureSeed: "recovery-match-1", sessionID: nil, locator: locator,
+            capturedAt: "2026-07-11T00:01:00.000Z")
+        let second = try manifest(captureSeed: "recovery-match-2", sessionID: nil, locator: locator,
+            capturedAt: "2026-07-11T00:02:00.000Z")
+        let wrongGeneration = try ArchiveSourceGeneration(device: 1, inode: 99, size: 5,
+            mtimeNs: 3, ctimeNs: 4, mode: Int64(S_IFREG | 0o600))
+        let noise = [
+            try manifest(captureSeed: "other-locator", sessionID: nil),
+            try manifest(captureSeed: "folded-locator", sessionID: nil, locator: "/tmp/keep%_é.jsonl"),
+            try manifest(captureSeed: "other-source", sessionID: nil, source: "claude-code", locator: locator),
+            try manifest(captureSeed: "other-generation", sessionID: nil, locator: locator,
+                generation: wrongGeneration),
+        ]
+        for value in noise + [first, second] {
+            _ = try catalog.recordCapture(canonicalManifestBytes: ArchiveCanonicalJSON.encode(value))
+        }
+        let boundary = try XCTUnwrap(catalog.unboundCaptureBoundary())
+        let tail = try manifest(captureSeed: "later-match", sessionID: nil, locator: locator,
+            capturedAt: "2026-07-11T00:03:00.000Z")
+        _ = try catalog.recordCapture(canonicalManifestBytes: ArchiveCanonicalJSON.encode(tail))
+        let matching = (source: first.source, locators: [locator], generation: first.generation)
+        XCTAssertEqual(try catalog.unboundCaptures(limit: 1, after: nil, through: boundary,
+            matching: matching).map(\.captureID), [first.captureID])
+        let afterFirst = ArchiveCaptureCursor(capturedAt: first.capturedAt, captureID: first.captureID)
+        XCTAssertEqual(try catalog.unboundCaptures(limit: 1, after: afterFirst, through: boundary,
+            matching: matching).map(\.captureID), [second.captureID],
+            "all matching candidates must remain visible so recovery can detect ambiguity")
+        let afterSecond = ArchiveCaptureCursor(capturedAt: second.capturedAt, captureID: second.captureID)
+        XCTAssertTrue(try catalog.unboundCaptures(limit: 1, after: afterSecond, through: boundary,
+            matching: matching).isEmpty, "new tail rows must not extend a frozen recovery sweep")
+        XCTAssertTrue(try catalog.unboundCaptures(limit: 1, after: nil, through: boundary,
+            matching: (first.source, [], first.generation)).isEmpty)
+        XCTAssertEqual(try catalog.unboundCaptures(limit: 20, after: nil, through: boundary).count, 6,
+            "default callers still see the complete unbound page")
+    }
+
     func testAtomicIgnoredCaptureDispositionRollsBackWhenBindingCursorWriteFails() throws {
         let catalog = try migratedCatalog()
         let capture = try manifest(
@@ -3117,7 +3156,8 @@ final class ArchiveCatalogTests: XCTestCase {
         sessionID: String?,
         source: String = "codex",
         locator: String = "/tmp/source.jsonl",
-        capturedAt: String = "2026-07-11T00:00:00.000Z"
+        capturedAt: String = "2026-07-11T00:00:00.000Z",
+        generation: ArchiveSourceGeneration? = nil
     ) throws -> ArchiveSourceManifest {
         let raw = Data("hello".utf8)
         let digest = ArchiveV2Hash.sha256(raw)
@@ -3128,7 +3168,7 @@ final class ArchiveCatalogTests: XCTestCase {
             locator: locator,
             sessionID: sessionID,
             capturedAt: capturedAt,
-            generation: ArchiveSourceGeneration(
+            generation: generation ?? ArchiveSourceGeneration(
                 device: 1,
                 inode: 2,
                 size: Int64(raw.count),

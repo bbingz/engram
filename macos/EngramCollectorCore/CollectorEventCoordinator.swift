@@ -15,6 +15,14 @@ struct CollectorEventCoordinatorBudget {
 struct CollectorEventBatch {
     let nextCheckpoint: CollectorEventCheckpoint
     let dirtyRelativePaths: [String]
+    let dirtyRelativeDirectories: [String]
+
+    init(nextCheckpoint: CollectorEventCheckpoint, dirtyRelativePaths: [String],
+         dirtyRelativeDirectories: [String] = []) {
+        self.nextCheckpoint = nextCheckpoint
+        self.dirtyRelativePaths = dirtyRelativePaths
+        self.dirtyRelativeDirectories = dirtyRelativeDirectories
+    }
 }
 
 enum CollectorEventStreamSignal {
@@ -237,7 +245,7 @@ final class CollectorEventCoordinator {
     // At most one bootstrap step or one ordinary batch per call. Pending loss
     // takes priority. Recovery never applies batches or chases a newer gap fence.
     // A completed scan waits without rescanning until explicit historyDone.
-    func step(budget: CollectorBootstrapBudget) throws -> CollectorEventCoordinatorStep {
+    func step(budget: CollectorBootstrapBudget, observed: CollectorRootState? = nil) throws -> CollectorEventCoordinatorStep {
         guard enabled else { return stepResult() }
         control.lock()
         defer { control.unlock() }
@@ -253,7 +261,22 @@ final class CollectorEventCoordinator {
             }
             guard state.0 == .recovering || state.0 == .watching,
                   let owner, let fence = mailbox.withLock({ recoveryRevision }) else { return stepResult() }
-            let current = try readRoot(owner)
+            let idleWatching = mailbox.withLock {
+                generation == token && !stopRequested && phase == .watching
+                    && pendingGap == nil && queue.isEmpty
+            }
+            var usedPrefetch = false
+            var current: CollectorRootState
+            if idleWatching,
+               let observed,
+               observed.configuration == configuration,
+               observed.activeScan == nil,
+               observed.requestedRevision == fence {
+                current = observed
+                usedPrefetch = true
+            } else {
+                current = try readRoot(owner)
+            }
             if try rejectChangedFence(current, fence: fence, token: token) { return stepResult() }
             if state.0 == .recovering {
                 if current.completedRevision >= current.requestedRevision && current.completedRevision >= fence {
@@ -281,38 +304,69 @@ final class CollectorEventCoordinator {
                 // budget until completion, including while Owner work is in flight.
                 return queue.first
             }
-            guard let entered else { return stepResult() }
-            try Task.checkCancellation()
-            let result = try owner.applyEvents(
-                configuration: configuration, expectedCheckpoint: current.eventCheckpoint,
-                nextCheckpoint: entered.batch.nextCheckpoint, dirtyRelativePaths: entered.batch.dirtyRelativePaths,
-                budget: self.budget.ingress
-            )
-            testHooks.afterApplyEvents?()
-            switch result {
-            case .applied(_, let checkpoint):
-                try Task.checkCancellation()
-                mailbox.withLock {
-                    queue.removeFirst()
-                    queuedBytes -= entered.bytes
-                    lastAcknowledgedCheckpoint = checkpoint
+            var applied = 0
+            if let entered {
+                if usedPrefetch {
+                    current = try readRoot(owner)
+                    if try rejectChangedFence(current, fence: fence, token: token) { return stepResult() }
                 }
-                return stepResult(applied: 1)
-            case .reconciliationRequested(_, let revision):
-                // This transaction already supplied the durable gap. Do not add
-                // a second request or acknowledge the rejected ordinary batch.
-                mailbox.withLock {
-                    accepting = false
-                    if !stopRequested { phase = .recoveryRequired }
-                    pendingGap = nil
-                    persistedGapRevision = revision
-                    queue.removeAll(keepingCapacity: false)
-                    queuedBytes = 0
-                }
-                mailbox.withLock { stream }?.stopOnce()
                 try Task.checkCancellation()
-                return stepResult()
+                let result = try owner.applyEvents(
+                    configuration: configuration, expectedCheckpoint: current.eventCheckpoint,
+                    nextCheckpoint: entered.batch.nextCheckpoint,
+                    dirtyRelativePaths: entered.batch.dirtyRelativePaths,
+                    dirtyRelativeDirectories: entered.batch.dirtyRelativeDirectories,
+                    budget: self.budget.ingress
+                )
+                testHooks.afterApplyEvents?()
+                switch result {
+                case .applied(_, let checkpoint):
+                    try Task.checkCancellation()
+                    mailbox.withLock {
+                        queue.removeFirst()
+                        queuedBytes -= entered.bytes
+                        lastAcknowledgedCheckpoint = checkpoint
+                    }
+                    applied = 1
+                case .reconciliationRequested(_, let revision):
+                    // This transaction already supplied the durable gap. Do not add
+                    // a second request or acknowledge the rejected ordinary batch.
+                    mailbox.withLock {
+                        accepting = false
+                        if !stopRequested { phase = .recoveryRequired }
+                        pendingGap = nil
+                        persistedGapRevision = revision
+                        queue.removeAll(keepingCapacity: false)
+                        queuedBytes = 0
+                    }
+                    mailbox.withLock { stream }?.stopOnce()
+                    try Task.checkCancellation()
+                    return stepResult()
+                }
             }
+            // Idle watching: no batch entered, and the first snapshot already
+            // has no active scan. A second rootState only repeats Owner
+            // storage fences. applyEvents and stepRoot still reread.
+            if entered == nil, current.activeScan == nil {
+                return stepResult(applied: applied)
+            }
+            let latest = try readRoot(owner)
+            if try rejectChangedFence(latest, fence: fence, token: token) { return stepResult(applied: applied) }
+            guard latest.activeScan != nil else { return stepResult(applied: applied) }
+            guard mailbox.withLock({ !stopRequested && pendingGap == nil }) else { return stepResult(applied: applied) }
+            try Task.checkCancellation()
+            let bootstrap = try owner.stepRoot(configuration, budget: budget)
+            try Task.checkCancellation()
+            let after = try readRoot(owner)
+            if try rejectChangedFence(after, fence: fence, token: token) {
+                return stepResult(bootstrap: bootstrap, applied: applied)
+            }
+            if case .blocked = bootstrap.outcome {
+                recordLoss(.continuityLoss, for: token)
+                mailbox.withLock { stream }?.stopOnce()
+                try persistGap(for: token)
+            }
+            return stepResult(bootstrap: bootstrap, applied: applied)
         } catch {
             recordLoss(.continuityLoss, for: token)
             mailbox.withLock { stream }?.stopOnce()
@@ -474,9 +528,10 @@ final class CollectorEventCoordinator {
 
     private func incomingBytes(_ batch: CollectorEventBatch) -> Int? {
         let raw = budget.ingress
-        guard batch.dirtyRelativePaths.count <= raw.maxIncomingPaths else { return nil }
+        let incoming = batch.dirtyRelativePaths.count + batch.dirtyRelativeDirectories.count
+        guard incoming <= raw.maxIncomingPaths else { return nil }
         var remainingPaths = raw.maxTotalPathUTF8Bytes
-        for path in batch.dirtyRelativePaths {
+        for path in batch.dirtyRelativePaths + batch.dirtyRelativeDirectories {
             guard let count = Self.utf8Count(path, limit: min(raw.maxPathUTF8Bytes, remainingPaths)) else { return nil }
             remainingPaths -= count
         }

@@ -15,16 +15,26 @@ public enum SessionAdapterFactory {
     public static let maximumRecentDays = 7
     public static let maximumTransientRetryLocatorsPerSource = 100
     public static var maximumCapturedSourceBytes: Int64 { ParserLimits.default.maxFileBytes }
+    public static var maximumCapturedJSONLSourceBytes: Int64 { ParserLimits.capturedJSONL.maxFileBytes }
 
     public static func scanCapturedSource(
         physicalLocator: String,
         stagingRoot: String,
         logicalLocator: String,
-        format: SourceMetadataProjection.Format
+        format: SourceMetadataProjection.Format,
+        capturedModificationNanoseconds: Int64? = nil,
+        capturedReplayLayout: ArchiveReplayLayout? = nil,
+        capturedSourceGeneration: ArchiveSourceGeneration? = nil
     ) async throws -> AdapterParseResult<CapturedSourceScan> {
         try Task.checkCancellation()
         let result: AdapterParseResult<CapturedSourceScan>
         switch format {
+        case .windsurfHookTranscript:
+            result = try await WindsurfAdapter.scanCapturedHookTranscript(
+                physicalLocator: physicalLocator, logicalLocator: logicalLocator)
+        case .antigravityCLITranscript:
+            result = try await AntigravityAdapter.scanCapturedCLITranscript(
+                physicalLocator: physicalLocator, logicalLocator: logicalLocator)
         case .claudeCode(let forceClaudeCodeSource):
             result = try ClaudeCodeAdapter.scanCapturedSource(
                 physicalLocator: physicalLocator, stagingRoot: stagingRoot,
@@ -33,6 +43,84 @@ public enum SessionAdapterFactory {
         case .codex:
             result = try CodexAdapter.scanCapturedSource(
                 physicalLocator: physicalLocator, logicalLocator: logicalLocator
+            )
+        case .qwen:
+            result = try QwenAdapter.scanCapturedSource(
+                physicalLocator: physicalLocator, logicalLocator: logicalLocator,
+                capturedModificationNanoseconds: capturedModificationNanoseconds
+            )
+        case .vscode:
+            guard let capturedReplayLayout else { return .failure(.malformedJSON) }
+            result = try await VsCodeAdapter.scanCapturedSource(
+                physicalLocator: physicalLocator, stagingRoot: stagingRoot,
+                logicalLocator: logicalLocator, replayLayout: capturedReplayLayout)
+        case .cline:
+            guard let capturedReplayLayout, capturedReplayLayout.strategy == .fileSet else { return .failure(.malformedJSON) }
+            result = try ClineAdapter.scanCapturedSource(physicalLocator: physicalLocator, logicalLocator: logicalLocator)
+        case .iflow:
+            result = try await IflowAdapter.scanCapturedSource(
+                physicalLocator: physicalLocator, logicalLocator: logicalLocator, stagingRoot: stagingRoot)
+        case .qoder:
+            result = try QoderAdapter.scanCapturedSource(
+                physicalLocator: physicalLocator, logicalLocator: logicalLocator,
+                stagingRoot: stagingRoot
+            )
+        case .commandcode:
+            result = try CommandCodeAdapter.scanCapturedSource(
+                physicalLocator: physicalLocator, logicalLocator: logicalLocator,
+                capturedModificationNanoseconds: capturedModificationNanoseconds
+            )
+        case .geminiCli:
+            guard let capturedReplayLayout else { return .failure(.malformedJSON) }
+            result = try await GeminiCliAdapter.scanCapturedSource(
+                physicalLocator: physicalLocator, stagingRoot: stagingRoot, logicalLocator: logicalLocator,
+                replayLayout: capturedReplayLayout
+            )
+        case .opencode:
+            guard let capturedReplayLayout, let context = capturedReplayLayout.sqliteSession else {
+                return .failure(.malformedJSON)
+            }
+            result = try await OpenCodeAdapter.scanCapturedSource(
+                physicalLocator: physicalLocator, logicalLocator: logicalLocator, context: context
+            )
+        case .kimi:
+            guard let capturedReplayLayout else { return .failure(.malformedJSON) }
+            result = try await KimiAdapter.scanCapturedSource(
+                physicalLocator: physicalLocator, logicalLocator: logicalLocator,
+                replayLayout: capturedReplayLayout,
+                capturedModificationNanoseconds: capturedModificationNanoseconds
+            )
+        case .cursor:
+            guard let capturedReplayLayout else { return .failure(.unsupportedVirtualLocator) }
+            if let context = capturedReplayLayout.cursorLegacySession {
+                guard let generation = capturedSourceGeneration,
+                      capturedModificationNanoseconds == nil || capturedModificationNanoseconds == generation.mtimeNs else {
+                    return .failure(.malformedJSON)
+                }
+                result = try await CursorAdapter.scanCapturedLegacySource(
+                    physicalLocator: physicalLocator, stagingRoot: stagingRoot, logicalLocator: logicalLocator,
+                    context: context, generation: generation)
+            } else {
+                result = try await CursorAdapter.scanCapturedSource(
+                    physicalLocator: physicalLocator, stagingRoot: stagingRoot, logicalLocator: logicalLocator,
+                    replayLayout: capturedReplayLayout,
+                    capturedModificationNanoseconds: capturedModificationNanoseconds)
+            }
+        case .copilot:
+            result = try await CopilotAdapter.scanCapturedSource(
+                physicalLocator: physicalLocator, stagingRoot: stagingRoot, logicalLocator: logicalLocator
+            )
+        case .pi:
+            result = try PiAdapter.scanCapturedSource(
+                physicalLocator: physicalLocator, logicalLocator: logicalLocator,
+                capturedModificationNanoseconds: capturedModificationNanoseconds
+            )
+        case .grok:
+            guard let capturedReplayLayout else { return .failure(.malformedJSON) }
+            result = try GrokAdapter.scanCapturedSource(
+                physicalLocator: physicalLocator, logicalLocator: logicalLocator,
+                replayLayout: capturedReplayLayout,
+                capturedModificationNanoseconds: capturedModificationNanoseconds
             )
         }
         try Task.checkCancellation()
@@ -94,6 +182,8 @@ public enum SessionAdapterFactory {
                 kimiJsonPath: homeDirectory.appendingPathComponent(".kimi/kimi.json").path
             ),
             CommandCodeAdapter(projectsRoot: homeDirectory.appendingPathComponent(".commandcode/projects").path),
+            PiAdapter(sessionsRoot: homeDirectory.appendingPathComponent(".pi/agent/sessions").path),
+            GrokAdapter(sessionsRoot: homeDirectory.appendingPathComponent(".grok/sessions").path),
             ClineAdapter(tasksRoot: homeDirectory.appendingPathComponent(".cline/data/tasks").path),
             CursorAdapter(
                 dbPath: homeDirectory.appendingPathComponent("Library/Application Support/Cursor/User/globalStorage/state.vscdb").path,

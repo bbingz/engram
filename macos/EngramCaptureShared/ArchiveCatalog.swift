@@ -1797,7 +1797,8 @@ public final class ArchiveCatalog: @unchecked Sendable {
     public func unboundCaptures(
         limit: Int,
         after cursor: ArchiveCaptureCursor?,
-        through boundary: ArchiveCaptureCursor
+        through boundary: ArchiveCaptureCursor,
+        matching: (source: String, locators: [String], generation: ArchiveSourceGeneration)? = nil
     ) throws -> [ArchiveCapture] {
         guard limit > 0 else {
             throw ArchiveCatalogError.invalidLimit(limit)
@@ -1815,6 +1816,28 @@ public final class ArchiveCatalog: @unchecked Sendable {
         return try pool.read { db in
             let lowerBoundSQL: String
             var arguments: StatementArguments = [Self.captureStatus]
+            let matchingSQL: String
+            if let matching {
+                guard !matching.locators.isEmpty else { return [] }
+                guard matching.locators.count <= 64 else {
+                    throw ArchiveCatalogError.invalidLimit(matching.locators.count)
+                }
+                let placeholders = Array(repeating: "?", count: matching.locators.count).joined(separator: ",")
+                matchingSQL = """
+                  AND c.source COLLATE BINARY = ?
+                  AND c.locator COLLATE BINARY IN (\(placeholders))
+                  AND c.generation_device = ? AND c.generation_inode = ?
+                  AND c.generation_size = ? AND c.generation_mtime_ns = ?
+                  AND c.generation_ctime_ns = ? AND c.generation_mode = ?
+                """
+                arguments += [matching.source]
+                arguments += StatementArguments(matching.locators)
+                let generation = matching.generation
+                arguments += [generation.device, generation.inode, generation.size,
+                              generation.mtimeNs, generation.ctimeNs, generation.mode]
+            } else {
+                matchingSQL = ""
+            }
             if let cursor {
                 lowerBoundSQL = """
                   AND (c.captured_at > ? OR (c.captured_at = ? AND c.capture_id > ?))
@@ -1830,6 +1853,7 @@ public final class ArchiveCatalog: @unchecked Sendable {
                 LEFT JOIN archive_session_bindings AS b
                   ON b.capture_id = c.capture_id
                 WHERE b.capture_id IS NULL AND c.status = ?
+                \(matchingSQL)
                 \(lowerBoundSQL)
                   AND (c.captured_at < ? OR (c.captured_at = ? AND c.capture_id <= ?))
                 ORDER BY c.captured_at ASC, c.capture_id ASC

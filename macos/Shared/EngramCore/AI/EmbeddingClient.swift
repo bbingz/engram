@@ -1,3 +1,4 @@
+import CoreFoundation
 import Foundation
 
 public struct EmbeddingConfig: Sendable, Equatable {
@@ -66,6 +67,18 @@ public protocol EmbeddingProvider: Sendable {
     func embed(_ texts: [String]) async throws -> [[Float]]
 }
 
+/// One actual HTTP attempt, including compatibility retries. Headers and API keys
+/// are deliberately absent; the service decides whether redacted bodies persist.
+public struct EmbeddingRequestObservation: Sendable {
+    public let statusCode: Int64?
+    public let durationMs: Int64
+    public let promptTokens: Int64?
+    public let totalTokens: Int64?
+    public let error: String?
+    public let requestBody: String?
+    public let responseBody: String?
+}
+
 /// OpenAI-compatible embeddings client (`POST {baseURL}/embeddings`). Works with
 /// OpenAI, SiliconFlow, DashScope, DeepSeek, and any compatible endpoint via the
 /// configurable `baseURL`. Opt-in: an empty API key throws `notConfigured` so
@@ -73,13 +86,19 @@ public protocol EmbeddingProvider: Sendable {
 public final class OpenAICompatibleEmbeddingClient: EmbeddingProvider, @unchecked Sendable {
     public let config: EmbeddingConfig
     private let session: URLSession
+    private let observeRequest: (@Sendable (EmbeddingRequestObservation) async -> Void)?
     private let dimensionLock = NSLock()
     private var adoptedDimension: Int?
     private var sendsDimensionsOnNextRequest: Bool
 
-    public init(config: EmbeddingConfig, session: URLSession = .shared) {
+    public init(
+        config: EmbeddingConfig,
+        session: URLSession = .shared,
+        observeRequest: (@Sendable (EmbeddingRequestObservation) async -> Void)? = nil
+    ) {
         self.config = config
         self.session = session
+        self.observeRequest = observeRequest
         sendsDimensionsOnNextRequest = EmbeddingRequestPolicy.sendsDimensions(for: config)
     }
 
@@ -126,105 +145,137 @@ public final class OpenAICompatibleEmbeddingClient: EmbeddingProvider, @unchecke
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw EmbeddingError.malformedResponse
+        let started = Date()
+        var responseData: Data?
+        var responseStatus: Int64?
+        var recorded = false
+        func record(_ error: String?) async {
+            guard !recorded else { return }
+            recorded = true
+            guard let observeRequest else { return }
+            let usage = responseData.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["usage"] as? [String: Any]
+            func tokens(_ key: String) -> Int64? {
+                guard let number = usage?[key] as? NSNumber,
+                      CFGetTypeID(number) != CFBooleanGetTypeID(),
+                      let value = Int64(number.stringValue), value >= 0 else { return nil }
+                return value
+            }
+            await observeRequest(EmbeddingRequestObservation(
+                statusCode: responseStatus,
+                durationMs: max(0, Int64((Date().timeIntervalSince(started) * 1000).rounded())),
+                promptTokens: tokens("prompt_tokens"), totalTokens: tokens("total_tokens"),
+                error: error, requestBody: request.httpBody.flatMap { String(data: $0, encoding: .utf8) },
+                responseBody: responseData.flatMap { String(data: $0, encoding: .utf8) }
+            ))
         }
-        guard (200..<300).contains(http.statusCode) else {
-            let providerError = Self.providerError(from: data)
-            if sendsDimensions,
-               allowsDimensionFallback,
-               providerError?.isDimensionRejection == true {
-                let vectors = try await embed(
-                    texts,
-                    sendsDimensions: false,
-                    allowsDimensionFallback: false
-                )
-                dimensionLock.lock()
-                sendsDimensionsOnNextRequest = false
-                dimensionLock.unlock()
-                return vectors
+        do {
+            let (data, response) = try await session.data(for: request)
+            responseData = data
+            responseStatus = (response as? HTTPURLResponse).map { Int64($0.statusCode) }
+            guard let http = response as? HTTPURLResponse else {
+                throw EmbeddingError.malformedResponse
             }
-            if [400, 413, 422].contains(http.statusCode),
-               texts.count > 1,
-               providerError?.isModelOrDimensionRejection != true {
-                let midpoint = texts.count / 2
-                let left = try await embed(
-                    Array(texts[..<midpoint]),
-                    sendsDimensions: sendsDimensions,
-                    allowsDimensionFallback: allowsDimensionFallback
-                )
-                let right = try await embed(
-                    Array(texts[midpoint...]),
-                    sendsDimensions: sendsDimensions,
-                    allowsDimensionFallback: allowsDimensionFallback
-                )
-                return left + right
+            guard (200..<300).contains(http.statusCode) else {
+                await record("Embedding request failed with status \(http.statusCode)")
+                let providerError = Self.providerError(from: data)
+                if sendsDimensions,
+                   allowsDimensionFallback,
+                   providerError?.isDimensionRejection == true {
+                    let vectors = try await embed(
+                        texts,
+                        sendsDimensions: false,
+                        allowsDimensionFallback: false
+                    )
+                    dimensionLock.lock()
+                    sendsDimensionsOnNextRequest = false
+                    dimensionLock.unlock()
+                    return vectors
+                }
+                if [400, 413, 422].contains(http.statusCode),
+                   texts.count > 1,
+                   providerError?.isModelOrDimensionRejection != true {
+                    let midpoint = texts.count / 2
+                    let left = try await embed(
+                        Array(texts[..<midpoint]),
+                        sendsDimensions: sendsDimensions,
+                        allowsDimensionFallback: allowsDimensionFallback
+                    )
+                    let right = try await embed(
+                        Array(texts[midpoint...]),
+                        sendsDimensions: sendsDimensions,
+                        allowsDimensionFallback: allowsDimensionFallback
+                    )
+                    return left + right
+                }
+                if [400, 413, 422].contains(http.statusCode),
+                   let message = Self.inputRejectionMessage(
+                       providerError,
+                       dimensionsWereSent: sendsDimensions
+                   ) {
+                    throw EmbeddingError.inputRejected(message)
+                }
+                throw EmbeddingError.http(http.statusCode)
             }
-            if [400, 413, 422].contains(http.statusCode),
-               let message = Self.inputRejectionMessage(
-                   providerError,
-                   dimensionsWereSent: sendsDimensions
-               ) {
-                throw EmbeddingError.inputRejected(message)
-            }
-            throw EmbeddingError.http(http.statusCode)
-        }
 
-        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let rows = root["data"] as? [[String: Any]] else {
-            throw EmbeddingError.malformedResponse
-        }
-        // Preserve input order: the API returns an `index` per row.
-        let ordered = rows.sorted {
-            ($0["index"] as? Int ?? 0) < ($1["index"] as? Int ?? 0)
-        }
-        var result: [[Float]] = []
-        result.reserveCapacity(ordered.count)
-        var responseDimension: Int?
-        for row in ordered {
-            guard let raw = row["embedding"] as? [Any] else {
+            guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let rows = root["data"] as? [[String: Any]] else {
                 throw EmbeddingError.malformedResponse
             }
-            let vector = raw.compactMap { ($0 as? NSNumber)?.floatValue }
-            guard vector.count == raw.count, !vector.isEmpty else {
+            // Preserve input order: the API returns an `index` per row.
+            let ordered = rows.sorted {
+                ($0["index"] as? Int ?? 0) < ($1["index"] as? Int ?? 0)
+            }
+            var result: [[Float]] = []
+            result.reserveCapacity(ordered.count)
+            var responseDimension: Int?
+            for row in ordered {
+                guard let raw = row["embedding"] as? [Any] else {
+                    throw EmbeddingError.malformedResponse
+                }
+                let vector = raw.compactMap { ($0 as? NSNumber)?.floatValue }
+                guard vector.count == raw.count, !vector.isEmpty else {
+                    throw EmbeddingError.malformedResponse
+                }
+                if sendsDimensions {
+                    guard vector.count == config.dimension else {
+                        throw EmbeddingError.dimensionMismatch(
+                            expected: config.dimension,
+                            actual: vector.count
+                        )
+                    }
+                } else if let responseDimension {
+                    guard vector.count == responseDimension else {
+                        throw EmbeddingError.dimensionMismatch(
+                            expected: responseDimension,
+                            actual: vector.count
+                        )
+                    }
+                } else {
+                    responseDimension = vector.count
+                }
+                result.append(VectorMath.l2Normalize(vector))
+            }
+            guard result.count == texts.count else {
                 throw EmbeddingError.malformedResponse
             }
-            if sendsDimensions {
-                guard vector.count == config.dimension else {
+            if let responseDimension {
+                dimensionLock.lock()
+                if let adoptedDimension, adoptedDimension != responseDimension {
+                    dimensionLock.unlock()
                     throw EmbeddingError.dimensionMismatch(
-                        expected: config.dimension,
-                        actual: vector.count
+                        expected: adoptedDimension,
+                        actual: responseDimension
                     )
                 }
-            } else if let responseDimension {
-                guard vector.count == responseDimension else {
-                    throw EmbeddingError.dimensionMismatch(
-                        expected: responseDimension,
-                        actual: vector.count
-                    )
-                }
-            } else {
-                responseDimension = vector.count
-            }
-            result.append(VectorMath.l2Normalize(vector))
-        }
-        guard result.count == texts.count else {
-            throw EmbeddingError.malformedResponse
-        }
-        if let responseDimension {
-            dimensionLock.lock()
-            if let adoptedDimension, adoptedDimension != responseDimension {
+                adoptedDimension = responseDimension
                 dimensionLock.unlock()
-                throw EmbeddingError.dimensionMismatch(
-                    expected: adoptedDimension,
-                    actual: responseDimension
-                )
             }
-            adoptedDimension = responseDimension
-            dimensionLock.unlock()
+            await record(nil)
+            return result
+        } catch {
+            await record("Embedding request failed: \(error)")
+            throw error
         }
-        return result
     }
 
     private struct ProviderError {

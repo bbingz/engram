@@ -86,10 +86,11 @@ struct CollectorNativeEventStreamTestHooks {
 //   callback queue. It synthesizes no checkpoint. Non-nil waits for native replay
 //   HistoryDone. FullHistory may replay lower/repeated IDs: retain ALL paths and
 //   use max(previous high-water, observed IDs), never a regressing checkpoint.
-// - UserDropped/KernelDropped are overflow. Directory/root structural events,
-//   unknown type, Mount/Unmount, MustScan, RootChanged, and EventIdsWrapped need
-//   application inventory reconciliation (continuityLoss), not a kernel-loss
-//   claim. A file-level ordinary change remains an ordinary batch.
+// - UserDropped/KernelDropped are overflow. MustScan/RootChanged/EventIdsWrapped,
+//   Mount/Unmount, directory removal, and unknown type need application inventory
+//   reconciliation (continuityLoss), not a kernel-loss claim. Ordinary directory
+//   create/rename stay in the same batch as file events for bounded subtree
+//   discovery. A file-level ordinary change remains an ordinary batch.
 // - Validate the entire callback before admitting any batch/control; a loss
 //   dominates HistoryDone and all ordinary entries in that callback. Latch once.
 //   Callbacks do no Owner, filesystem, Task, or background-queue work.
@@ -401,11 +402,24 @@ final class CollectorNativeEventStream: CollectorEventStream {
         let historyFlag = FSEventStreamEventFlags(kFSEventStreamEventFlagHistoryDone)
         let directoryFlag = FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir)
         let fileFlag = FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsFile)
+        let removedFlag = FSEventStreamEventFlags(kFSEventStreamEventFlagItemRemoved)
         // Dropped wins even if a preceding entry has a bad path or control flag.
         for index in 0..<count where flags[index] & dropped != 0 { lose(.overflow); return }
         for index in 0..<count {
             let flag = flags[index]
-            if flag & structural != 0 || flag & directoryFlag != 0 || (flag & historyFlag == 0 && flag & fileFlag == 0) {
+            if flag & structural != 0 {
+                lose(.continuityLoss)
+                return
+            }
+            if flag & historyFlag != 0 { continue }
+            if flag & directoryFlag != 0 {
+                if flag & removedFlag != 0 {
+                    lose(.continuityLoss)
+                    return
+                }
+                continue
+            }
+            if flag & fileFlag == 0 {
                 lose(.continuityLoss)
                 return
             }
@@ -416,11 +430,12 @@ final class CollectorNativeEventStream: CollectorEventStream {
         let scanLimit = rootPrefix.count + relativeLimit + 1
         var decoded: [Decoded] = []
         var pendingPaths: [String] = []
+        var pendingDirectories: [String] = []
         var candidate = highWater
         var replayFinished = historyDone
         var totalBytes = 0
         func appendBatch() -> Bool {
-            guard !pendingPaths.isEmpty else { return true }
+            guard !pendingPaths.isEmpty || !pendingDirectories.isEmpty else { return true }
             let cursor = String(candidate)
             // Both lengths are bounded by canonical epoch/finite ID validation.
             // As at coordinator admission, this bounds the next checkpoint;
@@ -428,8 +443,10 @@ final class CollectorNativeEventStream: CollectorEventStream {
             let nextSize = request.epoch.utf8.count + cursor.utf8.count
             guard nextSize <= budget.maxCheckpointUTF8Bytes else { return false }
             decoded.append(.batch(.init(nextCheckpoint: .init(epoch: request.epoch, cursor: cursor),
-                                        dirtyRelativePaths: pendingPaths), candidate))
+                                        dirtyRelativePaths: pendingPaths,
+                                        dirtyRelativeDirectories: pendingDirectories), candidate))
             pendingPaths = []
+            pendingDirectories = []
             return true
         }
         for index in 0..<count {
@@ -459,7 +476,11 @@ final class CollectorNativeEventStream: CollectorEventStream {
             guard !overflow, sum <= budget.maxTotalPathUTF8Bytes else { lose(.budgetExceeded); return }
             totalBytes = sum
             candidate = max(candidate, id)
-            pendingPaths.append(relative)
+            if flags[index] & directoryFlag != 0 {
+                pendingDirectories.append(relative)
+            } else {
+                pendingPaths.append(relative)
+            }
         }
         guard appendBatch() else { lose(.budgetExceeded); return }
         // No prefix is published until every entry and every checkpoint passes.

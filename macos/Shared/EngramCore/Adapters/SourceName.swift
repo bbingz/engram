@@ -18,4 +18,6 @@ public enum SourceName: String, CaseIterable, Codable, Sendable {
     case vscode
     case antigravity
     case windsurf
+    case pi
+    case grok
 }

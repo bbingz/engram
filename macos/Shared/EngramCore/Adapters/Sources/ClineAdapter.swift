@@ -134,6 +134,29 @@ final class ClineAdapter: SessionAdapter, Sendable {
         }
     }
 
+    static func scanCapturedSource(
+        physicalLocator: String, logicalLocator: String
+    ) throws -> AdapterParseResult<CapturedSourceScan> {
+        do {
+            let (url, _) = try JSONLAdapterSupport.prepareFile(locator: physicalLocator, limits: .default)
+            var reader = SourceMetadataProjection.ClineArrayReader(
+                maximumRecordBytes: Int(ParserLimits.default.maxFileBytes), maximumRecords: 1_000_000)
+            try reader.consume(Data(contentsOf: url)) { _ in }
+            try reader.finish()
+            let prefix = try readPrefix(locator: physicalLocator, limits: .default)
+            if prefix.exceededMessageLimit { return .failure(.messageLimitExceeded) }
+            if let failure = prefix.parseFailure { return .failure(failure) }
+            switch sessionInfo(locator: logicalLocator, objects: prefix.objects, physicalLocator: physicalLocator) {
+            case .failure(let failure): return .failure(failure)
+            case .success(let info):
+                return .success(CapturedSourceScan(scan: IndexingScan(info: info, messages: messages(from: prefix.objects)),
+                    rawSourceSessionID: info.id))
+            }
+        } catch let failure as ParserFailure { return .failure(failure) }
+        catch is CancellationError { throw CancellationError() }
+        catch { return .failure(.malformedJSON) }
+    }
+
     func isAccessible(locator: String) async -> Bool {
         JSONLAdapterSupport.fileExists(locator)
     }
@@ -151,7 +174,7 @@ final class ClineAdapter: SessionAdapter, Sendable {
 
     private static func sessionInfo(
         locator: String,
-        objects: [Phase4AdapterSupport.JSONObject]
+        objects: [Phase4AdapterSupport.JSONObject], physicalLocator: String? = nil
     ) -> AdapterParseResult<NormalizedSessionInfo> {
         let normalizedMessages = messages(from: objects)
         guard let first = objects.first,
@@ -192,7 +215,7 @@ final class ClineAdapter: SessionAdapter, Sendable {
             systemMessageCount: 0,
             summary: summary.map { String($0.prefix(200)) },
             filePath: locator,
-            sizeBytes: Phase4AdapterSupport.fileSize(locator),
+            sizeBytes: Phase4AdapterSupport.fileSize(physicalLocator ?? locator),
             indexedAt: nil,
             agentRole: nil,
             originator: nil,

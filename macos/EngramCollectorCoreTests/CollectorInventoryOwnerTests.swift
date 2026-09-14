@@ -5,6 +5,41 @@ import XCTest
 @testable import EngramCollectorCore
 
 final class CollectorInventoryOwnerTests: XCTestCase {
+    func testVSCodeEventsKeepOnlyPrimaryJournalsOutOfSidecarQueue() throws {
+        let f = try CollectorOwnerFixture(); defer { f.remove() }
+        let configuration = f.configuration(source: .vscode)
+        let owner = try XCTUnwrap(f.open()); defer { try? owner.close() }
+        _ = try owner.enrollAndActivateRoot(configuration)
+        _ = try owner.applyEvents(configuration: configuration, expectedCheckpoint: nil,
+            nextCheckpoint: .init(epoch: "vscode", cursor: "1"),
+            dirtyRelativePaths: ["ws/chatSessions/a.jsonl", "ws/workspace.json", "ws/state.vscdb", "ws/cache/other.jsonl"],
+            budget: n3Budget())
+        XCTAssertEqual(try f.inventoryInteger("SELECT count(*) FROM collector_locators"), 1)
+        XCTAssertEqual(try f.inventoryText("SELECT relative_path FROM collector_locators"), "ws/chatSessions/a.jsonl")
+    }
+
+    func testExplicitCursorLegacyWALRoutesOnlyToDatabasePrimary() throws {
+        let f = try CollectorOwnerFixture(); defer { f.remove() }
+        let root = f.sourceRoot.appendingPathComponent("globalStorage")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("main".utf8).write(to: root.appendingPathComponent("state.vscdb"))
+        try Data("wal".utf8).write(to: root.appendingPathComponent("state.vscdb-wal"))
+        let configuration = CollectorRootConfiguration(rootID: "legacy", source: .cursor,
+            rootPath: root.path, revision: 1, cursorLegacy: true)
+        let owner = try XCTUnwrap(f.open()); defer { try? owner.close() }
+        _ = try owner.enrollAndActivateRoot(configuration)
+        let next = CollectorEventCheckpoint(epoch: "legacy", cursor: "1")
+        _ = try owner.applyEvents(configuration: configuration, expectedCheckpoint: nil,
+            nextCheckpoint: next, dirtyRelativePaths: ["state.vscdb-wal", "state.vscdb-shm",
+                "state.vscdb-journal", "chats/ws/id/store.db"], budget: n3Budget())
+        XCTAssertEqual(try f.inventoryInteger("SELECT count(*) FROM collector_locators"), 1)
+        XCTAssertEqual(try f.inventoryText("SELECT relative_path FROM collector_locators"), "state.vscdb")
+        _ = try owner.applyEvents(configuration: configuration, expectedCheckpoint: next,
+            nextCheckpoint: .init(epoch: "legacy", cursor: "2"),
+            dirtyRelativePaths: ["state.vscdb-wal", "state.vscdb-shm", "state.vscdb-journal"], budget: n3Budget())
+        XCTAssertEqual(try f.inventoryInteger("SELECT dirty_revision FROM collector_locators"), 1)
+    }
+
     func testRealUsersDataFirmlinkAliasesCannotOverlapLiveCatalogStorage() throws {
         let donor = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -394,11 +429,11 @@ final class CollectorInventoryOwnerTests: XCTestCase {
         XCTAssertEqual(try fixture.inventoryInteger("SELECT requested_revision FROM collector_roots"), 1)
     }
 
-    func testObservationFactoryReturnsRealFiveTupleForBothSupportedSources() throws {
+    func testObservationFactoryReturnsRealFiveTupleForSupportedSources() throws {
         let fixture = try CollectorOwnerFixture()
         defer { fixture.remove() }
         let descriptors = CollectorOwnerDescriptorObservation()
-        for source in [SourceName.codex, .claudeCode] {
+        for source in [SourceName.codex, .claudeCode, .vscode] {
             let configuration = fixture.configuration(source: source)
             let binding = try CollectorPOSIXRootEnumerator.observeRoot(configuration: configuration, testHooks: descriptors.hooks)
             XCTAssertEqual(binding.configuration, configuration)
@@ -415,7 +450,7 @@ final class CollectorInventoryOwnerTests: XCTestCase {
         defer { fixture.remove() }
         let descriptors = CollectorOwnerDescriptorObservation()
         let configurations = [
-            fixture.configuration(source: .cursor), fixture.configuration(path: "/"),
+            fixture.configuration(path: "/"),
             fixture.configuration(path: "relative/root"), fixture.configuration(path: fixture.sourceRoot.path + "/../sessions"),
             fixture.configuration(path: "/" + Array(repeating: "x", count: 33).joined(separator: "/")),
             fixture.configuration(path: "/" + String(repeating: "x", count: Int(MAXPATHLEN))),
@@ -847,6 +882,158 @@ final class CollectorInventoryOwnerTests: XCTestCase {
         XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators"), 0)
     }
 
+    func testDirectoryEventsEnqueueTargetedScanWithoutRevisionBump() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        try fixture.directory(fixture.sourceRoot.appendingPathComponent("sibling"))
+        try fixture.file(fixture.sourceRoot.appendingPathComponent("sibling/rollout-unrelated.jsonl"), bytes: Data("fixture".utf8))
+        let owner = try XCTUnwrap(fixture.open())
+        defer { try? owner.close() }
+        _ = try owner.enrollAndActivateRoot(fixture.configuration)
+        for _ in 0..<16 {
+            let current = try XCTUnwrap(owner.rootState(rootID: fixture.configuration.rootID))
+            if current.completedRevision >= current.requestedRevision { break }
+            _ = try owner.stepRoot(fixture.configuration, budget: fixture.budget)
+        }
+        let before = try XCTUnwrap(owner.rootState(rootID: fixture.configuration.rootID))
+        XCTAssertEqual(before.requestedRevision, before.completedRevision)
+        XCTAssertNil(before.activeScan)
+        try fixture.directory(fixture.sourceRoot.appendingPathComponent("newdir"))
+        try fixture.file(fixture.sourceRoot.appendingPathComponent("newdir/rollout-hidden.jsonl"), bytes: Data("fixture".utf8))
+        try fixture.file(fixture.sourceRoot.appendingPathComponent("newdir/rollout-visible.jsonl"), bytes: Data("fixture".utf8))
+        let checkpoint = CollectorEventCheckpoint(epoch: "epoch", cursor: "dir-1")
+        XCTAssertEqual(
+            try owner.applyEvents(
+                configuration: fixture.configuration, expectedCheckpoint: before.eventCheckpoint,
+                nextCheckpoint: checkpoint, dirtyRelativePaths: ["newdir/rollout-visible.jsonl"],
+                dirtyRelativeDirectories: ["newdir"], budget: n3Budget()
+            ),
+            .applied(inputPathCount: 2, checkpoint: checkpoint)
+        )
+        let after = try XCTUnwrap(owner.rootState(rootID: fixture.configuration.rootID))
+        XCTAssertEqual(after.requestedRevision, before.requestedRevision)
+        XCTAssertEqual(after.completedRevision, before.completedRevision)
+        XCTAssertNotNil(after.activeScan)
+        for _ in 0..<16 {
+            if try owner.rootState(rootID: fixture.configuration.rootID)?.activeScan == nil { break }
+            _ = try owner.stepRoot(fixture.configuration, budget: fixture.budget)
+        }
+        XCTAssertNil(try owner.rootState(rootID: fixture.configuration.rootID)?.activeScan)
+        try owner.close()
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators WHERE relative_path = 'newdir/rollout-visible.jsonl'"), 1)
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators WHERE relative_path = 'newdir/rollout-hidden.jsonl'"), 1)
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators WHERE relative_path = 'sibling/rollout-unrelated.jsonl'"), 1)
+        XCTAssertEqual(try fixture.inventoryInteger("""
+            SELECT COUNT(*) FROM collector_frontier
+            WHERE relative_directory = 'sibling' AND scan_id IN (
+                SELECT scan_id FROM collector_frontier WHERE relative_directory = 'newdir'
+            )
+            """), 0)
+    }
+
+    func testRepeatedDirectoryEventDuringPendingScanFindsNewChildrenWithoutSiblingWalk() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        try fixture.directory(fixture.sourceRoot.appendingPathComponent("sibling"))
+        try fixture.file(fixture.sourceRoot.appendingPathComponent("sibling/rollout-unrelated.jsonl"), bytes: Data("fixture".utf8))
+        let owner = try XCTUnwrap(fixture.open())
+        defer { try? owner.close() }
+        _ = try owner.enrollAndActivateRoot(fixture.configuration)
+        for _ in 0..<16 {
+            let current = try XCTUnwrap(owner.rootState(rootID: fixture.configuration.rootID))
+            if current.completedRevision >= current.requestedRevision { break }
+            _ = try owner.stepRoot(fixture.configuration, budget: fixture.budget)
+        }
+        let ready = try XCTUnwrap(owner.rootState(rootID: fixture.configuration.rootID))
+        try fixture.directory(fixture.sourceRoot.appendingPathComponent("alpha"))
+        try fixture.directory(fixture.sourceRoot.appendingPathComponent("zeta"))
+        try fixture.file(fixture.sourceRoot.appendingPathComponent("alpha/rollout-old.jsonl"), bytes: Data("fixture".utf8))
+        try fixture.file(fixture.sourceRoot.appendingPathComponent("zeta/rollout-keep.jsonl"), bytes: Data("fixture".utf8))
+        XCTAssertEqual(
+            try owner.applyEvents(
+                configuration: fixture.configuration, expectedCheckpoint: ready.eventCheckpoint,
+                nextCheckpoint: .init(epoch: "epoch", cursor: "dir-1"),
+                dirtyRelativePaths: [], dirtyRelativeDirectories: ["alpha", "zeta"], budget: n3Budget()
+            ),
+            .applied(inputPathCount: 2, checkpoint: .init(epoch: "epoch", cursor: "dir-1"))
+        )
+        let scan = try XCTUnwrap(owner.rootState(rootID: fixture.configuration.rootID)?.activeScan)
+        let tiny = CollectorBootstrapBudget(
+            maxEntriesVisited: 1, maxCandidateFiles: 1, maxDirectoryOpens: 1, maxMetadataBytes: 4096
+        )
+        var reopened = false
+        for _ in 0..<24 {
+            let pending = try fixture.inventoryInteger("""
+                SELECT COUNT(*) FROM collector_frontier
+                WHERE scan_id = '\(scan.scanID)' AND relative_directory = 'alpha' AND completed = 0
+                """)
+            let zetaPending = try fixture.inventoryInteger("""
+                SELECT COUNT(*) FROM collector_frontier
+                WHERE scan_id = '\(scan.scanID)' AND relative_directory = 'zeta' AND completed = 0
+                """)
+            if pending == 0, zetaPending == 1 {
+                reopened = true
+                break
+            }
+            _ = try owner.stepRoot(fixture.configuration, budget: tiny)
+        }
+        XCTAssertTrue(reopened, "alpha must finish while zeta remains pending")
+        try fixture.file(fixture.sourceRoot.appendingPathComponent("alpha/rollout-new.jsonl"), bytes: Data("fixture".utf8))
+        XCTAssertEqual(
+            try owner.applyEvents(
+                configuration: fixture.configuration,
+                expectedCheckpoint: .init(epoch: "epoch", cursor: "dir-1"),
+                nextCheckpoint: .init(epoch: "epoch", cursor: "dir-2"),
+                dirtyRelativePaths: [], dirtyRelativeDirectories: ["alpha"], budget: n3Budget()
+            ),
+            .applied(inputPathCount: 1, checkpoint: .init(epoch: "epoch", cursor: "dir-2"))
+        )
+        let afterRepeat = try XCTUnwrap(owner.rootState(rootID: fixture.configuration.rootID))
+        XCTAssertEqual(afterRepeat.requestedRevision, ready.requestedRevision)
+        XCTAssertEqual(afterRepeat.activeScan, scan)
+        XCTAssertEqual(try fixture.inventoryInteger("""
+            SELECT completed FROM collector_frontier
+            WHERE scan_id = '\(scan.scanID)' AND relative_directory = 'alpha'
+            """), 0)
+        for _ in 0..<24 {
+            if try owner.rootState(rootID: fixture.configuration.rootID)?.activeScan == nil { break }
+            _ = try owner.stepRoot(fixture.configuration, budget: fixture.budget)
+        }
+        XCTAssertNil(try owner.rootState(rootID: fixture.configuration.rootID)?.activeScan)
+        try owner.close()
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators WHERE relative_path = 'alpha/rollout-old.jsonl'"), 1)
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators WHERE relative_path = 'alpha/rollout-new.jsonl'"), 1)
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators WHERE relative_path = 'zeta/rollout-keep.jsonl'"), 1)
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators WHERE relative_path = 'sibling/rollout-unrelated.jsonl'"), 1)
+        XCTAssertEqual(try fixture.inventoryInteger("""
+            SELECT COUNT(*) FROM collector_frontier
+            WHERE relative_directory = 'sibling' AND scan_id = '\(scan.scanID)'
+            """), 0)
+    }
+
+    func testUnsafeDirectoryEventRequestsReconciliationWithoutApplyingPrefix() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let owner = try XCTUnwrap(fixture.open())
+        defer { try? owner.close() }
+        _ = try owner.enrollAndActivateRoot(fixture.configuration)
+        let before = try XCTUnwrap(owner.rootState(rootID: fixture.configuration.rootID))
+        XCTAssertEqual(
+            try owner.applyEvents(
+                configuration: fixture.configuration, expectedCheckpoint: nil,
+                nextCheckpoint: .init(epoch: "epoch", cursor: "dir-1"),
+                dirtyRelativePaths: ["safe.jsonl"], dirtyRelativeDirectories: ["../escape"],
+                budget: n3Budget()
+            ),
+            .reconciliationRequested(reason: .continuityLoss, requestedRevision: before.requestedRevision + 1)
+        )
+        let after = try XCTUnwrap(owner.rootState(rootID: fixture.configuration.rootID))
+        XCTAssertNil(after.eventCheckpoint)
+        XCTAssertEqual(after.requestedRevision, before.requestedRevision + 1)
+        try owner.close()
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators"), 0)
+    }
+
     func testN3CheckpointTokensAreByteExactBoundedOpaqueValues() throws {
         let fixture = try CollectorOwnerFixture()
         defer { fixture.remove() }
@@ -1092,6 +1279,313 @@ final class CollectorInventoryOwnerTests: XCTestCase {
         guard chmod(fixture.inventoryURL.path, 0o600) == 0 else { throw POSIXError(.EACCES) }
     }
     // End N3-A event ingress tests.
+
+    // Cursor modern analogue of OpenCode applyEvents fingerprint skip
+    // (`openCodeObservationFingerprint`). Repeated FSEvent batches that do not
+    // change the closed file-set (store/WAL/meta/transcript plus declared
+    // absences) must advance the event checkpoint without minting another
+    // dirty revision on the canonical primary. SHM/journal stay observation-only.
+    func testCursorModernUnchangedCompleteSetEventsAdvanceCheckpointWithoutRedirtyingPrimary_repro() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let configuration = fixture.configuration(source: .cursor)
+        try writeCursorModernCompleteSet(fixture)
+        let payloadBefore = try cursorModernPayloadSnapshot(fixture)
+        let liveBefore = try fixture.snapshot(at: fixture.liveRoot)
+        let owner = try XCTUnwrap(fixture.open())
+        defer { try? owner.close() }
+        _ = try owner.enrollAndActivateRoot(configuration)
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators"), 0)
+
+        var checkpoint = try applyCursorModernEvents(
+            owner, configuration, paths: Self.cursorModernFSEventBatch, cursor: "1", expected: nil
+        )
+        try assertCursorModernPrimary(fixture, dirty: 1, acknowledged: 0)
+        let observed = try fixture.inventoryText(
+            "SELECT observed_generation FROM collector_locators WHERE relative_path = '\(Self.cursorModernPrimary)'"
+        )
+        XCTAssertNotNil(observed)
+        XCTAssertFalse(observed?.isEmpty ?? true, "complete-set observation must be stored so later identical batches can be skipped")
+
+        for (index, cursor) in ["2", "3", "4"].enumerated() {
+            checkpoint = try applyCursorModernEvents(
+                owner, configuration, paths: Self.cursorModernFSEventBatch, cursor: cursor, expected: checkpoint
+            )
+            try assertCursorModernPrimary(fixture, dirty: 1, acknowledged: 0)
+            XCTAssertEqual(
+                try fixture.inventoryText(
+                    "SELECT observed_generation FROM collector_locators WHERE relative_path = '\(Self.cursorModernPrimary)'"
+                ),
+                observed,
+                "unchanged complete-set batch \(index + 1) must not rewrite the stored fingerprint"
+            )
+        }
+
+        try cursorModernWrite(fixture, Self.cursorModernSHM, Data("shm-chatter".utf8))
+        try cursorModernWrite(fixture, Self.cursorModernJournal, Data("journal-chatter".utf8))
+        checkpoint = try applyCursorModernEvents(
+            owner, configuration, paths: Self.cursorModernFSEventBatch, cursor: "5", expected: checkpoint
+        )
+        try assertCursorModernPrimary(fixture, dirty: 1, acknowledged: 0)
+        XCTAssertEqual(
+            try fixture.inventoryText(
+                "SELECT observed_generation FROM collector_locators WHERE relative_path = '\(Self.cursorModernPrimary)'"
+            ),
+            observed,
+            "SHM/journal chatter is not part of the closed dependency set"
+        )
+
+        checkpoint = try applyCursorModernEvents(
+            owner, configuration, paths: [Self.cursorModernSHM, Self.cursorModernJournal], cursor: "6", expected: checkpoint
+        )
+        try assertCursorModernPrimary(fixture, dirty: 1, acknowledged: 0)
+        n3AssertCheckpoint(try owner.rootState(rootID: configuration.rootID)?.eventCheckpoint, checkpoint)
+
+        try owner.close()
+        XCTAssertEqual(try cursorModernPayloadSnapshot(fixture), payloadBefore)
+        XCTAssertEqual(try fixture.snapshot(at: fixture.liveRoot), liveBefore)
+        XCTAssertEqual(
+            try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_publications"), 0
+        )
+        XCTAssertEqual(
+            try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_capture_reservations"), 0
+        )
+    }
+
+    func testCursorModernWALMetaAndSidecarPresenceChangesStillDirtyWithoutClearingOutstandingWork_repro() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let configuration = fixture.configuration(source: .cursor)
+        try writeCursorModernCompleteSet(fixture)
+        let liveBefore = try fixture.snapshot(at: fixture.liveRoot)
+        let owner = try XCTUnwrap(fixture.open())
+        defer { try? owner.close() }
+        _ = try owner.enrollAndActivateRoot(configuration)
+
+        var checkpoint = try applyCursorModernEvents(
+            owner, configuration, paths: Self.cursorModernFSEventBatch, cursor: "10", expected: nil
+        )
+        try assertCursorModernPrimary(fixture, dirty: 1, acknowledged: 0)
+        var observed = try fixture.inventoryText(
+            "SELECT observed_generation FROM collector_locators WHERE relative_path = '\(Self.cursorModernPrimary)'"
+        )
+        XCTAssertNotNil(observed)
+        XCTAssertFalse(observed?.isEmpty ?? true)
+
+        checkpoint = try applyCursorModernEvents(
+            owner, configuration, paths: Self.cursorModernFSEventBatch, cursor: "11", expected: checkpoint
+        )
+        try assertCursorModernPrimary(fixture, dirty: 1, acknowledged: 0)
+        XCTAssertEqual(
+            try fixture.inventoryText(
+                "SELECT observed_generation FROM collector_locators WHERE relative_path = '\(Self.cursorModernPrimary)'"
+            ),
+            observed
+        )
+
+        try cursorModernWrite(fixture, Self.cursorModernWAL, Data("WAL-only".utf8))
+        checkpoint = try applyCursorModernEvents(
+            owner, configuration, paths: [Self.cursorModernWAL], cursor: "12", expected: checkpoint
+        )
+        try assertCursorModernPrimary(fixture, dirty: 2, acknowledged: 0)
+        let afterWAL = try fixture.inventoryText(
+            "SELECT observed_generation FROM collector_locators WHERE relative_path = '\(Self.cursorModernPrimary)'"
+        )
+        XCTAssertNotEqual(afterWAL, observed, "WAL-only generation change must be visible on the primary fingerprint")
+        observed = afterWAL
+
+        checkpoint = try applyCursorModernEvents(
+            owner, configuration, paths: Self.cursorModernFSEventBatch, cursor: "13", expected: checkpoint
+        )
+        try assertCursorModernPrimary(fixture, dirty: 2, acknowledged: 0)
+        XCTAssertEqual(
+            try fixture.inventoryText(
+                "SELECT observed_generation FROM collector_locators WHERE relative_path = '\(Self.cursorModernPrimary)'"
+            ),
+            observed,
+            "unchanged events must leave outstanding dirty work in place"
+        )
+
+        try cursorModernWrite(fixture, Self.cursorModernMeta, Data("meta-only-change".utf8))
+        checkpoint = try applyCursorModernEvents(
+            owner, configuration, paths: [Self.cursorModernMeta], cursor: "14", expected: checkpoint
+        )
+        try assertCursorModernPrimary(fixture, dirty: 3, acknowledged: 0)
+        let afterMeta = try fixture.inventoryText(
+            "SELECT observed_generation FROM collector_locators WHERE relative_path = '\(Self.cursorModernPrimary)'"
+        )
+        XCTAssertNotEqual(afterMeta, observed)
+        observed = afterMeta
+
+        try FileManager.default.removeItem(at: fixture.sourceRoot.appendingPathComponent(Self.cursorModernWAL))
+        checkpoint = try applyCursorModernEvents(
+            owner, configuration, paths: [Self.cursorModernWAL], cursor: "15", expected: checkpoint
+        )
+        try assertCursorModernPrimary(fixture, dirty: 4, acknowledged: 0)
+        let afterWALGone = try fixture.inventoryText(
+            "SELECT observed_generation FROM collector_locators WHERE relative_path = '\(Self.cursorModernPrimary)'"
+        )
+        XCTAssertNotEqual(afterWALGone, observed)
+        observed = afterWALGone
+
+        try cursorModernWrite(fixture, Self.cursorModernWAL, Data("WAL-reappeared".utf8))
+        checkpoint = try applyCursorModernEvents(
+            owner, configuration, paths: [Self.cursorModernWAL], cursor: "16", expected: checkpoint
+        )
+        try assertCursorModernPrimary(fixture, dirty: 5, acknowledged: 0)
+        let afterWALReturned = try fixture.inventoryText(
+            "SELECT observed_generation FROM collector_locators WHERE relative_path = '\(Self.cursorModernPrimary)'"
+        )
+        XCTAssertNotEqual(afterWALReturned, observed)
+        observed = afterWALReturned
+
+        try FileManager.default.removeItem(at: fixture.sourceRoot.appendingPathComponent(Self.cursorModernMeta))
+        checkpoint = try applyCursorModernEvents(
+            owner, configuration, paths: [Self.cursorModernMeta], cursor: "17", expected: checkpoint
+        )
+        try assertCursorModernPrimary(fixture, dirty: 6, acknowledged: 0)
+        XCTAssertNotEqual(
+            try fixture.inventoryText(
+                "SELECT observed_generation FROM collector_locators WHERE relative_path = '\(Self.cursorModernPrimary)'"
+            ),
+            observed
+        )
+        n3AssertCheckpoint(try owner.rootState(rootID: configuration.rootID)?.eventCheckpoint, checkpoint)
+
+        try owner.close()
+        XCTAssertEqual(try fixture.snapshot(at: fixture.liveRoot), liveBefore)
+    }
+
+    func testCursorObservationPagesStayBoundedAndStaleHintsPreserveNewerWork() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let configuration = fixture.configuration(source: .cursor)
+        try writeCursorModernCompleteSet(fixture)
+        let secondPath = "projects/proj/agent-transcripts/sid2/sid2.jsonl"
+        try cursorModernWrite(fixture, secondPath, Data("second".utf8))
+        let owner = try XCTUnwrap(fixture.open())
+        defer { try? owner.close() }
+        _ = try owner.enrollAndActivateRoot(configuration)
+        let checkpoint = try applyCursorModernEvents(owner, configuration,
+            paths: [Self.cursorModernPrimary, secondPath], cursor: "20", expected: nil)
+        let claim = try n4Claim(owner, configuration, path: Self.cursorModernPrimary)
+        XCTAssertEqual(try owner.acknowledge(claim, configuration: configuration, captureID: n4CaptureID), .acknowledged)
+        let first = try owner.capturedDependencyObservationPage(configuration: configuration, after: nil, limit: 1)
+        XCTAssertEqual(first.count, 1)
+        let hint = try XCTUnwrap(first.first)
+        XCTAssertEqual(hint.relativePath, Self.cursorModernPrimary)
+        XCTAssertEqual(hint.dirtyRevision, hint.acknowledgedRevision)
+        let second = try owner.capturedDependencyObservationPage(configuration: configuration, after: hint.relativePath, limit: 1)
+        XCTAssertEqual(second.count, 1)
+        XCTAssertEqual(second.first?.relativePath, secondPath)
+        XCTAssertEqual(second.first?.acknowledgedRevision, 0, "uncaptured/dirty rows consume the page bound")
+        XCTAssertTrue(try owner.capturedDependencyObservationPage(configuration: configuration, after: secondPath, limit: 1).isEmpty)
+        for limit in [-1, 0, 65] {
+            XCTAssertThrowsError(try owner.capturedDependencyObservationPage(configuration: configuration, after: nil, limit: limit))
+        }
+        XCTAssertThrowsError(try owner.capturedDependencyObservationPage(configuration: configuration, after: "../outside", limit: 1))
+
+        try owner.dirtyCapturedDependencyObservation(configuration: configuration, locator: hint)
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT dirty_revision FROM collector_locators WHERE relative_path = '\(Self.cursorModernPrimary)'"), 2)
+        try owner.dirtyCapturedDependencyObservation(configuration: configuration, locator: hint)
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT dirty_revision FROM collector_locators WHERE relative_path = '\(Self.cursorModernPrimary)'"), 2)
+        let pending = try n4Claim(owner, configuration, path: secondPath)
+        _ = try owner.acknowledge(pending, configuration: configuration, captureID: n4CaptureID)
+        let newer = try n4Claim(owner, configuration, path: Self.cursorModernPrimary)
+        _ = try owner.acknowledge(newer, configuration: configuration, captureID: String(repeating: "b", count: 64))
+        let before = try fixture.inventoryInteger("SELECT dirty_revision FROM collector_locators WHERE relative_path = '\(Self.cursorModernPrimary)'")
+        try owner.dirtyCapturedDependencyObservation(configuration: configuration, locator: hint)
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT dirty_revision FROM collector_locators WHERE relative_path = '\(Self.cursorModernPrimary)'"), before)
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT acknowledged_revision FROM collector_locators WHERE relative_path = '\(Self.cursorModernPrimary)'"), before)
+        n3AssertCheckpoint(try owner.rootState(rootID: configuration.rootID)?.eventCheckpoint, checkpoint)
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT count(*) FROM collector_capture_reservations"), 0)
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT count(*) FROM collector_publications"), 0)
+    }
+
+    private static let cursorModernStore = "chats/ws/sid/store.db"
+    private static let cursorModernWAL = "chats/ws/sid/store.db-wal"
+    private static let cursorModernMeta = "chats/ws/sid/meta.json"
+    private static let cursorModernSHM = "chats/ws/sid/store.db-shm"
+    private static let cursorModernJournal = "chats/ws/sid/store.db-journal"
+    private static let cursorModernPrimary = "projects/proj/agent-transcripts/sid/sid.jsonl"
+    private static let cursorModernFSEventBatch = [
+        cursorModernStore, cursorModernWAL, cursorModernWAL, cursorModernMeta,
+        cursorModernPrimary, cursorModernSHM, cursorModernJournal,
+    ]
+
+    private func writeCursorModernCompleteSet(_ fixture: CollectorOwnerFixture) throws {
+        try cursorModernWrite(fixture, Self.cursorModernStore, Data("STORE".utf8))
+        try cursorModernWrite(fixture, Self.cursorModernWAL, Data("WAL".utf8))
+        try cursorModernWrite(fixture, Self.cursorModernMeta, Data("meta-old".utf8))
+        try cursorModernWrite(fixture, Self.cursorModernPrimary, Data("TRANSCRIPT\n".utf8))
+        try cursorModernWrite(fixture, Self.cursorModernSHM, Data([1]))
+        try cursorModernWrite(fixture, Self.cursorModernJournal, Data([2]))
+    }
+
+    private func cursorModernWrite(_ fixture: CollectorOwnerFixture, _ relative: String, _ bytes: Data) throws {
+        var current = fixture.sourceRoot
+        for part in relative.split(separator: "/").dropLast() {
+            current = current.appendingPathComponent(String(part))
+            if !FileManager.default.fileExists(atPath: current.path) {
+                try fixture.directory(current)
+            }
+        }
+        try fixture.file(fixture.sourceRoot.appendingPathComponent(relative), bytes: bytes)
+    }
+
+    private func cursorModernPayloadSnapshot(_ fixture: CollectorOwnerFixture) throws -> [String: Data] {
+        let paths = [Self.cursorModernStore, Self.cursorModernWAL, Self.cursorModernMeta, Self.cursorModernPrimary]
+        return try Dictionary(uniqueKeysWithValues: paths.map { path in
+            (path, try Data(contentsOf: fixture.sourceRoot.appendingPathComponent(path)))
+        })
+    }
+
+    @discardableResult
+    private func applyCursorModernEvents(
+        _ owner: CollectorInventoryOwner, _ configuration: CollectorRootConfiguration,
+        paths: [String], cursor: String, expected: CollectorEventCheckpoint?
+    ) throws -> CollectorEventCheckpoint {
+        let next = CollectorEventCheckpoint(epoch: "cursor-modern", cursor: cursor)
+        XCTAssertEqual(
+            try owner.applyEvents(
+                configuration: configuration, expectedCheckpoint: expected, nextCheckpoint: next,
+                dirtyRelativePaths: paths, budget: n3Budget(maxIncomingPaths: max(1, paths.count))
+            ),
+            .applied(inputPathCount: paths.count, checkpoint: next)
+        )
+        n3AssertCheckpoint(try owner.rootState(rootID: configuration.rootID)?.eventCheckpoint, next)
+        return next
+    }
+
+    private func assertCursorModernPrimary(
+        _ fixture: CollectorOwnerFixture, dirty: Int64, acknowledged: Int64,
+        file: StaticString = #filePath, line: UInt = #line
+    ) throws {
+        XCTAssertEqual(
+            try fixture.inventoryInteger("SELECT COUNT(*) FROM collector_locators"), 1,
+            "only the canonical transcript primary may be dirtied", file: file, line: line
+        )
+        XCTAssertEqual(
+            try fixture.inventoryText("SELECT relative_path FROM collector_locators"),
+            Self.cursorModernPrimary, file: file, line: line
+        )
+        XCTAssertEqual(
+            try fixture.inventoryInteger("SELECT dirty_revision FROM collector_locators"), dirty,
+            file: file, line: line
+        )
+        XCTAssertEqual(
+            try fixture.inventoryInteger("SELECT acknowledged_revision FROM collector_locators"), acknowledged,
+            file: file, line: line
+        )
+        for sidecar in [Self.cursorModernSHM, Self.cursorModernJournal, Self.cursorModernWAL, Self.cursorModernMeta] {
+            XCTAssertEqual(
+                try fixture.inventoryInteger(
+                    "SELECT COUNT(*) FROM collector_locators WHERE relative_path = '\(sidecar)'"
+                ),
+                0, file: file, line: line
+            )
+        }
+    }
 
     // N4a TEST-DRAFT only. Existing N2/N3 test bodies remain unchanged.
     func testN4ClaimPreservesCandidateLimitIncludingSixtyFourAndEmptyCorpus() throws {
@@ -1650,6 +2144,74 @@ final class CollectorInventoryOwnerTests: XCTestCase {
 
     func testN4DeferralStorageReplacementAfterMutationRollsBackRetryErrorAndLease() throws {
         try n4AssertStorageCommitRollback(.deferClaim)
+    }
+
+    func testDeferClaimsBatchOneCommitStaleNewerDirtyAndFenceRollback_repro() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        var commits = 0
+        let owner = try XCTUnwrap(fixture.open(hooks: .init(beforeInventoryCommit: { commits += 1 })))
+        defer { try? owner.close() }
+        _ = try owner.enrollAndActivateRoot(fixture.configuration)
+        try n4Mark(owner, fixture.configuration, ["a.jsonl", "b.jsonl"])
+        let claimed = try owner.claimDirty(configuration: fixture.configuration, limit: 8, now: 0)
+        XCTAssertEqual(Set(claimed.map(\.relativePath)), ["a.jsonl", "b.jsonl"])
+        let afterClaim = commits
+        let stale = n4Copy(claimed[0], claimGeneration: claimed[0].claimGeneration + 1)
+        let results = try owner.deferClaims(
+            [(claim: claimed[0], retryNotBefore: 60), (claim: stale, retryNotBefore: 1),
+             (claim: claimed[1], retryNotBefore: 1)],
+            configuration: fixture.configuration, reason: .unavailable)
+        XCTAssertEqual(results, [true, false, true])
+        XCTAssertEqual(commits - afterClaim, 1)
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT retry_not_before FROM collector_locators WHERE relative_path = 'a.jsonl'"), 60)
+        XCTAssertEqual(try fixture.inventoryInteger("SELECT retry_not_before FROM collector_locators WHERE relative_path = 'b.jsonl'"), 1)
+        XCTAssertEqual(try fixture.inventoryText("SELECT last_error FROM collector_locators WHERE relative_path = 'a.jsonl'"), "unavailable")
+        let due = try owner.claimDirty(configuration: fixture.configuration, limit: 8, now: 60)
+        let again = try XCTUnwrap(due.first { $0.relativePath.utf8.elementsEqual("a.jsonl".utf8) })
+        try n4Mark(owner, fixture.configuration, ["a.jsonl"])
+        let afterNewer = commits
+        XCTAssertEqual(try owner.deferClaims(
+            [(claim: again, retryNotBefore: 1_000)],
+            configuration: fixture.configuration, reason: .unavailable), [true])
+        XCTAssertEqual(commits - afterNewer, 1)
+        XCTAssertNil(try fixture.inventoryInteger("SELECT retry_not_before FROM collector_locators WHERE relative_path = 'a.jsonl'"))
+        XCTAssertNil(try fixture.inventoryText("SELECT last_error FROM collector_locators WHERE relative_path = 'a.jsonl'"))
+
+        let probe = N4CommitProbe()
+        try owner.close()
+        let fenced = try XCTUnwrap(fixture.open(hooks: probe.hooks))
+        defer { try? fenced.close() }
+        _ = try fenced.enrollAndActivateRoot(fixture.configuration)
+        try n4Mark(fenced, fixture.configuration, ["c.jsonl"])
+        let live = try XCTUnwrap(
+            try fenced.claimDirty(configuration: fixture.configuration, limit: 8, now: 0)
+                .first { $0.relativePath.utf8.elementsEqual("c.jsonl".utf8) })
+        let before = try n4Audit(fixture)
+        let rootMutation = try N4PathMutation(fixture, target: fixture.sourceRoot)
+        defer { try? rootMutation.restore() }
+        probe.arm { try rootMutation.install(.symlink) }
+        XCTAssertThrowsError(try fenced.deferClaims(
+            [(claim: live, retryNotBefore: 99)],
+            configuration: fixture.configuration, reason: .unavailable)) {
+            self.n4AssertUnsafeRootError($0)
+        }
+        XCTAssertEqual(probe.visits, 1)
+        probe.disarm()
+        try rootMutation.restore()
+        XCTAssertEqual(try n4Audit(fixture), before)
+        let mutation = try N4PathMutation(fixture, target: fixture.inventoryURL)
+        defer { try? mutation.restore() }
+        probe.arm { try mutation.install(.file) }
+        XCTAssertThrowsError(try fenced.deferClaims(
+            [(claim: live, retryNotBefore: 99)],
+            configuration: fixture.configuration, reason: .unavailable)) {
+            XCTAssertEqual($0 as? CollectorInventoryOwnerError, .unsafePath)
+        }
+        XCTAssertEqual(probe.visits, 1)
+        probe.disarm()
+        try mutation.restore()
+        XCTAssertEqual(try n4Audit(fixture), before)
     }
 
     func testN4AcknowledgementIsOnlyACallerAssertionAndCreatesNoCaptureOrPublication() throws {
@@ -2302,6 +2864,45 @@ extension CollectorInventoryOwnerTests {
         }
     }
 
+    func testStorageValidationRejectsSameInodeInventorySymlinkAtEntryAndCommit() throws {
+        for atCommit in [false, true] {
+            let fixture = try CollectorOwnerFixture()
+            defer { fixture.remove() }
+            let commit = N4CommitProbe()
+            let owner = try XCTUnwrap(fixture.open(hooks: commit.hooks))
+            defer { try? owner.close() }
+            let claim = try n4Prepare(.claim, owner, fixture)
+            let before = try n4Audit(fixture)
+            let target = fixture.inventoryDirectory
+            let expected = try fixture.fileIdentity(target)
+            let mutation = try N4PathMutation(fixture, target: target)
+            defer { try? mutation.restore() }
+            let install = {
+                try mutation.install(.symlink)
+                XCTAssertEqual(try fixture.mode(target) & S_IFMT, S_IFLNK)
+                var info = stat()
+                XCTAssertEqual(fstatat(AT_FDCWD, target.path, &info, 0), 0)
+                XCTAssertEqual(CollectorOwnerFixture.Identity(device: info.st_dev, inode: info.st_ino), expected,
+                    "the alias must still resolve to the original inode")
+            }
+            if atCommit { commit.arm(install) } else { try install() }
+            XCTAssertThrowsError(try {
+                if atCommit { try self.n4Perform(.claim, owner, fixture.configuration, claim) }
+                else { _ = try owner.rootState(rootID: fixture.configuration.rootID) }
+            }()) { self.storageAssertNoFollowError($0) }
+            if atCommit {
+                XCTAssertEqual(commit.visits, 1)
+                XCTAssertEqual(commit.returnedNormally, 1, "the real storage fence, not the mutation hook, must reject")
+            }
+            commit.disarm()
+            try mutation.restore()
+            XCTAssertEqual(try fixture.fileIdentity(target), expected)
+            XCTAssertEqual(try n4Audit(fixture), before, "commit=\(atCommit)")
+            try owner.close()
+            XCTAssertEqual(try collectorOwnerFixtureDescriptors(under: fixture.base), [])
+        }
+    }
+
     func testStorageValidationKeepsAncestorReadPermissionChecksAtEntryAndCommit() throws {
         try XCTSkipIf(geteuid() == 0, "root bypasses the owned fixture's DAC read denial")
         for atCommit in [false, true] {
@@ -2457,6 +3058,84 @@ extension CollectorInventoryOwnerTests {
         XCTAssertEqual(try n4Audit(fixture), before)
         try owner.close()
         XCTAssertEqual(try collectorOwnerFixtureDescriptors(under: fixture.base), [])
+    }
+
+    func testLiveEnrolledObservationPaysOneStorageFencePairForSixteenRoots_repro() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        var commits = 0
+        let probe = StorageValidationDescriptorProbe()
+        let owner = try XCTUnwrap(fixture.open(hooks: .init(
+            beforeInventoryCommit: { commits += 1 },
+            storageValidationOpenHooks: probe.hooks
+        )))
+        defer { try? owner.close() }
+        var configurations: [CollectorRootConfiguration] = []
+        for index in 0..<16 {
+            let source = fixture.sourceParent.appendingPathComponent("observe-\(index)")
+            try fixture.directory(source)
+            let configuration = CollectorRootConfiguration(
+                rootID: "observe-root-\(index)", source: .codex, rootPath: source.path, revision: 1)
+            _ = try owner.enrollAndActivateRoot(configuration)
+            configurations.append(configuration)
+        }
+        try FileManager.default.removeItem(at: URL(fileURLWithPath: configurations[15].rootPath))
+        let commitsAfterEnroll = commits
+        probe.arm()
+        XCTAssertEqual(try owner.observeLiveEnrolledRoots([]), [])
+        XCTAssertEqual(probe.opened, 0)
+        let observed = try owner.observeLiveEnrolledRoots(configurations)
+        XCTAssertEqual(probe.opened, 4, "one publication-store entry/exit pair, not 16 isolated sessions")
+        XCTAssertEqual(probe.closed, 4)
+        probe.disarm()
+        XCTAssertEqual(commits, commitsAfterEnroll)
+        XCTAssertEqual(observed.count, 16)
+        XCTAssertEqual(observed.filter(\.unavailable).map(\.configuration.rootID), ["observe-root-15"])
+        XCTAssertNil(observed[15].state)
+        XCTAssertTrue(observed.prefix(15).allSatisfy { !$0.unavailable && $0.state != nil })
+        probe.arm()
+        probe.beforeOpen = {
+            guard probe.opened == 2 else { return }
+            try FileManager.default.moveItem(
+                at: fixture.inventoryDirectory,
+                to: fixture.base.appendingPathComponent("held-inventory"))
+        }
+        XCTAssertThrowsError(try owner.observeLiveEnrolledRoots(configurations)) {
+            XCTAssertFalse(($0 as? CollectorInventoryOwnerError) == .rootNotActivated)
+        }
+        XCTAssertEqual(commits, commitsAfterEnroll)
+        probe.disarm()
+    }
+
+    func testUnacknowledgedDirtyOwnerBatchPaysOneStorageFencePair_repro() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        var commits = 0
+        let probe = StorageValidationDescriptorProbe()
+        let owner = try XCTUnwrap(fixture.open(hooks: .init(
+            beforeInventoryCommit: { commits += 1 },
+            storageValidationOpenHooks: probe.hooks
+        )))
+        defer { try? owner.close() }
+        var configurations: [CollectorRootConfiguration] = []
+        for index in 0..<16 {
+            let source = fixture.sourceParent.appendingPathComponent("pending-\(index)")
+            try fixture.directory(source)
+            let configuration = CollectorRootConfiguration(
+                rootID: "pending-root-\(index)", source: .codex, rootPath: source.path, revision: 1)
+            _ = try owner.enrollAndActivateRoot(configuration)
+            configurations.append(configuration)
+        }
+        let commitsAfterEnroll = commits
+        probe.arm()
+        XCTAssertTrue(try owner.rootsWithUnacknowledgedDirty([]).isEmpty)
+        XCTAssertEqual(probe.opened, 0)
+        let pending = try owner.rootsWithUnacknowledgedDirty(configurations)
+        XCTAssertEqual(probe.opened, 4, "one store entry/exit pair for sixteen pending-root probes")
+        XCTAssertEqual(probe.closed, 4)
+        probe.disarm()
+        XCTAssertTrue(pending.isEmpty)
+        XCTAssertEqual(commits, commitsAfterEnroll)
     }
 
     private func storageValidationLiveRoot(_ fixture: CollectorOwnerFixture) throws -> URL {

@@ -40,6 +40,14 @@ enum CollectorEventIngressResult: Equatable {
     case reconciliationRequested(reason: CollectorEventGapReason, requestedRevision: Int64)
 }
 
+/// One synchronous capture-tick observation. Not a cache, lease, or
+/// action/commit authority.
+struct CollectorLiveRootObservation: Equatable {
+    let configuration: CollectorRootConfiguration
+    let unavailable: Bool
+    let state: CollectorRootState?
+}
+
 // Narrow fault/observation boundaries for temporary fixture tests only.
 struct CollectorInventoryOwnerTestHooks {
     var beforeFilesystemAccess: (() throws -> Void)?
@@ -83,8 +91,8 @@ final class CollectorInventoryOwner {
     private var dirtyCommitFence: (() throws -> Void)?
     private var closed = false
 
-    private var inventoryRoot: URL { shadowRoot.appendingPathComponent("inventory") }
-    private var databaseURL: URL { inventoryRoot.appendingPathComponent(Self.databaseName) }
+    private var inventoryRoot: URL { shadowRoot.appendingPathComponent("inventory", isDirectory: true) }
+    private var databaseURL: URL { inventoryRoot.appendingPathComponent(Self.databaseName, isDirectory: false) }
 
     private init(
         shadowRoot: URL, identityCatalog: URL, shadowDescriptor: Int32,
@@ -191,20 +199,224 @@ final class CollectorInventoryOwner {
         }
     }
 
+    /// Reinstalls a persisted binding for publication recovery. Never observes
+    /// the live path or writes a new identity. False means the root was never
+    /// enrolled or the configured binding does not match stored authority.
+    func activateStoredRootForPublication(_ configuration: CollectorRootConfiguration) throws -> Bool {
+        try withPublicationStore { store in
+            guard !configuration.rootID.contains("\0"),
+                  let previous = try store.rootState(rootID: configuration.rootID),
+                  previous.configuration == configuration,
+                  let enrolled = try store.enrolledRoot(configuration: configuration),
+                  let activated = try store.activateEnrolledRoot(configuration: configuration),
+                  activated.expectedIdentity == enrolled.expectedIdentity else {
+                return false
+            }
+            let key = Data(configuration.rootID.utf8)
+            if activeRoots[key]?.binding.configuration != configuration
+                || activeRoots[key]?.binding.expectedIdentity != enrolled.expectedIdentity {
+                activeRoots[key] = (
+                    activated,
+                    CollectorBootstrapWalker(store: store, enumerator: try CollectorPOSIXRootEnumerator(binding: activated))
+                )
+            }
+            return true
+        }
+    }
+
+    /// A source failure may be isolated only after independently validating
+    /// the owned storage and the exact enrolled binding. This never rebinds.
+    func sourceRootIsUnavailable(_ configuration: CollectorRootConfiguration) throws -> Bool {
+        try withPublicationStore { store in
+            try Self.liveRootObservation(store, configuration, activeRoots: activeRoots).unavailable
+        }
+    }
+
+    func observeLiveEnrolledRoots(
+        _ configurations: [CollectorRootConfiguration]
+    ) throws -> [CollectorLiveRootObservation] {
+        guard configurations.count <= 64 else { throw CollectorInventoryError.invalidBudget }
+        guard !configurations.isEmpty else { return [] }
+        return try withPublicationStore { store in
+            try configurations.map { configuration in
+                try Task.checkCancellation()
+                return try Self.liveRootObservation(store, configuration, activeRoots: activeRoots)
+            }
+        }
+    }
+
+    func rootsWithUnacknowledgedDirty(
+        _ configurations: [CollectorRootConfiguration]
+    ) throws -> Set<Data> {
+        guard configurations.count <= 64 else { throw CollectorInventoryError.invalidBudget }
+        guard !configurations.isEmpty else { return [] }
+        return try withStore { try $0.rootsWithUnacknowledgedDirty(configurations) }
+    }
+
     func rootState(rootID: String) throws -> CollectorRootState? {
         try withStore { try $0.rootState(rootID: rootID) }
     }
 
+    func capturedDependencyObservationPage(
+        configuration: CollectorRootConfiguration, after: String?, limit: Int
+    ) throws -> [CollectorLocatorState] {
+        try withDirtyStore(configuration: configuration, validateInput: {
+            guard (configuration.source == .cursor || configuration.source == .vscode), (1...64).contains(limit),
+                  after.map({ CollectorInventoryStore.isSafeRelativePath($0) }) ?? true else {
+                throw CollectorInventoryError.invalidBudget
+            }
+        }) { try $0.capturedDependencyObservationPage(configuration: configuration, after: after, limit: limit) }
+    }
+
+    func dirtyCapturedDependencyObservation(
+        configuration: CollectorRootConfiguration, locator: CollectorLocatorState
+    ) throws {
+        try withDirtyStore(configuration: configuration, validateInput: {
+            guard (configuration.source == .cursor || configuration.source == .vscode),
+                  CollectorInventoryStore.isSafeRelativePath(locator.relativePath) else {
+                throw CollectorInventoryError.invalidRelativePath
+            }
+        }) { try $0.dirtyCapturedDependencyObservation(configuration: configuration, locator: locator) }
+    }
+
+    func claimFileSetPrimary(
+        _ claim: CollectorDirtyClaim, configuration: CollectorRootConfiguration, snapshot: CollectorDependencySnapshot
+    ) throws -> CollectorDirtyClaim? {
+        try withDirtyStore(configuration: configuration, validateInput: {
+            try Self.requireClaimConfiguration(claim, configuration)
+        }) { try $0.claimFileSetPrimary(claim, configuration: configuration, snapshot: snapshot) }
+    }
+
+    func claimClinePendingAlias(
+        _ primary: CollectorDirtyClaim, configuration: CollectorRootConfiguration
+    ) throws -> CollectorDirtyClaim? {
+        try withDirtyStore(configuration: configuration, validateInput: {
+            try Self.requireClaimConfiguration(primary, configuration)
+        }) { try $0.claimClinePendingAlias(primary, configuration: configuration) }
+    }
+
     func reserveCapture(
         _ claim: CollectorDirtyClaim, configuration: CollectorRootConfiguration,
-        generation: ArchiveSourceGeneration
+        generation: ArchiveSourceGeneration, snapshot: CollectorDependencySnapshot? = nil,
+        sqliteSession: ArchiveSQLiteSessionContext? = nil, cursorLegacySession: ArchiveCursorLegacyContext? = nil, effectiveSource: SourceName? = nil,
+        allowExisting: Bool = true
     ) throws -> CollectorCaptureReservation? {
         try withDirtyStore(configuration: configuration, validateInput: {
             try Self.requireClaimConfiguration(claim, configuration)
             guard CollectorInventoryStore.isSafeRelativePath(claim.relativePath) else {
                 throw CollectorInventoryError.invalidRelativePath
             }
-        }) { try $0.reserveCapture(claim, configuration: configuration, generation: generation) }
+        }) {
+            try $0.reserveCapture(
+                claim, configuration: configuration, generation: generation, snapshot: snapshot,
+                sqliteSession: sqliteSession, cursorLegacySession: cursorLegacySession, effectiveSource: effectiveSource,
+                allowExisting: allowExisting
+            )
+        }
+    }
+
+    func cursorLegacyOwnershipAfter(configuration: CollectorRootConfiguration) throws -> String? {
+        try withPublicationStore {
+            try $0.cursorLegacyOwnershipAfter(configuration: configuration)
+        }
+    }
+
+    func recordCursorLegacyObservationFailure(configuration: CollectorRootConfiguration, fingerprint: String) throws {
+        try withPublicationStore {
+            try $0.recordCursorLegacyObservationFailure(configuration: configuration, fingerprint: fingerprint)
+        }
+    }
+
+    func applyCursorLegacyObservation(
+        configuration: CollectorRootConfiguration, after: String?, membershipFingerprint: String,
+        workspaces: [(workspaceID: String, fingerprint: String)], nextAfter: String?,
+        mainFingerprint: String, peerFingerprint: String
+    ) throws {
+        try withDirtyStore(configuration: configuration, allowsUnavailableRoot: true, validateInput: {}) {
+            _ = try $0.applyCursorLegacyObservation(configuration: configuration, after: after,
+                membershipFingerprint: membershipFingerprint, workspaces: workspaces, nextAfter: nextAfter,
+                mainFingerprint: mainFingerprint, peerFingerprint: peerFingerprint)
+        }
+    }
+
+    func lastCursorLegacyCapture(configuration: CollectorRootConfiguration, composerID: String) throws -> String? {
+        try withPublicationStore { try $0.lastCursorLegacyCapture(configuration: configuration, composerID: composerID) }
+    }
+
+    func advanceCursorLegacySkippedSession(
+        _ claim: CollectorDirtyClaim, configuration: CollectorRootConfiguration,
+        generation: ArchiveSourceGeneration, session: ArchiveCursorLegacyContext, previousCaptureID: String?
+    ) throws {
+        try withDirtyStore(configuration: configuration, validateInput: {
+            try Self.requireClaimConfiguration(claim, configuration)
+        }) {
+            try $0.advanceCursorLegacySkippedSession(claim, configuration: configuration,
+                generation: generation, session: session, previousCaptureID: previousCaptureID)
+        }
+    }
+
+    func reconcileCursorLegacyWalk(
+        _ claim: CollectorDirtyClaim, configuration: CollectorRootConfiguration,
+        generation: ArchiveSourceGeneration, walGeneration: ArchiveSourceGeneration?
+    ) throws -> String? {
+        try withDirtyStore(configuration: configuration, validateInput: {
+            try Self.requireClaimConfiguration(claim, configuration)
+            guard CollectorInventoryStore.isSafeRelativePath(claim.relativePath) else {
+                throw CollectorInventoryError.invalidRelativePath
+            }
+        }) {
+            try $0.reconcileCursorLegacyWalk(
+                claim, configuration: configuration, generation: generation, walGeneration: walGeneration
+            )
+        }
+    }
+
+    func finishCursorLegacyWalk(
+        _ claim: CollectorDirtyClaim, configuration: CollectorRootConfiguration,
+        generation: ArchiveSourceGeneration, walGeneration: ArchiveSourceGeneration?
+    ) throws -> CollectorClaimCompletion {
+        try withDirtyStore(configuration: configuration, validateInput: {
+            try Self.requireClaimConfiguration(claim, configuration)
+            guard CollectorInventoryStore.isSafeRelativePath(claim.relativePath) else {
+                throw CollectorInventoryError.invalidRelativePath
+            }
+        }) {
+            try $0.finishCursorLegacyWalk(
+                claim, configuration: configuration, generation: generation, walGeneration: walGeneration
+            )
+        }
+    }
+
+    func reconcileOpenCodeWalk(
+        _ claim: CollectorDirtyClaim, configuration: CollectorRootConfiguration,
+        generation: ArchiveSourceGeneration, walGeneration: ArchiveSourceGeneration?
+    ) throws -> String? {
+        try withDirtyStore(configuration: configuration, validateInput: {
+            try Self.requireClaimConfiguration(claim, configuration)
+            guard CollectorInventoryStore.isSafeRelativePath(claim.relativePath) else {
+                throw CollectorInventoryError.invalidRelativePath
+            }
+        }) {
+            try $0.reconcileOpenCodeWalk(
+                claim, configuration: configuration, generation: generation, walGeneration: walGeneration
+            )
+        }
+    }
+
+    func finishOpenCodeWalk(
+        _ claim: CollectorDirtyClaim, configuration: CollectorRootConfiguration,
+        generation: ArchiveSourceGeneration, walGeneration: ArchiveSourceGeneration?
+    ) throws -> CollectorClaimCompletion {
+        try withDirtyStore(configuration: configuration, validateInput: {
+            try Self.requireClaimConfiguration(claim, configuration)
+            guard CollectorInventoryStore.isSafeRelativePath(claim.relativePath) else {
+                throw CollectorInventoryError.invalidRelativePath
+            }
+        }) {
+            try $0.finishOpenCodeWalk(
+                claim, configuration: configuration, generation: generation, walGeneration: walGeneration
+            )
+        }
     }
 
     func captureReservations(limit: Int) throws -> [CollectorCaptureReservation] {
@@ -230,8 +442,16 @@ final class CollectorInventoryOwner {
         }) { try $0.finishCapture(reservation, capture: capture) }
     }
 
+    func publicationSource(_ intent: CollectorPublicationIntent) throws -> SourceName {
+        try withPublicationStore { try $0.publicationSource(intent) }
+    }
+
     func publicationIntents(limit: Int) throws -> [CollectorPublicationIntent] {
         try withPublicationStore { try $0.publicationIntents(limit: limit) }
+    }
+
+    func reconcilePublicationPrivacy(policySHA256: String) throws {
+        try withPublicationStore { try $0.reconcilePublicationPrivacy(policySHA256: policySHA256) }
     }
 
     func claimPublications(replicaID: String, limit: Int, now: Int64) throws -> [CollectorPublicationClaim] {
@@ -283,6 +503,28 @@ final class CollectorInventoryOwner {
         try withPublicationStore { _ in machineID }
     }
 
+    func reconcileGeminiRegistry(
+        configuration: CollectorRootConfiguration,
+        locator: String,
+        generation: ArchiveSourceGeneration?
+    ) throws {
+        try withDirtyStore(configuration: configuration, validateInput: {
+            // gemini_registry_* columns are the durable per-root registry pager
+            // for both Gemini and Kimi; names stay for existing migrations.
+            guard configuration.source == .geminiCli || configuration.source == .kimi,
+                  ArchiveSourceDescriptor.fileSetAbsolutePath(locator) == locator,
+                  !locator.utf8.elementsEqual(configuration.rootPath.utf8),
+                  !locator.hasPrefix(configuration.rootPath + "/"),
+                  !configuration.rootPath.hasPrefix(locator + "/") else {
+                throw CollectorInventoryError.invalidRoot
+            }
+        }) { store in
+            try store.reconcileGeminiRegistry(
+                configuration: configuration, locator: locator, generation: generation, limit: 64
+            )
+        }
+    }
+
     func claimDirty(
         configuration: CollectorRootConfiguration, limit: Int, now: Int64
     ) throws -> [CollectorDirtyClaim] {
@@ -327,6 +569,24 @@ final class CollectorInventoryOwner {
         }
     }
 
+    func deferClaims(
+        _ items: [(claim: CollectorDirtyClaim, retryNotBefore: Int64)],
+        configuration: CollectorRootConfiguration,
+        reason: CollectorDirtyDeferReason
+    ) throws -> [Bool] {
+        guard !items.isEmpty else { return [] }
+        return try withDirtyStore(configuration: configuration, allowsUnavailableRoot: true, validateInput: {
+            guard (1...64).contains(items.count), items.allSatisfy({ $0.retryNotBefore >= 0 }) else {
+                throw CollectorInventoryError.invalidBudget
+            }
+            for item in items { try Self.requireClaimConfiguration(item.claim, configuration) }
+        }) { store in
+            try store.deferClaims(items.map { item in
+                (claim: item.claim, retryNotBefore: item.retryNotBefore, reason: reason.rawValue)
+            })
+        }
+    }
+
     func stepRoot(
         _ configuration: CollectorRootConfiguration,
         budget: CollectorBootstrapBudget
@@ -345,6 +605,7 @@ final class CollectorInventoryOwner {
         expectedCheckpoint: CollectorEventCheckpoint?,
         nextCheckpoint: CollectorEventCheckpoint,
         dirtyRelativePaths: [String],
+        dirtyRelativeDirectories: [String] = [],
         budget: CollectorEventIngressBudget
     ) throws -> CollectorEventIngressResult {
         try withEventStore { store in
@@ -354,7 +615,9 @@ final class CollectorInventoryOwner {
                   active.binding.expectedIdentity == binding.expectedIdentity else {
                 throw CollectorInventoryOwnerError.rootNotActivated
             }
-            if try Self.exceedsEventBudget(dirtyRelativePaths, expectedCheckpoint, nextCheckpoint, budget) {
+            if try Self.exceedsEventBudget(
+                dirtyRelativePaths + dirtyRelativeDirectories, expectedCheckpoint, nextCheckpoint, budget
+            ) {
                 // Preserve loss even when the source is gone; accept no prefix
                 // and never send an oversized batch to the checkpoint writer.
                 return try Self.recordEventGap(store, state, .budgetExceeded)
@@ -371,12 +634,165 @@ final class CollectorInventoryOwner {
                     throw CollectorInventoryError.invalidRelativePath
                 }
             }
+            for directory in dirtyRelativeDirectories {
+                try Task.checkCancellation()
+                guard CollectorInventoryStore.isSafeRelativePath(directory) else {
+                    return try Self.recordEventGap(store, state, .continuityLoss)
+                }
+            }
+            if !dirtyRelativeDirectories.isEmpty && !Self.supportsBoundedDirectoryDiscovery(configuration) {
+                return try Self.recordEventGap(store, state, .continuityLoss)
+            }
+            var observedGenerations: [String: String] = [:]
+            let appliedPaths: [String]
+            if configuration.source == .cursor, configuration.cursorLegacy {
+                // A WAL change dirties its physical primary; sidecar chatter
+                // must not create independent session locators.
+                appliedPaths = dirtyRelativePaths.contains(where: { $0 == "state.vscdb" || $0 == "state.vscdb-wal" })
+                    ? ["state.vscdb"] : []
+            } else if configuration.source == .cursor {
+                let relevant = dirtyRelativePaths.filter { CollectorCursorSource.sessionOwning($0) != nil }
+                if relevant.isEmpty { appliedPaths = [] }
+                else {
+                    let sessions: [CollectorCursorSource.ModernSession]
+                    do { sessions = try CollectorCursorSource.discoverModern(rootPath: configuration.rootPath) }
+                    catch is CancellationError { throw CancellationError() }
+                    catch { return try Self.recordEventGap(store, state, .continuityLoss) }
+                    var seen = Set<Data>()
+                    appliedPaths = try relevant.compactMap { path in
+                        guard let id = CollectorCursorSource.sessionOwning(path),
+                              let session = sessions.first(where: { $0.nativeSessionID.utf8.elementsEqual(id.utf8) }),
+                              session.present.contains(where: { $0.relativePath.utf8.elementsEqual(path.utf8) })
+                                || session.absentRelativePaths.contains(where: { $0.utf8.elementsEqual(path.utf8) }),
+                              let primary = session.transcriptRelativePath ?? session.storeRelativePath,
+                              seen.insert(Data(primary.utf8)).inserted else { return nil }
+                        observedGenerations[primary] = try CollectorCursorSource.eventObservationFingerprint(session)
+                        return primary
+                    }
+                }
+            } else if configuration.source == .vscode {
+                // Workspace and external-config changes are reconciled by the bounded
+                // captured-dependency pager. They are never independent session claims.
+                var seen = Set<Data>()
+                appliedPaths = dirtyRelativePaths.filter { path in
+                    CollectorVSCodeSource.isSelectedPrimary(rootPath: configuration.rootPath,
+                        components: path.split(separator: "/", omittingEmptySubsequences: false).map(String.init))
+                        && seen.insert(Data(path.utf8)).inserted
+                }
+            } else if configuration.source == .cline {
+                var seen = Set<Data>()
+                var selected: [String] = []
+                for path in dirtyRelativePaths {
+                    do {
+                        if let primary = try CollectorClineSource.owningPrimary(rootPath: configuration.rootPath, dirtyRelative: path),
+                           seen.insert(Data(primary.utf8)).inserted { selected.append(primary) }
+                    } catch is CancellationError { throw CancellationError() }
+                    catch { return try Self.recordEventGap(store, state, .continuityLoss) }
+                }
+                appliedPaths = selected
+            } else if configuration.source == .copilot {
+                var seen = Set<String>()
+                var reduced: [String] = []
+                for path in dirtyRelativePaths {
+                    for candidate in CollectorCopilotSource.owningCandidates(
+                        rootPath: configuration.rootPath, dirtyRelative: path
+                    ) where seen.insert(candidate).inserted {
+                        reduced.append(candidate)
+                    }
+                }
+                appliedPaths = reduced
+            } else if configuration.source == .geminiCli {
+                var seen = Set<String>()
+                var reduced: [String] = []
+                for path in dirtyRelativePaths {
+                    for candidate in CollectorGeminiSource.owningCandidates(
+                        rootPath: configuration.rootPath, dirtyRelative: path
+                    ) where seen.insert(candidate).inserted {
+                        reduced.append(candidate)
+                    }
+                }
+                appliedPaths = reduced
+            } else if configuration.source == .kimi {
+                var seen = Set<String>()
+                var reduced: [String] = []
+                for path in dirtyRelativePaths {
+                    for candidate in CollectorKimiSource.owningCandidates(
+                        rootPath: configuration.rootPath, dirtyRelative: path
+                    ) where seen.insert(candidate).inserted {
+                        reduced.append(candidate)
+                    }
+                }
+                appliedPaths = reduced
+            } else if configuration.source == .grok {
+                var seen = Set<String>()
+                var reduced: [String] = []
+                for path in dirtyRelativePaths {
+                    for candidate in CollectorGrokSource.owningCandidates(
+                        rootPath: configuration.rootPath, dirtyRelative: path
+                    ) where seen.insert(candidate).inserted {
+                        reduced.append(candidate)
+                    }
+                }
+                appliedPaths = reduced
+            } else if configuration.source == .opencode {
+                var seen = Set<String>()
+                var reduced: [String] = []
+                for path in dirtyRelativePaths {
+                    for candidate in Self.openCodeOwningCandidates(dirtyRelative: path)
+                    where seen.insert(candidate).inserted {
+                        reduced.append(candidate)
+                    }
+                }
+                appliedPaths = reduced
+            } else {
+                appliedPaths = dirtyRelativePaths
+            }
             try CollectorPOSIXRootEnumerator.validateRoot(binding: binding)
+            var eventPaths = appliedPaths
+            if configuration.cursorLegacy, appliedPaths.contains("state.vscdb") {
+                do {
+                    let pair = try CollectorSQLiteSnapshotLease.observe(
+                        root: URL(fileURLWithPath: configuration.rootPath), databaseName: "state.vscdb")
+                    struct Observation: Encodable {
+                        let kind = "cursorLegacyObservationV1"
+                        let databaseGeneration: ArchiveSourceGeneration
+                        let walGeneration: ArchiveSourceGeneration?
+                    }
+                    observedGenerations["state.vscdb"] = ArchiveV2Hash.sha256(try ArchiveCanonicalJSON.encode(
+                        Observation(databaseGeneration: pair.databaseGeneration, walGeneration: pair.walGeneration)))
+                } catch is CancellationError { throw CancellationError() }
+                catch let error as CollectorSQLiteSnapshotError where error == .unavailable {
+                    // A deletion must remain dirty for bounded retry. There is
+                    // no current pair fingerprint to substitute for its bytes.
+                }
+            }
+            if configuration.source == .opencode, appliedPaths.contains("opencode.db") {
+                do {
+                    let pair = try CollectorOpenCodeSource.observe(
+                        root: URL(fileURLWithPath: configuration.rootPath)
+                    )
+                    observedGenerations["opencode.db"] = try CollectorInventoryStore.openCodeObservationFingerprint(
+                        databaseGeneration: pair.databaseGeneration, walGeneration: pair.walGeneration
+                    )
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch let error as CollectorOpenCodeSourceError where error == .unavailable {
+                    eventPaths = []
+                }
+            }
             try store.applyEventBatch(
                 configuration: configuration, expectedCheckpoint: expectedCheckpoint, nextCheckpoint: nextCheckpoint,
-                dirtyRelativePaths: dirtyRelativePaths, requiresReconciliation: false
+                dirtyRelativePaths: eventPaths, requiresReconciliation: false,
+                dirtyRelativeDirectories: dirtyRelativeDirectories,
+                observedGenerations: observedGenerations
             )
-            return .applied(inputPathCount: dirtyRelativePaths.count, checkpoint: nextCheckpoint)
+            if !dirtyRelativeDirectories.isEmpty {
+                active.walker.invalidateCursor()
+            }
+            return .applied(
+                inputPathCount: dirtyRelativePaths.count + dirtyRelativeDirectories.count,
+                checkpoint: nextCheckpoint
+            )
         }
     }
 
@@ -519,6 +935,29 @@ final class CollectorInventoryOwner {
         }
     }
 
+    private static func liveRootObservation(
+        _ store: CollectorInventoryStore, _ configuration: CollectorRootConfiguration,
+        activeRoots: [Data: (binding: CollectorPOSIXRootBinding, walker: CollectorBootstrapWalker)]
+    ) throws -> CollectorLiveRootObservation {
+        let (state, binding) = try requireEnrolledEventRoot(store, configuration)
+        guard let active = activeRoots[Data(configuration.rootID.utf8)],
+              active.binding.configuration == configuration,
+              active.binding.expectedIdentity == binding.expectedIdentity else {
+            throw CollectorInventoryOwnerError.rootNotActivated
+        }
+        do {
+            try CollectorPOSIXRootEnumerator.validateRoot(binding: binding)
+            return CollectorLiveRootObservation(
+                configuration: configuration, unavailable: false, state: state)
+        } catch CollectorPOSIXEnumerationError.io(.openComponent, ENOENT) {
+            return CollectorLiveRootObservation(
+                configuration: configuration, unavailable: true, state: nil)
+        } catch CollectorPOSIXEnumerationError.rootIdentityChanged {
+            return CollectorLiveRootObservation(
+                configuration: configuration, unavailable: true, state: nil)
+        }
+    }
+
     private static func requireEnrolledEventRoot(
         _ store: CollectorInventoryStore, _ configuration: CollectorRootConfiguration
     ) throws -> (CollectorRootState, CollectorPOSIXRootBinding) {
@@ -531,12 +970,29 @@ final class CollectorInventoryOwner {
         return (state, binding)
     }
 
+    private static func supportsBoundedDirectoryDiscovery(_ configuration: CollectorRootConfiguration) -> Bool {
+        if configuration.cursorLegacy { return false }
+        if configuration.source == .opencode { return false }
+        return true
+    }
+
     private static func recordEventGap(
         _ store: CollectorInventoryStore, _ state: CollectorRootState, _ reason: CollectorEventGapReason
     ) throws -> CollectorEventIngressResult {
         try store.requestReconciliation(configuration: state.configuration)
         // Store rejects revision exhaustion before this result is formed.
         return .reconciliationRequested(reason: reason, requestedRevision: state.requestedRevision + 1)
+    }
+
+    private static func openCodeOwningCandidates(dirtyRelative: String) -> [String] {
+        switch dirtyRelative {
+        case "opencode.db", "opencode.db-wal":
+            return ["opencode.db"]
+        case "opencode.db-shm", "opencode.db-journal":
+            return []
+        default:
+            return []
+        }
     }
 
     private static func exceedsEventBudget(
@@ -700,7 +1156,7 @@ final class CollectorInventoryOwner {
         try Self.requireSeparateStorage(shadow: shadow.descriptor, live: live.descriptor)
         _ = try Self.fileIdentity(parent: shadowDescriptor, name: Self.lockName, expected: lockIdentity, descriptor: lockDescriptor)
         if inventoryDescriptor >= 0, let inventoryIdentity {
-            let current = try Self.openDirectory(inventoryRoot)
+            let current = try Self.openStorageValidationDirectory(inventoryRoot, testHooks: .init())
             defer { CollectorPOSIXDirectoryAccess.close(current.descriptor) }
             try Self.validateDirectoryDescriptor(inventoryDescriptor, expected: inventoryIdentity)
             try Self.validateDirectoryDescriptor(current.descriptor, expected: inventoryIdentity)
@@ -721,8 +1177,9 @@ final class CollectorInventoryOwner {
         return try CollectorPOSIXDirectoryAccess.openAbsolute(components: components)
     }
 
-    // Only shadow/live revalidation uses one absolute no-symlink open.
-    // Here beforeOpenComponent receives the full absolute path, once per route.
+    // Validation reopens use one absolute no-symlink open. Startup still
+    // walks components via openDirectory. beforeOpenComponent sees the full
+    // absolute path, once per hooked route.
     private static func openStorageValidationDirectory(
         _ url: URL, testHooks: CollectorPOSIXRootEnumeratorTestHooks
     ) throws -> (descriptor: Int32, info: stat) {
@@ -858,7 +1315,7 @@ final class CollectorInventoryOwner {
         _ db: Database, url: URL, canonicalPath: String, directory: URL,
         directoryIdentity: Identity, parent: Int32, mainDescriptor: Int32, mainIdentity: Identity
     ) throws {
-        let opened = try openDirectory(directory)
+        let opened = try openStorageValidationDirectory(directory, testHooks: .init())
         defer { CollectorPOSIXDirectoryAccess.close(opened.descriptor) }
         try validateDirectoryDescriptor(opened.descriptor, expected: directoryIdentity)
         try validateDirectoryDescriptor(parent, expected: directoryIdentity)

@@ -61,6 +61,80 @@ final class CommandCodeAdapter: SessionAdapter, Sendable {
         }
     }
 
+    static func scanCapturedSource(
+        physicalLocator: String,
+        logicalLocator: String,
+        capturedModificationNanoseconds: Int64? = nil
+    ) throws -> AdapterParseResult<CapturedSourceScan> {
+        try scanFileForIndexing(
+            physicalLocator: physicalLocator,
+            logicalLocator: logicalLocator,
+            limits: .default,
+            strictRecords: true,
+            capturedModificationNanoseconds: capturedModificationNanoseconds
+        )
+    }
+
+    private static func scanFileForIndexing(
+        physicalLocator: String,
+        logicalLocator: String,
+        limits: ParserLimits,
+        strictRecords: Bool,
+        capturedModificationNanoseconds: Int64?
+    ) throws -> AdapterParseResult<CapturedSourceScan> {
+        do {
+            let (objects, failure) = try JSONLAdapterSupport.readObjects(
+                locator: physicalLocator,
+                limits: limits,
+                reportFailures: true,
+                strictRecords: strictRecords,
+                countsTowardMessageLimit: {
+                    guard let message = Self.message(from: $0) else { return false }
+                    return message.role != .system
+                }
+            )
+            if let failure, failure != .fileModifiedDuringParse { return .failure(failure) }
+            let messages = objects.compactMap(Self.message(from:))
+            if failure == .fileModifiedDuringParse, messages.isEmpty {
+                return .failure(.fileModifiedDuringParse)
+            }
+            let info: NormalizedSessionInfo
+            switch Self.sessionInfo(
+                from: objects,
+                locator: logicalLocator,
+                physicalLocator: physicalLocator,
+                capturedModificationNanoseconds: capturedModificationNanoseconds
+            ) {
+            case .failure(let reason): return .failure(reason)
+            case .success(let value): info = value
+            }
+            let checkpoint = failure == nil
+                ? try JSONLAdapterSupport.checkpoint(locator: physicalLocator, limits: limits)
+                : nil
+            let checkpointBoundaryHash = checkpoint?.parsedOffset == info.sizeBytes
+                ? checkpoint?.boundaryHash
+                : nil
+            return .success(
+                CapturedSourceScan(
+                    scan: IndexingScan(
+                        info: info,
+                        messages: messages,
+                        parseFailure: failure,
+                        checkpointParsedOffset: checkpoint?.parsedOffset,
+                        checkpointBoundaryHash: checkpointBoundaryHash
+                    ),
+                    rawSourceSessionID: info.id
+                )
+            )
+        } catch is CancellationError where strictRecords {
+            throw CancellationError()
+        } catch let failure as ParserFailure {
+            return .failure(failure)
+        } catch {
+            return .failure(.malformedJSON)
+        }
+    }
+
     func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
         do {
             let (objects, failure) = try JSONLAdapterSupport.readObjects(
@@ -169,7 +243,9 @@ final class CommandCodeAdapter: SessionAdapter, Sendable {
 
     private static func sessionInfo(
         from objects: [JSONLAdapterSupport.JSONObject],
-        locator: String
+        locator: String,
+        physicalLocator: String? = nil,
+        capturedModificationNanoseconds: Int64? = nil
     ) -> AdapterParseResult<NormalizedSessionInfo> {
         var sessionId = ""
         var startTime = ""
@@ -189,7 +265,9 @@ final class CommandCodeAdapter: SessionAdapter, Sendable {
             if sessionId.isEmpty, let value = JSONLAdapterSupport.string(object["sessionId"]) {
                 sessionId = value
             }
-            if cwd.isEmpty, let value = JSONLAdapterSupport.string(object["cwd"]) { cwd = value }
+            if cwd.isEmpty, let value = JSONLAdapterSupport.string(object["cwd"]), !value.isEmpty {
+                cwd = value
+            }
             if model == nil, let value = JSONLAdapterSupport.string(object["model"]) { model = value }
             if model == nil,
                let value = JSONLAdapterSupport.string(
@@ -220,9 +298,15 @@ final class CommandCodeAdapter: SessionAdapter, Sendable {
             return .failure(.noVisibleMessages)
         }
         if startTime.isEmpty {
-            let attrs = try? FileManager.default.attributesOfItem(atPath: locator)
-            let mtime = attrs?[.modificationDate] as? Date ?? Date(timeIntervalSince1970: 0)
-            startTime = Phase4AdapterSupport.isoFromSeconds(mtime.timeIntervalSince1970)
+            if let capturedModificationNanoseconds {
+                startTime = Phase4AdapterSupport.isoFromSeconds(
+                    Double(capturedModificationNanoseconds) / 1_000_000_000
+                )
+            } else {
+                let attrs = try? FileManager.default.attributesOfItem(atPath: physicalLocator ?? locator)
+                let mtime = attrs?[.modificationDate] as? Date ?? Date(timeIntervalSince1970: 0)
+                startTime = Phase4AdapterSupport.isoFromSeconds(mtime.timeIntervalSince1970)
+            }
             endTime = ""
         }
         return .success(NormalizedSessionInfo(
@@ -240,7 +324,7 @@ final class CommandCodeAdapter: SessionAdapter, Sendable {
             systemMessageCount: systemCount,
             summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200)),
             filePath: locator,
-            sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
+            sizeBytes: JSONLAdapterSupport.fileSize(locator: physicalLocator ?? locator),
             indexedAt: nil,
             agentRole: nil,
             originator: nil,
@@ -302,9 +386,10 @@ final class CommandCodeAdapter: SessionAdapter, Sendable {
     private static func decodeCwd(from locator: String) -> String {
         let encoded = URL(fileURLWithPath: locator).deletingLastPathComponent().lastPathComponent
         guard encoded.contains("-") else { return "" }
-        return encoded
+        let decoded = encoded
             .replacingOccurrences(of: "--", with: "\u{0}")
             .replacingOccurrences(of: "-", with: "/")
             .replacingOccurrences(of: "\u{0}", with: "-")
+        return SourceMetadataProjection.normalizedProjectRoot(decoded) ?? ""
     }
 }

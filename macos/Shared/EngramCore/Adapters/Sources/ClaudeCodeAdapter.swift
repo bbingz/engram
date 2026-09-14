@@ -345,7 +345,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
     ) throws -> AdapterParseResult<CapturedSourceScan> {
         try scanFileForIndexing(
             physicalLocator: physicalLocator, logicalLocator: logicalLocator, projectsRoot: stagingRoot,
-            forceClaudeCodeSource: forceClaudeCodeSource, limits: .default, strictRecords: true
+            forceClaudeCodeSource: forceClaudeCodeSource, limits: .capturedJSONL, strictRecords: true
         )
     }
 
@@ -354,7 +354,12 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         forceClaudeCodeSource: Bool, limits: ParserLimits, strictRecords: Bool
     ) throws -> AdapterParseResult<CapturedSourceScan> {
         do {
-            let (objects, failure) = try JSONLAdapterSupport.readObjects(
+            // One sink feeds both gates so unknown kinds form a set, not a double count.
+            let unknownKinds = UnknownRecordKindSink()
+            let seenUsageMessageIds = UsageMessageIdSet()
+            var aggregateBuild = SessionInfoBuild()
+            var messages: [NormalizedMessage] = []
+            let failure = try JSONLAdapterSupport.consumeObjects(
                 locator: physicalLocator,
                 limits: limits,
                 reportFailures: true,
@@ -366,23 +371,28 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
                         unknownKinds: nil
                     ) != nil
                 }
-            )
+            ) { object in
+                aggregateBuild.consume(object, unknownKinds: unknownKinds)
+                if let message = Self.message(
+                    from: object,
+                    seenUsageMessageIds: seenUsageMessageIds,
+                    unknownKinds: unknownKinds
+                ) {
+                    messages.append(message)
+                }
+            }
             if let failure, failure != .fileModifiedDuringParse { return .failure(failure) }
-            // One sink feeds both gates so unknown kinds form a set, not a double count.
-            let unknownKinds = UnknownRecordKindSink()
-            let messages = Self.messages(from: objects, unknownKinds: unknownKinds)
             if failure == .fileModifiedDuringParse, messages.isEmpty {
                 return .failure(.fileModifiedDuringParse)
             }
-            let aggregate = Self.aggregateSessionInfo(from: objects, unknownKinds: unknownKinds)
+            let aggregate = aggregateBuild.finish()
             switch Self.sessionInfo(
-                from: objects,
                 locator: logicalLocator,
                 projectsRoot: projectsRoot,
                 forceClaudeCodeSource: forceClaudeCodeSource,
-                unknownKinds: unknownKinds,
                 physicalLocator: physicalLocator,
-                aggregate: aggregate
+                aggregate: aggregate,
+                sawRecord: aggregateBuild.sawRecord
             ) {
             case .failure(let reason):
                 return .failure(reason)
@@ -475,9 +485,26 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         physicalLocator: String? = nil,
         aggregate suppliedAggregate: SessionInfoAggregate? = nil
     ) -> AdapterParseResult<NormalizedSessionInfo> {
-        let aggregate = suppliedAggregate ?? aggregateSessionInfo(from: objects, unknownKinds: unknownKinds)
+        sessionInfo(
+            locator: locator,
+            projectsRoot: projectsRoot,
+            forceClaudeCodeSource: forceClaudeCodeSource,
+            physicalLocator: physicalLocator,
+            aggregate: suppliedAggregate ?? aggregateSessionInfo(from: objects, unknownKinds: unknownKinds),
+            sawRecord: !objects.isEmpty
+        )
+    }
+
+    private static func sessionInfo(
+        locator: String,
+        projectsRoot: String,
+        forceClaudeCodeSource: Bool,
+        physicalLocator: String?,
+        aggregate: SessionInfoAggregate,
+        sawRecord: Bool
+    ) -> AdapterParseResult<NormalizedSessionInfo> {
         guard aggregate.messageCount > 0 else {
-            return objects.isEmpty ? .failure(.malformedJSON) : .failure(.noVisibleMessages)
+            return sawRecord ? .failure(.noVisibleMessages) : .failure(.malformedJSON)
         }
         let subagent = SubagentTranscriptPath.layout(locator: physicalLocator ?? locator, projectsRoot: projectsRoot)
         guard let id = aggregate.id(locator: physicalLocator ?? locator, projectsRoot: projectsRoot) else {
@@ -561,13 +588,16 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         "pr-link", "queue-operation", "result", "started", "summary", "system",
     ]
 
-    private static func aggregateSessionInfo(
-        from objects: [JSONLAdapterSupport.JSONObject],
-        unknownKinds: UnknownRecordKindSink?
-    ) -> SessionInfoAggregate {
+    private struct SessionInfoBuild {
         var aggregate = SessionInfoAggregate()
         var metadata = SourceMetadataProjection(format: .claudeCode(forceClaudeCodeSource: false), locator: "")
-        for object in objects {
+        var sawRecord = false
+
+        mutating func consume(
+            _ object: JSONLAdapterSupport.JSONObject,
+            unknownKinds: UnknownRecordKindSink?
+        ) {
+            sawRecord = true
             metadata.consume(object)
             if aggregate.agentId.isEmpty, let value = JSONLAdapterSupport.string(object["agentId"]) {
                 aggregate.agentId = value
@@ -575,8 +605,8 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             guard let type = JSONLAdapterSupport.string(object["type"]),
                   type == "user" || type == "assistant"
             else {
-                noteUnknownRecordKind(JSONLAdapterSupport.string(object["type"]), into: unknownKinds)
-                continue
+                ClaudeCodeAdapter.noteUnknownRecordKind(JSONLAdapterSupport.string(object["type"]), into: unknownKinds)
+                return
             }
 
             if aggregate.startTime.isEmpty, let value = JSONLAdapterSupport.string(object["timestamp"]) {
@@ -589,16 +619,16 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             let message = JSONLAdapterSupport.object(object["message"])
             if type == "assistant" {
                 aggregate.assistantCount += 1
-            } else if Self.isToolResult(message?["content"]) {
+            } else if ClaudeCodeAdapter.isToolResult(message?["content"]) {
                 // Count a tool_result user record only when it surfaces
                 // non-empty content, matching message(from:) which drops
                 // empty tool results from the streamed transcript.
-                if !Self.extractContent(message?["content"]).isEmpty {
+                if !ClaudeCodeAdapter.extractContent(message?["content"]).isEmpty {
                     aggregate.toolCount += 1
                 }
             } else {
-                let text = Self.extractContent(message?["content"])
-                if Self.isSystemInjection(text) {
+                let text = ClaudeCodeAdapter.extractContent(message?["content"])
+                if ClaudeCodeAdapter.isSystemInjection(text) {
                     aggregate.systemCount += 1
                 } else {
                     aggregate.userCount += 1
@@ -606,10 +636,24 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
                 }
             }
         }
-        aggregate.sessionId = metadata.nativeSessionID ?? ""
-        aggregate.cwd = metadata.cwd ?? ""
-        aggregate.detectedModel = metadata.model ?? ""
-        return aggregate
+
+        mutating func finish() -> SessionInfoAggregate {
+            aggregate.sessionId = metadata.nativeSessionID ?? ""
+            aggregate.cwd = metadata.cwd ?? ""
+            aggregate.detectedModel = metadata.model ?? ""
+            return aggregate
+        }
+    }
+
+    private static func aggregateSessionInfo(
+        from objects: [JSONLAdapterSupport.JSONObject],
+        unknownKinds: UnknownRecordKindSink?
+    ) -> SessionInfoAggregate {
+        var build = SessionInfoBuild()
+        for object in objects {
+            build.consume(object, unknownKinds: unknownKinds)
+        }
+        return build.finish()
     }
 
     func streamMessages(

@@ -29,6 +29,8 @@ public enum SessionStorageRootCatalog {
         Entry(id: "antigravity-legacy", relativePath: ".gemini/antigravity"),
         Entry(id: "commandcode", relativePath: ".commandcode/projects"),
         Entry(id: "copilot", relativePath: ".copilot"),
+        Entry(id: "pi", relativePath: ".pi/agent/sessions"),
+        Entry(id: "grok", relativePath: ".grok/sessions"),
     ]
 
     public static func paths(homeDirectory: URL) -> [(id: String, path: String)] {

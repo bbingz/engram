@@ -150,7 +150,24 @@ export function makeInstallationPlan(options, metadata) {
         'existing target would be overwritten; a separate upgrade transaction is required',
       );
   }
-  for (const key of [...capture, ...index]) {
+  const expectedHome = options['expected-home'];
+  if (
+    expectedHome &&
+    [
+      join(root, 'releases'),
+      current,
+      targets.wrapper,
+      options.package,
+      options['launch-agent-directory'],
+    ].some(
+      (target) =>
+        expectedHome === target || expectedHome.startsWith(`${target}/`),
+    )
+  ) {
+    fail('user home is inside a package or installation target');
+  }
+  // expected-home describes the user context; it is not a writable state file.
+  for (const key of ['settings', 'credentials-file', ...index]) {
     const value = options[key];
     if (
       value &&
@@ -209,6 +226,17 @@ export function makeInstallationPlan(options, metadata) {
         script: role.verifier,
         bundle: release,
       },
+      ...(options.role === 'collector'
+        ? [
+            {
+              operation: 'initialize-collector-spool',
+              executable: join(release, 'bin/EngramCollector'),
+              arguments: ['--settings', options.settings, '--initialize'],
+              overwrite: false,
+              startsCollection: false,
+            },
+          ]
+        : []),
       {
         operation: 'render-wrapper',
         template: join(release, 'templates', `${role.wrapper}.template`),

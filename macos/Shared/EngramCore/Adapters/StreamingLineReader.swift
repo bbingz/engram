@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 final class StreamingLineReader {
@@ -43,6 +44,7 @@ final class StreamingLineReader {
         // until process exit.
         let holder = HandleHolder(handle: handle)
         var buffer = Data()
+        var searchedBytes = 0
         var eof = false
         let maxLineBytes = self.maxLineBytes
         let chunkSize = self.chunkSize
@@ -51,9 +53,17 @@ final class StreamingLineReader {
             AnyIterator { [weak self, holder] in
                 _ = holder // keep handle alive until iterator is released
                 while true {
-                    if let newlineIndex = buffer.firstIndex(of: UInt8(ascii: "\n")) {
+                    // Prefix bytes were already checked before the last read.
+                    let newlineIndex = buffer.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) -> Int? in
+                        guard searchedBytes < bytes.count, let base = bytes.baseAddress,
+                              let found = memchr(base.advanced(by: searchedBytes), 10, bytes.count - searchedBytes)
+                        else { return nil }
+                        return base.distance(to: found)
+                    }
+                    if let newlineIndex {
                         let lineData = buffer[buffer.startIndex..<newlineIndex]
                         buffer = Data(buffer[(newlineIndex + 1)...])
+                        searchedBytes = 0
                         if lineData.count > maxLineBytes {
                             self?.recordFailure(.lineTooLarge)
                             continue
@@ -67,11 +77,14 @@ final class StreamingLineReader {
                         return trimmed
                     }
 
+                    searchedBytes = buffer.count
+
                     if eof {
                         holder.closeNow()
                         guard !buffer.isEmpty else { return nil }
                         let remaining = buffer
                         buffer = Data()
+                        searchedBytes = 0
                         if remaining.count > maxLineBytes {
                             self?.recordFailure(.lineTooLarge)
                             return nil
@@ -87,6 +100,7 @@ final class StreamingLineReader {
                     if buffer.count > maxLineBytes {
                         self?.recordFailure(.lineTooLarge)
                         buffer = Data()
+                        searchedBytes = 0
                         while true {
                             let chunk = holder.handle.readData(ofLength: chunkSize)
                             if chunk.isEmpty {

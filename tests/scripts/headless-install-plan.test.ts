@@ -126,6 +126,45 @@ function checkTemplates(root: string, argv: string[]) {
 }
 
 describe('headless installation dry-run boundaries', () => {
+  for (const [role, product] of [
+    ['collector', 'EngramCollector'],
+    ['service-index', 'EngramService'],
+  ]) {
+    it(`allows ${role} installation inside its expected user home`, () => {
+      const root = fixture();
+      const argv = args(root, role);
+      argv[argv.indexOf('--expected-home') + 1] = root;
+      const result = runPure(root, argv, { sourceRevision: revision, product });
+      expect(result.status, result.stderr).toBe(0);
+      const plan = JSON.parse(result.stdout);
+      expect(plan.activation.launchctl).toBe('NOT_RUN');
+      expect(existsSync(join(root, 'installation'))).toBe(false);
+    });
+    it(`rejects ${role} user context inside package or installation targets`, () => {
+      const root = fixture();
+      const wrapper =
+        role === 'collector'
+          ? 'run-engram-collector.zsh'
+          : 'run-engram-service-index.zsh';
+      for (const target of [
+        'package',
+        'jobs',
+        'installation/releases',
+        'installation/current',
+        `installation/${wrapper}`,
+      ]) {
+        for (const suffix of ['', '/runtime-home']) {
+          const argv = args(root, role);
+          argv[argv.indexOf('--expected-home') + 1] =
+            join(root, target) + suffix;
+          expectRejected(
+            runPure(root, argv, { sourceRevision: revision, product }),
+            /user home is inside/,
+          );
+        }
+      }
+    });
+  }
   for (const [role, product, label, wrapper] of [
     [
       'collector',
@@ -177,6 +216,7 @@ describe('headless installation dry-run boundaries', () => {
       ).toEqual([
         'copy-new-release',
         'verify-copied-release',
+        ...(role === 'collector' ? ['initialize-collector-spool'] : []),
         'render-wrapper',
         'render-disabled-launch-agent',
         'create-current-symlink',
@@ -184,6 +224,29 @@ describe('headless installation dry-run boundaries', () => {
       expect(plan.blockersBeforeApply).toContain(
         'separately authorized host transaction',
       );
+      if (role === 'collector') {
+        expect(
+          plan.steps.find(
+            (step: { operation: string }) =>
+              step.operation === 'initialize-collector-spool',
+          ),
+        ).toEqual({
+          operation: 'initialize-collector-spool',
+          executable: join(
+            root,
+            'installation/releases',
+            revision,
+            'bin/EngramCollector',
+          ),
+          arguments: [
+            '--settings',
+            join(root, 'settings.json'),
+            '--initialize',
+          ],
+          overwrite: false,
+          startsCollection: false,
+        });
+      }
       const wrapperStep = plan.steps.find(
         (step: { operation: string }) => step.operation === 'render-wrapper',
       );

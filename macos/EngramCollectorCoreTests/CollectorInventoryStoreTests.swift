@@ -6,6 +6,149 @@ import XCTest
 @testable import EngramCollectorCore
 
 final class CollectorInventoryStoreTests: XCTestCase {
+    func testSnapshotByteBudgetIncludesFrozenVSCodeConfigurationAndRejectsOverflow() throws {
+        let bytes = Data(#"{"folders":[{"path":"project"}]}"#.utf8)
+        let configuration = try ArchiveVSCodeWorkspaceContext(
+            configurationLocator: "/project.code-workspace",
+            configurationGeneration: ArchiveSourceGeneration(device: 1, inode: 2,
+                size: Int64(bytes.count), mtimeNs: 1, ctimeNs: 1, mode: 0o100600),
+            configurationData: bytes, configurationSHA256: ArchiveV2Hash.sha256(bytes))
+        func snapshot(size: Int64, context: ArchiveVSCodeWorkspaceContext?) throws -> CollectorDependencySnapshot {
+            CollectorDependencySnapshot(entrypointRelativePath: "ws/chatSessions/chat.jsonl",
+                present: [.init(relativePath: "ws/chatSessions/chat.jsonl",
+                    generation: try ArchiveSourceGeneration(device: 1, inode: 3,
+                        size: size, mtimeNs: 1, ctimeNs: 1, mode: 0o100600))],
+                absentRelativePaths: [], vscodeWorkspaceContext: context)
+        }
+        XCTAssertEqual(try snapshot(size: 42, context: configuration).presentByteCount(), 42 + Int64(bytes.count))
+        XCTAssertEqual(try snapshot(size: 42, context: ArchiveVSCodeWorkspaceContext(
+            configurationLocator: "/missing.code-workspace")).presentByteCount(), 42)
+        XCTAssertEqual(try snapshot(size: 42, context: nil).presentByteCount(), 42)
+        XCTAssertThrowsError(try snapshot(size: Int64.max, context: configuration).presentByteCount())
+    }
+
+    func testSchemaNineMigrationPreservesPublicationAndACKBytes() throws {
+        let f = try CollectorInventoryTestFixture(); defer { f.remove() }
+        _ = try f.openRegistered()
+        let db = try f.openDatabase()
+        try f.seedPublications(in: db, acknowledgedReplicas: ["hq"])
+        let before = try db.read { db in
+            (try Data.fetchOne(db, sql: "SELECT canonical_bytes FROM collector_publications"),
+             try Data.fetchOne(db, sql: "SELECT ack_bytes FROM collector_publication_replicas WHERE replica_id = 'hq'"),
+             try String.fetchOne(db, sql: "SELECT source_instance_id FROM collector_streams"),
+             try String.fetchOne(db, sql: "SELECT collector_epoch FROM collector_streams"))
+        }
+        try downgradeStreamsToSchemaNine(db)
+        _ = try f.open(owner: "migration-owner")
+        try db.read { db in
+            XCTAssertEqual(try Data.fetchOne(db, sql: "SELECT canonical_bytes FROM collector_publications"), before.0)
+            XCTAssertEqual(try Data.fetchOne(db, sql: "SELECT ack_bytes FROM collector_publication_replicas WHERE replica_id = 'hq'"), before.1)
+            XCTAssertNotNil(before.1)
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT source_instance_id FROM collector_streams"), before.2)
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT collector_epoch FROM collector_streams"), before.3)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT last_sequence FROM collector_streams"), 1)
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT effective_source FROM collector_streams"), f.configuration.source.rawValue)
+            XCTAssertTrue(try Row.fetchAll(db, sql: "PRAGMA foreign_key_check").isEmpty)
+        }
+    }
+
+    func testSchemaNineHistoricalStreamsRemainUnresolvedAndSeparateFromCurrentSources() throws {
+        let f = try CollectorInventoryTestFixture(); defer { f.remove() }
+        let store = try f.openRegistered()
+        let db = try f.openDatabase()
+        try f.seedPublications(in: db)
+        let next = CollectorRootConfiguration(rootID: f.configuration.rootID, source: .claudeCode,
+            rootPath: f.configuration.rootPath, revision: f.configuration.revision + 1)
+        try store.registerRoot(next)
+        try downgradeStreamsToSchemaNine(db)
+        _ = try f.open(owner: "migration-owner")
+        try db.write { db in
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT effective_source FROM collector_streams"), "")
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT last_sequence FROM collector_streams"), 1)
+            for source in ["claude-code", "minimax", "lobsterai"] {
+                try db.execute(sql: """
+                    INSERT INTO collector_streams(root_id, root_revision, effective_source,
+                        source_instance_id, collector_epoch, last_sequence) VALUES (?, ?, ?, ?, ?, 0)
+                    """, arguments: [next.rootID, next.revision, source, UUID().uuidString, UUID().uuidString])
+            }
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT count(*) FROM collector_streams"), 4)
+            XCTAssertTrue(try Row.fetchAll(db, sql: "PRAGMA foreign_key_check").isEmpty)
+        }
+        _ = try f.open(owner: "second-reopen")
+        XCTAssertEqual(try db.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM collector_streams") }, 4)
+    }
+
+    private func downgradeStreamsToSchemaNine(_ database: DatabaseQueue) throws {
+        try database.writeWithoutTransaction { db in
+            try db.execute(sql: "PRAGMA foreign_keys = OFF")
+            do {
+                try db.inTransaction {
+                    try db.execute(sql: """
+                        CREATE TABLE collector_streams_v9 (
+                            root_id TEXT NOT NULL, root_revision INTEGER NOT NULL,
+                            source_instance_id TEXT NOT NULL, collector_epoch TEXT NOT NULL,
+                            last_sequence INTEGER NOT NULL,
+                            PRIMARY KEY(root_id, root_revision),
+                            UNIQUE(root_id, root_revision, source_instance_id, collector_epoch),
+                            FOREIGN KEY(root_id) REFERENCES collector_roots(root_id)
+                        ) WITHOUT ROWID;
+                        INSERT INTO collector_streams_v9 SELECT root_id, root_revision,
+                            source_instance_id, collector_epoch, last_sequence FROM collector_streams;
+                        DROP TABLE collector_streams;
+                        ALTER TABLE collector_streams_v9 RENAME TO collector_streams;
+                        UPDATE collector_metadata SET value = '9' WHERE key = 'publication_schema_version';
+                        """)
+                    XCTAssertTrue(try Row.fetchAll(db, sql: "PRAGMA foreign_key_check").isEmpty)
+                    return .commit
+                }
+            } catch {
+                try db.execute(sql: "PRAGMA foreign_keys = ON")
+                throw error
+            }
+            try db.execute(sql: "PRAGMA foreign_keys = ON")
+        }
+    }
+
+    func testCursorLayoutAndByteExactPairPersistAndRequireNewRootRevision() throws {
+        let f = try CollectorInventoryTestFixture(); defer { f.remove() }
+        let store = try f.open()
+        let root = CollectorRootConfiguration(rootID: "legacy", source: .cursor,
+            rootPath: "/tmp/explicit-cursor/User/globalStorage", revision: 1,
+            cursorLegacy: true, cursorModernRootID: "modern-é")
+        try store.registerRoot(root)
+        let reopened = try f.open(owner: "run-2")
+        XCTAssertEqual(try reopened.rootState(rootID: root.rootID)?.configuration, root)
+        let changed = CollectorRootConfiguration(rootID: root.rootID, source: root.source,
+            rootPath: root.rootPath, revision: 1, cursorLegacy: true, cursorModernRootID: "modern-e\u{301}")
+        XCTAssertNotEqual(root, changed)
+        XCTAssertThrowsError(try reopened.registerRoot(changed))
+        let advanced = CollectorRootConfiguration(rootID: root.rootID, source: root.source,
+            rootPath: root.rootPath, revision: 2, cursorLegacy: true, cursorModernRootID: changed.cursorModernRootID)
+        try reopened.registerRoot(advanced)
+        XCTAssertEqual(try reopened.rootState(rootID: root.rootID)?.configuration, advanced)
+        for invalid in [
+            CollectorRootConfiguration(rootID: "bad", source: .codex, rootPath: root.rootPath, revision: 1, cursorLegacy: true),
+            CollectorRootConfiguration(rootID: "bad", source: .cursor, rootPath: "/tmp/modern", revision: 1, cursorLegacy: true),
+            CollectorRootConfiguration(rootID: "bad", source: .cursor, rootPath: root.rootPath, revision: 1, cursorModernRootID: "modern"),
+            CollectorRootConfiguration(rootID: "bad", source: .cursor, rootPath: root.rootPath, revision: 1, cursorLegacy: true, cursorModernRootID: "bad")
+        ] { XCTAssertThrowsError(try reopened.registerRoot(invalid)) }
+    }
+
+    func testCursorSchemaSixMigrationDefaultsExistingRootsWithoutDroppingDirtyWork() throws {
+        let f = try CollectorInventoryTestFixture(); defer { f.remove() }
+        let old = try f.openRegistered()
+        try old.markDirty(configuration: f.configuration, relativePath: "one.jsonl")
+        let db = try f.openDatabase()
+        try db.write {
+            try $0.execute(sql: "ALTER TABLE collector_roots DROP COLUMN cursor_legacy")
+            try $0.execute(sql: "ALTER TABLE collector_roots DROP COLUMN cursor_modern_root_id")
+            try $0.execute(sql: "UPDATE collector_metadata SET value = '6' WHERE key = 'publication_schema_version'")
+        }
+        let reopened = try f.open(owner: "run-2")
+        XCTAssertEqual(try reopened.rootState(rootID: f.configuration.rootID)?.configuration, f.configuration)
+        XCTAssertEqual(try reopened.locator(configuration: f.configuration, relativePath: "one.jsonl")?.dirtyRevision, 1)
+    }
+
     func testN1ByteDifferentOwnerCannotAcknowledgeOrDeferOldOrSubstitutedOwnerClaims() throws {
         for owners in [["run-é", "run-e\u{301}"], ["run-e\u{301}", "run-é"]] {
             for substitutesOwner in [false, true] {
@@ -221,8 +364,11 @@ final class CollectorInventoryStoreTests: XCTestCase {
         // Reconstruct the frozen v1 shape before opening the migration owner.
         try database.write { db in
             try db.execute(sql: """
+                DROP TABLE IF EXISTS collector_cursor_legacy_workspaces;
+                DROP TABLE IF EXISTS collector_cursor_legacy_sessions;
                 DROP TABLE IF EXISTS collector_publication_replicas;
                 DROP TABLE IF EXISTS collector_publications;
+                DROP TABLE IF EXISTS collector_capture_reservation_dependencies;
                 DROP TABLE IF EXISTS collector_capture_reservations;
                 DROP TABLE IF EXISTS collector_streams;
                 DROP TABLE IF EXISTS collector_root_bindings;
@@ -818,7 +964,7 @@ final class CollectorInventoryStoreTests: XCTestCase {
         let database = try fixture.openDatabase()
         let tables = try database.read { try String.fetchAll($0, sql: "SELECT name FROM sqlite_master WHERE type = 'table'") }
         XCTAssertEqual(Set(tables), ["collector_metadata", "collector_roots", "collector_locators", "collector_frontier", "collector_root_bindings",
-            "collector_streams", "collector_capture_reservations", "collector_publications", "collector_publication_replicas"])
+            "collector_streams", "collector_capture_reservations", "collector_capture_reservation_dependencies", "collector_publications", "collector_publication_replicas", "collector_cursor_legacy_sessions", "collector_cursor_legacy_workspaces"])
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent("index.sqlite").path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent("archive.sqlite").path))
     }
@@ -953,6 +1099,40 @@ final class CollectorInventoryStoreTests: XCTestCase {
         XCTAssertEqual(try store.pendingDirectories(scan: scan, limit: 10), [""])
     }
 
+    // RED before / GREEN after for applyBootstrapBatch non-OpenCode files:
+    // Setup: scan-1 observes one.jsonl generation "observed-1", finish, ACK;
+    //        requestReconciliation; scan-2 observes the same path+generation.
+    // RED (old): `if generation == observed, seenScanID == batch.scan.scanID`
+    //        → scan-2 upserts dirty; after.dirtyRevision == before.dirtyRevision + 1
+    //        and pendingLocators == ["one.jsonl"].
+    // GREEN (new): `if generation == observed { touch last_seen; continue }`
+    //        → dirtyRevision/acknowledgedRevision/observedGeneration unchanged
+    //        and pendingLocators is empty.
+    func testUnchangedBootstrapGenerationOnNewScanDoesNotRedirty_repro() throws {
+        let fixture = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        let store = try fixture.openRegistered()
+        let first = try store.beginBootstrap(configuration: fixture.configuration, scanID: "scan-1")
+        try store.applyBootstrapBatch(fixture.batch(scan: first, files: [fixture.file("one.jsonl")], finished: true))
+        XCTAssertTrue(try store.finishBootstrap(first))
+        XCTAssertEqual(try store.acknowledge(fixture.claim(store), captureID: "last-good"), .acknowledged)
+        XCTAssertTrue(try store.pendingLocators(configuration: fixture.configuration, limit: 10).isEmpty)
+        let before = try XCTUnwrap(store.locator(configuration: fixture.configuration, relativePath: "one.jsonl"))
+
+        try store.requestReconciliation(configuration: fixture.configuration)
+        let second = try store.beginBootstrap(configuration: fixture.configuration, scanID: "scan-2")
+        try store.applyBootstrapBatch(fixture.batch(scan: second, files: [fixture.file("one.jsonl")], finished: true))
+        let after = try XCTUnwrap(store.locator(configuration: fixture.configuration, relativePath: "one.jsonl"))
+        XCTAssertEqual(after.dirtyRevision, before.dirtyRevision)
+        XCTAssertEqual(after.acknowledgedRevision, before.acknowledgedRevision)
+        XCTAssertEqual(after.observedGeneration, before.observedGeneration)
+        XCTAssertTrue(
+            try store.pendingLocators(configuration: fixture.configuration, limit: 10).isEmpty,
+            "unchanged generation on a new scan must not enqueue recapture"
+        )
+        XCTAssertTrue(try store.finishBootstrap(second))
+    }
+
     func testNewGapDuringScanCannotBeClearedByOldCompletionAndSurvivesReopen() throws {
         let fixture = try CollectorInventoryTestFixture()
         defer { fixture.remove() }
@@ -1019,6 +1199,188 @@ final class CollectorInventoryStoreTests: XCTestCase {
         XCTAssertEqual(try store.rootState(rootID: fixture.configuration.rootID), state)
     }
 
+    func testDirectoryBatchEnqueuesTargetedScanWithoutRootFrontierOrRevisionBump() throws {
+        let fixture = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        let store = try fixture.openRegistered()
+        let before = try watchingReady(store, fixture)
+        try store.applyEventBatch(
+            configuration: fixture.configuration, expectedCheckpoint: nil,
+            nextCheckpoint: .init(epoch: "epoch-1", cursor: "dir-1"),
+            dirtyRelativePaths: ["newdir/visible.jsonl"], requiresReconciliation: false,
+            dirtyRelativeDirectories: ["newdir"]
+        )
+        let state = try XCTUnwrap(store.rootState(rootID: fixture.configuration.rootID))
+        XCTAssertEqual(state.requestedRevision, before.requestedRevision)
+        XCTAssertEqual(state.completedRevision, before.completedRevision)
+        XCTAssertEqual(state.eventCheckpoint, .init(epoch: "epoch-1", cursor: "dir-1"))
+        let scan = try XCTUnwrap(state.activeScan)
+        XCTAssertEqual(scan.requestedRevision, before.requestedRevision)
+        XCTAssertEqual(try store.pendingDirectories(scan: scan, limit: 8), ["newdir"])
+        XCTAssertEqual(
+            try store.locator(configuration: fixture.configuration, relativePath: "newdir/visible.jsonl")?.relativePath,
+            "newdir/visible.jsonl"
+        )
+        let database = try fixture.openDatabase()
+        let dirs = try database.read { db in
+            try String.fetchAll(db, sql: """
+                SELECT relative_directory FROM collector_frontier
+                WHERE root_id = ? AND scan_id = ? ORDER BY relative_directory
+                """, arguments: [fixture.configuration.rootID, scan.scanID])
+        }
+        XCTAssertEqual(dirs, ["newdir"])
+        XCTAssertFalse(dirs.contains(""))
+        XCTAssertFalse(dirs.contains("sibling"))
+    }
+
+    func testTargetedDirectoryScanResumesAfterStoreReopen() throws {
+        let fixture = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        var store: CollectorInventoryStore? = try fixture.openRegistered()
+        _ = try watchingReady(store!, fixture)
+        try store!.applyEventBatch(
+            configuration: fixture.configuration, expectedCheckpoint: nil,
+            nextCheckpoint: .init(epoch: "epoch-1", cursor: "dir-1"),
+            dirtyRelativePaths: [], requiresReconciliation: false,
+            dirtyRelativeDirectories: ["newdir"]
+        )
+        let pending = try XCTUnwrap(store!.rootState(rootID: fixture.configuration.rootID))
+        let scan = try XCTUnwrap(pending.activeScan)
+        store = nil
+        store = try fixture.open(owner: "run-1")
+        XCTAssertEqual(try store!.rootState(rootID: fixture.configuration.rootID), pending)
+        XCTAssertEqual(try store!.beginBootstrap(configuration: fixture.configuration, scanID: "ignored"), scan)
+        XCTAssertEqual(try store!.pendingDirectories(scan: scan, limit: 8), ["newdir"])
+        try store!.applyBootstrapBatch(fixture.batch(
+            scan: scan, directory: "newdir", files: [fixture.file("newdir/hidden.jsonl")], finished: true
+        ))
+        XCTAssertTrue(try store!.finishBootstrap(scan))
+        let completed = try XCTUnwrap(store!.rootState(rootID: fixture.configuration.rootID))
+        XCTAssertNil(completed.activeScan)
+        XCTAssertEqual(completed.requestedRevision, pending.requestedRevision)
+        XCTAssertEqual(completed.completedRevision, pending.completedRevision)
+        XCTAssertEqual(
+            try store!.locator(configuration: fixture.configuration, relativePath: "newdir/hidden.jsonl")?.relativePath,
+            "newdir/hidden.jsonl"
+        )
+    }
+
+    func testRepeatedDirectoryEventReopensCompletedFrontierDuringPendingScan() throws {
+        let fixture = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        let store = try fixture.openRegistered()
+        let before = try watchingReady(store, fixture)
+        try store.applyEventBatch(
+            configuration: fixture.configuration, expectedCheckpoint: nil,
+            nextCheckpoint: .init(epoch: "epoch-1", cursor: "dir-1"),
+            dirtyRelativePaths: [], requiresReconciliation: false,
+            dirtyRelativeDirectories: ["alpha", "zeta"]
+        )
+        let scan = try XCTUnwrap(store.rootState(rootID: fixture.configuration.rootID)?.activeScan)
+        try store.applyBootstrapBatch(fixture.batch(
+            scan: scan, directory: "alpha", files: [fixture.file("alpha/old.jsonl")], finished: true
+        ))
+        XCTAssertEqual(try store.pendingDirectories(scan: scan, limit: 8), ["zeta"])
+        XCTAssertEqual(try frontierCompleted(fixture, scan: scan, directory: "alpha"), 1)
+        try store.applyEventBatch(
+            configuration: fixture.configuration, expectedCheckpoint: .init(epoch: "epoch-1", cursor: "dir-1"),
+            nextCheckpoint: .init(epoch: "epoch-1", cursor: "dir-2"),
+            dirtyRelativePaths: [], requiresReconciliation: false,
+            dirtyRelativeDirectories: ["alpha"]
+        )
+        let after = try XCTUnwrap(store.rootState(rootID: fixture.configuration.rootID))
+        XCTAssertEqual(after.requestedRevision, before.requestedRevision)
+        XCTAssertEqual(after.completedRevision, before.completedRevision)
+        XCTAssertEqual(after.activeScan, scan)
+        XCTAssertEqual(try store.pendingDirectories(scan: scan, limit: 8), ["alpha", "zeta"])
+        XCTAssertEqual(try frontierCompleted(fixture, scan: scan, directory: "alpha"), 0)
+        XCTAssertEqual(try frontierCompleted(fixture, scan: scan, directory: "zeta"), 0)
+        let database = try fixture.openDatabase()
+        let dirs = try database.read { db in
+            try String.fetchAll(db, sql: """
+                SELECT relative_directory FROM collector_frontier
+                WHERE root_id = ? AND scan_id = ? ORDER BY relative_directory
+                """, arguments: [fixture.configuration.rootID, scan.scanID])
+        }
+        XCTAssertEqual(dirs, ["alpha", "zeta"])
+        XCTAssertFalse(dirs.contains(""))
+    }
+
+    func testTargetedDirectorySeedDuringPendingReconciliationDoesNotCompleteRequestedRevision() throws {
+        let fixture = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        let store = try fixture.openRegistered()
+        let ready = try watchingReady(store, fixture)
+        try store.requestReconciliation(configuration: fixture.configuration)
+        let gapped = try XCTUnwrap(store.rootState(rootID: fixture.configuration.rootID))
+        XCTAssertGreaterThan(gapped.requestedRevision, ready.completedRevision)
+        try store.applyEventBatch(
+            configuration: fixture.configuration, expectedCheckpoint: nil,
+            nextCheckpoint: .init(epoch: "epoch-1", cursor: "dir-1"),
+            dirtyRelativePaths: [], requiresReconciliation: false,
+            dirtyRelativeDirectories: ["newdir"]
+        )
+        let scan = try XCTUnwrap(store.rootState(rootID: fixture.configuration.rootID)?.activeScan)
+        XCTAssertEqual(scan.requestedRevision, gapped.requestedRevision)
+        XCTAssertEqual(try store.pendingDirectories(scan: scan, limit: 8), ["", "newdir"])
+        try store.applyBootstrapBatch(fixture.batch(
+            scan: scan, directory: "newdir", files: [fixture.file("newdir/hidden.jsonl")], finished: true
+        ))
+        XCTAssertFalse(try store.finishBootstrap(scan))
+        let afterSubtree = try XCTUnwrap(store.rootState(rootID: fixture.configuration.rootID))
+        XCTAssertEqual(afterSubtree.completedRevision, ready.completedRevision)
+        XCTAssertEqual(afterSubtree.requestedRevision, gapped.requestedRevision)
+        XCTAssertEqual(afterSubtree.activeScan, scan)
+        try store.applyBootstrapBatch(fixture.batch(scan: scan, finished: true))
+        XCTAssertTrue(try store.finishBootstrap(scan))
+        let complete = try XCTUnwrap(store.rootState(rootID: fixture.configuration.rootID))
+        XCTAssertNil(complete.activeScan)
+        XCTAssertEqual(complete.requestedRevision, complete.completedRevision)
+        XCTAssertEqual(complete.completedRevision, gapped.requestedRevision)
+    }
+
+    func testTargetedScanFinishAfterLaterGapDoesNotAdvanceCompletedRevision() throws {
+        let fixture = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        let store = try fixture.openRegistered()
+        let ready = try watchingReady(store, fixture)
+        try store.applyEventBatch(
+            configuration: fixture.configuration, expectedCheckpoint: nil,
+            nextCheckpoint: .init(epoch: "epoch-1", cursor: "dir-1"),
+            dirtyRelativePaths: [], requiresReconciliation: false,
+            dirtyRelativeDirectories: ["newdir"]
+        )
+        let scan = try XCTUnwrap(store.rootState(rootID: fixture.configuration.rootID)?.activeScan)
+        try store.requestReconciliation(configuration: fixture.configuration)
+        try store.applyBootstrapBatch(fixture.batch(
+            scan: scan, directory: "newdir", files: [fixture.file("newdir/hidden.jsonl")], finished: true
+        ))
+        XCTAssertTrue(try store.finishBootstrap(scan))
+        let after = try XCTUnwrap(store.rootState(rootID: fixture.configuration.rootID))
+        XCTAssertNil(after.activeScan)
+        XCTAssertEqual(after.completedRevision, ready.completedRevision)
+        XCTAssertGreaterThan(after.requestedRevision, after.completedRevision)
+        XCTAssertEqual(try store.pendingDirectories(scan: scan, limit: 8), [])
+    }
+
+    func testBeginBootstrapAddsRootFrontierWhenTargetedScanFacesNewGap() throws {
+        let fixture = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        let store = try fixture.openRegistered()
+        _ = try watchingReady(store, fixture)
+        try store.applyEventBatch(
+            configuration: fixture.configuration, expectedCheckpoint: nil,
+            nextCheckpoint: .init(epoch: "epoch-1", cursor: "dir-1"),
+            dirtyRelativePaths: [], requiresReconciliation: false,
+            dirtyRelativeDirectories: ["newdir"]
+        )
+        let scan = try XCTUnwrap(store.rootState(rootID: fixture.configuration.rootID)?.activeScan)
+        XCTAssertEqual(try store.pendingDirectories(scan: scan, limit: 8), ["newdir"])
+        try store.requestReconciliation(configuration: fixture.configuration)
+        XCTAssertEqual(try store.beginBootstrap(configuration: fixture.configuration, scanID: "ignored"), scan)
+        XCTAssertEqual(try store.pendingDirectories(scan: scan, limit: 8), ["", "newdir"])
+    }
+
     func testFailureRetainsLastCaptureAndPendingWork() throws {
         let fixture = try CollectorInventoryTestFixture()
         defer { fixture.remove() }
@@ -1032,6 +1394,136 @@ final class CollectorInventoryStoreTests: XCTestCase {
         XCTAssertGreaterThan(pending.dirtyRevision, pending.acknowledgedRevision)
         XCTAssertEqual(pending.retryNotBefore, 50)
         XCTAssertEqual(pending.lastError, "source missing")
+    }
+
+    func testDirtyEventClearsSamePathUnavailableRetryBeforeDeadlineAndLeavesUnrelatedPrivacyWithheld_repro() throws {
+        let fixture = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        let store = try fixture.openRegistered()
+        try store.markDirty(configuration: fixture.configuration, relativePath: "cold.jsonl")
+        try store.markDirty(configuration: fixture.configuration, relativePath: "hot.jsonl")
+        let claimed = try store.claimDirty(configuration: fixture.configuration, limit: 8, now: 10)
+        XCTAssertEqual(Set(claimed.map(\.relativePath)), ["cold.jsonl", "hot.jsonl"])
+        for claim in claimed {
+            XCTAssertTrue(try store.deferClaim(claim, retryNotBefore: 1_000, reason: "unavailable"))
+        }
+        let database = try fixture.openDatabase()
+        try fixture.seedPublications(in: database)
+        try database.write { db in
+            try db.execute(sql: """
+                UPDATE collector_publication_replicas SET state = 'pending', attempts = 3,
+                    last_error = 'privacyWithheld', retry_not_before = 5_000
+                """)
+        }
+        let withheldBefore = try database.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT replica_id, last_error, retry_not_before, attempts, state
+                FROM collector_publication_replicas ORDER BY replica_id
+                """)
+        }
+        XCTAssertEqual(withheldBefore.count, 2)
+        XCTAssertTrue(withheldBefore.allSatisfy { row in
+            let error: String = row["last_error"]
+            let retry: Int64 = row["retry_not_before"]
+            return error == "privacyWithheld" && retry == 5_000
+        })
+        try store.applyEventBatch(
+            configuration: fixture.configuration, expectedCheckpoint: nil,
+            nextCheckpoint: .init(epoch: "wake-hot", cursor: "1"),
+            dirtyRelativePaths: ["hot.jsonl"], requiresReconciliation: false
+        )
+        let hot = try XCTUnwrap(store.locator(configuration: fixture.configuration, relativePath: "hot.jsonl"))
+        XCTAssertNil(hot.retryNotBefore)
+        XCTAssertNil(hot.lastError)
+        XCTAssertGreaterThan(hot.dirtyRevision, hot.acknowledgedRevision)
+        let cold = try XCTUnwrap(store.locator(configuration: fixture.configuration, relativePath: "cold.jsonl"))
+        XCTAssertEqual(cold.retryNotBefore, 1_000)
+        XCTAssertEqual(cold.lastError, "unavailable")
+        let woken = try store.claimDirty(configuration: fixture.configuration, limit: 8, now: 0)
+        XCTAssertEqual(woken.map(\.relativePath), ["hot.jsonl"])
+        let withheldAfter = try database.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT replica_id, last_error, retry_not_before, attempts, state
+                FROM collector_publication_replicas ORDER BY replica_id
+                """)
+        }
+        func replicaFields(_ rows: [Row]) -> [(String, String, Int64, Int64, String)] {
+            rows.map { row in
+                let replica: String = row["replica_id"]
+                let error: String = row["last_error"]
+                let retry: Int64 = row["retry_not_before"]
+                let attempts: Int64 = row["attempts"]
+                let state: String = row["state"]
+                return (replica, error, retry, attempts, state)
+            }
+        }
+        XCTAssertEqual(replicaFields(withheldAfter).map(\.0), replicaFields(withheldBefore).map(\.0))
+        XCTAssertEqual(replicaFields(withheldAfter).map(\.1), replicaFields(withheldBefore).map(\.1))
+        XCTAssertEqual(replicaFields(withheldAfter).map(\.2), replicaFields(withheldBefore).map(\.2))
+        XCTAssertEqual(replicaFields(withheldAfter).map(\.3), replicaFields(withheldBefore).map(\.3))
+        XCTAssertEqual(replicaFields(withheldAfter).map(\.4), replicaFields(withheldBefore).map(\.4))
+    }
+
+    func testSamePathDirtyAfterClaimReleasesWithoutRestoringUnavailableRetry_repro() throws {
+        let fixture = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        let store = try fixture.openRegistered()
+        try store.markDirty(configuration: fixture.configuration, relativePath: "hot.jsonl")
+        let inflight = try fixture.claim(store)
+        XCTAssertEqual(inflight.relativePath, "hot.jsonl")
+        try store.markDirty(configuration: fixture.configuration, relativePath: "hot.jsonl")
+        let afterEvent = try XCTUnwrap(store.locator(configuration: fixture.configuration, relativePath: "hot.jsonl"))
+        XCTAssertGreaterThan(afterEvent.dirtyRevision, inflight.dirtyRevision)
+        XCTAssertNil(afterEvent.retryNotBefore)
+        XCTAssertTrue(try store.deferClaim(inflight, retryNotBefore: 1_000, reason: "unavailable"))
+        let released = try XCTUnwrap(store.locator(configuration: fixture.configuration, relativePath: "hot.jsonl"))
+        XCTAssertNil(released.retryNotBefore)
+        XCTAssertNil(released.lastError)
+        XCTAssertGreaterThan(released.dirtyRevision, released.acknowledgedRevision)
+        let due = try store.claimDirty(configuration: fixture.configuration, limit: 8, now: 0)
+        XCTAssertEqual(due.map(\.relativePath), ["hot.jsonl"])
+        XCTAssertEqual(due.first?.dirtyRevision, afterEvent.dirtyRevision)
+    }
+
+    func testDeferClaimsBatchOneWriteKeepsPerRowFreshnessAndStale_repro() throws {
+        let fixture = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        var commits = 0
+        let store = try fixture.openRegistered(hooks: .init(beforeCommit: { commits += 1 }))
+        try store.markDirty(configuration: fixture.configuration, relativePath: "cold.jsonl")
+        try store.markDirty(configuration: fixture.configuration, relativePath: "hot.jsonl")
+        let claimed = try store.claimDirty(configuration: fixture.configuration, limit: 8, now: 10)
+        XCTAssertEqual(Set(claimed.map(\.relativePath)), ["cold.jsonl", "hot.jsonl"])
+        commits = 0
+        let stale = CollectorDirtyClaim(
+            rootID: claimed[0].rootID, rootRevision: claimed[0].rootRevision,
+            relativePath: claimed[0].relativePath, dirtyRevision: claimed[0].dirtyRevision,
+            ownerRunID: claimed[0].ownerRunID, claimGeneration: claimed[0].claimGeneration + 1)
+        let results = try store.deferClaims([
+            (claim: claimed[0], retryNotBefore: 60, reason: "unavailable"),
+            (claim: stale, retryNotBefore: 1, reason: "unavailable"),
+            (claim: claimed[1], retryNotBefore: 1, reason: "unavailable"),
+        ])
+        XCTAssertEqual(results, [true, false, true])
+        XCTAssertEqual(commits, 1)
+        let cold = try XCTUnwrap(store.locator(configuration: fixture.configuration, relativePath: claimed[0].relativePath))
+        let hot = try XCTUnwrap(store.locator(configuration: fixture.configuration, relativePath: claimed[1].relativePath))
+        XCTAssertEqual(cold.retryNotBefore, 60)
+        XCTAssertEqual(hot.retryNotBefore, 1)
+        let inflight = try XCTUnwrap(
+            try store.claimDirty(configuration: fixture.configuration, limit: 8, now: 10)
+                .first { $0.relativePath.utf8.elementsEqual(claimed[1].relativePath.utf8) })
+        try store.markDirty(configuration: fixture.configuration, relativePath: inflight.relativePath)
+        let afterEvent = try XCTUnwrap(store.locator(configuration: fixture.configuration, relativePath: inflight.relativePath))
+        XCTAssertGreaterThan(afterEvent.dirtyRevision, inflight.dirtyRevision)
+        commits = 0
+        XCTAssertEqual(try store.deferClaims([
+            (claim: inflight, retryNotBefore: 1_000, reason: "unavailable"),
+        ]), [true])
+        XCTAssertEqual(commits, 1)
+        let woken = try XCTUnwrap(store.locator(configuration: fixture.configuration, relativePath: claimed[1].relativePath))
+        XCTAssertNil(woken.retryNotBefore)
+        XCTAssertNil(woken.lastError)
     }
 
     func testUnknownRootsUnsafePathsAndMismatchedMachineIdentityFailClosed() throws {
@@ -1168,6 +1660,30 @@ final class CollectorInventoryStoreTests: XCTestCase {
         trace.uninstallSafely(database)
         XCTAssertEqual(try store.pendingLocators(configuration: fixture.configuration, limit: prefixCount + 1).count, prefixCount + 1)
         XCTAssertEqual(try store.locator(configuration: fixture.configuration, relativePath: prefix.last!.relativePath)?.retryNotBefore, 1_000)
+    }
+
+    private func frontierCompleted(
+        _ fixture: CollectorInventoryTestFixture, scan: CollectorScanToken, directory: String
+    ) throws -> Int {
+        let database = try fixture.openDatabase()
+        return try XCTUnwrap(database.read { db in
+            try Int.fetchOne(db, sql: """
+                SELECT completed FROM collector_frontier
+                WHERE root_id = ? AND scan_id = ? AND relative_directory = ?
+                """, arguments: [fixture.configuration.rootID, scan.scanID, directory])
+        })
+    }
+
+    private func watchingReady(
+        _ store: CollectorInventoryStore, _ fixture: CollectorInventoryTestFixture
+    ) throws -> CollectorRootState {
+        let scan = try store.beginBootstrap(configuration: fixture.configuration, scanID: "ready")
+        try store.applyBootstrapBatch(fixture.batch(scan: scan, finished: true))
+        XCTAssertTrue(try store.finishBootstrap(scan))
+        let state = try XCTUnwrap(store.rootState(rootID: fixture.configuration.rootID))
+        XCTAssertEqual(state.requestedRevision, state.completedRevision)
+        XCTAssertNil(state.activeScan)
+        return state
     }
 }
 
@@ -1390,6 +1906,74 @@ extension CollectorInventoryStoreTests {
         XCTAssertEqual(try fixture.claimSnapshot(in: database), before)
     }
 
+    func testUnacknowledgedDirtyProbeIncludesDeferredInFlightAndSkipsAckedWithoutCommit_repro() throws {
+        let fixture = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        let database = try fixture.openDatabase()
+        var commits = 0
+        let store = try CollectorInventoryStore(
+            database: database, machineID: fixture.machineID, ownerRunID: "run-1",
+            testHooks: .init(beforeCommit: { commits += 1 }))
+        func configuration(_ rootID: String) -> CollectorRootConfiguration {
+            CollectorRootConfiguration(
+                rootID: rootID, source: .codex,
+                rootPath: fixture.root.appendingPathComponent(rootID).path, revision: 1)
+        }
+        let empty = configuration("empty-root")
+        let deferred = configuration("deferred-root")
+        let inflight = configuration("inflight-root")
+        let acked = configuration("acked-root")
+        let large = configuration("large-acked-root")
+        for root in [empty, deferred, inflight, acked, large] {
+            try store.registerRoot(root)
+        }
+        try store.markDirty(configuration: deferred, relativePath: "deferred.jsonl")
+        let deferredClaim = try XCTUnwrap(store.claimDirty(configuration: deferred, limit: 1, now: 10).first)
+        XCTAssertTrue(try store.deferClaim(deferredClaim, retryNotBefore: 1_000, reason: "deferred"))
+        try store.markDirty(configuration: inflight, relativePath: "inflight.jsonl")
+        XCTAssertEqual(try store.claimDirty(configuration: inflight, limit: 1, now: 10).count, 1)
+        try store.markDirty(configuration: acked, relativePath: "acked.jsonl")
+        try database.write { db in
+            try db.execute(sql: """
+                UPDATE collector_locators SET acknowledged_revision = dirty_revision WHERE root_id = ?
+                """, arguments: [acked.rootID])
+            for index in 0..<2_048 {
+                try db.execute(sql: """
+                    INSERT INTO collector_locators(root_id, root_revision, relative_path,
+                        dirty_revision, acknowledged_revision, claim_generation)
+                    VALUES (?, ?, ?, 1, 1, 0)
+                    """, arguments: [large.rootID, large.revision, String(format: "acked-%04d.jsonl", index)])
+            }
+        }
+        let trace = CollectorCandidateQueryTrace(prefix: "select 1 from collector_locators ")
+        try database.writeWithoutTransaction { try trace.install(on: $0) }
+        defer { database.writeWithoutTransaction { trace.uninstall(from: $0) } }
+        commits = 0
+        let pending = try store.rootsWithUnacknowledgedDirty([empty, deferred, inflight, acked, large])
+        XCTAssertEqual(pending, Set([Data(deferred.rootID.utf8), Data(inflight.rootID.utf8)]))
+        XCTAssertEqual(commits, 0)
+        let queries = trace.queries
+        XCTAssertEqual(queries.count, 5, "one indexed LIMIT 1 probe per enrolled root")
+        for query in queries {
+            XCTAssertTrue(query.profiled)
+            XCTAssertGreaterThan(query.vmSteps, 0)
+            XCTAssertLessThanOrEqual(query.vmSteps, 128)
+            XCTAssertEqual(query.fullScanSteps, 0)
+            XCTAssertEqual(query.sorts, 0)
+            XCTAssertTrue(query.sql.contains("indexed by collector_pending_locators"))
+            XCTAssertTrue(query.sql.contains("root_id = ?"))
+            XCTAssertTrue(query.sql.contains("root_revision = ?"))
+            XCTAssertTrue(query.sql.contains("dirty_revision > acknowledged_revision"))
+            XCTAssertTrue(query.sql.hasSuffix(" limit 1"))
+            XCTAssertFalse(query.sql.contains("retry_not_before"))
+            XCTAssertFalse(query.sql.contains("claim_cursor"))
+            XCTAssertFalse(query.sql.contains("claim_owner_run_id"))
+        }
+        XCTAssertLessThanOrEqual(queries.reduce(0) { $0 + $1.vmSteps }, 128)
+        XCTAssertEqual(queries.reduce(0) { $0 + $1.fullScanSteps }, 0)
+        trace.uninstallSafely(database)
+    }
+
     func testDirtyAvailabilityProbeKeepsDeferredAndInFlightCursorTransactions() throws {
         let fixture = try CollectorInventoryTestFixture()
         defer { fixture.remove() }
@@ -1452,6 +2036,129 @@ extension CollectorInventoryStoreTests {
         XCTAssertEqual(commits, 0, "another replica's pending work cannot force an HQ write")
         XCTAssertEqual(try store.claimPublications(replicaID: "m1", limit: 1, now: 10).count, 1)
         XCTAssertEqual(commits, 1, "M1 must still select its pending publication")
+    }
+
+    // Live claimPublications still entered the write transaction for future
+    // retries and SCAN'd acknowledged history (collector-claim-partial-predicate-diagnostic.json).
+    func testClaimSelectionOverAcknowledgedHistoryPlusFutureRetryStaysBounded_repro() throws {
+        let fixture = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        let database = try fixture.openDatabase()
+        let store = try CollectorInventoryStore(database: database, machineID: fixture.machineID, ownerRunID: "run-1")
+        try store.registerRoot(fixture.configuration)
+        let acknowledged = 2_048
+        let futureRetries = 8
+        try fixture.seedPublications(in: database, count: acknowledged + futureRetries, acknowledgedReplicas: ["hq"])
+        try database.write { db in
+            try db.execute(sql: """
+                UPDATE collector_publication_replicas SET state = 'pending', ack_bytes = NULL,
+                    attempts = 1, last_error = 'unavailable', retry_not_before = 1000
+                WHERE replica_id = 'hq' AND publication_digest IN (
+                    SELECT publication_digest FROM collector_publications
+                    WHERE root_id = ? AND sequence > ?
+                )
+                """, arguments: [fixture.configuration.rootID, acknowledged])
+            XCTAssertEqual(try Int.fetchOne(db, sql: """
+                SELECT count(*) FROM collector_publication_replicas
+                WHERE replica_id = 'hq' AND state = 'acknowledged'
+                """), acknowledged)
+            XCTAssertEqual(try Int.fetchOne(db, sql: """
+                SELECT count(*) FROM collector_publication_replicas
+                WHERE replica_id = 'hq' AND state = 'pending' AND retry_not_before = 1000
+                """), futureRetries)
+        }
+        let trace = CollectorCandidateQueryTrace(
+            prefix: "select p.*, r.claim_generation, r.attempts from collector_publication_replicas r")
+        try database.writeWithoutTransaction { try trace.install(on: $0) }
+        defer { database.writeWithoutTransaction { trace.uninstall(from: $0) } }
+        XCTAssertTrue(try store.claimPublications(replicaID: "hq", limit: 7, now: 10).isEmpty,
+            "future retries must not be due before retry_not_before")
+        let queries = trace.queries
+        XCTAssertEqual(queries.count, 1, "observe the real claim selection; absent SQL must not pass vacuously")
+        let query = try XCTUnwrap(queries.first)
+        XCTAssertTrue(query.profiled)
+        XCTAssertEqual(query.rows, 0)
+        XCTAssertGreaterThan(query.vmSteps, 0)
+        XCTAssertLessThanOrEqual(query.vmSteps, 1_024, "fixed bound independent of the 2,048 acknowledged rows")
+        XCTAssertEqual(query.fullScanSteps, 0)
+        XCTAssertTrue(query.sql.contains("r.replica_id = ?"))
+        XCTAssertTrue(query.sql.contains("r.state != 'acknowledged'"))
+        trace.uninstallSafely(database)
+        let retries = try store.claimPublications(replicaID: "hq", limit: futureRetries, now: 1_000)
+        XCTAssertEqual(retries.count, futureRetries)
+        XCTAssertTrue(retries.allSatisfy { $0.attempts == 1 })
+        XCTAssertEqual(retries.map(\.intent.publication.sequence),
+            (Int64(acknowledged + 1)...Int64(acknowledged + futureRetries)).map { $0 })
+    }
+
+    // Retryable history must leave upload slots for new publications.
+    func testNeverAttemptedPublicationsClaimBeforeReadyRetries_repro() throws {
+        let fixture = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        let store = try fixture.openRegistered()
+        let database = try fixture.openDatabase()
+        try fixture.seedPublications(in: database, count: 4)
+        try database.write { db in
+            try db.execute(sql: """
+                UPDATE collector_publication_replicas SET attempts = 1, last_error = 'privacyWithheld', retry_not_before = 1
+                WHERE replica_id = 'hq' AND publication_digest IN (
+                    SELECT publication_digest FROM collector_publications
+                    WHERE root_id = ? AND sequence IN (1, 2)
+                )
+                """, arguments: [fixture.configuration.rootID])
+        }
+        let claims = try store.claimPublications(replicaID: "hq", limit: 2, now: 10)
+        XCTAssertEqual(claims.map(\.intent.publication.sequence), [3, 4])
+        XCTAssertTrue(claims.allSatisfy { $0.attempts == 0 })
+        let retries = try store.claimPublications(replicaID: "hq", limit: 2, now: 10)
+        XCTAssertEqual(retries.map(\.intent.publication.sequence), [1, 2])
+        XCTAssertTrue(retries.allSatisfy { $0.attempts == 1 })
+    }
+
+    // A later root's never-attempted backlog must share claimPublications
+    // slots while the lexicographic first root still has pending work.
+    func testNeverAttemptedRootPublicationsShareClaimBudgetWithoutDrainingFirstRoot_repro() throws {
+        for limit in [1, 2] {
+            let fixture = try CollectorInventoryTestFixture()
+            defer { fixture.remove() }
+            let store = try fixture.open()
+            let claude = CollectorRootConfiguration(
+                rootID: "claude-root", source: .claudeCode,
+                rootPath: fixture.root.appendingPathComponent("claude").path, revision: 1)
+            let codex = CollectorRootConfiguration(
+                rootID: "codex-root", source: .codex,
+                rootPath: fixture.root.appendingPathComponent("codex").path, revision: 1)
+            XCTAssertLessThan(claude.rootID, codex.rootID)
+            try store.registerRoot(codex)
+            try store.registerRoot(claude)
+            let database = try fixture.openDatabase()
+            let perRoot = 6
+            try fixture.seedPublications(in: database, configuration: claude, count: perRoot,
+                sourceInstanceID: "44444444-5555-6666-7777-888888888888",
+                collectorEpoch: "55555555-6666-7777-8888-999999999999")
+            try fixture.seedPublications(in: database, configuration: codex, count: perRoot,
+                sourceInstanceID: "66666666-7777-8888-9999-000000000000",
+                collectorEpoch: "77777777-8888-9999-0000-111111111111")
+            var seen = Set<String>()
+            var claimedFromFirst = 0
+            for _ in 1...2 {
+                let claims = try store.claimPublications(replicaID: "hq", limit: limit, now: 10)
+                XCTAssertEqual(claims.count, limit, "limit=\(limit) must fill the claim budget")
+                XCTAssertTrue(claims.allSatisfy { $0.attempts == 0 }, "limit=\(limit)")
+                seen.formUnion(claims.map(\.intent.rootID))
+                claimedFromFirst += claims.filter { $0.intent.rootID == claude.rootID }.count
+            }
+            XCTAssertEqual(seen, Set([claude.rootID, codex.rootID]),
+                "limit=\(limit): both roots must appear across two claims")
+            XCTAssertLessThan(claimedFromFirst, perRoot,
+                "limit=\(limit): first-root backlog must still have unclaimed publications")
+            XCTAssertGreaterThan(
+                try fixture.pendingPublicationCount(in: database, replicaID: "hq", rootID: claude.rootID), 0,
+                "limit=\(limit): Claude remaining pending after mixed claims")
+            XCTAssertGreaterThan(
+                try fixture.pendingPublicationCount(in: database, replicaID: "hq", rootID: codex.rootID), 0,
+                "limit=\(limit): Codex remaining pending after mixed claims")
+        }
     }
 
     func testEmptyClaimFastPathsStillRejectStaleOwnersRootsAndInvalidArguments() throws {
@@ -1581,9 +2288,9 @@ private extension CollectorInventoryTestFixture {
         let epoch = "33333333-4444-5555-6666-777777777777"
         try database.write { db in
             try db.execute(sql: """
-                INSERT INTO collector_streams(root_id, root_revision, source_instance_id, collector_epoch, last_sequence)
-                VALUES (?, ?, ?, ?, ?)
-                """, arguments: [configuration.rootID, configuration.revision, sourceInstance, epoch, count])
+                INSERT INTO collector_streams(root_id, root_revision, effective_source, source_instance_id, collector_epoch, last_sequence)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """, arguments: [configuration.rootID, configuration.revision, configuration.source.rawValue, sourceInstance, epoch, count])
             for index in 1...count {
                 let publication = try CollectorPublicationEnvelope(machineID: machineID,
                     sourceInstanceID: sourceInstance, collectorEpoch: epoch, sequence: Int64(index),
@@ -1618,6 +2325,56 @@ private extension CollectorInventoryTestFixture {
         }
     }
 
+    func seedPublications(
+        in database: DatabaseQueue,
+        configuration: CollectorRootConfiguration,
+        count: Int,
+        sourceInstanceID: String,
+        collectorEpoch: String
+    ) throws {
+        try database.write { db in
+            try db.execute(sql: """
+                INSERT INTO collector_streams(root_id, root_revision, effective_source, source_instance_id, collector_epoch, last_sequence)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """, arguments: [configuration.rootID, configuration.revision, configuration.source.rawValue,
+                    sourceInstanceID, collectorEpoch, count])
+            for index in 1...count {
+                let publication = try CollectorPublicationEnvelope(machineID: machineID,
+                    sourceInstanceID: sourceInstanceID, collectorEpoch: collectorEpoch, sequence: Int64(index),
+                    manifestSHA256: ArchiveV2Hash.sha256(Data("manifest-\(configuration.rootID)-\(index)".utf8)))
+                let bytes = try ArchiveCanonicalJSON.encode(publication)
+                let digest = ArchiveV2Hash.sha256(bytes)
+                let intent = CollectorPublicationIntent(
+                    captureID: ArchiveV2Hash.sha256(Data("capture-\(configuration.rootID)-\(index)".utf8)),
+                    rootID: configuration.rootID, rootRevision: configuration.revision,
+                    relativePath: "\(configuration.rootID)-publication-\(index).jsonl",
+                    publication: publication, canonicalBytes: bytes, digest: digest)
+                try db.execute(sql: """
+                    INSERT INTO collector_publications(publication_digest, capture_id, root_id, root_revision, relative_path,
+                        source_instance_id, collector_epoch, sequence, manifest_sha256, canonical_bytes)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, arguments: [digest, intent.captureID, intent.rootID, intent.rootRevision, intent.relativePath,
+                        sourceInstanceID, collectorEpoch, publication.sequence, publication.manifestSHA256, bytes])
+                for replica in ["hq", "m1"] {
+                    try db.execute(sql: """
+                        INSERT INTO collector_publication_replicas(publication_digest, replica_id, state,
+                            claim_generation, attempts, ack_bytes) VALUES (?, ?, ?, 0, 0, NULL)
+                        """, arguments: [digest, replica, "pending"])
+                }
+            }
+        }
+    }
+
+    func pendingPublicationCount(in database: DatabaseQueue, replicaID: String, rootID: String) throws -> Int {
+        try database.read { db in
+            try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM collector_publication_replicas r
+                JOIN collector_publications p ON p.publication_digest = r.publication_digest
+                WHERE r.replica_id = ? AND r.state = 'pending' AND p.root_id = ?
+                """, arguments: [replicaID, rootID]) ?? 0
+        }
+    }
+
     func claimSnapshot(in database: DatabaseQueue) throws -> [[Row]] {
         try database.read { db in
             try [
@@ -1627,4 +2384,1400 @@ private extension CollectorInventoryTestFixture {
             ]
         }
     }
+}
+
+extension CollectorInventoryStoreTests {
+    func testCursorLegacyPublicationAndPageAdvanceRollBackTogether() throws {
+        let f = try CursorLegacyWalkTestFixture()
+        defer { f.remove() }
+        var fail = false
+        let store = try f.open(hooks: .init(beforeCommit: {
+            if fail { throw CollectorInventoryInjectedFailure.beforeCommit }
+        }))
+        let claim = try f.dirtyClaim(store)
+        _ = try store.reconcileCursorLegacyWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal)
+        let context = try f.context("ses-A")
+        let reservation = try XCTUnwrap(store.reserveCapture(claim, configuration: f.configuration,
+            generation: f.generation, cursorLegacySession: context))
+        let capture = try f.capture(context)
+        fail = true
+        XCTAssertThrowsError(try store.finishCapture(reservation, capture: capture.capture))
+        fail = false
+        XCTAssertEqual(try store.captureReservations(limit: 8), [reservation])
+        XCTAssertTrue(try store.publicationIntents(limit: 8).isEmpty)
+        XCTAssertNil(try store.lastCursorLegacyCapture(configuration: f.configuration, composerID: context.composerID))
+        XCTAssertNil(try store.reconcileCursorLegacyWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal))
+        _ = try store.finishCapture(reservation, capture: capture.capture)
+        XCTAssertEqual(try store.lastCursorLegacyCapture(configuration: f.configuration, composerID: context.composerID), capture.capture.captureID)
+        XCTAssertEqual(try store.reconcileCursorLegacyWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal), "ses-A")
+    }
+
+    func testCursorLegacyObserverPersistsPagesAndDetectsOwnershipOrPeerChanges() throws {
+        let f = try CollectorInventoryTestFixture(); defer { f.remove() }
+        let root = CollectorRootConfiguration(rootID: "observed", source: .cursor,
+            rootPath: "/tmp/observed/User/globalStorage", revision: 1, cursorLegacy: true)
+        let member = String(repeating: "a", count: 64), main = String(repeating: "b", count: 64)
+        let peer = String(repeating: "c", count: 64), original = String(repeating: "d", count: 64)
+        var store = try f.open()
+        try store.registerRoot(root)
+        func page(_ after: String?, _ id: String, _ fingerprint: String, next: String?, peerHash: String? = nil) throws -> Bool {
+            try store.applyCursorLegacyObservation(configuration: root, after: after,
+                membershipFingerprint: member, workspaces: [(id, fingerprint)], nextAfter: next,
+                mainFingerprint: main, peerFingerprint: peerHash ?? peer)
+        }
+        XCTAssertTrue(try page(nil, "a", original, next: "a"))
+        XCTAssertEqual(try store.cursorLegacyOwnershipAfter(configuration: root), "a")
+        XCTAssertFalse(try page(nil, "b", original, next: nil), "stale page must not advance or overwrite the current cursor")
+        store = try f.open(owner: "run-2")
+        XCTAssertEqual(try store.cursorLegacyOwnershipAfter(configuration: root), "a")
+        XCTAssertTrue(try page("a", "b", original, next: nil))
+        let first = try XCTUnwrap(store.claimDirty(configuration: root, limit: 1, now: 10).first)
+        _ = try store.acknowledge(first, captureID: "fixture-capture")
+        let baseline = try XCTUnwrap(store.locator(configuration: root, relativePath: "state.vscdb"))
+        XCTAssertTrue(try page(nil, "a", original, next: "a"))
+        XCTAssertTrue(try page("a", "b", original, next: nil))
+        XCTAssertEqual(try store.locator(configuration: root, relativePath: "state.vscdb")?.dirtyRevision, baseline.dirtyRevision)
+        XCTAssertTrue(try page(nil, "a", String(repeating: "e", count: 64), next: "a"))
+        XCTAssertEqual(try store.locator(configuration: root, relativePath: "state.vscdb")?.dirtyRevision, baseline.dirtyRevision + 1)
+        XCTAssertTrue(try page("a", "b", original, next: nil, peerHash: String(repeating: "f", count: 64)))
+        XCTAssertEqual(try store.locator(configuration: root, relativePath: "state.vscdb")?.dirtyRevision, baseline.dirtyRevision + 2)
+    }
+
+    func testCursorLegacyObserverMembershipRestartFailureCoalescingAndAtomicRollback() throws {
+        let f = try CollectorInventoryTestFixture(); defer { f.remove() }
+        let root = CollectorRootConfiguration(rootID: "observed", source: .cursor,
+            rootPath: "/tmp/observed/User/globalStorage", revision: 1, cursorLegacy: true)
+        let first = String(repeating: "a", count: 64), second = String(repeating: "b", count: 64)
+        var fail = false
+        let store = try f.open(hooks: .init(beforeCommit: { if fail { throw CollectorInventoryInjectedFailure.beforeCommit } }))
+        try store.registerRoot(root)
+        XCTAssertTrue(try store.applyCursorLegacyObservation(configuration: root, after: nil,
+            membershipFingerprint: first, workspaces: [("m", first)], nextAfter: "m", mainFingerprint: first, peerFingerprint: first))
+        let before = try store.locator(configuration: root, relativePath: "state.vscdb")
+        fail = true
+        XCTAssertThrowsError(try store.applyCursorLegacyObservation(configuration: root, after: "m",
+            membershipFingerprint: second, workspaces: [("z", second)], nextAfter: nil, mainFingerprint: first, peerFingerprint: first))
+        fail = false
+        XCTAssertEqual(try store.cursorLegacyOwnershipAfter(configuration: root), "m")
+        XCTAssertEqual(try store.locator(configuration: root, relativePath: "state.vscdb"), before)
+        XCTAssertTrue(try store.applyCursorLegacyObservation(configuration: root, after: "m",
+            membershipFingerprint: second, workspaces: [("z", second)], nextAfter: nil, mainFingerprint: first, peerFingerprint: first))
+        XCTAssertNil(try store.cursorLegacyOwnershipAfter(configuration: root), "changed membership must restart before an earlier inserted ID")
+        XCTAssertTrue(try store.applyCursorLegacyObservation(configuration: root, after: nil,
+            membershipFingerprint: second, workspaces: [("a", second)], nextAfter: nil, mainFingerprint: first, peerFingerprint: first))
+        try store.recordCursorLegacyObservationFailure(configuration: root, fingerprint: first)
+        let failed = try store.locator(configuration: root, relativePath: "state.vscdb")
+        try store.recordCursorLegacyObservationFailure(configuration: root, fingerprint: first)
+        XCTAssertEqual(try store.locator(configuration: root, relativePath: "state.vscdb"), failed)
+        XCTAssertTrue(try store.applyCursorLegacyObservation(configuration: root, after: nil,
+            membershipFingerprint: second, workspaces: [("a", second)], nextAfter: nil, mainFingerprint: first, peerFingerprint: first))
+        XCTAssertEqual(try store.locator(configuration: root, relativePath: "state.vscdb")?.dirtyRevision,
+            try XCTUnwrap(failed).dirtyRevision + 1, "recovery must recheck a previously unavailable ownership input")
+    }
+
+    func testCursorLegacySchemaEightMigrationPreservesDirtyWorkAndStartsObserverCold() throws {
+        let f = try CollectorInventoryTestFixture(); defer { f.remove() }
+        let root = CollectorRootConfiguration(rootID: "observed", source: .cursor,
+            rootPath: "/tmp/observed/User/globalStorage", revision: 1, cursorLegacy: true)
+        let old = try f.open(); try old.registerRoot(root)
+        try old.markDirty(configuration: root, relativePath: "state.vscdb")
+        let db = try f.openDatabase()
+        try db.write { db in
+            try db.execute(sql: "DROP TABLE collector_cursor_legacy_workspaces")
+            for suffix in ["membership", "main", "peer", "after", "error", "initialized"] {
+                try db.execute(sql: "ALTER TABLE collector_roots DROP COLUMN cursor_legacy_observer_\(suffix)")
+            }
+            try db.execute(sql: "UPDATE collector_metadata SET value = '8' WHERE key = 'publication_schema_version'")
+        }
+        let reopened = try f.open(owner: "run-2")
+        XCTAssertEqual(try reopened.rootState(rootID: root.rootID)?.configuration, root)
+        XCTAssertNil(try reopened.cursorLegacyOwnershipAfter(configuration: root))
+        XCTAssertEqual(try reopened.pendingLocators(configuration: root, limit: 8).count, 1)
+    }
+
+    func testCursorLegacySchemaSevenMigrationCreatesLedgerWithoutDroppingDirtyWork() throws {
+        let f = try CursorLegacyWalkTestFixture(); defer { f.remove() }
+        let old = try f.open()
+        _ = try f.dirtyClaim(old)
+        let db = try f.database()
+        try db.write { db in
+            try db.execute(sql: "DROP TABLE collector_cursor_legacy_sessions")
+            try db.execute(sql: "UPDATE collector_metadata SET value = '7' WHERE key = 'publication_schema_version'")
+        }
+        let reopened = try f.open(owner: "run-2")
+        XCTAssertNil(try reopened.lastCursorLegacyCapture(configuration: f.configuration, composerID: "owned"))
+        XCTAssertEqual(try reopened.pendingLocators(configuration: f.configuration, limit: 8).count, 1)
+        XCTAssertEqual(try db.read { try String.fetchOne($0,
+            sql: "SELECT value FROM collector_metadata WHERE key = 'publication_schema_version'") }, "11")
+    }
+
+    func testCursorLegacyUnchangedSkipRequiresPublishedSessionAndAdvancesWithoutNewPublication() throws {
+        let f = try CursorLegacyWalkTestFixture(); defer { f.remove() }
+        let store = try f.open()
+        let first = try f.dirtyClaim(store)
+        _ = try store.reconcileCursorLegacyWalk(first, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal)
+        let session = try f.context("a:/%_")
+        let reservation = try XCTUnwrap(store.reserveCapture(first, configuration: f.configuration,
+            generation: f.generation, cursorLegacySession: session))
+        let capture = try f.capture(session)
+        _ = try store.finishCapture(reservation, capture: capture.capture)
+        _ = try store.finishCursorLegacyWalk(first, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal)
+        let next = try f.dirtyClaim(store)
+        XCTAssertNil(try store.reconcileCursorLegacyWalk(next, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal))
+        XCTAssertThrowsError(try store.advanceCursorLegacySkippedSession(next, configuration: f.configuration,
+            generation: f.generation, session: session, previousCaptureID: String(repeating: "0", count: 64)))
+        XCTAssertThrowsError(try store.advanceCursorLegacySkippedSession(next, configuration: f.configuration,
+            generation: f.generation, session: session, previousCaptureID: nil))
+        try store.advanceCursorLegacySkippedSession(next, configuration: f.configuration,
+            generation: f.generation, session: session, previousCaptureID: capture.capture.captureID)
+        XCTAssertEqual(try store.reconcileCursorLegacyWalk(next, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal), session.composerID)
+        XCTAssertEqual(try store.publicationIntents(limit: 8).count, 1)
+        XCTAssertEqual(try store.pendingLocators(configuration: f.configuration, limit: 8).count, 1)
+        XCTAssertTrue(try store.captureReservations(limit: 8).isEmpty)
+        XCTAssertThrowsError(try store.advanceCursorLegacySkippedSession(next, configuration: f.configuration,
+            generation: f.generation, session: session, previousCaptureID: capture.capture.captureID))
+        XCTAssertEqual(try store.finishCursorLegacyWalk(next, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal), .acknowledged)
+    }
+
+    func testCursorLegacyOwnershipOnlyDirtyEventRestartsWalkWithSameDatabasePair() throws {
+        let f = try CursorLegacyWalkTestFixture(); defer { f.remove() }
+        let store = try f.open()
+        let claim = try f.dirtyClaim(store)
+        _ = try store.reconcileCursorLegacyWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal)
+        let context = try f.context("owned")
+        let reserved = try XCTUnwrap(store.reserveCapture(claim, configuration: f.configuration,
+            generation: f.generation, cursorLegacySession: context))
+        let capture = try f.capture(context)
+        _ = try store.finishCapture(reserved, capture: capture.capture)
+        _ = try store.finishCursorLegacyWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal)
+        try store.markDirty(configuration: f.configuration, relativePath: "state.vscdb", observedGeneration: "ownership-changed")
+        let next = try f.claim(store)
+        XCTAssertGreaterThan(next.dirtyRevision, claim.dirtyRevision)
+        XCTAssertNil(try store.reconcileCursorLegacyWalk(next, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal))
+        XCTAssertNotNil(try store.reserveCapture(next, configuration: f.configuration,
+            generation: f.generation, cursorLegacySession: context))
+    }
+
+    func testCursorLegacySchemaFiveMigrationAddsContextColumnsWithoutDroppingDirtyWork() throws {
+        let f = try CursorLegacyWalkTestFixture(); defer { f.remove() }
+        let old = try f.open()
+        _ = try f.dirtyClaim(old)
+        let db = try f.database()
+        try db.write { db in
+            for name in ["cursor_legacy_bytes", "cursor_legacy_sha256"] {
+                try db.execute(sql: "ALTER TABLE collector_capture_reservations DROP COLUMN \(name)")
+            }
+            for name in ["cursor_legacy_walk_generation", "cursor_legacy_walk_wal_generation",
+                         "cursor_legacy_walk_page_after", "cursor_legacy_walk_dirty_revision"] {
+                try db.execute(sql: "ALTER TABLE collector_roots DROP COLUMN \(name)")
+            }
+            try db.execute(sql: "UPDATE collector_metadata SET value = '5' WHERE key = 'publication_schema_version'")
+        }
+        let reopened = try f.open(owner: "run-2")
+        XCTAssertEqual(try db.read { try String.fetchOne($0,
+            sql: "SELECT value FROM collector_metadata WHERE key = 'publication_schema_version'") }, "11")
+        let claim = try f.claim(reopened)
+        _ = try reopened.reconcileCursorLegacyWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal)
+        XCTAssertNotNil(try reopened.reserveCapture(claim, configuration: f.configuration,
+            generation: f.generation, cursorLegacySession: f.context("owned")))
+    }
+
+    func testCursorLegacyCorruptContextFailsClosedWithoutDeletingReservation() throws {
+        let f = try CursorLegacyWalkTestFixture(); defer { f.remove() }
+        let store = try f.open()
+        let claim = try f.dirtyClaim(store)
+        _ = try store.reconcileCursorLegacyWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal)
+        let reserved = try XCTUnwrap(store.reserveCapture(claim, configuration: f.configuration,
+            generation: f.generation, cursorLegacySession: f.context("owned")))
+        let db = try f.database()
+        try db.write { try $0.execute(sql: "UPDATE collector_capture_reservations SET cursor_legacy_bytes = ? WHERE id = ?",
+            arguments: [Data([0]), reserved.id]) }
+        XCTAssertThrowsError(try store.captureReservations(limit: 8))
+        XCTAssertEqual(try db.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM collector_capture_reservations") }, 1)
+        XCTAssertTrue(try store.publicationIntents(limit: 8).isEmpty)
+    }
+
+    func testCursorLegacyFirstSessionCannotAcknowledgeDatabaseOrReleaseItsClaim() throws {
+        let f = try CursorLegacyWalkTestFixture()
+        defer { f.remove() }
+        let store = try f.open()
+        let claim = try f.dirtyClaim(store)
+        let after = try store.reconcileCursorLegacyWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal)
+        XCTAssertNil(after)
+        for id in ["a:/%_", "b"] {
+            let context = try f.context(id)
+            let reservation = try XCTUnwrap(store.reserveCapture(claim, configuration: f.configuration,
+                generation: f.generation, cursorLegacySession: context))
+            XCTAssertEqual(reservation.cursorLegacySession, context)
+            let capture = try f.capture(context)
+            XCTAssertNotNil(try store.finishCapture(reservation, capture: capture.capture))
+            XCTAssertEqual(try store.reconcileCursorLegacyWalk(claim, configuration: f.configuration,
+                generation: f.generation, walGeneration: f.wal), id)
+            XCTAssertEqual(try store.pendingLocators(configuration: f.configuration, limit: 8).count, 1)
+        }
+        XCTAssertEqual(try store.publicationIntents(limit: 8).count, 2)
+        XCTAssertEqual(try store.claimPublications(replicaID: "hq", limit: 8, now: 100).count, 2)
+        XCTAssertEqual(try store.claimPublications(replicaID: "m1", limit: 8, now: 100).count, 2)
+        XCTAssertEqual(try store.finishCursorLegacyWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal), .acknowledged)
+        XCTAssertTrue(try store.pendingLocators(configuration: f.configuration, limit: 8).isEmpty)
+    }
+
+    func testCursorLegacyOldCASRecoveryCannotAdvanceDifferentWALWalk() throws {
+        let f = try CursorLegacyWalkTestFixture()
+        defer { f.remove() }
+        var store: CollectorInventoryStore? = try f.open()
+        let claim = try f.dirtyClaim(store!)
+        _ = try store!.reconcileCursorLegacyWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal)
+        let context = try f.context("ses-Z")
+        let reservation = try XCTUnwrap(store!.reserveCapture(claim, configuration: f.configuration,
+            generation: f.generation, cursorLegacySession: context))
+        let oldCapture = try f.capture(context)
+        store = nil
+        let reopened = try f.open(owner: "run-2")
+        let resumed = try f.claim(reopened)
+        let changed = try f.changedWAL()
+        XCTAssertNil(try reopened.reconcileCursorLegacyWalk(resumed, configuration: f.configuration,
+            generation: f.generation, walGeneration: changed))
+        XCTAssertNotNil(try reopened.finishCapture(reservation, capture: oldCapture.capture))
+        XCTAssertNil(try reopened.reconcileCursorLegacyWalk(resumed, configuration: f.configuration,
+            generation: f.generation, walGeneration: changed), "old ses-Z must not skip new ses-A")
+        XCTAssertNotNil(try reopened.reserveCapture(resumed, configuration: f.configuration,
+            generation: f.generation, cursorLegacySession: f.context("a:/%_", wal: changed)))
+        XCTAssertEqual(try reopened.publicationIntents(limit: 8).count, 1)
+    }
+
+    func testCursorLegacyReservationPersistsLongNativeIDAndRefusesWrongSessionOrWAL() throws {
+        let f = try CursorLegacyWalkTestFixture()
+        defer { f.remove() }
+        var store: CollectorInventoryStore? = try f.open()
+        let claim = try f.dirtyClaim(store!)
+        _ = try store!.reconcileCursorLegacyWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal)
+        let context = try f.context(String(repeating: "s", count: 3_000))
+        let reservation = try XCTUnwrap(store!.reserveCapture(claim, configuration: f.configuration,
+            generation: f.generation, cursorLegacySession: context))
+        store = nil
+        let reopened = try f.open(owner: "run-2")
+        XCTAssertEqual(try reopened.captureReservations(limit: 8), [reservation])
+        XCTAssertEqual(try reopened.captureReservations(limit: 8).first?.cursorLegacySession, context)
+        for wrong in [try f.context("ses-wrong"), try f.context(context.composerID, wal: f.changedWAL())] {
+            XCTAssertThrowsError(try reopened.finishCapture(reservation, capture: f.capture(wrong).capture))
+        }
+        XCTAssertEqual(try reopened.captureReservations(limit: 8), [reservation])
+        XCTAssertTrue(try reopened.publicationIntents(limit: 8).isEmpty)
+    }
+
+    func testCursorLegacyPendingReservationPreventsPrematureEOFAndRecoversAfterRestart() throws {
+        let f = try CursorLegacyWalkTestFixture()
+        defer { f.remove() }
+        var store: CollectorInventoryStore? = try f.open()
+        let claim = try f.dirtyClaim(store!)
+        _ = try store!.reconcileCursorLegacyWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal)
+        let context = try f.context("ses-A")
+        let reservation = try XCTUnwrap(store!.reserveCapture(claim, configuration: f.configuration,
+            generation: f.generation, cursorLegacySession: context))
+        let capture = try f.capture(context)
+        XCTAssertThrowsError(try store!.finishCursorLegacyWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal))
+        store = nil
+        let reopened = try f.open(owner: "run-2")
+        let resumed = try f.claim(reopened)
+        _ = try reopened.reconcileCursorLegacyWalk(resumed, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal)
+        XCTAssertNotNil(try reopened.finishCapture(reservation, capture: capture.capture))
+        XCTAssertEqual(try reopened.reconcileCursorLegacyWalk(resumed, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal), "ses-A")
+        let next = try f.context("ses-B")
+        XCTAssertNotNil(try reopened.reserveCapture(resumed, configuration: f.configuration,
+            generation: f.generation, cursorLegacySession: next), "old recovery must preserve the new owner's claim")
+    }
+
+    func testOpenCodeFirstSessionCannotAcknowledgeDatabaseOrReleaseItsClaim() throws {
+        let f = try OpenCodeWalkTestFixture()
+        defer { f.remove() }
+        let store = try f.open()
+        let claim = try f.dirtyClaim(store)
+        let after = try store.reconcileOpenCodeWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal)
+        XCTAssertNil(after)
+        for id in ["ses-A", "ses-B"] {
+            let context = try f.context(id)
+            let reservation = try XCTUnwrap(store.reserveCapture(claim, configuration: f.configuration,
+                generation: f.generation, sqliteSession: context))
+            XCTAssertEqual(reservation.sqliteSession, context)
+            let capture = try f.capture(context)
+            XCTAssertNotNil(try store.finishCapture(reservation, capture: capture.capture))
+            XCTAssertEqual(try store.reconcileOpenCodeWalk(claim, configuration: f.configuration,
+                generation: f.generation, walGeneration: f.wal), id)
+            XCTAssertEqual(try store.pendingLocators(configuration: f.configuration, limit: 8).count, 1)
+        }
+        XCTAssertEqual(try store.publicationIntents(limit: 8).count, 2)
+        XCTAssertEqual(try store.claimPublications(replicaID: "hq", limit: 8, now: 100).count, 2)
+        XCTAssertEqual(try store.claimPublications(replicaID: "m1", limit: 8, now: 100).count, 2)
+        XCTAssertEqual(try store.finishOpenCodeWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal), .acknowledged)
+        XCTAssertTrue(try store.pendingLocators(configuration: f.configuration, limit: 8).isEmpty)
+    }
+
+    func testOpenCodeOldCASRecoveryCannotAdvanceDifferentWALWalk() throws {
+        let f = try OpenCodeWalkTestFixture()
+        defer { f.remove() }
+        var store: CollectorInventoryStore? = try f.open()
+        let claim = try f.dirtyClaim(store!)
+        _ = try store!.reconcileOpenCodeWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal)
+        let context = try f.context("ses-Z")
+        let reservation = try XCTUnwrap(store!.reserveCapture(claim, configuration: f.configuration,
+            generation: f.generation, sqliteSession: context))
+        let oldCapture = try f.capture(context)
+        store = nil
+        let reopened = try f.open(owner: "run-2")
+        let resumed = try f.claim(reopened)
+        let changed = try f.changedWAL()
+        XCTAssertNil(try reopened.reconcileOpenCodeWalk(resumed, configuration: f.configuration,
+            generation: f.generation, walGeneration: changed))
+        XCTAssertNotNil(try reopened.finishCapture(reservation, capture: oldCapture.capture))
+        XCTAssertNil(try reopened.reconcileOpenCodeWalk(resumed, configuration: f.configuration,
+            generation: f.generation, walGeneration: changed), "old ses-Z must not skip new ses-A")
+        XCTAssertNotNil(try reopened.reserveCapture(resumed, configuration: f.configuration,
+            generation: f.generation, sqliteSession: f.context("ses-A", wal: changed)))
+        XCTAssertEqual(try reopened.publicationIntents(limit: 8).count, 1)
+    }
+
+    func testOpenCodeWalkRefusesOtherPhysicalFilesAndRootRevisionResetsProgress() throws {
+        let f = try OpenCodeWalkTestFixture()
+        defer { f.remove() }
+        let store = try f.open()
+        try store.markDirty(configuration: f.configuration, relativePath: "unrelated.jsonl")
+        let wrong = try f.claim(store)
+        XCTAssertThrowsError(try store.reconcileOpenCodeWalk(wrong, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal))
+        XCTAssertTrue(try store.deferClaim(wrong, retryNotBefore: 1000, reason: "not-an-opencode-primary"))
+        let claim = try f.dirtyClaim(store)
+        _ = try store.reconcileOpenCodeWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal)
+        let context = try f.context("ses-A")
+        let reservation = try XCTUnwrap(store.reserveCapture(claim, configuration: f.configuration,
+            generation: f.generation, sqliteSession: context))
+        _ = try store.finishCapture(reservation, capture: f.capture(context).capture)
+        let updated = CollectorRootConfiguration(rootID: f.configuration.rootID, source: .opencode,
+            rootPath: f.configuration.rootPath + "-remapped", revision: 2)
+        try store.registerRoot(updated)
+        try store.enrollRoot(binding: .init(configuration: updated,
+            expectedIdentity: .init(device: 1, inode: 3, generation: 0, birthSeconds: 1, birthNanoseconds: 0)))
+        XCTAssertNotNil(try store.activateEnrolledRoot(configuration: updated))
+        XCTAssertThrowsError(try store.reconcileOpenCodeWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal))
+        try store.markDirty(configuration: updated, relativePath: "opencode.db")
+        let current = try XCTUnwrap(store.claimDirty(configuration: updated, limit: 8, now: 100).first)
+        XCTAssertNil(try store.reconcileOpenCodeWalk(current, configuration: updated,
+            generation: f.generation, walGeneration: f.wal))
+    }
+
+    func testOpenCodeReservationRequiresMatchingRootContextAndMonotonicSessionID() throws {
+        let f = try OpenCodeWalkTestFixture()
+        defer { f.remove() }
+        let store = try f.open()
+        let claim = try f.dirtyClaim(store)
+        _ = try store.reconcileOpenCodeWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal)
+        XCTAssertThrowsError(try store.reserveCapture(claim, configuration: f.configuration,
+            generation: f.generation))
+        let wrongRoot = try ArchiveSQLiteSessionContext(databaseLocator: "/another/opencode.db",
+            nativeSessionID: "ses-A", nativePayloadByteCount: 0, walGeneration: f.wal)
+        XCTAssertThrowsError(try store.reserveCapture(claim, configuration: f.configuration,
+            generation: f.generation, sqliteSession: wrongRoot))
+        let context = try f.context("ses-B")
+        let reservation = try XCTUnwrap(store.reserveCapture(claim, configuration: f.configuration,
+            generation: f.generation, sqliteSession: context))
+        _ = try store.finishCapture(reservation, capture: f.capture(context).capture)
+        for id in ["ses-A", "ses-B"] {
+            XCTAssertThrowsError(try store.reserveCapture(claim, configuration: f.configuration,
+                generation: f.generation, sqliteSession: f.context(id)))
+        }
+    }
+
+    func testOpenCodeReservationRequiresAnEstablishedMatchingSourcePair() throws {
+        for establishDifferentPair in [false, true] {
+            let f = try OpenCodeWalkTestFixture()
+            defer { f.remove() }
+            let store = try f.open()
+            let claim = try f.dirtyClaim(store)
+            if establishDifferentPair {
+                _ = try store.reconcileOpenCodeWalk(claim, configuration: f.configuration,
+                    generation: f.generation, walGeneration: f.changedWAL())
+            }
+            XCTAssertThrowsError(try store.reserveCapture(claim, configuration: f.configuration,
+                generation: f.generation, sqliteSession: f.context("ses-A")))
+            XCTAssertTrue(try store.captureReservations(limit: 8).isEmpty)
+        }
+    }
+
+    func testOpenCodeWalkResumesAfterRestartAndResetsOnlyForDifferentPair() throws {
+        let f = try OpenCodeWalkTestFixture()
+        defer { f.remove() }
+        var store: CollectorInventoryStore? = try f.open()
+        let claim = try f.dirtyClaim(store!)
+        _ = try store!.reconcileOpenCodeWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal)
+        let context = try f.context("ses-A")
+        let reservation = try XCTUnwrap(store!.reserveCapture(claim, configuration: f.configuration,
+            generation: f.generation, sqliteSession: context))
+        _ = try store!.finishCapture(reservation, capture: f.capture(context).capture)
+        store = nil
+        let reopened = try f.open(owner: "run-2")
+        let resumed = try f.claim(reopened)
+        XCTAssertEqual(try reopened.reconcileOpenCodeWalk(resumed, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal), "ses-A")
+        XCTAssertEqual(try reopened.publicationIntents(limit: 8).count, 1)
+        let changed = try f.changedWAL()
+        XCTAssertNil(try reopened.reconcileOpenCodeWalk(resumed, configuration: f.configuration,
+            generation: f.generation, walGeneration: changed))
+        XCTAssertThrowsError(try reopened.finishOpenCodeWalk(resumed, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal))
+        XCTAssertEqual(try reopened.publicationIntents(limit: 8).count, 1,
+            "resetting a walk must preserve older immutable publications")
+    }
+
+    func testOpenCodePublicationAndPageAdvanceRollBackTogether() throws {
+        let f = try OpenCodeWalkTestFixture()
+        defer { f.remove() }
+        var fail = false
+        let store = try f.open(hooks: .init(beforeCommit: {
+            if fail { throw CollectorInventoryInjectedFailure.beforeCommit }
+        }))
+        let claim = try f.dirtyClaim(store)
+        _ = try store.reconcileOpenCodeWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal)
+        let context = try f.context("ses-A")
+        let reservation = try XCTUnwrap(store.reserveCapture(claim, configuration: f.configuration,
+            generation: f.generation, sqliteSession: context))
+        let capture = try f.capture(context)
+        fail = true
+        XCTAssertThrowsError(try store.finishCapture(reservation, capture: capture.capture))
+        fail = false
+        XCTAssertEqual(try store.captureReservations(limit: 8), [reservation])
+        XCTAssertTrue(try store.publicationIntents(limit: 8).isEmpty)
+        XCTAssertNil(try store.reconcileOpenCodeWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal))
+        _ = try store.finishCapture(reservation, capture: capture.capture)
+        XCTAssertEqual(try store.reconcileOpenCodeWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal), "ses-A")
+    }
+
+    func testOpenCodeReservationPersistsLongNativeIDAndRefusesWrongSessionOrWAL() throws {
+        let f = try OpenCodeWalkTestFixture()
+        defer { f.remove() }
+        var store: CollectorInventoryStore? = try f.open()
+        let claim = try f.dirtyClaim(store!)
+        _ = try store!.reconcileOpenCodeWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal)
+        let context = try f.context(String(repeating: "s", count: 3_000))
+        let reservation = try XCTUnwrap(store!.reserveCapture(claim, configuration: f.configuration,
+            generation: f.generation, sqliteSession: context))
+        store = nil
+        let reopened = try f.open(owner: "run-2")
+        XCTAssertEqual(try reopened.captureReservations(limit: 8), [reservation])
+        XCTAssertEqual(try reopened.captureReservations(limit: 8).first?.sqliteSession, context)
+        for wrong in [try f.context("ses-wrong"), try f.context(context.nativeSessionID, wal: f.changedWAL())] {
+            XCTAssertThrowsError(try reopened.finishCapture(reservation, capture: f.capture(wrong).capture))
+        }
+        XCTAssertEqual(try reopened.captureReservations(limit: 8), [reservation])
+        XCTAssertTrue(try reopened.publicationIntents(limit: 8).isEmpty)
+    }
+
+    func testOpenCodePendingReservationPreventsPrematureEOFAndRecoversAfterRestart() throws {
+        let f = try OpenCodeWalkTestFixture()
+        defer { f.remove() }
+        var store: CollectorInventoryStore? = try f.open()
+        let claim = try f.dirtyClaim(store!)
+        _ = try store!.reconcileOpenCodeWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal)
+        let context = try f.context("ses-A")
+        let reservation = try XCTUnwrap(store!.reserveCapture(claim, configuration: f.configuration,
+            generation: f.generation, sqliteSession: context))
+        let capture = try f.capture(context)
+        XCTAssertThrowsError(try store!.finishOpenCodeWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal))
+        store = nil
+        let reopened = try f.open(owner: "run-2")
+        let resumed = try f.claim(reopened)
+        _ = try reopened.reconcileOpenCodeWalk(resumed, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal)
+        XCTAssertNotNil(try reopened.finishCapture(reservation, capture: capture.capture))
+        XCTAssertEqual(try reopened.reconcileOpenCodeWalk(resumed, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal), "ses-A")
+        let next = try f.context("ses-B")
+        XCTAssertNotNil(try reopened.reserveCapture(resumed, configuration: f.configuration,
+            generation: f.generation, sqliteSession: next), "old recovery must preserve the new owner's claim")
+    }
+
+    func testOpenCodeOldWalkCannotEraseNewDirtyAndEmptyWalkNeedsNoFakeCapture() throws {
+        let f = try OpenCodeWalkTestFixture()
+        defer { f.remove() }
+        let store = try f.open()
+        let claim = try f.dirtyClaim(store)
+        _ = try store.reconcileOpenCodeWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal)
+        try store.markDirty(configuration: f.configuration, relativePath: "opencode.db", observedGeneration: "wal-new")
+        XCTAssertEqual(try store.finishOpenCodeWalk(claim, configuration: f.configuration,
+            generation: f.generation, walGeneration: f.wal), .newerWorkPending)
+        XCTAssertEqual(try store.pendingLocators(configuration: f.configuration, limit: 8).count, 1)
+        let next = try f.claim(store)
+        let changed = try f.changedWAL()
+        _ = try store.reconcileOpenCodeWalk(next, configuration: f.configuration,
+            generation: f.generation, walGeneration: changed)
+        XCTAssertEqual(try store.finishOpenCodeWalk(next, configuration: f.configuration,
+            generation: f.generation, walGeneration: changed), .acknowledged)
+        XCTAssertNil(try store.locator(configuration: f.configuration, relativePath: "opencode.db")?.lastCaptureID)
+        XCTAssertTrue(try store.publicationIntents(limit: 8).isEmpty)
+    }
+}
+
+extension CollectorInventoryStoreTests {
+    func testCursorStoreClaimCanClaimPairedPrimaryWithoutAcknowledgingUncapturedWork() throws {
+        let f = try CursorModernReservationFixture(); defer { f.close() }
+        let store = try f.open()
+        let sealed = try f.persistPaired()
+        let alias = try f.dirtyClaim(store, relativePath: f.storeRelative)
+        let primary = try XCTUnwrap(store.claimFileSetPrimary(alias, configuration: f.configuration, snapshot: sealed.snapshot))
+        XCTAssertEqual(primary.relativePath, f.transcriptRelative)
+        XCTAssertEqual(try store.locator(configuration: f.configuration, relativePath: f.storeRelative)?.acknowledgedRevision, 0)
+        let reservation = try XCTUnwrap(store.reserveCapture(primary, configuration: f.configuration,
+            generation: sealed.primaryGeneration, snapshot: sealed.snapshot))
+        XCTAssertNotNil(try store.finishCapture(reservation, capture: sealed.capture.capture))
+        try store.markDirty(configuration: f.configuration, relativePath: f.storeRelative)
+        XCTAssertEqual(try store.acknowledge(alias, captureID: sealed.capture.capture.captureID), .newerWorkPending)
+        let remaining = try XCTUnwrap(store.locator(configuration: f.configuration, relativePath: f.storeRelative))
+        XCTAssertGreaterThan(remaining.dirtyRevision, remaining.acknowledgedRevision)
+        XCTAssertEqual(try store.publicationIntents(limit: 8).count, 1)
+    }
+
+    func testCursorPrimaryClaimDoesNotStealAnAlreadyClaimedPrimary() throws {
+        let f = try CursorModernReservationFixture(); defer { f.close() }
+        let store = try f.open()
+        let sealed = try f.persistPaired()
+        let primary = try f.dirtyClaim(store, relativePath: f.transcriptRelative)
+        let alias = try f.dirtyClaim(store, relativePath: f.storeRelative)
+        XCTAssertNil(try store.claimFileSetPrimary(alias, configuration: f.configuration, snapshot: sealed.snapshot))
+        XCTAssertNotNil(try store.reserveCapture(primary, configuration: f.configuration,
+            generation: sealed.primaryGeneration, snapshot: sealed.snapshot))
+    }
+
+    func testCopilotStoreClaimCanClaimCleanEventsPrimaryWithoutAcknowledgingIndex() throws {
+        let f = try CopilotFileSetClaimFixture(); defer { f.close() }
+        let store = try f.open()
+        let snapshot = try f.observe("session-1/events.jsonl")
+        try f.acknowledgeLocator(store, relativePath: "session-1/events.jsonl")
+        let alias = try f.dirtyClaim(store, relativePath: "session-1/checkpoints/index.md")
+        let primary = try XCTUnwrap(store.claimFileSetPrimary(alias, configuration: f.configuration, snapshot: snapshot))
+        XCTAssertEqual(primary.relativePath, "session-1/events.jsonl")
+        XCTAssertEqual(
+            try store.locator(configuration: f.configuration, relativePath: "session-1/checkpoints/index.md")?.acknowledgedRevision,
+            0
+        )
+        XCTAssertGreaterThan(
+            try XCTUnwrap(store.locator(configuration: f.configuration, relativePath: "session-1/events.jsonl")).dirtyRevision,
+            try XCTUnwrap(store.locator(configuration: f.configuration, relativePath: "session-1/events.jsonl")).acknowledgedRevision
+        )
+    }
+
+    func testCopilotPrimaryClaimRejectsAnotherSessionAndStaleOrClaimedPrimary() throws {
+        let f = try CopilotFileSetClaimFixture(); defer { f.close() }
+        try f.writeSession("session-2")
+        let store = try f.open()
+        let foreign = try f.observe("session-2/events.jsonl")
+        let alias = try f.dirtyClaim(store, relativePath: "session-1/checkpoints/index.md")
+        XCTAssertThrowsError(try store.claimFileSetPrimary(alias, configuration: f.configuration, snapshot: foreign))
+        let body = try f.dirtyClaim(store, relativePath: "session-1/checkpoints/001.md")
+        XCTAssertThrowsError(try store.claimFileSetPrimary(body, configuration: f.configuration, snapshot: try f.observe("session-1/events.jsonl")))
+        let stale = try f.open(owner: "run-2")
+        XCTAssertNil(try stale.claimFileSetPrimary(alias, configuration: f.configuration, snapshot: try f.observe("session-1/events.jsonl")))
+        let owned = try CopilotFileSetClaimFixture(); defer { owned.close() }
+        let claimed = try owned.open()
+        let snapshot = try owned.observe("session-1/events.jsonl")
+        _ = try owned.dirtyClaim(claimed, relativePath: "session-1/events.jsonl")
+        let leftover = try owned.dirtyClaim(claimed, relativePath: "session-1/checkpoints/index.md")
+        XCTAssertNil(try claimed.claimFileSetPrimary(leftover, configuration: owned.configuration, snapshot: snapshot))
+        XCTAssertEqual(
+            try claimed.locator(configuration: owned.configuration, relativePath: "session-1/checkpoints/index.md")?.acknowledgedRevision,
+            0
+        )
+    }
+
+    func testCursorModernReservationSurvivesDatabaseCatalogReopenAndSourceRemoval() throws {
+        let f = try CursorModernReservationFixture(); defer { f.close() }
+        var store: CollectorInventoryStore? = try f.open()
+        let sealed = try f.persistPaired()
+        XCTAssertEqual(sealed.snapshot.entrypointRelativePath, f.transcriptRelative)
+        XCTAssertEqual(sealed.capture.manifest.generation, sealed.primaryGeneration)
+        XCTAssertTrue(ArchiveSourceDescriptor.isCursorModernFileSet(sealed.capture.manifest))
+        let reservation = try XCTUnwrap(store!.reserveCapture(
+            try f.dirtyClaim(store!, relativePath: f.transcriptRelative),
+            configuration: f.configuration, generation: sealed.primaryGeneration, snapshot: sealed.snapshot
+        ))
+        XCTAssertEqual(reservation.generation, sealed.primaryGeneration)
+        XCTAssertEqual(reservation.relativePath, f.transcriptRelative)
+        let expectedID = sealed.capture.capture.captureID
+        store = nil
+        try f.reopenDatabase()
+        try f.reopenCatalog()
+        try FileManager.default.removeItem(at: f.root)
+        let loaded = try f.loadPersistedCapture()
+        XCTAssertEqual(loaded.capture.captureID, expectedID)
+        XCTAssertEqual(
+            try f.cas.readManifest(sha256: loaded.capture.unboundManifestSHA256),
+            loaded.capture.unboundManifestBytes
+        )
+        XCTAssertEqual(
+            try ArchiveCanonicalJSON.encode(loaded.manifest),
+            loaded.capture.unboundManifestBytes
+        )
+        let reopened = try f.open(owner: "run-2")
+        XCTAssertEqual(try reopened.captureReservations(limit: 8), [reservation])
+        XCTAssertNotNil(try reopened.finishCapture(reservation, capture: loaded.capture))
+        XCTAssertTrue(try reopened.captureReservations(limit: 8).isEmpty)
+        XCTAssertEqual(try reopened.publicationIntents(limit: 8).count, 1)
+        XCTAssertEqual(try reopened.publicationIntents(limit: 8).first?.captureID, loaded.capture.captureID)
+        let states = try f.database.read {
+            try String.fetchAll($0, sql: "SELECT state FROM collector_publication_replicas ORDER BY replica_id")
+        }
+        XCTAssertEqual(states, ["pending", "pending"])
+    }
+
+    func testCursorAuxiliaryOnlyCaptureCannotReplaceReservedTranscriptPrimary() throws {
+        let f = try CursorModernReservationFixture(); defer { f.close() }
+        let store = try f.open()
+        let old = try f.persistPaired(meta: Data("meta-old".utf8))
+        let reservation = try XCTUnwrap(store.reserveCapture(
+            try f.dirtyClaim(store, relativePath: f.transcriptRelative),
+            configuration: f.configuration, generation: old.primaryGeneration, snapshot: old.snapshot
+        ))
+        let next = try f.persistPaired(meta: Data("meta-new-auxiliary".utf8), metaGeneration: f.changedMetaGeneration)
+        XCTAssertEqual(next.snapshot.entrypointRelativePath, f.transcriptRelative)
+        XCTAssertEqual(next.primaryGeneration, old.primaryGeneration)
+        XCTAssertEqual(next.capture.manifest.generation, old.capture.manifest.generation)
+        XCTAssertEqual(next.capture.capture.locator, old.capture.capture.locator)
+        XCTAssertNotEqual(next.capture.capture.captureID, old.capture.capture.captureID)
+        XCTAssertNotEqual(next.snapshot, old.snapshot)
+        XCTAssertThrowsError(try store.finishCapture(reservation, capture: next.capture.capture))
+        XCTAssertEqual(try store.captureReservations(limit: 8), [reservation])
+        XCTAssertNotNil(try store.finishCapture(reservation, capture: old.capture.capture))
+        XCTAssertEqual(try store.publicationIntents(limit: 8).first?.captureID, old.capture.capture.captureID)
+    }
+
+    func testCursorReservationRetryDistinguishesByteDifferentUnicodeMemberPaths() throws {
+        let f = try CursorModernReservationFixture(); defer { f.close() }
+        let store = try f.open()
+        let sealed = try f.persistPaired()
+        func snapshot(workspace: String) -> CollectorDependencySnapshot {
+            CollectorDependencySnapshot(entrypointRelativePath: sealed.snapshot.entrypointRelativePath,
+                present: sealed.snapshot.present.map { member in
+                    .init(relativePath: member.relativePath.replacingOccurrences(of: "chats/ws/", with: "chats/" + workspace + "/"),
+                        generation: member.generation)
+                }, absentRelativePaths: sealed.snapshot.absentRelativePaths)
+        }
+        let first = snapshot(workspace: "caf\u{00e9}")
+        let second = snapshot(workspace: "cafe\u{0301}")
+        XCTAssertEqual(first, second, "Swift String equality folds canonical Unicode equivalence")
+        XCTAssertNotEqual(first.present.map { Data($0.relativePath.utf8) }, second.present.map { Data($0.relativePath.utf8) })
+        let claim = try f.dirtyClaim(store, relativePath: f.transcriptRelative)
+        let reservation = try XCTUnwrap(store.reserveCapture(claim, configuration: f.configuration,
+            generation: sealed.primaryGeneration, snapshot: first))
+        XCTAssertNil(try store.reserveCapture(claim, configuration: f.configuration,
+            generation: sealed.primaryGeneration, snapshot: second), "a byte-distinct dependency set cannot reuse the reserved generation")
+        XCTAssertEqual(try store.captureReservations(limit: 8).first?.snapshot?.present.map { Data($0.relativePath.utf8) },
+            reservation.snapshot?.present.map { Data($0.relativePath.utf8) })
+        let different = CollectorCaptureReservation(id: reservation.id, rootID: reservation.rootID,
+            rootRevision: reservation.rootRevision, relativePath: reservation.relativePath,
+            dirtyRevision: reservation.dirtyRevision, generation: reservation.generation,
+            sourceInstanceID: reservation.sourceInstanceID, collectorEpoch: reservation.collectorEpoch,
+            sequence: reservation.sequence, snapshot: second)
+        XCTAssertTrue(try store.storeCaptureRecoveryState(reservation, payload: Data("original".utf8)))
+        XCTAssertFalse(try store.storeCaptureRecoveryState(different, payload: Data("wrong-generation".utf8)))
+        XCTAssertNil(try store.captureRecoveryState(different))
+        XCTAssertEqual(try store.captureRecoveryState(reservation), Data("original".utf8))
+        XCTAssertFalse(try store.abandonCapture(different))
+        XCTAssertEqual(try store.captureReservations(limit: 8).count, 1)
+    }
+
+    func testCursorStoreOnlySnapshotShapeAndInvalidReservationMembers() throws {
+        let f = try CursorModernReservationFixture(); defer { f.close() }
+        let store = try f.open()
+        let paired = try f.persistPaired()
+        let claim = try f.dirtyClaim(store, relativePath: f.transcriptRelative)
+        XCTAssertThrowsError(try store.reserveCapture(
+            claim, configuration: f.configuration, generation: paired.primaryGeneration
+        ))
+        let wrongPrimary = CollectorDependencySnapshot(
+            entrypointRelativePath: f.storeRelative, present: paired.snapshot.present,
+            absentRelativePaths: paired.snapshot.absentRelativePaths
+        )
+        XCTAssertThrowsError(try store.reserveCapture(
+            claim, configuration: f.configuration, generation: paired.storeGeneration, snapshot: wrongPrimary
+        ))
+        let missingStore = CollectorDependencySnapshot(
+            entrypointRelativePath: f.transcriptRelative,
+            present: paired.snapshot.present.filter { $0.relativePath != f.storeRelative },
+            absentRelativePaths: paired.snapshot.absentRelativePaths
+        )
+        XCTAssertThrowsError(try store.reserveCapture(
+            claim, configuration: f.configuration, generation: paired.primaryGeneration, snapshot: missingStore
+        ))
+        let unrelated = CollectorDependencySnapshot(
+            entrypointRelativePath: f.transcriptRelative,
+            present: paired.snapshot.present + [
+                .init(relativePath: f.storeRelative + "-shm", generation: f.noiseGeneration),
+            ],
+            absentRelativePaths: paired.snapshot.absentRelativePaths
+        )
+        XCTAssertThrowsError(try store.reserveCapture(
+            claim, configuration: f.configuration, generation: paired.primaryGeneration, snapshot: unrelated
+        ))
+        XCTAssertTrue(try store.captureReservations(limit: 8).isEmpty)
+
+        let valid = try f.persistStoreOnly()
+        XCTAssertEqual(valid.snapshot.entrypointRelativePath, f.storeRelative)
+        XCTAssertEqual(Set(valid.snapshot.absentRelativePaths), [f.storeRelative + "-wal", f.metaRelative])
+        XCTAssertFalse(valid.snapshot.present.contains { $0.relativePath.hasSuffix("-shm") || $0.relativePath.hasSuffix("-journal") })
+        let accepted = try XCTUnwrap(store.reserveCapture(
+            try f.dirtyClaim(store, relativePath: f.storeRelative),
+            configuration: f.configuration, generation: valid.primaryGeneration, snapshot: valid.snapshot
+        ))
+        XCTAssertEqual(accepted.snapshot, valid.snapshot)
+        XCTAssertEqual(try store.captureReservations(limit: 8), [accepted])
+    }
+
+    func testCursorReservationReloadsOnPublicationSchemaFiveAndFailsClosedOnCorruptDependency() throws {
+        let f = try CursorModernReservationFixture(); defer { f.close() }
+        var store: CollectorInventoryStore? = try f.open()
+        let sealed = try f.persistPaired()
+        let reservation = try XCTUnwrap(store!.reserveCapture(
+            try f.dirtyClaim(store!, relativePath: f.transcriptRelative),
+            configuration: f.configuration, generation: sealed.primaryGeneration, snapshot: sealed.snapshot
+        ))
+        XCTAssertEqual(try f.database.read {
+            try String.fetchOne($0, sql: "SELECT value FROM collector_metadata WHERE key = 'publication_schema_version'")
+        }, "11")
+        store = nil
+        try f.reopenDatabase()
+        let reloaded = try f.open(owner: "run-2")
+        XCTAssertEqual(try reloaded.captureReservations(limit: 8), [reservation])
+        try f.database.write { db in
+            try db.execute(sql: """
+                UPDATE collector_capture_reservation_dependencies SET generation_bytes = ?
+                WHERE reservation_id = ? AND relative_path = ?
+                """, arguments: [Data([0x00]), reservation.id, f.transcriptRelative])
+        }
+        XCTAssertThrowsError(try reloaded.captureReservations(limit: 8))
+        XCTAssertEqual(try f.database.read {
+            try Int.fetchOne($0, sql: "SELECT count(*) FROM collector_capture_reservations")
+        }, 1)
+    }
+}
+
+private final class OpenCodeWalkTestFixture {
+    private let base: CollectorInventoryTestFixture
+    let configuration: CollectorRootConfiguration
+    let generation: ArchiveSourceGeneration
+    let wal: ArchiveSourceGeneration
+    let cas: ImmutableArchiveCAS
+    let catalog: ArchiveCatalog
+
+    init() throws {
+        let fixture = try CollectorInventoryTestFixture()
+        base = fixture
+        let pointer = try XCTUnwrap(realpath(fixture.root.path, nil))
+        defer { free(pointer) }
+        let physical = URL(fileURLWithPath: String(cString: pointer))
+        configuration = .init(rootID: "open-code", source: .opencode,
+            rootPath: physical.appendingPathComponent("source").path, revision: 1)
+        generation = try ArchiveSourceGeneration(device: 1, inode: 2, size: 819200,
+            mtimeNs: 3, ctimeNs: 4, mode: 0o100600)
+        wal = try ArchiveSourceGeneration(device: 1, inode: 5, size: 16384,
+            mtimeNs: 6, ctimeNs: 7, mode: 0o100600)
+        let archive = physical.appendingPathComponent("archive")
+        cas = try ImmutableArchiveCAS(root: archive)
+        catalog = try ArchiveCatalog(root: archive, machineID: fixture.machineID)
+        try catalog.migrate()
+    }
+
+    func open(owner: String = "run-1", hooks: CollectorInventoryStoreTestHooks = .init()) throws -> CollectorInventoryStore {
+        let store = try base.open(owner: owner, hooks: hooks)
+        try store.registerRoot(configuration)
+        try store.enrollRoot(binding: .init(configuration: configuration,
+            expectedIdentity: .init(device: 1, inode: 2, generation: 0, birthSeconds: 1, birthNanoseconds: 0)))
+        XCTAssertNotNil(try store.activateEnrolledRoot(configuration: configuration))
+        return store
+    }
+
+    func claim(_ store: CollectorInventoryStore) throws -> CollectorDirtyClaim {
+        try XCTUnwrap(store.claimDirty(configuration: configuration, limit: 1, now: 100).first)
+    }
+
+    func dirtyClaim(_ store: CollectorInventoryStore) throws -> CollectorDirtyClaim {
+        try store.markDirty(configuration: configuration, relativePath: "opencode.db", observedGeneration: "wal-initial")
+        return try claim(store)
+    }
+
+    func changedWAL() throws -> ArchiveSourceGeneration {
+        try ArchiveSourceGeneration(device: 1, inode: 5, size: 32768, mtimeNs: 8, ctimeNs: 9, mode: 0o100600)
+    }
+
+    func context(_ id: String, wal override: ArchiveSourceGeneration? = nil) throws -> ArchiveSQLiteSessionContext {
+        try ArchiveSQLiteSessionContext(databaseLocator: configuration.rootPath + "/opencode.db",
+            nativeSessionID: id, nativePayloadByteCount: 0, walGeneration: override ?? wal)
+    }
+
+    func capture(_ context: ArchiveSQLiteSessionContext) throws -> ArchiveCaptureResult {
+        let file = base.root.appendingPathComponent("image-\(UUID().uuidString).sqlite")
+        let db = try DatabaseQueue(path: file.path)
+        try db.write {
+            try $0.execute(sql: "CREATE TABLE session(id TEXT, directory TEXT); INSERT INTO session VALUES (?, ?)",
+                arguments: [context.nativeSessionID, "/fixture/project"])
+        }
+        try db.close()
+        return try ExactSourceCapturer.captureSQLiteSessionImage(Data(contentsOf: file), context: context,
+            generation: generation, machineID: base.machineID, cas: cas, catalog: catalog)
+    }
+
+    func remove() {
+        try? catalog.close()
+        base.remove()
+    }
+}
+
+/// Sealed reservation fixtures only. Planted SHM/journal are excluded members,
+/// not a live captureModern proof with a source journal present.
+private final class CursorModernReservationFixture {
+    let base: URL
+    let root: URL
+    let archive: URL
+    var database: DatabaseQueue
+    let cas: ImmutableArchiveCAS
+    var catalog: ArchiveCatalog
+    let machineID = "11111111-2222-3333-4444-555555555555"
+    let storeRelative = "chats/ws/sid/store.db"
+    let transcriptRelative = "projects/proj/agent-transcripts/sid/sid.jsonl"
+    var metaRelative: String { "chats/ws/sid/meta.json" }
+    let storeGeneration: ArchiveSourceGeneration
+    let transcriptGeneration: ArchiveSourceGeneration
+    let walGeneration: ArchiveSourceGeneration
+    let metaGeneration: ArchiveSourceGeneration
+    let changedMetaGeneration: ArchiveSourceGeneration
+    let noiseGeneration: ArchiveSourceGeneration
+    var configuration: CollectorRootConfiguration {
+        .init(rootID: "cursor", source: .cursor, rootPath: root.path, revision: 1)
+    }
+
+    struct Sealed {
+        let snapshot: CollectorDependencySnapshot
+        let capture: ArchiveCaptureResult
+        let storeGeneration: ArchiveSourceGeneration
+        var primaryGeneration: ArchiveSourceGeneration {
+            snapshot.present.first { $0.relativePath == snapshot.entrypointRelativePath }!.generation
+        }
+    }
+
+    init() throws {
+        let temporary = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cursor-reserve-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: false)
+        let physical = try XCTUnwrap(realpath(temporary.path, nil))
+        defer { free(physical) }
+        base = URL(fileURLWithPath: String(cString: physical))
+        root = base.appendingPathComponent("source")
+        archive = base.appendingPathComponent("archive")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        database = try DatabaseQueue(path: base.appendingPathComponent("inventory.sqlite").path)
+        cas = try ImmutableArchiveCAS(root: archive)
+        catalog = try ArchiveCatalog(root: archive, machineID: machineID)
+        try catalog.migrate()
+        storeGeneration = try ArchiveSourceGeneration(
+            device: 1, inode: 2, size: 5, mtimeNs: 10, ctimeNs: 11, mode: 0o100600)
+        transcriptGeneration = try ArchiveSourceGeneration(
+            device: 1, inode: 3, size: 11, mtimeNs: 12, ctimeNs: 13, mode: 0o100600)
+        walGeneration = try ArchiveSourceGeneration(
+            device: 1, inode: 4, size: 3, mtimeNs: 14, ctimeNs: 15, mode: 0o100600)
+        metaGeneration = try ArchiveSourceGeneration(
+            device: 1, inode: 5, size: 8, mtimeNs: 16, ctimeNs: 17, mode: 0o100600)
+        changedMetaGeneration = try ArchiveSourceGeneration(
+            device: 1, inode: 5, size: 18, mtimeNs: 26, ctimeNs: 27, mode: 0o100600)
+        noiseGeneration = try ArchiveSourceGeneration(
+            device: 1, inode: 9, size: 1, mtimeNs: 1, ctimeNs: 1, mode: 0o100600)
+    }
+
+    func open(owner: String = "run-1") throws -> CollectorInventoryStore {
+        let store = try CollectorInventoryStore(database: database, machineID: machineID, ownerRunID: owner)
+        try store.registerRoot(configuration)
+        try store.enrollRoot(binding: .init(configuration: configuration,
+            expectedIdentity: .init(device: 1, inode: 2, generation: 0, birthSeconds: 1, birthNanoseconds: 0)))
+        XCTAssertNotNil(try store.activateEnrolledRoot(configuration: configuration))
+        return store
+    }
+
+    func dirtyClaim(_ store: CollectorInventoryStore, relativePath: String) throws -> CollectorDirtyClaim {
+        try store.markDirty(configuration: configuration, relativePath: relativePath)
+        let claims = try store.claimDirty(configuration: configuration, limit: 8, now: 100)
+        return try XCTUnwrap(claims.first { $0.relativePath == relativePath })
+    }
+
+    func persistPaired(
+        meta: Data = Data("meta-old".utf8), metaGeneration override: ArchiveSourceGeneration? = nil
+    ) throws -> Sealed {
+        let store = Data("STORE".utf8)
+        let transcript = Data("TRANSCRIPT\n".utf8)
+        let wal = Data("WAL".utf8)
+        try write(storeRelative, store)
+        try write(storeRelative + "-wal", wal)
+        try write(metaRelative, meta)
+        try write(transcriptRelative, transcript)
+        try write(storeRelative + "-shm", Data([1]))
+        try write(storeRelative + "-journal", Data([2]))
+        return try persist(
+            store: store, transcript: transcript, wal: wal, meta: meta,
+            metaGeneration: override ?? metaGeneration
+        )
+    }
+
+    func persistStoreOnly() throws -> Sealed {
+        let store = Data("STORE".utf8)
+        try write(storeRelative, store)
+        try write(storeRelative + "-shm", Data([1]))
+        return try persist(store: store, transcript: nil, wal: nil, meta: nil)
+    }
+
+    func persist(
+        store: Data, transcript: Data?, wal: Data?, meta: Data?,
+        metaGeneration: ArchiveSourceGeneration? = nil
+    ) throws -> Sealed {
+        var files: [CollectorCursorSource.CapturedMember] = [
+            .init(relativePath: storeRelative, generation: storeGeneration, bytes: store),
+        ]
+        if let wal {
+            files.append(.init(relativePath: storeRelative + "-wal", generation: walGeneration, bytes: wal))
+        }
+        if let meta {
+            files.append(.init(relativePath: metaRelative, generation: metaGeneration ?? self.metaGeneration, bytes: meta))
+        }
+        if let transcript {
+            files.append(.init(relativePath: transcriptRelative, generation: transcriptGeneration, bytes: transcript))
+        }
+        files.sort { $0.relativePath.utf8.lexicographicallyPrecedes($1.relativePath.utf8) }
+        var absent: [String] = []
+        if wal == nil { absent.append(storeRelative + "-wal") }
+        if meta == nil { absent.append(metaRelative) }
+        absent.sort { $0.utf8.lexicographicallyPrecedes($1.utf8) }
+        let session = CollectorCursorSource.ModernSession(
+            nativeSessionID: "sid", storeRelativePath: storeRelative,
+            transcriptRelativePath: transcript != nil ? transcriptRelative : nil,
+            present: files.map { .init(relativePath: $0.relativePath, generation: $0.generation) },
+            absentRelativePaths: absent
+        )
+        let modern = CollectorCursorSource.ModernCapture(rootPath: root.path, session: session, files: files)
+        let capture = try CollectorCursorSource.persistModern(
+            modern, machineID: machineID, cas: cas, catalog: catalog
+        )
+        return Sealed(snapshot: snapshot(from: modern), capture: capture, storeGeneration: storeGeneration)
+    }
+
+    func snapshot(from capture: CollectorCursorSource.ModernCapture) -> CollectorDependencySnapshot {
+        let primary = capture.session.transcriptRelativePath ?? capture.session.storeRelativePath!
+        var slots = Set<Data>()
+        if let store = capture.session.storeRelativePath {
+            slots.insert(Data((store + "-wal").utf8))
+            slots.insert(Data((store.split(separator: "/").dropLast().joined(separator: "/") + "/meta.json").utf8))
+        }
+        return CollectorDependencySnapshot(
+            entrypointRelativePath: primary,
+            present: capture.files.map { .init(relativePath: $0.relativePath, generation: $0.generation) }
+                .sorted { $0.relativePath.utf8.lexicographicallyPrecedes($1.relativePath.utf8) },
+            absentRelativePaths: capture.session.absentRelativePaths
+                .filter { slots.contains(Data($0.utf8)) }
+                .sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
+        )
+    }
+
+    func loadPersistedCapture() throws -> ArchiveCaptureResult {
+        let capture = try XCTUnwrap(try catalog.unboundCaptures(limit: 2).first)
+        let manifest = try ArchiveCanonicalJSON.decode(
+            ArchiveSourceManifest.self, from: capture.unboundManifestBytes
+        )
+        return ArchiveCaptureResult(capture: capture, manifest: manifest)
+    }
+
+    func write(_ relative: String, _ bytes: Data) throws {
+        let url = root.appendingPathComponent(relative)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try bytes.write(to: url)
+    }
+
+    func reopenDatabase() throws {
+        try database.close()
+        database = try DatabaseQueue(path: base.appendingPathComponent("inventory.sqlite").path)
+    }
+
+    func reopenCatalog() throws {
+        try catalog.close()
+        catalog = try ArchiveCatalog(root: archive, machineID: machineID)
+        try catalog.migrate()
+    }
+
+    func close() {
+        try? catalog.close()
+        try? database.close()
+        try? FileManager.default.removeItem(at: base)
+    }
+}
+
+private final class CopilotFileSetClaimFixture {
+    let base: URL
+    let root: URL
+    var database: DatabaseQueue
+    let machineID = "11111111-2222-3333-4444-555555555555"
+    var configuration: CollectorRootConfiguration {
+        .init(rootID: "copilot", source: .copilot, rootPath: root.path, revision: 1)
+    }
+
+    init() throws {
+        let temporary = FileManager.default.temporaryDirectory
+            .appendingPathComponent("copilot-claim-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: false)
+        let physical = try XCTUnwrap(realpath(temporary.path, nil))
+        defer { free(physical) }
+        base = URL(fileURLWithPath: String(cString: physical))
+        root = base.appendingPathComponent("source")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        database = try DatabaseQueue(path: base.appendingPathComponent("inventory.sqlite").path)
+        try writeSession("session-1")
+    }
+
+    func open(owner: String = "run-1") throws -> CollectorInventoryStore {
+        let store = try CollectorInventoryStore(database: database, machineID: machineID, ownerRunID: owner)
+        try store.registerRoot(configuration)
+        try store.enrollRoot(binding: .init(configuration: configuration,
+            expectedIdentity: .init(device: 1, inode: 2, generation: 0, birthSeconds: 1, birthNanoseconds: 0)))
+        XCTAssertNotNil(try store.activateEnrolledRoot(configuration: configuration))
+        return store
+    }
+
+    func writeSession(_ session: String) throws {
+        let directory = root.appendingPathComponent(session)
+        let checkpoints = directory.appendingPathComponent("checkpoints")
+        try FileManager.default.createDirectory(at: checkpoints, withIntermediateDirectories: true)
+        try Data("{\"type\":\"user.message\",\"data\":{\"content\":\"hello\"}}\n".utf8)
+            .write(to: directory.appendingPathComponent("events.jsonl"))
+        try Data("id: \(session)\ncwd: /repo/\(session)\n".utf8)
+            .write(to: directory.appendingPathComponent("workspace.yaml"))
+        try Data("| 1 | Checkpoint | 001.md |\n".utf8)
+            .write(to: checkpoints.appendingPathComponent("index.md"))
+        try Data("# body\n".utf8).write(to: checkpoints.appendingPathComponent("001.md"))
+    }
+
+    func observe(_ primary: String) throws -> CollectorDependencySnapshot {
+        try CollectorCopilotSource.observe(rootPath: root.path, primaryRelative: primary).snapshot
+    }
+
+    func dirtyClaim(_ store: CollectorInventoryStore, relativePath: String) throws -> CollectorDirtyClaim {
+        try store.markDirty(configuration: configuration, relativePath: relativePath)
+        let claims = try store.claimDirty(configuration: configuration, limit: 8, now: 100)
+        return try XCTUnwrap(claims.first { $0.relativePath == relativePath })
+    }
+
+    func acknowledgeLocator(_ store: CollectorInventoryStore, relativePath: String) throws {
+        try store.markDirty(configuration: configuration, relativePath: relativePath)
+        try database.write { db in
+            try db.execute(sql: """
+                UPDATE collector_locators SET acknowledged_revision = dirty_revision
+                WHERE root_id = ? AND root_revision = ? AND relative_path = ?
+                """, arguments: [configuration.rootID, configuration.revision, relativePath])
+        }
+    }
+
+    func close() {
+        try? database.close()
+        try? FileManager.default.removeItem(at: base)
+    }
+}
+
+private final class CursorLegacyWalkTestFixture {
+    private let base: CollectorInventoryTestFixture
+    let configuration: CollectorRootConfiguration
+    let generation: ArchiveSourceGeneration
+    let wal: ArchiveSourceGeneration
+    let cas: ImmutableArchiveCAS
+    let catalog: ArchiveCatalog
+
+    init() throws {
+        let fixture = try CollectorInventoryTestFixture()
+        base = fixture
+        let pointer = try XCTUnwrap(realpath(fixture.root.path, nil))
+        defer { free(pointer) }
+        let physical = URL(fileURLWithPath: String(cString: pointer))
+        configuration = .init(rootID: "cursor-legacy", source: .cursor,
+            rootPath: physical.appendingPathComponent("source").path, revision: 1)
+        generation = try ArchiveSourceGeneration(device: 1, inode: 2, size: 819200,
+            mtimeNs: 3, ctimeNs: 4, mode: 0o100600)
+        wal = try ArchiveSourceGeneration(device: 1, inode: 5, size: 16384,
+            mtimeNs: 6, ctimeNs: 7, mode: 0o100600)
+        let archive = physical.appendingPathComponent("archive")
+        cas = try ImmutableArchiveCAS(root: archive)
+        catalog = try ArchiveCatalog(root: archive, machineID: fixture.machineID)
+        try catalog.migrate()
+    }
+
+    func open(owner: String = "run-1", hooks: CollectorInventoryStoreTestHooks = .init()) throws -> CollectorInventoryStore {
+        let store = try base.open(owner: owner, hooks: hooks)
+        try store.registerRoot(configuration)
+        try store.enrollRoot(binding: .init(configuration: configuration,
+            expectedIdentity: .init(device: 1, inode: 2, generation: 0, birthSeconds: 1, birthNanoseconds: 0)))
+        XCTAssertNotNil(try store.activateEnrolledRoot(configuration: configuration))
+        return store
+    }
+
+    func claim(_ store: CollectorInventoryStore) throws -> CollectorDirtyClaim {
+        try XCTUnwrap(store.claimDirty(configuration: configuration, limit: 1, now: 100).first)
+    }
+
+    func dirtyClaim(_ store: CollectorInventoryStore) throws -> CollectorDirtyClaim {
+        try store.markDirty(configuration: configuration, relativePath: "state.vscdb", observedGeneration: "wal-initial")
+        return try claim(store)
+    }
+
+    func changedWAL() throws -> ArchiveSourceGeneration {
+        try ArchiveSourceGeneration(device: 1, inode: 5, size: 32768, mtimeNs: 8, ctimeNs: 9, mode: 0o100600)
+    }
+
+    func session(_ id: String, wal override: ArchiveSourceGeneration? = nil) throws -> ArchiveCursorLegacySession {
+        let bytes = try JSONSerialization.data(withJSONObject: ["composerId": id], options: [.sortedKeys])
+        return try ArchiveCursorLegacySession(logicalDatabaseLocator: configuration.rootPath + "/state.vscdb",
+            composerID: id, cwd: "/fixture/project", databaseGeneration: generation, walGeneration: override ?? wal,
+            composer: .init(rowID: 1, key: "composerData:" + id, value: bytes), bubbles: [])
+    }
+
+    func context(_ id: String, wal override: ArchiveSourceGeneration? = nil) throws -> ArchiveCursorLegacyContext {
+        try ArchiveCursorLegacyContext(session: session(id, wal: override))
+    }
+
+    func capture(_ context: ArchiveCursorLegacyContext) throws -> ArchiveCaptureResult {
+        try ExactSourceCapturer.captureCursorLegacySession(session(context.composerID, wal: context.walGeneration),
+            machineID: base.machineID, cas: cas, catalog: catalog)
+    }
+
+    func database() throws -> DatabaseQueue { try base.openDatabase() }
+
+    func remove() {
+        try? catalog.close()
+        base.remove()
+    }
+}
+
+extension CollectorInventoryStoreTests {
+    func testVSCodeReservationRecoversFrozenConfigurationAfterDatabaseReopenAndSourceRemoval() throws {
+        let f = try VSCodePersistenceFixture(); defer { f.close() }
+        var store: CollectorInventoryStore? = try f.open()
+        let captured = try f.capture()
+        let snapshot = try f.snapshot(captured)
+        let reserved = try XCTUnwrap(store!.reserveCapture(f.claim(store!), configuration: f.configuration,
+            generation: captured.manifest.generation, snapshot: snapshot))
+        store = nil
+        try f.reopen()
+        try FileManager.default.removeItem(at: f.source)
+        let reopened = try f.open(owner: "run-2")
+        XCTAssertEqual(try reopened.captureReservations(limit: 8), [reserved])
+        XCTAssertEqual(try reopened.captureReservations(limit: 8).first?.snapshot?.vscodeWorkspaceContext, try f.context)
+        XCTAssertNotNil(try reopened.finishCapture(reserved, capture: captured.capture))
+        XCTAssertTrue(try reopened.captureReservations(limit: 8).isEmpty)
+        XCTAssertEqual(try reopened.publicationIntents(limit: 8).count, 1)
+        XCTAssertEqual(try f.database.read { try String.fetchAll($0,
+            sql: "SELECT state FROM collector_publication_replicas ORDER BY replica_id") }, ["pending", "pending"])
+    }
+
+    func testVSCodeReservationRejectsChangedFrozenConfigurationWithoutConsumingReservation() throws {
+        let f = try VSCodePersistenceFixture(); defer { f.close() }
+        let store = try f.open()
+        let captured = try f.capture()
+        let snapshot = try f.snapshot(captured)
+        let reserved = try XCTUnwrap(store.reserveCapture(f.claim(store), configuration: f.configuration,
+            generation: captured.manifest.generation, snapshot: snapshot))
+        let changed = try f.capture(context: f.makeContext(Data(#"{"folders":[{"path":"other"}]}"#.utf8)))
+        XCTAssertEqual(changed.manifest.wholeSourceSHA256, captured.manifest.wholeSourceSHA256)
+        XCTAssertNotEqual(changed.manifest.captureID, captured.manifest.captureID)
+        XCTAssertThrowsError(try store.finishCapture(reserved, capture: changed.capture))
+        XCTAssertEqual(try store.captureReservations(limit: 8), [reserved])
+        XCTAssertTrue(try store.publicationIntents(limit: 8).isEmpty)
+        XCTAssertNotNil(try store.finishCapture(reserved, capture: captured.capture))
+    }
+
+    func testSchemaTenMigrationPreservesExistingPublicationAndACKBytes() throws {
+        let f = try CollectorInventoryTestFixture(); defer { f.remove() }
+        _ = try f.openRegistered()
+        let db = try f.openDatabase()
+        try f.seedPublications(in: db, acknowledgedReplicas: ["hq"])
+        let before = try db.read { db in
+            (try Data.fetchOne(db, sql: "SELECT canonical_bytes FROM collector_publications"),
+             try Data.fetchOne(db, sql: "SELECT ack_bytes FROM collector_publication_replicas WHERE replica_id = 'hq'"))
+        }
+        try db.write { db in
+            try db.execute(sql: "ALTER TABLE collector_capture_reservations DROP COLUMN vscode_context_bytes")
+            try db.execute(sql: "ALTER TABLE collector_capture_reservations DROP COLUMN vscode_context_sha256")
+            try db.execute(sql: "UPDATE collector_metadata SET value = '10' WHERE key = 'publication_schema_version'")
+        }
+        _ = try f.open(owner: "migrated")
+        try db.read { db in
+            XCTAssertEqual(try Data.fetchOne(db, sql: "SELECT canonical_bytes FROM collector_publications"), before.0)
+            XCTAssertEqual(try Data.fetchOne(db, sql: "SELECT ack_bytes FROM collector_publication_replicas WHERE replica_id = 'hq'"), before.1)
+            XCTAssertNotNil(before.1)
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT value FROM collector_metadata WHERE key = 'publication_schema_version'"), "11")
+            XCTAssertTrue(try Row.fetchAll(db, sql: "PRAGMA foreign_key_check").isEmpty)
+        }
+    }
+
+    func testVSCodePublicationFailureRollsBackFrozenContextAndReplicaObligations() throws {
+        let f = try VSCodePersistenceFixture(); defer { f.close() }
+        var fail = false
+        let store = try f.open(hooks: .init(beforeCommit: {
+            if fail { throw CollectorInventoryInjectedFailure.beforeCommit }
+        }))
+        let captured = try f.capture()
+        let reserved = try XCTUnwrap(store.reserveCapture(f.claim(store), configuration: f.configuration,
+            generation: captured.manifest.generation, snapshot: f.snapshot(captured)))
+        fail = true
+        XCTAssertThrowsError(try store.finishCapture(reserved, capture: captured.capture))
+        fail = false
+        XCTAssertEqual(try store.captureReservations(limit: 8), [reserved])
+        XCTAssertTrue(try store.publicationIntents(limit: 8).isEmpty)
+        XCTAssertEqual(try f.database.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM collector_publication_replicas") }, 0)
+        XCTAssertNotNil(try store.finishCapture(reserved, capture: captured.capture))
+    }
+
+    func testVSCodeReservationPreservesReferencedAbsenceAndMaximumConfigurationBytes() throws {
+        for missing in [true, false] {
+            let f = try VSCodePersistenceFixture(); defer { f.close() }
+            let context = try missing
+                ? ArchiveVSCodeWorkspaceContext(configurationLocator: f.source.appendingPathComponent("project.code-workspace").path)
+                : f.makeContext(Data(repeating: 32, count: ArchiveVSCodeWorkspaceContext.maximumContextBytes))
+            var store: CollectorInventoryStore? = try f.open()
+            let captured = try f.capture(context: context)
+            let reserved = try XCTUnwrap(store!.reserveCapture(f.claim(store!), configuration: f.configuration,
+                generation: captured.manifest.generation, snapshot: f.snapshot(captured)))
+            store = nil
+            try f.reopen()
+            try FileManager.default.removeItem(at: f.source)
+            let reopened = try f.open(owner: "run-2")
+            XCTAssertEqual(try reopened.captureReservations(limit: 8).first?.snapshot?.vscodeWorkspaceContext, context)
+            XCTAssertNotNil(try reopened.finishCapture(reserved, capture: captured.capture))
+        }
+    }
+
+    func testVSCodeReservationCorruptContextFailsClosedAndPreservesRow() throws {
+        for corruption in ["digest", "missing", "noncanonical"] {
+            let f = try VSCodePersistenceFixture(); defer { f.close() }
+            let store = try f.open()
+            let captured = try f.capture()
+            _ = try XCTUnwrap(store.reserveCapture(f.claim(store), configuration: f.configuration,
+                generation: captured.manifest.generation, snapshot: f.snapshot(captured)))
+            try f.database.write { db in
+                switch corruption {
+                case "digest": try db.execute(sql: "UPDATE collector_capture_reservations SET vscode_context_sha256 = ?",
+                    arguments: [String(repeating: "0", count: 64)])
+                case "missing": try db.execute(sql: "UPDATE collector_capture_reservations SET vscode_context_bytes = NULL")
+                default:
+                    var bytes = try XCTUnwrap(Data.fetchOne(db, sql: "SELECT vscode_context_bytes FROM collector_capture_reservations"))
+                    bytes.append(32)
+                    try db.execute(sql: "UPDATE collector_capture_reservations SET vscode_context_bytes = ?, vscode_context_sha256 = ?",
+                        arguments: [bytes, ArchiveV2Hash.sha256(bytes)])
+                }
+            }
+            XCTAssertThrowsError(try store.captureReservations(limit: 8), corruption)
+            XCTAssertEqual(try f.database.read { try Int.fetchOne($0,
+                sql: "SELECT count(*) FROM collector_capture_reservations") }, 1)
+        }
+    }
+}
+
+private final class VSCodePersistenceFixture {
+    let base: URL
+    let source: URL
+    let root: URL
+    let cas: ImmutableArchiveCAS
+    let catalog: ArchiveCatalog
+    var database: DatabaseQueue
+    let machineID = "11111111-2222-3333-4444-555555555555"
+    let relative = "ws/chatSessions/chat.jsonl"
+    var configuration: CollectorRootConfiguration { .init(rootID: "vscode", source: .vscode, rootPath: root.path, revision: 1) }
+    var context: ArchiveVSCodeWorkspaceContext { get throws {
+        try makeContext(Data(#"{"folders":[{"path":"project"}]}"#.utf8))
+    } }
+    init() throws {
+        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("vscode-persist-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: false)
+        let physical = try XCTUnwrap(realpath(temporary.path, nil)); defer { free(physical) }
+        base = URL(fileURLWithPath: String(cString: physical))
+        source = base.appendingPathComponent("source"); root = source.appendingPathComponent("workspaceStorage")
+        let primary = root.appendingPathComponent(relative)
+        try FileManager.default.createDirectory(at: primary.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data((#"{"kind":0,"v":{"sessionId":"chat","requests":[]}}"# + "\n").utf8).write(to: primary)
+        try JSONSerialization.data(withJSONObject: ["configuration": source.appendingPathComponent("project.code-workspace").absoluteString])
+            .write(to: root.appendingPathComponent("ws/workspace.json"))
+        database = try DatabaseQueue(path: base.appendingPathComponent("inventory.sqlite").path)
+        let archive = base.appendingPathComponent("archive")
+        cas = try ImmutableArchiveCAS(root: archive)
+        catalog = try ArchiveCatalog(root: archive, machineID: machineID)
+        try catalog.migrate()
+    }
+    func makeContext(_ bytes: Data) throws -> ArchiveVSCodeWorkspaceContext {
+        try ArchiveVSCodeWorkspaceContext(configurationLocator: source.appendingPathComponent("project.code-workspace").path,
+            configurationGeneration: ArchiveSourceGeneration(device: 1, inode: 2, size: Int64(bytes.count),
+                mtimeNs: 1, ctimeNs: 1, mode: 0o100600), configurationData: bytes,
+            configurationSHA256: ArchiveV2Hash.sha256(bytes))
+    }
+    func open(owner: String = "run-1", hooks: CollectorInventoryStoreTestHooks = .init()) throws -> CollectorInventoryStore {
+        let store = try CollectorInventoryStore(database: database, machineID: machineID, ownerRunID: owner, testHooks: hooks)
+        try store.registerRoot(configuration)
+        try store.enrollRoot(binding: .init(configuration: configuration,
+            expectedIdentity: .init(device: 1, inode: 2, generation: 0, birthSeconds: 1, birthNanoseconds: 0)))
+        XCTAssertNotNil(try store.activateEnrolledRoot(configuration: configuration))
+        return store
+    }
+    func claim(_ store: CollectorInventoryStore) throws -> CollectorDirtyClaim {
+        try store.markDirty(configuration: configuration, relativePath: relative)
+        return try XCTUnwrap(store.claimDirty(configuration: configuration, limit: 1, now: 100).first)
+    }
+    func capture(context override: ArchiveVSCodeWorkspaceContext? = nil) throws -> ArchiveCaptureResult {
+        let primary = root.appendingPathComponent(relative)
+        let descriptor = try ArchiveSourceDescriptor.fileSet(locator: primary.path, root: root,
+            files: [primary, root.appendingPathComponent("ws/workspace.json")],
+            vscodeWorkspaceContext: override ?? context)
+        return try ExactSourceCapturer(cas: cas, catalog: catalog, descriptor: descriptor)
+            .capture(source: .vscode, locator: primary.path, machineID: machineID)
+    }
+    func snapshot(_ capture: ArchiveCaptureResult) throws -> CollectorDependencySnapshot {
+        CollectorDependencySnapshot(entrypointRelativePath: relative,
+            present: try XCTUnwrap(capture.manifest.replayLayout.files).map { .init(relativePath: $0.relativePath, generation: $0.generation) },
+            absentRelativePaths: capture.manifest.replayLayout.absentRelativePaths ?? [],
+            vscodeWorkspaceContext: capture.manifest.replayLayout.vscodeWorkspaceContext)
+    }
+    func reopen() throws {
+        try database.close()
+        database = try DatabaseQueue(path: base.appendingPathComponent("inventory.sqlite").path)
+    }
+    func close() { try? catalog.close(); try? database.close(); try? FileManager.default.removeItem(at: base) }
 }

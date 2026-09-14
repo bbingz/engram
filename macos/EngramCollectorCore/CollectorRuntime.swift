@@ -24,6 +24,58 @@ public struct CollectorRuntimeCycle: Equatable, Sendable {
     public var diskAdmission: CollectorDiskAdmissionStatus = .notEvaluated
 }
 
+struct CollectorCaptureScheduleSample: Equatable, Sendable {
+    var phase: CollectorEventCoordinatorPhase
+    var historyDone: Bool
+    var queuedBatchCount: Int
+    var pendingGap: Bool
+    var historyWaiting: Bool
+}
+
+struct CollectorCaptureWorkHints: Equatable, Sendable {
+    var bootstrapProgressed: Bool
+    var drainableBatchesRemaining: Bool
+    var captured: Int
+    var recovered: Int
+}
+
+enum CollectorCaptureScheduler {
+    static let cheapWakeCapMilliseconds = 1_000
+
+    static func cheapWakeMilliseconds(intervalMilliseconds: Int) -> Int {
+        min(max(intervalMilliseconds, 0), cheapWakeCapMilliseconds)
+    }
+
+    static func shouldRunCapture(deadlineReached: Bool, samples: [CollectorCaptureScheduleSample]) -> Bool {
+        if deadlineReached { return true }
+        return samples.contains { sample in
+            if sample.pendingGap || sample.phase == .recoveryRequired { return true }
+            if sample.phase == .watching && sample.queuedBatchCount > 0 { return true }
+            if sample.historyWaiting && sample.historyDone { return true }
+            return false
+        }
+    }
+
+    static func shouldContinuePromptly(_ hints: CollectorCaptureWorkHints) -> Bool {
+        hints.bootstrapProgressed || hints.drainableBatchesRemaining || hints.captured > 0 || hints.recovered > 0
+    }
+
+    static func bootstrapProgressed(_ result: CollectorBootstrapStepResult) -> Bool {
+        switch result.outcome {
+        case .progress, .paused(.budget):
+            return result.entriesVisited > 0 || result.candidateFiles > 0
+                || result.directoriesOpened > 0 || result.metadataBytes > 0
+        case .finished, .blocked, .paused(.diskPressure):
+            return false
+        }
+    }
+
+    static func isHistoryWaiting(phase: CollectorEventCoordinatorPhase, bootstrap: CollectorBootstrapStepResult?) -> Bool {
+        guard phase == .recovering else { return false }
+        return bootstrap == nil || bootstrap?.outcome == .finished
+    }
+}
+
 /// Owns only a provisioned collector spool. Call stop before relinquishing the
 /// runtime: it joins work and closes the capture pool before releasing its lock.
 public actor CollectorRuntime {
@@ -32,7 +84,8 @@ public actor CollectorRuntime {
     private var owner: CollectorInventoryOwner?
     private var catalog: ArchiveCatalog?
     private var worker: CollectorPublicationWorker?
-    private var coordinators: [CollectorEventCoordinator] = []
+    private var uploader: CollectorPublicationWorker?
+    private var coordinators: [Int: CollectorEventCoordinator] = [:]
     private var cycle: Task<CollectorRuntimeCycle, Error>?
     private var loop: Task<Void, Error>?
     private var cleanup: Task<Void, Error>?
@@ -40,12 +93,14 @@ public actor CollectorRuntime {
     private var closed = false
 
     private init(settingsURL: URL, configuration: CollectorRuntimeConfiguration,
-                 owner: CollectorInventoryOwner, catalog: ArchiveCatalog, worker: CollectorPublicationWorker) {
+                 owner: CollectorInventoryOwner, catalog: ArchiveCatalog,
+                 worker: CollectorPublicationWorker, uploader: CollectorPublicationWorker) {
         self.settingsURL = settingsURL
         self.configuration = configuration
         self.owner = owner
         self.catalog = catalog
         self.worker = worker
+        self.uploader = uploader
     }
 
     public static func open(
@@ -71,15 +126,13 @@ public actor CollectorRuntime {
                     return .init(replicaID: reference.serverID, baseURL: URL(string: reference.baseURL)!, bearerToken: secret)
                 }
                 guard replicas[0].bearerToken != replicas[1].bearerToken else { throw CollectorRuntimeError.invalidCredential }
-                let worker = try CollectorPublicationWorker(owner: owner, catalog: catalog,
-                    cas: ImmutableArchiveCAS(root: configuration.captureURL), roots: configuration.rootConfigurations,
-                    replicas: replicas, policy: {
-                        // Every request must still have explicit persisted role,
-                        // root/replica authority and the current privacy policy.
-                        try configuration.freshPolicy(at: settingsURL)
-                    }, budget: configuration.budgets.publication)
+                let cas = try ImmutableArchiveCAS(root: configuration.captureURL)
+                let worker = try makePublicationWorker(owner: owner, catalog: catalog, cas: cas,
+                    configuration: configuration, replicas: replicas, settingsURL: settingsURL)
+                let uploader = try makePublicationWorker(owner: owner, catalog: catalog, cas: cas,
+                    configuration: configuration, replicas: replicas, settingsURL: settingsURL)
                 return CollectorRuntime(settingsURL: settingsURL, configuration: configuration,
-                    owner: owner, catalog: catalog, worker: worker)
+                    owner: owner, catalog: catalog, worker: worker, uploader: uploader)
             } catch {
                 try catalog.close()
                 throw error
@@ -90,33 +143,44 @@ public actor CollectorRuntime {
         }
     }
 
+    /// Explicitly creates a new spool from the configured, read-only machine
+    /// identity. It does not start workers, read credentials or enroll roots.
+    public static func initialize(settingsURL: URL) throws {
+        try Task.checkCancellation()
+        guard let configuration = try CollectorRuntimeConfiguration.load(at: settingsURL) else {
+            throw CollectorRuntimeError.invalidConfiguration
+        }
+        try CollectorSpoolInitializer.create(root: configuration.shadowURL, identityCatalog: configuration.identityURL)
+    }
+
+    private static func makePublicationWorker(
+        owner: CollectorInventoryOwner, catalog: ArchiveCatalog, cas: ImmutableArchiveCAS,
+        configuration: CollectorRuntimeConfiguration, replicas: [CollectorReplicaEndpoint],
+        settingsURL: URL
+    ) throws -> CollectorPublicationWorker {
+        try CollectorPublicationWorker(
+            owner: owner, catalog: catalog, cas: cas, roots: configuration.rootConfigurations,
+            formats: configuration.rootFormats, projectRegistryPaths: configuration.projectRegistryPaths,
+            replicas: replicas, policy: {
+                // Every request must still have explicit persisted role,
+                // root/replica authority and the current privacy policy.
+                try configuration.freshPolicy(at: settingsURL)
+            }, budget: configuration.budgets.publication)
+    }
+
     public func runOnce(now: Int64) async throws -> CollectorRuntimeCycle {
         guard !stopping, !closed, let owner, let worker else { throw CollectorRuntimeError.closed }
+        guard loop == nil else { throw CollectorRuntimeError.busy }
         guard cycle == nil else { throw CollectorRuntimeError.busy }
         guard now >= 0 else { throw CollectorRuntimeError.invalidConfiguration }
         try Task.checkCancellation()
-        _ = try configuration.freshPolicy(at: settingsURL)
-        try startEventsIfNeeded(owner: owner)
-        var scannedEntries = 0
-        for (index, coordinator) in coordinators.enumerated() {
-            try Task.checkCancellation()
-            if try coordinator.snapshot().phase == .recoveryRequired {
-                let binding = try owner.enrollAndActivateRoot(configuration.rootConfigurations[index])
-                try coordinator.start(epoch: CollectorNativeEventStream.currentEpoch(binding: binding))
-                guard try coordinator.snapshot().phase != .recoveryRequired else {
-                    // A changed native epoch is not permission to erase history.
-                    throw CollectorRuntimeError.reconciliationRequired
-                }
-            }
-            let step = try coordinator.step(budget: configuration.budgets.bootstrap)
-            scannedEntries += step.bootstrap?.entriesVisited ?? 0
-        }
-        let entries = scannedEntries
+        let inventory = try advanceInventory(owner: owner)
+        let unavailableCount = configuration.rootConfigurations.count - inventory.availableRoots.count
         let entered = Task {
-            let publication = try await worker.runOnce(now: now)
-            return CollectorRuntimeCycle(scannedEntries: entries, captured: publication.captured,
+            let publication = try await worker.runOnce(now: now, captureRootIDs: inventory.availableRoots)
+            return CollectorRuntimeCycle(scannedEntries: inventory.scannedEntries, captured: publication.captured,
                 recovered: publication.recovered, acknowledgedHQ: publication.acknowledgedHQ,
-                acknowledgedM1: publication.acknowledgedM1, deferred: publication.deferred,
+                acknowledgedM1: publication.acknowledgedM1, deferred: publication.deferred + unavailableCount,
                 diskAdmission: publication.diskAdmission)
         }
         cycle = entered
@@ -126,23 +190,147 @@ public actor CollectorRuntime {
         } onCancel: { entered.cancel() }
     }
 
+    private func advanceInventory(owner: CollectorInventoryOwner) throws -> (
+        scannedEntries: Int, availableRoots: Set<Data>, steps: [(Int, CollectorEventCoordinatorStep)]
+    ) {
+        _ = try configuration.freshPolicy(at: settingsURL)
+        let started = try startEventsIfNeeded(owner: owner)
+        var captureRootIDs = started.available
+        var scannedEntries = 0
+        var steps: [(Int, CollectorEventCoordinatorStep)] = []
+        for index in coordinators.keys.sorted() {
+            try Task.checkCancellation()
+            guard let coordinator = coordinators[index] else { continue }
+            do {
+                let observed = started.observations[Data(configuration.rootConfigurations[index].rootID.utf8)]
+                let step = try coordinator.step(budget: configuration.budgets.bootstrap, observed: observed)
+                scannedEntries += step.bootstrap?.entriesVisited ?? 0
+                steps.append((index, step))
+            } catch where Self.isUnavailableSource(error) {
+                try suspendSource(at: index, owner: owner)
+                captureRootIDs.remove(Data(configuration.rootConfigurations[index].rootID.utf8))
+            }
+        }
+        return (scannedEntries, captureRootIDs, steps)
+    }
+
+    private func mailboxSamples(historyWaiting: [Int: Bool]) throws -> [CollectorCaptureScheduleSample] {
+        try coordinators.keys.sorted().compactMap { index in
+            guard let coordinator = coordinators[index] else { return nil }
+            let snap = try coordinator.snapshot()
+            return CollectorCaptureScheduleSample(
+                phase: snap.phase, historyDone: snap.historyDone, queuedBatchCount: snap.queuedBatchCount,
+                pendingGap: snap.pendingGap != nil, historyWaiting: historyWaiting[index] ?? false)
+        }
+    }
+
+    private func runCaptureTurn(
+        now: Int64, historyWaiting: [Int: Bool]
+    ) async throws -> (hints: CollectorCaptureWorkHints, historyWaiting: [Int: Bool]) {
+        guard !stopping, !closed, let owner, let worker else { throw CollectorRuntimeError.closed }
+        guard now >= 0 else { throw CollectorRuntimeError.invalidConfiguration }
+        try Task.checkCancellation()
+        let inventory = try advanceInventory(owner: owner)
+        let publication = try await worker.captureOnce(now: now, captureRootIDs: inventory.availableRoots)
+        var waiting = historyWaiting
+        var bootstrapProgressed = false
+        var drainable = false
+        for (index, step) in inventory.steps {
+            if let bootstrap = step.bootstrap, CollectorCaptureScheduler.bootstrapProgressed(bootstrap) {
+                bootstrapProgressed = true
+            }
+            if step.snapshot.phase == .watching && step.snapshot.queuedBatchCount > 0 { drainable = true }
+            waiting[index] = CollectorCaptureScheduler.isHistoryWaiting(
+                phase: step.snapshot.phase, bootstrap: step.bootstrap)
+        }
+        return (
+            hints: .init(
+                bootstrapProgressed: bootstrapProgressed, drainableBatchesRemaining: drainable,
+                captured: publication.captured, recovered: publication.recovered),
+            historyWaiting: waiting
+        )
+    }
+
+    private func runUploadOnce(replicaID: String, now: Int64) async throws {
+        guard !stopping, !closed, let uploader else { throw CollectorRuntimeError.closed }
+        try Task.checkCancellation()
+        _ = try await uploader.uploadOnce(replicaID: replicaID, now: now)
+    }
+
     public func start() async throws {
         guard !stopping, !closed, let owner else { throw CollectorRuntimeError.closed }
         guard loop == nil, cycle == nil else { throw CollectorRuntimeError.busy }
         try Task.checkCancellation()
         _ = try configuration.freshPolicy(at: settingsURL)
-        try startEventsIfNeeded(owner: owner)
+        _ = try startEventsIfNeeded(owner: owner)
         let interval = configuration.budgets.pollIntervalMilliseconds
+        let cheapWake = CollectorCaptureScheduler.cheapWakeMilliseconds(intervalMilliseconds: interval)
         loop = Task { [weak self] in
-            while !Task.isCancelled {
-                guard let self else { return }
-                do {
-                    _ = try await self.runOnce(now: Int64(Date().timeIntervalSince1970))
-                } catch let error as DatabaseError where error.resultCode == .SQLITE_BUSY || error.resultCode == .SQLITE_LOCKED {
-                    // Only storage contention is retryable here. Settings,
-                    // identity and privacy failures terminate the producer.
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask { [weak self] in
+                    let clock = ContinuousClock()
+                    var periodicDeadline = clock.now
+                    var historyWaiting: [Int: Bool] = [:]
+                    var forceRun = true
+                    while !Task.isCancelled {
+                        guard let self else { return }
+                        try Task.checkCancellation()
+                        let now = clock.now
+                        let deadlineReached = now >= periodicDeadline
+                        let samples = try await self.mailboxSamples(historyWaiting: historyWaiting)
+                        if forceRun || CollectorCaptureScheduler.shouldRunCapture(
+                            deadlineReached: deadlineReached, samples: samples)
+                        {
+                            forceRun = false
+                            do {
+                                let turn = try await self.runCaptureTurn(
+                                    now: Int64(Date().timeIntervalSince1970), historyWaiting: historyWaiting)
+                                historyWaiting = turn.historyWaiting
+                                if deadlineReached {
+                                    periodicDeadline = clock.now.advanced(by: .milliseconds(interval))
+                                }
+                                if CollectorCaptureScheduler.shouldContinuePromptly(turn.hints) {
+                                    await Task.yield()
+                                    forceRun = true
+                                    continue
+                                }
+                            } catch let error as DatabaseError
+                                where error.resultCode == .SQLITE_BUSY || error.resultCode == .SQLITE_LOCKED
+                            {
+                                try await Task.sleep(for: .milliseconds(cheapWake))
+                                continue
+                            }
+                        }
+                        try Task.checkCancellation()
+                        let remaining = periodicDeadline - clock.now
+                        let cheap = Duration.milliseconds(cheapWake)
+                        if remaining <= .zero {
+                            await Task.yield()
+                            continue
+                        }
+                        try await Task.sleep(for: remaining < cheap ? remaining : cheap)
+                    }
                 }
-                try await Task.sleep(for: .milliseconds(interval))
+                group.addTask { [weak self] in
+                    while !Task.isCancelled {
+                        guard let self else { return }
+                        do {
+                            try await self.runUploadOnce(replicaID: "hq", now: Int64(Date().timeIntervalSince1970))
+                        } catch let error as DatabaseError where error.resultCode == .SQLITE_BUSY || error.resultCode == .SQLITE_LOCKED {}
+                        try await Task.sleep(for: .milliseconds(interval))
+                    }
+                }
+                group.addTask { [weak self] in
+                    while !Task.isCancelled {
+                        guard let self else { return }
+                        do {
+                            try await self.runUploadOnce(replicaID: "m1", now: Int64(Date().timeIntervalSince1970))
+                        } catch let error as DatabaseError where error.resultCode == .SQLITE_BUSY || error.resultCode == .SQLITE_LOCKED {}
+                        try await Task.sleep(for: .milliseconds(interval))
+                    }
+                }
+                defer { group.cancelAll() }
+                _ = try await group.next()
             }
         }
     }
@@ -181,41 +369,97 @@ public actor CollectorRuntime {
         catch { cleanup = nil; throw error }
     }
 
-    private func startEventsIfNeeded(owner: CollectorInventoryOwner) throws {
-        guard coordinators.isEmpty else { return }
-        var opened: [CollectorEventCoordinator] = []
-        do {
-            for root in configuration.rootConfigurations {
-                try Task.checkCancellation()
-                let binding = try owner.enrollAndActivateRoot(root)
-                let epoch = try CollectorNativeEventStream.currentEpoch(binding: binding)
-                let budget = configuration.budgets.events
-                let coordinator = CollectorEventCoordinator(enabled: true, configuration: root, budget: budget,
-                    ownerFactory: { owner }, streamFactory: { request in
-                        CollectorNativeEventStream(request: request, budget: budget.ingress)
-                    })
-                opened.append(coordinator)
-                try coordinator.start(epoch: epoch)
-                guard try coordinator.snapshot().phase != .recoveryRequired else {
-                    throw CollectorRuntimeError.reconciliationRequired
+    private static func isUnavailableSource(_ error: Error) -> Bool {
+        switch error {
+        case CollectorPOSIXEnumerationError.io(.openComponent, ENOENT),
+             CollectorPOSIXEnumerationError.rootIdentityChanged:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func suspendSource(at index: Int, owner: CollectorInventoryOwner) throws {
+        // Revalidate storage even when source validation failed: a missing
+        // inventory must never be misclassified as an unavailable source.
+        _ = try owner.activateStoredRootForPublication(configuration.rootConfigurations[index])
+        if let coordinator = coordinators[index] {
+            do { try coordinator.stop() }
+            catch where Self.isUnavailableSource(error) {
+                // stop seals and joins the stream before persisting its gap.
+                // A later full start requests reconciliation before scanning.
+                _ = try owner.activateStoredRootForPublication(configuration.rootConfigurations[index])
+            }
+            coordinators.removeValue(forKey: index)
+        }
+    }
+
+    private func startEventsIfNeeded(owner: CollectorInventoryOwner) throws -> (
+        available: Set<Data>, observations: [Data: CollectorRootState]
+    ) {
+        var available = Set<Data>()
+        var observations: [Data: CollectorRootState] = [:]
+        var live: [(Int, CollectorRootConfiguration)] = []
+        for (index, root) in configuration.rootConfigurations.enumerated() {
+            try Task.checkCancellation()
+            if let coordinator = coordinators[index],
+               try coordinator.snapshot().phase != .recoveryRequired {
+                live.append((index, root))
+            }
+        }
+        if !live.isEmpty {
+            let observed = try owner.observeLiveEnrolledRoots(live.map(\.1))
+            for (entry, observation) in zip(live, observed) {
+                if observation.unavailable {
+                    try suspendSource(at: entry.0, owner: owner)
+                } else {
+                    available.insert(Data(entry.1.rootID.utf8))
+                    if let state = observation.state {
+                        observations[Data(entry.1.rootID.utf8)] = state
+                    }
                 }
             }
-            coordinators = opened
-        } catch {
-            for coordinator in opened { try? coordinator.stop() }
-            throw error
         }
+        for (index, root) in configuration.rootConfigurations.enumerated() {
+            try Task.checkCancellation()
+            if live.contains(where: { $0.0 == index }) { continue }
+            do {
+                // Missing or recovery-required coordinators still enroll and start.
+                let binding = try owner.enrollAndActivateRoot(root)
+                if let coordinator = coordinators[index] {
+                    try coordinator.start(epoch: CollectorNativeEventStream.currentEpoch(binding: binding))
+                } else {
+                    let epoch = try CollectorNativeEventStream.currentEpoch(binding: binding)
+                    let budget = configuration.budgets.events
+                    let coordinator = CollectorEventCoordinator(enabled: true, configuration: root, budget: budget,
+                        ownerFactory: { owner }, streamFactory: { request in
+                            CollectorNativeEventStream(request: request, budget: budget.ingress)
+                        })
+                    coordinators[index] = coordinator
+                    try coordinator.start(epoch: epoch)
+                }
+                guard try coordinators[index]?.snapshot().phase != .recoveryRequired else {
+                    // A changed native epoch is not permission to erase history.
+                    throw CollectorRuntimeError.reconciliationRequired
+                }
+                available.insert(Data(root.rootID.utf8))
+            } catch where Self.isUnavailableSource(error) {
+                try suspendSource(at: index, owner: owner)
+            }
+        }
+        return (available, observations)
     }
 
     private func finishStop() throws {
         var streamFailure: Error?
-        for coordinator in coordinators {
+        for coordinator in coordinators.values {
             do { try coordinator.stop() }
             catch { if streamFailure == nil { streamFailure = error } }
         }
         // A failed synchronous pool close keeps Owner held and is retryable by
         // another stop. ARC lifetime is not a database-close barrier.
         try catalog?.close()
+        uploader = nil
         worker = nil
         catalog = nil
         coordinators.removeAll()
@@ -381,6 +625,10 @@ private struct CollectorRuntimeConfiguration {
         let source: String
         let rootPath: String
         let revision: Int64
+        let parseFormat: String?
+        let projectRegistryPath: String?
+        let cursorLegacy: Bool?
+        let cursorModernRootID: String?
     }
     struct Replica: Decodable {
         let serverID: String
@@ -435,7 +683,7 @@ private struct CollectorRuntimeConfiguration {
         var valid: Bool {
             (1...4096).contains(maxEntriesVisited) && (1...1024).contains(maxCandidateFiles)
                 && (1...128).contains(maxDirectoryOpens) && (512...1_048_576).contains(maxMetadataBytes)
-                && (1...64).contains(maxCaptureFiles) && (1...268_435_456).contains(maxCaptureBytes)
+                && (1...64).contains(maxCaptureFiles) && (1...1_073_741_824).contains(maxCaptureBytes)
                 && (1...64).contains(maxUploadClaimsPerReplica) && (1...64).contains(maxRecoveryCandidates)
                 && (1...CollectorPublicationProtocolLimits.maxAcceptanceRecordBytes).contains(maxResponseBytes)
                 && minimumFreeDiskBytes >= 0 && (1...1024).contains(maxIncomingPaths)
@@ -453,7 +701,20 @@ private struct CollectorRuntimeConfiguration {
     var replicas: [Replica] { document.replicas }
     var budgets: Budgets { document.budgets }
     var rootConfigurations: [CollectorRootConfiguration] {
-        document.roots.map { .init(rootID: $0.rootID, source: SourceName(rawValue: $0.source)!, rootPath: $0.rootPath, revision: $0.revision) }
+        document.roots.map { .init(rootID: $0.rootID, source: SourceName(rawValue: $0.source)!, rootPath: $0.rootPath, revision: $0.revision,
+            cursorLegacy: $0.cursorLegacy ?? false, cursorModernRootID: $0.cursorModernRootID) }
+    }
+
+    var rootFormats: [String: SourceMetadataProjection.Format] {
+        Dictionary(uniqueKeysWithValues: document.roots.compactMap { root in
+            Self.rootFormat(source: root.source, parseFormat: root.parseFormat).map { (root.rootID, $0) }
+        })
+    }
+
+    var projectRegistryPaths: [String: String] {
+        Dictionary(uniqueKeysWithValues: document.roots.compactMap { root in
+            root.projectRegistryPath.map { (root.rootID, $0) }
+        })
     }
 
     func freshPolicy(at url: URL) throws -> CollectorPrivacyPolicy {
@@ -465,8 +726,12 @@ private struct CollectorRuntimeConfiguration {
     }
 
     private func policy() throws -> CollectorPrivacyPolicy {
-        try .init(revision: document.privacy.revision, excludedProjectRoots: document.privacy.excludedProjectRoots,
-            allowedSources: Set(rootConfigurations.map(\.source)))
+        var sources = Set(rootConfigurations.map(\.source))
+        if rootFormats.values.contains(.claudeCode(forceClaudeCodeSource: false)) {
+            sources.formUnion([.minimax, .lobsterai])
+        }
+        return try .init(revision: document.privacy.revision, excludedProjectRoots: document.privacy.excludedProjectRoots,
+            allowedSources: sources)
     }
 
     static func load(at url: URL) throws -> Self? {
@@ -497,7 +762,10 @@ private struct CollectorRuntimeConfiguration {
                   let privacy = block["privacy"] as? [String: Any], let budgets = block["budgets"] as? [String: Any] else {
                 throw CollectorRuntimeError.invalidConfiguration
             }
-            for root in roots { try keys(root, exactly: ["rootID", "source", "rootPath", "revision"]) }
+            for root in roots {
+                try keys(root, exactly: ["rootID", "source", "rootPath", "revision"],
+                    allowing: ["parseFormat", "projectRegistryPath", "cursorLegacy", "cursorModernRootID"])
+            }
             for replica in replicas { try keys(replica, exactly: ["serverID", "baseURL", "credentialID"]) }
             try keys(privacy, exactly: ["revision", "excludedProjectRoots"])
             try keys(budgets, exactly: ["maxEntriesVisited", "maxCandidateFiles", "maxDirectoryOpens", "maxMetadataBytes",
@@ -508,10 +776,16 @@ private struct CollectorRuntimeConfiguration {
             let value = try JSONDecoder().decode(Document.self, from: data)
             guard value.budgets.valid, validPath(value.shadowRoot), validPath(value.identityCatalog),
                   (1...64).contains(value.roots.count), Set(value.roots.map { Data($0.rootID.utf8) }).count == value.roots.count,
-                  value.roots.allSatisfy({ identifier($0.rootID) && ($0.source == "codex" || $0.source == "claude-code")
+                  value.roots.allSatisfy({ identifier($0.rootID) && ($0.source == "codex" || $0.source == "claude-code" || $0.source == "qwen"
+                      || $0.source == "qoder" || $0.source == "iflow" || $0.source == "vscode" || $0.source == "cline" || $0.source == "commandcode" || $0.source == "copilot"
+                      || $0.source == "gemini-cli" || $0.source == "opencode" || $0.source == "kimi" || $0.source == "cursor"
+                      || $0.source == "antigravity" || $0.source == "windsurf" || $0.source == "pi"
+                      || $0.source == "grok")
                       && validPath($0.rootPath) && $0.revision > 0
+                      && rootFormat(source: $0.source, parseFormat: $0.parseFormat) != nil
                       && !overlaps($0.rootPath, value.shadowRoot)
-                      && !overlaps($0.rootPath, URL(fileURLWithPath: value.identityCatalog).deletingLastPathComponent().path) }),
+                      && !overlaps($0.rootPath, URL(fileURLWithPath: value.identityCatalog).deletingLastPathComponent().path)
+                      && validRegistry($0, shadowRoot: value.shadowRoot, identityCatalog: value.identityCatalog) }),
                   value.replicas.count == 2, Set(value.replicas.map(\.serverID)) == Set(["hq", "m1"]),
                   Set(value.replicas.map(\.credentialID)).count == 2,
                   value.replicas.allSatisfy({ identifier($0.credentialID) && endpoint($0.baseURL) != nil }),
@@ -523,13 +797,74 @@ private struct CollectorRuntimeConfiguration {
             var authority = block
             authority.removeValue(forKey: "privacy")
             let result = Self(document: value, authorityBytes: try JSONSerialization.data(withJSONObject: authority, options: [.sortedKeys]))
+            for root in result.rootConfigurations {
+                guard root.validCursorLayout else { throw CollectorRuntimeError.invalidConfiguration }
+                if root.cursorLegacy {
+                    let ownershipRoot = URL(fileURLWithPath: root.rootPath).deletingLastPathComponent().path
+                    guard !overlaps(ownershipRoot, value.shadowRoot),
+                          !overlaps(ownershipRoot, URL(fileURLWithPath: value.identityCatalog).deletingLastPathComponent().path) else {
+                        throw CollectorRuntimeError.invalidConfiguration
+                    }
+                }
+                if let modernID = root.cursorModernRootID {
+                    guard let modern = result.rootConfigurations.first(where: { $0.rootID.utf8.elementsEqual(modernID.utf8) }),
+                          modern.source == .cursor, !modern.cursorLegacy,
+                          !overlaps(root.rootPath, modern.rootPath) else { throw CollectorRuntimeError.invalidConfiguration }
+                }
+            }
             _ = try result.policy()
             return result
         } catch { throw CollectorRuntimeError.invalidConfiguration }
     }
 
-    private static func keys(_ value: [String: Any], exactly: Set<String>) throws {
-        guard Set(value.keys) == exactly else { throw CollectorRuntimeError.invalidConfiguration }
+    private static func keys(_ value: [String: Any], exactly: Set<String>, allowing: Set<String> = []) throws {
+        let present = Set(value.keys)
+        guard exactly.isSubset(of: present), present.subtracting(exactly).isSubset(of: allowing) else {
+            throw CollectorRuntimeError.invalidConfiguration
+        }
+    }
+
+    private static func rootFormat(source: String, parseFormat: String?) -> SourceMetadataProjection.Format? {
+        switch (source, parseFormat) {
+        case ("codex", nil), ("codex", "codex"):
+            return .codex
+        case ("claude-code", nil), ("claude-code", "claudeDefault"):
+            return .claudeCode(forceClaudeCodeSource: false)
+        case ("claude-code", "claudeCustomProfile"):
+            return .claudeCode(forceClaudeCodeSource: true)
+        case ("qwen", nil), ("qwen", "qwen"):
+            return .qwen
+        case ("vscode", nil), ("vscode", "vscode"):
+            return .vscode
+        case ("cline", nil), ("cline", "cline"):
+            return .cline
+        case ("iflow", nil), ("iflow", "iflow"):
+            return .iflow
+        case ("qoder", nil), ("qoder", "qoder"):
+            return .qoder
+        case ("commandcode", nil), ("commandcode", "commandcode"):
+            return .commandcode
+        case ("copilot", nil), ("copilot", "copilot"):
+            return .copilot
+        case ("gemini-cli", nil), ("gemini-cli", "gemini-cli"):
+            return .geminiCli
+        case ("opencode", nil), ("opencode", "opencode"):
+            return .opencode
+        case ("kimi", nil), ("kimi", "kimi"):
+            return .kimi
+        case ("cursor", nil), ("cursor", "cursor"):
+            return .cursor
+        case ("antigravity", nil), ("antigravity", "antigravityCLITranscript"):
+            return .antigravityCLITranscript
+        case ("windsurf", nil), ("windsurf", "windsurfHookTranscript"):
+            return .windsurfHookTranscript
+        case ("pi", nil), ("pi", "pi"):
+            return .pi
+        case ("grok", nil), ("grok", "grok"):
+            return .grok
+        default:
+            return nil
+        }
     }
 
     private static func identifier(_ value: String) -> Bool {
@@ -541,6 +876,28 @@ private struct CollectorRuntimeConfiguration {
     private static func validPath(_ path: String) -> Bool {
         path.utf8.count <= CollectorPOSIXRootEnumerator.maximumPathBytes
             && (try? CollectorPOSIXDirectoryAccess.components(path)) != nil
+    }
+
+    private static func validRegistry(_ root: Root, shadowRoot: String, identityCatalog: String) -> Bool {
+        if root.source == "kimi" {
+            guard let path = root.projectRegistryPath else { return false }
+            return validConfiguredRegistry(path, rootPath: root.rootPath, shadowRoot: shadowRoot,
+                identityCatalog: identityCatalog)
+        }
+        guard let path = root.projectRegistryPath else { return true }
+        return root.source == "gemini-cli"
+            && validConfiguredRegistry(path, rootPath: root.rootPath, shadowRoot: shadowRoot,
+                identityCatalog: identityCatalog)
+    }
+
+    private static func validConfiguredRegistry(
+        _ path: String, rootPath: String, shadowRoot: String, identityCatalog: String
+    ) -> Bool {
+        validPath(path)
+            && ArchiveSourceDescriptor.fileSetAbsolutePath(path) == path
+            && !overlaps(path, rootPath)
+            && !overlaps(path, shadowRoot)
+            && !overlaps(path, URL(fileURLWithPath: identityCatalog).deletingLastPathComponent().path)
     }
 
     private static func overlaps(_ lhs: String, _ rhs: String) -> Bool {

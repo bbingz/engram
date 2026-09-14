@@ -92,12 +92,17 @@ public struct ImmutableArchiveCAS: Sendable {
     private let root: URL
     private let testHooks: ImmutableArchiveCASTestHooks
 
+    // Preserve the caller's path for the snapshot helper's no-follow walk.
+    // Foundation standardization may replace /private/var with the /var symlink.
+    let snapshotStagingParent: URL
+
     public init(root: URL) throws {
         try self.init(root: root, testHooks: ImmutableArchiveCASTestHooks())
     }
 
     init(root: URL, testHooks: ImmutableArchiveCASTestHooks) throws {
         self.root = root.standardizedFileURL
+        self.snapshotStagingParent = root.appendingPathComponent("tmp", isDirectory: true)
         self.testHooks = testHooks
         try Self.ensureDirectory(self.root, afterFsync: testHooks.afterDirectoryFsync)
         try Self.ensureDirectory(

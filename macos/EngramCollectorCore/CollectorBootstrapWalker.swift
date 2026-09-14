@@ -177,6 +177,10 @@ final class CollectorBootstrapWalker {
         }
     }
 
+    func invalidateCursor() {
+        resetCursor()
+    }
+
     private func resetCursor() {
         activeScan = nil
         relativeDirectory = nil

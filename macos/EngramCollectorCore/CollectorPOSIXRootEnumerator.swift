@@ -173,8 +173,15 @@ final class CollectorPOSIXRootEnumerator: CollectorRootEnumerator {
     }
 
     private static func validatedComponents(_ configuration: CollectorRootConfiguration) throws -> [String] {
-        guard configuration.source == .codex || configuration.source == .claudeCode,
-              !configuration.rootID.isEmpty, !configuration.rootID.contains("\0"), configuration.revision > 0 else {
+        guard configuration.source == .codex || configuration.source == .claudeCode || configuration.source == .qwen
+                || configuration.source == .qoder || configuration.source == .iflow || configuration.source == .commandcode
+                || configuration.source == .copilot || configuration.source == .vscode || configuration.source == .cline
+                || configuration.source == .geminiCli
+                || configuration.source == .opencode
+                || configuration.source == .kimi || configuration.source == .cursor
+                || configuration.source == .antigravity || configuration.source == .windsurf
+                || configuration.source == .pi || configuration.source == .grok,
+              !configuration.rootID.isEmpty, !configuration.rootID.contains("\0"), configuration.revision > 0, configuration.validCursorLayout else {
             throw CollectorPOSIXEnumerationError.invalidBinding
         }
         return try CollectorPOSIXDirectoryAccess.components(configuration.rootPath)
@@ -185,9 +192,7 @@ final class CollectorPOSIXRootEnumerator: CollectorRootEnumerator {
         relativeDirectory: String
     ) throws -> any CollectorDirectoryCursor {
         let expected = binding.configuration
-        guard configuration.rootID.utf8.elementsEqual(expected.rootID.utf8),
-              configuration.rootPath.utf8.elementsEqual(expected.rootPath.utf8),
-              configuration.source == expected.source, configuration.revision == expected.revision else {
+        guard configuration == expected else {
             throw CollectorPOSIXEnumerationError.configurationMismatch
         }
         guard CollectorInventoryStore.isSafeRelativePath(relativeDirectory, allowRoot: true),
@@ -261,8 +266,84 @@ final class CollectorPOSIXRootEnumerator: CollectorRootEnumerator {
         try CollectorPOSIXDirectoryAccess.identity(info)
     }
 
-    private func selectedDirectory(_ components: [String]) -> Bool {
-        if binding.configuration.source == .codex { return components.allSatisfy { !$0.hasPrefix(".") } }
+    private func selectedDirectory(_ components: [String], flags: UInt32) -> Bool {
+        if binding.configuration.source == .cursor {
+            if binding.configuration.cursorLegacy { return false }
+            guard components.allSatisfy({ !$0.hasPrefix(".") }) else { return false }
+            if components == ["chats"] || components == ["projects"] { return true }
+            if components.count == 3, components[0] == "projects", components[2] == "agent-transcripts" { return true }
+            guard flags & UInt32(UF_HIDDEN) == 0 else { return false }
+            if components.first == "chats" { return components.count == 2 || components.count == 3 }
+            if components.first == "projects" {
+                return components.count == 2 || (components.count == 4 && components[2] == "agent-transcripts")
+            }
+            return false
+        }
+        if binding.configuration.source == .opencode { return false }
+        if binding.configuration.source == .codex || binding.configuration.source == .pi {
+            return components.allSatisfy { !$0.hasPrefix(".") }
+        }
+        if binding.configuration.source == .qwen {
+            guard components.allSatisfy({ !$0.hasPrefix(".") }) else { return false }
+            switch components.count {
+            case 1: return true
+            case 2: return components[1] == "chats"
+            default: return false
+            }
+        }
+        if binding.configuration.source == .vscode {
+            guard components.allSatisfy({ !$0.hasPrefix(".") }) else { return false }
+            return components.count == 1 || (components.count == 2 && components[1] == "chatSessions")
+        }
+        if binding.configuration.source == .iflow || binding.configuration.source == .cline {
+            return components.count == 1 && components.allSatisfy { !$0.hasPrefix(".") }
+        }
+        if binding.configuration.source == .qoder {
+            guard components.allSatisfy({ !$0.hasPrefix(".") }) else { return false }
+            switch components.count {
+            case 1: return true
+            case 2: return !components[1].hasSuffix(".jsonl")
+            case 3: return components[2] == "subagents"
+            default: return false
+            }
+        }
+        if binding.configuration.source == .commandcode {
+            guard components.allSatisfy({ !$0.hasPrefix(".") }) else { return false }
+            return components.count == 1
+        }
+        if binding.configuration.source == .copilot {
+            guard components.allSatisfy({ !$0.hasPrefix(".") }) else { return false }
+            switch components.count {
+            case 1: return true
+            case 2: return components[1] == "checkpoints"
+            default: return false
+            }
+        }
+        if binding.configuration.source == .geminiCli {
+            switch components.count {
+            case 1: return true
+            case 2: return components[1] == "chats"
+            default: return false
+            }
+        }
+        if binding.configuration.source == .kimi {
+            guard components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." && !$0.hasPrefix(".") }) else {
+                return false
+            }
+            return components.count == 1 || components.count == 2
+        }
+        if binding.configuration.source == .grok {
+            guard components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." && !$0.hasPrefix(".") }) else {
+                return false
+            }
+            return components.count == 1 || components.count == 2
+        }
+        if binding.configuration.source == .antigravity {
+            return Self.isAntigravityCLIDirectory(components)
+        }
+        if binding.configuration.source == .windsurf {
+            return false
+        }
         guard components.dropFirst().allSatisfy({ !$0.hasPrefix(".") }) else { return false }
         switch components.count {
         case 1: return true // Project directory names may start with a dot.
@@ -275,9 +356,75 @@ final class CollectorPOSIXRootEnumerator: CollectorRootEnumerator {
     }
 
     private func selectedFile(_ components: [String]) -> Bool {
+        if binding.configuration.source == .cursor {
+            if binding.configuration.cursorLegacy { return components == ["state.vscdb"] }
+            guard let id = CollectorCursorSource.sessionOwning(components.joined(separator: "/")),
+                  let name = components.last else { return false }
+            return name == "store.db" || name.utf8.elementsEqual((id + ".jsonl").utf8)
+        }
+        if binding.configuration.source == .opencode {
+            return components == ["opencode.db"]
+        }
+        if binding.configuration.source == .vscode {
+            return CollectorVSCodeSource.isSelectedPrimary(rootPath: binding.configuration.rootPath, components: components)
+        }
+        if binding.configuration.source == .cline {
+            return CollectorClineSource.isSelectedPrimary(rootPath: binding.configuration.rootPath, components: components)
+        }
+        if binding.configuration.source == .copilot {
+            return CollectorCopilotSource.isSelectedPrimary(
+                rootPath: binding.configuration.rootPath, components: components
+            )
+        }
+        if binding.configuration.source == .geminiCli {
+            return CollectorGeminiSource.isSelectedPrimary(
+                rootPath: binding.configuration.rootPath, components: components
+            )
+        }
+        if binding.configuration.source == .kimi {
+            return CollectorKimiSource.isSelectedPrimary(
+                rootPath: binding.configuration.rootPath, components: components
+            )
+        }
+        if binding.configuration.source == .grok {
+            return CollectorGrokSource.isSelectedPrimary(
+                rootPath: binding.configuration.rootPath, components: components
+            )
+        }
+        if binding.configuration.source == .antigravity {
+            return Self.isAntigravityCLITranscript(components)
+        }
+        if binding.configuration.source == .windsurf {
+            guard let name = components.last else { return false }
+            return components.count == 1 && !name.hasPrefix(".") && name.hasSuffix(".jsonl")
+        }
         guard let name = components.last, !name.hasPrefix("."), name.hasSuffix(".jsonl") else { return false }
         if binding.configuration.source == .codex {
             return name.hasPrefix("rollout-") && components.allSatisfy { !$0.hasPrefix(".") }
+        }
+        if binding.configuration.source == .pi {
+            return components.allSatisfy { !$0.hasPrefix(".") }
+        }
+        if binding.configuration.source == .qwen {
+            guard components.allSatisfy({ !$0.hasPrefix(".") }) else { return false }
+            return components.count == 3 && components[1] == "chats"
+        }
+        if binding.configuration.source == .iflow {
+            return components.count == 2 && name.hasPrefix("session-")
+                && components.allSatisfy { !$0.hasPrefix(".") }
+        }
+        if binding.configuration.source == .qoder {
+            guard components.allSatisfy({ !$0.hasPrefix(".") }) else { return false }
+            switch components.count {
+            case 2: return true
+            case 3: return components[1] == "subagents"
+            case 4: return components[2] == "subagents"
+            default: return false
+            }
+        }
+        if binding.configuration.source == .commandcode {
+            guard components.allSatisfy({ !$0.hasPrefix(".") }) else { return false }
+            return components.count == 2 && !name.hasSuffix(".checkpoints.jsonl")
         }
         guard components.dropFirst().allSatisfy({ !$0.hasPrefix(".") }) else { return false }
         switch components.count {
@@ -288,6 +435,33 @@ final class CollectorPOSIXRootEnumerator: CollectorRootEnumerator {
                 && components[4].hasPrefix("wf_") && name.hasPrefix("agent-")
         default: return false
         }
+    }
+
+    /// Brain session directory only. Hidden session IDs, cache, and extra nesting stay ignored.
+    private static func isAntigravityCLISession(_ name: String) -> Bool {
+        !name.isEmpty && name != "." && name != ".." && !name.hasPrefix(".")
+    }
+
+    private static func isAntigravityCLIDirectory(_ components: [String]) -> Bool {
+        guard let session = components.first, isAntigravityCLISession(session) else { return false }
+        switch components.count {
+        case 1:
+            return true
+        case 2:
+            return components[1] == ".system_generated"
+        case 3:
+            return components[1] == ".system_generated" && components[2] == "logs"
+        default:
+            return false
+        }
+    }
+
+    private static func isAntigravityCLITranscript(_ components: [String]) -> Bool {
+        components.count == 4
+            && isAntigravityCLISession(components[0])
+            && components[1] == ".system_generated"
+            && components[2] == "logs"
+            && components[3] == "transcript.jsonl"
     }
 
     private static func observation(_ info: stat, relativePath: String) throws -> CollectorObservedFile {
@@ -380,7 +554,7 @@ final class CollectorPOSIXRootEnumerator: CollectorRootEnumerator {
                     switch info.st_mode & S_IFMT {
                     case S_IFLNK: selected = .symlink(path)
                     case S_IFDIR:
-                        if owner.selectedDirectory(childComponents) {
+                        if owner.selectedDirectory(childComponents, flags: UInt32(info.st_flags)) {
                             guard childComponents.count <= CollectorPOSIXRootEnumerator.maximumRelativeDepth else {
                                 throw CollectorPOSIXEnumerationError.depthLimit
                             }

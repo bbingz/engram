@@ -5,11 +5,35 @@ struct CollectorRootConfiguration: Equatable {
     let source: SourceName
     let rootPath: String
     let revision: Int64
+    let cursorLegacy: Bool
+    let cursorModernRootID: String?
+
+    init(rootID: String, source: SourceName, rootPath: String, revision: Int64,
+         cursorLegacy: Bool = false, cursorModernRootID: String? = nil) {
+        self.rootID = rootID
+        self.source = source
+        self.rootPath = rootPath
+        self.revision = revision
+        self.cursorLegacy = cursorLegacy
+        self.cursorModernRootID = cursorModernRootID
+    }
+
+    var validCursorLayout: Bool {
+        guard cursorLegacy || cursorModernRootID != nil else { return true }
+        guard source == .cursor, cursorLegacy,
+              URL(fileURLWithPath: rootPath).lastPathComponent == "globalStorage" else { return false }
+        return cursorModernRootID.map {
+            !$0.isEmpty && $0.utf8.count <= 256 && !$0.utf8.contains(0)
+                && !$0.utf8.elementsEqual(rootID.utf8)
+        } ?? true
+    }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.rootID.utf8.elementsEqual(rhs.rootID.utf8)
             && lhs.rootPath.utf8.elementsEqual(rhs.rootPath.utf8)
             && lhs.source == rhs.source && lhs.revision == rhs.revision
+            && lhs.cursorLegacy == rhs.cursorLegacy
+            && lhs.cursorModernRootID.map { Data($0.utf8) } == rhs.cursorModernRootID.map { Data($0.utf8) }
     }
 }
 
@@ -57,6 +81,20 @@ struct CollectorDirtyClaim: Equatable {
     let dirtyRevision: Int64
     let ownerRunID: String
     let claimGeneration: Int64
+    let lastCaptureID: String?
+
+    init(
+        rootID: String, rootRevision: Int64, relativePath: String, dirtyRevision: Int64,
+        ownerRunID: String, claimGeneration: Int64, lastCaptureID: String? = nil
+    ) {
+        self.rootID = rootID
+        self.rootRevision = rootRevision
+        self.relativePath = relativePath
+        self.dirtyRevision = dirtyRevision
+        self.ownerRunID = ownerRunID
+        self.claimGeneration = claimGeneration
+        self.lastCaptureID = lastCaptureID
+    }
 }
 
 enum CollectorClaimCompletion: Equatable {
@@ -125,4 +163,51 @@ struct CollectorBootstrapStepResult: Equatable {
     let candidateFiles: Int
     let directoriesOpened: Int
     let metadataBytes: Int
+}
+
+struct CollectorDependencySnapshot: Equatable, Sendable {
+    struct PresentMember: Equatable, Sendable {
+        let relativePath: String
+        let generation: ArchiveSourceGeneration
+    }
+
+    let entrypointRelativePath: String
+    let present: [PresentMember]
+    let absentRelativePaths: [String]
+    let vscodeWorkspaceContext: ArchiveVSCodeWorkspaceContext?
+    let geminiProjectContext: ArchiveGeminiProjectContext?
+    let kimiProjectContext: ArchiveKimiProjectContext?
+
+    init(
+        entrypointRelativePath: String,
+        present: [PresentMember],
+        absentRelativePaths: [String],
+        vscodeWorkspaceContext: ArchiveVSCodeWorkspaceContext? = nil,
+        geminiProjectContext: ArchiveGeminiProjectContext? = nil,
+        kimiProjectContext: ArchiveKimiProjectContext? = nil
+    ) {
+        self.entrypointRelativePath = entrypointRelativePath
+        self.present = present
+        self.absentRelativePaths = absentRelativePaths
+        self.vscodeWorkspaceContext = vscodeWorkspaceContext
+        self.geminiProjectContext = geminiProjectContext
+        self.kimiProjectContext = kimiProjectContext
+    }
+
+    func presentByteCount() throws -> Int64 {
+        var total: Int64 = 0
+        for member in present {
+            let next = total.addingReportingOverflow(member.generation.size)
+            guard !next.overflow, member.generation.size >= 0 else {
+                throw CollectorPublicationWorkerError.invalidCapture
+            }
+            total = next.partialValue
+        }
+        // Frozen external configuration lives in the manifest, outside file-set members,
+        // but still consumes the collector capture allowance.
+        let contextBytes = Int64(vscodeWorkspaceContext?.configurationData?.count ?? 0)
+        let next = total.addingReportingOverflow(contextBytes)
+        guard !next.overflow else { throw CollectorPublicationWorkerError.invalidCapture }
+        return next.partialValue
+    }
 }

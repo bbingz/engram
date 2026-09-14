@@ -360,6 +360,109 @@ final class CollectorEventCoordinatorTests: XCTestCase {
         try coordinator.stop()
     }
 
+    func testHistoryDoneTransitionIsVisibleOnMailboxWithoutAnotherOwnerStep_repro() throws {
+        let fixture = try CoordinatorFixture()
+        defer { fixture.remove() }
+        var commits = 0
+        let owner = try fixture.open(hooks: .init(beforeInventoryCommit: { commits += 1 }))
+        defer { try? owner.close() }
+        let stream = CoordinatorFakeStream()
+        let coordinator = make(owner, fixture, stream: stream)
+        try coordinator.start(epoch: "epoch")
+        XCTAssertEqual(try coordinator.step(budget: scanBudget).bootstrap?.outcome, .finished)
+        XCTAssertEqual(try coordinator.snapshot().phase, .recovering)
+        XCTAssertFalse(try coordinator.snapshot().historyDone)
+        let afterScan = commits
+        XCTAssertEqual(stream.emit(.historyDone), .controlAccepted)
+        let mailbox = try coordinator.snapshot()
+        XCTAssertTrue(mailbox.historyDone)
+        XCTAssertEqual(mailbox.phase, .recovering)
+        XCTAssertEqual(mailbox.queuedBatchCount, 0)
+        XCTAssertEqual(commits, afterScan)
+        try coordinator.stop()
+    }
+
+    func testWatchingCompletedScanDoesNotRereadRootWhenQueueEmpty_repro() throws {
+        let fixture = try CoordinatorFixture()
+        defer { fixture.remove() }
+        var commits = 0
+        let probe = CoordinatorStorageValidationOpenProbe()
+        let owner = try fixture.open(hooks: .init(
+            beforeInventoryCommit: { commits += 1 },
+            storageValidationOpenHooks: probe.hooks
+        ))
+        defer { try? owner.close() }
+        let stream = CoordinatorFakeStream()
+        let coordinator = make(owner, fixture, stream: stream)
+        try ready(coordinator, stream, owner, fixture)
+        let idle = try state(owner, fixture)
+        XCTAssertEqual(try coordinator.snapshot().phase, .watching)
+        XCTAssertTrue(try coordinator.snapshot().historyDone)
+        XCTAssertEqual(try coordinator.snapshot().queuedBatchCount, 0)
+        XCTAssertNil(idle.activeScan)
+        XCTAssertGreaterThanOrEqual(idle.completedRevision, idle.requestedRevision)
+        let commitsAfterReady = commits
+        // Count only coordinator.step Owner reads. Do not call rootState while
+        // armed: each extra read is another entry/exit storage fence.
+        probe.arm()
+        for _ in 0..<16 {
+            let step = try coordinator.step(budget: scanBudget)
+            XCTAssertNil(step.bootstrap)
+            XCTAssertEqual(step.appliedBatches, 0)
+            XCTAssertEqual(step.snapshot.phase, .watching)
+            XCTAssertEqual(step.snapshot.queuedBatchCount, 0)
+        }
+        // One rootState: two validateStorage fences, two hooked route opens each.
+        // A redundant second readRoot on this idle path doubles the work to 128.
+        XCTAssertEqual(probe.opened, 16 * 4)
+        XCTAssertEqual(probe.closed, 16 * 4)
+        XCTAssertEqual(commits, commitsAfterReady)
+        probe.disarm()
+        XCTAssertNil(try state(owner, fixture).activeScan)
+        try coordinator.stop()
+    }
+
+    func testPrefetchedIdleWatchingObservationDoesNotRereadOwner_repro() throws {
+        let fixture = try CoordinatorFixture()
+        defer { fixture.remove() }
+        var commits = 0
+        let probe = CoordinatorStorageValidationOpenProbe()
+        let owner = try fixture.open(hooks: .init(
+            beforeInventoryCommit: { commits += 1 },
+            storageValidationOpenHooks: probe.hooks
+        ))
+        defer { try? owner.close() }
+        let stream = CoordinatorFakeStream()
+        let coordinator = make(owner, fixture, stream: stream)
+        try ready(coordinator, stream, owner, fixture)
+        let idle = try state(owner, fixture)
+        XCTAssertEqual(try coordinator.snapshot().phase, .watching)
+        XCTAssertTrue(try coordinator.snapshot().historyDone)
+        XCTAssertEqual(try coordinator.snapshot().queuedBatchCount, 0)
+        XCTAssertNil(idle.activeScan)
+        XCTAssertGreaterThanOrEqual(idle.completedRevision, idle.requestedRevision)
+        let commitsAfterReady = commits
+        probe.arm()
+        for _ in 0..<16 {
+            let step = try coordinator.step(budget: scanBudget, observed: idle)
+            XCTAssertNil(step.bootstrap)
+            XCTAssertEqual(step.appliedBatches, 0)
+            XCTAssertEqual(step.snapshot.phase, .watching)
+            XCTAssertEqual(step.snapshot.queuedBatchCount, 0)
+        }
+        XCTAssertEqual(probe.opened, 0)
+        XCTAssertEqual(probe.closed, 0)
+        XCTAssertEqual(commits, commitsAfterReady)
+        XCTAssertEqual(stream.emit(batch("queued-after-prefetch")), .queued)
+        let applied = try coordinator.step(budget: scanBudget, observed: idle)
+        XCTAssertEqual(applied.appliedBatches, 1)
+        XCTAssertGreaterThanOrEqual(probe.opened, 4)
+        XCTAssertGreaterThanOrEqual(probe.closed, 4)
+        probe.disarm()
+        XCTAssertEqual(commits, commitsAfterReady + 1)
+        try coordinator.stop()
+    }
+
     func testEveryLossSignalSealsImmediatelyAndPersistsOnlyOneGapPerGeneration() throws {
         let cases: [(CollectorEventStreamSignal, CollectorEventGapReason)] = [
             (.loss(.overflow), .overflow), (.loss(.continuityLoss), .continuityLoss),
@@ -829,8 +932,97 @@ final class CollectorEventCoordinatorTests: XCTestCase {
               maxQueuedBatches: batches, maxQueuedUTF8Bytes: queueBytes)
     }
 
-    private func batch(_ cursor: String, epoch: String = "epoch", paths: [String] = ["rollout-event.jsonl"]) -> CollectorEventStreamSignal {
-        .batch(.init(nextCheckpoint: .init(epoch: epoch, cursor: cursor), dirtyRelativePaths: paths))
+    func testWatchingDirectoryCreateDiscoversSubtreeWithoutVisitingSibling() throws {
+        let fixture = try CoordinatorFixture()
+        defer { fixture.remove() }
+        try fixture.nestedFile("sibling/rollout-unrelated.jsonl")
+        let owner = try fixture.open()
+        defer { try? owner.close() }
+        let stream = CoordinatorFakeStream()
+        let coordinator = make(owner, fixture, stream: stream)
+        try ready(coordinator, stream, owner, fixture)
+        try fixture.nestedFile("newdir/rollout-hidden.jsonl")
+        try fixture.nestedFile("newdir/rollout-visible.jsonl")
+        let before = try state(owner, fixture)
+        XCTAssertEqual(before.requestedRevision, before.completedRevision)
+        XCTAssertNil(before.activeScan)
+        XCTAssertEqual(stream.emit(batch(
+            "dir-1", paths: ["newdir/rollout-visible.jsonl"], directories: ["newdir"]
+        )), .queued)
+        let first = try coordinator.step(budget: scanBudget)
+        XCTAssertEqual(first.appliedBatches, 1)
+        let after = try state(owner, fixture)
+        XCTAssertEqual(after.requestedRevision, before.requestedRevision)
+        XCTAssertEqual(after.completedRevision, before.completedRevision)
+        assertCheckpoint(after.eventCheckpoint, .init(epoch: "epoch", cursor: "dir-1"))
+        for _ in 0..<16 {
+            if try state(owner, fixture).activeScan == nil { break }
+            let step = try coordinator.step(budget: scanBudget)
+            XCTAssertEqual(step.appliedBatches, 0)
+        }
+        XCTAssertNil(try state(owner, fixture).activeScan)
+        try coordinator.stop()
+        try owner.close()
+        XCTAssertEqual(try fixture.integer("SELECT COUNT(*) FROM collector_locators WHERE relative_path = 'newdir/rollout-visible.jsonl'"), 1)
+        XCTAssertEqual(try fixture.integer("SELECT COUNT(*) FROM collector_locators WHERE relative_path = 'newdir/rollout-hidden.jsonl'"), 1)
+        XCTAssertEqual(try fixture.integer("SELECT COUNT(*) FROM collector_locators WHERE relative_path = 'sibling/rollout-unrelated.jsonl'"), 1)
+        XCTAssertEqual(try fixture.integer("""
+            SELECT COUNT(*) FROM collector_frontier
+            WHERE relative_directory = 'sibling' AND scan_id IN (
+                SELECT scan_id FROM collector_frontier WHERE relative_directory = 'newdir'
+            )
+            """), 0)
+        XCTAssertEqual(try fixture.integer("""
+            SELECT COUNT(*) FROM collector_frontier
+            WHERE relative_directory = '' AND scan_id IN (
+                SELECT scan_id FROM collector_frontier WHERE relative_directory = 'newdir'
+            )
+            """), 0)
+        let siblingScan = try fixture.text("SELECT last_seen_scan_id FROM collector_locators WHERE relative_path = 'sibling/rollout-unrelated.jsonl'")
+        let hiddenScan = try fixture.text("SELECT last_seen_scan_id FROM collector_locators WHERE relative_path = 'newdir/rollout-hidden.jsonl'")
+        XCTAssertNotEqual(siblingScan, hiddenScan)
+        XCTAssertNotNil(siblingScan)
+        XCTAssertNotNil(hiddenScan)
+    }
+
+    func testTargetedDirectoryScanResumesAfterOwnerRelaunchSameRun() throws {
+        let fixture = try CoordinatorFixture()
+        defer { fixture.remove() }
+        var owner: CollectorInventoryOwner? = try fixture.open()
+        let stream = CoordinatorFakeStream()
+        let coordinator = make(owner!, fixture, stream: stream)
+        try ready(coordinator, stream, owner!, fixture)
+        try fixture.nestedFile("newdir/rollout-hidden.jsonl")
+        try fixture.nestedFile("newdir/rollout-other.jsonl")
+        XCTAssertEqual(stream.emit(batch("dir-1", paths: [], directories: ["newdir"])), .queued)
+        XCTAssertEqual(try coordinator.step(budget: tinyScanBudget).appliedBatches, 1)
+        let pending = try state(owner!, fixture)
+        XCTAssertEqual(pending.requestedRevision, pending.completedRevision)
+        XCTAssertNotNil(pending.activeScan)
+        try coordinator.stop()
+        try owner!.close()
+        owner = nil
+        owner = try fixture.open()
+        defer { try? owner?.close() }
+        _ = try owner!.enrollAndActivateRoot(fixture.configuration)
+        let resumed = try state(owner!, fixture)
+        XCTAssertEqual(resumed.requestedRevision, pending.requestedRevision)
+        XCTAssertEqual(resumed.activeScan, pending.activeScan)
+        for _ in 0..<16 {
+            if try state(owner!, fixture).activeScan == nil { break }
+            _ = try owner!.stepRoot(fixture.configuration, budget: scanBudget)
+        }
+        XCTAssertNil(try state(owner!, fixture).activeScan)
+        try owner!.close()
+        owner = nil
+        XCTAssertEqual(try fixture.integer("SELECT COUNT(*) FROM collector_locators WHERE relative_path = 'newdir/rollout-hidden.jsonl'"), 1)
+        XCTAssertEqual(try fixture.integer("SELECT COUNT(*) FROM collector_locators WHERE relative_path = 'newdir/rollout-other.jsonl'"), 1)
+    }
+
+    private func batch(_ cursor: String, epoch: String = "epoch", paths: [String] = ["rollout-event.jsonl"],
+                       directories: [String] = []) -> CollectorEventStreamSignal {
+        .batch(.init(nextCheckpoint: .init(epoch: epoch, cursor: cursor),
+                     dirtyRelativePaths: paths, dirtyRelativeDirectories: directories))
     }
 
     private func make(
@@ -885,6 +1077,31 @@ final class CollectorEventCoordinatorTests: XCTestCase {
     ) {
         XCTAssertEqual(actual.map { Data($0.epoch.utf8) }, Data(expected.epoch.utf8), file: file, line: line)
         XCTAssertEqual(actual.map { Data($0.cursor.utf8) }, Data(expected.cursor.utf8), file: file, line: line)
+    }
+}
+
+private final class CoordinatorStorageValidationOpenProbe {
+    private var armed = false
+    private(set) var opened = 0
+    private(set) var closed = 0
+    var hooks: CollectorPOSIXRootEnumeratorTestHooks {
+        .init(didOpenDescriptor: { [weak self] _ in
+            guard let self, self.armed else { return }
+            self.opened += 1
+        }, didCloseDescriptor: { [weak self] _, _ in
+            guard let self, self.armed else { return }
+            self.closed += 1
+        })
+    }
+
+    func arm() {
+        opened = 0
+        closed = 0
+        armed = true
+    }
+
+    func disarm() {
+        armed = false
     }
 }
 
@@ -1032,6 +1249,28 @@ private final class CoordinatorFixture {
         let path = sourceRoot.appendingPathComponent(name)
         try Data("fixture".utf8).write(to: path)
         guard chmod(path.path, 0o600) == 0 else { throw POSIXError(.EACCES) }
+    }
+
+    func nestedFile(_ relative: String) throws {
+        let parts = relative.split(separator: "/").map(String.init)
+        var directory = sourceRoot
+        for part in parts.dropLast() {
+            directory.appendPathComponent(part, isDirectory: true)
+            if !FileManager.default.fileExists(atPath: directory.path) {
+                try self.directory(directory)
+            }
+        }
+        let path = directory.appendingPathComponent(try XCTUnwrap(parts.last))
+        try Data("fixture".utf8).write(to: path)
+        guard chmod(path.path, 0o600) == 0 else { throw POSIXError(.EACCES) }
+    }
+
+    func text(_ sql: String) throws -> String? {
+        var configuration = Configuration()
+        configuration.readonly = true
+        let queue = try DatabaseQueue(path: inventoryURL.path, configuration: configuration)
+        defer { try? queue.close() }
+        return try queue.read { try String.fetchOne($0, sql: sql) }
     }
 
     func replaceSourceRoot() throws {

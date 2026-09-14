@@ -181,6 +181,52 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
         JSONLAdapterSupport.fileExists(locator)
     }
 
+    /// Replay a frozen CLI brain transcript. Identity comes from the logical
+    /// `…/<session>/.system_generated/logs/transcript.jsonl` layout; the staged
+    /// filename may differ. Reads only `physicalLocator` bytes.
+    static func scanCapturedCLITranscript(
+        physicalLocator: String,
+        logicalLocator: String,
+        limits: ParserLimits = .default
+    ) async throws -> AdapterParseResult<CapturedSourceScan> {
+        try Task.checkCancellation()
+        guard let id = cliSessionIdFromLogicalLayout(logicalLocator) else {
+            return .failure(.malformedJSON)
+        }
+        do {
+            let (objects, failure) = try JSONLAdapterSupport.readObjects(
+                locator: physicalLocator,
+                limits: limits,
+                reportFailures: true,
+                strictRecords: true,
+                countsTowardMessageLimit: { cliMessage(from: $0) != nil }
+            )
+            if let failure { return .failure(failure) }
+            let messages = objects.compactMap(cliMessage(from:))
+            switch cliSessionInfo(
+                from: objects,
+                id: id,
+                filePath: logicalLocator,
+                cwd: inferredCWDFromFilePrefix(physicalLocator),
+                sizeBytes: JSONLAdapterSupport.fileSize(locator: physicalLocator)
+            ) {
+            case .failure(let reason):
+                return .failure(reason)
+            case .success(let info):
+                return .success(CapturedSourceScan(
+                    scan: IndexingScan(info: info, messages: messages),
+                    rawSourceSessionID: id
+                ))
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let failure as ParserFailure {
+            return .failure(failure)
+        } catch {
+            return .failure(.malformedJSON)
+        }
+    }
+
     private func sizeBytes(metadata: CascadeCacheSupport.JSONObject, id: String, locator: String) -> Int64 {
         if let number = metadata["pbSizeBytes"] as? NSNumber, number.int64Value > 0 {
             return number.int64Value
@@ -233,76 +279,93 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
                 countsTowardMessageLimit: { Self.cliMessage(from: $0) != nil }
             )
             if let failure { return .failure(failure) }
-
-            var startTime = ""
-            var endTime = ""
-            var userCount = 0
-            var assistantCount = 0
-            var toolCount = 0
-            var firstUserText = ""
-
-            for object in objects {
-                guard let message = Self.cliMessage(from: object) else { continue }
-                if startTime.isEmpty, let timestamp = message.timestamp {
-                    startTime = timestamp
-                }
-                if let timestamp = message.timestamp {
-                    endTime = timestamp
-                }
-                switch message.role {
-                case .user:
-                    userCount += 1
-                    if firstUserText.isEmpty { firstUserText = message.content }
-                case .assistant:
-                    assistantCount += 1
-                case .tool:
-                    toolCount += 1
-                case .system:
-                    break
-                }
-            }
-
             let id = cliSessionId(from: locator)
             guard !id.isEmpty else {
                 return .failure(.malformedJSON)
             }
-            guard userCount + assistantCount + toolCount > 0 else {
-                return .failure(.noVisibleMessages)
-            }
-
-            return .success(
-                NormalizedSessionInfo(
-                    id: id,
-                    source: .antigravity,
-                    startTime: startTime,
-                    endTime: endTime != startTime ? endTime : nil,
-                    cwd: inferredCWD(metadata: [:], locator: locator),
-                    project: nil,
-                    model: nil,
-                    messageCount: userCount + assistantCount + toolCount,
-                    userMessageCount: userCount,
-                    assistantMessageCount: assistantCount,
-                    toolMessageCount: toolCount,
-                    systemMessageCount: 0,
-                    summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200)),
-                    filePath: locator,
-                    sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
-                    indexedAt: nil,
-                    agentRole: nil,
-                    originator: nil,
-                    origin: nil,
-                    summaryMessageCount: nil,
-                    tier: nil,
-                    qualityScore: nil,
-                    parentSessionId: nil,
-                    suggestedParentId: nil
-                )
+            return Self.cliSessionInfo(
+                from: objects,
+                id: id,
+                filePath: locator,
+                cwd: inferredCWD(metadata: [:], locator: locator),
+                sizeBytes: JSONLAdapterSupport.fileSize(locator: locator)
             )
         } catch let failure as ParserFailure {
             return .failure(failure)
         } catch {
             return .failure(.malformedJSON)
         }
+    }
+
+    /// Logical replay layout only. Does not consult a live brain root or staged name.
+    private static func cliSessionIdFromLogicalLayout(_ locator: String) -> String? {
+        SourceMetadataProjection.antigravityCLINativeID(logicalLocator: locator)
+    }
+
+    private static func cliSessionInfo(
+        from objects: [JSONLAdapterSupport.JSONObject],
+        id: String,
+        filePath: String,
+        cwd: String,
+        sizeBytes: Int64
+    ) -> AdapterParseResult<NormalizedSessionInfo> {
+        var startTime = ""
+        var endTime = ""
+        var userCount = 0
+        var assistantCount = 0
+        var toolCount = 0
+        var firstUserText = ""
+        for object in objects {
+            guard let message = cliMessage(from: object) else { continue }
+            if startTime.isEmpty, let timestamp = message.timestamp {
+                startTime = timestamp
+            }
+            if let timestamp = message.timestamp {
+                endTime = timestamp
+            }
+            switch message.role {
+            case .user:
+                userCount += 1
+                if firstUserText.isEmpty { firstUserText = message.content }
+            case .assistant:
+                assistantCount += 1
+            case .tool:
+                toolCount += 1
+            case .system:
+                break
+            }
+        }
+        guard userCount + assistantCount + toolCount > 0 else {
+            return .failure(.noVisibleMessages)
+        }
+        return .success(
+            NormalizedSessionInfo(
+                id: id,
+                source: .antigravity,
+                startTime: startTime,
+                endTime: endTime != startTime ? endTime : nil,
+                cwd: cwd,
+                project: nil,
+                model: nil,
+                messageCount: userCount + assistantCount + toolCount,
+                userMessageCount: userCount,
+                assistantMessageCount: assistantCount,
+                toolMessageCount: toolCount,
+                systemMessageCount: 0,
+                summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200)),
+                filePath: filePath,
+                sizeBytes: sizeBytes,
+                indexedAt: nil,
+                agentRole: nil,
+                originator: nil,
+                origin: nil,
+                summaryMessageCount: nil,
+                tier: nil,
+                qualityScore: nil,
+                parentSessionId: nil,
+                suggestedParentId: nil
+            )
+        )
     }
 
     private static func cliMessage(from object: JSONLAdapterSupport.JSONObject) -> NormalizedMessage? {
@@ -384,6 +447,10 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
         if let cwd = JSONLAdapterSupport.string(metadata["cwd"]), !cwd.isEmpty {
             return cwd
         }
+        return Self.inferredCWDFromFilePrefix(locator)
+    }
+
+    private static func inferredCWDFromFilePrefix(_ locator: String) -> String {
         guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: locator)) else {
             return ""
         }
@@ -401,7 +468,7 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
         guard let content = String(data: prefix, encoding: .utf8) else {
             return ""
         }
-        return Self.inferCWDFromAbsolutePaths(in: content)
+        return inferCWDFromAbsolutePaths(in: content)
     }
 
     // Derive a working directory from the absolute file paths the transcript
@@ -409,29 +476,6 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
     // no assumption about the user's name or a personal directory layout — the
     // source session may belong to a different user or directory shape.
     static func inferCWDFromAbsolutePaths(in text: String) -> String {
-        guard let regex = try? NSRegularExpression(pattern: #"(/(?:[^/\s"'`]+/)+)[^/\s"'`]+"#) else {
-            return ""
-        }
-        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
-        var counts: [String: Int] = [:]
-        for match in matches {
-            // Capture group 1 is the directory portion (everything up to and
-            // including the final slash). Drop the trailing slash so the cwd is
-            // returned without it.
-            guard match.numberOfRanges > 1,
-                  let range = Range(match.range(at: 1), in: text)
-            else {
-                continue
-            }
-            var directory = String(text[range])
-            if directory.count > 1, directory.hasSuffix("/") {
-                directory.removeLast()
-            }
-            counts[directory, default: 0] += 1
-        }
-        guard let top = counts.sorted(by: { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }).first else {
-            return ""
-        }
-        return top.key
+        SourceMetadataProjection.antigravityCLIPathMetadata(in: text).cwd
     }
 }

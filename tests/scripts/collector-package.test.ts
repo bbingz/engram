@@ -1001,6 +1001,142 @@ describe('collector package extra manifested dependencies', () => {
   );
 });
 
+const rpathSwiftConcurrency = '@rpath/libswift_Concurrency.dylib';
+const systemSwiftConcurrency = '/usr/lib/swift/libswift_Concurrency.dylib';
+
+function compileRpathSwiftDylib(
+  directory: string,
+  installName: string,
+): string {
+  const stubC = join(directory, 'stub.c');
+  const probeC = join(directory, 'probe.c');
+  const stub = join(directory, 'libstub.dylib');
+  const probe = join(directory, 'probe.dylib');
+  writeFileSync(stubC, 'void engram_package_probe_stub(void) {}\n');
+  writeFileSync(probeC, 'void engram_package_probe(void) {}\n');
+  const stubBuild = spawnSync(
+    '/usr/bin/clang',
+    ['-dynamiclib', '-o', stub, stubC, '-install_name', installName],
+    { encoding: 'utf8' },
+  );
+  expect(stubBuild.status, stubBuild.stderr).toBe(0);
+  const probeBuild = spawnSync(
+    '/usr/bin/clang',
+    ['-dynamiclib', '-o', probe, probeC, stub, '-Wl,-rpath,/usr/lib/swift'],
+    { encoding: 'utf8' },
+  );
+  expect(probeBuild.status, probeBuild.stderr).toBe(0);
+  const otool = spawnSync('/usr/bin/otool', ['-L', probe], {
+    encoding: 'utf8',
+  });
+  expect(otool.status).toBe(0);
+  expect(otool.stdout).toContain(installName);
+  return probe;
+}
+
+function runExtractedConcurrencyNormalize(binary: string): {
+  status: number | null;
+  output: string;
+} {
+  const script = [
+    'set -euo pipefail',
+    'fail() { echo "package-collector: ERROR: $*" >&2; exit 1; }',
+    extractShippedFunctions([
+      'canonical_existing_path',
+      'assert_system_swift_concurrency_install_name',
+      'normalize_copied_system_swift_concurrency',
+    ]),
+    `normalize_copied_system_swift_concurrency ${bashSingleQuote(binary)}`,
+  ].join('\n');
+  const result = spawnSync('/bin/bash', ['-s'], {
+    encoding: 'utf8',
+    env: { ...process.env, LC_ALL: 'C' },
+    input: script,
+  });
+  return {
+    status: result.status,
+    output: `${result.stdout ?? ''}${result.stderr ?? ''}`,
+  };
+}
+
+describe('collector package copied system Swift Concurrency install name', () => {
+  it('still rejects unrepaired @rpath/libswift_Concurrency.dylib as a packaged Frameworks dependency', () => {
+    const root = makeTempRoot();
+    const bundle = join(root, 'bundle');
+    const probe = join(bundle, 'bin/probe');
+    mkdirSync(join(bundle, 'bin'), { recursive: true });
+    mkdirSync(join(bundle, 'Frameworks'), { recursive: true });
+    writeSyntheticMachOWithLoadDylibs(probe, [rpathSwiftConcurrency]);
+    assertOtoolParsesLoadPath(probe, rpathSwiftConcurrency);
+
+    const result = runExtractedDependencyClosure(bundle, probe);
+
+    expect(result.status).not.toBe(0);
+    expect(result.output).toMatch(
+      /unresolved packaged dependency: @rpath\/libswift_Concurrency\.dylib/,
+    );
+  });
+
+  it('rewrites the copied GRDB Concurrency rpath on Mach-O before codesign, not in verify-only', () => {
+    const packaging = extractShellFunction(packageScript, 'package_collector');
+    const thin = packaging.indexOf('thin_macho_to_arm64 "$grdb_entity"');
+    const normalize = packaging.indexOf(
+      'normalize_copied_system_swift_concurrency "$grdb_entity"',
+    );
+    const sign = packaging.indexOf('codesign --force --sign - "$dest_grdb"');
+    expect(thin).toBeGreaterThan(-1);
+    expect(normalize).toBeGreaterThan(thin);
+    expect(sign).toBeGreaterThan(normalize);
+    expect(packageScript).toContain('install_name_tool -change');
+    expect(packageScript).toContain(rpathSwiftConcurrency);
+    expect(packageScript).toContain(systemSwiftConcurrency);
+    expect(packageScript).toContain('dyld_info');
+    expect(packageScript).not.toMatch(/@rpath\/\*\)\s*candidate=.*libswift/);
+  });
+
+  it.skipIf(process.platform !== 'darwin' || !existsSync('/usr/bin/clang'))(
+    'changes only @rpath/libswift_Concurrency.dylib to the attested OS install name (repro)',
+    () => {
+      const root = makeTempRoot();
+      const probe = compileRpathSwiftDylib(root, rpathSwiftConcurrency);
+      const copy = join(root, 'copied.dylib');
+      writeFileSync(copy, readFileSync(probe));
+      chmodSync(copy, 0o700);
+
+      const result = runExtractedConcurrencyNormalize(copy);
+
+      expect(result.status, result.output).toBe(0);
+      const otool = spawnSync('/usr/bin/otool', ['-L', copy], {
+        encoding: 'utf8',
+      });
+      expect(otool.status).toBe(0);
+      expect(otool.stdout).toContain(systemSwiftConcurrency);
+      expect(otool.stdout).not.toContain(rpathSwiftConcurrency);
+    },
+  );
+
+  it.skipIf(process.platform !== 'darwin' || !existsSync('/usr/bin/clang'))(
+    'refuses an arbitrary @rpath/libswift dylib instead of rewriting it',
+    () => {
+      const root = makeTempRoot();
+      const probe = compileRpathSwiftDylib(root, '@rpath/libswiftFoo.dylib');
+      const copy = join(root, 'copied.dylib');
+      writeFileSync(copy, readFileSync(probe));
+      chmodSync(copy, 0o700);
+
+      const result = runExtractedConcurrencyNormalize(copy);
+
+      expect(result.status).not.toBe(0);
+      expect(result.output).toMatch(/unsupported copied Swift rpath dylib/);
+      const otool = spawnSync('/usr/bin/otool', ['-L', copy], {
+        encoding: 'utf8',
+      });
+      expect(otool.stdout).toContain('@rpath/libswiftFoo.dylib');
+      expect(otool.stdout).not.toContain(systemSwiftConcurrency);
+    },
+  );
+});
+
 describe('collector package nested SHA256SUMS exact-set', () => {
   it('rejects an unlisted nested SHA256SUMS at exact-set before native inspection', () => {
     const root = makeTempRoot();

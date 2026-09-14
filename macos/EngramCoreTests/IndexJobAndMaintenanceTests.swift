@@ -1,5 +1,6 @@
 import GRDB
 import Foundation
+import SQLite3
 import XCTest
 @testable import EngramCoreRead
 @testable import EngramCoreWrite
@@ -246,6 +247,10 @@ private final class TerminalPrefixIndexingAdapter: SessionAdapter {
 }
 
 final class IndexJobAndMaintenanceTests: XCTestCase {
+    /// Same 2048-identity fixture. Covering `(id,c0)` scan is ~6200 VM steps
+    /// (O(keys), not a seek). Payload virtual-table EXISTS/DELETE is ~20500.
+    /// 12000 sits between those measured counts.
+    fileprivate static let unmappedCoveringBound = 12000
     private var tempDB: URL!
     private var writer: EngramDatabaseWriter!
 
@@ -1685,7 +1690,419 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
         }
     }
 
+    // MARK: - Mapped nonempty FTS probe
+
+    func testHasNonemptyFtsContentMappedTailAvoidsFullScan_repro() throws {
+        try writer.write { db in
+            for index in 0..<2048 {
+                _ = try insertFts(db, sessionId: "noise-\(index)", content: "noise-body-\(index)")
+            }
+            try seedSession(db, id: "fts-target")
+            let rowid = try insertFts(db, sessionId: "fts-target", content: "target-needle")
+            try insertMap(db, sessionId: "fts-target", seq: 0, rowid: rowid)
+        }
+        try writer.read { db in
+            func measure(_ body: () throws -> Void) throws -> Int {
+                let probe = FtsHelperVMSteps()
+                probe.install(db)
+                defer { probe.remove(db) }
+                try body()
+                return probe.vmSteps
+            }
+            let helperSteps = try measure {
+                XCTAssertTrue(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: "fts-target"))
+            }
+            let pragmaSteps = try measure {
+                _ = try String.fetchAll(db, sql: "SELECT name FROM pragma_table_info('fts_map')")
+            }
+            let mappedSteps = try measure {
+                _ = try Bool.fetchOne(
+                    db,
+                    sql: """
+                    SELECT EXISTS(
+                      SELECT 1
+                      FROM fts_map AS m
+                      JOIN sessions_fts AS f ON f.rowid = m.fts_rowid
+                      WHERE m.session_id = ?
+                        AND f.session_id = ?
+                        AND LENGTH(TRIM(f.content)) > 0
+                    )
+                    """,
+                    arguments: ["fts-target", "fts-target"]
+                )
+            }
+            let oldSqlSteps = try measure {
+                _ = try Bool.fetchOne(
+                    db,
+                    sql: """
+                    SELECT EXISTS(
+                      SELECT 1 FROM sessions_fts
+                      WHERE session_id = ? AND LENGTH(TRIM(content)) > 0
+                    )
+                    """,
+                    arguments: ["fts-target"]
+                )
+            }
+            fputs(
+                "FTS_POSITIVE_VM pragma=\(pragmaSteps) mapped=\(mappedSteps) oldSQL=\(oldSqlSteps) helper=\(helperSteps)\n",
+                stderr
+            )
+            XCTAssertGreaterThan(
+                oldSqlSteps,
+                2000,
+                "same 2048-row fixture old EXISTS must still exceed the bound; observed \(oldSqlSteps)"
+            )
+            XCTAssertLessThan(
+                helperSteps,
+                2000,
+                "production hasNonemptyFtsContent must not walk 2048 prior FTS rows; observed \(helperSteps)"
+            )
+        }
+    }
+
+    func testHasNonemptyFtsContentAcceptsValidAndIncompleteMap() throws {
+        try writer.write { db in
+            try seedSession(db, id: "fts-owner")
+            let rowid = try insertFts(db, sessionId: "fts-owner", content: "  needleunique mapped  ")
+            try insertMap(db, sessionId: "fts-owner", seq: 0, rowid: rowid)
+            try seedSession(db, id: "fts-incomplete")
+            _ = try insertFts(db, sessionId: "fts-incomplete", content: "    ")
+            let keep = try insertFts(db, sessionId: "fts-incomplete", content: "keep-me")
+            try insertMap(db, sessionId: "fts-incomplete", seq: 1, rowid: keep)
+        }
+        try writer.read { db in
+            XCTAssertTrue(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: "fts-owner"))
+            XCTAssertTrue(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: "fts-incomplete"))
+        }
+    }
+
+    func testHasNonemptyFtsContentFallsBackWhenMapEmptyMissingOrUnusable() throws {
+        try writer.write { db in
+            try seedSession(db, id: "fts-empty-map")
+            _ = try insertFts(db, sessionId: "fts-empty-map", content: "unmapped-owner")
+            try seedSession(db, id: "fts-missing-map")
+            _ = try insertFts(db, sessionId: "fts-missing-map", content: "still-searchable")
+            try seedSession(db, id: "fts-unusable-map")
+            _ = try insertFts(db, sessionId: "fts-unusable-map", content: "unusable-schema-owner")
+            try db.execute(sql: "DROP TABLE fts_map")
+        }
+        try writer.read { db in
+            XCTAssertFalse(try db.tableExists("fts_map"))
+            XCTAssertTrue(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: "fts-missing-map"))
+        }
+
+        try writer.write { db in
+            try db.execute(sql: """
+                CREATE TABLE fts_map (
+                  session_id TEXT NOT NULL,
+                  msg_seq INTEGER NOT NULL,
+                  content_hash TEXT NOT NULL DEFAULT '',
+                  PRIMARY KEY (session_id, msg_seq)
+                )
+                """)
+            try db.execute(
+                sql: "INSERT INTO fts_map(session_id, msg_seq, content_hash) VALUES ('fts-unusable-map', 0, 'probe')"
+            )
+        }
+        try writer.read { db in
+            XCTAssertTrue(try db.tableExists("fts_map"))
+            XCTAssertFalse(
+                try String.fetchAll(db, sql: "SELECT name FROM pragma_table_info('fts_map')").contains("fts_rowid")
+            )
+            XCTAssertTrue(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: "fts-empty-map"))
+            XCTAssertTrue(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: "fts-unusable-map"))
+        }
+    }
+
+    func testHasNonemptyFtsContentRejectsStaleWrongOwnerAndReusedRowid() throws {
+        try writer.write { db in
+            try seedSession(db, id: "fts-owner-a")
+            try seedSession(db, id: "fts-owner-b")
+            try seedSession(db, id: "fts-owner-c")
+            let a = try insertFts(db, sessionId: "fts-owner-a", content: "alpha-body")
+            let b = try insertFts(db, sessionId: "fts-owner-b", content: "beta-body")
+            try insertMap(db, sessionId: "fts-owner-a", seq: 0, rowid: b)
+            try insertMap(db, sessionId: "fts-owner-c", seq: 0, rowid: a)
+        }
+        try writer.read { db in
+            XCTAssertTrue(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: "fts-owner-a"))
+            XCTAssertFalse(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: "fts-owner-c"))
+        }
+    }
+
+    func testHasNonemptyFtsContentUsesExactSQLTrimSemantics() throws {
+        try writer.write { db in
+            try seedSession(db, id: "fts-spaces")
+            let spaces = try insertFts(db, sessionId: "fts-spaces", content: "    ")
+            try insertMap(db, sessionId: "fts-spaces", seq: 0, rowid: spaces)
+            try seedSession(db, id: "fts-tab")
+            let tab = try insertFts(db, sessionId: "fts-tab", content: "\t")
+            try insertMap(db, sessionId: "fts-tab", seq: 0, rowid: tab)
+            try seedSession(db, id: "fts-padded")
+            let padded = try insertFts(db, sessionId: "fts-padded", content: "  keep  ")
+            try insertMap(db, sessionId: "fts-padded", seq: 0, rowid: padded)
+        }
+        try writer.read { db in
+            XCTAssertFalse(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: "fts-spaces"))
+            XCTAssertTrue(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: "fts-tab"))
+            XCTAssertTrue(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: "fts-padded"))
+        }
+    }
+
+    func testHasNonemptyFtsContentUnmappedOwnedIdentityAvoidsFullScan_repro() throws {
+        try writer.write { db in
+            try insertNoiseFts(db)
+            try seedSession(db, id: "fts-unmapped")
+            _ = try insertFts(db, sessionId: "fts-unmapped", content: "unmapped-needle")
+            try seedSession(db, id: "fts-absent")
+        }
+        try writer.read { db in
+            XCTAssertTrue(try FTSRebuildPolicy.hasOwnedContentIdentityIndex(db))
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM fts_map WHERE session_id = 'fts-unmapped'") ?? -1,
+                0
+            )
+            let helperTrue = try measureFtsHelperVM(db) {
+                XCTAssertTrue(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: "fts-unmapped"))
+            }
+            let helperFalse = try measureFtsHelperVM(db) {
+                XCTAssertFalse(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: "fts-absent"))
+            }
+            let coveringSteps = try measureFtsHelperVM(db) {
+                _ = try Bool.fetchOne(
+                    db,
+                    sql: """
+                    SELECT EXISTS(
+                      SELECT 1
+                      FROM sessions_fts_content AS c
+                      INDEXED BY \(FTSRebuildPolicy.contentIdentityIndexName)
+                      CROSS JOIN sessions_fts AS f ON f.rowid = c.id
+                      WHERE c.c0 = ?
+                        AND f.session_id = ?
+                        AND LENGTH(TRIM(f.content)) > 0
+                    )
+                    """,
+                    arguments: ["fts-unmapped", "fts-unmapped"]
+                )
+            }
+            let oldSqlSteps = try measureFtsHelperVM(db) {
+                _ = try Bool.fetchOne(
+                    db,
+                    sql: """
+                    SELECT EXISTS(
+                      SELECT 1 FROM sessions_fts
+                      WHERE session_id = ? AND LENGTH(TRIM(content)) > 0
+                    )
+                    """,
+                    arguments: ["fts-unmapped"]
+                )
+            }
+            fputs(
+                "FTS_UNMAPPED_VM unmapped=\(helperTrue) absent=\(helperFalse) covering=\(coveringSteps) oldSQL=\(oldSqlSteps) bound=\(Self.unmappedCoveringBound)\n",
+                stderr
+            )
+            XCTAssertLessThan(
+                coveringSteps,
+                Self.unmappedCoveringBound,
+                "covering identity scan of 2048 keys must stay under the payload-scan bound; observed \(coveringSteps)"
+            )
+            XCTAssertGreaterThan(
+                oldSqlSteps,
+                Self.unmappedCoveringBound,
+                "same 2048-row fixture payload EXISTS must still exceed the bound; observed \(oldSqlSteps)"
+            )
+            XCTAssertLessThan(
+                helperTrue,
+                Self.unmappedCoveringBound,
+                "unmapped helper must avoid unrelated FTS payload reads; covering-scans 2048 identity keys, not a seek; observed \(helperTrue)"
+            )
+            XCTAssertLessThan(
+                helperFalse,
+                Self.unmappedCoveringBound,
+                "owned identity miss must avoid unrelated FTS payload reads; covering-scans 2048 identity keys; observed \(helperFalse)"
+            )
+        }
+    }
+
+    func testHasNonemptyFtsContentStaleAndIncompleteMapSeesUnmappedRowsWithoutFullScan_repro() throws {
+        try writer.write { db in
+            try insertNoiseFts(db)
+            try seedSession(db, id: "fts-stale-map")
+            _ = try insertFts(db, sessionId: "fts-stale-map", content: "stale-owner-body")
+            let noiseRow = try Int64.fetchOne(
+                db,
+                sql: "SELECT rowid FROM sessions_fts WHERE session_id = 'noise-0'"
+            )
+            try insertMap(db, sessionId: "fts-stale-map", seq: 0, rowid: try XCTUnwrap(noiseRow))
+            try seedSession(db, id: "fts-incomplete-unmapped")
+            let spaces = try insertFts(db, sessionId: "fts-incomplete-unmapped", content: "    ")
+            _ = try insertFts(db, sessionId: "fts-incomplete-unmapped", content: "keep-unmapped")
+            try insertMap(db, sessionId: "fts-incomplete-unmapped", seq: 0, rowid: spaces)
+        }
+        try writer.read { db in
+            let staleSteps = try measureFtsHelperVM(db) {
+                XCTAssertTrue(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: "fts-stale-map"))
+            }
+            let incompleteSteps = try measureFtsHelperVM(db) {
+                XCTAssertTrue(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: "fts-incomplete-unmapped"))
+            }
+            fputs("FTS_UNMAPPED_VM stale=\(staleSteps) incomplete=\(incompleteSteps) bound=\(Self.unmappedCoveringBound)\n", stderr)
+            XCTAssertLessThan(
+                staleSteps,
+                Self.unmappedCoveringBound,
+                "stale map must still see the unmapped owner without payload-scanning 2048 FTS bodies; covering-scans identity keys; observed \(staleSteps)"
+            )
+            XCTAssertLessThan(
+                incompleteSteps,
+                Self.unmappedCoveringBound,
+                "incomplete map must still see the unmapped nonempty row without payload-scanning 2048 FTS bodies; observed \(incompleteSteps)"
+            )
+        }
+    }
+
+    func testHasNonemptyFtsContentUnknownIdentityIndexKeepsOriginalFallback() throws {
+        try writer.write { db in
+            try seedSession(db, id: "fts-unknown")
+            _ = try insertFts(db, sessionId: "fts-unknown", content: "still-searchable")
+            try seedSession(db, id: "fts-unknown-absent")
+            try db.execute(sql: "DROP INDEX \(FTSRebuildPolicy.contentIdentityIndexName)")
+        }
+        try writer.read { db in
+            XCTAssertFalse(try FTSRebuildPolicy.hasOwnedContentIdentityIndex(db))
+            XCTAssertTrue(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: "fts-unknown"))
+            XCTAssertFalse(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: "fts-unknown-absent"))
+        }
+
+        try writer.write { db in
+            try db.execute(sql: """
+                CREATE INDEX \(FTSRebuildPolicy.contentIdentityIndexName)
+                ON sessions_fts_content(c0)
+                """)
+        }
+        try writer.read { db in
+            XCTAssertFalse(try FTSRebuildPolicy.hasOwnedContentIdentityIndex(db))
+            XCTAssertTrue(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: "fts-unknown"))
+            XCTAssertFalse(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: "fts-unknown-absent"))
+        }
+    }
+
+    func testFirstFtsFillReenqueuesExistingEmbeddingJob() async throws {
+        let locator = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fts-first-fill-\(UUID().uuidString).jsonl")
+        try Data("{}".utf8).write(to: locator)
+        defer { try? FileManager.default.removeItem(at: locator) }
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions (id, source, start_time, file_path, source_locator, tier, summary)
+                VALUES ('fts-first-fill', 'claude-code', '2026-03-18T11:00:00Z', ?, ?, 'normal', 'summary-only')
+                """, arguments: [locator.path, locator.path])
+            try db.execute(sql: """
+                INSERT INTO session_index_jobs (id, session_id, job_kind, target_sync_version, status)
+                VALUES ('fts-first-fill:1:h:fts', 'fts-first-fill', 'fts', 1, 'pending'),
+                       ('fts-first-fill:1:h:embedding', 'fts-first-fill', 'embedding', 1, 'completed')
+                """)
+            try db.execute(sql: """
+                INSERT INTO semantic_chunks (id, session_id, chunk_index, text, embedding)
+                VALUES ('first-fill-vector', 'fts-first-fill', 0, 'summary-only', ?)
+                """, arguments: [Data([0, 0, 128, 63])])
+        }
+        let runner = IndexJobRunner(writer: writer, adapters: [
+            StubFTSAdapter(source: .claudeCode, messages: [
+                NormalizedMessage(role: .user, content: "first visible body"),
+            ]),
+        ])
+        let summary = try await runner.runRecoverableJobs()
+        XCTAssertEqual(summary.completed, 1)
+        try writer.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT status FROM session_index_jobs WHERE id = 'fts-first-fill:1:h:embedding'"),
+                "pending"
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM semantic_chunks WHERE session_id = 'fts-first-fill'"),
+                0
+            )
+        }
+    }
+
+    func testExistingNonemptyFtsDoesNotReenqueueEmbedding() async throws {
+        let locator = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fts-already-\(UUID().uuidString).jsonl")
+        try Data("{}".utf8).write(to: locator)
+        defer { try? FileManager.default.removeItem(at: locator) }
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions (id, source, start_time, file_path, source_locator, tier, summary)
+                VALUES ('fts-already', 'claude-code', '2026-03-18T11:00:00Z', ?, ?, 'normal', 'keep-summary')
+                """, arguments: [locator.path, locator.path])
+            try db.execute(sql: """
+                INSERT INTO session_index_jobs (id, session_id, job_kind, target_sync_version, status)
+                VALUES ('fts-already:1:h:fts', 'fts-already', 'fts', 1, 'pending'),
+                       ('fts-already:1:h:embedding', 'fts-already', 'embedding', 1, 'completed')
+                """)
+            try db.execute(sql: """
+                INSERT INTO semantic_chunks (id, session_id, chunk_index, text, embedding)
+                VALUES ('already-vector', 'fts-already', 0, 'keep-summary', ?)
+                """, arguments: [Data([0, 0, 128, 63])])
+            let rowid = try insertFts(db, sessionId: "fts-already", content: "already-visible")
+            try insertMap(db, sessionId: "fts-already", seq: 0, rowid: rowid)
+        }
+        let runner = IndexJobRunner(writer: writer, adapters: [
+            StubFTSAdapter(source: .claudeCode, messages: [
+                NormalizedMessage(role: .user, content: "already-visible"),
+            ]),
+        ])
+        let already = try await runner.runRecoverableJobs()
+        XCTAssertEqual(already, StartupIndexJobRecoveryResult(completed: 1, notApplicable: 0))
+        try writer.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT status FROM session_index_jobs WHERE id = 'fts-already:1:h:embedding'"),
+                "completed"
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM semantic_chunks WHERE session_id = 'fts-already'"),
+                1
+            )
+        }
+    }
+
     // MARK: - Helpers
+
+    private func seedSession(_ db: Database, id: String) throws {
+        try db.execute(
+            sql: "INSERT INTO sessions (id, source, start_time, file_path, tier) VALUES (?, 'claude-code', '2026-03-18T11:00:00Z', ?, 'normal')",
+            arguments: [id, "/tmp/\(id).jsonl"]
+        )
+    }
+
+    private func insertFts(_ db: Database, sessionId: String, content: String) throws -> Int64 {
+        try db.execute(
+            sql: "INSERT INTO sessions_fts(session_id, content) VALUES (?, ?)",
+            arguments: [sessionId, content]
+        )
+        return db.lastInsertedRowID
+    }
+
+    private func insertNoiseFts(_ db: Database, count: Int = 2048) throws {
+        for index in 0..<count {
+            _ = try insertFts(db, sessionId: "noise-\(index)", content: "noise-body-\(index)")
+        }
+    }
+
+    private func measureFtsHelperVM(_ db: Database, _ body: () throws -> Void) throws -> Int {
+        let probe = FtsHelperVMSteps()
+        probe.install(db)
+        defer { probe.remove(db) }
+        try body()
+        return probe.vmSteps
+    }
+
+    private func insertMap(_ db: Database, sessionId: String, seq: Int, rowid: Int64) throws {
+        try db.execute(
+            sql: "INSERT INTO fts_map(session_id, msg_seq, fts_rowid, content_hash) VALUES (?, ?, ?, 'probe')",
+            arguments: [sessionId, seq, rowid]
+        )
+    }
 
     private func makeMinimalSnapshot(id: String) -> AuthoritativeSessionSnapshot {
         AuthoritativeSessionSnapshot(
@@ -1714,6 +2131,31 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
             agentRole: nil,
             toolCallCounts: [:]
         )
+    }
+}
+
+private final class FtsHelperVMSteps {
+    private(set) var vmSteps = 0
+
+    func install(_ db: Database) {
+        vmSteps = 0
+        guard let connection = db.sqliteConnection else { return }
+        var current: OpaquePointer?
+        while true {
+            current = sqlite3_next_stmt(connection, current)
+            guard let current else { break }
+            _ = sqlite3_stmt_status(current, SQLITE_STMTSTATUS_VM_STEP, 1)
+        }
+        sqlite3_trace_v2(connection, UInt32(SQLITE_TRACE_PROFILE), { _, context, statement, _ in
+            guard let context, let statement else { return 0 }
+            Unmanaged<FtsHelperVMSteps>.fromOpaque(context).takeUnretainedValue().vmSteps +=
+                Int(sqlite3_stmt_status(OpaquePointer(statement), SQLITE_STMTSTATUS_VM_STEP, 1))
+            return 0
+        }, Unmanaged.passUnretained(self).toOpaque())
+    }
+
+    func remove(_ db: Database) {
+        sqlite3_trace_v2(db.sqliteConnection, 0, nil, nil)
     }
 }
 
