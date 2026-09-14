@@ -8,6 +8,7 @@ import XCTest
 final class CaptureIngestReadinessTests: XCTestCase {
     private let machine = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
     private let instance = "BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB"
+    private let grokInstance = "DDDDDDDD-DDDD-4DDD-8DDD-DDDDDDDDDDDD"
     private let epoch = "CCCCCCCC-CCCC-4CCC-8CCC-CCCCCCCCCCCC"
     private let journal = "11111111-1111-4111-8111-111111111111"
     private let revision = "swift-parser-ready-v1"
@@ -65,6 +66,243 @@ final class CaptureIngestReadinessTests: XCTestCase {
         XCTAssertEqual(snapshot.messages.first, messages.first)
         XCTAssertEqual(snapshot.messages.last, messages.last)
         XCTAssertTrue(snapshot.messages == messages, "No normalized role, middle element or suffix may be dropped")
+    }
+
+    func testLoadAndReadyPreserveCompleteHistoryAboveTenThousand() throws {
+        let messages = (0..<10_001).map { index in
+            NormalizedMessage(role: index.isMultiple(of: 2) ? .user : .assistant, content: "message-\(index)")
+        }
+        let fixture = try parsed(messages: messages)
+        let snapshot = try load(fixture)
+        XCTAssertEqual(snapshot.messages.count, 10_001)
+        XCTAssertEqual(snapshot.messages.first, messages.first)
+        XCTAssertEqual(snapshot.messages.last, messages.last)
+        XCTAssertTrue(snapshot.messages == messages, "No normalized role, middle element or suffix may be dropped")
+        XCTAssertNotEqual(snapshot.normalizedMessagesSHA256, try ArchiveV2Hash.sha256(ArchiveCanonicalJSON.encode(messages)),
+                          "parent digest must hash the bounded v2 manifest, not the giant message array")
+        let stored = try writer.read {
+            try XCTUnwrap(Row.fetchOne($0, sql: "SELECT * FROM capture_ingest_generations WHERE generation_id = ?",
+                                       arguments: [fixture.receipt.generationID]))
+        }
+        XCTAssertEqual(stored["normalized_schema_version"] as Int, 1)
+        XCTAssertEqual(stored["normalized_storage_version"] as Int?, 2)
+        XCTAssertEqual(stored["normalized_message_count"] as Int, 0,
+                       "v2 writes sentinel 0 on the legacy count column; never clamp")
+        XCTAssertEqual(stored["normalized_total_message_count"] as Int?, 10_001)
+        _ = try ready(snapshot)
+        try assertReady(fixture)
+        XCTAssertEqual(try fts(fixture).first, messages.first?.content)
+        XCTAssertTrue(try fts(fixture).contains(try XCTUnwrap(messages.last?.content)))
+        XCTAssertEqual(try fts(fixture), try expectedFTS(fixture))
+    }
+
+    func testWeakReviewSkipRepairPromotesV1AndDrainsFTSToReady_repro() async throws {
+        let fixture = try parsed(nativeID: "weak-v1", messages: weakReviewMessages(count: 20))
+        try seedSidecars(fixture)
+        try demoteToFalseSkip(fixture)
+        let beforeSession = try sessionColumns(fixture, excluding: ["tier"])
+        let beforeGeneration = try generationColumns(fixture, excluding: ["required_fts_job_id"])
+        let beforeSidecars = try sidecarState(fixture)
+        XCTAssertEqual(try sessionTier(fixture), "skip")
+        XCTAssertNil(try requiredJob(fixture))
+        let first = try writer.write {
+            try CaptureIngestReadiness.repairWeakReviewSkips($0, expectedParserRevision: revision,
+                enabledSources: [.claudeCode], limit: 4)
+        }
+        XCTAssertEqual(first.repaired, 1)
+        XCTAssertEqual(try sessionTier(fixture), "premium")
+        XCTAssertEqual(try requiredJob(fixture), expectedFTSJobID(fixture))
+        XCTAssertEqual(try sessionColumns(fixture, excluding: ["tier"]), beforeSession)
+        XCTAssertEqual(try generationColumns(fixture, excluding: ["required_fts_job_id"]), beforeGeneration)
+        XCTAssertEqual(try sidecarState(fixture), beforeSidecars)
+        let identity = try snapshotIdentity(fixture)
+        XCTAssertEqual(identity.0, fixture.receipt.syncVersion)
+        XCTAssertEqual(identity.1, fixture.receipt.snapshotHash)
+        XCTAssertEqual(identity.2, fixture.receipt.generationID)
+        let second = try writer.write {
+            try CaptureIngestReadiness.repairWeakReviewSkips($0, expectedParserRevision: revision,
+                enabledSources: [.claudeCode], limit: 4)
+        }
+        XCTAssertEqual(second.repaired, 0)
+        XCTAssertEqual(try sessionColumns(fixture, excluding: ["tier"]), beforeSession)
+        XCTAssertEqual(try generationColumns(fixture, excluding: ["required_fts_job_id"]), beforeGeneration)
+        XCTAssertEqual(try sidecarState(fixture), beforeSidecars)
+        _ = try await makeRunner().runRecoverableJobsOnce()
+        try assertReady(fixture)
+        XCTAssertTrue(try fts(fixture).contains("Review P2 tests for correctness and summarize the result."))
+        XCTAssertEqual(try sessionColumns(fixture, excluding: ["tier"]), beforeSession)
+        XCTAssertEqual(try generationColumns(fixture, excluding: ["required_fts_job_id"]), beforeGeneration)
+        XCTAssertEqual(try sidecarState(fixture), beforeSidecars)
+    }
+
+    func testWeakReviewSkipRepairPromotesV2AndDrainsFTSToReady_repro() async throws {
+        let messages = weakReviewMessages(count: 10_001)
+        let fixture = try parsed(nativeID: "weak-v2", messages: messages)
+        try writer.read { db in
+            let row = try XCTUnwrap(Row.fetchOne(db, sql: """
+                SELECT normalized_storage_version, normalized_message_count, normalized_total_message_count
+                FROM capture_ingest_generations WHERE generation_id = ?
+                """, arguments: [fixture.receipt.generationID]))
+            XCTAssertEqual(row["normalized_storage_version"] as Int, 2)
+            XCTAssertEqual(row["normalized_message_count"] as Int, 0)
+            XCTAssertEqual(row["normalized_total_message_count"] as Int?, 10_001)
+        }
+        try demoteToFalseSkip(fixture)
+        let batch = try writer.write {
+            try CaptureIngestReadiness.repairWeakReviewSkips($0, expectedParserRevision: revision,
+                enabledSources: [.claudeCode], limit: 1)
+        }
+        XCTAssertEqual(batch.repaired, 1)
+        XCTAssertEqual(try sessionTier(fixture), "premium")
+        XCTAssertEqual(try requiredJob(fixture), expectedFTSJobID(fixture))
+        _ = try await makeRunner().runRecoverableJobsOnce()
+        try assertReady(fixture)
+        XCTAssertTrue(try fts(fixture).contains("Review P2 tests for correctness and summarize the result."))
+    }
+
+    func testWeakReviewSkipRepairPreservesExplicitProbeSubagentAndDispatched() throws {
+        let probe = try parsed(nativeID: "explicit-probe", messages: [
+            .init(role: .user, content: "Review these snippets. Report only blocking correctness findings."),
+            .init(role: .assistant, content: "No blocking issues.")
+        ])
+        let subagent = try parsed(nativeID: "role-subagent", messages: weakReviewMessages(count: 20),
+                                  agentRole: "subagent")
+        let dispatched = try parsed(nativeID: "role-dispatched", messages: weakReviewMessages(count: 20),
+                                    agentRole: "dispatched")
+        XCTAssertEqual(try sessionTier(probe), "skip")
+        XCTAssertNil(try requiredJob(probe))
+        try demoteToFalseSkip(subagent)
+        try demoteToFalseSkip(dispatched)
+        let before = try state()
+        let batch = try writer.write {
+            try CaptureIngestReadiness.repairWeakReviewSkips($0, expectedParserRevision: revision,
+                enabledSources: [.claudeCode], limit: 8)
+        }
+        XCTAssertEqual(batch.repaired, 0)
+        XCTAssertGreaterThanOrEqual(batch.reviewedUnchanged, 1)
+        XCTAssertEqual(try sessionTier(probe), "skip")
+        XCTAssertNil(try requiredJob(probe))
+        XCTAssertEqual(try sessionTier(subagent), "skip")
+        XCTAssertEqual(try sessionTier(dispatched), "skip")
+        XCTAssertNil(try requiredJob(subagent))
+        XCTAssertNil(try requiredJob(dispatched))
+        let after = try state()
+        XCTAssertEqual(after["sessions"], before["sessions"])
+        XCTAssertEqual(after["session_index_jobs"], before["session_index_jobs"])
+        XCTAssertEqual(after["capture_ingest_generations"], before["capture_ingest_generations"])
+        let again = try writer.write {
+            try CaptureIngestReadiness.repairWeakReviewSkips($0, expectedParserRevision: revision,
+                enabledSources: [.claudeCode], limit: 8)
+        }
+        XCTAssertEqual(again.repaired, 0)
+        XCTAssertEqual(again.reviewedUnchanged, 0)
+    }
+
+    func testWeakReviewSkipRepairIgnoresStaleAndDisabledWithoutMutation() throws {
+        let stale = try parsed(nativeID: "stale-head", messages: weakReviewMessages(count: 20))
+        let current = try parsed(nativeID: "policy-disabled", messages: weakReviewMessages(count: 20))
+        try demoteToFalseSkip(stale)
+        try demoteToFalseSkip(current)
+        try writer.write { db in
+            try db.execute(sql: "UPDATE sessions SET sync_version = sync_version + 1 WHERE id = ?",
+                           arguments: [stale.receipt.sessionID])
+        }
+        let before = try state()
+        let emptyPolicy = try writer.write {
+            try CaptureIngestReadiness.repairWeakReviewSkips($0, expectedParserRevision: revision,
+                enabledSources: [], limit: 8)
+        }
+        XCTAssertEqual(emptyPolicy.repaired, 0)
+        XCTAssertEqual(try state(), before)
+        let otherSource = try writer.write {
+            try CaptureIngestReadiness.repairWeakReviewSkips($0, expectedParserRevision: revision,
+                enabledSources: [.codex], limit: 8)
+        }
+        XCTAssertEqual(otherSource.repaired, 0)
+        XCTAssertEqual(try state(), before)
+        XCTAssertEqual(try sessionTier(stale), "skip")
+        XCTAssertEqual(try sessionTier(current), "skip")
+        XCTAssertNil(try requiredJob(stale))
+        XCTAssertNil(try requiredJob(current))
+    }
+
+    func testWeakReviewSkipRepairRollsBackPartialCandidate() throws {
+        let fixture = try parsed(nativeID: "rollback-weak", messages: weakReviewMessages(count: 20))
+        try seedSidecars(fixture)
+        try demoteToFalseSkip(fixture)
+        let before = try state()
+        try writer.write { db in
+            try db.execute(sql: """
+                CREATE TEMP TRIGGER repair_bind_fault AFTER UPDATE ON capture_ingest_generations
+                WHEN NEW.required_fts_job_id IS NOT NULL AND OLD.required_fts_job_id IS NULL
+                BEGIN
+                    SELECT RAISE(FAIL, 'repair-bind-fault');
+                END
+                """)
+            let batch = try CaptureIngestReadiness.repairWeakReviewSkips(db,
+                expectedParserRevision: revision, enabledSources: [.claudeCode], limit: 1)
+            XCTAssertEqual(batch.repaired, 0)
+            XCTAssertEqual(batch.reviewedUnchanged, 0)
+            XCTAssertEqual(try state(db), before)
+            try db.execute(sql: "DROP TRIGGER repair_bind_fault")
+        }
+        XCTAssertEqual(try state(), before)
+        XCTAssertEqual(try sessionTier(fixture), "skip")
+        XCTAssertNil(try requiredJob(fixture))
+    }
+
+    func testWeakReviewSkipRepairPreservesOriginalProbeLocatorSkip_repro() throws {
+        let probeLocator = "/offline-client/.claude/projects/.engram/probes/claude/session.jsonl"
+        let fixture = try parsed(nativeID: "original-probe-locator", messages: weakReviewMessages(count: 20),
+                                 locator: probeLocator)
+        try demoteToFalseSkip(fixture)
+        let storedPath = try writer.read { try String.fetchOne($0, sql: "SELECT file_path FROM sessions WHERE id = ?",
+                                                                arguments: [fixture.receipt.sessionID]) }
+        XCTAssertEqual(storedPath?.hasPrefix("capture://"), true)
+        XCTAssertFalse(storedPath?.contains("/.engram/probes/") == true)
+        let batch = try writer.write {
+            try CaptureIngestReadiness.repairWeakReviewSkips($0, expectedParserRevision: revision,
+                enabledSources: [.claudeCode], limit: 1)
+        }
+        XCTAssertEqual(batch.repaired, 0)
+        XCTAssertEqual(batch.reviewedUnchanged, 1)
+        XCTAssertEqual(try sessionTier(fixture), "skip")
+        XCTAssertNil(try requiredJob(fixture))
+        XCTAssertTrue(try isReviewed(fixture))
+    }
+
+    func testWeakReviewSkipRepairLeavesTruncatedFirstUserWindowUnmarked() throws {
+        let injections = (0..<48).map { index in
+            NormalizedMessage(role: .user, content: "# AGENTS.md instructions for /repo \(index)", timestamp: timestamp)
+        }
+        let fixture = try parsed(nativeID: "truncated-first-users", messages: injections + weakReviewMessages(count: 20))
+        try demoteToFalseSkip(fixture)
+        let batch = try writer.write {
+            try CaptureIngestReadiness.repairWeakReviewSkips($0, expectedParserRevision: revision,
+                enabledSources: [.claudeCode], limit: 1)
+        }
+        XCTAssertEqual(batch.repaired, 0)
+        XCTAssertEqual(batch.reviewedUnchanged, 0)
+        XCTAssertEqual(try sessionTier(fixture), "skip")
+        XCTAssertNil(try requiredJob(fixture))
+        XCTAssertFalse(try isReviewed(fixture))
+    }
+
+    func testReadyRejectsPartialRangeSnapshot() throws {
+        let messages = (0..<10_001).map { index in
+            NormalizedMessage(role: index.isMultiple(of: 2) ? .user : .assistant, content: "message-\(index)")
+        }
+        let fixture = try parsed(messages: messages)
+        let partial = try load(fixture, messageRange: 0..<1)
+        XCTAssertEqual(partial.messageStartOrdinal, 0)
+        XCTAssertEqual(partial.messages.count, 1)
+        XCTAssertEqual(partial.totalMessageCount, 10_001)
+        assertError(.invalidStoredRecord) { try ready(partial) }
+        let page = try loadPage(fixture, fromOrdinal: 0, maximumMessages: 2, roles: [.user])
+        XCTAssertEqual(page.ordinals, [0, 2])
+        assertError(.invalidStoredRecord) { try ready(page.snapshot) }
+        _ = try ready(try load(fixture))
+        try assertReady(fixture)
     }
 
     func testLoadRejectsWrongSessionGenerationAndParserAuthority() throws {
@@ -486,6 +724,58 @@ final class CaptureIngestReadinessTests: XCTestCase {
                            seedFTS: true, becomeSkip: true)
     }
 
+    func testGrokReadinessCommitIndexesLabeledArchivePhraseAndExcludesOtherSystem_repro() throws {
+        let phrase = "GROKARCHFTS_zx9q_compaction_only"
+        let archive = "Grok compaction archive\nsegment_000.md\n\n# Turn\n\(phrase)\n"
+        let unlabeled = "system-unlabeled-must-stay-out"
+        let grok = try parsedGrok(messages: [
+            .init(role: .system, content: archive, timestamp: timestamp),
+            .init(role: .system, content: unlabeled, timestamp: timestamp),
+            .init(role: .user, content: "grok user needle", timestamp: timestamp),
+            .init(role: .assistant, content: "Implemented the Grok archive readiness path.", timestamp: timestamp),
+        ])
+        XCTAssertGreaterThan(grok.messages.filter { $0.role == .system }.count, 0)
+        let snapshot = try load(grok, sources: [.grok])
+        _ = try writer.write { db in
+            try CaptureIngestReadiness.commit(db, snapshot: snapshot, expectedParserRevision: revision,
+                enabledSources: [.grok])
+        }
+        let contents = try writer.read {
+            try String.fetchAll($0, sql: "SELECT content FROM sessions_fts WHERE session_id = ?",
+                arguments: [grok.receipt.sessionID])
+        }
+        XCTAssertTrue(contents.contains { $0.contains(phrase) }, "archived phrase must appear in stored FTS content")
+        XCTAssertFalse(contents.contains { $0.contains(unlabeled) })
+        XCTAssertEqual(try writer.read {
+            try Int.fetchOne($0, sql: """
+                SELECT COUNT(*) FROM sessions_fts
+                WHERE sessions_fts MATCH 'GROKARCHFTS_zx9q_compaction_only' AND session_id = ?
+                """, arguments: [grok.receipt.sessionID])
+        }, 1)
+        let stored = try writer.read {
+            try XCTUnwrap(Row.fetchOne($0, sql: "SELECT * FROM capture_ingest_generations WHERE generation_id = ?",
+                                       arguments: [grok.receipt.generationID]))
+        }
+        XCTAssertEqual(
+            stored["normalized_total_message_count"] as Int? ?? stored["normalized_message_count"] as Int,
+            grok.messages.count,
+            "Web COALESCE(normalized_total_message_count, normalized_message_count) must include archives"
+        )
+
+        let control = try parsed(messages: [
+            .init(role: .system, content: archive, timestamp: timestamp),
+            .init(role: .user, content: "claude user needle", timestamp: timestamp),
+            .init(role: .assistant, content: "Implemented the control readiness path.", timestamp: timestamp),
+        ])
+        _ = try ready(try load(control))
+        XCTAssertEqual(try writer.read {
+            try Int.fetchOne($0, sql: """
+                SELECT COUNT(*) FROM sessions_fts
+                WHERE sessions_fts MATCH 'GROKARCHFTS_zx9q_compaction_only' AND session_id = ?
+                """, arguments: [control.receipt.sessionID])
+        }, 0, "non-Grok system archives must stay out of capture-owned FTS")
+    }
+
     func testOuterTransactionRollbackRestoresSuccessfulInnerReadiness() throws {
         let fixture = try parsed()
         let snapshot = try load(fixture)
@@ -499,6 +789,165 @@ final class CaptureIngestReadinessTests: XCTestCase {
     }
 
     // This slice deliberately starts after verified replay. It uses a real T2
+    private func weakReviewMessages(count: Int) -> [NormalizedMessage] {
+        var messages: [NormalizedMessage] = [
+            .init(role: .user, content: "Review P2 tests for correctness and summarize the result.",
+                  timestamp: timestamp)
+        ]
+        while messages.count < count {
+            let index = messages.count
+            messages.append(.init(
+                role: index.isMultiple(of: 2) ? .user : .assistant,
+                content: index.isMultiple(of: 2)
+                    ? "Continue the ordinary implementation turn \(index)."
+                    : "Continued the ordinary implementation turn \(index).",
+                timestamp: timestamp
+            ))
+        }
+        return messages
+    }
+
+    private func demoteToFalseSkip(_ fixture: Fixture) throws {
+        try writer.write { db in
+            try db.execute(sql: "UPDATE sessions SET tier = 'skip' WHERE id = ?",
+                           arguments: [fixture.receipt.sessionID])
+            try db.execute(sql: """
+                UPDATE capture_ingest_generations SET required_fts_job_id = NULL WHERE generation_id = ?
+                """, arguments: [fixture.receipt.generationID])
+            try db.execute(sql: "DELETE FROM session_index_jobs WHERE session_id = ?",
+                           arguments: [fixture.receipt.sessionID])
+            try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = ?",
+                           arguments: [fixture.receipt.sessionID])
+            try db.execute(sql: """
+                UPDATE capture_ingest_ledger SET status = 'parsed'
+                WHERE publication_sha256 = ? AND parser_revision = ?
+                """, arguments: [fixture.publicationSHA256, revision])
+            try db.execute(sql: """
+                UPDATE capture_ingest_identity_bindings SET last_ready_generation_id = NULL
+                WHERE stored_session_id = ?
+                """, arguments: [fixture.receipt.sessionID])
+        }
+    }
+
+    private func seedSidecars(_ fixture: Fixture) throws {
+        try writer.write { db in
+            try db.execute(sql: """
+                UPDATE sessions SET custom_name = 'User title', generated_title = 'Generated title',
+                    parent_session_id = 'manual-parent', link_source = 'manual'
+                WHERE id = ?
+                """, arguments: [fixture.receipt.sessionID])
+            try db.execute(sql: """
+                INSERT INTO session_costs(session_id, model, input_tokens, output_tokens, cost_usd)
+                VALUES (?, 'offline-fixture', 11, 22, 0.5)
+                ON CONFLICT(session_id) DO UPDATE SET input_tokens = excluded.input_tokens,
+                    output_tokens = excluded.output_tokens, cost_usd = excluded.cost_usd
+                """, arguments: [fixture.receipt.sessionID])
+            try db.execute(sql: """
+                INSERT INTO session_tools(session_id, tool_name, call_count) VALUES (?, 'edit_file', 7)
+                ON CONFLICT(session_id, tool_name) DO UPDATE SET call_count = excluded.call_count
+                """, arguments: [fixture.receipt.sessionID])
+            try db.execute(sql: """
+                INSERT INTO session_work_beats(
+                    session_id, beat_index, action_date, action_timestamp, work_key, work_title,
+                    human_intent, assistant_outcome, kind, status)
+                VALUES (?, 0, '2026-09-06', ?, 'sidecar-work', 'Sidecar beat',
+                    'Keep the custom beat', 'Beat stayed', 'implementation', 'completed')
+                ON CONFLICT(session_id, beat_index) DO UPDATE SET work_title = excluded.work_title
+                """, arguments: [fixture.receipt.sessionID, timestamp])
+        }
+    }
+
+    private func sessionColumns(_ fixture: Fixture, excluding: Set<String>) throws -> [String: DatabaseValue] {
+        try writer.read { db in
+            let row = try XCTUnwrap(Row.fetchOne(db, sql: "SELECT * FROM sessions WHERE id = ?",
+                                                 arguments: [fixture.receipt.sessionID]))
+            return namedValues(row, excluding: excluding)
+        }
+    }
+
+    private func generationColumns(_ fixture: Fixture, excluding: Set<String>) throws -> [String: DatabaseValue] {
+        try writer.read { db in
+            let row = try XCTUnwrap(Row.fetchOne(db, sql: "SELECT * FROM capture_ingest_generations WHERE generation_id = ?",
+                                                 arguments: [fixture.receipt.generationID]))
+            return namedValues(row, excluding: excluding)
+        }
+    }
+
+    private func namedValues(_ row: Row, excluding: Set<String>) -> [String: DatabaseValue] {
+        Dictionary(uniqueKeysWithValues: row.columnNames
+            .filter { !excluding.contains($0) }
+            .map { ($0, row[$0] as DatabaseValue) })
+    }
+
+    private func sidecarState(_ fixture: Fixture) throws -> [String: String] {
+        try writer.read { db in
+            let session = try XCTUnwrap(Row.fetchOne(db, sql: """
+                SELECT custom_name, generated_title, parent_session_id, link_source, snapshot_hash,
+                    sync_version FROM sessions WHERE id = ?
+                """, arguments: [fixture.receipt.sessionID]))
+            let cost = try XCTUnwrap(Row.fetchOne(db, sql: """
+                SELECT input_tokens, output_tokens, cost_usd FROM session_costs WHERE session_id = ?
+                """, arguments: [fixture.receipt.sessionID]))
+            let tool = try XCTUnwrap(Row.fetchOne(db, sql: """
+                SELECT call_count FROM session_tools WHERE session_id = ? AND tool_name = 'edit_file'
+                """, arguments: [fixture.receipt.sessionID]))
+            let beat = try XCTUnwrap(Row.fetchOne(db, sql: """
+                SELECT work_title, human_intent FROM session_work_beats
+                WHERE session_id = ? AND beat_index = 0
+                """, arguments: [fixture.receipt.sessionID]))
+            return [
+                "custom": session["custom_name"] as String? ?? "",
+                "title": session["generated_title"] as String? ?? "",
+                "parent": session["parent_session_id"] as String? ?? "",
+                "link": session["link_source"] as String? ?? "",
+                "hash": session["snapshot_hash"] as String? ?? "",
+                "version": String(session["sync_version"] as Int? ?? -1),
+                "in": String(cost["input_tokens"] as Int? ?? -1),
+                "out": String(cost["output_tokens"] as Int? ?? -1),
+                "usd": String(cost["cost_usd"] as Double? ?? -1),
+                "tool": String(tool["call_count"] as Int? ?? -1),
+                "beat": beat["work_title"] as String? ?? "",
+                "intent": beat["human_intent"] as String? ?? "",
+            ]
+        }
+    }
+
+    private func sessionTier(_ fixture: Fixture) throws -> String? {
+        try writer.read { try String.fetchOne($0, sql: "SELECT tier FROM sessions WHERE id = ?",
+                                              arguments: [fixture.receipt.sessionID]) }
+    }
+
+    private func requiredJob(_ fixture: Fixture) throws -> String? {
+        try writer.read { try String.fetchOne($0, sql: """
+            SELECT required_fts_job_id FROM capture_ingest_generations WHERE generation_id = ?
+            """, arguments: [fixture.receipt.generationID]) }
+    }
+
+    private func expectedFTSJobID(_ fixture: Fixture) -> String {
+        "\(fixture.receipt.sessionID):\(fixture.receipt.syncVersion):\(fixture.receipt.snapshotHash):fts"
+    }
+
+    private func snapshotIdentity(_ fixture: Fixture) throws -> (Int, String, String) {
+        try writer.read { db in
+            let session = try XCTUnwrap(Row.fetchOne(db, sql: """
+                SELECT sync_version, snapshot_hash FROM sessions WHERE id = ?
+                """, arguments: [fixture.receipt.sessionID]))
+            let generation = try XCTUnwrap(Row.fetchOne(db, sql: """
+                SELECT generation_id, sync_version, snapshot_hash FROM capture_ingest_generations
+                WHERE generation_id = ?
+                """, arguments: [fixture.receipt.generationID]))
+            XCTAssertEqual(session["sync_version"] as Int, generation["sync_version"] as Int)
+            XCTAssertEqual(session["snapshot_hash"] as String, generation["snapshot_hash"] as String)
+            return (session["sync_version"] as Int? ?? 0, session["snapshot_hash"] as String? ?? "",
+                    generation["generation_id"] as String? ?? "")
+        }
+    }
+
+    private func makeRunner() -> IndexJobRunner {
+        let policy = CaptureFTSReadinessPolicy(parserRevision: revision, enabledSources: [.claudeCode])
+        return IndexJobRunner(writer: writer, adapters: [], capturePolicy: { policy })
+    }
+
     // transaction and real SQLite/FTS but never opens source files or credentials.
     private struct Fixture {
         let receipt: CaptureIngestCommittedGeneration
@@ -510,8 +959,15 @@ final class CaptureIngestReadinessTests: XCTestCase {
 
     private enum FixtureFailure: Error, Equatable { case outerRollback }
 
+    private func isReviewed(_ fixture: Fixture) throws -> Bool {
+        try writer.read {
+            try String.fetchOne($0, sql: "SELECT value FROM metadata WHERE key = ?",
+                                arguments: ["capture_weak_review_skip_reviewed:" + fixture.receipt.generationID]) != nil
+        }
+    }
+
     private func parsed(nativeID: String = "native-session", messages: [NormalizedMessage]? = nil,
-                        agentRole: String? = nil) throws -> Fixture {
+                        agentRole: String? = nil, locator: String? = nil) throws -> Fixture {
         let messages: [NormalizedMessage] = messages ?? [
             .init(role: .system, content: "system-only-needle", timestamp: timestamp),
             .init(role: .user, content: "  needleunique user text  ", timestamp: timestamp),
@@ -533,7 +989,7 @@ final class CaptureIngestReadinessTests: XCTestCase {
         let relative = "project/\(ArchiveV2Hash.sha256(Data(nativeID.utf8))).jsonl"
         let manifest = try ArchiveSourceManifest(
             captureID: ArchiveV2Hash.sha256(Data("\(ordinal):\(nativeID)".utf8)), machineID: machine, source: "claude-code",
-            locator: binding.configuredRoot + "/" + relative, sessionID: nil, capturedAt: timestamp,
+            locator: locator ?? (binding.configuredRoot + "/" + relative), sessionID: nil, capturedAt: timestamp,
             generation: .init(device: 1, inode: 2, size: Int64(raw.count), mtimeNs: 3, ctimeNs: 4, mode: 0o100600),
             wholeSourceSHA256: rawHash, rawByteCount: Int64(raw.count),
             chunks: [try .init(ordinal: 0, rawSHA256: rawHash, rawByteCount: Int64(raw.count))],
@@ -574,12 +1030,103 @@ final class CaptureIngestReadinessTests: XCTestCase {
         return .init(receipt: receipt, publicationSHA256: digest, native: identity, binding: binding, messages: messages)
     }
 
+    private func parsedGrok(messages: [NormalizedMessage]) throws -> Fixture {
+        let binding = try writer.write { db in
+            if let existing = try CaptureIngestSourceRegistry.binding(db, machineID: machine, sourceInstanceID: grokInstance) {
+                return existing
+            }
+            return try CaptureIngestSourceRegistry.provision(db, machineID: machine, sourceInstanceID: grokInstance,
+                source: .grok, parseFormat: .grok, configuredRoot: "/offline-client/.grok/sessions", initialEpoch: epoch)
+        }
+        let ordinal = nextOrdinal
+        nextOrdinal += 1
+        let project = "%2FUsers%2Ftest%2Fproject"
+        let session = "019dd6e3-91d1-7326-8299-314858773a0e"
+        let prefix = project + "/" + session + "/"
+        let chat = prefix + "chat_history.jsonl"
+        let chatBytes = Data("{\"type\":\"user\",\"content\":\"<user_query>Inspect</user_query>\"}\n".utf8)
+        let summaryBytes = Data("{\"info\":{\"id\":\"\(session)\",\"cwd\":\"/Users/test/project\"}}\n".utf8)
+        let promptBytes = Data("{\"working_directory\":\"/Users/test/project\"}\n".utf8)
+        let members: [(String, Data)] = [(chat, chatBytes), (prefix + "prompt_context.json", promptBytes),
+                                         (prefix + "summary.json", summaryBytes)]
+        var combined = Data()
+        var files: [ArchiveFileSetEntry] = []
+        for (index, member) in members.enumerated() {
+            files.append(try ArchiveFileSetEntry(
+                relativePath: member.0, byteOffset: Int64(combined.count),
+                rawByteCount: Int64(member.1.count), wholeSourceSHA256: ArchiveV2Hash.sha256(member.1),
+                generation: .init(device: 1, inode: Int64(index + 2), size: Int64(member.1.count),
+                                  mtimeNs: 3, ctimeNs: 4, mode: 0o100600)))
+            combined.append(member.1)
+        }
+        let hash = ArchiveV2Hash.sha256(combined)
+        let manifest = try ArchiveSourceManifest(
+            schemaVersion: 2, captureID: ArchiveV2Hash.sha256(Data("\(ordinal):grok".utf8)),
+            machineID: machine, source: "grok", locator: binding.configuredRoot + "/" + chat,
+            sessionID: nil, capturedAt: timestamp,
+            generation: .init(device: 1, inode: 2, size: Int64(chatBytes.count), mtimeNs: 3, ctimeNs: 4, mode: 0o100600),
+            wholeSourceSHA256: hash, rawByteCount: Int64(combined.count),
+            chunks: [try .init(ordinal: 0, rawSHA256: hash, rawByteCount: Int64(combined.count))],
+            replayLayout: .init(strategy: .fileSet, relativePaths: members.map(\.0),
+                entrypointRelativePath: chat, files: files,
+                absentRelativePaths: [prefix + "compaction/INDEX.md", prefix + "updates.jsonl"]))
+        XCTAssertTrue(ArchiveSourceDescriptor.isGrokFileSet(manifest))
+        let publication = try CollectorPublicationEnvelope(machineID: machine, sourceInstanceID: grokInstance,
+            collectorEpoch: binding.approvedEpoch, sequence: ordinal,
+            manifestSHA256: ArchiveV2Hash.sha256(ArchiveCanonicalJSON.encode(manifest)))
+        let digest = try publication.sha256()
+        let ack = try CollectorPublicationACK(serverID: "hq", journalID: journal, arrivalOrdinal: ordinal,
+            publicationSHA256: digest, manifestSHA256: publication.manifestSHA256, storedAt: timestamp)
+        let page = try CollectorPublicationPage(items: [try .init(publication: publication, ack: ack)],
+            afterCursor: CollectorPublicationCursor(journalID: journal, afterArrivalOrdinal: ordinal).encoded(), hasMore: false)
+        let claim = try writer.write { db in
+            try CaptureIngestLedger.accept(db, page: page, requestedCursor: CaptureIngestLedger.checkpoint(db, serverID: "hq"),
+                serverID: "hq", parserRevision: revision)
+            return try XCTUnwrap(CaptureIngestLedger.claim(db, publicationSHA256: digest, parserRevision: revision, now: 100, leaseDuration: 10))
+        }
+        let identity = try CaptureIngestIdentity(machineID: machine, sourceInstanceID: grokInstance, source: .grok, nativeID: session)
+        let info = NormalizedSessionInfo(id: session, source: .grok, startTime: timestamp, endTime: timestamp,
+            cwd: "/Users/test/project", project: "fixture", model: "grok-4",
+            messageCount: messages.filter { $0.role == .user || $0.role == .assistant || $0.role == .tool }.count,
+            userMessageCount: messages.filter { $0.role == .user }.count,
+            assistantMessageCount: messages.filter { $0.role == .assistant }.count,
+            toolMessageCount: messages.filter { $0.role == .tool }.count,
+            systemMessageCount: messages.filter { $0.role == .system }.count,
+            summary: "Grok fixture summary", displayTitle: "Grok readiness", filePath: manifest.locator,
+            sizeBytes: Int64(chatBytes.count), originator: "grok")
+        let replay = CaptureIngestReplayResult(publicationSHA256: digest, verifiedManifest: manifest, bindingSnapshot: binding,
+            scan: .init(info: info, messages: messages), rawSourceSessionID: session, nativeIdentity: identity,
+            parentIdentity: nil, suggestedParentIdentity: nil)
+        let receipt = try writer.write { db in
+            let result = try CaptureIngestCommitter.commitParsed(db, claim: claim, replay: replay,
+                expectedParserRevision: revision, now: 101, indexedAt: timestamp)
+            if let job = result.requiredFTSJobID {
+                try db.execute(sql: "UPDATE session_index_jobs SET not_before = NULL WHERE id = ?", arguments: [job])
+            }
+            return result
+        }
+        return .init(receipt: receipt, publicationSHA256: digest, native: identity, binding: binding, messages: messages)
+    }
+
     private func load(_ fixture: Fixture, sessionID: String? = nil, generationID: String? = nil,
                       parser: String? = nil, sources: Set<SourceName> = [.claudeCode],
-                      deadline: ContinuousClock.Instant? = nil) throws -> CaptureIngestNormalizedSnapshot {
+                      deadline: ContinuousClock.Instant? = nil,
+                      messageRange: Range<Int>? = nil) throws -> CaptureIngestNormalizedSnapshot {
         try writer.read { try CaptureIngestNormalizedStore.load($0, sessionID: sessionID ?? fixture.receipt.sessionID,
             generationID: generationID ?? fixture.receipt.generationID, expectedParserRevision: parser ?? revision,
-            enabledSources: sources, deadline: deadline) }
+            enabledSources: sources, deadline: deadline, messageRange: messageRange) }
+    }
+
+    private func loadPage(_ fixture: Fixture, fromOrdinal: Int, maximumMessages: Int,
+                          roles: Set<NormalizedMessageRole>, sources: Set<SourceName> = [.claudeCode],
+                          deadline: ContinuousClock.Instant? = nil,
+                          maximumPayloadBytes: Int = 1024 * 1024) throws -> (snapshot: CaptureIngestNormalizedSnapshot, ordinals: [Int], hasMore: Bool) {
+        try writer.read {
+            try CaptureIngestNormalizedStore.loadPage($0, sessionID: fixture.receipt.sessionID,
+                generationID: fixture.receipt.generationID, expectedParserRevision: revision,
+                enabledSources: sources, fromOrdinal: fromOrdinal, maximumMessages: maximumMessages,
+                roles: roles, deadline: deadline, maximumPayloadBytes: maximumPayloadBytes)
+        }
     }
 
     private func ready(_ snapshot: CaptureIngestNormalizedSnapshot, parser: String? = nil,

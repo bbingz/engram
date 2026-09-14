@@ -2,9 +2,13 @@ import Foundation
 @testable import EngramCoreRead
 @testable import EngramCoreWrite
 import GRDB
+import SQLite3
 import XCTest
 
 final class CaptureIngestIndexJobRunnerTests: XCTestCase {
+    /// Same 2048-identity fixture. Covering `(id,c0)` scan is ~6200 VM steps
+    /// (O(keys), not a seek). Payload virtual-table EXISTS is ~20500.
+    fileprivate static let unmappedCoveringBound = 12000
     private let machine = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
     private let instance = "BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB"
     private let epoch = "CCCCCCCC-CCCC-4CCC-8CCC-CCCCCCCCCCCC"
@@ -566,6 +570,283 @@ final class CaptureIngestIndexJobRunnerTests: XCTestCase {
         return sibling
     }
 
+    func testHasNonemptyFtsContentAcceptsValidMap() throws {
+        let fixture = try parsed()
+        try writer.write { db in
+            let rowid = try insertFts(db, sessionId: fixture.receipt.sessionID, content: "  capture-mapped-needle  ")
+            try insertMap(db, sessionId: fixture.receipt.sessionID, seq: 0, rowid: rowid)
+        }
+        try writer.read { db in
+            XCTAssertTrue(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: fixture.receipt.sessionID))
+        }
+    }
+
+    func testHasNonemptyFtsContentFallsBackAndRejectsWrongOwner() throws {
+        let owner = try parsed(nativeID: "capture-owner")
+        let other = try parsed(nativeID: "capture-other")
+        try writer.write { db in
+            _ = try insertFts(db, sessionId: owner.receipt.sessionID, content: "owner-body")
+            let otherRow = try insertFts(db, sessionId: other.receipt.sessionID, content: "other-body")
+            try insertMap(db, sessionId: owner.receipt.sessionID, seq: 0, rowid: otherRow)
+        }
+        try writer.read { db in
+            XCTAssertTrue(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: owner.receipt.sessionID))
+        }
+
+        try writer.write { db in
+            try db.execute(sql: "DELETE FROM fts_map WHERE session_id = ?", arguments: [owner.receipt.sessionID])
+            try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = ?", arguments: [owner.receipt.sessionID])
+            _ = try insertFts(db, sessionId: owner.receipt.sessionID, content: "    ")
+        }
+        try writer.read { db in
+            XCTAssertFalse(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: owner.receipt.sessionID))
+        }
+
+        try writer.write { db in
+            try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = ?", arguments: [owner.receipt.sessionID])
+            _ = try insertFts(db, sessionId: owner.receipt.sessionID, content: "\t")
+        }
+        try writer.read { db in
+            XCTAssertTrue(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: owner.receipt.sessionID))
+        }
+
+        try writer.write { db in
+            try db.execute(sql: "DROP TABLE fts_map")
+            try db.execute(sql: """
+                CREATE TABLE fts_map (
+                  session_id TEXT NOT NULL,
+                  msg_seq INTEGER NOT NULL,
+                  content_hash TEXT NOT NULL DEFAULT '',
+                  PRIMARY KEY (session_id, msg_seq)
+                )
+                """)
+            try db.execute(
+                sql: "INSERT INTO fts_map(session_id, msg_seq, content_hash) VALUES (?, 0, 'probe')",
+                arguments: [owner.receipt.sessionID]
+            )
+            try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = ?", arguments: [owner.receipt.sessionID])
+            _ = try insertFts(db, sessionId: owner.receipt.sessionID, content: "unusable-schema-owner")
+        }
+        try writer.read { db in
+            XCTAssertTrue(try db.tableExists("fts_map"))
+            XCTAssertFalse(
+                try String.fetchAll(db, sql: "SELECT name FROM pragma_table_info('fts_map')").contains("fts_rowid")
+            )
+            XCTAssertTrue(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: owner.receipt.sessionID))
+        }
+    }
+
+    func testCaptureFirstFtsFillReenqueuesExistingEmbedding() async throws {
+        let fixture = try parsed()
+        try writer.write { db in
+            try markProductEmbeddingCompleted(
+                db,
+                sessionId: fixture.receipt.sessionID,
+                chunkID: "capture-first-vector",
+                chunkText: "summary-only"
+            )
+        }
+        let result = try await makeRunner().runRecoverableJobsOnce()
+        XCTAssertEqual(result.result.completed, 1)
+        try writer.read { db in
+            XCTAssertEqual(
+                try String.fetchAll(db, sql: "SELECT status FROM session_index_jobs WHERE session_id = ? AND job_kind = 'embedding' ORDER BY id",
+                                    arguments: [fixture.receipt.sessionID]),
+                ["pending"]
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM semantic_chunks WHERE session_id = ?",
+                                 arguments: [fixture.receipt.sessionID]),
+                0
+            )
+        }
+    }
+
+    func testCaptureExistingNonemptyFtsDoesNotReenqueueEmbedding() async throws {
+        let fixture = try parsed()
+        try writer.write { db in
+            let rowid = try insertFts(db, sessionId: fixture.receipt.sessionID, content: "already-visible")
+            try insertMap(db, sessionId: fixture.receipt.sessionID, seq: 0, rowid: rowid)
+            try markProductEmbeddingCompleted(
+                db,
+                sessionId: fixture.receipt.sessionID,
+                chunkID: "capture-keep-vector",
+                chunkText: "keep"
+            )
+            XCTAssertTrue(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: fixture.receipt.sessionID))
+        }
+        let result = try await makeRunner().runRecoverableJobsOnce()
+        XCTAssertEqual(result.result.completed, 1)
+        try writer.read { db in
+            XCTAssertEqual(
+                try String.fetchAll(db, sql: "SELECT status FROM session_index_jobs WHERE session_id = ? AND job_kind = 'embedding' ORDER BY id",
+                                    arguments: [fixture.receipt.sessionID]),
+                ["completed"]
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM semantic_chunks WHERE session_id = ?",
+                                 arguments: [fixture.receipt.sessionID]),
+                1
+            )
+        }
+    }
+
+    func testCaptureUnmappedOwnedIdentityAvoidsFullScan_repro() throws {
+        try writer.write { db in
+            for index in 0..<2048 {
+                _ = try insertFts(db, sessionId: "noise-\(index)", content: "noise-body-\(index)")
+            }
+            _ = try insertFts(db, sessionId: "capture-unmapped", content: "unmapped-needle")
+        }
+        try writer.read { db in
+            XCTAssertTrue(try FTSRebuildPolicy.hasOwnedContentIdentityIndex(db))
+            let helperTrue = try measureFtsHelperVM(db) {
+                XCTAssertTrue(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: "capture-unmapped"))
+            }
+            let helperFalse = try measureFtsHelperVM(db) {
+                XCTAssertFalse(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: "capture-absent"))
+            }
+            let coveringSteps = try measureFtsHelperVM(db) {
+                _ = try Bool.fetchOne(
+                    db,
+                    sql: """
+                    SELECT EXISTS(
+                      SELECT 1
+                      FROM sessions_fts_content AS c
+                      INDEXED BY \(FTSRebuildPolicy.contentIdentityIndexName)
+                      CROSS JOIN sessions_fts AS f ON f.rowid = c.id
+                      WHERE c.c0 = ?
+                        AND f.session_id = ?
+                        AND LENGTH(TRIM(f.content)) > 0
+                    )
+                    """,
+                    arguments: ["capture-unmapped", "capture-unmapped"]
+                )
+            }
+            fputs(
+                "FTS_UNMAPPED_VM captureUnmapped=\(helperTrue) captureAbsent=\(helperFalse) covering=\(coveringSteps) bound=\(Self.unmappedCoveringBound)\n",
+                stderr
+            )
+            XCTAssertLessThan(
+                coveringSteps,
+                Self.unmappedCoveringBound,
+                "covering identity scan of 2048 keys must stay under the payload-scan bound; observed \(coveringSteps)"
+            )
+            XCTAssertLessThan(
+                helperTrue,
+                Self.unmappedCoveringBound,
+                "unmapped capture helper must avoid unrelated FTS payload reads; covering-scans 2048 identity keys, not a seek; observed \(helperTrue)"
+            )
+            XCTAssertLessThan(
+                helperFalse,
+                Self.unmappedCoveringBound,
+                "owned identity miss must avoid unrelated FTS payload reads; covering-scans 2048 identity keys; observed \(helperFalse)"
+            )
+        }
+    }
+
+    func testCaptureFirstFillKeepsUnrelatedAndReenqueuesEmbedding() async throws {
+        let fixture = try parsed()
+        try writer.write { db in
+            for index in 0..<2048 {
+                _ = try insertFts(db, sessionId: "noise-\(index)", content: "noise-body-\(index)")
+            }
+            try markProductEmbeddingCompleted(
+                db,
+                sessionId: fixture.receipt.sessionID,
+                chunkID: "capture-first-unrelated-vector",
+                chunkText: "summary-only"
+            )
+        }
+        let result = try await makeRunner().runRecoverableJobsOnce()
+        XCTAssertEqual(result.result.completed, 1)
+        try writer.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT c1 FROM sessions_fts_content WHERE c0 = 'noise-0'"),
+                "noise-body-0"
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts_content WHERE c0 GLOB 'noise-*'"),
+                2048
+            )
+            XCTAssertEqual(
+                try String.fetchAll(db, sql: "SELECT status FROM session_index_jobs WHERE session_id = ? AND job_kind = 'embedding' ORDER BY id",
+                                    arguments: [fixture.receipt.sessionID]),
+                ["pending"]
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM semantic_chunks WHERE session_id = ?",
+                                 arguments: [fixture.receipt.sessionID]),
+                0
+            )
+        }
+    }
+
+    func testCaptureUnmappedExistingFtsDoesNotReenqueueEmbedding() async throws {
+        let fixture = try parsed()
+        try writer.write { db in
+            for index in 0..<32 {
+                _ = try insertFts(db, sessionId: "noise-\(index)", content: "noise-body-\(index)")
+            }
+            _ = try insertFts(db, sessionId: fixture.receipt.sessionID, content: "already-visible")
+            try markProductEmbeddingCompleted(
+                db,
+                sessionId: fixture.receipt.sessionID,
+                chunkID: "capture-unmapped-keep-vector",
+                chunkText: "keep"
+            )
+            XCTAssertTrue(try IndexJobRunner.hasNonemptyFtsContent(db, sessionId: fixture.receipt.sessionID))
+        }
+        let result = try await makeRunner().runRecoverableJobsOnce()
+        XCTAssertEqual(result.result.completed, 1)
+        try writer.read { db in
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts_content WHERE c0 GLOB 'noise-*'"),
+                32
+            )
+            XCTAssertEqual(
+                try String.fetchAll(db, sql: "SELECT status FROM session_index_jobs WHERE session_id = ? AND job_kind = 'embedding' ORDER BY id",
+                                    arguments: [fixture.receipt.sessionID]),
+                ["completed"]
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM semantic_chunks WHERE session_id = ?",
+                                 arguments: [fixture.receipt.sessionID]),
+                1
+            )
+        }
+    }
+
+    func testCaptureUnknownIdentityIndexPreservesFirstFillEmbeddingAndUnrelated() async throws {
+        let fixture = try parsed()
+        try writer.write { db in
+            try db.execute(sql: "DROP INDEX \(FTSRebuildPolicy.contentIdentityIndexName)")
+            for index in 0..<32 {
+                _ = try insertFts(db, sessionId: "noise-\(index)", content: "noise-body-\(index)")
+            }
+            try markProductEmbeddingCompleted(
+                db,
+                sessionId: fixture.receipt.sessionID,
+                chunkID: "capture-unknown-vector",
+                chunkText: "summary-only"
+            )
+            XCTAssertFalse(try FTSRebuildPolicy.hasOwnedContentIdentityIndex(db))
+        }
+        let result = try await makeRunner().runRecoverableJobsOnce()
+        XCTAssertEqual(result.result.completed, 1)
+        try writer.read { db in
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts_content WHERE c0 GLOB 'noise-*'"),
+                32
+            )
+            XCTAssertEqual(
+                try String.fetchAll(db, sql: "SELECT status FROM session_index_jobs WHERE session_id = ? AND job_kind = 'embedding' ORDER BY id",
+                                    arguments: [fixture.receipt.sessionID]),
+                ["pending"]
+            )
+        }
+    }
+
     func testLegacyAdapterReturningAfterCaptureOwnershipChangeCannotWriteFTSOrJob() async throws {
         try seedLegacy(id: "legacy-adopted-later", owner: "local")
         let pause = CaptureRunnerPause()
@@ -707,6 +988,58 @@ final class CaptureIngestIndexJobRunnerTests: XCTestCase {
         return .init(receipt: receipt, publicationSHA256: digest, native: identity, binding: binding, messages: messages)
     }
 
+    private func insertFts(_ db: Database, sessionId: String, content: String) throws -> Int64 {
+        try db.execute(sql: "INSERT INTO sessions_fts(session_id, content) VALUES (?, ?)", arguments: [sessionId, content])
+        return db.lastInsertedRowID
+    }
+
+    private func insertMap(_ db: Database, sessionId: String, seq: Int, rowid: Int64) throws {
+        try db.execute(
+            sql: "INSERT INTO fts_map(session_id, msg_seq, fts_rowid, content_hash) VALUES (?, ?, ?, 'probe')",
+            arguments: [sessionId, seq, rowid]
+        )
+    }
+
+    private func measureFtsHelperVM(_ db: Database, _ body: () throws -> Void) throws -> Int {
+        let probe = FtsHelperVMSteps()
+        probe.install(db)
+        defer { probe.remove(db) }
+        try body()
+        return probe.vmSteps
+    }
+
+    private func markProductEmbeddingCompleted(
+        _ db: Database,
+        sessionId: String,
+        chunkID: String,
+        chunkText: String
+    ) throws {
+        try db.execute(
+            sql: """
+            UPDATE session_index_jobs
+            SET status = 'completed', retry_count = 0, last_error = NULL, not_before = NULL
+            WHERE session_id = ? AND job_kind = 'embedding'
+            """,
+            arguments: [sessionId]
+        )
+        if db.changesCount == 0 {
+            try db.execute(
+                sql: """
+                INSERT INTO session_index_jobs (id, session_id, job_kind, target_sync_version, status)
+                VALUES (?, ?, 'embedding', 1, 'completed')
+                """,
+                arguments: [sessionId + ":1:h:embedding", sessionId]
+            )
+        }
+        try db.execute(
+            sql: """
+            INSERT INTO semantic_chunks (id, session_id, chunk_index, text, embedding)
+            VALUES (?, ?, 0, ?, ?)
+            """,
+            arguments: [chunkID, sessionId, chunkText, Data([0, 0, 128, 63])]
+        )
+    }
+
     private func jobID(_ fixture: Fixture) throws -> String { try XCTUnwrap(fixture.receipt.requiredFTSJobID) }
 
     private func job(_ fixture: Fixture) throws -> Row {
@@ -817,5 +1150,30 @@ private final class CaptureRunnerSpyAdapter: SessionAdapter, @unchecked Sendable
             continuation.yield(.init(role: .user, content: "legacy-adapter-must-not-be-read"))
             continuation.finish()
         }
+    }
+}
+
+private final class FtsHelperVMSteps {
+    private(set) var vmSteps = 0
+
+    func install(_ db: Database) {
+        vmSteps = 0
+        guard let connection = db.sqliteConnection else { return }
+        var current: OpaquePointer?
+        while true {
+            current = sqlite3_next_stmt(connection, current)
+            guard let current else { break }
+            _ = sqlite3_stmt_status(current, SQLITE_STMTSTATUS_VM_STEP, 1)
+        }
+        sqlite3_trace_v2(connection, UInt32(SQLITE_TRACE_PROFILE), { _, context, statement, _ in
+            guard let context, let statement else { return 0 }
+            Unmanaged<FtsHelperVMSteps>.fromOpaque(context).takeUnretainedValue().vmSteps +=
+                Int(sqlite3_stmt_status(OpaquePointer(statement), SQLITE_STMTSTATUS_VM_STEP, 1))
+            return 0
+        }, Unmanaged.passUnretained(self).toOpaque())
+    }
+
+    func remove(_ db: Database) {
+        sqlite3_trace_v2(db.sqliteConnection, 0, nil, nil)
     }
 }

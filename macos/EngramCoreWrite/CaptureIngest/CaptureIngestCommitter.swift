@@ -9,6 +9,8 @@ public enum CaptureIngestCommitError: Error, Equatable {
     case invalidReplay
     case identityConflict
     case staleGeneration
+    /// A valid same-authority publication predates the current identity head.
+    case obsoleteGeneration
     case sequenceConflict
     case syncVersionOverflow
     case invalidStoredRecord
@@ -35,6 +37,11 @@ public enum CaptureIngestCommitter {
     public static let normalizedSchemaVersion = 1
     public static let maximumNormalizedPayloadBytes = 100 * 1024 * 1024
     public static let maximumNormalizedMessages = 10_000
+    public static let normalizedStorageVersionV1 = 1
+    public static let normalizedStorageVersionV2 = 2
+    public static let maximumNormalizedStorageMessages = 100_000
+    public static let maximumNormalizedStorageBytes = 1024 * 1024 * 1024
+    public static let maximumNormalizedMessageBytes = 128 * 1024 * 1024
 
     /// Call in one writer transaction after replay finishes, with no awaits.
     /// Per-identity order uses authority generation and stream sequence, never
@@ -65,7 +72,7 @@ public enum CaptureIngestCommitter {
             }
             try requireBinding(db, claim: claim, replay: replay)
             try validateReplay(claim: claim, replay: replay)
-            let messages = try normalizedPayload(replay.scan.messages)
+            let stored = try normalizedStorage(replay.scan.messages)
             let native = replay.nativeIdentity
             let storedID = try native.proposedSessionID()
             let priorBinding = try identityRow(db, native: native)
@@ -102,6 +109,7 @@ public enum CaptureIngestCommitter {
                 authoritativeNode: native.peer, syncVersion: version, indexedAt: indexedAt)
             let writer = SessionSnapshotWriter(db: db)
             _ = try writer.writeAuthoritativeSnapshot(snapshot)
+            try CaptureIngestFileActivity.replace(db, sessionID: storedID, messages: scan.messages)
             let jobID = try writer.ensureCurrentCaptureFTSJob(sessionID: storedID, authoritativeNode: native.peer,
                                                             syncVersion: version, snapshotHash: snapshot.snapshotHash)
             if priorBinding == nil {
@@ -117,15 +125,24 @@ public enum CaptureIngestCommitter {
                     parse_format, configured_root, collector_epoch, authority_generation, sequence, native_id,
                     raw_source_session_id, stored_session_id, parent_native_id, suggested_parent_native_id,
                     manifest_json, normalized_schema_version, normalized_messages_json, normalized_messages_sha256,
-                    normalized_message_count, sync_version, snapshot_hash, required_fts_job_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    normalized_message_count, normalized_storage_version, normalized_total_message_count,
+                    sync_version, snapshot_hash, required_fts_job_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, arguments: [
                     generationID, claim.publicationSHA256, claim.parserRevision, native.machineID, native.sourceInstanceID,
                     native.source.rawValue, binding.parseFormat.rawValue, binding.configuredRoot, claim.publication.collectorEpoch,
                     binding.authorityGeneration, claim.publication.sequence, native.nativeID, replay.rawSourceSessionID, storedID,
                     replay.parentIdentity?.nativeID, replay.suggestedParentIdentity?.nativeID, manifestBytes, normalizedSchemaVersion,
-                    messages, ArchiveV2Hash.sha256(messages), replay.scan.messages.count, version, snapshot.snapshotHash, jobID, indexedAt,
+                    stored.parentBlob, ArchiveV2Hash.sha256(stored.parentBlob), stored.legacyMessageCount,
+                    stored.storageVersion, stored.totalMessageCount, version, snapshot.snapshotHash, jobID, indexedAt,
                 ])
+            for row in stored.rows {
+                try db.execute(sql: """
+                    INSERT INTO capture_ingest_generation_messages(
+                        generation_id, ordinal, message_json, message_sha256, message_byte_size)
+                    VALUES (?, ?, ?, ?, ?)
+                    """, arguments: [generationID, row.ordinal, row.bytes, row.sha256, row.bytes.count])
+            }
             try db.execute(sql: """
                 UPDATE capture_ingest_identity_bindings SET last_parsed_generation_id = ?, last_sync_version = ?
                 WHERE machine_id = ? AND source_instance_id = ? AND source = ? AND native_id = ?
@@ -196,7 +213,45 @@ public enum CaptureIngestCommitter {
                 FOREIGN KEY (machine_id, source_instance_id, source, native_id)
                     REFERENCES capture_ingest_identity_bindings(machine_id, source_instance_id, source, native_id)
             );
+            CREATE TABLE IF NOT EXISTS capture_ingest_generation_messages (
+                generation_id TEXT NOT NULL REFERENCES capture_ingest_generations(generation_id),
+                ordinal INTEGER NOT NULL CHECK (ordinal >= 0 AND ordinal < \(maximumNormalizedStorageMessages)),
+                message_json BLOB NOT NULL CHECK (length(message_json) <= \(maximumNormalizedMessageBytes)),
+                message_sha256 TEXT NOT NULL,
+                message_byte_size INTEGER NOT NULL
+                    CHECK (message_byte_size >= 0 AND message_byte_size <= \(maximumNormalizedMessageBytes)),
+                PRIMARY KEY (generation_id, ordinal)
+            );
             """)
+        try addNormalizedStorageColumnsIfNeeded(db)
+        // Ready-count metadata follows large transcript BLOBs in the table row.
+        // Cover every authority scalar so overview reads never visit overflow pages.
+        try db.execute(sql: """
+            CREATE INDEX IF NOT EXISTS capture_ingest_generations_ready_metadata
+            ON capture_ingest_generations (
+                generation_id, authority_generation, collector_epoch, configured_root,
+                machine_id, native_id, parse_format, parser_revision, publication_sha256,
+                sequence, snapshot_hash, source, source_instance_id, stored_session_id, sync_version
+            )
+            """)
+    }
+
+    static func addNormalizedStorageColumnsIfNeeded(_ db: Database) throws {
+        let columns = Set(try Row.fetchAll(db, sql: "PRAGMA table_info(capture_ingest_generations)").map { $0["name"] as String })
+        if !columns.contains("normalized_storage_version") {
+            try db.execute(sql: """
+                ALTER TABLE capture_ingest_generations ADD COLUMN normalized_storage_version
+                    INTEGER NOT NULL DEFAULT \(normalizedStorageVersionV1)
+                    CHECK (normalized_storage_version IN (\(normalizedStorageVersionV1), \(normalizedStorageVersionV2)))
+                """)
+        }
+        if !columns.contains("normalized_total_message_count") {
+            try db.execute(sql: """
+                ALTER TABLE capture_ingest_generations ADD COLUMN normalized_total_message_count INTEGER
+                    CHECK (normalized_total_message_count IS NULL
+                        OR (normalized_total_message_count BETWEEN 0 AND \(maximumNormalizedStorageMessages)))
+                """)
+        }
     }
 
     private static func requireBinding(_ db: Database, claim: CaptureIngestClaim, replay: CaptureIngestReplayResult) throws {
@@ -209,9 +264,87 @@ public enum CaptureIngestCommitter {
 
     private static func validateReplay(claim: CaptureIngestClaim, replay: CaptureIngestReplayResult) throws {
         let scan = replay.scan
+        let manifest = replay.verifiedManifest
+        let nativeSize: Int64
+        if scan.info.source == .geminiCli || scan.info.source == .vscode || scan.info.source == .grok {
+            // Native Gemini, VSCode, and Grok report transcript size; auxiliary
+            // files remain independently verified members of the complete capture.
+            guard (scan.info.source == .geminiCli && ArchiveSourceDescriptor.isGeminiFileSet(manifest))
+                    || (scan.info.source == .vscode && ArchiveSourceDescriptor.isVSCodeFileSet(manifest))
+                    || (scan.info.source == .grok && ArchiveSourceDescriptor.isGrokFileSet(manifest)),
+                  let primary = manifest.replayLayout.files?.first(where: {
+                      $0.relativePath.utf8.elementsEqual((manifest.replayLayout.entrypointRelativePath ?? "").utf8)
+                  }) else { throw CaptureIngestCommitError.invalidReplay }
+            nativeSize = primary.rawByteCount
+        } else if scan.info.source == .kimi {
+            guard ArchiveSourceDescriptor.isKimiFileSet(manifest),
+                  let context = manifest.replayLayout.kimiProjectContext,
+                  exact(scan.info.id, context.nativeSessionID),
+                  exact(replay.rawSourceSessionID, context.nativeSessionID),
+                  exact(scan.info.cwd, context.cwd),
+                  let files = manifest.replayLayout.files else {
+                throw CaptureIngestCommitError.invalidReplay
+            }
+            // Native Kimi reports context bytes; wire is separately captured
+            // timing/usage evidence and must not inflate the session size.
+            nativeSize = try files.filter { !$0.relativePath.hasSuffix("/wire.jsonl") }.reduce(Int64(0)) {
+                let sum = $0.addingReportingOverflow($1.rawByteCount)
+                guard !sum.overflow else { throw CaptureIngestCommitError.invalidReplay }
+                return sum.partialValue
+            }
+        } else if scan.info.source == .cursor, ArchiveSourceDescriptor.isCursorLegacySession(manifest) {
+            guard let context = manifest.replayLayout.cursorLegacySession,
+                  exact(scan.info.id, context.composerID), exact(replay.rawSourceSessionID, context.composerID),
+                  exact(scan.info.cwd, context.cwd) else { throw CaptureIngestCommitError.invalidReplay }
+            // Invalid UTF-8 can expand native size beyond both raw row bytes
+            // and encoded body length. Replay checked this summary against CAS.
+            nativeSize = context.nativePayloadByteCount
+        } else if scan.info.source == .cursor {
+            guard ArchiveSourceDescriptor.isCursorModernFileSet(manifest),
+                  let nativeID = ArchiveSourceDescriptor.cursorModernSessionID(manifest.replayLayout, locator: manifest.locator),
+                  exact(scan.info.id, nativeID), exact(replay.rawSourceSessionID, nativeID),
+                  let files = manifest.replayLayout.files else {
+                throw CaptureIngestCommitError.invalidReplay
+            }
+            // Native Cursor attributes main database and transcript bytes to
+            // the session; captured WAL and metadata remain replay inputs.
+            nativeSize = try files.filter {
+                $0.relativePath.hasSuffix("/store.db") || $0.relativePath.hasSuffix(".jsonl")
+            }.reduce(Int64(0)) {
+                let sum = $0.addingReportingOverflow($1.rawByteCount)
+                guard !sum.overflow else { throw CaptureIngestCommitError.invalidReplay }
+                return sum.partialValue
+            }
+        } else if scan.info.source == .antigravity {
+            guard ArchiveSourceDescriptor.isAntigravityCLITranscript(manifest),
+                  let nativeID = manifest.replayLayout.relativePaths[0].split(separator: "/").first,
+                  exact(scan.info.id, String(nativeID)),
+                  exact(replay.rawSourceSessionID, String(nativeID)) else {
+                throw CaptureIngestCommitError.invalidReplay
+            }
+            nativeSize = manifest.rawByteCount
+        } else if scan.info.source == .windsurf {
+            guard ArchiveSourceDescriptor.isWindsurfHookTranscript(manifest),
+                  let nativeID = ArchiveSourceDescriptor.windsurfHookNativeID(logicalLocator: manifest.locator),
+                  exact(scan.info.id, nativeID),
+                  exact(replay.rawSourceSessionID, nativeID) else {
+                throw CaptureIngestCommitError.invalidReplay
+            }
+            nativeSize = manifest.rawByteCount
+        } else if scan.info.source == .opencode {
+            guard ArchiveSourceDescriptor.isOpenCodeSessionImage(manifest),
+                  let session = manifest.replayLayout.sqliteSession,
+                  exact(scan.info.id, session.nativeSessionID),
+                  exact(replay.rawSourceSessionID, session.nativeSessionID) else {
+                throw CaptureIngestCommitError.invalidReplay
+            }
+            nativeSize = session.nativePayloadByteCount
+        } else {
+            nativeSize = manifest.rawByteCount
+        }
         guard scan.parseFailure == nil, scan.info.source == replay.bindingSnapshot.source,
-              exact(scan.info.filePath, replay.verifiedManifest.locator),
-              scan.info.sizeBytes == replay.verifiedManifest.rawByteCount else {
+              exact(scan.info.filePath, manifest.locator),
+              scan.info.sizeBytes == nativeSize else {
             throw CaptureIngestCommitError.invalidReplay
         }
         do {
@@ -229,8 +362,32 @@ public enum CaptureIngestCommitter {
         }
     }
 
-    private static func normalizedPayload(_ messages: [NormalizedMessage]) throws -> Data {
-        guard messages.count <= maximumNormalizedMessages else { throw CaptureIngestCommitError.tooManyMessages }
+    private struct PreparedNormalizedStorage {
+        let parentBlob: Data
+        let legacyMessageCount: Int
+        let storageVersion: Int
+        let totalMessageCount: Int?
+        let rows: [(ordinal: Int, bytes: Data, sha256: String)]
+    }
+
+    private static func normalizedStorage(_ messages: [NormalizedMessage]) throws -> PreparedNormalizedStorage {
+        guard messages.count <= maximumNormalizedStorageMessages else { throw CaptureIngestCommitError.tooManyMessages }
+        if messages.count <= maximumNormalizedMessages {
+            do {
+                try rejectIfEncodedArrayWouldExceedLegacyBudget(messages)
+                let bytes = try ArchiveCanonicalJSON.encode(messages)
+                if bytes.count <= maximumNormalizedPayloadBytes {
+                    return PreparedNormalizedStorage(parentBlob: bytes, legacyMessageCount: messages.count,
+                        storageVersion: normalizedStorageVersionV1, totalMessageCount: nil, rows: [])
+                }
+            } catch CaptureIngestCommitError.normalizedPayloadTooLarge {
+                // Above the legacy 100MiB array budget: persist v2 rows instead.
+            }
+        }
+        return try preparedV2Storage(messages)
+    }
+
+    private static func rejectIfEncodedArrayWouldExceedLegacyBudget(_ messages: [NormalizedMessage]) throws {
         // A cheap lower bound avoids encoding an already oversized string. The
         // final canonical byte count still accounts for JSON escape expansion.
         var minimumBytes = 0
@@ -251,9 +408,63 @@ public enum CaptureIngestCommitter {
                 try include(tool.output)
             }
         }
-        let bytes = try ArchiveCanonicalJSON.encode(messages)
-        guard bytes.count <= maximumNormalizedPayloadBytes else { throw CaptureIngestCommitError.normalizedPayloadTooLarge }
-        return bytes
+    }
+
+    private static func rejectIfV2RawBytesExceedStorageBudget(_ messages: [NormalizedMessage]) throws {
+        var aggregate = 0
+        for message in messages {
+            var messageBytes = 0
+            func include(_ text: String?) throws {
+                guard let text else { return }
+                let bytes = text.utf8.count
+                let (next, overflow) = messageBytes.addingReportingOverflow(bytes)
+                guard !overflow, next <= maximumNormalizedMessageBytes else {
+                    throw CaptureIngestCommitError.normalizedPayloadTooLarge
+                }
+                messageBytes = next
+            }
+            try include(message.content)
+            try include(message.timestamp)
+            for tool in message.toolCalls ?? [] {
+                try include(tool.name)
+                try include(tool.input)
+                try include(tool.output)
+            }
+            let (next, overflow) = aggregate.addingReportingOverflow(messageBytes)
+            guard !overflow, next <= maximumNormalizedStorageBytes else {
+                throw CaptureIngestCommitError.normalizedPayloadTooLarge
+            }
+            aggregate = next
+        }
+    }
+
+    private static func preparedV2Storage(_ messages: [NormalizedMessage]) throws -> PreparedNormalizedStorage {
+        try rejectIfV2RawBytesExceedStorageBudget(messages)
+        var rows: [(ordinal: Int, bytes: Data, sha256: String)] = []
+        rows.reserveCapacity(messages.count)
+        var totalBytes = 0
+        var digests: [CaptureIngestNormalizedMessageDigest] = []
+        digests.reserveCapacity(messages.count)
+        for (ordinal, message) in messages.enumerated() {
+            let bytes = try ArchiveCanonicalJSON.encode(message)
+            guard bytes.count <= maximumNormalizedMessageBytes else {
+                throw CaptureIngestCommitError.normalizedPayloadTooLarge
+            }
+            let (next, overflow) = totalBytes.addingReportingOverflow(bytes.count)
+            guard !overflow, next <= maximumNormalizedStorageBytes else {
+                throw CaptureIngestCommitError.normalizedPayloadTooLarge
+            }
+            totalBytes = next
+            let digest = ArchiveV2Hash.sha256(bytes)
+            rows.append((ordinal, bytes, digest))
+            digests.append(CaptureIngestNormalizedMessageDigest(sha256: digest, byteSize: bytes.count, role: message.role))
+        }
+        let parentBlob = try ArchiveCanonicalJSON.encode(digests)
+        guard parentBlob.count <= maximumNormalizedPayloadBytes else {
+            throw CaptureIngestCommitError.normalizedPayloadTooLarge
+        }
+        return PreparedNormalizedStorage(parentBlob: parentBlob, legacyMessageCount: 0,
+            storageVersion: normalizedStorageVersionV2, totalMessageCount: messages.count, rows: rows)
     }
 
     private static func identityRow(_ db: Database, native: CaptureIngestIdentity) throws -> Row? {
@@ -296,7 +507,7 @@ public enum CaptureIngestCommitter {
         catch { throw CaptureIngestCommitError.invalidStoredRecord }
         guard binding.authorityGeneration >= authority else { throw CaptureIngestCommitError.staleGeneration }
         if binding.authorityGeneration == authority {
-            guard claim.publication.sequence >= sequence else { throw CaptureIngestCommitError.staleGeneration }
+            guard claim.publication.sequence >= sequence else { throw CaptureIngestCommitError.obsoleteGeneration }
             if claim.publication.sequence == sequence {
                 guard exact(claim.publicationSHA256, priorDigest) else { throw CaptureIngestCommitError.sequenceConflict }
                 guard !exact(claim.parserRevision, priorRevision) else { throw CaptureIngestCommitError.staleGeneration }

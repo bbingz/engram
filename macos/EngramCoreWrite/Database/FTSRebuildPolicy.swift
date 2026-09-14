@@ -18,6 +18,7 @@ public struct CaptureFTSReadinessPolicy: Sendable {
 
 public enum FTSRebuildPolicy {
     public static let expectedVersion = "3"
+    public static let contentIdentityIndexName = "idx_sessions_fts_content_identity"
     private static let rebuildVersionKey = "fts_rebuild_version"
     private static let activeTable = "sessions_fts"
     private static let rebuildTable = "sessions_fts_rebuild"
@@ -156,6 +157,7 @@ public enum FTSRebuildPolicy {
         }
         try db.execute(sql: "ALTER TABLE \(rebuildTable) RENAME TO \(activeTable)")
         try db.execute(sql: "DROP TABLE IF EXISTS sessions_fts_old")
+        try ensureOwnedContentIdentityIndex(db)
         try markCurrentVersion(db)
         try db.execute(sql: "DELETE FROM metadata WHERE key = ?", arguments: [rebuildVersionKey])
         try db.execute(sql: "DELETE FROM metadata WHERE key = ?", arguments: [StartupBackfills.ftsOptimizeSignatureKey])
@@ -271,13 +273,10 @@ public enum FTSRebuildPolicy {
         let existing = try fetchMapRows(db, sessionId: sessionId)
 
         if existing.isEmpty {
-            // No map rows: heal any pre-backfill FTS rows with a single session_id
-            // scan (this is the only path that scans, and it runs at most once per
-            // session — brand-new sessions have nothing to delete), then insert fresh.
-            try db.execute(
-                sql: "DELETE FROM \(activeTable) WHERE session_id = ?",
-                arguments: [sessionId]
-            )
+            // No map rows: heal any pre-backfill FTS rows, then insert fresh.
+            // Owned live layout covering-scans identity keys; unknown layouts
+            // keep the session_id delete.
+            try deleteActiveSessionFtsRows(db, sessionId: sessionId)
             try insertFresh(db, sessionId: sessionId, messages: msgs, summary: summaryLine)
             return
         }
@@ -310,7 +309,7 @@ public enum FTSRebuildPolicy {
 
         // Full replace. Prefer the rowid-seek delete (no full-table scan); the
         // `session_id` filter guards against stale/reused rowids after a table swap.
-        // If the map diverged from the FTS table, heal with one session_id scan.
+        // If the map diverged, delete every actual owner row, not only mapped rowids.
         if mapConsistent {
             try db.execute(
                 sql: """
@@ -321,13 +320,35 @@ public enum FTSRebuildPolicy {
                 arguments: [sessionId, sessionId]
             )
         } else {
+            try deleteActiveSessionFtsRows(db, sessionId: sessionId)
+        }
+        try db.execute(sql: "DELETE FROM fts_map WHERE session_id = ?", arguments: [sessionId])
+        try insertFresh(db, sessionId: sessionId, messages: msgs, summary: summaryLine)
+    }
+
+    /// Owned covering-identity delete of every live FTS row for `sessionId`.
+    /// Scans all identity keys; does not seek `c0`. Missing/wrong identity
+    /// index keeps the original session_id delete.
+    private static func deleteActiveSessionFtsRows(_ db: GRDB.Database, sessionId: String) throws {
+        if try hasOwnedContentIdentityIndex(db) {
+            try db.execute(
+                sql: """
+                DELETE FROM \(activeTable)
+                WHERE rowid IN (
+                  SELECT id FROM sessions_fts_content
+                  INDEXED BY \(contentIdentityIndexName)
+                  WHERE c0 = ?
+                )
+                AND session_id = ?
+                """,
+                arguments: [sessionId, sessionId]
+            )
+        } else {
             try db.execute(
                 sql: "DELETE FROM \(activeTable) WHERE session_id = ?",
                 arguments: [sessionId]
             )
         }
-        try db.execute(sql: "DELETE FROM fts_map WHERE session_id = ?", arguments: [sessionId])
-        try insertFresh(db, sessionId: sessionId, messages: msgs, summary: summaryLine)
     }
 
     /// True when the stored message rows are exactly the prefix of the new message
@@ -447,6 +468,78 @@ public enum FTSRebuildPolicy {
             """,
             arguments: [expectedVersion]
         )
+    }
+
+    /// Owned internal-content FTS5 only. SQLite 3.51 ALTER RENAME rewrites
+    /// identifiers as double-quoted names; FTS5 CREATE uses a single-quoted
+    /// `_content` table. Those variants are accepted; module, columns, and
+    /// tokenizer must still match. Compatibility with this layout, not an
+    /// FTS5 public-API guarantee (sqlite.org/fts5.html §9).
+    public static func hasOwnedInternalFTSContent(_ db: GRDB.Database) throws -> Bool {
+        let ftsSQL = try String.fetchOne(
+            db, sql: "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions_fts'"
+        ) ?? ""
+        let shadowSQL = try String.fetchOne(
+            db, sql: "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions_fts_content'"
+        ) ?? ""
+        return isOwnedFTS(ftsSQL) && isOwnedContent(shadowSQL)
+    }
+
+    public static func hasOwnedContentIdentityIndex(_ db: GRDB.Database) throws -> Bool {
+        guard try hasOwnedInternalFTSContent(db) else { return false }
+        let sql = try String.fetchOne(
+            db,
+            sql: "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+            arguments: [contentIdentityIndexName]
+        ) ?? ""
+        return isOwnedContentIdentityIndex(sql)
+    }
+
+    /// Create the covering `(id,c0)` index only on the owned live layout.
+    /// If the product name already exists with any SQL, leave it.
+    public static func ensureOwnedContentIdentityIndex(_ db: GRDB.Database) throws {
+        guard try hasOwnedInternalFTSContent(db) else { return }
+        let existing = try String.fetchOne(
+            db,
+            sql: "SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?",
+            arguments: [contentIdentityIndexName]
+        )
+        guard existing == nil else { return }
+        try db.execute(sql: """
+            CREATE INDEX IF NOT EXISTS idx_sessions_fts_content_identity
+            ON sessions_fts_content(id, c0)
+            """)
+    }
+
+    private static func compactedSQL(_ sql: String) -> String {
+        String(sql.filter { !$0.isWhitespace }).lowercased()
+    }
+
+    private static func isOwnedFTS(_ sql: String) -> Bool {
+        let compact = compactedSQL(sql)
+        let body = "usingfts5(session_idunindexed,content,tokenize='trigramcase_sensitive0')"
+        return compact == "createvirtualtablesessions_fts" + body
+            || compact == "createvirtualtable\"sessions_fts\"" + body
+    }
+
+    private static func isOwnedContent(_ sql: String) -> Bool {
+        let compact = compactedSQL(sql)
+        let columns = "(idintegerprimarykey,c0,c1)"
+        return compact == "createtable'sessions_fts_content'" + columns
+            || compact == "createtable\"sessions_fts_content\"" + columns
+    }
+
+    private static func isOwnedContentIdentityIndex(_ sql: String) -> Bool {
+        let compact = compactedSQL(sql)
+        let names = ["idx_sessions_fts_content_identity", "\"idx_sessions_fts_content_identity\""]
+        let tables = ["sessions_fts_content", "\"sessions_fts_content\""]
+        for name in names {
+            for table in tables {
+                if compact == "createindex\(name)on\(table)(id,c0)" { return true }
+                if compact == "createindexifnotexists\(name)on\(table)(id,c0)" { return true }
+            }
+        }
+        return false
     }
 
     private static func createFtsTable(_ db: GRDB.Database, named table: String) throws {
@@ -663,7 +756,8 @@ public enum FTSRebuildPolicy {
                 g.publication_sha256, g.parser_revision, g.parse_format, g.configured_root,
                 g.collector_epoch, g.authority_generation, g.sequence, g.required_fts_job_id,
                 g.sync_version, g.snapshot_hash, g.normalized_schema_version,
-                g.normalized_message_count, g.normalized_messages_sha256,
+                g.normalized_message_count, g.normalized_storage_version, g.normalized_total_message_count,
+                g.normalized_messages_sha256,
                 typeof(g.normalized_messages_json), length(g.normalized_messages_json),
                 r.source, r.parse_format, r.configured_root, r.approved_epoch, r.authority_generation,
                 s.authoritative_node, s.source, s.sync_version, s.snapshot_hash, s.tier, s.summary, s.offload_state,

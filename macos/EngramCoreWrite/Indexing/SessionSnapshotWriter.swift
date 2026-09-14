@@ -54,6 +54,56 @@ public final class SessionSnapshotWriter {
         return jobID
     }
 
+    /// Current parsed capture head only. Updates skip → visible tier and binds
+    /// `required_fts_job_id` under the exact session/generation tuple. Does not
+    /// rewrite snapshot hash, version, messages, titles, links, costs, tools, or beats.
+    func bindCurrentCaptureSkipReclassification(
+        sessionID: String,
+        generationID: String,
+        authoritativeNode: String,
+        syncVersion: Int,
+        snapshotHash: String,
+        nextTier: SessionTier
+    ) throws -> String {
+        guard nextTier != .skip, syncVersion > 0,
+              ArchiveV2Hash.isValidSHA256(generationID),
+              ArchiveV2Hash.isValidSHA256(snapshotHash) else {
+            throw CaptureIngestCommitError.currentSnapshotMismatch
+        }
+        var jobID: String?
+        try db.inSavepoint {
+            try db.execute(sql: """
+                UPDATE sessions SET tier = ?
+                WHERE id = ? AND tier = 'skip' AND agent_role IS NULL
+                  AND authoritative_node = ? AND sync_version = ? AND snapshot_hash = ?
+                """, arguments: [nextTier.rawValue, sessionID, authoritativeNode, syncVersion, snapshotHash])
+            guard db.changesCount == 1 else { throw CaptureIngestCommitError.currentSnapshotMismatch }
+            guard let ensured = try ensureCurrentCaptureFTSJob(
+                sessionID: sessionID, authoritativeNode: authoritativeNode,
+                syncVersion: syncVersion, snapshotHash: snapshotHash
+            ) else {
+                throw CaptureIngestCommitError.currentSnapshotMismatch
+            }
+            try db.execute(sql: """
+                UPDATE capture_ingest_generations SET required_fts_job_id = ?
+                WHERE generation_id = ? AND stored_session_id = ?
+                  AND sync_version = ? AND snapshot_hash = ?
+                  AND required_fts_job_id IS NULL
+                  AND EXISTS (
+                    SELECT 1 FROM capture_ingest_identity_bindings
+                    WHERE stored_session_id = capture_ingest_generations.stored_session_id
+                      AND last_parsed_generation_id = capture_ingest_generations.generation_id
+                      AND last_sync_version = capture_ingest_generations.sync_version
+                  )
+                """, arguments: [ensured, generationID, sessionID, syncVersion, snapshotHash])
+            guard db.changesCount == 1 else { throw CaptureIngestCommitError.currentSnapshotMismatch }
+            jobID = ensured
+            return .commit
+        }
+        guard let jobID else { throw CaptureIngestCommitError.currentSnapshotMismatch }
+        return jobID
+    }
+
     public func writeAuthoritativeSnapshot(_ snapshot: AuthoritativeSessionSnapshot) throws -> SessionWriteResult {
         // docs/invariants.md #1: sanitize inside the service-owned writer path;
         // app and MCP readers must not introduce a competing SQLite writer.

@@ -55,6 +55,7 @@ public enum CaptureIngestWorkFailure: Equatable, Sendable {
         case bindingMismatch = "binding_mismatch"
         case invalidNativeIdentity = "invalid_native_identity"
         case sequenceConflict = "sequence_conflict"
+        case obsoleteGeneration = "obsolete_generation"
     }
 
     public enum RetryCode: String, CaseIterable, Sendable {

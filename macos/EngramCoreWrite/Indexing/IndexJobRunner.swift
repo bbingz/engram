@@ -505,8 +505,43 @@ public final class IndexJobRunner: StartupIndexJobRunning {
 
     // MARK: - SQL helpers (static so they run inside writer.read/write blocks)
 
-    private static func hasNonemptyFtsContent(_ db: Database, sessionId: String) throws -> Bool {
-        try Bool.fetchOne(
+    static func hasNonemptyFtsContent(_ db: Database, sessionId: String) throws -> Bool {
+        let columns = try String.fetchAll(db, sql: "SELECT name FROM pragma_table_info('fts_map')")
+        if columns.contains("session_id"), columns.contains("fts_rowid"),
+           try Bool.fetchOne(
+            db,
+            sql: """
+            SELECT EXISTS(
+              SELECT 1
+              FROM fts_map AS m
+              JOIN sessions_fts AS f ON f.rowid = m.fts_rowid
+              WHERE m.session_id = ?
+                AND f.session_id = ?
+                AND LENGTH(TRIM(f.content)) > 0
+            )
+            """,
+            arguments: [sessionId, sessionId]
+           ) == true {
+            return true
+        }
+        if try FTSRebuildPolicy.hasOwnedContentIdentityIndex(db) {
+            return try Bool.fetchOne(
+                db,
+                sql: """
+                SELECT EXISTS(
+                  SELECT 1
+                  FROM sessions_fts_content AS c
+                  INDEXED BY \(FTSRebuildPolicy.contentIdentityIndexName)
+                  CROSS JOIN sessions_fts AS f ON f.rowid = c.id
+                  WHERE c.c0 = ?
+                    AND f.session_id = ?
+                    AND LENGTH(TRIM(f.content)) > 0
+                )
+                """,
+                arguments: [sessionId, sessionId]
+            ) ?? false
+        }
+        return try Bool.fetchOne(
             db,
             sql: """
             SELECT EXISTS(

@@ -22,6 +22,21 @@ public enum CaptureIngestParseFormat: String, Equatable, Sendable {
     case claudeDefault
     case claudeCustomProfile
     case codex
+    case qwen
+    case qoder
+    case iflow
+    case cline
+    case commandcode
+    case copilot
+    case geminiCli = "gemini-cli"
+    case opencode
+    case kimi
+    case cursor
+    case vscode
+    case antigravityCLITranscript
+    case windsurfHookTranscript
+    case pi
+    case grok
 }
 
 public struct CaptureIngestSourceBinding: Equatable, Sendable {
@@ -184,12 +199,26 @@ public enum CaptureIngestSourceRegistry {
         }
         guard exact(publication.representation, "exact-source-v1"), verifiedManifest.sessionID == nil,
               let source = SourceName(rawValue: verifiedManifest.source),
-              source == .claudeCode || source == .codex,
-              verifiedManifest.replayLayout.strategy == .singleFile,
-              verifiedManifest.replayLayout.relativePaths.count == 1 else {
+              ((source == .claudeCode || source == .minimax || source == .lobsterai || source == .codex || source == .qwen
+                || source == .qoder || source == .iflow || source == .commandcode || source == .pi)
+                && verifiedManifest.replayLayout.strategy == .singleFile
+                && verifiedManifest.replayLayout.relativePaths.count == 1)
+                || ArchiveSourceDescriptor.isVSCodeFileSet(verifiedManifest)
+                || ArchiveSourceDescriptor.isClineFileSet(verifiedManifest)
+                || ArchiveSourceDescriptor.isCopilotFileSet(verifiedManifest)
+                || ArchiveSourceDescriptor.isGeminiFileSet(verifiedManifest)
+                || ArchiveSourceDescriptor.isKimiFileSet(verifiedManifest)
+                || ArchiveSourceDescriptor.isGrokFileSet(verifiedManifest)
+                || ArchiveSourceDescriptor.isCursorModernFileSet(verifiedManifest)
+                || ArchiveSourceDescriptor.isCursorLegacySession(verifiedManifest)
+                || ArchiveSourceDescriptor.isOpenCodeSessionImage(verifiedManifest)
+                || ArchiveSourceDescriptor.isAntigravityCLITranscript(verifiedManifest)
+                || ArchiveSourceDescriptor.isWindsurfHookTranscript(verifiedManifest) else {
             return .quarantined(.unsupportedCaptureShape)
         }
-        let locator = verifiedManifest.locator
+        // A legacy composer suffix is an opaque native ID, not filesystem
+        // components. Root authorization binds the actual shared database.
+        let locator = verifiedManifest.replayLayout.cursorLegacySession?.databaseLocator ?? verifiedManifest.locator
         guard isCanonicalAbsolutePath(locator) else { return .quarantined(.invalidLocator) }
         let current: CaptureIngestSourceBinding
         do {
@@ -201,7 +230,23 @@ public enum CaptureIngestSourceRegistry {
             return .quarantined(.parseFormatNotProvisioned)
         }
         guard current.source == source else { return .quarantined(.sourceMismatch) }
-        guard isDescendant(locator, of: current.configuredRoot) else { return .quarantined(.locatorOutsideRoot) }
+        if ArchiveSourceDescriptor.isCursorLegacySession(verifiedManifest) {
+            guard exact(locator, current.configuredRoot + "/state.vscdb") else {
+                return .quarantined(.locatorOutsideRoot)
+            }
+        } else if source == .opencode {
+            guard let context = verifiedManifest.replayLayout.sqliteSession,
+                  exact(context.databaseLocator, current.configuredRoot + "/opencode.db") else {
+                return .quarantined(.locatorOutsideRoot)
+            }
+        } else if ArchiveSourceDescriptor.isAntigravityCLITranscript(verifiedManifest)
+                    || ArchiveSourceDescriptor.isWindsurfHookTranscript(verifiedManifest) {
+            guard exact(locator, current.configuredRoot + "/" + verifiedManifest.replayLayout.relativePaths[0]) else {
+                return .quarantined(.locatorOutsideRoot)
+            }
+        } else {
+            guard isDescendant(locator, of: current.configuredRoot) else { return .quarantined(.locatorOutsideRoot) }
+        }
         let matching = try registeredRoots(db, machineID: publication.machineID, source: source)
             .filter { isDescendant(locator, of: $0) }
         guard matching.count == 1 else { return .quarantined(.ambiguousSourceMapping) }
@@ -382,10 +427,42 @@ public enum CaptureIngestSourceRegistry {
 
     private static func isCompatible(source: SourceName, parseFormat: CaptureIngestParseFormat) -> Bool {
         switch parseFormat {
-        case .claudeDefault, .claudeCustomProfile:
+        case .claudeDefault:
+            return source == .claudeCode || source == .minimax || source == .lobsterai
+        case .claudeCustomProfile:
             return source == .claudeCode
         case .codex:
             return source == .codex
+        case .qwen:
+            return source == .qwen
+        case .cline:
+            return source == .cline
+        case .iflow:
+            return source == .iflow
+        case .qoder:
+            return source == .qoder
+        case .commandcode:
+            return source == .commandcode
+        case .copilot:
+            return source == .copilot
+        case .geminiCli:
+            return source == .geminiCli
+        case .opencode:
+            return source == .opencode
+        case .kimi:
+            return source == .kimi
+        case .cursor:
+            return source == .cursor
+        case .vscode:
+            return source == .vscode
+        case .antigravityCLITranscript:
+            return source == .antigravity
+        case .windsurfHookTranscript:
+            return source == .windsurf
+        case .pi:
+            return source == .pi
+        case .grok:
+            return source == .grok
         }
     }
 

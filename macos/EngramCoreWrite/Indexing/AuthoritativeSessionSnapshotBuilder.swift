@@ -291,7 +291,31 @@ public enum AuthoritativeSessionSnapshotBuilder {
         return String(encoded.dropFirst().dropLast())
     }
 
-    private static func isSkippableFirstUserMessages(_ userMessages: [String]) -> Bool {
+    static func firstSubstantiveUserTexts(from messages: [NormalizedMessage], limit: Int = 3) -> [String] {
+        var texts: [String] = []
+        for message in messages {
+            guard message.role == .user else { continue }
+            let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty, !isSystemInjection(content) else { continue }
+            texts.append(message.content)
+            if texts.count == limit { break }
+        }
+        return texts
+    }
+
+    static func isCurrentPreambleSkip(_ userMessages: [String]) -> Bool {
+        isSkippableFirstUserMessages(userMessages, includeLegacyWeakScope: false)
+    }
+
+    /// True only when the pre-fix classifier would skip and the current one would not.
+    static func isLegacyWeakReviewOnlySkip(_ userMessages: [String]) -> Bool {
+        isSkippableFirstUserMessages(userMessages, includeLegacyWeakScope: true)
+            && !isSkippableFirstUserMessages(userMessages, includeLegacyWeakScope: false)
+    }
+
+    private static func isSkippableFirstUserMessages(
+        _ userMessages: [String], includeLegacyWeakScope: Bool = false
+    ) -> Bool {
         let combined = userMessages.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !combined.isEmpty else { return false }
         if Self.healthProbePrompts.contains(combined.lowercased()) {
@@ -306,7 +330,7 @@ public enum AuthoritativeSessionSnapshotBuilder {
         if combined.range(of: #"^You are acting as [a-z0-9_-]+ inside polycli\."#, options: [.regularExpression, .caseInsensitive]) != nil {
             return true
         }
-        if Self.isProviderReviewPrompt(combined) {
+        if Self.isProviderReviewPrompt(combined, includeLegacyWeakScope: includeLegacyWeakScope) {
             return true
         }
         return combined.hasPrefix("# AGENTS.md instructions for ") ||
@@ -323,19 +347,22 @@ public enum AuthoritativeSessionSnapshotBuilder {
             text.hasPrefix("<plugins_instructions>")
     }
 
-    private static func isProviderReviewPrompt(_ prompt: String) -> Bool {
+    private static func isProviderReviewPrompt(_ prompt: String, includeLegacyWeakScope: Bool = false) -> Bool {
         let lower = prompt.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let isStageFactProbe = lower.hasPrefix("no tools.") &&
             lower.contains("stage ") &&
             (lower.contains("facts") || lower.contains("verified") || lower.contains("diff:"))
-        let isScopedInput = lower.contains("no tools") ||
+        var isScopedInput = lower.contains("no tools") ||
             lower.contains("use only") ||
             lower.contains("snippets") ||
-            lower.contains("diff:") ||
-            lower.contains("tests passed") ||
-            lower.contains("tests ") ||
-            lower.range(of: #"\bp\d+(\.\d+)?\b"#, options: .regularExpression) != nil ||
-            lower.contains("stage ")
+            lower.contains("diff:")
+        if includeLegacyWeakScope {
+            isScopedInput = isScopedInput
+                || lower.contains("tests passed")
+                || lower.contains("tests ")
+                || lower.range(of: #"\bp\d+"#, options: .regularExpression) != nil
+                || lower.contains("stage ")
+        }
         let asksForOnlyFindings = lower.contains("blocking") ||
             lower.contains("correctness") ||
             lower.contains("report only") ||

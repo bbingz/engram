@@ -26,6 +26,55 @@ final class CaptureIngestSourceRegistryTests: XCTestCase {
         if let directory { try FileManager.default.removeItem(at: directory) }
     }
 
+    func testWindsurfHookRegistryRequiresExactLayoutRootAndNativeFormat() throws {
+        let root = self.root + "/transcripts"
+        let format = try XCTUnwrap(CaptureIngestParseFormat(rawValue: "windsurfHookTranscript"))
+        let registered = try provision(source: .windsurf, parseFormat: format, configuredRoot: root)
+        let relative = "session.jsonl"
+        func capture(_ locator: String, relativePath: String) throws -> ArchiveSourceManifest {
+            let model = try manifest(source: "windsurf", locator: locator)
+            var object = try JSONSerialization.jsonObject(with: ArchiveCanonicalJSON.encode(model)) as! [String: Any]
+            var layout = object["replayLayout"] as! [String: Any]
+            layout["relativePaths"] = [relativePath]
+            object["replayLayout"] = layout
+            return try JSONDecoder().decode(ArchiveSourceManifest.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+        let valid = try capture(root + "/" + relative, relativePath: relative)
+        XCTAssertEqual(try eligibility(valid), .eligible(registered))
+        XCTAssertEqual(try eligibility(valid, collectorEpoch: nextEpoch), .quarantined(.epochNotApproved))
+        XCTAssertEqual(try eligibility(manifest(source: "windsurf")), .quarantined(.unsupportedCaptureShape))
+        let nested = try capture(root + "/other/transcripts/" + relative, relativePath: relative)
+        XCTAssertEqual(try eligibility(nested), .quarantined(.locatorOutsideRoot))
+        let wrongIdentity = try capture(root + "/" + relative, relativePath: "other.jsonl")
+        XCTAssertEqual(try eligibility(wrongIdentity), .quarantined(.unsupportedCaptureShape))
+        assertRegistryError(.invalidSourceParseFormat) { try self.provision(source: .codex, parseFormat: format) }
+        assertRegistryError(.invalidSourceParseFormat) { try self.provision(source: .windsurf, parseFormat: .claudeDefault) }
+    }
+
+    func testAntigravityCLIRegistryRequiresExactLayoutRootAndNativeFormat() throws {
+        let format = try XCTUnwrap(CaptureIngestParseFormat(rawValue: "antigravityCLITranscript"))
+        let registered = try provision(source: .antigravity, parseFormat: format)
+        let relative = "session/.system_generated/logs/transcript.jsonl"
+        func capture(_ locator: String, relativePath: String) throws -> ArchiveSourceManifest {
+            let model = try manifest(source: "antigravity", locator: locator)
+            var object = try JSONSerialization.jsonObject(with: ArchiveCanonicalJSON.encode(model)) as! [String: Any]
+            var layout = object["replayLayout"] as! [String: Any]
+            layout["relativePaths"] = [relativePath]
+            object["replayLayout"] = layout
+            return try JSONDecoder().decode(ArchiveSourceManifest.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+        let valid = try capture(root + "/" + relative, relativePath: relative)
+        XCTAssertEqual(try eligibility(valid), .eligible(registered))
+        XCTAssertEqual(try eligibility(valid, collectorEpoch: nextEpoch), .quarantined(.epochNotApproved))
+        XCTAssertEqual(try eligibility(manifest(source: "antigravity")), .quarantined(.unsupportedCaptureShape))
+        let nested = try capture(root + "/other/" + relative, relativePath: relative)
+        XCTAssertEqual(try eligibility(nested), .quarantined(.locatorOutsideRoot))
+        let wrongIdentity = try capture(root + "/" + relative, relativePath: "other/.system_generated/logs/transcript.jsonl")
+        XCTAssertEqual(try eligibility(wrongIdentity), .quarantined(.unsupportedCaptureShape))
+        assertRegistryError(.invalidSourceParseFormat) { try self.provision(source: .codex, parseFormat: format) }
+        assertRegistryError(.invalidSourceParseFormat) { try self.provision(source: .antigravity, parseFormat: .claudeDefault) }
+    }
+
     func testRepeatedMigrationCreatesEmptyRegistryWithoutGrantingAuthority() throws {
         try writer.migrate()
         try writer.migrate()
@@ -183,6 +232,180 @@ final class CaptureIngestSourceRegistryTests: XCTestCase {
     func testCodexPhysicalSourceCanBeProvisionedAndMatched() throws {
         let initial = try provision(source: .codex)
         XCTAssertEqual(try eligibility(manifest(source: "codex")), .eligible(initial))
+    }
+
+    func testQwenEligibilityRequiresMatchingProvisionedSourceAndEpoch() throws {
+        let captured = try manifest(source: "qwen", locator: root + "/project/chats/session.jsonl")
+        XCTAssertEqual(try eligibility(captured), .quarantined(.unknownSourceInstance))
+        let initial = try provision(source: .qwen, parseFormat: .qwen)
+        XCTAssertEqual(try eligibility(captured), .eligible(initial))
+        XCTAssertEqual(try eligibility(captured, collectorEpoch: nextEpoch), .quarantined(.epochNotApproved))
+        XCTAssertEqual(try eligibility(manifest(source: "qwen", locator: "/other/p/chats/session.jsonl")),
+            .quarantined(.locatorOutsideRoot))
+        XCTAssertEqual(try binding(), initial)
+        XCTAssertEqual(try count("capture_ingest_ledger"), 0)
+    }
+
+    func testQoderEligibilityRequiresNativeFormatSourceAndEpoch() throws {
+        try assertAdditionalSourceEligibility(.qoder)
+    }
+
+    func testCommandCodeEligibilityRequiresNativeFormatSourceAndEpoch() throws {
+        try assertAdditionalSourceEligibility(.commandcode)
+    }
+
+    func testPiEligibilityRequiresMatchingProvisionedSourceAndEpoch_repro() throws {
+        try assertAdditionalSourceEligibility(.pi)
+    }
+
+    func testOpenCodeEligibilityRequiresScopedImageNativeFormatAndExactDatabaseRoot() throws {
+        let format = try XCTUnwrap(CaptureIngestParseFormat(rawValue: "opencode"))
+        let bytes = Data([1])
+        let hash = ArchiveV2Hash.sha256(bytes)
+        let generation = try ArchiveSourceGeneration(device: 1, inode: 2, size: 4096, mtimeNs: 3, ctimeNs: 4, mode: 0o100600)
+        func image(_ database: String) throws -> ArchiveSourceManifest {
+            let context = try ArchiveSQLiteSessionContext(databaseLocator: database, nativeSessionID: "ses-native",
+                nativePayloadByteCount: 1, walGeneration: nil)
+            return try ArchiveSourceManifest(schemaVersion: 4, captureID: hash, machineID: machine,
+                source: "opencode", locator: database + "::ses-native", sessionID: nil,
+                capturedAt: "2026-09-08T00:00:00Z", generation: generation, wholeSourceSHA256: hash,
+                rawByteCount: 1, chunks: [ArchiveChunkReference(ordinal: 0, rawSHA256: hash, rawByteCount: 1)],
+                replayLayout: ArchiveReplayLayout(strategy: .singleFile, relativePaths: ["session.sqlite"], sqliteSession: context))
+        }
+        let captured = try image(root + "/opencode.db")
+        XCTAssertEqual(try eligibility(captured), .quarantined(.unknownSourceInstance))
+        let initial = try provision(source: .opencode, parseFormat: format)
+        XCTAssertEqual(try eligibility(captured), .eligible(initial))
+        XCTAssertEqual(try eligibility(captured, collectorEpoch: nextEpoch), .quarantined(.epochNotApproved))
+        XCTAssertEqual(try eligibility(image(root + "/nested/opencode.db")), .quarantined(.locatorOutsideRoot))
+        XCTAssertEqual(try eligibility(image("/other/opencode.db")), .quarantined(.locatorOutsideRoot))
+        XCTAssertEqual(try eligibility(manifest(source: "opencode")), .quarantined(.unsupportedCaptureShape))
+        assertRegistryError(.invalidSourceParseFormat) { try self.provision(source: .opencode, parseFormat: .codex) }
+        XCTAssertEqual(try binding(), initial)
+    }
+
+    func testCursorModernEligibilityRequiresClosedFileSetAndProvisionedBinding() throws {
+        let format = try XCTUnwrap(CaptureIngestParseFormat(rawValue: "cursor"))
+        let empty = ArchiveV2Hash.sha256(Data())
+        let generation = try ArchiveSourceGeneration(device: 1, inode: 2, size: 0, mtimeNs: 3, ctimeNs: 4, mode: 0o100600)
+        func modern(root: String, transcriptID: String = "native") throws -> ArchiveSourceManifest {
+            let primary = "projects/proj/agent-transcripts/\(transcriptID)/\(transcriptID).jsonl"
+            let paths = ["chats/ws/native/meta.json", "chats/ws/native/store.db", "chats/ws/native/store.db-wal", primary]
+            let files = try paths.map { try ArchiveFileSetEntry(relativePath: $0, byteOffset: 0,
+                rawByteCount: 0, wholeSourceSHA256: empty, generation: generation) }
+            return try ArchiveSourceManifest(schemaVersion: 2, captureID: empty, machineID: machine,
+                source: "cursor", locator: root + "/" + primary, sessionID: nil,
+                capturedAt: "2026-09-09T00:00:00Z", generation: generation, wholeSourceSHA256: empty,
+                rawByteCount: 0, chunks: [], replayLayout: ArchiveReplayLayout(strategy: .fileSet,
+                    relativePaths: paths, entrypointRelativePath: primary, files: files, absentRelativePaths: []))
+        }
+        let captured = try modern(root: root)
+        XCTAssertTrue(ArchiveSourceDescriptor.isCursorModernFileSet(captured))
+        XCTAssertEqual(try eligibility(captured), .quarantined(.unknownSourceInstance))
+        let initial = try provision(source: .cursor, parseFormat: format)
+        XCTAssertEqual(try eligibility(captured), .eligible(initial))
+        XCTAssertEqual(try eligibility(captured, collectorEpoch: nextEpoch), .quarantined(.epochNotApproved))
+        XCTAssertEqual(try eligibility(modern(root: "/other")), .quarantined(.locatorOutsideRoot))
+        XCTAssertEqual(try eligibility(modern(root: root, transcriptID: "other")), .quarantined(.unsupportedCaptureShape))
+        XCTAssertEqual(try eligibility(manifest(source: "cursor")), .quarantined(.unsupportedCaptureShape))
+        XCTAssertEqual(try eligibility(manifest(source: "cursor", locator: root + "/state.vscdb?composer=legacy")),
+            .quarantined(.unsupportedCaptureShape))
+        assertRegistryError(.invalidSourceParseFormat) { try self.provision(source: .cursor, parseFormat: .kimi) }
+        assertRegistryError(.invalidSourceParseFormat) { try self.provision(source: .codex, parseFormat: format) }
+        XCTAssertEqual(try binding(), initial)
+        XCTAssertEqual(try count("capture_ingest_ledger"), 0)
+    }
+
+    func testCopilotEligibilityRequiresNativeFileSetAndProvisionedBinding() throws {
+        let format = try XCTUnwrap(CaptureIngestParseFormat(rawValue: "copilot"))
+        let empty = ArchiveV2Hash.sha256(Data())
+        let generation = try ArchiveSourceGeneration(device: 1, inode: 2, size: 0, mtimeNs: 3, ctimeNs: 4, mode: 0o100600)
+        let paths = ["s1/events.jsonl", "s1/workspace.yaml"]
+        let files = try paths.map { try ArchiveFileSetEntry(relativePath: $0, byteOffset: 0,
+            rawByteCount: 0, wholeSourceSHA256: empty, generation: generation) }
+        let captured = try ArchiveSourceManifest(schemaVersion: 2, captureID: empty, machineID: machine,
+            source: "copilot", locator: root + "/s1/events.jsonl", sessionID: nil,
+            capturedAt: "2026-09-08T00:00:00Z", generation: generation, wholeSourceSHA256: empty,
+            rawByteCount: 0, chunks: [], replayLayout: ArchiveReplayLayout(strategy: .fileSet,
+                relativePaths: paths, entrypointRelativePath: paths[0], files: files,
+                absentRelativePaths: ["s1/checkpoints/index.md"]))
+        XCTAssertEqual(try eligibility(captured), .quarantined(.unknownSourceInstance))
+        let initial = try provision(source: .copilot, parseFormat: format)
+        XCTAssertEqual(try eligibility(captured), .eligible(initial))
+        XCTAssertEqual(try eligibility(captured, collectorEpoch: nextEpoch), .quarantined(.epochNotApproved))
+        XCTAssertEqual(try eligibility(manifest(source: "copilot")), .quarantined(.unsupportedCaptureShape))
+        assertRegistryError(.invalidSourceParseFormat) { try self.provision(source: .copilot, parseFormat: .claudeDefault) }
+        XCTAssertEqual(try binding(), initial)
+    }
+
+    func testGrokFileSetEligibilityRequiresNativeBindingAndRejectsSingleFile_repro() throws {
+        let format = try XCTUnwrap(CaptureIngestParseFormat(rawValue: "grok"))
+        let empty = ArchiveV2Hash.sha256(Data())
+        let generation = try ArchiveSourceGeneration(device: 1, inode: 2, size: 0, mtimeNs: 3, ctimeNs: 4, mode: 0o100600)
+        let project = "%2FUsers%2Ftest%2Fproject"
+        let session = "019dd6e3-91d1-7326-8299-314858773a0e"
+        let prefix = project + "/" + session + "/"
+        let chat = prefix + "chat_history.jsonl"
+        let files = [try ArchiveFileSetEntry(relativePath: chat, byteOffset: 0, rawByteCount: 0,
+            wholeSourceSHA256: empty, generation: generation)]
+        let captured = try ArchiveSourceManifest(schemaVersion: 2, captureID: empty, machineID: machine,
+            source: "grok", locator: root + "/" + chat, sessionID: nil,
+            capturedAt: "2026-09-08T00:00:00Z", generation: generation, wholeSourceSHA256: empty,
+            rawByteCount: 0, chunks: [], replayLayout: ArchiveReplayLayout(strategy: .fileSet,
+                relativePaths: [chat], entrypointRelativePath: chat, files: files,
+                absentRelativePaths: [
+                    prefix + "compaction/INDEX.md",
+                    prefix + "prompt_context.json",
+                    prefix + "summary.json",
+                    prefix + "updates.jsonl",
+                ]))
+        XCTAssertTrue(ArchiveSourceDescriptor.isGrokFileSet(captured))
+        XCTAssertEqual(try eligibility(captured), .quarantined(.unknownSourceInstance))
+        let initial = try provision(source: .grok, parseFormat: format)
+        XCTAssertEqual(try eligibility(captured), .eligible(initial))
+        XCTAssertEqual(try eligibility(captured, collectorEpoch: nextEpoch), .quarantined(.epochNotApproved))
+        XCTAssertEqual(try eligibility(manifest(source: "grok")), .quarantined(.unsupportedCaptureShape))
+        assertRegistryError(.invalidSourceParseFormat) { try self.provision(source: .grok, parseFormat: .codex) }
+        XCTAssertEqual(try binding(), initial)
+    }
+
+    func testGeminiRegistryProjectionRequiresNativeBindingAndApprovedEpoch() throws {
+        let format = try XCTUnwrap(CaptureIngestParseFormat(rawValue: "gemini-cli"))
+        let empty = ArchiveV2Hash.sha256(Data())
+        let generation = try ArchiveSourceGeneration(device: 1, inode: 2, size: 0, mtimeNs: 3, ctimeNs: 4, mode: 0o100600)
+        let primary = "project/chats/stem.json"
+        let entry = try ArchiveFileSetEntry(relativePath: primary, byteOffset: 0,
+            rawByteCount: 0, wholeSourceSHA256: empty, generation: generation)
+        let context = try ArchiveGeminiProjectContext(projectName: "project", cwd: "/repo/gemini",
+            registryLocator: "/fixture/projects.json", registryGeneration: generation, registrySHA256: empty)
+        let captured = try ArchiveSourceManifest(schemaVersion: 3, captureID: empty, machineID: machine,
+            source: "gemini-cli", locator: root + "/" + primary, sessionID: nil,
+            capturedAt: "2026-09-08T00:00:00Z", generation: generation, wholeSourceSHA256: empty,
+            rawByteCount: 0, chunks: [], replayLayout: ArchiveReplayLayout(strategy: .fileSet,
+                relativePaths: [primary], entrypointRelativePath: primary, files: [entry],
+                absentRelativePaths: ["project/.project_root", "project/chats/native.engram.json"],
+                geminiProjectContext: context))
+        XCTAssertEqual(try eligibility(captured), .quarantined(.unknownSourceInstance))
+        let initial = try provision(source: .geminiCli, parseFormat: format)
+        XCTAssertEqual(try eligibility(captured), .eligible(initial))
+        XCTAssertEqual(try eligibility(captured, collectorEpoch: nextEpoch), .quarantined(.epochNotApproved))
+        XCTAssertEqual(try eligibility(manifest(source: "gemini-cli")), .quarantined(.unsupportedCaptureShape))
+        assertRegistryError(.invalidSourceParseFormat) { try self.provision(source: .geminiCli, parseFormat: .codex) }
+        XCTAssertEqual(try binding(), initial)
+    }
+
+    private func assertAdditionalSourceEligibility(_ source: SourceName) throws {
+        let format = try XCTUnwrap(CaptureIngestParseFormat(rawValue: source.rawValue))
+        let capture = try manifest(source: source.rawValue, locator: root + "/project/session.jsonl")
+        XCTAssertEqual(try eligibility(capture), .quarantined(.unknownSourceInstance))
+        let initial = try provision(source: source, parseFormat: format)
+        XCTAssertEqual(try eligibility(capture), .eligible(initial))
+        XCTAssertEqual(try eligibility(capture, collectorEpoch: nextEpoch), .quarantined(.epochNotApproved))
+        XCTAssertEqual(try eligibility(manifest(source: source.rawValue, locator: "/other/project/session.jsonl")),
+            .quarantined(.locatorOutsideRoot))
+        assertRegistryError(.invalidSourceParseFormat) { try self.provision(source: source, parseFormat: .claudeDefault) }
+        XCTAssertEqual(try binding(), initial)
+        XCTAssertEqual(try count("capture_ingest_ledger"), 0)
     }
 
     func testEligibilityRejectsNoncanonicalLogicalLocators() throws {
@@ -399,11 +622,36 @@ final class CaptureIngestSourceRegistryTests: XCTestCase {
         }
     }
 
+    func testDerivedClaudeSourcesHaveIndependentAuthorityAtTheSamePhysicalRoot() throws {
+        let cases: [(SourceName, String)] = [(.claudeCode, instance), (.minimax, nextEpoch), (.lobsterai, laterEpoch)]
+        for (source, id) in cases {
+            let current = try provision(instanceID: id, source: source, parseFormat: .claudeDefault)
+            XCTAssertEqual(current.source, source)
+            XCTAssertEqual(try eligibility(manifest(source: source.rawValue), instanceID: id), .eligible(current))
+            for (other, _) in cases where other != source {
+                XCTAssertEqual(try eligibility(manifest(source: other.rawValue), instanceID: id), .quarantined(.sourceMismatch))
+            }
+        }
+        try reopen()
+        XCTAssertEqual(try count("capture_ingest_source_registry"), 3)
+        for (source, id) in cases {
+            let current = try writer.read {
+                try CaptureIngestSourceRegistry.binding($0, machineID: machine, sourceInstanceID: id)
+            }
+            XCTAssertEqual(current?.source, source)
+            XCTAssertEqual(current?.configuredRoot, root)
+            assertRegistryError(.overlappingRoot) {
+                try self.provision(instanceID: UUID().uuidString, source: source,
+                    parseFormat: .claudeDefault, configuredRoot: self.root + "/nested")
+            }
+        }
+    }
+
     func testParseFormatMustMatchThePhysicalSource() throws {
         let invalid: [(SourceName, CaptureIngestParseFormat)] = [
             (.claudeCode, .codex), (.codex, .claudeDefault), (.codex, .claudeCustomProfile),
             (.geminiCli, .claudeDefault), (.geminiCli, .codex),
-            (.minimax, .claudeDefault), (.lobsterai, .claudeCustomProfile),
+            (.minimax, .claudeCustomProfile), (.lobsterai, .claudeCustomProfile),
         ]
         for (index, pair) in invalid.enumerated() {
             assertRegistryError(.invalidSourceParseFormat) {

@@ -18,8 +18,232 @@ public struct CaptureIngestReadyGeneration: Equatable, Sendable {
     public let disposition: Disposition
 }
 
+public struct CaptureWeakReviewSkipRepairBatch: Equatable, Sendable {
+    public var repaired: Int
+    public var reviewedUnchanged: Int
+
+    public init(repaired: Int, reviewedUnchanged: Int) {
+        self.repaired = repaired
+        self.reviewedUnchanged = reviewedUnchanged
+    }
+}
+
 public enum CaptureIngestReadiness {
     private typealias Store = CaptureIngestNormalizedStore
+
+    private static let reviewedMetadataPrefix = "capture_weak_review_skip_reviewed:"
+
+    /// Bounded one-shot correction for current parsed capture heads that are
+    /// skip only because the pre-fix weak review-probe scope matched. Does not
+    /// rebuild snapshots, bump parser revision, or mutate stale/disabled heads.
+    /// Each call attempts at most `limit` current heads (clamped to 8) and
+    /// honors `deadline`; unprocessable heads consume an attempt and stay unmarked.
+    public static func repairWeakReviewSkips(
+        _ db: Database,
+        expectedParserRevision: String,
+        enabledSources: Set<SourceName>,
+        deadline: ContinuousClock.Instant? = nil,
+        limit: Int = 4
+    ) throws -> CaptureWeakReviewSkipRepairBatch {
+        try Store.checkpoint(deadline)
+        try Store.validateParserRevision(expectedParserRevision)
+        let batchLimit = min(max(limit, 0), 8)
+        let sources = enabledSources.sorted { $0.rawValue < $1.rawValue }
+        guard batchLimit > 0, !sources.isEmpty else {
+            return CaptureWeakReviewSkipRepairBatch(repaired: 0, reviewedUnchanged: 0)
+        }
+        let placeholders = sources.map { _ in "?" }.joined(separator: ", ")
+        var repaired = 0
+        var reviewedUnchanged = 0
+        var attempted = 0
+        var afterGeneration: String?
+        while attempted < batchLimit {
+            try Store.checkpoint(deadline)
+            var arguments: [any DatabaseValueConvertible] = [expectedParserRevision]
+            arguments.append(contentsOf: sources.map(\.rawValue))
+            arguments.append(afterGeneration)
+            arguments.append(afterGeneration)
+            arguments.append(reviewedMetadataPrefix)
+            arguments.append(batchLimit - attempted)
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT g.generation_id, g.stored_session_id, g.sync_version, g.snapshot_hash,
+                    s.authoritative_node, s.message_count, s.project, s.summary, s.start_time,
+                    s.end_time, s.source, s.assistant_message_count, s.tool_message_count
+                FROM capture_ingest_identity_bindings b
+                JOIN capture_ingest_generations g
+                    ON g.generation_id = b.last_parsed_generation_id
+                    AND g.stored_session_id = b.stored_session_id
+                    AND g.sync_version = b.last_sync_version
+                JOIN sessions s ON s.id = g.stored_session_id
+                JOIN capture_ingest_ledger l
+                    ON l.publication_sha256 = g.publication_sha256
+                    AND l.parser_revision = g.parser_revision
+                WHERE l.status = 'parsed'
+                    AND s.tier = 'skip'
+                    AND s.agent_role IS NULL
+                    AND s.message_count > 1
+                    AND g.required_fts_job_id IS NULL
+                    AND g.parser_revision = ?
+                    AND g.source IN (\(placeholders))
+                    AND s.sync_version = g.sync_version
+                    AND s.snapshot_hash = g.snapshot_hash
+                    AND s.authoritative_node IS NOT NULL
+                    AND (? IS NULL OR g.generation_id > ?)
+                    AND NOT EXISTS (
+                        SELECT 1 FROM metadata m
+                        WHERE m.key = ? || g.generation_id
+                    )
+                ORDER BY g.generation_id
+                LIMIT ?
+                """, arguments: StatementArguments(arguments))
+            if rows.isEmpty { break }
+            for row in rows {
+                try Store.checkpoint(deadline)
+                guard let generationID = try? Store.string(row, "generation_id") else { break }
+                afterGeneration = generationID
+                attempted += 1
+                var outcome: RepairOneResult?
+                do {
+                    try db.inSavepoint {
+                        outcome = try repairOne(db, row: row, expectedParserRevision: expectedParserRevision,
+                            enabledSources: enabledSources, deadline: deadline)
+                        return .commit
+                    }
+                    switch outcome {
+                    case .repaired: repaired += 1
+                    case .reviewedUnchanged: reviewedUnchanged += 1
+                    case .unprocessed, nil: break
+                    }
+                } catch let error as CaptureIngestReadinessError where error == .deadlineExceeded {
+                    throw error
+                } catch {
+                    // Disabled, stale, corrupt, and tuple mismatches stay unmarked
+                    // so a later start can resume them. They are not repaired.
+                    continue
+                }
+                if attempted >= batchLimit { break }
+            }
+        }
+        return CaptureWeakReviewSkipRepairBatch(repaired: repaired, reviewedUnchanged: reviewedUnchanged)
+    }
+
+    private enum RepairOneResult {
+        case repaired
+        case reviewedUnchanged
+        case unprocessed
+    }
+
+    private static func repairOne(
+        _ db: Database,
+        row: Row,
+        expectedParserRevision: String,
+        enabledSources: Set<SourceName>,
+        deadline: ContinuousClock.Instant?
+    ) throws -> RepairOneResult {
+        let sessionID = try Store.string(row, "stored_session_id")
+        let generationID = try Store.string(row, "generation_id")
+        let snapshotHash = try Store.string(row, "snapshot_hash")
+        let authoritativeNode = try Store.string(row, "authoritative_node")
+        let version = try Store.integer(row, "sync_version")
+        guard ArchiveV2Hash.isValidSHA256(generationID), ArchiveV2Hash.isValidSHA256(snapshotHash),
+              let syncVersion = Int(exactly: version), syncVersion > 0 else {
+            throw CaptureIngestReadinessError.invalidStoredRecord
+        }
+        let texts: [String]
+        switch try firstSubstantiveUserEvidence(db, sessionID: sessionID, generationID: generationID,
+            expectedParserRevision: expectedParserRevision, enabledSources: enabledSources, deadline: deadline) {
+        case .truncated:
+            return .unprocessed
+        case .window(let window):
+            texts = window
+        }
+        guard AuthoritativeSessionSnapshotBuilder.isLegacyWeakReviewOnlySkip(texts) else {
+            try markReviewed(db, generationID: generationID)
+            return .reviewedUnchanged
+        }
+        let nextTier = try recomputedVisibleTier(row, originalLocator: try originalManifestLocator(db, generationID: generationID))
+        guard nextTier != .skip else {
+            try markReviewed(db, generationID: generationID)
+            return .reviewedUnchanged
+        }
+        _ = try SessionSnapshotWriter(db: db).bindCurrentCaptureSkipReclassification(
+            sessionID: sessionID, generationID: generationID, authoritativeNode: authoritativeNode,
+            syncVersion: syncVersion, snapshotHash: snapshotHash, nextTier: nextTier)
+        return .repaired
+    }
+
+    private enum FirstUserEvidence {
+        case window([String])
+        case truncated
+    }
+
+    private static func firstSubstantiveUserEvidence(
+        _ db: Database,
+        sessionID: String,
+        generationID: String,
+        expectedParserRevision: String,
+        enabledSources: Set<SourceName>,
+        deadline: ContinuousClock.Instant?
+    ) throws -> FirstUserEvidence {
+        var texts: [String] = []
+        var from = 0
+        var pages = 0
+        var hasMore = false
+        while texts.count < 3, pages < 3 {
+            try Store.checkpoint(deadline)
+            let page = try Store.loadPage(db, sessionID: sessionID, generationID: generationID,
+                expectedParserRevision: expectedParserRevision, enabledSources: enabledSources,
+                fromOrdinal: from, maximumMessages: 16, roles: [.user], deadline: deadline)
+            pages += 1
+            hasMore = page.hasMore
+            texts.append(contentsOf: AuthoritativeSessionSnapshotBuilder.firstSubstantiveUserTexts(
+                from: page.snapshot.messages, limit: 3 - texts.count))
+            if !page.hasMore { break }
+            from = (page.ordinals.last ?? from) + 1
+        }
+        if texts.count < 3, hasMore { return .truncated }
+        return .window(texts)
+    }
+
+    private static func originalManifestLocator(_ db: Database, generationID: String) throws -> String {
+        guard let bytes = try Data.fetchOne(db, sql: """
+            SELECT manifest_json FROM capture_ingest_generations WHERE generation_id = ?
+            """, arguments: [generationID]), !bytes.isEmpty else {
+            throw CaptureIngestReadinessError.invalidStoredRecord
+        }
+        let manifest: ArchiveSourceManifest
+        do { manifest = try ArchiveCanonicalJSON.decode(ArchiveSourceManifest.self, from: bytes) }
+        catch { throw CaptureIngestReadinessError.invalidStoredRecord }
+        guard !manifest.locator.isEmpty else { throw CaptureIngestReadinessError.invalidStoredRecord }
+        return manifest.locator
+    }
+
+    private static func recomputedVisibleTier(_ row: Row, originalLocator: String) throws -> SessionTier {
+        let messageCount = Int(try Store.integer(row, "message_count"))
+        return SessionTier.compute(TierInput(
+            messageCount: messageCount,
+            agentRole: nil,
+            filePath: originalLocator,
+            project: try Store.optionalString(row, "project"),
+            summary: try Store.optionalString(row, "summary"),
+            startTime: try Store.string(row, "start_time"),
+            endTime: try Store.optionalString(row, "end_time"),
+            source: try Store.string(row, "source"),
+            isPreamble: false,
+            assistantCount: Int(try Store.integer(row, "assistant_message_count")),
+            toolCount: Int(try Store.integer(row, "tool_message_count"))
+        ))
+    }
+
+    private static func markReviewed(_ db: Database, generationID: String) throws {
+        guard ArchiveV2Hash.isValidSHA256(generationID) else {
+            throw CaptureIngestReadinessError.invalidStoredRecord
+        }
+        try db.execute(sql: """
+            INSERT INTO metadata(key, value) VALUES (?, '1')
+            ON CONFLICT(key) DO NOTHING
+            """, arguments: [reviewedMetadataPrefix + generationID])
+    }
 
     /// Call in one writer transaction, with no awaits. An internal savepoint
     /// reserves the writer before reads and atomically fences the exact current
@@ -63,12 +287,19 @@ public enum CaptureIngestReadiness {
                 // both active and shadow FTS. It is not a visible/searchable row.
                 try FTSRebuildPolicy.purgeFtsContent(db, sessionId: snapshot.sessionID)
             } else {
-                // Match the existing runner: trim only to identify empty lines,
-                // preserve nonempty user/assistant bytes and the stored summary.
+                // Capture-owned FTS is written here; IndexJobRunner skips these
+                // sessions. Non-Grok system messages stay excluded. Grok-only
+                // labeled compaction archives are admitted so pre-compaction
+                // Markdown is searchable after parse-format/registry wiring.
+                let admitGrokArchives = current.nativeIdentity.source == .grok
                 let messages = snapshot.messages.compactMap { message -> String? in
-                    guard message.role == .user || message.role == .assistant,
-                          !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-                    return message.content
+                    guard !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+                    if message.role == .user || message.role == .assistant { return message.content }
+                    if admitGrokArchives, message.role == .system,
+                       message.content.hasPrefix("Grok compaction archive\n") {
+                        return message.content
+                    }
+                    return nil
                 }
                 try FTSRebuildPolicy.replaceFtsContent(db, sessionId: snapshot.sessionID,
                     messages: messages, summary: current.summary)
@@ -120,12 +351,38 @@ public enum CaptureIngestReadiness {
               Store.exact(snapshot.snapshotHash, current.snapshotHash),
               snapshot.requiredFTSJobID == current.requiredFTSJobID,
               Store.exact(snapshot.normalizedMessagesSHA256, current.normalizedSHA256),
+              snapshot.messageStartOrdinal == 0,
+              snapshot.totalMessageCount == current.messageCount,
               snapshot.messages.count == current.messageCount else { throw CaptureIngestReadinessError.invalidStoredRecord }
         try Store.checkpoint(deadline)
-        // The public value has no public initializer, but module-internal callers
-        // must still not turn a changed payload into an authorized FTS write.
-        let bytes = try ArchiveCanonicalJSON.encode(snapshot.messages)
-        guard bytes.count == current.payloadBytes, ArchiveV2Hash.sha256(bytes) == current.normalizedSHA256 else {
+        // Partial range snapshots are rejected above. v1 still hashes the
+        // complete array; v2 hashes the bounded per-message digest manifest.
+        switch current.storageVersion {
+        case CaptureIngestCommitter.normalizedStorageVersionV1:
+            let bytes = try ArchiveCanonicalJSON.encode(snapshot.messages)
+            guard bytes.count == current.payloadBytes, ArchiveV2Hash.sha256(bytes) == current.normalizedSHA256 else {
+                throw CaptureIngestReadinessError.invalidStoredRecord
+            }
+        case CaptureIngestCommitter.normalizedStorageVersionV2:
+            var digests: [CaptureIngestNormalizedMessageDigest] = []
+            digests.reserveCapacity(snapshot.messages.count)
+            var totalBytes = 0
+            for message in snapshot.messages {
+                let bytes = try ArchiveCanonicalJSON.encode(message)
+                let (next, overflow) = totalBytes.addingReportingOverflow(bytes.count)
+                guard !overflow, bytes.count <= CaptureIngestCommitter.maximumNormalizedMessageBytes,
+                      next <= CaptureIngestCommitter.maximumNormalizedStorageBytes else {
+                    throw CaptureIngestReadinessError.invalidStoredRecord
+                }
+                totalBytes = next
+                digests.append(CaptureIngestNormalizedMessageDigest(sha256: ArchiveV2Hash.sha256(bytes),
+                    byteSize: bytes.count, role: message.role))
+            }
+            let manifest = try ArchiveCanonicalJSON.encode(digests)
+            guard manifest.count == current.payloadBytes, ArchiveV2Hash.sha256(manifest) == current.normalizedSHA256 else {
+                throw CaptureIngestReadinessError.invalidStoredRecord
+            }
+        default:
             throw CaptureIngestReadinessError.invalidStoredRecord
         }
         try Store.checkpoint(deadline)

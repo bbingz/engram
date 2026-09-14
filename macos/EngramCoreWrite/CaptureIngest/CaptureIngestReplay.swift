@@ -2,6 +2,7 @@ import CryptoKit
 import Darwin
 import EngramCoreRead
 import Foundation
+import GRDB
 
 public enum CaptureIngestReplayQuarantineReason: String, Equatable, Sendable {
     case invalidManifest
@@ -92,21 +93,46 @@ public enum CaptureIngestReplay {
               exact(manifestMachine, publication.machineID) else {
             throw CaptureIngestReplayError.quarantined(.manifestMismatch)
         }
+        let composite = ArchiveSourceDescriptor.isVSCodeFileSet(manifest) || ArchiveSourceDescriptor.isClineFileSet(manifest) || ArchiveSourceDescriptor.isCopilotFileSet(manifest)
+            || ArchiveSourceDescriptor.isGeminiFileSet(manifest)
+            || ArchiveSourceDescriptor.isKimiFileSet(manifest)
+            || ArchiveSourceDescriptor.isGrokFileSet(manifest)
+            || ArchiveSourceDescriptor.isCursorModernFileSet(manifest)
+        let singleFile = [SourceName.claudeCode, .minimax, .lobsterai, .codex, .qwen, .qoder, .iflow, .commandcode, .pi]
+            .contains { $0.rawValue == manifest.source }
+            && manifest.replayLayout.strategy == .singleFile
+            && manifest.replayLayout.relativePaths.count == 1 && manifest.locator.hasSuffix(".jsonl")
+        let openCodeImage = ArchiveSourceDescriptor.isOpenCodeSessionImage(manifest)
+        let cursorLegacy = ArchiveSourceDescriptor.isCursorLegacySession(manifest)
+        let antigravityCLI = ArchiveSourceDescriptor.isAntigravityCLITranscript(manifest)
+        let windsurfHook = ArchiveSourceDescriptor.isWindsurfHookTranscript(manifest)
         guard exact(publication.representation, "exact-source-v1"), manifest.sessionID == nil,
-              manifest.source == SourceName.claudeCode.rawValue || manifest.source == SourceName.codex.rawValue,
-              manifest.replayLayout.strategy == .singleFile,
-              manifest.replayLayout.relativePaths.count == 1,
-              manifest.locator.hasSuffix(".jsonl") else {
+              singleFile || composite || openCodeImage || cursorLegacy || antigravityCLI || windsurfHook else {
             throw CaptureIngestReplayError.quarantined(.unsupportedCaptureShape)
         }
         let format = try validatedFormat(publication: publication, binding: bindingSnapshot, manifest: manifest)
         let relativePath = try validatedRelativePath(manifest: manifest, binding: bindingSnapshot)
-        guard manifest.rawByteCount <= SessionAdapterFactory.maximumCapturedSourceBytes else {
+        let primary = manifest.replayLayout.files?.first { exact($0.relativePath, relativePath) }
+        let primaryByteCount = primary?.rawByteCount ?? manifest.rawByteCount
+        let primaryHash = primary?.wholeSourceSHA256 ?? manifest.wholeSourceSHA256
+        let maximumByteCount: Int64
+        if cursorLegacy {
+            maximumByteCount = ArchiveCursorLegacySession.maximumEncodedByteCount
+        } else {
+            switch format {
+            case .codex, .claudeCode, .grok: maximumByteCount = SessionAdapterFactory.maximumCapturedJSONLSourceBytes
+            default: maximumByteCount = SessionAdapterFactory.maximumCapturedSourceBytes
+            }
+        }
+        guard manifest.rawByteCount <= maximumByteCount else {
             throw CaptureIngestReplayError.parseFailed(.fileTooLarge)
         }
         let stage = try Staging.create(parent: stagingParent, relativePath: relativePath)
         let outcome: Result<CaptureIngestReplayResult, Error>
         do {
+            if composite { try stage.createCompanions(manifest.replayLayout.files ?? []) }
+            var memberVerifier: ArchiveFileSetByteVerifier?
+            if composite { memberVerifier = try ArchiveFileSetByteVerifier(layout: manifest.replayLayout) }
             var whole = SHA256()
             var byteCount: Int64 = 0
             for chunk in manifest.chunks {
@@ -126,23 +152,40 @@ public enum CaptureIngestReplay {
                       Int64(bytes.count) <= manifest.rawByteCount - byteCount else {
                     throw CaptureIngestReplayError.quarantined(.sourceIntegrityMismatch)
                 }
-                try stage.append(bytes)
+                try memberVerifier?.append(bytes)
+                if let files = manifest.replayLayout.files {
+                    for file in files {
+                        let start = max(byteCount, file.byteOffset)
+                        let end = min(byteCount + Int64(bytes.count), file.byteOffset + file.rawByteCount)
+                        if start < end {
+                            try stage.append(Data(bytes[Int(start - byteCount)..<Int(end - byteCount)]),
+                                relativePath: file.relativePath)
+                        }
+                    }
+                } else {
+                    try stage.append(bytes)
+                }
                 whole.update(data: bytes)
                 byteCount += Int64(bytes.count)
             }
+            try memberVerifier?.finish()
             guard byteCount == manifest.rawByteCount, hex(whole.finalize()) == manifest.wholeSourceSHA256 else {
                 throw CaptureIngestReplayError.quarantined(.sourceIntegrityMismatch)
             }
-            try stage.seal(byteCount: manifest.rawByteCount)
+            try stage.prepareCursorWALRead(manifest: manifest)
+            try stage.seal(byteCount: primaryByteCount)
             try testHooks.beforeParse?(stage.fileURL)
-            try stage.verify(byteCount: manifest.rawByteCount, sha256: manifest.wholeSourceSHA256)
+            try stage.verify(byteCount: primaryByteCount, sha256: primaryHash)
             let parsed = try await SessionAdapterFactory.scanCapturedSource(
                 physicalLocator: stage.fileURL.path, stagingRoot: stage.rootURL.path,
-                logicalLocator: manifest.locator, format: format
+                logicalLocator: manifest.locator, format: format,
+                capturedModificationNanoseconds: manifest.generation.mtimeNs,
+                capturedReplayLayout: manifest.replayLayout,
+                capturedSourceGeneration: manifest.generation
             )
             try Task.checkCancellation()
             try testHooks.afterParse?(stage.fileURL)
-            try stage.verify(byteCount: manifest.rawByteCount, sha256: manifest.wholeSourceSHA256)
+            try stage.verify(byteCount: primaryByteCount, sha256: primaryHash)
             let captured = try requireCompleteScan(parsed)
             guard exact(captured.scan.info.source.rawValue, manifest.source),
                   captured.scan.info.source == bindingSnapshot.source else {
@@ -167,6 +210,8 @@ public enum CaptureIngestReplay {
                 rawSourceSessionID: captured.rawSourceSessionID, nativeIdentity: identity,
                 parentIdentity: parent, suggestedParentIdentity: suggestedParent
             ))
+        } catch is ArchiveV2ValidationError {
+            outcome = .failure(CaptureIngestReplayError.quarantined(.sourceIntegrityMismatch))
         } catch {
             outcome = .failure(error)
         }
@@ -212,14 +257,55 @@ public enum CaptureIngestReplay {
             throw CaptureIngestReplayError.quarantined(.bindingMismatch)
         }
         switch (binding.source, binding.parseFormat) {
-        case (.claudeCode, .claudeDefault): return .claudeCode(forceClaudeCodeSource: false)
+        case (.claudeCode, .claudeDefault), (.minimax, .claudeDefault), (.lobsterai, .claudeDefault): return .claudeCode(forceClaudeCodeSource: false)
         case (.claudeCode, .claudeCustomProfile): return .claudeCode(forceClaudeCodeSource: true)
         case (.codex, .codex): return .codex
+        case (.qwen, .qwen): return .qwen
+        case (.qoder, .qoder): return .qoder
+        case (.iflow, .iflow): return .iflow
+        case (.cline, .cline): return .cline
+        case (.commandcode, .commandcode): return .commandcode
+        case (.copilot, .copilot): return .copilot
+        case (.geminiCli, .geminiCli): return .geminiCli
+        case (.opencode, .opencode): return .opencode
+        case (.kimi, .kimi): return .kimi
+        case (.cursor, .cursor): return .cursor
+        case (.vscode, .vscode): return .vscode
+        case (.antigravity, .antigravityCLITranscript): return .antigravityCLITranscript
+        case (.windsurf, .windsurfHookTranscript): return .windsurfHookTranscript
+        case (.pi, .pi): return .pi
+        case (.grok, .grok): return .grok
         default: throw CaptureIngestReplayError.quarantined(.bindingMismatch)
         }
     }
 
     private static func validatedRelativePath(manifest: ArchiveSourceManifest, binding: CaptureIngestSourceBinding) throws -> String {
+        if ArchiveSourceDescriptor.isCursorLegacySession(manifest),
+           let context = manifest.replayLayout.cursorLegacySession {
+            guard exact(context.databaseLocator, binding.configuredRoot + "/state.vscdb"),
+                  canonicalAbsolutePath(context.databaseLocator) else {
+                throw CaptureIngestReplayError.quarantined(.invalidReplayLayout)
+            }
+            return "session.cursor-legacy.json"
+        }
+        if ArchiveSourceDescriptor.isOpenCodeSessionImage(manifest),
+           let context = manifest.replayLayout.sqliteSession {
+            guard exact(context.databaseLocator, binding.configuredRoot + "/opencode.db"),
+                  canonicalAbsolutePath(context.databaseLocator) else {
+                throw CaptureIngestReplayError.quarantined(.invalidReplayLayout)
+            }
+            return "session.sqlite"
+        }
+        if ArchiveSourceDescriptor.isAntigravityCLITranscript(manifest)
+            || ArchiveSourceDescriptor.isWindsurfHookTranscript(manifest) {
+            let relative = manifest.replayLayout.relativePaths[0]
+            let root = binding.configuredRoot
+            guard canonicalAbsolutePath(root), canonicalAbsolutePath(manifest.locator),
+                  exact(manifest.locator, root + "/" + relative) else {
+                throw CaptureIngestReplayError.quarantined(.invalidReplayLayout)
+            }
+            return relative
+        }
         let root = binding.configuredRoot
         let locator = manifest.locator
         guard canonicalAbsolutePath(root), canonicalAbsolutePath(locator) else {
@@ -230,7 +316,7 @@ public enum CaptureIngestReplay {
             throw CaptureIngestReplayError.quarantined(.invalidReplayLayout)
         }
         let relative = String(decoding: locator.utf8.dropFirst(prefix.utf8.count), as: UTF8.self)
-        let layout = manifest.replayLayout.relativePaths[0]
+        let layout = manifest.replayLayout.entrypointRelativePath ?? manifest.replayLayout.relativePaths[0]
         if exact(layout, relative) { return layout }
         let leaf = root.split(separator: "/").last.map(String.init) ?? ""
         if binding.source == .codex, leaf == "sessions" || leaf == "archived_sessions",
@@ -290,12 +376,24 @@ public enum CaptureIngestReplay {
         private let rootName: String
         private let fileName: String
         private var directories: [Directory] = []
+        private let primaryRelativePath: String
+        private var primaryParentDescriptor: Int32 = -1
+        private struct Companion {
+            let entry: ArchiveFileSetEntry
+            let descriptor: Int32
+            let parent: Int32
+            let name: String
+            var identity: Identity
+        }
+        private var companions: [Companion] = []
         private var fileDescriptor: Int32 = -1
         private var fileIdentity: Identity?
         private var createdRoot = false
+        private var cursorWALReader: DatabaseQueue?
 
         private init(parent: URL, parentDescriptor: Int32, identity: Identity, relativePath: String) {
             parentURL = parent
+            primaryRelativePath = relativePath
             self.parentDescriptor = parentDescriptor
             parentIdentity = identity
             rootName = ".capture-replay-" + UUID().uuidString
@@ -306,6 +404,7 @@ public enum CaptureIngestReplay {
 
         deinit {
             if fileDescriptor >= 0 { _ = Darwin.close(fileDescriptor) }
+            for file in companions { _ = Darwin.close(file.descriptor) }
             for directory in directories.reversed() { _ = Darwin.close(directory.descriptor) }
             _ = Darwin.close(parentDescriptor)
         }
@@ -333,6 +432,7 @@ public enum CaptureIngestReplay {
                     guard Darwin.mkdirat(parent, String(component), 0o700) == 0 else { throw unavailable() }
                     try stage.openCreatedDirectory(parent: parent, name: String(component))
                 }
+                stage.primaryParentDescriptor = stage.directories.last!.descriptor
                 stage.fileDescriptor = Darwin.openat(
                     stage.directories.last!.descriptor, stage.fileName,
                     O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600
@@ -348,18 +448,87 @@ public enum CaptureIngestReplay {
             }
         }
 
-        func append(_ bytes: Data) throws {
+        func createCompanions(_ entries: [ArchiveFileSetEntry]) throws {
+            for entry in entries where !exact(entry.relativePath, primaryRelativePath) {
+                try Task.checkCancellation()
+                let parts = entry.relativePath.split(separator: "/").map(String.init)
+                guard let root = directories.first, let name = parts.last,
+                      rootURL.appendingPathComponent(entry.relativePath).path.utf8.count < Int(PATH_MAX),
+                      parts.allSatisfy({ $0.utf8.count <= Int(NAME_MAX) }) else {
+                    throw CaptureIngestReplayError.quarantined(.invalidReplayLayout)
+                }
+                var parent = root.descriptor
+                for component in parts.dropLast() {
+                    if let existing = directories.first(where: { $0.parentDescriptor == parent && exact($0.name, component) }) {
+                        parent = existing.descriptor
+                    } else {
+                        guard Darwin.mkdirat(parent, component, 0o700) == 0 else { throw Self.unavailable() }
+                        try openCreatedDirectory(parent: parent, name: component)
+                        parent = directories.last!.descriptor
+                    }
+                }
+                let descriptor = Darwin.openat(parent, name, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+                guard descriptor >= 0 else { throw Self.unavailable() }
+                do {
+                    companions.append(Companion(entry: entry, descriptor: descriptor, parent: parent, name: name,
+                        identity: try Self.identity(descriptor)))
+                } catch {
+                    _ = Darwin.close(descriptor)
+                    throw error
+                }
+            }
+            try verifyLinks(sealed: false)
+        }
+
+        func append(_ bytes: Data) throws { try append(bytes, descriptor: fileDescriptor) }
+
+        func append(_ bytes: Data, relativePath: String) throws {
+            if exact(relativePath, primaryRelativePath) { return try append(bytes) }
+            guard let file = companions.first(where: { exact($0.entry.relativePath, relativePath) }) else { throw Self.unsafe() }
+            try append(bytes, descriptor: file.descriptor)
+        }
+
+        private func append(_ bytes: Data, descriptor: Int32) throws {
             try bytes.withUnsafeBytes { buffer in
                 guard let base = buffer.baseAddress else { return }
                 var offset = 0
                 while offset < buffer.count {
                     try Task.checkCancellation()
-                    let count = Darwin.write(fileDescriptor, base.advanced(by: offset), buffer.count - offset)
+                    let count = Darwin.write(descriptor, base.advanced(by: offset), buffer.count - offset)
                     if count < 0, errno == EINTR { continue }
                     guard count > 0 else { throw Self.unavailable() }
                     offset += count
                 }
             }
+        }
+
+        func prepareCursorWALRead(manifest: ArchiveSourceManifest) throws {
+            guard ArchiveSourceDescriptor.isCursorModernFileSet(manifest),
+                  let store = manifest.replayLayout.files?.first(where: { $0.relativePath.hasSuffix("/store.db") }),
+                  manifest.replayLayout.files?.contains(where: {
+                      exact($0.relativePath, store.relativePath + "-wal")
+                  }) == true else { return }
+            try Task.checkCancellation()
+            try verifyLinks(sealed: false)
+            var configuration = Configuration()
+            configuration.readonly = true
+            do {
+                let reader = try DatabaseQueue(path: rootURL.appendingPathComponent(store.relativePath).path,
+                    configuration: configuration)
+                // Initialize SQLite's private SHM before freezing directory
+                // identities. Retain the reader so native parse opens/closes
+                // cannot remove and recreate it inside the sealed tree.
+                _ = try reader.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM sqlite_schema") }
+                cursorWALReader = reader
+            } catch {
+                throw CaptureIngestReplayError.parseFailed(.sqliteUnreadable)
+            }
+            let parent = exact(primaryRelativePath, store.relativePath) ? primaryParentDescriptor
+                : companions.first(where: { exact($0.entry.relativePath, store.relativePath) })?.parent
+            guard let parent, try Self.identity(parent: parent, name: "store.db-shm").safeFile else {
+                throw Self.unsafe()
+            }
+            try verifyLinks(sealed: false)
         }
 
         func seal(byteCount: Int64) throws {
@@ -369,19 +538,32 @@ public enum CaptureIngestReplay {
             }
             fileIdentity = try Self.identity(fileDescriptor)
             guard fileIdentity?.size == byteCount else { throw Self.unsafe() }
+            for index in companions.indices {
+                companions[index].identity = try Self.identity(companions[index].descriptor)
+                guard companions[index].identity.size == companions[index].entry.rawByteCount else { throw Self.unsafe() }
+            }
         }
 
         func verify(byteCount: Int64, sha256: String) throws {
             try Task.checkCancellation()
             try verifyLinks(sealed: true)
             guard fileIdentity?.size == byteCount else { throw Self.unsafe() }
+            try verifyBytes(fileDescriptor, byteCount: byteCount, sha256: sha256)
+            for file in companions {
+                guard file.identity.size == file.entry.rawByteCount else { throw Self.unsafe() }
+                try verifyBytes(file.descriptor, byteCount: file.entry.rawByteCount, sha256: file.entry.wholeSourceSHA256)
+            }
+            try verifyLinks(sealed: true)
+        }
+
+        private func verifyBytes(_ descriptor: Int32, byteCount: Int64, sha256: String) throws {
             var hasher = SHA256()
             var offset: Int64 = 0
             var buffer = [UInt8](repeating: 0, count: 64 * 1024)
             while true {
                 try Task.checkCancellation()
                 let limit = Int(min(Int64(buffer.count), byteCount - offset + 1))
-                let count = buffer.withUnsafeMutableBytes { Darwin.pread(fileDescriptor, $0.baseAddress, limit, off_t(offset)) }
+                let count = buffer.withUnsafeMutableBytes { Darwin.pread(descriptor, $0.baseAddress, limit, off_t(offset)) }
                 if count < 0, errno == EINTR { continue }
                 guard count >= 0 else { throw Self.unavailable() }
                 if count == 0 { break }
@@ -390,7 +572,6 @@ public enum CaptureIngestReplay {
                 offset += Int64(count)
             }
             guard offset == byteCount, hex(hasher.finalize()) == sha256 else { throw Self.unsafe() }
-            try verifyLinks(sealed: true)
         }
 
         private func verifyLinks(sealed: Bool) throws {
@@ -404,11 +585,18 @@ public enum CaptureIngestReplay {
                       descriptor.sameInode(directory.identity), path.sameInode(descriptor),
                       !sealed || (descriptor == directory.identity && path == descriptor) else { throw Self.unsafe() }
             }
-            guard let expected = fileIdentity, let parent = directories.last?.descriptor else { throw Self.unsafe() }
+            guard let expected = fileIdentity, primaryParentDescriptor >= 0 else { throw Self.unsafe() }
+            let parent = primaryParentDescriptor
             let descriptor = try Self.identity(fileDescriptor)
             let path = try Self.identity(parent: parent, name: fileName)
             guard descriptor.safeFile, path.safeFile, descriptor.sameInode(expected), path.sameInode(descriptor),
                   !sealed || (descriptor == expected && path == descriptor) else { throw Self.unsafe() }
+            for file in companions {
+                let descriptor = try Self.identity(file.descriptor)
+                let path = try Self.identity(parent: file.parent, name: file.name)
+                guard descriptor.safeFile, path.safeFile, descriptor.sameInode(file.identity), path.sameInode(descriptor),
+                      !sealed || (descriptor == file.identity && path == descriptor) else { throw Self.unsafe() }
+            }
         }
 
         private func openCreatedDirectory(parent: Int32, name: String) throws {
@@ -427,6 +615,8 @@ public enum CaptureIngestReplay {
         }
 
         func cleanup() throws {
+            try cursorWALReader?.close()
+            cursorWALReader = nil
             guard createdRoot else { return }
             if let root = directories.first {
                 try Self.removeContents(root.descriptor)
