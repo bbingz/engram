@@ -1,0 +1,91 @@
+#!/bin/zsh
+set -euo pipefail
+umask 077
+
+fail() {
+  print -r -u2 -- "engram-collector-launch: invalid or missing launch arguments"
+  exit 64
+}
+
+valid_absolute_path() {
+  local candidate="$1"
+  [[ "$candidate" == /* && "$candidate" != / && "$candidate" != */ &&
+     "$candidate" != *'__ENGRAM_'* && ${#candidate} -le 4096 ]] || return 1
+  case "$candidate" in
+    *//* | */./* | */../* | */. | */..) return 1 ;;
+  esac
+}
+
+typeset -A launch_paths
+typeset -a required_flags=(--package-root --expected-home --settings --credentials-file)
+dry_run=0
+while (( $# > 0 )); do
+  argument="$1"
+  case "$argument" in
+    --dry-run)
+      (( dry_run == 0 )) || fail
+      dry_run=1
+      shift
+      ;;
+    --package-root | --expected-home | --settings | --credentials-file)
+      (( $# >= 2 )) || fail
+      [[ -z "${launch_paths[$argument]-}" ]] || fail
+      valid_absolute_path "$2" || fail
+      launch_paths[$argument]="$2"
+      shift 2
+      ;;
+    *) fail ;;
+  esac
+done
+for argument in "${required_flags[@]}"; do
+  [[ -n "${launch_paths[$argument]-}" ]] || fail
+done
+
+launch_executable="${launch_paths[--package-root]}/bin/EngramCollector"
+typeset -a product_arguments=(--settings "${launch_paths[--settings]}"
+  --credentials-file "${launch_paths[--credentials-file]}")
+
+# JSON uses only shell builtins. Argument strings are never evaluated.
+json_string() {
+  local json_value="$1" json_character json_number
+  printf '"'
+  while [[ -n "$json_value" ]]; do
+    json_character="${json_value[1]}"
+    json_value="${json_value[2,-1]}"
+    case "$json_character" in
+      '"') printf '\\"' ;;
+      '\') printf '\\\\' ;;
+      *)
+        if [[ "$json_character" == [[:cntrl:]] ]]; then
+          printf -v json_number '%d' "'$json_character"
+          printf '\\u%04x' "$json_number"
+        else
+          printf '%s' "$json_character"
+        fi
+        ;;
+    esac
+  done
+  printf '"'
+}
+
+if (( dry_run )); then
+  # This is a launch plan, not an installation plan or a runtime check.
+  printf '{"kind":"launch-plan","role":"collector","executable":'
+  json_string "$launch_executable"
+  printf ',"arguments":['
+  separator=''
+  for argument in "${product_arguments[@]}"; do
+    printf '%s' "$separator"
+    json_string "$argument"
+    separator=','
+  done
+  printf '],"environment":{'
+  :
+  printf '},"expectedHome":'
+  json_string "${launch_paths[--expected-home]}"
+  printf ',"installs":false,"executes":false}\n'
+  exit 0
+fi
+
+# expected-home is descriptive only; Collector has no such CLI option.
+exec "$launch_executable" "${product_arguments[@]}"

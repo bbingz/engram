@@ -62,6 +62,18 @@ public enum CJKText {
         rawTokens.map { "\"" + $0.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
     }
 
+    /// Whether a search token can be served by the product FTS5 trigram index
+    /// (`tokenize='trigram case_sensitive 0'`). Trigram MATCH is a substring
+    /// match over unicode code points, so any token of three or more scalars —
+    /// Latin or CJK — is index-served and equivalent to `LIKE '%token%'`.
+    /// Shorter tokens have no trigram and must fall back to a LIKE content scan.
+    /// Routing by scalar count (not `containsCJK`) matters at corpus scale: the
+    /// HQ index holds ~780k FTS rows, where one LIKE scan costs seconds while
+    /// MATCH answers in milliseconds.
+    public static func usesTrigramMatch(_ token: String) -> Bool {
+        token.unicodeScalars.count >= 3
+    }
+
     /// FTS5 trigram cannot represent one-character Latin terms, and LIKE on
     /// those terms causes severe substring over-recall. CJK stays eligible at
     /// any length; two-character Latin terms keep the existing LIKE fallback.

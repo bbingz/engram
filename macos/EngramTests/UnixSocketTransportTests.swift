@@ -390,6 +390,34 @@ final class UnixSocketTransportTests: XCTestCase {
         XCTAssertEqual(deadline.timeIntervalSince(now), 600, accuracy: 0.001)
     }
 
+    func testLegacyFrameDeadlineKeepsItsMinimumSeparateFromRawExchangeDeadline() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        for timeout in [nil, 0.1, 2, 30] as [TimeInterval?] {
+            XCTAssertEqual(
+                UnixSocketEngramServiceTransport.frameDeadline(requestTimeout: timeout, now: now)
+                    .timeIntervalSince(now),
+                30, accuracy: 0.001
+            )
+        }
+    }
+
+    func testExplicitRequestTimeoutIsNotCappedByDefaultConnectTimeout() async throws {
+        let socketPath = temporarySocketPath()
+        let server = try UnixSocketFixtureServer(socketPath: socketPath) { request in
+            Thread.sleep(forTimeInterval: 0.2)
+            return try JSONEncoder().encode(
+                EngramServiceResponseEnvelope.success(requestId: request.requestId, result: Data([1]))
+            )
+        }
+        defer { server.stop() }
+        let transport = UnixSocketEngramServiceTransport(socketPath: socketPath, connectTimeout: 0.05)
+        let request = EngramServiceRequestEnvelope(command: "fixture-read")
+
+        let response = try await transport.send(request, timeout: 1)
+
+        XCTAssertEqual(response, .success(requestId: request.requestId, result: Data([1])))
+    }
+
     func testRoundTripDecodesTypedStatus() async throws {
         let socketPath = temporarySocketPath()
         let server = try UnixSocketFixtureServer(socketPath: socketPath) { request in
@@ -522,6 +550,30 @@ final class UnixSocketTransportTests: XCTestCase {
             guard case EngramServiceError.invalidRequest = error else {
                 return XCTFail("Expected invalidRequest, got \(error)")
             }
+        }
+    }
+
+    func testFrameHelpersPreserveBlockingAndNonblockingDescriptorFlags() throws {
+        for nonblocking in [false, true] {
+            var fds: [Int32] = [-1, -1]
+            XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds), 0)
+            defer { close(fds[0]); close(fds[1]) }
+            if nonblocking {
+                for fd in fds {
+                    let original = fcntl(fd, F_GETFL)
+                    XCTAssertGreaterThanOrEqual(original, 0)
+                    XCTAssertEqual(fcntl(fd, F_SETFL, original | O_NONBLOCK), 0)
+                }
+            }
+            // Darwin adds FWASWRITTEN after a write. Compare the FCNTLFLAGS
+            // settable mask, not that kernel-maintained observation bit.
+            let mutableFlags = O_NONBLOCK | O_APPEND | O_ASYNC | O_FSYNC | O_DSYNC
+            let originalFlags = fds.map { fcntl($0, F_GETFL) & mutableFlags }
+
+            try UnixSocketEngramServiceTransport.writeFrame(Data([1, 2, 3]), to: fds[0])
+            XCTAssertEqual(try UnixSocketEngramServiceTransport.readFrame(from: fds[1]), Data([1, 2, 3]))
+
+            XCTAssertEqual(fds.map { fcntl($0, F_GETFL) & mutableFlags }, originalFlags)
         }
     }
 

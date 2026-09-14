@@ -8,6 +8,11 @@ struct FileIdentity: Equatable, Sendable {
 
 struct ParserLimits: Equatable, Sendable {
     static let `default` = ParserLimits()
+    static let capturedJSONL = ParserLimits(
+        maxFileBytes: 1024 * 1024 * 1024,
+        maxLineBytes: 32 * 1024 * 1024,
+        maxMessages: 100_000
+    )
 
     var maxFileBytes: Int64
     var maxLineBytes: Int

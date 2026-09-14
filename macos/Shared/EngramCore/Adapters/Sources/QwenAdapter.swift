@@ -62,98 +62,175 @@ final class QwenAdapter: SessionAdapter, Sendable {
                     return .failure(failure)
                 }
             }
-
-            var sessionId = ""
-            var cwd = ""
-            var model: String?
-            var startTime = ""
-            var endTime = ""
-            var userCount = 0
-            var assistantCount = 0
-            var toolCount = 0
-            var systemCount = 0
-            var firstUserText = ""
-
-            for object in objects {
-                if sessionId.isEmpty, let value = JSONLAdapterSupport.string(object["sessionId"]) {
-                    sessionId = value
-                }
-                guard let type = JSONLAdapterSupport.string(object["type"]),
-                      type == "user" || type == "assistant" || type == "tool_result"
-                else {
-                    continue
-                }
-
-                if cwd.isEmpty, let value = JSONLAdapterSupport.string(object["cwd"]) {
-                    cwd = value
-                }
-                if model == nil, let value = JSONLAdapterSupport.string(object["model"]) {
-                    model = value
-                }
-                if startTime.isEmpty, let value = JSONLAdapterSupport.string(object["timestamp"]) {
-                    startTime = value
-                }
-                if let value = JSONLAdapterSupport.string(object["timestamp"]) {
-                    endTime = value
-                }
-
-                if type == "assistant" {
-                    assistantCount += 1
-                } else if type == "tool_result" {
-                    toolCount += 1
-                } else {
-                    let message = JSONLAdapterSupport.object(object["message"])
-                    let text = Self.extractContent(message)
-                    if Self.isSystemInjection(text) {
-                        systemCount += 1
-                    } else {
-                        userCount += 1
-                        if firstUserText.isEmpty { firstUserText = text }
-                    }
-                }
-            }
-
-            guard !sessionId.isEmpty else { return .failure(.malformedJSON) }
-            guard userCount + assistantCount + toolCount > 0 else { return .failure(.noVisibleMessages) }
-            if startTime.isEmpty,
-               let modificationDate = try? FileManager.default.attributesOfItem(atPath: locator)[.modificationDate] as? Date
-            {
-                startTime = Phase4AdapterSupport.isoFromSeconds(modificationDate.timeIntervalSince1970)
-            }
-
-            return .success(
-                NormalizedSessionInfo(
-                    id: sessionId,
-                    source: .qwen,
-                    startTime: startTime,
-                    endTime: endTime != startTime ? endTime : nil,
-                    cwd: cwd,
-                    project: nil,
-                    model: model,
-                    messageCount: userCount + assistantCount + toolCount,
-                    userMessageCount: userCount,
-                    assistantMessageCount: assistantCount,
-                    toolMessageCount: toolCount,
-                    systemMessageCount: systemCount,
-                    summary: firstUserText.isEmpty ? nil : firstUserText,
-                    filePath: locator,
-                    sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
-                    indexedAt: nil,
-                    agentRole: nil,
-                    originator: nil,
-                    origin: nil,
-                    summaryMessageCount: nil,
-                    tier: nil,
-                    qualityScore: nil,
-                    parentSessionId: nil,
-                    suggestedParentId: nil
-                )
-            )
+            return Self.sessionInfo(from: objects, locator: locator)
         } catch let failure as ParserFailure {
             return .failure(failure)
         } catch {
             return .failure(.malformedJSON)
         }
+    }
+
+    static func scanCapturedSource(
+        physicalLocator: String,
+        logicalLocator: String,
+        capturedModificationNanoseconds: Int64? = nil
+    ) throws -> AdapterParseResult<CapturedSourceScan> {
+        try scanFileForIndexing(
+            physicalLocator: physicalLocator, logicalLocator: logicalLocator,
+            limits: .default, strictRecords: true,
+            capturedModificationNanoseconds: capturedModificationNanoseconds
+        )
+    }
+
+    private static func scanFileForIndexing(
+        physicalLocator: String, logicalLocator: String, limits: ParserLimits, strictRecords: Bool,
+        capturedModificationNanoseconds: Int64? = nil
+    ) throws -> AdapterParseResult<CapturedSourceScan> {
+        do {
+            let (objects, failure) = try JSONLAdapterSupport.readObjects(
+                locator: physicalLocator,
+                limits: limits,
+                reportFailures: true,
+                strictRecords: strictRecords,
+                countsTowardMessageLimit: Self.countsTowardMessageLimit
+            )
+            if let failure, failure != .fileModifiedDuringParse { return .failure(failure) }
+            let messages = Self.messages(from: objects)
+            if failure == .fileModifiedDuringParse, messages.isEmpty {
+                return .failure(.fileModifiedDuringParse)
+            }
+            let info: NormalizedSessionInfo
+            switch Self.sessionInfo(
+                from: objects, locator: logicalLocator, physicalLocator: physicalLocator,
+                capturedModificationNanoseconds: capturedModificationNanoseconds
+            ) {
+            case .failure(let reason): return .failure(reason)
+            case .success(let value): info = value
+            }
+            let checkpoint = failure == nil
+                ? try JSONLAdapterSupport.checkpoint(locator: physicalLocator, limits: limits)
+                : nil
+            let checkpointBoundaryHash = checkpoint?.parsedOffset == info.sizeBytes
+                ? checkpoint?.boundaryHash
+                : nil
+            return .success(
+                CapturedSourceScan(
+                    scan: IndexingScan(
+                        info: info,
+                        messages: messages,
+                        parseFailure: failure,
+                        checkpointParsedOffset: checkpoint?.parsedOffset,
+                        checkpointBoundaryHash: checkpointBoundaryHash
+                    ),
+                    rawSourceSessionID: info.id
+                )
+            )
+        } catch is CancellationError where strictRecords {
+            throw CancellationError()
+        } catch let failure as ParserFailure {
+            return .failure(failure)
+        } catch {
+            return .failure(.malformedJSON)
+        }
+    }
+
+    private static func sessionInfo(
+        from objects: [JSONLAdapterSupport.JSONObject],
+        locator: String,
+        physicalLocator: String? = nil,
+        capturedModificationNanoseconds: Int64? = nil
+    ) -> AdapterParseResult<NormalizedSessionInfo> {
+        var sessionId = ""
+        var cwd = ""
+        var model: String?
+        var startTime = ""
+        var endTime = ""
+        var userCount = 0
+        var assistantCount = 0
+        var toolCount = 0
+        var systemCount = 0
+        var firstUserText = ""
+
+        for object in objects {
+            if sessionId.isEmpty, let value = JSONLAdapterSupport.string(object["sessionId"]) {
+                sessionId = value
+            }
+            guard let type = JSONLAdapterSupport.string(object["type"]),
+                  type == "user" || type == "assistant" || type == "tool_result"
+            else {
+                continue
+            }
+
+            if cwd.isEmpty, let value = JSONLAdapterSupport.string(object["cwd"]) {
+                cwd = value
+            }
+            if model == nil, let value = JSONLAdapterSupport.string(object["model"]) {
+                model = value
+            }
+            if startTime.isEmpty, let value = JSONLAdapterSupport.string(object["timestamp"]) {
+                startTime = value
+            }
+            if let value = JSONLAdapterSupport.string(object["timestamp"]) {
+                endTime = value
+            }
+
+            if type == "assistant" {
+                assistantCount += 1
+            } else if type == "tool_result" {
+                toolCount += 1
+            } else {
+                let message = JSONLAdapterSupport.object(object["message"])
+                let text = Self.extractContent(message)
+                if Self.isSystemInjection(text) {
+                    systemCount += 1
+                } else {
+                    userCount += 1
+                    if firstUserText.isEmpty { firstUserText = text }
+                }
+            }
+        }
+
+        guard !sessionId.isEmpty else { return .failure(.malformedJSON) }
+        guard userCount + assistantCount + toolCount > 0 else { return .failure(.noVisibleMessages) }
+        let sizeLocator = physicalLocator ?? locator
+        if startTime.isEmpty {
+            if let capturedModificationNanoseconds {
+                startTime = Phase4AdapterSupport.isoFromSeconds(
+                    Double(capturedModificationNanoseconds) / 1_000_000_000
+                )
+            } else if let modificationDate = try? FileManager.default.attributesOfItem(atPath: sizeLocator)[.modificationDate] as? Date {
+                startTime = Phase4AdapterSupport.isoFromSeconds(modificationDate.timeIntervalSince1970)
+            }
+        }
+
+        return .success(
+            NormalizedSessionInfo(
+                id: sessionId,
+                source: .qwen,
+                startTime: startTime,
+                endTime: endTime != startTime ? endTime : nil,
+                cwd: cwd,
+                project: nil,
+                model: model,
+                messageCount: userCount + assistantCount + toolCount,
+                userMessageCount: userCount,
+                assistantMessageCount: assistantCount,
+                toolMessageCount: toolCount,
+                systemMessageCount: systemCount,
+                summary: firstUserText.isEmpty ? nil : firstUserText,
+                filePath: locator,
+                sizeBytes: JSONLAdapterSupport.fileSize(locator: sizeLocator),
+                indexedAt: nil,
+                agentRole: nil,
+                originator: nil,
+                origin: nil,
+                summaryMessageCount: nil,
+                tier: nil,
+                qualityScore: nil,
+                parentSessionId: nil,
+                suggestedParentId: nil
+            )
+        )
     }
 
     func streamMessages(

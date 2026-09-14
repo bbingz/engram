@@ -1,11 +1,12454 @@
 # Changelog
 
+## `agents=all` / `agents=only` at HQ scale: pin the visible-session driver (2026-09-14, r15–r17)
+
+With the default `agents=hide`, every list, tool and file statement carries
+`parent_session_id IS NULL AND suggested_parent_id IS NULL`, and those two
+extra equalities make the planner take the covering partial
+`idx_sessions_web_list_keys` on its own. `agents=all` and `agents=only` leave
+`hidden_at IS NULL` as the only index constraint on `sessions`; on the
+statistics-free HQ database the planner takes `idx_sessions_visible` and reads
+every visible session's row, 44k of which 32k are skip-tier and discarded.
+Measured on r14 through the remote server: Sessions "All" 1.85s, Tools
+`agents=all` 503 at 2.08s, Files `agents=all` 503 at 2.00s; with a `query`,
+Sessions "All" 1.6–1.8s uncached.
+
+`ServiceWebMetadataProducer.sessionsJoinSQL(agents:on:)` writes the
+`sessions s` join as `INDEXED BY idx_sessions_activity_time` for `.all` and
+`.only` — the migration-owned skip-excluding partial index, present wherever
+the schema is — and leaves `.hide` alone. It is used by the list statement
+(`sessionRows` without id batch or identity-first search), the total
+(`sessionCount`, including the search total, whose plain join was planned
+from `idx_sessions_visible` with the FTS hit set as a filter: 1.65s → 0.02s on
+the live database), `toolAnalyticsRows` and `fileActivityRows`. The live id
+batch — the freshness re-check of one page, at most 50 ids — is pinned to the
+primary key (`primaryKeyJoinSQL`, `INDEXED BY sqlite_autoindex_sessions_1` only
+when `sqlite_master` lists that index, else the plain join): with `agents=all`
+and a `query` it too was planned from `idx_sessions_visible` and re-read all
+44k rows to re-check 20 ids (950 of 1,200 CPU samples of one request).
+Identity-first search keeps its `CROSS JOIN`.
+
+HQ on r17, uncached, nothing else running: Sessions `agents=all` 0.07s (r14
+1.85s), `agents=all&query=xcodegen` 0.13s (1.62–1.82s), `agents=all&query=engram`
+0.23s, `agents=all&source=codex&query=swift` 0.32s, `agents=only` 0.12s; Tools
+`agents=all` 0.38–0.59s (503), Files `agents=all` 1.14s (503), Files default
+0.38–0.96s, Tools by session 0.60s. In the browser: Sessions "All" 1–50 of
+6,545, "All" + `xcodegen` 1–50 of 122, "Agents Only" 0 sessions (every agent
+session on HQ is skip-tier), Stats → Tools grouped by session with agents
+"All" 1,215,122 calls · 5,380 groups, Stats → Files rows, Child sessions tab
+"No child sessions" without the earlier "unavailable".
+
+`testAgentsAllPinsSessionsToSkipExcludingIndex_repro` traces the tool
+statement for `.hide`, `.all` and `.only`, requires the pin on the latter two
+and not the first, and `EXPLAIN`s the traced `.all` statement on the
+statistics-free fixture (must use `idx_sessions_activity_time`, never
+`idx_sessions_visible`); the existing `.all` search assertion in
+`WebMetadataProducerTests` now also runs with `agents: .all` so the pinned
+total and the identity-first page must agree. Packages r15 (EngramServiceCore
+`983f129e…4e4d3`, activated 09:30:54), r16 (`0bc482eb…4fe32`, 09:37:46, search
+total), r17 (`369f3ddd…5d83d`, 09:46:58, id batch), each with the previous
+job at `state/service-index/persistent/web-parity-20260913-r1N-job-before.plist`.
+Test lanes (Grok, Herdr `wH:p2`, Debug): `children-plan-lanes-10.log` 106/106,
+`children-plan-lanes-11.log` 106/106, `children-plan-lanes-12.log` 105/106 with
+the known load-sensitive costs test failing `stale` under the concurrent
+Release build and passing in isolation (`…-12-costs-rerun.log`); costs does not
+touch the changed statements.
+
+Residual: Files `agents=all` at 1.14s is the slowest Web request left; it
+reads 11.8k session rows through the non-covering activity index. A covering
+partial index for the `.all` set would need a migration and is not done here.
+The two-scalar search token (`测试`) as a *sessions-list* filter still exceeds
+the 2s metadata deadline (503) as documented on 09-13; the Search page (8s)
+is unaffected.
+
+## Child sessions and Stats → Files on a statistics-free HQ database (2026-09-14, r13/r14)
+
+The r10 entry below claimed the children fix brought HQ to 0.215s cold. That
+number was measured against a copy of the HQ database on which `ANALYZE` had
+been run while diagnosing; the live `index.sqlite` has no `sqlite_stat1` at
+all (the service never analyses it), and on it the r10/r11 statement still
+took 1.53s per uncached request: without statistics SQLite assumes every
+indexed equality returns about ten rows, so it preferred the partial
+`idx_sessions_visible (hidden_at=?)`, which matches every one of HQ's 44k
+visible sessions, over the two parent indexes. The browser only avoided the
+503 because r11 landed 0.3s under the deadline; the "1.08s first, then 0.03s"
+pattern was the producer's short-lived lease, not the query.
+
+`childRows` now sends `childVisibilitySQL`: the three privacy terms are written
+`+s.hidden_at IS NULL`, `+s.source = i.source …`, `+s.authoritative_node = …`.
+The unary plus stops each term from acting as an index constraint (SQLite's
+documented planner hint), which removes `idx_sessions_visible` and also
+`idx_sessions_source`, the plan the fixture exposed next when a policy has few
+enabled sources (`s.source = i.source AND i.source IN (…)` is propagated
+transitively). With neither available the multi-index OR over
+`idx_sessions_parent` and `idx_sessions_suggested_parent` is the only cheap
+plan whether statistics exist or not; the list statements keep the plain
+columns. Verified read-only on the live database: 0.08s for the parent with
+2,315 (skip-tier, therefore not shown) children, `MULTI-INDEX OR` for one and
+for four enabled sources. `testChildrenStatementUsesBothParentIndexes_repro`
+replaces the single-table eligibility check: it `EXPLAIN`s the statement the
+producer actually traced, on the fixture (which, like HQ, has no statistics)
+and requires both parent indexes and no `idx_sessions_visible`,
+`idx_sessions_source`, `SCAN s` or `SCAN i`. Through the deployed remote
+server on r13: 0.088s for the first request after the restart, 0.013–0.019s
+uncached afterwards (r11: 1.29–1.69s).
+
+Stats → Files returned 503 on every request (2.00s) once r11's backfill filled
+`session_files` with 190,039 rows. A CPU sample of one request: the snapshot
+read alone was 1.26s and the freshness re-check repeats it. Of that,
+`fileActivityLabel` → `TranscriptRedactionPolicy.redact` ~0.5s and
+`publishedProjectKey` (SHA-256 + hex) ~0.25s for the ~16k distinct paths, and
+`Row.fetchAll` 0.36s; in the CLI the statement's `ORDER BY s.id, file_path,
+action` temp B-tree was 0.46s of a 0.50s statement (23,151 joined rows after
+the default agent filter). `fileActivityRows` now runs the statement without
+`ORDER BY` and makes each group's authority a digest over its sorted per-row
+digests, so equal row sets give equal authorities in any physical order;
+`FileActivityRecord` stores path, key and counts and derives the label on
+`.item`, so only the returned page pays redaction; keys are memoized in a
+bounded per-producer `FileKeyCache` (a pure function of the path) shared by
+the snapshot read, the re-check and later requests; cursor matching uses the
+stored key. `testFileActivityStatementIsUnsortedAndAuthorityIgnoresRowOrder_repro`
+traces the statement (no `ORDER BY`) and continues a page from the same
+snapshot after the rows were deleted and reinserted in reverse order.
+
+Packages: `service-index-web-parity-20260913-r13` (children; EngramServiceCore
+`ec01f34b…30cdf3`) activated 09:05:59 with the r11 job kept at
+`state/service-index/persistent/web-parity-20260913-r13-job-before.plist`;
+r12 was built with only the `hidden_at` term de-indexed and never activated.
+`service-index-web-parity-20260913-r14` (file activity; EngramServiceCore
+`e7b7dad0…7755d4`) activated 09:16:12 with the r13 job kept at
+`…-r14-job-before.plist`. HQ through the remote server, nothing else running:
+`/web/api/file-activity?limit=50` 503 at 2.00s on r11–r13 → 0.94s first and
+uncached, 0.37s cached, second page 0.98s; 13,340 files / 46,424 operations;
+`project=engram` 0.18s. Stats → Files renders rows in the browser (top entry
+`-NetWork- › Safeline › BLOCKED-IPS.md`, 1,118 reads, 6 sessions).
+`tool-analytics` on r14: session 1.67s first after the restart then
+0.46–0.62s, tool 0.29s, project 0.29–0.34s. Test lanes (Grok, Herdr `wH:p2`,
+Debug): `children-plan-lanes-7.log` failed as intended on the
+`idx_sessions_source` plan, `children-plan-lanes-8.log` 4/4 after the
+three-term fix, `children-plan-lanes-9.log` 15/15 (WebFileActivity 6,
+WebChildren 4, WebToolAnalytics 5) for the file-activity change.
+
+Still open after r14 and fixed in r15 (next entry): every `agents=all` /
+`agents=only` statement (Sessions "All", Tools, Files) is planned from
+`idx_sessions_visible` on the statistics-free database and reads all 44k
+visible session rows; r14 measured Tools `agents=all` 503 at 2.08s, Files
+`agents=all` 503 at 2.00s, Sessions `agents=all` 1.85s, `agents=only` 0.08–0.81s.
+
+## Backfill `session_files` on HQ: the file-activity repair never got past its own candidate query (2026-09-14)
+
+HQ had `session_files` at 0 rows although `CaptureIngestFileActivity` shipped in
+r8 and 38,780 current parsed heads were eligible. The startup repair task
+(`ServiceCaptureIngestRuntime.boundedFileActivityRepair`, 4 heads per gate
+write under a 2s deadline) never repaired or marked anything and never stored a
+resume cursor. Measured read-only against the HQ database: the candidate
+`SELECT … ORDER BY g.generation_id LIMIT 4` took 14.7–15.6s because SQLite
+started from `idx_capture_ingest_pending` on the ledger, joined every current
+head and sorted the lot in a temp B-tree before applying the limit, so the
+deadline checkpoint after the fetch threw `deadlineExceeded` on every process
+start. The commit path was not at fault: the only publications ingested after
+r8 were eight Codex sessions without file tool calls.
+
+`CaptureIngestFileActivity.repairCurrentGenerations` now issues the candidate
+statement from `capture_ingest_generations` with `CROSS JOIN`, so the planner
+walks the `generation_id`-leading index in order and probes bindings, sessions
+and ledger per row: 5ms cold for the first batch, 14ms from a cursor 30k rows
+in, 4.1s only for a full no-match traversal that returns nothing. The deadline
+semantics also changed for the batch that contains a slow head: a deadline hit
+after at least one head completed now ends the batch and keeps the committed
+heads and cursor (previously the whole write rolled back and the task ended, so
+that batch could never progress across restarts), and a head whose own load
+exhausts the budget is skipped for this process start instead of stalling every
+later head. HQ stores 44 v2 generations of 5–87 MB and 93 v1 generations over
+5 MB, so this case is real. Three `_repro` tests in `CaptureIngestCommitTests`
+cover the plan (no `TEMP B-TREE`, `SCAN g` first), the mid-batch deadline and
+the single-slow-head skip; all three fail on the previous code (plan starts
+with `SEARCH l …`, both deadline cases throw `deadlineExceeded`) and pass now.
+
+The change compiled into `service-index-web-parity-20260913-r11` (activated by
+the parallel Web lane at 08:40:58) and ran on HQ without intervention: 38,779
+heads repaired in one finite traversal between 08:41 and 08:46, 190,039
+`session_files` rows across 22,925 sessions (184,347 read / 5,263 edit / 429
+write), resume cursor cleared. `/web/api/file-activity?limit=50` now returns
+real rows (top entry `-NetWork- › Safeline › BLOCKED-IPS.md`, 1,118 reads
+across 6 sessions) but takes 1.95–2.00s on HQ and alternates 200/503 against
+the 2s metadata deadline, and answered 409 while the backfill was still
+writing. Stats → Files therefore moved from "empty" to "borderline"; the read
+side (`fileActivityRows` sorts 190k rows by session, path and action and the
+freshness check re-aggregates) is the next item and is not touched here.
+
+Verification: `EngramCoreTests/CaptureIngestCommitTests` 107/107 in an isolated
+DerivedData (`/tmp/engram-wh4-lane/capture-commit-lane.log`);
+`ServiceCaptureIngestRuntimeTests` + `WebFileActivityProducerTests` 17/19, the
+two failures being the pre-existing `ENGRAM_DEMO_EXPECTED_HOME` integration
+gates that fail at `XCTUnwrap` before running (`service-runtime-lane.log`);
+before-fix run of the three repro tests 0/3 (`capture-commit-before.log`). No
+Release build or activation was performed by this lane. Also observed while
+here: all 577 HQ ledger quarantines carry `parse.noVisibleMessages`
+(claude-code 473, cursor 57, codex 35, qoder 5, vscode 5, opencode 2); the
+Cursor count on the Health page is this class, not a Cursor-specific parser
+failure, and was not investigated further.
+
+Follow-up sweep (09:00–09:30, read-only, no code changed): after the parallel
+lane's r14 activated, `/web/api/file-activity?limit=50` measured 1.25s cold /
+0.34s warm on HQ, closing the borderline item above. Every other GET read
+endpoint was probed twice with the browser's parameters
+(`/tmp/engram-wh4-lane/probe/sweep.sh`, `sweep2.sh`); three remain at or over
+their deadline. (1) `/web/api/overview` without `limit` defaults to 50 and
+computes all 17 capture streams in one request: 2.85s on HQ (`readyCount`
+2.07s across streams, of which claude-code 0.84s and codex 0.74s, plus the
+per-stream ledger `GROUP BY` 0.77s), a deterministic 503. The Web UI walks it
+with `limit=2` over nine pages (slowest pages 0.91s and 1.20s warm, all 200),
+so the page is unaffected; the API default is what does not fit HQ. (2) A
+two-scalar CJK query (`query=修复`) takes 5.0–6.2s: below three scalars there
+is no trigram, so `keywordSearch` materializes `m0_hits` from a `LIKE` scan of
+all 777,468 `sessions_fts` rows (379 MB of content). It sits inside the 8s
+search deadline today but will cross it as the corpus grows; `instr()` and
+`GLOB` measured 5.8–6.5s, so there is no cheaper operator, only a design
+change (recency-ordered early termination via `fts_map`, which currently maps
+all 777,464 rows 1:1, or a short-term index). (3) The Health card's "Parsed"
+count reads as a backlog but is a terminal state: all 32,138 `parsed` heads
+are `tier = skip` (28,654 `agent_role = subagent`, then codex
+explorer/worker/awaiter and Polycli `dispatched` roles); `ensureCurrentCaptureFTSJob`
+creates no FTS job for skip sessions, so readiness never promotes them to
+`index_ready` by design. A label or split count would remove the ambiguity.
+Also checked, on a `VACUUM INTO` copy of the HQ database under `/tmp` and never
+on the live file: `ANALYZE` takes 3.5s and makes the original children
+statement pick the multi-index OR on its own, but the pre-r11 repair candidate
+query still takes 2.06s with statistics (the `CROSS JOIN` rewrite above was
+necessary regardless) and an approximation of the sessions first-page statement
+moved from 1ms to 18ms with a full temp B-tree sort. Recommendation: keep the
+per-statement plan fixes and do not introduce a database-wide `ANALYZE`
+(`/tmp/engram-wh4-lane/probe/analyze-before.txt`, `analyze-after.txt`).
+
+## Fix the tool-analytics session grouping and the Child sessions tab on HQ (2026-09-14)
+
+`com.engram.service-index` now executes `service-index-web-parity-20260913-r10`
+(EngramServiceCore `94fd82af…ef0be3`; the launcher binary `40c33aa4…a754de` is
+unchanged between r9 and r10 because the code lives in the framework),
+activated by `activate-web-parity-role.py` with the previous jobs kept at
+`state/service-index/persistent/web-parity-20260913-r{9,10}-job-before.plist`.
+The remote server stays on r5. r9 carried the `ByteKey` fix below; r10 adds the
+children-predicate fix.
+
+Child sessions returned 503 in the browser: `GET /web/api/sessions/{id}/children`
+took 1.96–2.00s on the first request for a session (0.03–0.93s afterwards)
+because `childRows` wrote the parent test as
+`(s.parent_session_id = ? COLLATE BINARY OR s.suggested_parent_id = ? COLLATE BINARY)`.
+An explicit `COLLATE` on either side of an OR term disables SQLite's
+multi-index OR optimisation, so the planner walked every one of HQ's 38,779
+identity bindings and joined each session by primary key. Both columns are
+plain TEXT (BINARY by default), so dropping the explicit collation changes no
+result and makes the OR eligible for `idx_sessions_parent` and
+`idx_sessions_suggested_parent`. **Correction (r13 entry above):** the
+"0.215s cold / 0.028s warm" measured here came from an analysed copy of the
+database; on the live, never-analysed HQ database r10 still scanned every
+visible session through `idx_sessions_visible` (1.53s) and only cleared the
+2s deadline by a margin. The browser's Child sessions tab showed "No child
+sessions" (every parent link on HQ today points at skip-tier subagent
+sessions, which are excluded by design) instead of "unavailable" for that
+reason, not because the plan was fixed. The r10 test seeded 3,000 sessions and
+ran `ANALYZE` to make the fixture look like that copy; it has been replaced by
+`testChildrenStatementUsesBothParentIndexes_repro`, which explains the traced
+statement on a statistics-free fixture.
+
+The r8 changelog blamed the residual `groupBy=session` timeout on SQLite I/O
+and proposed a covering index; that was wrong. Fable's own prototype
+(`/tmp/engram-search/proto-index.py`) showed the planner ignoring such an
+index with no timing change, and the real cause is in Swift: Foundation's
+`Data.hash(into:)` hashes at most the first 80 bytes. HQ session ids are
+`remote:capture-v1.<machine>.<instance>:<native>` (about 196 bytes, 38,740
+sessions, only 5,464 distinct 80-byte prefixes), so every session of one
+capture stream hashed to the same bucket and the `[Data: Group]` dictionary and
+`Set<Data>` session sets in `toolAnalyticsRows` degraded to linear probing.
+A standalone measurement with 8k such keys: `[Data: Int]` remove+insert 9.4s
+versus `[String: Int]` 12ms; `Set<Data>` insert 450ms versus 2.5ms. The CPU
+sample's `__RawDictionaryStorage.find` frames were this probing, not hashing
+cost; the `pread` frames were OS-cache reads that every grouping pays alike.
+
+`ServiceWebMetadataProducer` now keys those containers with a private
+`ByteKey` (byte-exact equality as before, hash over every byte) in
+`toolAnalyticsRows`, `fileActivityRows` (file paths under one checkout share
+long prefixes too) and `admittedAuditSessionIDs` plus its four consumers. The
+other `[Data: …]` sites key short published facet keys and were left alone.
+`testLongSharedPrefixSessionIDsAggregateQuickly_repro` seeds 4,000 bound
+sessions with 196-byte shared-prefix ids and asserts correct group and session
+counts for `groupBy=session|tool` within 3s wall time (1.88s in the Debug lane,
+most of it fixture seeding).
+
+HQ timings through the deployed remote server (`/web/api/tool-analytics`,
+limit 50): `groupBy=session` was 503 at 2.00s cold then 1.62–1.66s warm on r8;
+on r9 it is 1.92s for the first request after the service restart and
+0.73–0.90s afterwards. `groupBy=tool` 0.29–0.55s and `groupBy=project`
+0.33–0.57s are unchanged. In a real browser (Stats → Tools → Group by Session →
+Apply) the page renders "1,215,036 calls · 5,378 groups" with session rows.
+The first request after a service restart remains close to the 2s metadata
+deadline; a retry succeeds. Sessions, search, stats, file-activity and AI
+settings endpoints answered 200 on r9. HQ is this Mac mini, so the timings
+above were taken with no Xcode build running; while a Release build and a
+Debug test lane were competing, r10 measured `groupBy=session` 2.57s (503) on
+the first request and 1.38s warm, and `groupBy=tool` 0.84–1.32s.
+
+Verification: Grok (Herdr `wH:p2`) ran the four producer lanes in one Debug
+xcodebuild on `/tmp/engram-final-lane/bytekey-lanes.log`: WebToolAnalytics
+5/5, WebFileActivity 5/5, WebAiAudit 14/14, WebMetadataProducer 89/90. The one
+failure, `testCostsGroupsFullSetTotalsFencesStartTimePagingAndUnpriced_repro`
+("stale"), touches no changed code and passed 3/3 on immediate re-runs
+(`costs-rerun-{1,2,3}.log`); it failed while the r9 Release build was
+competing for the machine and should be treated as load-sensitive, not as a
+regression. For r10, Grok ran `WebChildrenProducerTests` (4 tests including the
+plan repro) and `WebToolAnalyticsProducerTests` 5/5 in `children-plan-lanes*.log`;
+the plan repro went through three shapes before the statistics point was
+understood (unbound placeholders, hand-edited `sqlite_stat1`, a dropped
+partial index) and the final run is `children-plan-lanes-4.log`. The parity
+change set on `codex/collector-server-web-20260905` remains uncommitted.
+
+## Deploy the native Web to HQ and fix HQ-scale search, snippets and AI settings (2026-09-13)
+
+The parity branch is now running on HQ: `com.engram.service-index` executes
+package `service-index-web-parity-20260913-r8` (EngramServiceCore framework
+`79251d7d…b61097`) and `com.engram.capture-core.receiver` executes
+`remote-server-web-parity-20260913-r5` (binary `704a0c34…cea1da`). Both
+were built and installed by `output/web-parity-20260913/build-web-parity-packages.py`
+and `activate-web-parity-role.py`, which record source provenance, SHA256SUMS,
+a 15-second stability window, a socket probe (service) or `Host`-checked
+`/web/` 200 plus unauthenticated 403 (remote server), and keep the previous
+LaunchAgent job as `state/<role>/persistent/web-parity-20260913-r{8,5}-job-before.plist`
+for rollback. An editor credential was generated into
+`state/remote-server/persistent/editor-credential.txt` (0600) and provisioned
+through `environment.json` and the job's `EnvironmentVariables`; no credential
+appears in this repo. Browser acceptance against
+`https://macmini-hq.tail1cb16.ts.net:8443/web/` covered login, Sessions,
+Search, Stats, Health and Settings, an alias add-then-delete write round trip,
+and the AI settings form loading the saved values with save enabled.
+
+D15 project migration Web APIs are accepted: `GET /web/api/projects/cwds`,
+`GET /web/api/migrations`, `POST /web/api/projects/{move,archive,undo,move-batch}`
+and `move-batch/cancel` behind editor/Origin/CSRF/capability checks, reusing
+the native confinement, pipeline, review manifest, undo and registry paths with
+`web-project:` namespaced operation IDs. Grok's focused lanes passed:
+21 service tests in `output/web-parity-20260913/d15-service-core.log` and
+5 remote-server tests in `d15-remote-server-core.log`. Remaining legacy
+capabilities are now explicitly mapped instead of silently omitted: Settings
+Sync explains the retired peer-sync model and links to Health, and a
+"Not available in this deployment" section lists the local-machine probes
+(skills, hooks, memory, hygiene, live events, monitor alerts, resume,
+link-sessions, dev mock/lint/log) that cannot run on a central server. Both
+are asserted in `tests/scripts/collector-web-ui.test.ts`.
+
+Three production defects surfaced only at HQ scale (44k sessions, 777k FTS
+rows) and are fixed in this package set. Keyword search returned 503 at the
+8-second deadline for a routine `xcodegen generate` query because the previous
+statement ran two correlated MATCH subqueries per candidate session and read
+content for every hit. `SQLiteEngramServiceReadProvider.keywordSearch` now
+materializes per-token hit sets (trigram MATCH through
+`idx_sessions_fts_content_identity` for tokens of three or more scalars, Latin
+or CJK; a single LIKE scan below that), AND-joins them, applies filters and
+LIMIT in a `top` CTE, and computes `snippet()` only for the chosen rows. HQ
+timings: `xcodegen generate` 1.41s cold / 0.35s warm; multi-token Latin and
+CJK queries under 1.5s; two-scalar tokens such as `测试` still cost one LIKE
+content scan of about 5–6s but complete inside the deadline. The sessions-list
+`query=` filter takes the same routing and replaces a correlated EXISTS with a
+non-correlated IN; two-scalar list queries still exceed the 2-second metadata
+deadline, as they did before. `CJKText.usesTrigramMatch` owns the routing and
+`testSQLiteReadProviderCJKTrigramTermsRankByRelevance_repro` /
+`testSQLiteReadProviderKeywordSearchIdentityIndexLayoutMatchesFallback_repro`
+pin the behavior with and without the identity index. Search snippets showed
+literal `<mark>` tags: `setHighlightedText` in `WebUIRoutes.swift` now renders
+them as `<mark>` elements without HTML parsing, with an XSS test in the UI lane.
+Settings showed "Settings unavailable" because HQ stores the legacy
+`aiProtocol: "disabled"` (summaries off), which the typed AI settings surface
+rejected; `disabled` is now a published and patchable choice
+(`EngramServiceWebAiSettingsValidation.aiProtocols`,
+`testDisabledProtocolPublishesAndPatchesAsChoice_repro`, UI repro).
+
+Tool analytics (`/web/api/tool-analytics`) also timed out at HQ scale.
+`ServiceWebMetadataProducer.toolAnalyticsRows` / `fileActivityRows` now memoize
+capture-stream bindings and group key/label derivation and feed the authority
+digest directly into SHA256 instead of encoding canonical JSON per row; the
+forced `CROSS JOIN` order was reverted because the planner's `sessions`-first
+plan is faster under the real predicates. With the r8 service `groupBy=tool`
+and `groupBy=project` answer in 1.1–1.8s warm; `groupBy=session` still exceeds
+the 2-second metadata deadline. The I/O-bound diagnosis and covering-index
+follow-up originally recorded here were incorrect; see the 2026-09-14 entry
+(`Data` keys hash only their first 80 bytes) for the actual cause and the r9 fix.
+
+Verification: Vitest UI lane 175 passed; Biome `check .` exit 0 after
+formatting the UI test; Grok's full Swift lanes on the worktree reported
+EngramServiceCore 1574 executed / 1509 passed / 8 failed (2 need
+`ENGRAM_DEMO_EXPECTED_HOME`; 6 `WebMetadataProducerTests` large-FTS cases hit
+SQLite error 13 when `/tmp` filled, and the class re-ran 90 / 90 green in
+`output/web-parity-20260913/web-metadata-producer-final.log`), EngramRemoteServerCore
+505 / 504 (one pre-existing firmlink identity test), EngramCoreTests 2009 /
+2007 with `IndexerParseOnceTests` updated for the single-pass `consumeObjects`
+reader. During this work `/private/tmp` reached 123MiB free from unrelated
+Claude scratchpads (about 611GB); only this worktree's DerivedData was removed.
+The branch `codex/collector-server-web-20260905` still carries the whole parity
+change set uncommitted (312 paths); committing is left to the owner.
+
+## Add native AI configuration controls (2026-09-13)
+
+Settings now has an explicit AI configuration form for summary/title providers,
+summary tuning, embedding parameters and audit flags. Reads show the saved
+native values; saves send only edited fields. Viewer mode cannot submit,
+duplicate writes are suppressed, uncertain results retain the draft and require
+a reload, and logout clears custom prompts and rejects late responses. API
+credentials retain their existing server-side secure owner. This typed surface
+does not accept secret keys or arbitrary settings keys.
+
+Six missing-behavior repros failed before implementation in
+`output/web-parity-20260913/ai-settings-ui-red.log`. All 173 shipped-script
+checks pass in `ai-settings-ui-final.log`; Biome and scoped diff checks pass.
+Desktop/mobile fixture rendering was inspected in
+`output/playwright/web-ai-settings-desktop.png` and
+`web-ai-settings-mobile.png`. Fixture save/reload retained 1,200 output tokens;
+`ai-settings-render.log` records equal 390-pixel viewport/document widths. These
+are fixture UI checks, not native settings persistence or deployed acceptance.
+The owned preview browser and loopback server have been closed. Source review
+caught multiline prompts being rejected and stored endpoint credentials being
+publishable. The typed GET/POST `/web/api/settings/ai` path now permits LF/CR/tab
+in prompt and style, still rejects NUL and other controls, and validates
+published URLs with the same `optionalURL` rules as PATCH. Invalid stored URLs
+return a safe unavailable error and are never echoed. GET embedding base URL
+matches native `EmbeddingSettings.load` precedence (`embeddingBaseURL`, then
+stored `aiBaseURL`, then `https://api.openai.com/v1`) without reading secrets.
+
+Focused isolated-lane verification: 8 service tests in
+`output/web-parity-20260913/ai-audit-d14-service4.log`, 14 remote checks
+(5 HTTP + 8 write-client + 1 read allowlist) in `ai-audit-d14-web-remote2.log`,
+and parent composition
+`CollectorWebDemoTests/testAliasEditorThroughHTTPAndServiceIPC` in
+`ai-audit-d14-demo.log`. The composition PATCH includes a multiline
+`summaryPrompt` and rereads it. Parent extended that real HTTP/IPC composition
+with title-provider fields and the actual `ServiceAISettings.read` resolver
+using an injected fixture keychain reader. The extended composition passes in
+`native-summary-and-config-final.log`; configured model, token limit, prompt,
+title endpoint/model and audit settings are consumed by the real resolver.
+No live credentials, production settings or
+services were changed. Migration, sync and remaining full-parity capabilities
+remain open. Source comparison confirmed the baseline Web views do not contain
+migration operation controls. D15 is assigned through Herdr for the native API
+adapter, with captured CWD metadata separated from explicit editor-only server
+filesystem operations. See the existing parity plan for the route contract,
+operation-ID decision and isolated-fixture verifier. No D15 implementation has
+been accepted yet.
+
+## Add session summary and title controls (2026-09-13)
+
+Session detail now renders the complete saved summary and exposes editor-gated
+summary/title generation. Results are bound to the displayed transcript
+generation; stale responses, logout and navigation cannot replace another
+session's content. Returned display titles preserve custom-name precedence.
+Settings has an editor-only missing-title batch action that reports started or
+already running, never prematurely completed. Reuse the existing rich-text
+renderer and native Web assets; summary paragraphs use readable body styling.
+
+Six missing-UI repros failed before implementation. All 167 shipped-script
+checks pass in `output/web-parity-20260913/session-ai-ui-final.log`; Biome and
+scoped diff checks pass. Desktop/mobile summary, title and batch fixture flows
+were inspected in `output/playwright/web-session-summary-*.png` and
+`web-title-batch-*.png`. Reopening the fixture session retains the full summary;
+`session-ai-render-final.log` records 528 rendered characters and equal
+390-pixel viewport/document widths. Both owned browsers and preview server were
+closed. No real AI provider was called by these browser checks.
+
+Source review found the native generateSummary path uses the 200-character
+`TranscriptRedactionPolicy.redactedSummary` preview helper before persistence,
+where the legacy Web saved full summaries. D13 is assigned through Herdr to
+Cursor: full redacted summary storage/projection, per-session summary/title
+writes, missing-title-only batch generation, current-generation admission and
+existing AI/audit/coordinator reuse. The Web implementation now passes ten focused service tests in
+`output/web-parity-20260913/ai-audit-d13-service2.log`, five HTTP tests in
+`ai-audit-d13-web-remote.log`, and the actual full saved-summary capture ->
+HTTP/IPC composition in `ai-audit-d13-demo.log`. Initial fixture failures were
+trailing-whitespace expectations and a one-shot batch test hold; an isolated
+build then exposed an actor-isolation error in the read-only admission helper.
+All three are fixed in the passing runs. Admission now reuses the hardened
+read-only pool; batch persistence rechecks tier and message-count eligibility.
+The configured-AI branch of the older native generateSummary command now
+calls the same full-summary helper. Parent caught a provider-settings lookup
+moving before the existing skip/empty admission checks: the new regression
+fails in `native-summary-config-red.log`. Lazy configuration evaluation restores
+the original lookup order. All three native summary tests and the extended
+D14 configuration composition pass in `native-summary-and-config-final.log`.
+The generated-summary write-client case independently passes within the eight
+write-client tests in `ai-audit-d14-web-remote2.log`. D13 totals are fourteen
+native/composition checks and six HTTP/client checks; installed-package
+acceptance remains pending.
+The full objective, including configuration, migration and sync, remains open.
+
+## Restore supplied Insight saving and verify native Insight reads (2026-09-13)
+
+Search now includes an editor-gated Save insight form for supplied text,
+category/topic, importance and an optional source session. Successful saves
+clear the draft and expose a direct full-reader action. Duplicate submissions
+are suppressed; uncertain failures preserve the draft without automatic retry.
+Logout, navigation and expired write sessions clear private form state.
+Source inspection corrected an earlier planning assumption:
+`5013bab7:src/web.ts:665` calls `handleSaveInsight` on user-supplied content;
+that legacy endpoint does not generate AI notes. Summary/title generation is
+still a separate remaining capability.
+
+Six missing-behavior repros were verified (five missing-form cases plus write
+session expiry). All 160 shipped-script checks pass in
+`output/web-parity-20260913/insight-save-ui-final.log`; Biome and scoped diff
+checks pass. Desktop/mobile form and saved-note reader were inspected in
+`output/playwright/web-insight-save-*.png` and
+`web-insight-saved-reader-mobile.png`. Fixture browser save clears the draft,
+shows the saved note, and has 390-pixel viewport/document widths. Owned browser
+and preview server are closed. These checks are not deployed acceptance.
+
+D11 native reads passed 17 focused service/composition tests in
+`ai-audit-d11-service5.log`, including actual captured-session search and
+8,000-scalar continuation through HTTP/IPC. The shared semantic gate now admits
+an insight-only corpus without another embedding request. Search previews reload
+current insight rows; superseded/hidden/disabled/unbound linkage stays excluded.
+All 11 existing semantic integrity tests pass in
+`ai-audit-d11-semantic-integrity2.log`. Its previous one failure was the expected
+extra insight read after busy hydration; the busy slot and orphan-result
+assertions remain intact. Remote D11 checks passed 30 tests in
+`ai-audit-d11-web-remote2.log` (11 HTTP, 19 base read-client). The new metadata
+roundtrip lives in a different test class; its exact method independently passed
+in `ai-audit-d11-web-metadata.log` (one check). D11 is locally verified with
+28 native/composition/regression and 31 HTTP/client checks; installed-package
+acceptance remains pending.
+
+D12 POST `/web/api/insights` is locally verified through the native writer gate,
+current source admission and bounded deduplication. The actual editor/viewer
+HTTP/IPC composition passed in `ai-audit-d12-service1.log`, including a long
+note, immediate FTS lookup, full-reader projection and hidden-source rejection.
+Five focused writer tests passed in `ai-audit-d12-service2.log`; the initial two
+failures were test runtime-directory permissions, fixed in the fixture only.
+Four HTTP and six write-client checks passed in `ai-audit-d12-web-remote1.log`.
+D12 totals are six native/composition and ten HTTP/client checks. Native non-Web
+dedup behavior is preserved; Web cannot supersede an unadmitted linked note.
+Installed-package acceptance remains pending. Full legacy reads and approved
+writes remain in scope; no production changes were made.
+
+## Add Insight search cards and complete reading (2026-09-13)
+
+Search now displays separate library-wide Insight matches even when no sessions
+match. Cards safely render previews as text and open the complete note in a
+responsive native dialog. Continuation uses the returned revision and Unicode
+scalar offset; changed content clears the partial note. Closing, logging out,
+navigating away, or replacing the search invalidates pending detail responses.
+The existing Swift-served Web assets, palette and navigation are reused.
+
+Five missing-feature repros failed before implementation (149 existing checks
+passed); all 154 shipped-script checks now pass in
+`output/web-parity-20260913/insights-ui-final.log`. Biome and scoped diff checks
+pass. Desktop/mobile search and reader screenshots were inspected under
+`output/playwright/web-insights-*.png` and `web-insight-reader-*.png`.
+A real browser continued from 1,200 to 2,400 Unicode scalars; mobile viewport
+and document widths were both 390, with a 356-pixel reader. These are fixture
+render checks, not deployed acceptance.
+
+Herdr Cursor owns the native search/read backend and focused tests. Parent
+review identified that the existing semantic session-chunk gate incorrectly
+blocks an insight-only corpus and restrictive session filters; Cursor is fixing
+that path. Parent added actual SQLite -> IPC -> HTTP search and long-content
+composition assertions to `CollectorWebDemoTests`; their run is pending the
+current Cursor build lane. Native D11 tests and installed-package acceptance
+remain unverified. The full legacy write scope remains approved and open.
+
+## Restore native AI call history and request recording (2026-09-13)
+
+Stats now has an AI calls view with exact caller/model/session/date/outcome
+filters, held paging, safe details and date-based statistics. Totals and
+caller/model/hour groups reuse the existing layout. Bodies are not rendered;
+only their recorded presence is shown. Separate request versions prevent an
+older detail response from replacing a newer selection while allowing history
+and details to load concurrently. Successful detail loads scroll into view.
+
+Parent verified 149 shipped-script checks (`output/web-parity-20260913/ai-ui-final.log`),
+Biome and scoped diff checks. Five missing-UI repros are preserved in
+`ai-ui-red.log`. Desktop/mobile call history, statistics and detail renders were
+inspected (`output/playwright/web-ai-*.png`); final mobile width and scroll width
+are both 390 (`ai-render-final.log`). Preview processes and browser were closed.
+
+Herdr Cursor delivered native chat audit recording through `ServiceWriterGate`
+and typed list/detail/stats reads. Linked records require currently admitted
+captured sessions; global records remain visible. Settings are read without
+resolving chat credentials or querying keychain. Bodies default to off and
+optional stored bodies are redacted; the Web projection exposes presence flags.
+Parent added actual chat -> writer -> HTTP/IPC composition with URLProtocol
+responses. The immediate-refresh composition caught a real timestamp bug:
+second-only query bounds omitted records written in the same second. Parent
+preserved fractional seconds in query/published timestamps; the composition
+now passes without sleeps or backdated call records.
+
+Parent also added one observation per actual embedding HTTP attempt, including
+compatibility retries and failures. Open-circuit rejections and empty input do
+not invent requests. The native service search factory and both background
+embedding backfills send observations to the same audit recorder. Provider
+usage accepts nonnegative integers; malformed/out-of-range usage stays unknown.
+The observer never receives authorization headers or API keys.
+
+Verified native coverage is 23 chat/producer/composition checks from
+`ai-audit-d10-service5.log` plus 24 embedding/guardrail/readiness checks from
+`ai-audit-d10-service6.log`. The service5 run also contained the new embedding
+fixture's missing runtime-directory failure; creating its private 0700 runtime
+fixed it, and all six embedding tests pass in service6. Combined remote auth,
+HTTP, typed-client and UI-route checks pass 110/110 in
+`ai-audit-d10-web-remote3.log`. Logs are under `output/web-parity-20260913/`.
+
+No installed package, external provider request or deployment was exercised.
+Optional stored-body viewing remains a legacy follow-up; all remaining full
+read/write parity stays in scope. D11 insight search/full content is now
+assigned through Herdr to Cursor; parent owns its Web UI and composition.
+
+## Restore file activity, recorded usage and repository Web views (2026-09-13)
+
+Stats now includes Files, Usage and Repositories using native typed read
+commands. Files preserves exact path identities while displaying redacted
+component breadcrumbs, full file/operation totals, per-action counts, project
+substring/date/agent filters and held-snapshot paging. Usage reads each metric's
+latest observation (including deterministic timestamp ties), labels native
+indexed-session estimates, exposes observation/reset times, and does not
+trigger a collection on GET. Repositories show stored server-filesystem probes,
+branch/commit/working-tree fields and visible captured-session counts; GET never
+probes Git or accesses a returned path. Missing tables and unknown stored counts
+are unavailable rather than invented clean/zero observations.
+
+Parent implemented the three views, usage backend, composition assertions and
+render checks. Herdr Cursor implemented file/repository read models, producer,
+routes and tests. Files and Usage use readable cards on phones; repository
+cards reuse existing Health styles. A render check found ISO usage timestamps
+incorrectly going through an integer-only formatter; `usage-time-red.log`
+reproduces the failure and the corrected shipped-script suite passes 142/142
+in `repos-ui-green.log`. Biome and scoped diff checks pass. Desktop/mobile
+screenshots are under `output/playwright/web-{files,usage,repos}-*.png`.
+
+Final native verification under `output/web-parity-20260913/` passes 15/15
+(`analytics-d9-service3.log`): five file, two usage and seven repository producer
+tests plus actual capture -> native file/usage/repository writes -> HTTP/IPC
+composition. Combined remote auth/HTTP/client/UI checks pass 106/106
+(`repos-d9-web-remote4.log`). The first composition fixture had only one human
+instruction, below the existing repository discovery threshold; adding a
+second distinct instruction verifies discovery without changing product
+visibility rules. Remote source inventory includes the usage wire DTO; no
+database/runtime dependency was added to RemoteServerCore.
+
+The existing native repository discovery is scoped to the service machine;
+remote collector Git probes are not represented as HQ observations. The full
+legacy scope remains active: AI audit/stats and insight search, migration/CWD,
+sync, retained local probes and remaining writes still need completion.
+Repository composition uses an injected deterministic probe and a real native
+writer/read/HTTP path; it does not claim a production Git probe. No installed
+package, live database repair or deployment was exercised.
+
+## Restore native Web tool analytics and capture file activity (2026-09-13)
+
+Stats now includes Tools with tool/session/project grouping, literal project
+substring filtering, inclusive latest-activity dates, agent visibility, stable
+snapshot paging and full aggregate totals. Session groups open existing detail
+and return to Tools. GET `/web/api/tool-analytics` uses the typed
+`webToolAnalytics` read command, current capture bindings and visibility checks;
+no retired Node entrypoint is restored. The legacy `group_by` alias is accepted
+but ambiguous duplicate grouping parameters are rejected.
+
+Local verification: 132 shipped-script tests (`tools-ui-green.log`), four
+native producer tests (`tools-d8-service2.log`), 54 remote/auth/client/UI tests
+(`tools-d8-remote.log`) and 46 typed metadata-client tests
+(`tools-d8-client.log`) pass. Logs live in `output/web-parity-20260913/`.
+The initial native run failed because a fixture deleted a referenced identity;
+it now seeds a genuinely local/unbound session. Three pre-implementation UI
+failures are retained in `tools-ui-red.log`. Biome and scoped diff checks pass.
+Desktop/mobile fixture screenshots were inspected at
+`output/playwright/web-tools-desktop.png` and `web-tools-mobile.png`; the
+390px viewport has no document overflow. Synthetic capture/HTTP/IPC composition
+with an actual tool call passes 1/1 in `tools-d8-composition.log`: the captured
+Read operation is counted and linked to its real stored session through HTTP.
+
+Herdr Cursor supplied the six-tool file-activity derivation and atomic
+`session_files` replacement inside the existing ingest savepoint. New/changed/
+failed-ingest checks pass 3/3 in `file-activity-d8-core3.log`. Historical repair
+uses stored current normalized generations and the existing writer gate;
+parent review found corrupt-head starvation and required a persistent resume
+position plus a finite traversal stopping rule. All nine file-activity ingest/repair tests pass in
+`file-activity-d8-core5.log`. The repair records a resume position, continues
+after failed candidates, and stops after a finite traversal. Disabled sources
+and corrupt heads are retried on a later process start. The first expanded
+test run used fixture naming instead of actual generation ordering for two
+expected paths; those assertions were corrected. No live database, installed
+package, deployment or production repair has been exercised in this batch. The file-activity Web surface, usage,
+repository observations and the remaining legacy views/writes are still part
+of the active full goal. File-activity backend is now assigned to the existing
+Herdr Cursor pane; parent owns its UI and composition.
+
+## Restore Web relationship editing (2026-09-13)
+
+Child sessions now offers editor-gated link, unlink, confirm and dismiss
+controls. Suggestion actions carry the viewed parent ID; successful writes
+refresh the current child list. Viewer, duplicate-click, conflict and late-auth
+behaviors are covered by 128 passing shipped-script tests
+(`output/web-parity-20260913/relationship-ui-green.log`), after eight missing-
+feature failures in `relationship-ui-red.log`. Biome and Swift asset extraction
+pass. Desktop/mobile fixture flows exercised confirm, link and unlink; rendered
+screenshots are `output/playwright/web-relationships-desktop.png` and
+`web-relationships-mobile.png`. At 390px, scroll width is also 390
+(`relationship-render.log`). The owned preview browser/listener were stopped.
+
+Typed HTTP/client/capability wiring preserves the existing Swift write boundary.
+Parent narrowed Cursor ownership to service helpers/tests, reviewed and retained
+its remote wiring, and added HTTP/client checks. A failing HTTP repro proved
+malformed empty JSON could reach unlink; validating the complete JSON object
+before dispatch fixes it. Evidence: `relationships-d7-http-red.log` and 47/47
+passing checks in `relationships-d7-remote-green.log` (relationship, typed-client,
+auth, alias, source and UI suites), under `output/web-parity-20260913`.
+
+Native service and real composition passed 21/21 checks in
+`output/web-parity-20260913/relationships-d7-service3.log`: ten relationship
+checks, ten existing native IPC regressions, and the expanded HTTP/IPC/SQLite
+composition. Parent read the actual source and log before accepting the result.
+Shared native UPDATE helpers replace duplicated Web SQL; Web checks current
+registry binding, visibility and affected parents, with conditional suggestion
+updates. Initial compile failures were missing EngramCoreRead imports in the new
+service/helper tests; the final build includes those imports. Installed-package
+acceptance remains pending; no deployment or production mutation occurred.
+
+D8 starts analytics restoration. Native capture already persists session_tools
+via SessionSnapshotWriter, but session_files lacks a native writer. Cursor is
+assigned only atomic capture file-activity derivation and focused Core tests,
+using the legacy six-tool/file_path extraction contract. Parent owns Web
+analytics work. Historical already-ingested generations still need bounded
+backfill/read repair; merely adding the new ingest writer cannot complete that
+requirement. Usage/repository observations and remaining legacy views/writes
+remain part of the active full goal.
+
+## Restore Web child sessions and normalized timeline (2026-09-13)
+
+Session detail now retains Transcript and adds lazy Timeline / Child sessions
+views. Both confirmed and suggested children page through a parent-bound
+snapshot; each child opens the existing detail flow. Timeline pages retain the
+requested normalized generation and original message ordinals, with actual
+totals, redacted 100-character previews, optional tool/token/time-gap metadata.
+The native provider reuses current capture authority, visibility, readiness and
+normalized-store admission. It never reopens HQ source paths or substitutes FTS
+text. Parent and child eligibility are freshly checked before response release.
+
+Herdr Cursor implemented typed HTTP/IPC models, routes, clients and service
+projections. Parent independently read the implementation and test output,
+implemented the UI and added real HTTP/IPC assertions to the existing synthetic
+capture-to-central composition test. That test now verifies timeline pagination
+through both captured messages and the empty child result from actual metadata.
+
+Validation: 120 shipped-script tests pass in
+`output/web-parity-20260913/detail-views-ui-green2.log`; five missing-feature
+failures preceded implementation (`detail-views-ui-red.log`). A focused refresh
+repro caught rejection of a repeated first-page child cursor; the continuation
+check now applies only to continued pages (`detail-views-refresh-red.log`).
+Biome, Swift literal extraction and scoped diff checks pass. Native service and
+real composition: 26/26 in `children-d6-service4.log`; remote HTTP/client/auth:
+45/45 in `children-d6-remote3.log` under the same evidence directory. Earlier
+compile visibility and invalid HTTP fixture failures remain in service/remote
+logs; those are not claimed as intentional behavior repros.
+
+Desktop timeline and mobile children fixture flows were rendered and inspected:
+`output/playwright/web-detail-timeline-desktop.png` and
+`output/playwright/web-detail-children-mobile.png`. Mobile width and scroll width
+both equal 390 (`detail-views-render.log`). The owned preview browser and Python
+listener were stopped. Browser fixtures are separate from native composition;
+installed-package acceptance and deployment remain pending.
+
+D7 dispatched to the same Herdr Cursor pane: four legacy relationship writes
+(link, unlink, confirm suggestion, dismiss suggestion), using existing native
+owners plus Web authority and expected-suggestion checks. Parent owns UI and
+composition, Cursor owns backend/tests and the Xcode lane. The full legacy Web
+goal remains active, including other analytics, operational views and writes.
+
+## Restore Web source configuration with all-off recovery (2026-09-13)
+
+Settings now displays every native source and its current enabled state. Editor
+sessions can enable/disable a source through typed GET/POST
+`/web/api/settings/sources`; viewers can inspect the states. The service reuses
+native `setSourceEnabled`, its writer gate, recovery intent and coordinator
+resume. A fresh capture-policy check rejects invalid settings before mutation;
+the response is reread from the same policy. No generic settings JSON or secrets
+are exposed. Configuration remains readable when all sources are disabled.
+
+The browser starts access/configuration reads independently of session metadata,
+so all-off metadata unavailability does not remove re-enable controls. It waits
+for confirmed changes, blocks concurrent writes, preserves logout guards and
+refreshes the alias project picker after source changes. Browser testing caught
+a stale global 503 label and an empty project picker after re-enable; both have
+focused failing repros and are fixed. Four new source interaction tests failed
+before implementation. All 114 shipped-script tests pass in
+`output/web-parity-20260913/source-config-ui-green4.log`; earlier failures remain
+in `source-config-ui-red.log`, `source-config-recovery-status-red.log` and
+`source-config-alias-refresh-red.log`. A first green attempt timed out because
+the test waited too few microtasks before finding the refresh request; the
+harness now flushes the event-loop turn. Biome, Swift asset extraction and
+changed-file whitespace checks pass.
+
+Herdr Cursor D5 service/real composition checks pass 7/7 in
+`sources-d5-service-compose2.log`: viewer denial, all-off/re-enable, actual
+SQLite visibility, manual-hide preservation, unrelated settings preservation
+and invalid-policy no-write. The expanded `CollectorWebDemoTests` case uses
+only temporary data and restores its isolated settings-path environment.
+An initial composition fixture reused a native identity; assigning the second
+fixture its own native ID fixed the setup. The affected HTTP/client/auth/UI
+selection passes 56/56 in `sources-d5-remote-close.log`; an earlier focused
+selection passed 24/24. Parent inspected actual terminal test results, not only
+Cursor's report. Matching xcresult bundles are retained.
+
+Desktop/mobile source-toggle and all-off recovery fixtures were visually
+inspected. `output/playwright/web-parity-source-settings-desktop.png` and
+`web-parity-source-settings-mobile.png` show the current assets; the final
+receipt `output/web-parity-20260913/source-config-render-final.log` records
+390px document/viewport width, recovered sign-in status and two restored alias
+project options. These browser checks use fixture HTTP; native composition is
+covered separately above. Owned preview browser/server are closed. No Docker,
+deployment or production data changes were performed. Full legacy Web parity
+and installed-package acceptance remain open. D6 children/timeline reads are
+now dispatched through Herdr Cursor; the existing plan records the typed
+contracts and normalized-transcript requirement.
+
+## Restore Web alias editor and authenticated access status (2026-09-13)
+
+The approved full-parity scope includes configuration and alias mutations.
+GET `/web/api/auth` now reports only the current cookie session’s `canWrite`
+boolean. Missing or revoked cookies fail; cross-origin requests fail; caller
+headers cannot grant editor authority. POST login and DELETE logout retain
+their behavior. Two new tests failed before the route existed (seven
+assertions); the full 24-test auth route suite now passes. Evidence:
+`output/web-parity-20260913/auth-status-red.log`, `auth-status-green.log`
+and the matching xcresult bundles.
+
+Settings now discovers edit access, offers a searchable/paged destination
+project picker, accepts explicit old names or paths, and deletes the selected
+published alias pair. It waits for confirmed write success before refreshing
+the authoritative alias list. Duplicate submissions, denied or expired access,
+and late responses after logout are handled; viewers keep read access.
+Four new interaction tests failed before implementation; all 110 shipped-script
+tests pass in `output/web-parity-20260913/aliases-ui-green3.log`. Initial failures
+are retained in `aliases-ui-red.log`. Biome and Swift asset extraction pass.
+Desktop/mobile fixture flows exercised add and delete, and both screenshots
+were visually inspected: `output/playwright/web-parity-aliases-desktop.png`
+and `web-parity-aliases-mobile.png`. The 390px viewport has 390px document
+width (`aliases-render-check.log`). The owned preview browser/server are
+closed. These are fixture checks, not proof of native HTTP/IPC mutations.
+
+Cursor implemented the accepted D4 typed writer through Herdr pane wH:p2.
+The service must preserve path-shaped ADD text and DELETE the exact raw pair;
+calling legacy `manageProjectAlias` would globally rewrite unrelated aliases.
+Native service and real HTTP/IPC/SQLite composition checks now pass 8/8 in
+`output/web-parity-20260913/aliases-d4-service-compose2.log` and its xcresult.
+The parent inspected the actual test log. The shared metadata-read cancellation
+relay is no longer consulted by a concurrent alias writer; its regression
+passes in that selection. The affected remote/auth/UI/client selection passes
+84/84 in `aliases-d4-remote3.log` and its xcresult; actual output was inspected.
+Earlier remote attempts caught test-fixture visibility, Unix socket path length,
+and a 404 expectation for an intentionally rejected POST prefix. The existing
+405 behavior is retained; no global route semantics were changed for that detail.
+Actual installed-package acceptance remains pending. Configuration
+mapping confirms `disabledSources` is read afresh by capture ingest policy
+(`ServiceCaptureIngestRuntime.swift:183`) and native `setSourceEnabled` already
+coordinates settings and visibility with recovery. A Web source control must
+use that owner; it must not imply that HQ can toggle remote collector capture.
+D5 source configuration backend is now dispatched through the same Herdr
+pane: typed GET/POST `/web/api/settings/sources`, current source states and
+native recovery-aware source toggles. The UI and remaining legacy writes are
+not complete. No deployment or live data mutation was performed.
+
+A real HTTP/default-client/socket/gate/SQLite composition case was added to
+`CollectorWebDemoTests.testAliasEditorThroughHTTPAndServiceIPC`; it passes in
+the 8-test D4 selection above. Initial integration builds exposed missing imports,
+shared fixture visibility and a linker file-write failure; none is a passing
+test result. Disk availability was observed at 1.5 GiB, then 4.7 GiB. Six explicit
+historical red xcresult directories were archived losslessly to adjacent
+`.xcresult.tar.gz` files; every regular file was hash-compared before removing
+the expanded copies. Original logs remain. Exact archive names, hashes and
+verified file counts: `output/web-parity-20260913/compressed-red-evidence.json`.
+Extract these archives before opening the older red xcresults; green bundles
+remain in place. No home-directory or whole-disk cleanup was performed.
+
+## Restore Costs UI and add editor-session authority (2026-09-13)
+
+Stats now switches between session statistics and Costs. The cost view consumes
+full-set server totals, model/source/project/day groups, inclusive dates,
+agent filters, grouped continuation and top 20/50/100 session costs. All four
+token counters remain visible; absent unpriced observations are explicit.
+Nested session summaries open existing detail and Back returns to the retained
+cost table. Logout clears both cost reads, and late responses cannot repaint.
+Four behavior tests initially failed; a fifth failure was the stale pre-restoration
+palette assertion. All 103 tests pass in
+`output/web-parity-20260913/costs-ui-green.log`; original failures remain in
+`costs-ui-red.log`. Biome and Swift asset extraction pass. Desktop/mobile
+fixtures were visually checked; numbers no longer split and session titles
+have usable width in horizontally scrolling tables. Mobile document width is
+390px. Screenshots: `output/playwright/web-parity-costs-desktop.png` and
+`web-parity-costs-mobile.png`; receipt: `costs-render-check.json`. The fixture
+browser/server are closed. These are synthetic render checks, not native cost
+integration. D3 producer tests now pass 4/4 in `costs-d3-cover-producer.log`
+and the remote/client/UI/auth selection passes 111/111 in `costs-d3-remote.log`.
+Parent inspected both terminal results. The raw-USD contract fixes independent
+rounding of sub-cent groups (two 0.006 groups keep a 0.012 full total); display
+rounding stays in the UI. Earlier producer 3/3 is retained as the pre-fix log.
+
+For the newly approved write scope, `EngramRemoteWebConfig` now accepts an
+optional dedicated `ENGRAM_REMOTE_WEB_EDITOR_CREDENTIAL`. It rejects blank or
+viewer/server-shared values and retains only the digest. `WebAuthSessionStore`
+binds a canWrite flag to the minted session alongside its existing expiry;
+viewers remain read-only and logout/expiry revoke authority. Cookie shape,
+login result and throttling remain unchanged. An actual-source `swiftc` probe
+failed before implementation (`editor-login-red.log`) and passed afterward
+(`editor-login-green.log`); the extended viewer/editor/logout probe passes in
+`editor-authority-green.log`. Three new XCTest cases cover configuration,
+authority separation and expiry. Their full native run passed within the 111-test D3 remote selection, including
+all WebConfigTests, WebAuthSessionTests and WebAuthRouteTests. No HTTP writer route is exposed by this
+foundation, and no production credential or data was changed. D4 alias
+add/delete has been dispatched through Herdr for a minimal typed contract;
+parent owns Settings UI and role-discovery auth route.
+
+The parity plan now inventories all 23 legacy non-GET declarations, separating
+POST-shaped reads and dev utilities from mutations. Configuration editing and
+legacy writes remain included; alias/project/session/sync/AI operations still
+need the actual typed Web writer adapter and UI. Source review found native
+`manageProjectAlias` globally rewrites path-shaped aliases; the Web adapter must
+reuse the gate/schema while targeting the exact authorized pair, rather than
+calling that broader normalization path for one delete. Full parity, native package
+acceptance and deployment remain pending.
+
+## Include legacy Web write operations in full parity (2026-09-13)
+
+The owner explicitly included configuration changes, alias deletion and other
+legacy Web writes in this iteration. Restore their existing workflows through
+Swift service write gates and explicit Web write authorization; the previous
+read-only implementation is no longer the scope limit. This scope approval
+does not itself execute writes against live configuration or production data.
+Costs implementation continues while the remaining mutation routes are mapped.
+
+## Restore ranked search UI and fix held-page totals (2026-09-13)
+
+The full D1 metadata run initially exposed four regressions: unrelated inserts
+or hiding a previous-page row invalidated continuation, and repeated FTS counts
+exceeded the two existing 32,768 page-read budgets. The count is now cached on
+the held snapshot, with current authority checked per counted stream. Parent
+verified the owner-queue assignment outside the database callback and unchanged
+read budgets. Focused four tests and the full 80-test producer suite pass in
+`output/web-parity-20260913/search-paging-d1-count-four.log` and
+`search-paging-d1-count-full-service.log`. The preceding wire suite passes 92
+checks in `search-paging-final-remote2.log`. Earlier failures remain preserved.
+
+Search UI now consumes the native nested `{session, snippet, matchType, score}`
+result shape, keyword/semantic/hybrid availability, and measured optional index
+progress. Filtered ranked queries preserve date/tool/source/project/agent inputs;
+missing totals remain unknown. Text-only snippets and expired-auth response
+guards are covered by the 99 passing checks in `ranked-search-ui-final.log`.
+Actual Swift assets were rendered with synthetic HTTP fixtures; desktop/mobile
+screenshots are `output/playwright/web-parity-ranked-search-desktop.png` and
+`web-parity-ranked-search-mobile.png`. They show two titled results, Hybrid,
+and fixture progress 84/120 (70%). These are not live index measurements.
+
+D2 backend reuses scoped native search rather than adding a ranking engine.
+The authentication fixture now logs in once for its route matrix; the previous
+429 failure remains recorded in `search-d2-remote2.log`. Search uses the existing
+metadata timer to cancel and join an entered provider at the separate 8s search
+deadline. The 150ms injected slow-provider repro checks cancellation, exit and
+no subsequent admission. Six focused checks pass in
+`search-d2-producer-deadline.log`; final HTTP/client/UI selection passes 58 in
+`search-d2-remote-final.log`. Parent independently ran the complete producer
+suite (86) and existing unscoped semantic integrity suite (11): all 97 pass in
+`search-d2-parent-service.log`. All 41 typed metadata-client tests also pass
+in `search-d2-parent-client2.log`. The first parent command selected the non-test
+`EngramRemoteServer` scheme and exited 66 before tests; its log is preserved as
+`search-d2-parent-client.log`. The corrected scheme is `EngramRemoteServerCore`.
+
+The UI now restores the legacy dark palette (#0f172a / #1e293b), translucent
+header and green navigation pills directly from `5013bab7:src/web/views.ts`.
+No HTML, JavaScript or wire behavior changed in this styling adjustment.
+Swift asset extraction and desktop/mobile browser rendering pass; viewed
+screenshots are `output/playwright/web-parity-legacy-palette-desktop.png` and
+`web-parity-legacy-palette-mobile.png`. Mobile viewport/document width is 390px.
+The initial fixture returned an octet-stream for its extensionless JSON URL;
+correcting the fixture MIME type resolved the empty preview without a product
+change. Receipt: `output/web-parity-20260913/legacy-palette-render-check.json`.
+The owned browser session and loopback fixture server have been closed.
+
+Full legacy read parity and actual-package HTTP/IPC acceptance remain open.
+Costs and per-session costs are next through Herdr Cursor, using existing
+native cost expressions and capture authorization. No deployment, commit,
+push, or local Docker occurred.
+
+## Restore session page navigation and legacy search filters (2026-09-13)
+
+Settings backend now passes the focused service suite (3 tests,
+`output/web-parity-20260913/settings-closeout-service.log`) and the combined
+remote/client/UI suite (91 tests, `settings-closeout-remote.log`). Parent
+review confirmed raw canonical-project authorization, opaque alias identities
+and basename labels, including the path-alias regression. Earlier failing logs
+remain intact. These are component checks, not deployed acceptance.
+
+The UI adds Previous/Next navigation over existing cursor pages, exact totals
+when provided, and range-only labels when an older response has no total.
+Returning to an already fetched page uses its existing rows and preserves the
+continuation cursor. A changed filter resets the page history. Opening detail
+while Next is pending now releases the paging control and drops the stale page.
+
+Since/Until and Hide tool-only sessions are included in the submitted query and
+remain pinned across continuation. The tool filter follows actual legacy
+`5013bab7:src/tools/search.ts` (tool count > 0 and user count == 0), not a new
+role-aware full-text query. Native date/tool/count handling is being implemented
+by Cursor as D1; semantic/hybrid/status remain a later part of the full goal.
+Parent corrected the proposed DTO fallback: missing totalCount must stay nil,
+never be synthesized from items.count. Parent also identified that path projects
+still lose their human label in sessionRows; Cursor should reuse the existing
+facetProjectLabel helper instead of showing an opaque hash in list/detail.
+
+Four new frontend regressions first failed (`search-paging-ui-red.log` and
+`paging-detail-red.log`); all 96 tests pass in `search-paging-ui-final.log`.
+Biome, scoped diff checks and actual Swift asset extraction pass. Browser
+fixtures confirm Next 3–4 of 4, Previous 1–2 of 4, and the submitted
+`since=2026-09-01&until=2026-09-13&tools=hide`. Desktop and mobile screenshots
+are `output/playwright/web-parity-paging-desktop.png` and
+`web-parity-search-paging-mobile.png`. A local checkbox layout fix was confirmed
+with computed row direction and visual inspection; mobile document width equals
+390px. Receipt: `output/web-parity-20260913/search-paging-render-check.json`.
+An expired browser element reference was corrected after reading the new
+snapshot. Fixture browser/server were closed after verification.
+
+D1 backend GREEN and actual-package HTTP/IPC acceptance remain pending. No
+production deployment, commit, push, service restart or local Docker occurred.
+The full parity checklist remains active; do not treat these local UI results
+as completion of all legacy backend capabilities.
+
+## Restore native facets, statistics and Health navigation (2026-09-13)
+
+B1 facets now pass the final service suite (93 tests) and remote suite (83
+tests), recorded in `output/web-parity-20260913/facet-green-service3.log` and
+`facet-green-remote3.log`. Earlier failing logs remain historical evidence.
+Facets aggregate the authorized capture corpus, preserve distinct opaque
+project keys, and apply current stream policy before returning results.
+
+B2 adds typed `webStats` IPC and `/web/api/stats` reads grouped by source,
+project, local-calendar day or Monday-based week. Inclusive date filters,
+agent visibility and optional lite-tier exclusion apply to full server totals
+as well as paged groups. Hidden/skip records remain excluded. Parent source
+review checked aggregate grouping, bound filters, policy revalidation and
+HTTP/IPC command admission. Service tests pass 76/76 (`stats-green-service3.log`);
+final remote tests pass 87/87 (`stats-final-remote.log`), including current UI
+resource tests. These are component tests, not real-package end-to-end proof.
+
+The Web now has working Stats and Health navigation. Stats displays full
+server totals, grouping/date/agent/noise controls and group continuation.
+Health displays current capture, ingest and search observations from overview;
+missing heartbeat/AI/replica observations remain explicitly unreported. Hash
+navigation restores bookmarked pages and browser back. UI regression tests
+pass 89/89 (`stats-ui-green.log`), including a Health bookmark double-fetch fix.
+
+Parent browser checks use actual Swift-generated assets and synthetic HTTP
+fixtures. Desktop (1280px) and mobile (390px) widths match document widths;
+Stats totals/rows render and browser back restores Health. Screenshots:
+`output/playwright/web-parity-stats-desktop.png`, `web-parity-stats-mobile.png`,
+`web-parity-health-desktop.png`, and `web-parity-health-mobile.png`. Receipt:
+`output/web-parity-20260913/stats-health-render-check.json`. Fixture checks do
+not prove production data or authorization behavior.
+
+Settings UI now restores the four legacy sections (Database, Active Sources,
+Sync, Project Aliases), all five navigation links, current browser Web origin,
+and paged alias display. Late responses cannot repaint after logout. Three
+new UI regressions first failed (`settings-ui-red.log` and
+`settings-ui-render-red.log`); all 92 tests now pass (`settings-ui-green.log`).
+Biome and scoped diff checks pass. Actual Swift string extraction compiles;
+fixture-only desktop/mobile rendering is inspected in
+`output/playwright/web-parity-settings-desktop.png` and
+`web-parity-settings-mobile.png`; the 390px document has no overflow and renders
+all four headings and two fixture aliases. Settings backend verification is
+still pending. Parent corrected the proposed contract so legitimate directory
+aliases must survive using opaque project identities and safe labels instead
+of being dropped; Cursor is implementing that correction. Legacy sync fields
+remain unavailable; current Web origin comes from the browser, not an assumed
+retired port setting. This is read-only UI; alias mutation parity is unresolved.
+
+Cursor in Herdr wH:p2 owns the bounded Settings read backend slice; parent
+owns Web UI and JS tests. Settings, advanced search, full list paging and the
+remaining legacy capability inventory are still incomplete. No deployment,
+commit, push, service restart or local Docker was performed.
+
+## Restore list interactions and continue native project facets (2026-09-13)
+
+Slice A now supports plural source/project filters, exact native-or-stored ID
+lookup, agent hide/all/only and optional role message counts. Independent parent
+review found that permitted agent rows could not open details/transcripts and
+that role-only agents bypassed hide; these paths are corrected with regressions.
+Hidden and skip records remain excluded, and reads do not change tiers.
+
+Verified slice A logs under `output/web-parity-20260913/`: 87 service tests
+(`web-parity-a-final-service.log`), 38 HTTP/client tests (their passing suites in
+`web-parity-a-final-remote.log`), and 8 UI resource tests
+(`web-parity-a-ui-final.log`). The combined remote run retained two failures
+from stale assertions banning any lastReady/lastParsed mention. Corrected tests
+check that only transcriptGeneration authorizes message reads; the final eight
+tests pass. Original RED and intermediate failure logs remain intact.
+
+The UI restores agent chips, relative dates and known per-role counts. It also
+replaces the source select and manual project-key entry with paged checkbox
+pickers and project search. Four facet regressions cover multiple values,
+opaque identities, submitted-query pagination and authentication invalidation.
+All 82 JS tests pass (`facet-ui-green.log`); Biome and scoped whitespace checks
+pass. Desktop/mobile rendering uses actual Swift asset constants with synthetic
+HTTP fixtures, not deployed backend acceptance. Screenshots are in
+`output/playwright/web-parity-agent-desktop.png`, `web-parity-agent-mobile.png`
+and `web-parity-project-picker-mobile.png`. A narrow mobile Find-button wrap
+was corrected after rendering. A fixture route setup failure was corrected;
+its earlier 404 remains in the browser log.
+The final picker render, 390px overflow check and submitted project-key request
+are recorded in `output/web-parity-20260913/parent-ui-render-check.json` and
+`output/playwright/web-parity-filters-desktop.png`. The owned preview browser
+and loopback fixture server were closed after verification.
+
+Cursor in Herdr wH:p2 is implementing the actual B1 facets endpoint, with a
+separate baseline at `output/web-parity-20260913/before-facets/manifest.json`.
+Parent review requires validated stream authority in aggregates, reserved
+opaque project keys without literal-key collisions, byte-safe project text,
+and case-insensitive search. B1 backend GREEN and real HTTP/IPC acceptance are
+still pending. Stats/Health/Settings and the remaining full-parity checklist
+are not complete. No deployment, commit, push or local Docker was performed.
+
+## Resume legacy Web parity on the native backend (2026-09-13)
+
+The active goal is full upgraded native-backend parity against the previous
+Web, superseding the earlier acceptance pause. Comparing `5013bab7:src/web/views.ts`
+with `macos/EngramRemoteServer/Core/WebUIRoutes.swift` confirms a reduced UI:
+Stats/Health/Settings, source/project multi-select and agent filters are still
+missing. The previous restored-Web handoff did not establish feature parity.
+The scope and remaining capability inventory are recorded in
+`docs/superpowers/plans/2026-09-13-web-native-parity.md`; reuse native reads and
+legacy interactions. Mutation scope is undecided; read parity work continues.
+
+Local ID navigation now resolves through the sessions filter before opening
+the canonical detail, offers ambiguous matches, retains pagination filters and
+ignores results superseded by logout. An encoding regression exposed literal
+spaces becoming plus signs; the URL now encodes them as `%20`. The 74 tests in
+`tests/scripts/collector-web-ui.test.ts` pass, including four ID navigation
+tests; Biome and scoped diff whitespace checks pass. Evidence:
+`output/web-parity-20260913/id-jump-encoding-red.log` and
+`output/web-parity-20260913/id-jump-encoding-green.log`.
+
+Herdr Cursor continues the scoped backend filter/summary slice in pane wH:p2.
+The first service run executed 66 tests with one failure, preserved in
+`output/web-parity-20260913/web-parity-a-green-service.log`; its filename is not
+a passing verdict. The singular `sessionId` contract correction and independent
+backend review remain pending. No new build/browser/HTTP acceptance or deployment
+is claimed by the passing JS tests. Existing dirty changes remain intact; the
+11-file starting baseline is in `output/web-parity-20260913/before/manifest.json`.
+
+## Hand off the deployed candidate for owner acceptance (2026-09-13)
+
+The owner explicitly requested a quick handoff for acceptance and later
+iteration, rather than further engineering or waiting on small differences.
+The deployed candidate is available at
+https://macmini-hq.tail1cb16.ts.net:8443/web/ . Daily remains in Collector mode;
+HQ provides indexing and Web reads, with independent HQ/M1 archive replicas.
+Herdr Cursor is idle/HOLD. Further autonomous development is paused for owner
+feedback; this is not a claim that the original performance targets all passed.
+
+At handoff, the current package has passed the exact baseline transcript and
+39 of60 scheduled append confirmations, with no failures among those39. The
+prior package's full30-minute CPU13.178% result remains a failure; current-package
+steady CPU is still unverified because fixedClaude82 reconciliation has not
+finished. The17 scheduler regressions and7 packaged flows remain verified.
+The existing bounded observer7119 and append wrapper58055 were confirmed live
+and remain running to their already authorized endpoints. Their eventual
+results must be inspected on resume; do not restart them based on this note.
+
+The owner can now review the Web layout, search and complete transcript reading,
+and use normal Cursor/Codex activity to assess synchronization. Mimo/Cline
+historical originals remain nonblocking, Antigravity deferred. Local code is
+retained in the feature worktree; this handoff adds no commit, push or release.
+
+Evidence: output/collector-goal-20260908/collector-capture-schedule-daily-verified.json,
+check-live-codex-append-lag-capture-schedule-live.json,
+collector-resource-capture-schedule-steady-observation.json,
+daily-retirement-after-capture-schedule-check.json and
+capture-schedule-parent-review.json.
+
+## Separate periodic Collector work from event checks (2026-09-13)
+
+The capture loop now uses a monotonic deadline for periodic work, with cheap
+native-event mailbox checks at most one second apart. Productive bootstrap
+slices continue promptly, including budget-paused slices with actual progress;
+finished, blocked, disk-pressure and zero-progress waits do not spin. Actual
+capture and source/storage validation remain unchanged. This package also
+contains the previously verified unavailable-deferral batch fix.
+
+Herdr Cursor implemented the scheduler and regression coverage. Parent reviewed
+the source and original logs: 10 Runtime and 7 Coordinator tests pass, followed
+by a Release build and 7 actual packaged flows. Earlier failures remain intact.
+The same local 414-missing-locator fixture measured CPU 3.375% at 1s with the
+previous batch package, 0.842% at 5s and 0.517% at 10s with this package. These
+120-second local comparisons explicitly change cadence and are not Daily
+resource acceptance or proof of append latency.
+
+The approved Daily trial now runs Collector455, started at 2026-09-13 08:31:21
+Daily host local time. Launcher SHA256 is
+1bc6c37a5c4bba6eb4023b9ced1ade258d5ad7c25cbddd0993800b8f176057ed;
+loaded Core SHA256 is
+d26d2c63e6a6a8d24c426de004d76f4021277758307c3dd9c6609e445fe60ddb.
+Parent independently verified the live process/framework and that the only
+settings change is pollIntervalMilliseconds from1000 to10000. The old executable
+and paired job/settings backups are retained in the Collector persistent folder.
+HQ and M1 roles were not changed by this rollout.
+
+Resource observer7119 follows fixed initial revisions, then measures1800s with
+the original CPU<=2% and sampled RSS<=150MiB targets. Append wrapper58055 follows
+fixed Codex86, then runs the unchanged60 appends of1024bytes every30s. Local
+verifier dry-run passed; it does not query live roles. Current-package resource
+and append results are pending. Prior92844 CPU13.178%FAIL and append60/60PASS
+remain separate dated evidence. Mimo/Cline originals remain nonblocking; no
+backup-path answer is needed from the user.
+
+The same trial has now passed live role/framework guards and the exact baseline
+transcript, with18 successful append confirmations and no failures so far;
+maximum26.731s is a partial observation, not full-window acceptance. Only fixed
+Claude82 remains before the resource window. A fresh read-only Daily retirement
+check confirms all three installed App/helper hashes and default settings remain
+unchanged, and the old Service remains unloaded, disabled and absent from the
+process list. See daily-retirement-after-capture-schedule-check.json.
+
+Evidence: output/collector-goal-20260908/capture-schedule-parent-review.json,
+capture-schedule-local-comparison.json, collector-capture-schedule-daily-verified.json,
+capture-schedule-independent-live-check.json,
+collector-resource-capture-schedule-steady-observation.json,
+append-capture-schedule-monitor.json and
+check-live-codex-append-lag-capture-schedule-dry-run.json.
+
+## Batch unavailable Collector deferrals (2026-09-13)
+
+The Collector now combines unavailable-source deferrals from one bounded root
+page into one transaction. A maximum of 64 exact claims and their original
+retry deadlines remain in the capture worker until the Owner call succeeds.
+A later non-cancelled call drains that batch before claiming new work; restart
+uses existing owner-generation recovery. Previously captured rows still retry
+after one second and never-captured unavailable rows after 60 seconds. Newer
+dirty work clears the old delay, with no false capture acknowledgment.
+
+Herdr Cursor implemented three production files and three test files. Parent
+reviewed the exact diff and original logs: four Core tests and six worker tests
+pass, including actual restored-body capture after SQLITE_BUSY, child-task
+cancellation, stale claims, and source/storage commit rollback. Original RED
+and three intermediate failed test logs remain; test corrections replaced a
+released claim, isolated the cancelled child task, and avoided reusing a
+connection after the deliberate inventory-file replacement. No configuration,
+poll interval, schema, source coverage or live package changed in this tranche.
+
+The Release package build and seven actual packaged flows passed, including
+Codex/Claude append, rename/usage, Collector crash and HQ crash recovery.
+Core SHA256: 3d0ec456ae3d166a33f6fd877dd76f1eeebd2317e6272d12268b36ddbd433df6.
+The controlled 414-missing-locator comparison completed: CPU fell from 4.275%
+to 3.375% (21.0%) with identical budgets, one-second polling and descriptor
+limits; both retain all414 rows with zero capture/ACK. Each local run has13
+samples over120s. This gain does not prove the Daily2% target, so the package
+remains local. See defer-batch-local-comparison.json. Daily Collector 92844 completed its unchanged 30-minute window:
+61 samples over 1800.016 seconds, CPU 13.178% FAIL and sampled RSS 55.734 MiB
+PASS. Parent independently recomputed raw metrics, rechecked the live loaded
+framework/settings, and confirmed both observer processes exited. The deployed
+package's append-latency PASS remains separate from this local change.
+See idle-batch-steady-terminal-49875.json and
+collector-defer-batch-binary-verified.log for these completed checks.
+
+Evidence: output/collector-goal-20260908/defer-batch-parent-review.json,
+defer-batch-parent-diff.patch, defer-batch-green4.log,
+defer-batch-green-service.log, and idle-batch-steady-retry-cadence.json.
+
+## Verify current Collector append latency (2026-09-13)
+
+The current idle-batch Collector92844 completed the unchanged60-slot real-host
+workload: all60 searches succeeded, independently recomputed p95 33.056s and
+maximum63.278s, strict verifier PASS. One owned Daily Codex file starts at65536
+bytes and receives60 appends of1024bytes at30-second intervals; confirmation
+concurrency remains capped at4, HTTP timeout5s and search deadline120s. Final
+HQ transcript verification covers62 messages; HQ/M1 exact raw proof and an
+independent source-file rehash agree on126976bytes,
+SHA25666aa491c9cc6aeb2ecdcb416a0f7c0b487a126b726535736138b54aef9055685.
+
+Parent verification checked all60 unique ordinals, write ACKs and markers,
+same-session hits, exact byte growth, and unchanged live Collector/HQ/M1 binary
+and framework guards. Each of four confirmers recorded two auth renewals.
+Wrapper36793 exited0 and must not be rerun. Earlier failed trials are immutable;
+this passing workload is not a general zero-error network reliability claim.
+
+A bounded Herdr Cursor read-only review mapped composite-source metadata work.
+Live inventory has239 clean captured Cursor locators and5VSCode locators.
+The three-second wall-stack sample at1789253138.142-1789253142.086 occurred during
+initial reconciliation and this append trial; all append slots are retained.
+It observes VSCode dependency checking alongside active inventory/storage work,
+not a dominantCPU attribution. No code, cadence or configuration changed.
+Current resource observer49875 is still live, waiting only for fixedClaude80
+before1800 seconds. At1789253657, Claude had1514 completed/178 pending frontier
+directories and no scan failure; CPU acceptance remains open.
+
+Evidence: output/collector-goal-20260908/append-idle-batch-terminal.json,
+check-live-codex-append-lag-idle-batch-live.json, append-idle-batch-monitor.json,
+idle-batch-bootstrap-process-sample.json/.txt, and
+collector-resource-idle-batch-steady-observation.json.
+
+## Batch idle Collector observations (2026-09-13)
+
+Two bounded read-only batches replace per-root idle Owner calls. Live-root
+observations retain storage entry/exit validation and fresh source identity
+checks. Only an idle watching coordinator may use the same synchronous tick's
+observation; queued/recovering/action paths still read current state. The Worker
+queries roots with unacknowledged dirty rows after its registry/dependency
+reconciliation and reservation recovery, so newly discovered work remains
+claimable in the same call. The unchanged indexed LIMIT 1 predicate includes
+future retries and in-flight claims. Claim order, budgets, polling interval,
+source/privacy authority and mutation/commit fences are unchanged.
+
+Parent-reviewed RED exercised the old per-root work: 3 tests, 6 expected count
+failures (hooked storage-route opens 124 to target4, 64 to target4, and idle
+prefetch64 to target0). Final focused checks cover 16 distinct tests: 13 Core,
+2 Runtime source-loss cases and 1 Gemini same-call registry capture case. The
+batch exit test swaps inventory on the third hooked reopen and requires the
+whole read to throw without commits. The initial Gemini test failed because it
+had not established a registry observer; its failed log is retained. The final
+test primes the observer, verifies an empty pending set before the next call,
+and retains the nonzero same-call capture assertion. No production workaround
+or weakened assertion was used.
+
+Nine of the ten scoped files changed; RuntimeTests stayed unchanged. Release
+build, package integrity, source provenance, and seven actual packaged flows
+passed. Controlled local 120-second comparisons measured empty-root CPU5.725%
+to2.358%, and414 missing-locator CPU8.366% to4.275%. All missing locators retained
+zero ACK revisions, captures and publications. These are single-pair local
+diagnostics, not Daily acceptance. The previous Daily baseline remains complete:
+1800.010 seconds, CPU17.769% FAIL and sampledRSS48.922MiB PASS.
+
+Authorized rollout replaced Daily Collector82327 with92844 at epoch1789251203.
+Loaded CoreSHA256 is83f7fd401e8499212fa01dce3b08535ab68fd0786bdb41ca4351839390f0f69b;
+settingsSHA256 remainsfde1358efabab7980bde86f7f4bbb0b92ce283be66e3e72cb5896206f2d1c37c.
+The previous package and persistent/idle-batch-job-before.plist remain available
+for rollback. Observer49875 follows the new process and fixed initial revision
+targets, then measures1800 seconds. Initial reconciliation is still running;
+CPU acceptance remains open. Cursor reviewed remaining idle privacy-validation
+cost read-only and is on HOLD pending actual mixed-source evidence.
+
+A bounded W6/W7 review accepted one additional current-package verification:
+all-root scheduling changes need a dated append-to-HQ-search trial. The prior
+60-slot result remains immutable. The new verifier differs only in its Collector
+receipt and artifact names; its complete dry-run passed. Wrapper36793 follows
+fixed Codex revision84, then runs the same60-slot workload against92844. It does
+not wait for later requested revisions or invent a zero-HTTP-error gate. The
+review's source-coverage objection cited historical checklist labels; the parent
+read the superseding cutover update and actual five-source/97-message receipt.
+Missing historical originals do not establish an enabled unsupported source.
+See idle-batch-acceptance-adjudication.json and append-idle-batch-monitor.json.
+
+Evidence: output/collector-goal-20260908/idle-batch-parent-review.json,
+idle-batch-parent-diff.patch, idle-batch-red.log, idle-batch-green.log,
+idle-batch-green-service.log (retained failure), idle-batch-green-service2.log,
+idle-batch-green-service3.log, kimi-empty-followthrough-terminal-69145.json,
+idle-batch-local-comparison.json, collector-idle-batch-binary-verified.log,
+collector-idle-batch-daily-verified.json, and
+collector-resource-idle-batch-steady-observation.json.
+
+## Reduce redundant idle coordinator reads (2026-09-13)
+
+Cursor added a failing real-operation regression, then removed a second root
+state read when a watching coordinator has no queued batch and no active scan.
+The first read retains both Owner storage validation fences; event application
+and active scans retain subsequent reads. The parent independently checked the
+two-file diff and logs: RED observed 128 opens/closes instead of 64 across 16
+idle steps; GREEN passed 8 affected coordinator tests. No polling interval,
+storage validation implementation, configuration, or deployed process changed.
+Release build and package verification passed with stable source hashes. The
+controlled local comparison measured5.725% CPU before and5.325% after (one120-second
+pair, about7% lower). This is insufficient for the2% target; the slice remains
+local and is not deployed. Remaining repeated idle Owner checks are under review.
+
+All original fixed reconciliation revisions completed on Daily Collector82327
+at epoch1789247581. Observer93294 had already exited1 at its7208-second bootstrap
+wait cap with no steady samples; its evidence is immutable. Same-PID observer69145
+then entered the original1800-second resource window. The first450 seconds used
+75.23 CPU seconds (16.71% one core), exceeding the full-window36 CPU-second
+budget; sampled RSS was48.92MiB. All16 roots were idle at the diagnostic query.
+A dated3-second wall-stack sample points to repeated Owner storage/ancestry
+validation, not a direct attribution of CPU percentage. The observer subsequently
+completed61 samples over1800.010 seconds: CPU17.769% FAIL, sampledRSS48.922MiB PASS,
+no new ACKs on either replica. PID82327, settings and loadedCore stayed unchanged;
+observer processes exited. The3-second diagnostic timing and all original samples
+are retained. Kimi retry reduction did not close the CPU acceptance gap.
+
+A controlled packaged16-empty-Claude-root local comparison is in progress before
+any deployment. The first fixture exited before readiness under inherited
+RLIMIT_NOFILE256; that failed result is retained. A new isolated invocation uses
+10240 only in the diagnostic process and its children; no host/launchd setting
+changed. That invocation completed120 seconds at5.725% one-core CPU and16.625MiB
+sampled RSS, then its owned child exited0. The updated package also completed120
+seconds and exited0, at5.325% CPU and16.859MiB. Same budgets and descriptor allowance
+were verified. This does not substitute for mixed-source Daily acceptance.
+
+Evidence: output/collector-goal-20260908/idle-rootstate-parent-review.json,
+idle-rootstate-parent-diff.patch, idle-rootstate-red.log, idle-rootstate-green.log,
+collector-idle-rootstate-build-result.json, idle-rootstate-local-comparison.json,
+kimi-empty-resource-terminal-93294.json, kimi-empty-followthrough-terminal-69145.json,
+collector-resource-kimi-empty-followthrough-observation.json,
+kimi-empty-steady-partial-diagnosis.json, kimi-empty-steady-root-diagnosis.json,
+kimi-empty-steady-process-sample.json/.txt, and empty-roots-kimi-baseline-result.json.
+
+## Verify current packaged recovery boundaries (2026-09-13)
+
+A bounded Cursor W6/W7 evidence review identified old-package crash evidence
+without a current rename/positive-usage receipt in the active handoff. The parent
+found the existing tests and ran them unchanged against the deployed Collector,
+HQ Service and Receiver packages in isolated temporary stores. All3 passed:
+rename keeps native identity/positive usage across3 generations; real Collector
+SIGKILL with pending M1 delivery recovers without republishing HQ; real HQ
+SIGKILL after durable ready preserves last-good state and resumes. Exact raw
+bytes, normalized roles/timestamps and usage assertions are present in the test
+source. These exercise Web read via service IPC; rendered Web proof is separate.
+Package SHA manifests were independently rechecked. No production files changed.
+
+The current Daily job was read directly: KeepAlive/RunAtLoad true, throttle10,
+Background, no WatchPaths or scheduled interval; PID82327 remained the same at
+7m52s. This is natural process/supervisor observation, not forced live failover
+or reboot proof. Inferring no watchdog merely from the retired old Service was
+rejected. Unchanged HQ/M1 legacy roles do not widen the one-host Daily cutover.
+Inactive Windsurf PB parsing remains unverified; preserved bytes are not parser
+coverage. Mimo/Cline and Antigravity remain user-deferred/nonblocking.
+
+Evidence: output/collector-goal-20260908/current-package-recovery-parent-review.json,
+current-package-recovery-verified.log/.xcresult,
+kimi-empty-launchd-natural-observation.json,
+w6-w7-current-evidence-adjudication.json, and kimi-empty-scan-first-progress.json.
+Observer93294 remains live on82327 with fixed original targets; only Claude78,
+Codex82 and Grok53 remained at epoch1789239839. No steady samples yet. Preserve
+resource acceptance as open; no extra zero-HTTP-error gate or full-suite rerun.
+
+## Deploy empty Kimi retry correction (2026-09-13)
+
+Cursor implemented and the parent independently reviewed the two-file change:
+CollectorPublicationWorker.swift now sends zero-byte Kimi snapshots through the
+existing unavailable-source delay. Never-captured sources wait60 seconds; a new
+same-path dirty event wakes immediately. Already-captured, byte-budget and disk
+retry semantics are unchanged. Two added regression tests preserve no-false-ACK
+behavior. RED reproduced two deadline assertions; GREEN passed7 targeted tests.
+Release build/package integrity and4 actual binary flows passed, with stable
+source hashes across build.
+
+Daily Collector82327 now loads Core SHA256
+6097029a2b01c9e1340aebc0cd98b5ca80b04462728e3058763815641811b952.
+Activation verified process identity, loaded framework, unchanged settings hash
+and15-second stability. Previous package and kimi-empty-job-before.plist remain
+for rollback. HQ and M1 roles were not restarted. The same six unchanged empty
+locators advanced only1 claim each over124.268 seconds, versus20 each over54.206
+seconds before; all retain ACK0 and no capture ID. This confirms retry reduction,
+not steady-state CPU acceptance. Bootstrap RSS in that diagnostic was205488KiB;
+it is not a steady-window sample.
+
+Old observer1444 exited1 when the replaced PID76125 disappeared, with zero steady
+samples; its incomplete evidence is retained. New observer93294 (monitor85099,
+SSH85118) follows the new process and fixed initial revision targets, then the
+original1800-second CPU<=2% / sampledRSS<=150MiB window. Resource acceptance
+remains open. Prior append17628 remains terminal with60 exact-hit observations,
+p9548.611s and4 retained HTTP errors. No full append rerun was added for the
+isolated empty-Kimi guard; actual binary Codex/Claude flows were rerun.
+
+Evidence under output/collector-goal-20260908/: kimi-empty-parent-review.json,
+kimi-empty-red.log, kimi-empty-green.log, collector-kimi-empty-build-result.json,
+collector-kimi-empty-binary-verified.log, collector-kimi-empty-daily-verified.json,
+kimi-empty-live-cadence.json, collector-unavailable-observer-terminal.json,
+and collector-resource-kimi-empty-steady-observation.json.
+
+## Diagnose repeated empty Kimi captures (2026-09-13)
+
+A read-only 54.206-second inventory comparison found six unchanged Kimi locators
+with no prior capture and zero acknowledged revisions. Each claim generation
+advanced20 times. Exact directory metadata showed each contains only a regular,
+zero-byte context.jsonl. The deployed framework sample and matching Release dSYM
+UUID5C693A59-C5E3-37C1-8D1D-66E0FA95D0CF map the deferred stack to
+CollectorPublicationWorker.swift:1133, where the zero-byte guard still uses the
+ordinary short retry. This establishes repeated empty-source work, not its CPU
+percentage. Cursor is implementing a two-file regression-tested guard split:
+empty never-captured Kimi sources use the existing unavailable-source delay;
+budget, disk, provenance and already-captured behavior remain unchanged.
+
+Evidence: output/collector-goal-20260908/kimi-retry-cadence-first.json,
+kimi-retry-cadence-second.json, collector-unavailable-bootstrap-sample.txt,
+and kimi-empty-before/manifest.json. No runtime restart or new deployment yet;
+resource observer1444 remains live. Package helpers are prepared only. Historical
+Mimo/Cline recovery remains nonblocking, with no new backup question or broad scan.
+
+## Complete current-Collector append observation (2026-09-13)
+
+Trial17628 is terminal (exit1). Parent independently counted all60 unique writes,
+ordinals, markers and same-session exact-hit confirmations. Final generation-bound
+62-message comparison and126976-byte SHA256 verification on both HQ and M1 passed.
+Across all60 actual observations, including recovered HTTP errors, readiness p95
+is48.611s and maximum84.575s from the HQ monotonic pre-write start. This supports
+the original <=120s numeric requirement for the deployed Collector76125.
+
+Original statuses remain56success/1HTTP503/3TimeoutError. The last two slots each
+retained a timeout before their eventual exact hits. The strict verifier remains
+false, with censored p95null because56 successes do not reach rank57. This is not
+an HTTP zero-error claim, and no original attempt, threshold or verifier was
+changed. All four auth sessions renewed twice. No additional HTTP probe or build
+overlapped this workload.
+
+Resource observer1444 remains live on the same Collector76125 and fixed initial
+revision76, waiting for Claude reconciliation. Its active scan ID is unchanged,
+with1102 completed/215 unfinished frontier directories and no recorded failure
+at epoch1789238036. Grok51 and the other original target roots have completed.
+The 1800-second steady resource window has not begun; CPU acceptance remains
+open. Prior failed baseline54801 and previous CPU18.949% window remain retained.
+Evidence under output/collector-goal-20260908/: append-unavailable-ready-terminal.json,
+check-live-codex-append-lag-unavailable-ready-live.json,
+unavailable-retry-post-append-scan-progress.json, and web-claim-closeout-resume.json.
+
+## Preserve baseline timeout and compare transport phases (2026-09-13)
+
+New-runtime trial54801 exited1 during baseline search with a read timeout after
+179 seconds, before any append was written. Its 60 cancelled slots, unverified
+final proof, and original data remain retained. Independently, the owned fixture
+was not yet inventoried while the Codex root was recovering. These are separate
+facts; initial recovery does not explain the HTTP timeout by itself.
+
+Native telemetry shows no Web dispatch errors and last100 search durations
+p95/max86.759/163.664ms, excluding transport/cancellation completion. Two bounded
+120-pair diagnostics compared fresh authenticated HTTP/1.1 requests via HTTPS
+and direct loopback, with default and explicit Connection: close behavior.
+All480 requests returned200; neither reproduced the5s timeout. Maximum was
+0.708s in the first run and2.248s in the close run; the latter included1.510s TLS
+setup and negligible body-transfer time. These checks do not establish a cause
+or erase earlier failures. Cursor is providing a bounded read-only source review;
+no speculative transport/source change or server restart was made.
+
+Parent verified Codex requested/completed revision80 with no active scan/failure,
+then started same-verifier trial17628 with a separate artifact prefix. Its
+two-message baseline and first append (29.322s) passed; remaining measurements
+are pending. Ordinal1 retained HTTP503 with exact-hit observation35.906s, and
+ordinal4 retained TimeoutError with observation43.463s. Their statuses remain
+failures; the recovered observations do not establish HTTP reliability or erase
+errors. No extra probes/builds will overlap the running workload. At completion,
+all-slot readiness and strict-zero-error diagnostics remain separate.
+Cursor completed the bounded read-only review without proving a
+product transport defect; no transport patch was made. Receipt,
+workload, deadlines and failure accounting are unchanged. Resource observer1444
+remains live on the same Collector76125 and fixed initial targets, still waiting
+for Claude76 at the latest check (688 completed frontier directories, no recorded
+scan failure); Grok51 has now completed. Trial17628 has25 observed confirmations,
+23 success and the two retained recovered errors. Both original failed observations remain
+immutable. A fresh post-update Daily retirement check again confirms matching
+App/helper/settings hashes, no old EngramService process or loaded job, and
+the retained disabled launch override; no processes were changed by this check. Evidence under output/collector-goal-20260908/:
+append-unavailable-retry-terminal.json, web-timeout-transport-adjudication.json,
+append-unavailable-ready-preflight.json, append-unavailable-ready-monitor.json,
+and daily-retirement-after-unavailable-retry-check.json.
+
+## Verify unavailable-source retry refinement (2026-09-13)
+
+Parent independently reviewed the final five-file slice against pre-edit hashes.
+The Collector carries existing last_capture_id on claims and applies a 60-second
+retry only to never-captured unavailable observations: generic source reads,
+Copilot observations/no-readable-entrypoint, and Kimi observation failures.
+Previously captured paths and ordinary budget, disk, provenance, reservation,
+and Cursor/OpenCode walk continuation keep one second. Same-path dirty events
+clear retry/error, and an old in-flight deferral cannot postpone a newer event.
+No claim fencing generation is repurposed, no ACK/skip is added, and no schema,
+configuration, privacy or filesystem validation changes.
+
+183 Store/Owner tests, four narrowed Worker regressions and two Copilot tests
+pass (189 total). Existing test bodies are unchanged. Original RED and the
+first overbroad Worker run (120 tests, nine assertions failing in two existing
+cases) remain retained. The passing focused rerun restores those original
+expectations. Release build/package verification and all four actual binary flows passed.
+Daily Collector PID 76125 now loads Core SHA256
+68d117195c27d0464f11c9ab87bf8d00cbf92fcdb52e78056ee3ccfd6f576a2b from
+collector-unavailable-retry-20260913, with unchanged settings and retained prior
+package/job rollback. Parent checked actual loaded framework and source hashes.
+HQ Service and both receivers are unchanged. Cursor wH:p2 holds source/Xcode work.
+
+Read-only observer 1444 (PIDs 55227/55248) fixes the new runtime's initial requested
+revisions once (Claude76, Codex80, etc.) and waits for their completion before
+measuring the same 1800-second CPU/RSS targets. It must not reuse old scan74
+as current steady-state evidence. Fresh same-workload append trial 54801
+(PID56206) uses the new Collector receipt; offline checks passed. Original
+verifier logic/thresholds are unchanged; only receipt/output names differ.
+No Xcode work runs during this live trial. Numeric results remain pending. Evidence under output/collector-goal-20260908/:
+collector-unavailable-parent-review.json, collector-unavailable-parent-diff.patch,
+collector-unavailable-green-store-owner.log, collector-unavailable-green-worker-narrow.log,
+collector-unavailable-green-copilot-index.log, collector-unavailable-binary-verified.log,
+collector-unavailable-daily-verified.json, and append-unavailable-retry-monitor.json.
+
+## Finish append observation and isolate steady retry cost (2026-09-13)
+
+Trial 10850 is terminal (exit 1): all 60 scheduled writes have unique exact-hit
+search confirmations, and final generation-bound 62-message comparison plus
+126976-byte SHA256 verification on both HQ and M1 passed. Across all 60 actual
+observations, including five recovered HTTP poll timeouts, readiness p95 is
+41.196s and maximum 53.426s from HQ monotonic pre-write start. This supports the
+original <=120s numeric target. It does not turn the strict verifier green:
+55 success / 5 TimeoutError statuses remain unchanged, censored p95 is null,
+and zero-error diagnostic is false. Timeout root causes remain unverified;
+bounded health/dispatch checks did not reproduce those particular failures.
+
+Fixed reconciliation completed at epoch 1789232253. Observer 3770 completed normally (exit 0)
+with 61 samples over 1799.914 seconds: average CPU 18.949% of one core, sampled
+maximum RSS 40.33 MiB, and 32 new ACKs per replica. CPU fails the 2% target;
+RSS passes 150 MiB. Parent recomputed the result and verified all samples kept
+Collector PID 62526 and the activated framework/settings hashes. The completed
+observer will not be restarted or reclassified as bootstrap. A bounded stack sample and read-only queue inspection
+show 414 never-captured unavailable locators repeatedly observed/deferred with
+one-second retries. The 90 privacyWithheld publications per replica already
+have future retry deadlines and must remain pending. This is steady work,
+not unfinished bulk bootstrap. Cursor wH:p2 is implementing a scoped retry fix
+with RED/GREEN tests: fixed 60-second unavailable retry for never-captured paths,
+existing one-second retry for captured paths, and immediate same-path dirty-event
+wake. Claim fencing generations are not retry counters. Store/Owner regression passes
+183 tests. The first Worker run has 9 assertion failures across existing legacy
+walk continuation and disk-admission cases: a blanket never-captured delay is
+too broad. Cursor is narrowing the 60-second opt-in to genuine unavailable
+observations (generic source read, Copilot, Kimi); ordinary budget/disk and walk
+continuation retain one second. Existing expectations are not weakened. The narrowed four focused tests now
+pass, including both previously failing cases. Copilot index-only rows can also
+return no readable entrypoint without throwing; Cursor is covering that branch
+before final verification. No runtime change yet; final focused checks and
+package verification remain open.
+
+Evidence under output/collector-goal-20260908/: append-unmapped-terminal-outcome.json,
+append-unmapped-acceptance-reconciliation.json, collector-steady-retry-diagnosis.json,
+collector-post-scan-sample.txt, collector-post-scan-queues.json, and
+collector-fixed-scan-followthrough-terminal.json. Original trial
+and observer outputs are retained unchanged. Missing Mimo/Cline originals remain
+low priority and do not block delivery.
+
+## Continue the fixed-target resource observation (2026-09-13)
+
+Observer 32402 exited 1 after its 7208-second reconciliation wait limit, before
+collecting any steady-state samples. This is not a resource pass or a Collector
+failure. Its original output is retained. Parent confirmed both old observer
+PIDs were gone, then started read-only observer 3770 (PIDs 6781/6800) with the
+same fixed revision targets and unchanged 1800-second measurement/CPU/RSS gates.
+Collector PID 62526, executable, loaded framework and settings hashes match the
+activation receipt; the Collector was not restarted. Original Claude scan 74
+has advanced to 2531 completed / 123 unfinished frontier directories with no
+recorded failure. The new append trial 10850 continues independently.
+
+Current Daily App/helper hashes and collector role also match cutover. The old
+EngramService has no process or loaded launch job (launchctl exit 113) and its
+override remains disabled. Its retained plist is a rollback asset, not an active
+job; an initial check comparing plist presence was corrected to loaded-job state.
+Evidence under output/collector-goal-20260908/: fixed-scan-resource-terminal-32402.json,
+fixed-scan-followthrough-monitor.json, fixed-scan-followthrough-current-check.json,
+and daily-retirement-current-readonly-check-20260913.json.
+
+## Complete the unmapped first-fill indexing path (2026-09-13)
+
+HQ Service PID 84037 now uses the existing owned covering identity index for
+unmapped content-existence checks and the two related first-fill deletion paths.
+The query still scans identity keys, but avoids unrelated payload pages.
+Mapped positive hits remain fast; unknown layouts retain the original SQL.
+No schema, index, cache, purge behavior, Collector settings or receiver changed.
+Parent independently verified the five-file diff, 126 tests in four classes,
+two actual binary flows, stable Release source/package hashes and the loaded
+CoreWrite SHA256 84cebac04363af968bbbffbac64fa543aa0a7625e0c54ca9a4873f657d566ea0.
+Prior package and launch plist remain available for rollback.
+
+The same 2048-key fixture and 12000-step bound fail under original code and
+pass under the fix: unmapped existence 20639 -> 7177 VM steps, absence
+20608 -> 7123, first-fill deletion 20777 -> 7302, inconsistent-map deletion
+20993 -> 7546. Mapped existence remains 139. Old-code semantic assertions pass;
+only workload assertions fail. Measurement resets cached statement counters,
+and unrelated-row assertions read stored identities directly. A bounded live
+read-only negative probe completed in 0.625s; this is diagnostic, not p95.
+
+The prior positive-only trial 82817 was stopped after its slow baseline and
+7 successful appends: exact owned verifier PID 78855 received SIGINT and exited
+130. Its 7 successes / 53 cancelled slots remain nonpassing, with final-content
+proof unverified. No product process or resource observer was stopped then.
+The new verifier dry-run passes. Fresh same-workload 60-slot trial 10850 is
+running with separate evidence. Its two-message baseline and first append
+(12.248s to search) pass; full latency and resource acceptance remain open.
+Resource observer 32402 continues the original fixed scan target without a
+Collector restart. Missing Mimo/Cline originals remain nonblocking.
+
+Evidence under output/collector-goal-20260908/: fts-unmapped-parent-review.json,
+fts-unmapped-red, fts-unmapped-green, fts-unmapped-class,
+fts-unmapped-binary-verified.log, fts-unmapped-hq-verified.json,
+check-live-codex-append-lag-fts-unmapped-live.json,
+fts-positive-bootstrap-chain.json, fts-positive-bootstrap-service-sample.txt,
+fts-unmapped-live-probe.json and append-fts-positive-monitor.json.
+
+## Verify the mapped FTS existence fix (2026-09-13)
+
+Cursor implemented a positive-only seek through the existing fts_map, checked
+against actual FTS row ownership and SQL TRIM content, then retained the
+original query as fallback. Parent independently reviewed all three scoped
+file diffs and exact logs. The same 2048-row fixture and 2000-step cap fail
+with the original helper (20556 VM steps) and pass with the fix (139).
+All 97 tests in the two affected classes pass, including missing/unusable
+maps, wrong ownership, space/tab semantics and embedding reenqueue behavior.
+The capture test setup was corrected to update the product embedding job;
+production embedding behavior was not changed. No schema/index/cache added.
+
+Release build/package verification and both actual binary flows pass. HQ
+Service PID78533 now loads CoreWrite SHA256
+2b27c40cd0c20f572e0ad3c9f934204f27355b349e6e49780f9af91b10258a6a;
+parent independently checked process/path and loaded framework hashes. Prior
+package and launch plist are retained for rollback. Collector and receivers
+were not restarted. The verifier dry-run passed after the new activation
+receipt existed (its premature first run failed on that missing dependency).
+Fresh same60-slot live trial82817 is running with separate evidence; previous
+failed trials stay immutable. Resource observer32402 remains on the original
+fixed scan target. Mimo/Cline recovery remains
+low priority and is not a delivery blocker. Evidence: output/collector-goal-20260908/
+fts-positive-parent-review.json, fts-positive-red, fts-positive-green and
+fts-positive-class.
+
+## Diagnose append indexing delay after authentication repair (2026-09-12)
+
+The auth-aware trial crossed900s successfully, then hit real120s search
+timeouts from ordinal30 and confirmation-slot misses. The complete trial57437
+is now terminal(exit1):54successes/4timeouts/2missed schedules. Final60messages
+and HQ/M1 raw124928bytes pass; renewal counts3/3/2/3 and no401 confirm the auth
+repair. Parent independently checked all60 ordinals,58writes, byte/message
+counts and failure-censored p95(nil with54successes); latency gate is false.
+See append-auth-aware-outcome.json. No Xcode build overlapped the trial. Daily capture and HQ/M1 acknowledgements keep
+advancing; HQ parses generations promptly but readiness lags. Only one FTS job
+is pending, with no recorded retry/error. This is not an auth recurrence or a
+general publication backlog. No service/Collector has been restarted.
+
+A3s live sample places1297/1479 samples in IndexJobRunner.hasNonemptyFtsContent
+inside the writer gate. Its original EXISTS scans the UNINDEXED FTS session
+column and reads unrelated payload pages. EXPLAIN confirms the full virtual
+table scan. A bounded read-only candidate query through existing fts_map,
+corroborated against actual FTS rowid/session/nonempty TRIM(content), returns
+true in0.000868s and fewer than100VM steps. False still needs the original
+query; stale/incomplete mapping cannot supply a false positive or false empty.
+No new index/schema/cache is proposed. These timings are diagnostic, notp95.
+
+Cursor owns only IndexJobRunner.swift and its two existing test files for
+RED/GREEN work and semantic regressions. Parent released the Xcode wait after
+live57437 terminated; Cursor may now run the reserved tests. Parent prepared build/binary/activation helpers without
+executing them. Resource observer32402 still follows original scan74. Evidence:
+append-auth-aware-lag-chain.json, append-auth-aware-hq-lag-progress.json,
+append-auth-aware-fts-jobs.json, append-lag-hq-service-sample.txt,
+append-has-content-live-query-plan.json and append-has-content-positive-probe.json.
+
+## Correct authentication in the live append verifier (2026-09-12)
+
+The first live append trial (tool81552) is terminal, exit130 after parent stopped
+only its owned Python process. It records25 successful searches,3 HTTP401
+failures and32 cancelled slots. WebAuthSessionStore expires sessions after900s;
+the verifier authenticated once and omitted renewal. The failed trial remains
+immutable and does not pass the60-slot gate. Resource observer32402 continues
+without any Collector/service/settings changes. Cursor is correcting only the
+verifier to renew proactively through the existing auth endpoint.
+
+A fresh login independently finds the last written marker withHTTP200. All30
+normalized messages for28 owned appends match the complete generation, and
+HQ/M1 raw copies both match94208bytes/SHA256. This verifies transport/content
+after the auth failure, not replacement latency evidence. See
+append-auth-expiry-outcome.json, append-auth-expiry-fresh-login-proof.json and
+append-auth-expiry-before/ for retained original script/results.
+
+The corrected verifier passes the independent offline run, including600s
+proactive auth renewal, shared login/GET timeout, unexpected401 retention and
+interrupt accounting. Parent reviewed the diff; original failure JSON remains
+byte-identical. New full trial57437 started at1789226559 with its own synthetic
+rollout-perf-codex-20260912152239.jsonl and separate auth-aware evidence. It is
+running, not passed. See append-auth-aware-parent-review.json and
+append-auth-aware-monitor.json. Resource observer32402 remains live; active
+Claude scan74 has completed330 directories at1789226460 after scan72 finished.
+
+## Reduce Web read work and acknowledged-history claim scans (2026-09-12)
+
+Current observation update: the original Collector scan is still progressing,
+with 2093 completed / 178 unfinished frontier directories at 1789224870.
+A read-only observer (local PID 88835, SSH PID 88854, tool session 32402)
+tracks the original fixed revision targets for up to 7200 seconds, then starts
+one 1800-second resource window. It does not restart the Collector or change
+settings. Earlier 901-second observers remain terminal historical evidence.
+See fixed-scan-resource-rationale.json, fixed-scan-live-progress.json and
+collector-resource-fixed-claim-scan-steady-observation.json. Before live execution,
+parent review found a stdin protocol deadlock, unbounded replies and
+coalesced-generation comparison defects in the offline Cursor artifact.
+Herdr Cursor corrected them and the partial-finish serialization defect.
+A bounded HQ Cline alternate-profile check found no missing-task names in
+sessions/workspaces/cache/db; its sessions catalog has only two rows and zero
+ID/path matches for all three missing task IDs. No transcript or secret contents
+were read. See cline-alternate-profile-name-check.json. This remains a low-priority
+lookup, not evidence of data loss or a delivery dependency.
+Parent re-ran the corrected offline protocol/accounting checks and verified
+all four actual runtime receipts. Live append trial tool session81552 started
+at1789225222, creating only the owned Daily file
+2026/09/12/rollout-perf-codex-20260912150022.jsonl. Baseline discovery passed
+and the60 scheduled appends are underway. Search latency is measured independently
+from one final complete transcript/dual-replica byte proof. No service or settings
+changed. See append-verifier-parent-review.json, append-verifier-monitor.json
+and check-live-codex-append-lag-live.json. No live gate has passed yet.
+The64KiB baseline complete transcript is now verified. Initial append ordinals0/1
+reach HQ search in13.676/16.704s; their publications are acknowledged by both
+HQ/M1. These are partial observations, not the60-slot result.
+Parent verified Cursor source review: active scan72 can only complete72;
+requested73/74 coalesce into one follow-up full scan74. Thus the original fixed
+resource target74 includes that queued traversal. Current frontier progressed
+to2545 completed/118 unfinished at1789225550, with no scan failure. See
+fixed-scan-revision-parent-review.json. No runtime or observer was restarted.
+Fresh read-only Daily verification at1789225819 confirms the installed App and
+bundled helper hashes still match cutover, collector role/default-settings hash
+is unchanged, and old Service remains unloaded/disabled. Four newer MCP helpers
+are present, each with0.03–0.04s cumulative CPU and no Engram task-state handles;
+these are distinct from the nine retired old helpers. They were not stopped.
+See daily-retirement-current-readonly-check.json. Parent inspected Cursor
+closeout pointers for retirement, residual inventory and rollback; those bounded
+surfaces show no additional failed requirement. This is not an all-source
+retest or final completion audit. Append trial has20/20 successes so far;
+scan72 reached3041 completed/30 unfinished directories at1789225956.
+
+
+Current result: HQ Service62877 loads ServiceCore
+ad067de16050fecba4ebfd5ec7ca61d7835c75f16a021f3a83d3591246986df8,
+with the combined aggregates; CoreWrite/CoreRead are unchanged from the FTS
+index package.62 metadata tests, Release/package and2 actual binary flows
+passed. Normal browser first list returns in591ms and displays50 sessions at
+1004ms; all9 overview pages finish by4831ms. Desktop/mobile images are reviewed.
+The final20-round/concurrency1 workload completes all260requests with no errors
+or skipped dependent steps. p95 list/search/detail/messages/overview is
+145/646/48/77/1450ms. Both numeric latency and the separate all-success diagnostic
+pass. This is the current measured corpus, not arbitrary concurrency/cold-cache
+proof. See overview-combined-parent-review.json and
+web-read-latency-overview-combined-full-window.json. Daily62526 is unchanged;
+current steady resources and small-append latency remain open. Earlier stages
+and retained failed workloads are described below.
+
+Herdr Cursor added an owned-layout covering FTS content identity index, shared
+exact create/rename DDL guards, and a guarded same-snapshot search hint. Unknown
+or missing index definitions retain the unhinted path; rebuild recreates the
+index only after the old renamed FTS table is dropped. Identity, visibility,
+LIKE handling, ordering and the two-second request budget are unchanged. This
+uses the existing guarded shadow-table dependency, not a public FTS5 API promise.
+SQLite 3.51 defensive-mode insert/update/delete/rebuild/integrity checks passed.
+The disposable clone index costs 70,844,416 bytes; test/fix query page misses
+fell from 40625/23046 to 17806/11697 with identical full result digests.
+
+The corrected production-query regression isolates 2048 small-posting FTS rows:
+old unhinted selection fails at 4225 reads against the new 1536 budget; the same
+fixture passes with the hint. Earlier repeated-token and trace-overridden
+measurements are superseded, not performance proof. Parent inspected all six
+diffs and actual logs: 60 metadata, 18 migration, 11 FTS policy and 8 incremental
+tests passed. Release package integrity and two real dual-replica/Web binary
+flows passed. HQ Service 96154 loads the new ServiceCore and CoreWrite; native
+startup created the exact index. Prior job/package are retained for rollback.
+
+Normal first browser navigation succeeds: list 1091 ms, 50 sessions visible at
+2096 ms, all nine overview pages complete by 6416 ms. Desktop/mobile screenshots
+were inspected. The new complete 20-round workload records 246 requests and
+17 fully successful rounds. All 20 searches now pass, p95 833 ms; all lists,
+details and message reads pass. Overview fails 3/166; whole-workload acceptance
+is still false. Failed overview walks end at the failed cursor page, so this is
+not a claim that all 180 potential overview pages were fetched.
+
+Daily HQ/M1 ACKs both reached 39365, with 90 pending per replica, all marked
+privacyWithheld (Claude 75, Gemini 1, Kimi 7, Qwen 7). These statuses are not
+network failure and were not bypassed; individual withholding correctness is
+not re-adjudicated here. The resource observer exhausted its 901-second fixed
+bootstrap-revision wait at Claude required 72 / completed 68. It exited before
+the 30-minute window began; no current resource pass exists. Source confirms
+this is a fixed target, not a moving live-revision goalpost. No blind restart.
+
+A new three-second process sample isolates publication claim SELECT scans while
+no work is due. Same-transaction read-only comparison returns zero in both
+cases: current SCAN r uses about 394000 VM steps; the redundant state predicate
+uses the existing partial index at about 1000 steps. Cursor delivered the
+one-line predicate and a production-query work regression: RED20612 VM steps /
+4111 full-scan steps, GREEN <=1024 / zero full scans.99 store and118 worker
+tests, Release/package integrity and4 real binary flows passed. Parent reviewed
+the two changed files; worker tests are unchanged. Daily Collector62526 loads
+Core118d4d283de16b958136e21bd692bd851e14f406aa880fb8698d8cb85d8d6ffc;
+settings/identity are unchanged and prior job/package retained. The60-second
+restart scan observation is38.337% one-core CPU /125MiB sampled maximum RSS,
+with no new ACKs. It is not steady-state acceptance. The new fixed-revision observer for this actual runtime change also exhausted
+its901s wait before measurement: onlyClaude required74/completed68 remains;
+all other initial root revisions completed. Tool session75230 exited1; no
+resource observer remains running. The Collector continues its retained scan
+(token72); frontier progressed1008→1424 completed directories before timeout.
+Verify that progress and completion before starting the actual30-minute window;
+do not restart a bounded wait blindly. See
+collector-resource-steady-after-claim-predicate-outcome.json. Missing Mimo/Cline originals remain
+low-priority autonomous lookup, with no user backup-path dependency.
+
+The proposed extra FTS hint in overview was rejected: Claude page misses rise
+17327→17614 and Codex falls only22665→21881. Ordered warm timing is not a fix.
+Stage counters instead identify three repeated ledger count walks. Folding
+parse-failure SUM and pending-age MIN into the existing status GROUP BY keeps
+all17 streams numerically equal in one snapshot. Claude aggregate page misses
+fall24645→9114, VM1381477→1044241; Codex pages2758 unchanged, VM227053→171580.
+The two-file aggregate implementation passes62 metadata regressions, including
+parse/non-parse failure totals, all parser revisions, empty0/nil, invalid dates
+and retained negative-epoch rejection. Corrected same-fixture RED1798 reads
+against1536 turns GREEN; parent reviewed both diffs and logs. Release/package
+verification and2 actual binary flows passed; rollout and the final workload
+are verified in the current-result paragraph above.
+
+Acceptance reconciliation against spec710–715 and plan1057/1130 confirms no
+explicit zero-error20-round gate. The existing diagnostic boolean conflated
+numeric p95 with every request/round succeeding. The previous FTS workload has
+all per-kind numeric p95<=2s while retaining3 overview failures, so latency and
+reliability are now reported separately. Raw artifacts remain unchanged; the
+new probe runs the same workload and retains all errors/skips. This does not
+claim that latency alone establishes functional reliability or close the
+Collector resource/capture-lag gates. See web-read-acceptance-reconciliation.json.
+
+CHECKS_RUN: Corrected RED/GREEN; 97 focused tests; Release/package; two real
+binary flows; normal browser/render; full mixed live workload; read-only claim
+plans/counters and native sample; bounded resource-wait outcome.
+CHECKS_NOT_RUN: Current 30-minute resource/capture-lag acceptance remains open;
+current Collector capture-lag/steady-state remain open; the final Web workload
+passes while earlier failures remain retained.
+EVIDENCE_PATH: output/collector-goal-20260908/fts-identity-parent-review.json,
+fts-identity-hq-verified.json, web-read-latency-fts-identity-full-window.json,
+collector-resource-steady-after-legacy-cadence-outcome.json,
+collector-claim-partial-predicate-diagnostic.json.
+
+## Add a measured scalar index for Web lists (2026-09-12)
+
+The previous goal turn made progress by deploying the10s Collector cadence and
+reload error handling. Both current HQ processes and the active goal/2s handler
+budget were reverified. Pure deferred list projection was rejected: live16MiB
+readers repeated22199 page misses for full rows versus22279 for deferred rows,
+with equal full-row digests. Plain binding-first LIST had already been rejected.
+
+A disposable offline-backup clone established a smaller change: a2,154,496-byte
+non-unique partial index over raw visibility, timestamp, ID, source and authority
+columns. Forced old visible-index reads used12852 pages/756764 VM steps; the
+unchanged full query naturally selected the new index at3007/538839, twice each.
+An independent clone with the earlier ready-count diagnostic index removed gave
+the same counters. These are work-reduction measurements, not live p95 claims.
+
+Herdr Cursor added8 migration lines and corresponding producer/migration tests.
+The corrected same-fixture RED fails only at2640 page reads against2048; the
+original RED also had an incorrect continuation fixture and is excluded from
+that proof. Final classes passed58 metadata and17 migration tests, including
+existing browse ordering, repeated migration and partial-index transitions.
+No sessionRows, cache, deadline, schema-version or stored-session change was made.
+
+Release/package integrity and2 actual-binary dual-replica/Web flows passed. HQ
+Service10184 loaded CoreWrite cb4bb96e405de5d0a0b4ea781890c529294a407114153dae4dbe741350511683;
+ServiceCore and CoreRead bytes are unchanged. Native startup created the exact
+index definition. Prior job/package remain for rollback; the additive index is
+compatible with the previous schema. Normal browser first navigation returned a
+single list200 in532ms, showed50 sessions at1032ms, and completed9 overview pages
+at4859ms without overflow or JS errors; desktop/mobile screenshots were inspected.
+The complete20-round,260-request window has no skipped dependent steps. List20,
+detail20, messages20 and overview180 all succeeded, with p95 of188/41/75/697ms.
+Search failed2/20 (test, rounds4/9), p95 including errors2018ms;18 successful
+searches have p95 of1295ms. Full performance acceptance therefore remains false.
+The revised probe continues after errors and retains every failure; earlier
+abort-on-first-failure artifacts remain unchanged.
+
+DailyCollector58605/settings remain unchanged. At1789219384 HQ/M1 had259/593
+pending publications, only Claude reconciliation active. A3s sample shows upload
+privacy assessment/JSON parsing; retain those checks rather than infer an idle
+CPU fix from active backfill. Current resource/capture-to-search acceptance is open.
+
+CHECKS_RUN: Current goal/runtime revalidation; read-only live deferred-projection
+and offline indexed query counters/equivalence; corrected RED;58 metadata and17
+migration tests;2 actual-binary flows; Release/package, deployment and loaded
+framework/native-index checks; successful normal browser first navigation and
+visual inspection; complete20-round live mixed window including all failures.
+CHECKS_NOT_RUN: Current30min steady-state resource and capture-to-search p95
+remain unverified while historical uploads continue. No repeated mixed-window
+run was used to fish for a pass; broad MATCH search remains the next measured issue.
+EVIDENCE_PATH: output/collector-goal-20260908/web-list-index-parent-review.json;
+web-list-deferred-projection-diagnostic.json; web-list-only-index-controlled.json;
+web-list-index-hq-verified.json; overview-pagination-browser-web-list-index-first-navigation.json;
+collector-progress-before-web-list-index.json; collector-resource-legacy-cadence-stacks.txt;
+web-read-latency-web-list-index-full-window.json.
+
+## Bound legacy observation and recover Web reload errors (2026-09-12)
+
+Herdr Cursor changed the legacy ownership observation gate from1s to10s. Clock
+rollback, root rotation, the30s peer hint and fresh capture-time ownership checks
+remain. Parent verified two failing repros,8 focused and118 class tests, Release
+package integrity and4 actual-binary flows. Daily Collector58605 now loads Core
+c02c161b31794650a3c4792602cb97621a553ab3d13a20204f3fee01830c33f2;
+settings/independent identity are unchanged and the previous launch job is retained.
+The subsequent60s restart/backfill window acknowledged55/63 new HQ/M1 publications
+and sent85,069,316 bytes. CPU averaged54.667% of one core; maximum RSS80,784KiB.
+This active-upload window does not establish steady-state acceptance or a CPU
+improvement over a differently sized workload.
+
+Cursor also repaired restoreSession only: a current reload GET503 receives at
+most one extra attempt; terminal HTTP, network and malformed-JSON failures display
+a clear status. Silent401 and login/logout epoch fences remain. Other APIs and
+auth writes are unchanged. The real first-navigation503 was the trigger; a failing
+VM repro,70 passing shipped-JS tests and changed-file Biome validate the patch.
+Receiver packaging and2 actual-binary flows passed. HQ Receiver63666 now runs
+the restore package SHAa64aacfdcada28cd105258d0299aa8a91f8a45edbb89bdb748592997fdaa4efd;
+environment is unchanged and the prior launch job is retained. Normal browser
+first-navigation returned503 twice (2005/2006ms), displaying the new status.
+An explicitly fault-injected first503 then recovered50 real sessions and all9
+overview pages: list visible2427ms, whole load5740ms. Two injected503s produced
+exactly two attempts and the clear terminal status. Both fault checks passed;
+desktop/mobile screenshots were inspected without overflow. These are functional
+recovery checks, not unmodified first-navigation or p95 acceptance.
+The backend2s deadline and previous failed mixed workload remain unchanged.
+
+CHECKS_RUN: Parent diffs and actual RED/GREEN logs;118 Collector tests;4 binary
+flows; Collector build/package/deploy/framework/settings verification;60s live
+resource/upload observation;70 frontend tests and Biome; Receiver Release/package,
+2 actual-binary flows, deployment, failed normal first navigation and2 browser
+fault cases; desktop/mobile visual inspection.
+CHECKS_NOT_RUN: Current30min steady-state CPU and capture-to-search p95 remain
+unverified during reconciliation. Backend mixed acceptance was not repeated after
+a frontend-only change; the latest unchanged-backend workload still failed.
+EVIDENCE_PATH: output/collector-goal-20260908/legacy-cadence-parent-review.json;
+legacy-cadence-daily-verified.json; collector-resource-legacy-cadence-backfill-observation.json;
+web-restore-parent-review.json; web-restore-build-result.json;
+web-restore-hq-verified.json; overview-pagination-browser-web-restore-*.json.
+
+## Start Web search from matching capture identities (2026-09-12)
+
+The previous goal turn made verified progress: the projection/batched-freshness
+package was deployed and tested, but mixed round7 search still failed. Current
+HQ Service82017 and its loaded framework were reverified before continuing.
+
+Alias-only membership on i.stored_session_id produced the same visible-index-first
+plan and was rejected. Combining that predicate with CROSS JOIN changes the plan
+to hit IDs -> identity UNIQUE lookup -> sessions PK lookup. Completed fix/engram
+queries have identical full-row SHA256 in one read transaction. No new index or
+live configuration was installed for diagnostics. Existing sessions-PK INDEXED BY
+was a diagnostic control and was not selected for product code.
+
+Fresh read-only connections use the same16MiB cache as product. Two repeats show
+45964 ->29314 cache misses and1161633 ->670610 VM steps for fix. OS cache and time
+remain uncontrolled, so this is repeated work reduction, not latency acceptance.
+
+Herdr Cursor changed only initial search containing owned MATCH: membership uses
+i.stored_session_id and the sessions join is CROSS JOIN. Initial list, detail,
+LIKE-only/non-owned layouts and current-page live batches keep their prior join.
+All filters, BINARY equality, order and freshness fences remain. A sparse-match
+fixture with unrelated visible rows fails on current behavior (2639 pages vs2048),
+then passes. Four focused checks and57/57 metadata tests pass, including mixed
+MATCH+short-LIKE conjunction. Parent reviewed source/test diff and actual logs.
+Source SHA046898d16486111a46436dd84bb0eda75a092874f486266a4eecc000d67e5ffd.
+Release packaging and two actual-binary dual-replica/Web flows passed. HQ Service
+PID22768 is activated with verified loaded ServiceCore SHA
+be312d2031cdecb56a0f773bf1679bfbb5d94a67f39bc4f91249565f7b5331d6.
+The prior package and exact launch job remain available for rollback. First browser
+navigation still failed (list503,2163ms). Mixed workload completed18 rounds, then
+round19 search returned503 at2031.5ms. Partial runs do not establish full p95 acceptance.
+
+Daily53303 is still on the prior peer-observation package/settings. At1789215738,
+HQ/M1 ACKs are36822/36211 with2627/3242 pending. Claude reconciliation has advanced
+to900 completed frontier entries,264 unfinished; Grok420/124. No scan failure is
+recorded. A3s sample has legacy workspace observation frames and37.9MiB physical
+footprint (historical202.8MiB peak); this is not a CPU or steady-state measurement.
+Cursor implemented a10s legacy observation gate, preserving clock rollback, root
+rotation and capture-time ownership checks. Two failing repros,8 focused and118
+class checks establish the behavior. Parent reviewed the diff. Release packaging
+completed later; see the newer cadence deployment entry above.
+
+CHECKS_RUN: Current HQ executable/framework and source verification; read-only live
+plans/row equivalence and repeated reader page/VM counters; actual RED, four focused
+checks and57 complete metadata regressions; parent diff review; Daily read-only
+root/queue state and short stack sample.
+CHECKS_RUN (additional): Release/package verification, two actual-binary flows,
+HQ activation/framework verification, failed first browser navigation and partial
+20-round mixed workload; Collector cadence RED/GREEN/class and parent diff review.
+CHECKS_NOT_RUN: Collector cadence package/binary/deploy checks are pending.
+Representative steady-state and capture-to-search acceptance remain open;
+Daily reconciliation is active. Mimo/Cline remain low priority and Antigravity is
+deferred, with no new user backup-path dependency.
+EVIDENCE_PATH: output/collector-goal-20260908/search-hit-order-parent-review.json;
+web-search-binding-id-live-query.json; web-search-hit-order-live-query.json;
+web-search-hit-order-page-cost.json; web-search-hit-order-{red,green,class}.log;
+collector-reconciliation-current-after-search.json;
+collector-resource-after-search-sample.txt.
+
+## Reduce Web search work and deploy batched freshness checks (2026-09-12)
+
+An eight-second HQ Service sample overlapping three native webSessions requests
+positively localizes the failures to initial snapshot sessionRows/Row.fetchAll:
+list B-tree/pread and search FTS5 virtual-column content seeks. Native list/search
+failed around 2011/2001ms; a later warmed list completed in66ms. Existing dispatch
+telemetry independently records the roughly2s handler durations; telemetry itself
+returned in4.5ms. This supersedes the earlier short negative stack sample and
+bridge/admission hypothesis. Per-item freshness batching was not the initial sampled bottleneck; a later
+measured regression justified batching only the current page's fresh read.
+
+Read-only OS SQLite3.51.0 diagnostics on the live HQ database show correlated MATCH
+exceeding a10s diagnostic bound for engram twice and migration once. On the exact
+owned FTS/content DDL, an uncorrelated MATCH rowid to shadow c0 identity projection
+returns51 rows in1853ms/381ms and1942ms respectively. Cache conditions differ;
+these are query-plan/work evidence, not production latency acceptance. The old
+query did not complete, so full live-result equivalence is not claimed. One final
+JSON serialization failed from a local variable-name collision; captured command
+stdout was preserved in the evidence summary and the script corrected without
+repeating the expensive queries.
+
+A separate50-item revalidation diagnostic measured798ms for the IN projection,
+1017ms for correlated shadow EXISTS, and1459ms for original virtual-column EXISTS.
+These separate warm samples are not a controlled latency comparison. Parent saved
+source/test baselines and delegated only the producer and existing tests to Herdr
+Cursor. The first fixture was ineffective and passed old code; corrected RED read
+594152pages. Initial IN-only code reduced this to20764, but a16-match page still
+read175966pages from repeated live queries. Raising that separate live fixture's
+budget was not accepted as improvement. A second RED retained the32768-page bound
+and failed on175966; a single fresh query constrained to current-page IDs then
+passed. The original initial RED also exceeds the final32768 bound.
+
+Final source combines exact-owned-DDL MATCH rowid/shadow identity projection with
+one current-page fresh query. It retains all query/source/visibility filters,
+policy/schema checks and per-item authority comparisons, using UTF8 Data map keys
+to preserve SQLite BINARY identity. Missing or changed current-page rows still
+fail stale; held snapshot pagination and singleton detail behavior remain. Other
+FTS layouts keep virtual-table queries, and CJK/short LIKE remains unchanged.
+No new index, schema, deadline, cache or UI page-size change was made.
+
+Parent caught an external-content fixture lacking index rebuild and removed a
+hand-written query-plan test that duplicated implementation instead of exercising
+production. Parent also caught Swift String map normalization: the valid
+composed/decomposed-ID RED throws stale, then Data keys pass. The first invalid
+extra-e fixture is retained but excluded as evidence. Final WebMetadataProducerTests
+pass55/55, including7new tests; earlier failed logs are preserved. Parent reviewed
+actual diff (+45/-15 product lines,224test lines), baseline matches prior live
+package provenance. Source SHA51470ffc9a4f7ffac95088115ead39a60d22d74c3be5c60149d28da87b6bc657.
+Release build/source stability and package integrity passed. Two actual-binary
+Claude/Codex two-generation flows passed through Collector, both replicas and HQ
+Web. HQ alone switched fromService59146 to82017;15s process stability and actual
+loaded framework verified. EngramServiceCore SHA is
+b1b3136abb87a5d3dc65a8926703d16b6252abb41afc33f1a31f25500ddff649;
+launcher and CoreWrite binary are unchanged. Rollback retains the prior package
+and private persistent/search-projection-job-before.plist. Collector, Receivers,
+settings, credentials and schema were not changed in this rollout.
+
+Live first browser navigation passed: listHTTP1891ms/visible1994ms,9overview pages
+all200, complete5812ms;50rows and15sources/5495ready sessions. Desktop/mobile
+screenshots were inspected with no horizontal overflow or page errors. This is
+one navigation, not a cold-cache or p95 guarantee.
+
+The20-round mixed workload completed6rounds before round7 search(fix) returned503
+at2032ms.7lists,6details,6message pages and54overview pages had no failures, but
+search has1/7failures and the intended workload is incomplete. No full-workload
+p95 pass is claimed. A separate native profile reproduced fix failure2004ms,
+then warm fix236ms and migration117ms. Existing telemetry confirms roughly2s
+inside dispatch;8s sample includes ingest work but no named metadata producer
+frames. Do not attribute ingest FTS stacks to Web or declare the residual cold
+SQL/IPC cause proven. Cursor continues a bounded read-only source review; the
+new package remains active and the overall goal remains incomplete.
+
+A list identity-first join experiment was rejected: fresh read-only connection
+cache misses increased from21031/21032 to25374/25390, with higher VM work. Warm
+same-transaction timing alone was misleading; product list JOIN is unchanged.
+
+Daily Collector53303 remains on the prior peer-observation package. A completed
+60s backfill window measured10.130% of one core, max sampled RSS80.531MiB,
+HQ/M1 +12/+10 ACKs and7900618bytes out. Claude reconciliation remains active
+(requested70/completed66); this is not steady-state acceptance. Mimo/Cline remain
+low priority with no user backup-path dependency.
+
+CHECKS_RUN: Native telemetry and overlapping stack evidence review; read-only live
+SQL plans and bounded query comparisons; fresh-reader page/VM counters;60s Daily
+resource/ACK observation; three meaningful REDs,55/55 complete metadata regressions,
+independent source/test diff and package-baseline provenance review; Release/package
+checks;2actual-binary flows; HQ15s stability/loaded-framework verification; live
+browser/screenshots, partial mixed workload and residual native profile/telemetry.
+CHECKS_NOT_RUN: Complete20-round Web workload did not finish because round7
+search returned503; no successful full-workload p95. Representative30-minute
+steady-state, capture-to-search and2-user acceptance remain incomplete; active
+reconciliation and the residual Web failure prevent final acceptance.
+EVIDENCE_PATH: output/collector-goal-20260908/web-sessions-native-overlap-profile.json;
+web-sessions-native-overlap-sample.txt; web-ipc-telemetry-before-localization.json;
+web-search-projection-live-query.json; web-search-projection-fresh-loop-cost.json;
+web-list-identity-first-rejected.json; web-list-identity-first-page-cost.json;
+web-search-projection-red-2.log; search-projection-before.json;
+collector-resource-peer-observation-backfill-observation.json;
+search-projection-parent-review.json; web-search-projection-batch-red.log;
+web-search-projection-binary-id-red-2.log; web-search-projection-batch-class.log;
+search-projection-build-result.json; search-projection-binary-verified.log;
+search-projection-hq-verified.json;
+overview-pagination-browser-search-projection-first-navigation.json;
+web-read-latency-search-projection-mixed.json;
+web-search-projection-residual-profile.json;
+web-ipc-telemetry-search-projection-after.json.
+
+## Reduce Cursor observation scans and remove retired-service identity dependency (2026-09-12)
+
+Herdr Cursor changed only CollectorPublicationWorker.swift and its existing test
+class. Successful peer-fingerprint hints are reused for less than 30 seconds
+when configuration, checkpoint and requested/completed revisions still match.
+Fresh attempts discard the previous hint; missing inventory state is not cached.
+Main/workspace observations retain their one-second cadence. Actual legacy
+capture still discovers current modern ownership; hints never authorize capture.
+This can delay a missing-event peer-membership hint by at most 30 seconds.
+
+Parent saved pre-change files matching the prior Collector package. The reuse
+repro failed on the original behavior (two discoveries instead of one). Final
+seven targeted checks and the complete 116-test publication class passed; parent
+reviewed actual source and logs. Release source hashes stayed stable, package
+integrity passed, and four actual-binary lifecycle/two-generation checks passed.
+Worker source SHA: 0dded15229bc8e2e81c0cf2a9f4114ec468e2dc46b525f5252310772fa95e4c3.
+
+The first rollout exposed a restart dependency, not a proven cache regression.
+Candidate PID 52855 exited 70 before runtime readiness; the first resource probe
+never started. Parent immediately restored the old package, which also exited
+before readiness. A tiny read-only probe using the actual OLD CollectorCore
+reported the borrowed legacy identity catalog unavailable, while the existing
+8192-byte rollback-journal spool marker was readable and matched the expected
+Daily machine ID. Existing WAL/SHM files were present; no missing-sidecar or
+corruption cause is claimed.
+
+Copied the provisioned marker bytes to the sibling private directory
+state/collector/identity/archive.sqlite, native-verified the same ID, and changed
+only collector.identityCatalog. No new identity was allocated; old catalog and
+spool marker were untouched. Exact copy SHA is
+39867e067ba6ca4c3ba0671277d1f005d384d806f0619b6fb748faed79cd6481;
+new settings SHA is fde1358efabab7980bde86f7f4bbb0b92ce283be66e3e72cb5896206f2d1c37c.
+Old package PID 53251 then stayed stable and advanced HQ/M1 ACKs by 22/16 over
+15 seconds, independently isolating recovery from the cache change.
+
+Reactivated the tested peer-observation package with a 15-second process-stability
+check. Current Daily Collector PID is 53303; loaded CollectorCore SHA is
+ae8024d4da83dd39392a85c733f37e41011f19aa58b99aa020af5350a95ead33.
+Launcher SHA is unchanged. Rollback package and
+persistent/peer-observation-identity-fixed-job-before.plist retain the proven old
+binary; keep the independent identity setting when rolling back the binary.
+Original settings remain in persistent/identity-independent-settings-before.json
+for history, but restoring that old identity dependency would reintroduce the
+observed startup failure. HQ Service 59146, Receiver 8917 and M1 were not deployed.
+
+The first post-restart 60-second window measured 53.715% of one core and sampled
+RSS 202.688 -> 92.516 -> 70.328 MiB, with HQ/M1 +29/+58 ACKs and 133,507,275 bytes
+sent. Claude reconciliation was requested 70/completed 66 and still advancing.
+This differs materially from the prior settled 24.492%/26MB window: no measured
+CPU improvement or steady-state acceptance is claimed. A later short stack sample
+shows inventory reconciliation and upload/storage validation; lack of the old
+peer-scan frame in that short sample is not proof of total cost elimination.
+
+A source-reviewed 20-round single-client HQ Web latency probe was prepared for
+list/search/detail/messages/overview. Both actual runs aborted: the first list
+returned 503 at 2025ms; the second list passed at 1902ms then search returned 503
+at 2015ms. No complete percentile result exists. A subsequent profiled search also
+returned 503 around 2044ms. Service sampling showed ingest activity and a waiting
+IPC listener, without metadata producer frames; that is a lead, not proof of where
+the delay occurs. Receiver sampling subsequently showed native IPC readFrame/poll
+while waiting for a reply. The named socket belongs to PID 59146; an idle accept
+thread alone does not exclude an accepted but suspended async handler. Tailscale
+8443 currently proxies to Receiver localhost:18787,
+whose configured IPC socket is the current HQ Service socket. Cursor's proposed
+batch revalidation optimization is unimplemented and not yet established as the
+cause. Subsequent overlapping sampling (see next entry) localizes initial SQL;
+the earlier short negative sample did not. Do not raise deadlines, reduce
+UI page size, add indexes or relax fresh authority checks to manufacture a pass.
+
+At 1789212748, HQ/M1 ACK totals were 35589/35021, pending 3856/4424. The recovered
+719-publication cohort still has 717 eligible pending without errors. Historical
+queue zero is not a retirement gate. Mimo/Cline remain low priority; Antigravity
+is deferred. Overall goal remains active; Web reliability and representative
+resource/latency acceptance are still incomplete.
+
+CHECKS_RUN: Same-behavior RED, seven targeted and 116 full-class checks; Release
+and source/package checks; four actual-binary checks; native read-only identity
+probe; exact marker copy/config-diff verification; old-package recovery with ACK
+progress; candidate process/loaded-framework/resource checks; authenticated Web
+failure probes and service/receiver stack sampling; queue check; git diff --check.
+CHECKS_NOT_RUN: Representative steady-state 30-minute resource and small-append
+capture-to-search p95; restart reconciliation is active. Web 20-round workload
+aborted on real 503 responses; no successful full-workload p95 or browser retest.
+EVIDENCE_PATH: output/collector-goal-20260908/peer-observation-parent-review.json;
+collector-peer-fingerprint-{red,green,worker-class}.log;
+peer-observation-{build-result,daily-stage,daily-verified}.json;
+peer-observation-binary-verified.log; peer-observation-failed-resource-probe.json;
+peer-observation-identity-probe.json; collector-identity-independent-{activation,
+old-binary-verified}.json; collector-resource-peer-observation-identity-trial-observation.json;
+web-read-latency-{peer-observation-mixed,identity-fixed-mixed}.json;
+web-search-live-profile.json; web-search-receiver-live-profile.json.
+
+## Recheck low-priority Mimo/Cline leads and dispatch Collector scan fix (2026-09-12)
+
+Read back the active feature worktree and prior rollout evidence. The approved
+core goal remains active. A bounded two-level HQ source-directory check found
+three Cline task folders, but none of their IDs matches the three old Daily
+records. All 43 old Mimo exact locators also remain absent on HQ. This is no
+new recovery and does not prove permanent loss. Existing three-host archive
+checks remain historical evidence; they were not rerun or widened. The user
+needs to provide no backup location, and this search does not block delivery.
+
+Herdr Cursor pane wH:p2 is implementing bounded modern-peer observation reuse,
+with exclusive ownership of the publication worker, related tests and Xcode
+lane until its handoff. Actual capture ownership must still be rediscovered.
+Parent saved the two pre-change files under peer-observation-before, matching
+the previous Collector package provenance, and prepared but did not execute
+build-peer-observation-package.py and run-peer-observation-binary.py. No new
+Collector binary has been deployed in this slice.
+
+CHECKS_RUN: git diff --check; existing rollout-record readback; exact old Daily
+source-locator comparison against HQ; bounded source-folder metadata check;
+Daily Cursor root-state read; pre-change SHA comparison; Python compile of two
+prepared build/test runners.
+CHECKS_NOT_RUN: New implementation tests and resource trial; Cursor is implementing.
+EVIDENCE_PATH: output/collector-goal-20260908/mimo-cline-bounded-root-recheck.json;
+mimo-cline-hq-exact-recheck.json; peer-observation-before.json.
+
+## Avoid computing out-of-page overview statistics and locate Collector scan cost (2026-09-12)
+
+Cursor through Herdr changed overview preparation to compute full statistics for
+at most the requested stream count. A cheap registry-binding lookahead reports
+hasMore; cursor positions still use the last returned stream. Invalid registry
+rows, envelope fitting and replay retain their existing behavior. No schema,
+index, cache or deadline changed.
+
+Corrected the regression fixture so its tiny returned stream has exactly one
+valid FTS map while the large next stream is unmapped. The initial unmapped-tiny
+RED was confounded and is not the corrected comparison. Parent independently
+read original producer SHA 6bee4e86bc7a21e1f06ca3731939db06d0ea62ce662408f9c984e316afffa1c3
+while corrected RED ran; that source matched the prior package provenance.
+Corrected RED read 8284 pages against a 1024-page bound; restored final source
+6382f3be15227a6dcc99224ac2abe189078487f3460698c9314d0509e7511188 passed the same
+fixture, including invalid-registry skipping and replay. Full metadata class 48
+and two actual-package Claude/Codex generation flows passed. An attempted parent
+source reconstruction was not used as proof; no reconstructed-source file exists.
+
+HQ Service alone moved from PID 6695 to 59146 under
+service-index-overview-lookahead-20260912. Parent verified launchd, executable and
+loaded ServiceCore SHA 94d169cc3820a3bf752f15d2533d347e5307fb3f74324b541eca5eeb7933cc50.
+Rollback retains the previous package and persistent/overview-lookahead-job-before.plist.
+Receiver 8917 and the Daily/M1 configuration were not changed by this rollout.
+
+The improved browser verifier observes one fresh navigation instead of an
+unobserved navigation followed by reload. Before rollout it passed in 3196ms;
+after rollout the first observed navigation passed in 4336ms, with list HTTP 1815ms
+and nine overview pages all 200, maximum 903ms. This is not a before/after speedup
+claim. A separate same-snapshot HTTP walk verified 17 unique streams in 2585ms,
+maximum 992ms per page. Mobile render was inspected; both viewport overflow checks
+and browser errors were clear. Cold-cache and representative p95 remain unverified.
+
+A fresh 60s Daily backfill observation verified PID 66519 and unchanged settings:
+CPU 24.492% of one core, sampled RSS maximum 75.172MiB, and 34 additional ACKs at
+each replica. A separate 2s stack sample points to the every-second full modern
+Cursor peer scan used only to compute a legacy-observer fingerprint. Actual
+legacy capture separately rediscovers current peer ownership. Do not attribute
+all measured CPU to upload traffic or treat the sample as percentage attribution.
+
+Next implementation focus: avoid repeated peer-fingerprint hint scans, preserving
+one-second main/workspace checks and fresh capture-time ownership. Cursor's bounded
+review found a state/checkpoint-keyed process-local hint cache with at most 30s
+missing-event delay plausible; this changes observer freshness and still needs
+behavior tests and measured benefit. No Collector cache/cadence change is applied.
+Do not cache an invalid configuration or use a cached hint to authorize capture.
+
+Current scope was reconciled against the accepted 2026-09-05 spec/plan: historical
+queue zero is not the retirement gate; Mimo/Cline stay low priority and Antigravity
+is deferred. Reboot is separately authorized, not a new assumed requirement.
+At 1789210057 HQ/M1 ACKs were 33331/32523, pending 6116/6922; recovered cohort remains
+719 captured, 717 eligible pending without errors. Overall goal remains active.
+
+CHECKS_RUN: Corrected same-fixture RED/GREEN; 48 metadata tests; Release package
+and stable-source provenance; two actual-package flows; live loaded-framework
+verification; first-navigation browser and same-snapshot HTTP pagination;
+60s resource counters, 2s stack sample, queue checks; git diff --check.
+CHECKS_NOT_RUN: Representative steady-state 30-minute and cold/p95 acceptance;
+active backfill and bounded observations do not establish those targets.
+EVIDENCE_PATH: output/collector-goal-20260908/overview-lookahead-{parent-review,
+hq-verified,build-result}.json; overview-lookahead-corrected-{red,green}.log;
+overview-lookahead-webmetadata-producer.log; overview-lookahead-binary-verified.log;
+overview-pagination-browser-lookahead-first-navigation.json;
+overview-pagination-http-lookahead-complete-http.json;
+collector-resource-settled-backfill-observation.json;
+collector-settled-backfill-profile-summary.json; recovered-publication-queue.json.
+
+## Complete Web overview pagination on HQ (2026-09-12)
+
+The Web viewer previously ignored overview nextCursor and requested up to 50
+streams in one operation. It now reads two streams per page using the existing
+snapshot/cursor contract, and renders totals only after the complete walk.
+Failures do not display partial totals; epoch changes, snapshot mismatches and
+repeated cursors stop stale or invalid continuations. Source list/reader layout
+is unchanged. Cursor reviewed the final UI code through Herdr with no actionable
+findings. The two original pagination reproductions failed before the fix;
+all 59 shipped-script tests now pass, including continuation and auth races.
+
+Release packaging and two actual-package Claude/Codex generation flows passed.
+Only WebUIRoutes.swift differs among macOS source files from the previous
+mapped-identity Service package. HQ Receiver moved from PID 69192 to 8917 at
+1789208106 under remote-server-overview-paged-20260912. Parent independently
+verified launchd, executable mapping and binary SHA256
+c6bc2a3c4a5c685dc755cf64410bf78e59f8bfcb7a47460f2a1e0fa6510607df.
+The old package and persistent/overview-paged-job-before.plist remain available.
+HQ Service, Daily Collector and M1 package/configuration were not changed.
+
+The first live browser attempt timed out after 25s waiting for a summary; no
+network diagnosis was captured, so its cause is UNVERIFIED. A subsequent real
+browser run without asset interception passed all nine requests, completed
+17 streams /15 sources in 4954ms, displayed 50 list entries, and showed no browser
+errors or horizontal overflow at 1200x900 and 390x844. Desktop/mobile screenshots
+were inspected. Preview completed in 4413ms. Playwright CLI sessions repeatedly
+closed during setup; a standalone Playwright driver using the installed library
+completed verification. Served app.js passed node --check and contains pagination.
+These observations do not establish cold-cache or representative p95 acceptance.
+The raw default-limit overview deadline remains open; the Web uses small pages.
+
+A diagnostic-only fixed clock allowed all 17 streams to finish in the Debug
+producer: readyCount 2686ms and taskCounts 930ms dominated 3889ms total. The live
+production deadline stayed unchanged. An existing publication-index hint passed
+an isolated overflow fixture (8470 to 156 pages, 48 tests) but saved only about 7%
+of page misses in reversed live read-only controls. Cursor removed that hint
+and its experimental fixture; it was not deployed. Final Service source matches
+the previously deployed package. No schema/index/cache changes were adopted.
+
+At 1789208141, HQ/M1 had 31314/30676 acknowledged and 8135/8769 pending publications.
+The recovered 719 originals remain fully captured, with 717 eligible pending and
+no errors behind older same-root history. Daily PID 66519/settings hash remained
+unchanged. Missing Mimo/Cline originals remain low-priority known-store work,
+without asking the user for backup locations or holding delivery.
+
+CHECKS_RUN: Two failing pagination reproductions; 59 UI tests; Biome for the
+changed test file; Release/package provenance; two actual-package integration
+flows; live process/binary verification; served-JS syntax; preview/live browser
+pagination and desktop/mobile render inspection; read-only queue check;
+git diff --check. The 48-test index experiment is not a shipped-code gate.
+CHECKS_NOT_RUN: Cold-cache/p95, idle 30-minute resource acceptance and reboot;
+active backfill and bounded functional validation do not establish these.
+EVIDENCE_PATH: output/collector-goal-20260908/overview-pagination-ui-{red,final}.log;
+overview-paged-{build-result,hq-verified,live-asset}.json;
+overview-paged-binary-verified.log;
+overview-pagination-browser-{preview,live-diagnose,first-live-failure}.json;
+overview-complete-diagnostic-summary.json; overview-publication-tuple-reject.json;
+recovered-publication-queue.json. Rendered images:
+output/playwright/overview-pagination-live-diagnose-{desktop,mobile}.png.
+
+## Bound mapped FTS identity reads and confirm recovered-source queue eligibility (2026-09-12)
+
+Cursor through Herdr implemented an optional metadata-only FTS identity seek.
+Only exact normalized owned virtual/shadow DDL enables the content-table id/c0
+lookup. Other layouts retain virtual-table corroboration; the full virtual IN
+fallback and every authority, source, head, version, hash, visibility and tier
+guard remain unchanged. No schema, deadline, cache budget or Collector change.
+The storage mapping is documented by SQLite FTS5 section9.4:
+https://www.sqlite.org/fts5.html#the_table_contents_content_table .
+Parent reconstructed the prior mapped-membership block and matched its SHA256 to
+the deployed source provenance, proving this is the only production-file change.
+
+Corrected an initially misleading fixture before accepting the fix. LIKE on its
+UNINDEXED trigram session_id matched zero rows: the supposed mapped fixture had
+zero map rows and32FTS rows. Its8279-page results did not prove a mapped-path bug.
+The corrected fixture explicitly verifies16maps and16matching content rows.
+The deployed virtual seek then failed at8292pages; the optional content seek
+passed at79pages with the same16ready sessions. Temporary prints, copies and
+query-plan instrumentation were removed from test source. Ordinary, reordered
+and external-content layouts with misleading content rows retain correct counts.
+The non-ready-head fixture also stopped silently omitting maps via that LIKE.
+
+Final metadata class47/47, Release/source-stable package verification and two
+actual-package Claude/Codex generation flows passed. Cursor reused the previous
+overview-webmetadata-producer-green log/result name for the47-test run; parent
+saved unique authoritative copies as overview-mapped-identity-metadata-green.*.
+The prior45-test result was verified in its original turn, but the reused file
+name no longer contains that older run. Do not reuse evidence paths again.
+
+HQ service-index alone moved from35176 to6695 under the private package
+hq/service-index-overview-mapped-identity-20260912. Parent verified the live job,
+executable and loaded EngramServiceCore SHA256
+0ad74320956d19ce84cc126081f859acd7465dbfaa0130d705a43b431920d31e.
+The old package and persistent/overview-mapped-identity-job-before.plist remain.
+Early requests during startup returned503 in12-14ms. About40seconds later,
+overview still returned503 at2019ms, followed by200 at489/240ms with17streams;
+the source list was200 at20ms. A later sample returned503 at2026ms, then200 at
+1169/1167ms, with the list200 at29ms. The mapped-body regression is fixed; the
+whole overview deadline issue is NOT closed and no cold/p95 acceptance is claimed.
+
+All719restored Claude originals are now captured. Exact live publication-fence
+checks find the remaining717eligible, with no errors, behind older same-root
+publications. Between queue snapshots1789204039 and1789206563, HQ/M1 total ACKs
+increased2444/2217 to30135/29313; pending is9310/10132. Collector66519 and its
+settings SHA256 remained unchanged. The recovered cohort itself still has only
+2dual ACKs. This is ordinary backlog, not proof of completed historical delivery.
+HQ capture intake runs every2seconds, with replay/readiness250ms; the native
+indexing30s setting is not its cadence. The sampled parsed backlog is almost
+entirely current skip-tier sessions; do not treat all parsed rows as stuck FTS.
+
+A proposed sessions covering index was tested ONLY on an APFS clone of a
+quiescent offline private test backup, including its unchanged WAL. No live
+index/schema was changed. The10.2MB index alone worsened page misses34362 to
+225146 by moving session filtering after generation/FTS work. Pinning the old
+order reduced misses only to31110; reverse-order cold timings did not establish
+sufficient benefit. No sessions-index or extra join-order change was adopted.
+The live current/old-virtual plans retain early session filtering; do not infer
+a live plan regression from the isolated covering-index experiment.
+
+CHECKS_RUN: Corrected real mapped-body RED/GREEN;47metadata tests including
+layout fallbacks; Release build/package/source stability;2actual-package flows;
+independent loaded-framework check; real HTTP startup/after/later probes;
+exact719-source capture and upload-fence reconciliation; bounded read-only native
+producer/SQLite diagnostics; isolated offline-clone index experiment.
+CHECKS_NOT_RUN: Full cold/p95 and idle CPU/RSS acceptance (first overview still
+fails and historical backfill continues); reboot/UI rendering (not changed here).
+EVIDENCE_PATH: output/collector-goal-20260908/overview-mapped-ready-bodies-real-red.log,
+overview-mapped-ready-bodies-candidate-green.log, overview-mapped-identity-metadata-green.log,
+overview-mapped-identity-binary-verified.log, overview-mapped-identity-parent-review.json,
+overview-mapped-identity-hq-verified.json, overview-ready-filter-http-mapped-identity-*.json,
+mapped-body-fixture-setup-adjudication.json, recovered-publication-queue{-first,}.json,
+hq-ingest-catchup-status.json, overview-session-index-{diagnostic,ordered,ordered-reversed}.json.
+
+## Reduce HQ overview ready-count reads; first-request deadline remains open (2026-09-12)
+
+Cursor through Herdr changed only the ready-count sessions join to CROSS JOIN
+and exposed the already implied parsed-head = ready-head equality before reading
+session rows. FTS-map corroboration, its legacy/missing/stale-map membership
+fallback, authority/epoch/hash/version/tier guards and the two-second deadline
+remain unchanged. The actual producer regression failed on the old query with
+4,382 page misses against a 1,024 bound, then passed; the final full metadata
+class passed 45 tests. Two actual packaged-binary Codex/Claude generation flows
+also passed. The Release build stayed source-stable and its package verified.
+
+HQ service-index alone moved from PID 7206 to 35176. Parent independently checked
+the loaded EngramServiceCore framework SHA256
+8bd3fa9b422e931dc8a94b7591be02fe4c6ed83e4416e4484ec1cfc8399f49b1.
+The launcher hash is unchanged; it is not evidence that the framework is old.
+The new private package is hq/service-index-overview-ready-filter-20260912 under
+~/.engram-shadow-core-20260911; the prior package and the private
+state/service-index/persistent/overview-ready-filter-job-before.plist are retained.
+No schema, Collector, receiver or Daily installed-role change was made.
+
+Authenticated real HTTP before activation returned three overview 503s at
+2,024/2,024/2,018 ms; the source list was 200 at 24 ms. First after restart was still
+503 at 2,230 ms, followed by 200 at 437/262 ms with 17 streams. About 50 seconds later,
+three overview requests were 200 at 1,804/341/303 ms and the list 200 at 18 ms. This is
+an improvement, not complete cold-cache or representative-p95 acceptance. An
+expired browser cookie produced 401 during an earlier attempt; that was not
+used as service performance evidence. Subsequent checks used fresh private
+viewer authentication without exporting credentials.
+
+Rejected the IN-to-EXISTS hypothesis: reversed-order OS SQLite 3.51 comparisons
+showed cache-order effects with equivalent VM work. Homebrew Python SQLite 3.53
+is not product SQLite evidence. Current join/head filtering reduced approximate
+VM work from 1.590m to 1.308m with the same 17 stream counts. A later sessions-last
+proposal was rejected after actual execution increased work to 19.370m versus
+1.314m, despite equal counts. Neither rejected proposal changed deployed code.
+A bounded current-source component probe measured readyCount1105ms/1.313msteps,
+taskCounts376ms/.564m, parseFailures26ms/.324m, oldestPending21ms/.322m and
+publications46ms/.080m. These separate-connection timings do not establish the
+cause of the first HTTP timeout. A combined ledger-aggregation diagnostic kept
+all 17 status/failure/oldest tuples equal and reduced approximate VM steps from
+1.217m to .920m; candidate-first447ms versus current-first500ms in separate
+reverse-order runs did not establish a substantial cold-latency improvement.
+No aggregate rewrite was adopted; avoid another optimization loop without
+stronger evidence on the real first-request critical path.
+
+A fresh metadata-only recovery check finds 699/719 restored Claude originals
+captured, 2 dual-acknowledged/HQ-ready; original byte verification was not repeated.
+Mimo/Cline remain low-priority bounded self-search with no user-response gate.
+
+CHECKS_RUN: Old-query page-read RED; full 45 metadata tests; Release build/package
+integrity/source stability; 2 actual-package flows; live job/executable/loaded
+framework verification; authenticated before/after/short-idle HTTP; OS SQLite3.51
+query/count comparisons; exact-cohort recovery progress.
+CHECKS_NOT_RUN: Cold/representative latency and steady-state resource acceptance
+(first restart request still failed; historical backfill continues); reboot and
+rendered UI checks (no UI change in this rollout).
+EVIDENCE_PATH: output/collector-goal-20260908/overview-identity-first-red.log,
+overview-webmetadata-producer-green.log, overview-ready-filter-binary-verified.log,
+overview-ready-filter-build-result.json, overview-ready-filter-hq-verified.json,
+overview-ready-filter-http-{before,after,after-idle}.json, overview-stream-cost.json,
+overview-system-sql-sessions-last.json, claude-recovered-originals-progress.json.
+
+## Retire Daily's old indexer and activate the collector-only App role (2026-09-12)
+
+Completed the approved Daily cutover after the source checks, rollback preparation
+and actual staged-package smoke. Cursor authored the task-local SSH transaction;
+parent review corrected its remote boundary, process matching, launchd default
+state handling and rename-based rollback, then added exclusive owner-only settings
+writes and live drift guards. Local/embedded Python syntax and the full remote
+read-only dry-run passed before apply. No product code or database schema changed.
+
+Disabled and booted out com.engram.service; old PID 25371 exited. The complete
+installed App is now local-only build 20260912020555 with runtimeRole=collector.
+All other default settings compare equal to the backup. Nine re-identified old
+MCP helpers exited, while all eight distinct parent PIDs remained present. The
+new actual bundled MCP returns the expected local-index-unavailable response;
+this is intentional collector-role behavior, not forwarding MCP calls to HQ.
+Collector 66519 retained its executable, start time and private settings; both
+replica ACK counts continued advancing. The HQ recovery job remained loaded.
+
+The original installed App was preserved by rename under the private rollback
+directory as displaced-installed-1789201231-17061.app. No rm, source deletion or
+database restore/migration was used. Independent verification checks installed
+hashes/signature, the disabled/unloaded old job, absence of any local Service,
+old-helper exit, parent presence and preserved Collector identity/settings. The
+retained old database independently passes immutable quick_check with no nonempty
+WAL and the same 60,379 session-row count as the online backup. Its current size
+is 1,493,655,552 bytes versus the backup's 1,544,617,984; these observations do not
+establish the cause of the size difference or a full row-by-row equality claim.
+
+One remaining HQ issue was found by the post-cutover smoke: overview returned
+HTTP 503 twice at roughly its two-second deadline, while the source-filtered
+session list returned 200 in 35ms. HQ Service 7206 and receiver 69192 are unchanged
+and live. A later sampled request returned 200 in 2,003ms, still near the
+deadline; the sample mainly captured unrelated ingest work and does not identify
+the overview cause. Cursor is diagnosing the bounded overview path; no HQ restart
+or deadline relaxation was applied. Historical backfill and steady/latency acceptance remain
+open, so the full goal is not complete. Do not rerun the one-shot cutover script.
+
+CHECKS_RUN: Remote cutover dry-run/apply; independent installed-role/job/process/
+settings verification; actual default MCP role response; retained old DB integrity
+and row count; post-cutover HTTP smoke/retry; Cursor cutover review.
+CHECKS_NOT_RUN: Steady-state CPU/RSS and representative latency acceptance
+(backfill remains; overview 503 is unresolved); reboot (not part of this cutover);
+new product suite (no product behavior code changed in the transaction).
+EVIDENCE_PATH: output/collector-goal-20260908/activate-daily-collector-role.py,
+daily-retirement-cutover-{dry-run.json,applied.json,applied.log,verified.json},
+daily-retirement-retained-db-check.json, daily-retirement-hq-web-retry.json,
+daily-retirement-role-stage.json and daily-retirement-rollback-prepared.json.
+
+## Finish backfill observation and prepare the Daily retirement transaction (2026-09-12)
+
+The same 30-minute observer completed normally: 61 samples over 1,800.073883s,
+HQ/M1 new ACKs 862/1,190, process outbound-counter delta 620,550,033 bytes,
+average Collector CPU 22.1208% of one core, maximum sampled RSS 122.53125 MiB,
+and final RSS 52.4375 MiB. Parent recomputed the summary and checked unchanged
+PID/executable/settings/framework across every sample. Claude frontier pending
+directories went from 190 to 145; discovery and historical publication continue.
+The final part included read-only Web/raw probes and rollback backup preparation.
+This is active backfill, not idle performance or a controlled speedup comparison.
+Tool session 42002 has exited successfully; do not restart this observer.
+
+Cursor through Herdr reconciled existing source evidence and identified four
+missing real HQ read samples. A bounded HTTP verifier now checks iFlow 29,
+Qoder 25, Qwen 36, Gemini 5 and OpenCode 2 messages: source-list HTTP success,
+available detail, complete fragments/ordinals/UTF-8 offsets/roles/payload hashes,
+and the same unique ready generation before and after paging. All five passed.
+Four manifests match existing dual-replica byte receipts. The selected OpenCode
+sequence 5 additionally passed fresh authenticated HQ/M1 publication ACK,
+manifest and full 28,672-byte object comparison against Daily immutable CAS.
+Cursor reviewed these exact receipts and verifier. No parser equivalence,
+rendered-browser or corpus-completeness claim follows from these samples.
+
+The real old-Service owner is com.engram.service, with RunAtLoad and restart on
+unsuccessful exit. Its launcher directly executes the installed helper against
+the default database. Retirement must disable and boot out that job before
+replacing the bundle; killing PID 25371 alone can respawn the indexer. The
+independent Collector and HQ recovery task remain outside that transaction.
+
+Prepared a private rollback package on Daily at
+~/.engram-shadow-core-20260911/daily/state/collector/persistent/retirement-rollback-20260912.
+The current 1,544,617,984-byte database was copied with sqlite3.Connection.backup
+from a read-only source connection while the old writer remained live. The
+closed, standalone destination has no WAL/SHM/journal sidecars, passes immutable
+quick_check, contains 60,379 session rows and hashes to
+a81dd27f09827c16597d98cc83cce44fabe4aec81184cfd92c0f09283bbc1301.
+The old App backup matches 56 files and 18 symlinks and passes strict deep
+signature verification. Default settings, three jobs and three launcher scripts
+have hash-verified private copies with original permissions recorded. Settings
+contents are not copied to shared evidence. No installed bundle, live setting,
+launchd job or process was changed in this preparation.
+
+The previously verified local-only role App is now staged on Daily under
+~/.engram-shadow-core-20260911/daily/collector-role-app-20260912/Engram.app.
+Rsync checksum comparison and remote strict deep signature verification pass.
+The actual staged MCP returns the collector-role error under isolated settings,
+leaving its invalid database sentinel unchanged with no database sidecars or
+service socket. This staged candidate is not yet the installed App. See
+`daily-retirement-role-stage.json`; Cursor is preparing the bounded cutover script.
+
+CHECKS_RUN: Completed live observation and independent summary/identity accounting;
+five complete HTTP transcripts (97 messages); same-sample OpenCode dual raw/ACK
+verification; live launchd/launcher inspection; online DB backup quick_check/hash;
+old App copy/hash/symlink/signature checks; Cursor source/receipt review.
+CHECKS_NOT_RUN: Final role cutover (being prepared); steady-state CPU/RSS and
+representative append/search/read latency (active backfill); new product build or
+unit suite (no product-code change); full historical transcript sweep (bounded
+missing-source evidence was the required check).
+EVIDENCE_PATH: output/collector-goal-20260908/publication-overlap-backfill-observation.json,
+publication-overlap-backfill-parent.json, retirement-source-web-final.json,
+verify-retirement-source-web.py, retirement-opencode-live-bytes.json,
+daily-retirement-launchd-preflight.json, daily-retirement-launcher-preflight.json,
+daily-retirement-rollback-prepared.json; delivery-core-active.json.
+
+## Reconcile remaining retirement gates while backfill continues (2026-09-12)
+
+Cursor through Herdr performed a read-only retirement review. Parent checked the
+current design, role loader, MCP guard, installed-bundle receipt and live delivery
+snapshots. The design requires proved replacement coverage per enabled source;
+it does not explicitly require every historical publication generation to drain
+before stopping Daily's old indexer. Durable Collector retry and retained raw/DB
+backups remain necessary. This interpretation is not completed source acceptance
+or permission to delete historical data. Do not convert the roughly 15,600 queued
+generations per replica into a blanket retirement gate.
+
+Daily still has installed App 1.0.5/1569, no default runtimeRole key, old Service
+25371, and nine old MCP helpers with non-1 parents. Collector 66519 remains
+independent. The complete role-aware bundle/default-settings transition and
+handling of old loaded helpers remain undone. Collector-role MCP explicitly
+returns a local-index-unavailable error; it does not automatically forward tools
+to HQ. Preserve agent parent processes and the old bundle/settings/DB rollback.
+The local-only candidate is not a notarized release, and rendered GUI remains
+unverified. Existing dated per-source evidence still needs a compact final
+acceptance reconciliation before cutover; pending counts alone cannot provide it.
+
+The same 30-minute observer continues under local PID 3971 / tool session 42002;
+no duplicate observer, tuning, deployment or process signals were introduced.
+The refreshed frozen-Claude metadata check found 445/719 restored files captured,
+with one dual-ACK/HQ-ready record; this was not a repeat whole-source hash sweep.
+Mimo43/Cline3 remain a low-priority known-store search with no new backup lead,
+no user question and no core-delivery hold. Antigravity remains deferred.
+
+CHECKS_RUN: Current per-root Collector/HQ reconciliation; frozen-Claude metadata
+reconciliation; live observer continuation; installed Engram identity/role/process
+receipt review; role/MCP source and approved-design inspection; Herdr Cursor review.
+CHECKS_NOT_RUN: Cutover and steady-state/latency acceptance (role transition and
+per-source acceptance remain); repeated raw/Web corpus sweep (no relevant change);
+new build/tests (no product code change).
+EVIDENCE_PATH: output/collector-goal-20260908/daily-retirement-current-preflight.json,
+per-root-delivery-latest.json, claude-recovered-originals-progress.json,
+publication-overlap-backfill-observation.json; docs/superpowers/specs/
+2026-09-05-collector-server-web-design.md; macos/Shared/EngramCore/RuntimeRoleSettings.swift;
+macos/EngramMCP/Core/MCPToolRegistry.swift.
+
+## Bound per-replica publication overlap and retain the measured Collector update (2026-09-12)
+
+Cursor through Herdr changed only the publication worker and its existing test
+file. Each replica now transmits claimed publications in pairs, with at most two
+active units per replica; the existing per-replica worker guard and claim budget
+remain. Each unit retains the preflight cancellation check, current privacy and
+claim checks before every request, existing deferral mapping, and exact ACK writer
+fence. No protocol, configuration, policy cache, capability cache, storage mutex,
+source content, or schema change was introduced. Server arrival-order journals and
+HQ per-identity sequence guards already support this ordering.
+
+Three held-HTTP repros failed on sequential upload, then passed with bounded
+overlap. Parent review restored the per-claim cancellation check and caught an
+unlocked test-helper counter; the final complete worker class passed 110/110.
+Two existing Core sequence tests passed, followed by a source-stable Release build,
+package integrity verification, and four actual-package CLI/dual-replica/HQ-Web-IPC
+checks. Only Daily's Collector launchd job was updated. PID 66519 loads CoreWrite-
+independent EngramCollectorCore SHA-256
+6ae82188a36714a2ef47408adf26b93f1ce05ebc63886d56110b88c47f6bb446;
+the launcher SHA remains 1a69abd105644c4a0e43703b8a2adbb6b66735d24945964e7d9975d29b605ee0.
+The previous package and publication-overlap-job-before.plist remain for rollback.
+Settings SHA is unchanged at 6ac31c66f534d519c51e1b2b350634a7e21abb8a81a40ecc8a228959fa180ff7.
+HQ index Service, receivers, and old Daily Service were retained.
+
+Three-minute baseline / trial / confirmation windows recorded HQ new ACK counts
+23 / 75 / 142 and M1 counts 32 / 116 / 132. Process outbound counter deltas were
+13,982,700 / 41,032,354 / 57,186,007 bytes. CPU-time deltas correspond to 8.57% /
+25.01% / 31.62% of one core during active backfill. RSS maxima were 58.1 / 150.2 /
+210.6 MiB; the last confirmation sample returned to 73.1 MiB. Keep the update based
+on deterministic overlap/ownership tests and sustained useful progress in both
+live windows. Network conditions and file-size mix changed, and bounded read-only
+byte probes occurred during trial: these are not a controlled causal speedup or
+steady-state acceptance. The chunk-body bound (8 MiB times four active transfers)
+is not a bound on complete process RSS.
+
+Independently retrieved one newly accepted small publication per replica (different
+sequences), comparing remote ACKs, exact canonical manifests, complete object bytes,
+and SHA-256 with Daily CAS. Both passed. One existing recovered Web detail also
+remained authenticated and available. The throughput checker now discovers the
+current PID from launchd instead of a stale deployment receipt. The restored-Claude
+metadata checker most recently found 406/719 files captured; raw backup coverage is
+unchanged, and most restored records are still behind historical publication work.
+No additional tuning or old-Service retirement was performed.
+A separate 30-minute read-only backfill monitor is now running (local PID 3971,
+Collector PID 66519; tool session 42002). Recheck its live handle before resuming;
+publication-overlap-backfill-observation.json is incomplete until completed=true.
+
+CHECKS_RUN: Behavioral RED; 110 final worker tests; two Core sequence tests; Release
+build/package/source integrity; four actual-package tests; three completed live
+observation windows; settings and loaded-framework identity; two fresh raw/ACK
+samples; one authenticated Web detail; current launchd-based throughput check.
+CHECKS_NOT_RUN: Steady-state CPU/RSS, append/search/read p95, reboot and old-Service
+retirement acceptance (historical backfill remains); all-history raw/Web sweep
+(two fresh samples do not prove corpus completeness).
+EVIDENCE_PATH: output/collector-goal-20260908/publication-overlap-{red.log,final.log,
+verify.log,binary-verified.log,parent-review.json,baseline-observation.json,
+trial-observation.json,confirmation-observation.json,live-bytes.json,
+web-smoke.json,daily-collector-activation.json}; delivery-core-active.json.
+
+## Make restored-Claude progress checks bounded and recheck collector-role isolation (2026-09-12)
+
+Cursor through Herdr updated only the one-off recovery checker: use the current
+root revision, one read-only SQLite snapshot, and batched locator/publication
+reads instead of 719 repeated lookups. Parent independently reran it in 0.58s;
+the prior 719-file / 1,872,340,369-byte verification artifact was hash-unchanged.
+The earlier 120-second timeout is confirmed, but redundant query cost alone does
+not prove its entire cause or live writer blocking. No product index, Collector
+setting, source content, or source modification time changed for this fix.
+
+The independent whole-root snapshot found 401/719 restored files discovered and
+captured. All 318 not yet discovered had pending parent directories in the active
+bootstrap walk; none were under completed or unseen parents. This supports waiting
+for the continuing walk, not a new discovery patch. The current scan was revision
+63, with 1,446 complete and 246 pending directories; completed root revision was
+still 41, and last_scan_failure was null. Per-root delivery confirms Claude is the
+large remaining publication backlog. Do not equate publication counts with distinct
+sessions, raw byte verification, or complete Web coverage.
+
+A fresh normal-mode launch of the existing local-only collector-role App candidate
+(PID 34437) kept the sentinel database unchanged, opened no SQLite/index or service
+socket, and created no child process. Parent terminated only that owned process
+and confirmed it exited. CUA inventory timed out; screenshot preflight found Screen
+Recording not granted after one request. No screenshot was taken, no render claim
+is made, and no repeated permission prompt/user dependency was introduced. The
+App was not installed and the old Daily Service remains running.
+
+CHECKS_RUN: Parent metadata-only checker rerun; frozen proof artifact hash; exact
+read-only root/frontier membership; per-root delivery; owned normal-mode App process,
+open files, sentinel and child checks; Markdown diff hygiene.
+CHECKS_NOT_RUN: Fresh 1.87 GB source hash sweep (existing proof untouched); GUI
+render (macOS screen permission unavailable); Daily retirement (backfill incomplete).
+EVIDENCE_PATH: output/collector-goal-20260908/claude-progress-checker-parent.json,
+claude-recovery-frontier-parent.json, per-root-delivery-latest.json,
+retirement-role-app-window-{start,result}.json.
+
+## Repair existing weak-review false skips through the HQ Service (2026-09-12)
+
+Cursor, dispatched through Herdr, implemented a bounded startup correction for
+current parsed capture heads misclassified by the old weak review-scope predicate.
+The Service-owned writer changes only the visible tier and required FTS job
+binding; existing readiness processing publishes the searchable generation. No
+parser revision, source file, schema, Collector setting, or receiver changed.
+Explicit probes and subagent/dispatched rows remain skipped. Original manifest
+locators preserve probe-path exclusions; incomplete user windows remain unmarked.
+Per-candidate savepoints prevent partial repair. Batches attempt at most four
+heads with a two-second deadline; startup exits on exhaustion or error, including
+timeout, instead of polling or retrying a timed-out batch indefinitely.
+
+Parent independently ran the native repair on a consistent private 7.16 GB online
+SQLite backup: exactly 239 repairs and 114 reviewed skips, 90 batches in 9.66s.
+Before/after hashing covered all 26,638 sessions, 21,017 generations, five sidecar
+tables, and affected external normalized messages. Only the 239 allowed tier and
+FTS-binding changes occurred; all other covered fields and payloads were unchanged.
+The preview did not run FTS workers and was never used as production-ready proof.
+
+Built a source-stable Release Service package and passed two actual-package
+Codex/Claude integration checks. Updated only HQ's private index Service, retaining
+the old package and launchd job for rollback. PID 7206 loaded CoreWrite SHA-256
+b8a5018cc917579e1b70ce137978fe226b67dcc6df5a625657663a45d2adfe38.
+The launcher SHA stayed 40c33aa49497efde46e8220155276431206de5833f70f7f2f6fd6f8b75a754de.
+All 239 remaining repairs completed online. Including the previously corrected
+session, 240/240 current heads are index_ready with completed FTS and authenticated
+Web detail availability. Their generation IDs, snapshot hashes, and sync versions
+match the immediately pre-deployment snapshot; the 114 reviewed probes stay skip.
+An early readiness observation had one transient HTTP failure; the final 240-detail
+check had none. This is detail availability, not a new full-transcript/render test.
+The earlier complete 156-Codex transcript evidence remains separate.
+
+Two mtime-only Claude discovery hints preserved source hashes but produced no
+immediate discovery in the pilot window; a third candidate was already discovered
+at preflight and was not touched. No expansion or tuning followed. A later optional
+719-source progress refresh exceeded its 120-second SSH timeout; the prior source
+hash proof and progress artifact remain valid only at their recorded timestamps.
+A separate successful live snapshot still showed HQ/M1 backfill advancing. Mimo43
+and Cline3 remain low-priority known-store recovery items without a user question
+or core-delivery hold. Historical backfill and old Daily Service retirement remain
+unfinished; do not mark the original migration goal complete.
+
+CHECKS_RUN: 28 Core builder/repair tests; 14 Service runtime tests in a fresh
+checkout-local isolated home; Release build/package integrity; two actual-package
+integration tests; private clone preservation comparison; loaded framework check;
+240 live FTS/head/Web details; 240 live version/hash identities; 114 preserved skips.
+The first full runtime run had two missing-isolated-home setup failures; supplying
+ENGRAM_DEMO_EXPECTED_HOME and CFFIXED_USER_HOME plus TEST_RUNNER equivalents made
+all 14 pass. An intermediate constant-only timeout helper/test was removed.
+CHECKS_NOT_RUN: New full-transcript/render sweep (tier-only change, payloads checked
+on clone); whole repository suites (focused Swift correction); steady-state/reboot
+and old-Service retirement acceptance (backfill and role transition outstanding).
+EVIDENCE_PATH: output/collector-goal-20260908/review-probe-repair-{green.log,
+runtime-isolated.log,binary-verified.log,preview-preservation.json,
+live-verification.json,live-identity.json,loaded-framework.json,
+hq-service-index-activation.json}; delivery-core-active.json; claude-discovery-hint-
+pilot{,-progress}.json. The clone and pre-deployment baseline are private under
+~/.engram-shadow-core-20260911/hq/state/service-index/persistent/.
+
+## Fix weak review-probe classification and verify recovered Codex reading (2026-09-12)
+
+Cursor through Herdr traced a real 19,376-message Codex main session incorrectly
+classified as skip. Its first three substantive user turns mentioned review,
+blocking and a P-priority label; none declared a restricted probe input. Removed
+the four weak scope signals (tests passed, tests, P-number and stage) from
+AuthoritativeSessionSnapshotBuilder's review-probe predicate, matching the
+existing StartupBackfills predicate. Explicit no-tools/use-only/snippets/diff
+scope, health/Polycli/stage-fact probes, and stamped subagent/dispatched roles keep
+their existing behavior. Two new regressions failed before the change; the full
+19-test snapshot-builder class then passed. Parent reviewed the exact diff and
+both logs. Two actual-package Codex/Claude integration checks also passed.
+
+Built and verified a source-stable Release Service package, then updated only
+HQ's private index Service through its existing launchd owner, retaining the old
+job/package for rollback. PID 42045 loaded EngramCoreWrite SHA-256
+423860f53cb844d50707fcb35a0c7c19f06a49fa5c0f89365a9c027297aa5237.
+The small Service launcher hash is unchanged; the loaded framework changed from
+00fae154e5735d928e7ec218854407d24060e910210e7f37cea50c434717166f.
+Post-restart authenticated Web detail remained available. Collector, receivers,
+privacy settings and parser revision were unchanged.
+
+Refreshed only the modification time of the affected 81,155,998-byte Codex source
+installed by this recovery task, verifying its full SHA-256 before and after.
+Normal Collector processing emitted sequence 5160; both replicas acknowledged it,
+and HQ independently reparsed it as premium/index_ready with 19,376 messages.
+No session tier, ledger, transcript or original SQLite database was directly
+edited to force the result. The broader read-only impact audit found 240 candidate
+false skips across ten sources; parent checked current SQL identities, roles and
+counts. One is now repaired, while 239 still require bounded live correction.
+That audit is not permission to promote arbitrary skip sessions.
+
+All 156 restored frozen non-skip Codex records now have complete authenticated
+Web API transcript verification: 181,600 messages, with every page, ordinal,
+fragment offset, UTF-8 payload, role, SHA-256 and complete tail checked. The first
+155 covered 162,224 messages over 3,716 pages; the repaired main session was then
+verified separately through the same resumable verifier. Expected counts are HQ
+normalized-generation totals, not an independent historical parser. An initial
+verifier used the inline message count for external v2 storage and falsely flagged
+sequence 4874; that checker error was corrected to use the total count. Its owned
+process was stopped, the 16 completed checks were preserved, and only unfinished
+or failed generations were resumed. No visual browser-render claim is made.
+
+Separately, 18 authenticated read-only publication-capability/object-HEAD/manifest-
+HEAD requests from Daily completed in 43–92 ms. A five-second Collector stack
+sample showed a publication-claim check waiting on the shared owner mutex. Claim
+age is not HTTP duration or transfer rate. Source review found no per-publication
+sleep or redundant write transaction in that claim read. No speculative upload,
+priority, caching or storage-fence change was applied.
+
+CHECKS_RUN: Two failing repros; 19 snapshot-builder tests; Release build/package
+integrity; two actual-package integration tests; loaded-framework verification;
+source byte preservation; live dual-ACK/HQ classification; all 156 full Web API
+transcripts; 18 read-only HTTP timings; bounded stack/SQL/source inspection;
+documentation/source diff whitespace check.
+CHECKS_NOT_RUN: Remaining 239 candidate live repairs (not yet applied); full
+Claude recovered-cohort ingestion/Web and steady-state retirement acceptance
+(historical backfill remains active).
+Evidence under `output/collector-goal-20260908/`: `review-probe-scope-red.log`,
+`review-probe-scope-green.log`, `review-probe-scope-build-result.json`,
+`review-probe-scope-binary-verified.log`, `review-probe-scope-hq-service-index-activation.json`,
+`review-probe-scope-loaded-framework.json`, `review-probe-scope-codex-refresh.json`,
+`review-probe-scope-codex-progress.json`, `review-probe-scope-impact-parent.json`,
+`codex-recovered-web-first-count-check.json`, `codex-recovered-web-full-transcripts.json`,
+`publication-read-http-timing.json`, and `collector-upload-cpu-observation.json`.
+
+## Claude historical originals recovered and source restoration verified (2026-09-12)
+
+Recovered 563 Claude originals from Daily's bound legacy archive, 120 through
+M1's legacy archive API, and 38 exact originals on HQ. Verified native session
+IDs, complete source hashes, and available manifest/chunk hashes. Each recovery
+package has independently verified copies on Daily, HQ and M1 before source
+installation. The M1 API returns plaintext; encrypted on-disk envelopes are not
+used as plaintext hash evidence.
+
+Restored 560 + 120 + 38 absent Daily source files inside the existing Claude
+root. Installation used exclusive links from complete private temporary copies,
+without overwriting existing sources or sharing mutable backup inodes. Three
+originals outside the configured root remain private backups only. Including the
+earlier pilot, the frozen 819-row non-skip cohort reconciles to 722 recovered
+originals (719 restored, three backup-only) and 97 not yet found. A fresh full
+read verified all 719 restored sources, stable generations and SHA-256, totaling
+1,872,340,369 bytes. This is source-restoration evidence, not complete ingestion
+or Web acceptance. At 1789191813, 136 were discovered, 68 captured, and none of
+this recovery cohort yet had dual acknowledgements or HQ index_ready status.
+
+Cursor through Herdr checked the exact 97 remaining IDs against HQ's old index
+and archive bindings. Parent independently verified all 97 index rows, zero
+matching bindings and zero existing exact source paths. Other stores remain
+unverified; this does not establish permanent loss. Mimo's 43 and Cline's three
+missing old records remain low-priority bounded-search follow-ups, with no user
+backup-location question or core-delivery hold.
+
+A completed 60-second temporary process-priority observation advanced the active
+Claude scan by 29 directories; it was not a controlled throughput benchmark.
+Background policy was restored and settings remained unchanged. Current live
+verification at 1789192130 confirmed Collector PID 32584 and the expected loaded
+framework/settings hashes. HQ/M1 had 20,243/19,399 acknowledged publications and
+18,604/19,451 pending respectively, plus five/two in flight. Counts are capture
+generations, not unique sessions. No product code, package, or persistent runtime
+configuration changed in this recovery tranche; old services remain retained.
+
+CHECKS_RUN: Three-host recovery-package hash checks; exclusive source restoration
+receipts; `check-claude-recovered-originals.py --verify-source-bytes`; exact
+97-ID parent SQL/path verification; `check-codex-archived-root-live.py`;
+`check-backfill-throughput.py`; documentation diff whitespace check.
+CHECKS_NOT_RUN: New production-code test/build run (no product code changed);
+full recovered-cohort Web checks (delivery/indexing pending); steady-state
+resource and final retirement acceptance (backfill still active).
+Evidence: `output/collector-goal-20260908/claude-local-originals-independent-backups.json`,
+`claude-local-originals-restored.json`, `claude-m1-originals-independent-backups.json`,
+`claude-m1-originals-restored.json`, `hq-claude-originals-daily-backup.json`,
+`hq-claude-originals-m1-backup.json`, `hq-claude-originals-restored.json`,
+`claude-recovered-originals-source-verification.json`,
+`claude-recovered-originals-progress.json`, `claude-missing-97-hq-evidence.json`,
+`claude-recovery-policy-observation.json`, `codex-archived-root-live-latest.json`,
+and `backfill-throughput-latest.json` (all filenames relative to that directory).
+
+## All 156 frozen missing non-skip Codex originals restored (2026-09-12)
+
+Verified 126 exact HQ Codex originals whose Daily source paths were still absent,
+excluding the prior 27 restorations by native session ID. Each first session_meta
+ID matches the frozen old-index ID; the same open descriptor remained stable
+through a streamed SHA-256 copy. The package totals 1,761,487,241 bytes. All files
+and the source-records digest were verified on Daily and M1 before source writes.
+Both initially uncompressed copy jobs were intentionally stopped after measured
+slow progress, preserving completed files. They resumed only in their owned
+destinations using rsync compression and a private partial directory. Both copies
+completed and all hashes passed; no transfer-speed multiplier is claimed.
+
+Cursor through Herdr reviewed the bounded preparation/restoration scripts and
+reported no blocker. Parent independently checked the native-ID selection,
+source stability, existing canonical parents and exclusive publication. A
+suggestion to delete restored files before retry was rejected: any interrupted
+write must be reconciled by hash and resumed without deleting completed sources.
+Installed all 126 originals with exclusive hard links from complete temporary
+copies. Private backup files do not share mutable source inodes. No existing
+source was overwritten and the deployed Collector settings/package were unchanged.
+
+The last three missing non-skip Codex archived-session originals were found in
+M1's legacy archive. A first filesystem probe incorrectly compared encrypted
+envelope sizes/hashes with plaintext; it is superseded by authenticated archive
+API verification. The verified live legacy listener returned all three bound
+manifests and source chunks; manifest/chunk/whole-source hashes and native IDs
+passed. Preserved the resulting 330,605 original bytes and manifests on all three
+hosts, checked every copy, and restored the absent Daily archived-session paths
+under the already enrolled root. All three are now captured, dual acknowledged
+and HQ index_ready. Independent new-receiver reads verified the complete original
+bytes on both replicas. Authenticated Web checks completed all 16, 16 and 3
+normalized messages, including ordinals, offsets, payload hashes and complete
+tails (36/27/13 ms). Expected counts are current HQ normalized-generation counts,
+not independent historical parser counts.
+
+At 1789189586, the union of the 1 + 26 + 126 + 3 recovery records exactly matched
+the frozen 156 non-skip Codex IDs. A fresh read of every restored Daily source
+verified stable generations, size and full SHA-256, totaling 2,173,898,977 bytes.
+This closes original-byte restoration for that frozen cohort only. It does not
+cover skip history, other providers, or complete new ingestion/replication/Web
+availability. The new 126-file batch still requires live delivery reconciliation.
+The Claude sample still awaits discovery; its active scan advanced from 1,867 to
+2,237 completed directories while retaining 133 pending directories, including
+that sample's parent. No restart or speculative event-handling patch was added.
+
+Checks ran: exact ID-set reconciliation; stable-source and three-host copy hashes;
+exclusive recovery; three archived sessions' live dual raw bytes and complete
+Web transcripts; deployed Collector package/settings and live inventory probes;
+Markdown diff checks. Product tests/builds were not repeated because product
+code/binaries did not change. Full 126-file Web checks and final steady-state/
+retirement acceptance remain pending live ingestion and overall source coverage.
+Evidence under output/collector-goal-20260908: hq-codex-originals-prepared.json,
+hq-codex-originals-{daily,m1}-backup.json, hq-codex-originals-restored.json,
+hq-codex-originals-progress.json, codex-archived-missing-m1-originals.json,
+codex-archived-originals-independent-backups.json,
+codex-archived-originals-restored.json, codex-archived-originals-progress.json,
+codex-archived-originals-dual-bytes.json,
+codex-archived-originals-web-full-transcripts.json,
+codex-missing-nonskip-originals-reconciled.json and legacy-missing-pilot-frontier-latest.json.
+
+## Codex legacy recovery reaches the live pipeline; additional HQ originals located (2026-09-12)
+
+The previously restored Codex sample is now captured as sequence 4862, acknowledged
+by both replicas, and index_ready on HQ. Independent authenticated HTTPS reads
+verified its manifest, every chunk and the complete 150,268-byte original against
+both receivers. An authenticated browser API check completed all nine normalized
+messages in one page (34 ms), checking ordinals, offsets, roles, payload hashes and
+the complete tail. The expected count came from the current HQ generation, not an
+independent historical parser. Renewed the expired owned Web cookie without
+changing authentication policy or retaining cookie material in project artifacts.
+
+Recovered the other 26 locally available Codex non-skip legacy files, totaling
+411,930,863 bytes. Recovery verified legacy manifest hashes, chunks, full-source
+hashes, first session_meta native identity, configured-root containment and absent
+targets. Each complete source was installed exclusively; private backup files do
+not share a mutable inode with the restored source. The first run stopped after
+one successful source write because Daily Python lacks hashlib.file_digest.
+Re-verified that exact file and its private copy, repaired its missing receipt,
+and resumed the remaining files using bounded streaming SHA-256 reads. No file was
+overwritten. All 26 original/manifest copies on HQ and M1 were independently hashed
+after transfer. At 1789187972, all 26 were discovered and captured, with nine dual
+ACKs and nine HQ index_ready generations. The remaining 17 are not claimed
+replicated or Web-verified; private recovery copies are distinct from ingestion.
+
+The earlier 30,192 discovered Claude files had all been captured at 1789187327.
+The new Claude restoration sample still awaits discovery. Cursor through Herdr
+confirmed the coordinator deliberately queues ordinary events while recovering;
+source review confirms bootstrap runs before applyEvents in this phase. At
+1789187853 the active Claude scan had 1,867 completed directories and 133 pending,
+including the restored sample's parent. No hardlink-specific loss was established,
+and no checkpoint bypass, direct inventory write or speculative patch was added.
+
+An exact-path, read-only HQ check of the 975 old non-skip missing-original rows
+found regular files for 115 Claude and 153 Codex records (268 total). It inspected
+only the recorded file_path/source_locator under the involved source stores; no
+directory or home walk occurred. These are unverified identity/content matches,
+not additional completed restorations. Next: compare identities, stable source
+generations and hashes, distinguish the 27 already restored Codex records, then
+recover only still-absent files without overwriting current sources.
+
+Collector PID 32584 and the deployed settings/package remained unchanged. At
+1789187969 HQ/M1 had 18,863/18,009 acknowledged publications, 19,713/20,567 pending,
+and two inflight each. Byte sums are generation totals, not deduplicated network
+bytes or an ETA. Full historical replication, remaining original recovery,
+steady-state acceptance and old-service retirement remain incomplete.
+
+Checks ran: Collector package/settings and inventory probes; independent dual
+archive bytes and complete browser API transcript for the Codex sample; all 26
+source/backup integrity and exclusive-write checks; three-host backup verification;
+live batch/HQ status; exact HQ path lstat census; Markdown diff checks. Product
+tests/builds were not repeated because no product source or binary changed.
+Full Web checks for the remaining batch and the pending Claude sample were not run
+because their complete live ingestion has not been verified.
+Evidence under output/collector-goal-20260908: legacy-missing-codex-dual-bytes.json,
+legacy-missing-codex-web-full-transcript.json, legacy-codex-batch-restore.json,
+legacy-codex-batch-independent-backups.json, legacy-codex-batch-progress.json,
+legacy-missing-pilot-frontier.json, legacy-missing-pilot-progress.json,
+missing-original-hq-exact-path-availability.json and backfill-throughput-latest.json.
+
+## Alternate history locators and two verified legacy restoration samples (2026-09-12)
+
+Extended the old-index census to blank origins and distinct source_locator values,
+using exact indexed paths and canonical aliases only. This does not retag origin
+or change ownership. The additional 129 Kimi files comprise 34 nested subagent
+contexts and 95 auxiliary files, totaling 5,392,696 bytes. Private recovery copies
+on Daily, HQ and M1 have stable source stats and complete file/checksum-list hash
+verification. Their checksum-list SHA-256 is
+06728828ca0b8e8aeaa96e746e84abd81ac38ff452d3917d9cad0157b09d4169.
+The repeated alternate-locator census has zero unmatched existing regular files;
+absent paths remain outside that coverage claim. No child was promoted or made
+Web-readable by these raw backups.
+
+A separate metadata census found 15,719 old Claude/Codex rows whose file_path and
+source_locator both lack a regular file. Of these, 975 have a non-skip old tier.
+Exact same-source/native-ID comparison found no corresponding current Daily HQ
+binding at the recorded snapshot; this is not a declaration that bytes are lost.
+Latest exact legacy bindings exist for 714 of the non-skip rows. Their manifest
+hashes passed; 591 have all expected local chunk paths and lengths, while 123
+have missing chunks. Another 261 have no exact legacy binding. Chunk existence
+alone is not content integrity or independent-replica verification. Most available
+locators resolve inside configured roots (561 Claude and 27 Codex); three are
+outside them and were not enrolled or restored.
+
+Cursor through Herdr traced Claude child identity and the existing legacy replay
+path read-only. Parent source review confirmed CaptureIngestCommitter derives
+native_id from scan.info.id, while rawSourceSessionID may remain the parent ID.
+Existing replay tests distinguish ordinary files and vendor subagent layouts;
+no identity patch was justified. ArchiveTranscriptResolver materializes verified
+temporary replay files; its existing CLI is a recovery proof, not source writeback.
+
+Restored one ordinary Claude and one Codex file (152,744 bytes total) from their
+verified legacy manifests/chunks. The bounded one-off checks a single matching
+native ID, whole-source hash, configured root containment and an absent target,
+then publishes the complete file with an exclusive hard link. It does not write
+the old index or overwrite any existing file. Original bytes and manifest copies
+are also retained in private legacy-missing-pilot-20260912 packages on Daily/HQ/M1,
+with all copied hashes checked. At the initial follow-up both restored paths were
+still awaiting Collector discovery, and both roots had an active scan. No new
+Collector publication, independent archive API receipt or Web readability is
+claimed for this sample yet; bulk recovery is deferred until it is ingested.
+
+No product source, package, settings or service process changed in this work.
+Collector PID 32584 remained on the expected package/settings. At 1789186887,
+Claude inventory had 29,637 captures and 555 dirty locators; HQ/M1 acknowledged
+9,991/9,188 Claude publications. Full replication, remaining legacy recovery,
+steady-state acceptance and old-service retirement are still incomplete.
+Mimo/Cline remain a bounded background search, with no request for user paths.
+
+Checks ran: read-only old-index/legacy-catalog/current-HQ correlation, manifest
+hash and chunk-stat census, two full manifest/chunk/whole-source recovery checks,
+exclusive restoration, independent HQ/M1 recovery-copy checks, Collector package/
+settings and per-root delivery probes, and Markdown diff checks. Product tests,
+builds and browser checks were not repeated because no product code changed and
+the restored samples have not yet reached the new index. Evidence under
+output/collector-goal-20260908: alternate-index-locator-reconciliation.json,
+kimi-alternate-independent-backups.json, missing-original-legacy-bindings.json,
+missing-original-current-native-correlation.json,
+missing-original-nonskip-legacy-availability.json, legacy-missing-pilot-restore.json,
+legacy-missing-pilot-independent-backups.json, legacy-missing-pilot-progress.json,
+codex-archived-root-live-latest.json and per-root-delivery-latest.json.
+
+## Codex archived-root enrollment and additional historical byte preservation (2026-09-12)
+
+A bounded read-only census reconciled exact file_path values from explicit local
+rows of the old Daily index with current Collector inventory. It used lstat and
+canonical alias resolution without a directory/home walk or transcript reads.
+All 36,526 existing Claude row locators map to inventory (29,920 distinct canonical
+files). Initial unmatched candidates were two Codex archived files and 491 Kimi
+files; an inventory mismatch alone was not labeled lost data. Ambiguous origins,
+absent/virtual locators, source_locator alternatives and explicitly deferred
+Antigravity records are outside this narrow census proof.
+
+The two Codex files under .codex/archived_sessions had no exact whole-source hash
+match in the current Collector catalog. Native Codex discovery already includes
+that sibling directory. Added only daily-codex-archived (source codex, revision 1)
+to Daily settings, retaining the old daily-codex root/namespace and all budgets,
+privacy revision 5 and exclusions. The same Collector package restarted as PID
+32584. Its new stream was provisioned by the existing HQ service startup writer
+from one appended authority entry; the same HQ Service package restarted as PID
+36446. HQ's job file and all prior source authority entries are unchanged. HQ/M1
+receivers and the old Daily Service/MCP helpers were not stopped or replaced.
+Rollback files are Daily state/collector/persistent/codex-archived-root-{job-before.plist,
+settings-before.json} and HQ state/service-index/persistent/codex-archived-authority-before.json.
+
+Both archived files are captured and acknowledged on both replicas. Independent
+HTTPS reads verified four durable receipts, all chunks and original whole-source
+hashes, totaling 230,237 bytes per replica. HQ has both generations index_ready.
+Authenticated browser API checks verified all 23 and 3 normalized messages,
+including every ordinal, offset and payload hash. The 900-second Web login had
+expired; renewing the owned session resolved the initial 401 without changing
+authentication policy. A repeated census now matches all 3,396 existing Codex
+regular files to inventory. This is not an all-history or all-Web acceptance claim.
+
+Of the Kimi candidates, 247 are captured dependencies with current source stat
+generations matching their manifests. Their containing publications have dual
+ACKs for 244 files; the other three belong to captures already preserved by the
+verified unbound recovery backup. The remaining 244 historical files total
+14,044,397 bytes, including 76 nested subagent contexts and 168 auxiliary files.
+Current native Kimi discovery intentionally addresses workspace/session/context;
+these historical files were preserved in private Daily/HQ/M1 recovery packages,
+with stable source stats and complete file/checksum-list hash verification.
+No nested child was promoted, newly indexed, or advertised as Web-readable.
+
+The copied 43-capture refusal cohort also had 20 entries beyond the prior
+22-capture recovery set: 19 metadata-only Claude captures and one Minimax
+multi-root capture, totaling 1,213,835 bytes. Their original records, manifests
+and chunks now have verified Daily/HQ/M1 recovery copies. The full cohort is
+accounted for by those 42 backups plus the separately verified synthetic-model
+fix publication. These are immutable raw recovery copies, not successful
+Collector publications. Full bootstrap, replication catchup, steady-state
+resource acceptance and old-service retirement remain incomplete.
+
+No product source code or binaries changed in this turn. Existing package tests
+were not repeated; config/registry checks and actual source/archive/Web flows
+were exercised instead. Evidence under output/collector-goal-20260908:
+old-index-file-inventory-reconciliation.json, kimi-old-index-file-set-coverage.json,
+kimi-dependency-backup-reconciliation.json, current-history-coverage-cross-check.json,
+unbound-backfill-delta-independent-backups.json, kimi-historical-independent-backups.json,
+codex-archived-root-daily-activation.json, codex-archived-hq-provision.json,
+codex-archived-root-progress.json, codex-archived-dual-bytes.json,
+codex-archived-web-full-transcripts.json and codex-archived-root-live-latest.json.
+
+## Synthetic model placeholder no longer falsely blocks a Minimax capture (2026-09-12)
+
+Per-root reconciliation found a real Minimax capture withheld as conflicting
+source identity. An isolated exact-byte copy contained 91 Minimax model records,
+one exact `<synthetic>` model, no other real model family, and one session ID
+and cwd. SourceMetadataProjection had counted the placeholder as Claude source
+evidence. Cursor through Herdr added two failing regression tests, then excluded
+only the exact placeholder from source-conflict observations. Selected model,
+selected source, parser output, identity/root observations, and real provider
+conflicts retain their prior behavior. Minimax multi-root eligibility was not
+expanded. Parent inverse hashes recovered all three prior deployed source files.
+
+Both focused repros failed on the original behavior and passed after the fix.
+All 27 projection parity and 79 privacy tests pass. Four actual-package tests
+also pass without failures: bounded cold CLI, resident TERM/reopen, and Codex/
+Claude two-generation dual-archive plus HQ Web IPC checks. The candidate framework
+was then loaded on Daily in a separate process against the same 43-capture copied
+cohort. Exactly the affected Minimax capture became eligible; the other 41
+incomplete-metadata captures and one Minimax multi-root capture stayed withheld.
+This cohort is not the entire evolving backfill corpus. No privacy exclusions
+were removed and no raw content was printed into diagnostics.
+
+Deployed only Daily Collector PID 22878, package collector-synthetic-source-20260912.
+Executable SHA-256: 1a69abd105644c4a0e43703b8a2adbb6b66735d24945964e7d9975d29b605ee0.
+Loaded CollectorCore SHA-256: b45d492b7a287fbaf003471da7db530ad46722811c740cf630356a0678e82b3f.
+Privacy revision advanced from 4 to 5 through existing reconciliation so previously
+withheld captures receive a new evaluation. All other settings, exclusions and
+budgets are unchanged. The old job and exact settings bytes are retained in
+Daily state/collector/persistent/synthetic-source-{job-before.plist,settings-before.json}.
+HQ/M1 jobs and the old Daily Service/MCP helpers were not replaced or stopped.
+
+The affected publication now has both replica ACKs and HQ index_ready status.
+Independent HTTPS reads matched both durable publication receipts and downloaded
+all source chunks: 689,687 bytes on each replica, with matching chunk and whole
+source hashes. The authenticated browser API returned all 99 HQ-normalized
+messages across two pages; ordinals, fragment offsets and payload hashes pass.
+The initial browser request returned 401 after the older login expired; renewing
+the owned session resolved it and its temporary authentication file was removed.
+The message count is checked against the current HQ generation, while original
+archive bytes have separate independent evidence. No new visual layout claim
+is made. Full historical catchup, idle resource acceptance and old-service
+retirement remain incomplete; the goal remains active.
+
+Evidence under output/collector-goal-20260908:
+per-root-delivery-latest.json, current-backfill-privacy-{export,histogram,shapes}.json,
+minimax-synthetic-source-repro.json, synthetic-source-parent-diff.patch,
+synthetic-source-{projection-red,privacy-red,parity-suite,privacy-suite}.log,
+synthetic-source-binary-verified.log, synthetic-source-private-fixture-result.json,
+synthetic-source-parent-review.json, synthetic-source-daily-collector-activation.json,
+synthetic-source-live-latest.json, minimax-synthetic-dual-bytes.json and
+minimax-synthetic-web-full-transcript.json.
+
+## Bounded live process-policy comparison restored Background (2026-09-12)
+
+After the thirty-minute observer exited, the parent verified Daily Collector
+PID 16485, executable SHA-256 and process start identity, then used taskpolicy
+-B for 60 seconds without restart or configuration changes. The finally block
+restored -b successfully (exit 0), followed by a further 60-second observation.
+Normal-policy interval: 128 Claude captures, 14 HQ ACKs and 36 M1 ACKs.
+Restored-Background interval: 52 captures, 30 HQ ACKs and 29 M1 ACKs.
+The different work items and single intervals do not establish a causal speedup;
+there was no consistent replication benefit. Background remains the operating
+policy and no product scheduling/SQL change follows from this test. Settings
+hash is unchanged. Latest capture count is 22,051 of 30,192; full catchup,
+steady-state resource acceptance and legacy Service/helper retirement remain.
+
+Cursor reviewed the bounded script through Herdr. Parent verified that Darwin
+ps -ww -o comm= returns the complete executable path, added explicit observer
+process-exit gating and persisted restoration errors without mutating a process
+whose identity changed. The probe process exited successfully. Evidence:
+output/collector-goal-20260908/root-reuse-live-policy-probe.json and
+output/collector-goal-20260908/probe-live-root-reuse-policy.py. No app installation,
+service restart or source deletion occurred.
+
+## Thirty-minute backfill observation and claim-query measurements (2026-09-12)
+
+The read-only observer completed 31 samples over 1,800 seconds on unchanged
+Daily Collector PID 16485; its process exited successfully. Claude captures
+increased by 2,209 to 21,826, leaving 8,366 dirty files. HQ ACKs increased by
+786 and M1 by 753 (26.2 and 25.1 per minute). End pending counts were 14,252
+and 15,131 respectively, plus 7/8 inflight. Capture still outpaced replication.
+Sampled RSS ranged from 48.89 to 250.17 MiB during historical backfill. This is
+not steady-state CPU/RSS acceptance, full-history completion or retirement.
+The current legacy Cursor walk acknowledged revision 46 and retains all 64
+dual-ACK publications; HQ has 8 readable sessions and 56 metadata-only records.
+
+Concurrent three-second samples found HQ/M1 receivers mostly waiting and Daily
+performing claim SQL/owner-lock work while capture and upload both ran. This is
+a short stack observation, not request latency attribution. A redundant replica
+state predicate enabled an existing partial index, but same-snapshot read-only
+selection probes showed no improvement: about 25-31 ms with normal policy and
+194-665 ms under a separate Background probe. Both variants returned identical
+rows/order. These probes do not measure native GRDB transaction/owner fences or
+end-to-end upload. Cursor reviewed the query through Herdr; no product SQL,
+index, cache or architecture change was made from this hypothesis.
+
+Evidence under output/collector-goal-20260908:
+observe-root-reuse-observation.json, observe-root-reuse-observation-summary.json,
+observe-root-reuse-flow-samples.json, publication-claim-selection-ro-probe.json,
+publication-claim-selection-background-ro-probe.json and
+cursor-legacy-inventory-progress.json. A separate bounded live priority trial
+starts only after this observer exits; its outcome is recorded separately.
+
+## Actual App role smoke and loaded-helper cutover inventory (2026-09-12)
+
+Ran the local-only App candidate in normal mode with an isolated collector-role
+settings file, CFFIXED_USER_HOME and --data-dir. The exact owned process stayed
+in the AppKit event loop for 90 seconds, opened no SQLite paths, left the invalid
+legacy sentinel unchanged, and created no database sidecars or service socket.
+It was terminated and no candidate process remained. This corroborates role
+isolation; it does not prove the rendered unavailable window. CUA full-path
+selection returned cgWindowNotFound twice and bundle-ID selection was ambiguous
+across installed/build/candidate copies. Parent and Cursor source review found
+the unavailable window is invoked directly at launch, independently of Settings;
+activation/tool selection remains a possible explanation, not an established
+product defect. No production code was changed for this observation.
+
+The current Daily installed bundle has twelve old MCP helpers and one Service,
+with no App process. Final cutover must replace the complete bundle, set only
+the default App/MCP role, and retire re-identified old loaded helpers as well as
+the old Service. Private Collector settings remain separate. Nothing was stopped
+on Daily. The prior build/role/MCP tests remain the candidate evidence; live
+installation, complete historical coverage and old-service retirement are still
+pending. The existing thirty-minute Collector metadata observer continues.
+
+Evidence under output/collector-goal-20260908:
+retirement-role-app-gui-smoke-start.json, retirement-role-app-gui-smoke-result.json,
+retirement-role-app-gui-smoke/startup-sample.txt and
+daily-legacy-app-helper-processes.json. A missing CUA window is not recorded as
+a passing GUI check or as proof that no window exists.
+
+## Reuse the first accepted repeated project root during metadata projection (2026-09-12)
+
+A fresh three-second sample of Daily PID 14584 showed upload assessment running
+concurrently with capture, with repeated SourceMetadataProjection root
+normalization including implicit URL directory probes. Cursor through Herdr
+added one exact UTF-8 early return in observeRoot against its existing accepted
+firstObservedRoot. Different or invalid roots still normalize, sticky failures
+remain, and identity/model/source handling still consumes every record. No new
+state, cache or normalizer behavior was added. Final assessment and every
+request still validate physical paths and current project exclusions.
+
+The parent inverse-hashed the one product line to deployed source. All 26
+projection parity and 78 privacy tests pass; added behavior coverage preserves
+repeated-root, later conflict/invalid, sticky invalid-first, identity and source
+checks. Four actual-package checks pass without failures/skips in 7.703 seconds:
+bounded one-shot, resident TERM/reopen, and two-generation Codex/Claude dual
+archives plus HQ Web IPC. The actual old/new packaged projection was measured
+interleaved on Daily under Background policy in a separate synthetic probe.
+Each 20,000-record run took 1.000-1.856 seconds before and 0.090-0.205 seconds
+after. Outputs match and loaded framework paths/hashes were checked. This is a
+microbenchmark, not an end-to-end speedup or full privacy assessment timing.
+
+Only Daily Collector was updated, to PID 16485 at
+/Users/bing/.engram-shadow-core-20260911/daily/collector-observe-root-reuse-20260912/bin/EngramCollector.
+Executable SHA-256: 1a69abd105644c4a0e43703b8a2adbb6b66735d24945964e7d9975d29b605ee0.
+Loaded CollectorCore SHA-256: f4970891ae2f1ef6f0964def49b62c09cf5ff7d72f2af0d704dd1fcd5163c5a6.
+Settings remain 32 inventory entries / 32 capture files / 1 GiB, privacy revision
+4. HQ/M1 jobs and the old Daily service were not restarted. Rollback job:
+/Users/bing/.engram-shadow-core-20260911/daily/state/collector/persistent/observe-root-reuse-job-before.plist.
+The previous process had completed legacy dirty revision 44 before this update;
+its 64 captures retained dual ACKs. The first current live observation, at epoch
+1789180948, found Claude 19,617 captured / 10,575 dirty, HQ 15,136 ACKs and M1
+14,289 ACKs. Full catchup and old-service retirement are not complete.
+
+A bounded thirty-minute read-only observer is running locally as PID 77501
+(exec session 64384), sampling the verified Collector and inventory/replica
+metadata every 60 seconds. It does not restart processes or change policy.
+Its first sample and live process were independently checked; completion and
+steady-state improvement remain unverified. Let this process continue through
+startup and observation instead of stacking more small restarts.
+
+Evidence under output/collector-goal-20260908: resident-upload-worker-startup-sample.json,
+observe-root-utf8-skip-{parity,privacy}.log, observe-root-reuse-parent-review.json,
+observe-root-reuse-binary-verified.log, repeated-project-root-microprobe-paired.json,
+observe-root-reuse-daily-collector-activation.json,
+observe-root-reuse-live-samples.jsonl and observe-root-reuse-observation.json.
+The raw sample is private. Source provenance includes the prior removal of two
+orphan comments in an uncompiled Runtime test target; this is not another
+product behavior change.
+
+## Resident upload worker separated from long capture work (2026-09-12)
+
+Cursor through Herdr split resident uploads onto a second existing Worker actor.
+Both replicas exclusively use that uploader during start(); capture and joined
+runOnce retain the original worker. Owner/catalog/immutable CAS remain shared;
+all loops are joined before the pool closes and either worker is released.
+No new dependency, cache, protocol, settings or storage bypass was added.
+The parent inverse-hashed Runtime back to the prior deployed source. Only
+CollectorRuntime.swift and its Worker regression differ from prior provenance.
+
+The corrected regression first finishes one capture, holds the next before
+publication commit, and requires the earlier HQ ACK while held. Same-worker RED
+fails only that assertion; two-worker GREEN passes. The first RED had no pending
+publication and is explicitly invalid evidence. Seven meaningful behavior tests
+pass, including resident discovery/healthy-replica progress and stop/reopen.
+A source-string mirror test was removed. Its two orphan comment lines were
+removed after the Collector build from an uncompiled test target; product source
+matches the package, and that Runtime test file equals prior provenance again.
+The Worker regression constructs two workers and does not itself prove Runtime
+routing; the parent checked that routing in source. Four actual-package checks
+pass without skips/failures in 7.507 seconds: bounded one-shot, resident TERM and
+reopen, and two-generation Codex/Claude dual-replica plus HQ Web IPC.
+
+Daily Collector alone was updated to PID 14584 at
+/Users/bing/.engram-shadow-core-20260911/daily/collector-resident-upload-worker-20260912/bin/EngramCollector.
+Executable SHA-256: 1a69abd105644c4a0e43703b8a2adbb6b66735d24945964e7d9975d29b605ee0.
+Loaded CollectorCore SHA-256: db3b016e467528c733c25cff7cf0c1d43be813d1bc7743337138663467e12528.
+The parent verified the loaded framework and package hashes. Settings remain
+32 inventory entries / 32 capture files / 1 GiB, privacy revision 4. HQ/M1 jobs
+and the old Daily Service were not restarted. Rollback job:
+/Users/bing/.engram-shadow-core-20260911/daily/state/collector/persistent/resident-upload-worker-job-before.plist.
+At 20 seconds Claude had 18,409 captured / 11,783 dirty and all three large Codex
+publications retained dual ACKs. This startup snapshot is not a throughput gain,
+full catchup or resource acceptance. Old-service retirement remains pending.
+At epoch 1789180134 (about 100 seconds after activation), captured Claude files
+increased to 18,442 and dirty files fell to 11,750. Between the 20-second and
+100-second snapshots HQ ACKs increased by 11 and M1 by 12, confirming both upload
+loops continue during startup; this is not a demonstrated speedup. Legacy dirty
+revision 43 still awaits the new walk (prior acknowledged revision 42); its
+64 existing captures retain dual ACKs and no locator error. Keep this process
+running through startup before judging steady-state performance.
+
+Evidence under output/collector-goal-20260908: upload-worker-held-ack-valid-red.log,
+upload-worker-held-ack-final.log, resident-upload-worker-runtime.patch,
+resident-upload-worker-parent-review.json, resident-upload-worker-build-result.json,
+resident-upload-worker-binary-verified.log,
+resident-upload-worker-daily-collector-activation.json and
+resident-upload-worker-live-samples.jsonl. delivery-core-active.json points to
+the new Collector; other role markers remain unchanged.
+
+## Local role-aware App candidate verified; historical backfill continues (2026-09-12)
+
+Prepared the complete App with bundled Service/MCP for eventual Daily retirement,
+without installing it, changing settings or stopping the old Service. Installed
+Daily 1.0.5/1569 is not yet behaviorally verified against runtimeRole. The private
+Collector settings and default App/MCP settings are separate documents; only the
+latter will need a role change when coverage and cutover prerequisites are met.
+
+Thirty focused role tests pass: nine shared settings tests, sixteen App/launcher/
+read-fence tests and five MCP tests. Release App build 20260912020555 succeeded.
+The first ad-hoc candidate passed structural verification but actual bundled MCP
+launch failed with dyld Team-ID library validation. HQ has no valid code-signing
+identity. A separate local-only copy was signed without Hardened Runtime using
+the existing local helper-packaging pattern; production entitlements and project
+signing configuration were not changed. This is not a notarized release.
+The second candidate passes bundle hygiene and strict deep signature verification.
+Its actual bundled MCP returns the expected collector-role error in an isolated
+fixture without changing the legacy sentinel, creating SQLite sidecars, creating
+a product database, or connecting a service socket. No live App GUI launch or
+Daily installation was performed. The first attempt and its failure remain as
+historical evidence and its builder is marked superseded.
+
+Eighteen read-only Daily HTTPS requests to HQ/M1 (capabilities, manifest HEAD and
+known durable publication record) all returned 200 on persistent connections.
+Latency was 2-60 ms; this does not measure large PUT verification, URLSession or
+Worker-actor waiting. Current source confirms resident capture and upload still
+share one Worker actor. Cursor through Herdr is implementing a bounded second
+upload-only Worker plus regression coverage; it is not deployed at this point.
+
+At epoch 1789179469, Daily PID 11562 still loaded the verified path-hints package;
+Claude had 17,777 captured and 12,415 dirty. HQ/M1 ACK totals were 14,516/13,679,
+with 11,601/12,445 pending publications. These are inventory/publication counts,
+not unique sessions or a transfer ETA. The three large Codex publications retain
+all six ACKs. Leave the process running while the candidate is tested. Missing
+Mimo/Cline originals remain a low-priority autonomous search, not a user-input
+blocker; known profile and archive leads have no matching missing IDs.
+
+Evidence under output/collector-goal-20260908: retirement-role-checks-result.json,
+retirement-role-{core,app,mcp}.log, daily-legacy-retirement-preflight.json,
+retirement-role-app-build-result.json, retirement-role-bundled-mcp-red.log,
+retirement-role-app-local-v2-result.json, retirement-role-app-local-v2-verify.log,
+retirement-role-bundled-mcp-smoke.json, retirement-role-bundled-mcp-green.log,
+small-archive-request-latency.json, owner-path-hints-live-latest.json,
+backfill-throughput-latest.json and mimo-cline-profile-backup-leads.json.
+
+## Explicit inventory path types remove implicit filesystem probes (2026-09-12)
+
+Cursor through Herdr changed exactly two CollectorInventoryOwner computed
+URLs: inventory is explicitly a directory, inventory.sqlite explicitly a file.
+The parent inverse-hashed those two arguments back to the prior deployed source;
+only this product file differs from prior package provenance. All storage,
+owner, sidecar, SQLite HAS_MOVED, cancellation and commit fences remain intact.
+No new cache, schema, dependency, concurrency or configuration was introduced.
+
+Fresh profiling first isolated startup Cursor legacy revalidation on the shared
+Worker actor; receiver acceptance was only briefly active. The previous process
+subsequently finished all 64 tracked rows at dirty/acknowledged revision 40,
+with no locator error. Post-walk profiling then found 247 samples in URL path
+construction, including 242 nested samples in implicit isDirectory/lstat.
+The read-only Background Daily microprobe confirmed identical URLs/checksums;
+4,000 constructions took 0.275/0.419 s with implicit lookup and 0.082/0.091 s
+with explicit hints. This is not end-to-end throughput or an artificial
+behavioral RED. The earlier startup stall is not blamed on the receivers.
+
+All 82 existing Owner tests pass, including path/symlink/storage fence coverage.
+Four actual-package tests pass without skips or failures in 7.632 seconds:
+bounded CLI, resident TERM/reopen and Codex/Claude two-generation independent
+replicas plus HQ Web IPC. Release package integrity and source stability pass.
+Daily Collector is PID 11562 at /Users/bing/.engram-shadow-core-20260911/daily/collector-owner-path-hints-20260912/bin/EngramCollector.
+Executable SHA-256: 70a53d4711e01db4991c9e4e7f71be755b90c5ccf35e99b62ed3358719f2a26b.
+Loaded CollectorCore SHA-256: 078384eec92dc7d6a662749c46773ab4693258d002fc8eee1fec91d2c99b61a0.
+The parent verified the running process loads that framework. Rollback job:
+/Users/bing/.engram-shadow-core-20260911/daily/state/collector/persistent/owner-path-hints-job-before.plist.
+Settings remain 32 inventory entries / 32 capture files / 1 GiB, privacy revision 4.
+Other roles and the old Daily service were not restarted.
+
+At 17 seconds the new process had 16,169 Claude files captured and 14,023 dirty;
+all three previously large Codex publications retained their dual ACKs. This is
+startup progress, not full catchup or resource acceptance. HQ readiness metadata
+separately showed all currently parsed-but-not-ready generations were skip tier;
+no non-skip parsed backlog was observed in that snapshot. It does not establish
+full historical visibility. Keep this process running through startup and
+backfill; measure steady-state flow before another optimization/restart.
+Mimo/Cline remain low-priority autonomous recovery leads, Antigravity deferred,
+and Windsurf PB readability and old-service retirement remain open.
+
+Evidence under output/collector-goal-20260908: owner-path-hints-final.log,
+owner-path-hints-binary-verified.log, owner-path-hints-parent-review.json,
+owner-path-hints-microprobe.json, owner-path-hints-daily-collector-activation.json,
+owner-path-hints-live-samples.jsonl, small-publication-flow-samples.json,
+post-legacy-walk-flow-sample.json, startup-walk-drain-observations.jsonl and
+hq-backfill-readiness-latest.json. The routine legacy metadata probe now reports
+checkpoint presence and tracked rank explicitly; a non-null checkpoint is not
+misnamed a completion flag.
+
+## Legacy Cursor ownership reads reused within each capture lease (2026-09-12)
+
+Cursor, dispatched through Herdr, replaced repeated workspace SQLite clones
+with lease-local raw workspace JSON/index/header reuse. Each reused read still
+charges the existing ownership byte budget. Exact UTF-8 path keys retain the
+first observed generation, including absent inputs; directory membership and
+global/source/ownership validation remain required before every capture returns.
+The parent removed unused cache fields and replaced a new linear remembered-input
+scan with a path-keyed map. No persistent cache, schema, dependency or settings
+were added. Only CollectorCursorLegacyOwnership.swift and its tests differ from
+the preceding package provenance.
+
+The real resource regression failed before the fix with four workspace index
+opens for two composers instead of two. The final affected ownership/source
+suites pass 60 tests without failures or skips, including cached second-capture
+DB/WAL mutation, metadata mutation, ambiguity, byte budgets and lease expiry.
+Four tests using the actual package pass in 14.413 seconds: bounded CLI, resident
+TERM/reopen, and modern/legacy Cursor dual-replica plus HQ FTS/Web IPC flows.
+The legacy flow includes ownership-only changes with unchanged global DB/WAL.
+
+Daily Collector is PID 8912 at /Users/bing/.engram-shadow-core-20260911/daily/collector-legacy-ownership-reuse-20260912/bin/EngramCollector.
+Executable SHA-256: 70a53d4711e01db4991c9e4e7f71be755b90c5ccf35e99b62ed3358719f2a26b.
+Loaded CollectorCore SHA-256: 8fcae8d96f691c0b53a8a25812fd8aa77814524dc283b25fa4f7b3d62374ed32.
+The parent verified the loaded framework against the package, all package
+hashes and stable source provenance. Settings remain 32 inventory entries,
+32 capture files, 1 GiB capture bytes and privacy revision 4. Rollback job:
+/Users/bing/.engram-shadow-core-20260911/daily/state/collector/persistent/legacy-ownership-reuse-job-before.plist.
+HQ Service, both receivers and the old Daily service were not restarted.
+
+Before deployment the old Collector had already cleared legacy revision 38
+and its previous error, with 64 publications acknowledged by both replicas;
+that recovery is not attributed to this update. At 22 seconds after activation
+Claude had 15,090 captured and 15,102 dirty. The three large Codex records still
+have dual ACKs and no last error. This is startup progress, not a measured
+steady-state speedup or full catchup. Full history and old-service retirement
+remain open. Mimo/Cline missing originals stay low priority and need no user
+response; Windsurf retained PB readability is separately unresolved.
+
+Evidence under output/collector-goal-20260908: cursor-legacy-ownership-reuse-red.log,
+cursor-legacy-ownership-reuse-lookup-final.log, legacy-ownership-reuse-binary-verified.log,
+legacy-ownership-reuse-parent-review.json, legacy-ownership-reuse-build-result.json,
+legacy-ownership-reuse-daily-collector-activation.json, legacy-ownership-reuse-live-samples.jsonl,
+legacy-ownership-reuse-cursor-before.json and delivery-core-active.json.
+
+## Capture batch adjustment and current recovery checkpoint (2026-09-12)
+
+The same inventory-loop package was restarted once as Daily PID 6796 with
+maxCaptureFiles raised from 8 to 32; inventory entries stay 32 and capture bytes
+stay 1 GiB. The private settings backup is persistent/bulk-capture-settings-before.json.
+The 60-second process scheduling probe on prior PID 6192 restored Background
+classification in finally and did not establish a speedup; no priority change
+was retained. Fresh metadata at 1789176904 shows Claude 14,706 captured and
+15,486 dirty, with HQ 13,727 and M1 12,887 total publication ACKs. These are
+progress snapshots, not completion or throughput guarantees.
+
+A three-second sample of PID 6796 located expensive startup revalidation in
+legacy Cursor workspace ownership reads. Cursor through Herdr is implementing
+lease-local raw-read reuse with first-generation fences and per-access byte
+charging. That change is not deployed at this checkpoint. Routine legacy
+progress now uses check-cursor-legacy-inventory.py, which reads only Collector
+inventory and HQ ledger, not the live Cursor source database. It confirms all
+64 existing publications have both replica ACKs; HQ has 8 readable conversations
+and 56 metadata-only quarantines. It does not refresh original source coverage.
+
+Evidence: output/collector-goal-20260908/bulk-capture-daily-activation.json,
+inventory-loop-scheduling-probe.json, inventory-loop-live-samples.jsonl,
+backfill-throughput-latest.json and cursor-legacy-inventory-progress.json.
+
+## Duplicate inventory loop removed; large replica backlog accepted (2026-09-12)
+
+Cursor, dispatched through Herdr, removed the redundant fourth resident task
+and its orphan advanceInventoryDuringPublication method from CollectorRuntime.
+The independent capture task already advances inventory before capture; HQ and
+M1 uploads remain independent. This is a 15-line deletion in one product file,
+with no new concurrency layer, dependency, cache or schema. Parent compared
+both package provenance maps and verified that only CollectorRuntime.swift
+changed since the previous package and that current source matches the build.
+
+The live pre-deployment sample showed 209 samples waiting in the uploader's
+CollectorInventoryOwner.withPublicationStore mutex while the fourth Runtime
+loop advanced inventory (110 samples). This supports removing duplicate work;
+it does not isolate every contributor to batch latency. Six existing Runtime
+checks pass, including discovery and healthy-replica capture while the other
+replica is held, SQLite busy recovery, cancellation and stop/reopen. Four
+actual-package CLI and Codex/Claude two-generation replica/HQ Web IPC tests
+pass (7.625 s). No deterministic functional RED or measured speedup ratio is
+claimed for this redundant-work deletion. Small-HQ-batch timing observations
+are labeled separately and are not per-request timings.
+
+Before restarting, the parent let all three existing large Codex publications
+finish: sequence 4754 (798,716,532 bytes), 4802 (676,703,625 bytes) and 4839
+(513,071,106 bytes). All now have HQ and M1 ACKs; M1 previous error fields are
+cleared and attempt counters remain 8/7/7. Independent HTTPS GETs of all six
+server-side durable acceptance records match the original Collector envelopes,
+manifest/publication digests and ACKs. This closes their replica-acceptance
+backlog. It is not a new whole-source download or Web transcript audit.
+
+Only Daily Collector was replaced, now PID 6192 at
+/Users/bing/.engram-shadow-core-20260911/daily/collector-inventory-loop-20260912/bin/EngramCollector.
+Executable SHA-256: 70a53d4711e01db4991c9e4e7f71be755b90c5ccf35e99b62ed3358719f2a26b.
+Loaded CollectorCore framework SHA-256:
+d76920804ef2e03705c6f9c0c6a5777be4b7380908db2db50a6208a4ea5182d6.
+Live lsof and hash comparison pass. Settings stayed unchanged: 32 inventory
+entries, 8 capture files, 1 GiB capture bytes, privacy revision 4. The previous
+job is preserved at persistent/inventory-loop-job-before.plist. HQ Service,
+both receivers and the old Daily indexing service were not restarted.
+
+The first 33-second snapshot showed Claude 13,545 captured versus the previous
+13,522 snapshot; at 94 seconds it was 13,547 with 16,645 dirty. These are startup
+observations, not full catchup or steady-state resource acceptance. Raw/source
+preservation, missing low-priority Mimo/Cline originals, Windsurf readability,
+full historical catchup and old-service retirement remain separately tracked.
+
+Evidence under output/collector-goal-20260908: inventory-loop-runtime-final.log,
+inventory-loop-binary-verified.log, inventory-loop-parent-review.json,
+inventory-loop-live-lock-sample.json, large-publication-dual-receipts.json,
+inventory-loop-build-result.json, inventory-loop-daily-collector-activation.json,
+inventory-loop-live-samples.jsonl and inventory-loop-small-hq-{before,after}.jsonl.
+
+## Recovery filtering and bounded upload waits deployed (2026-09-12)
+
+A subsequent settings-only trial keeps the same package/framework, now PID 4031.
+maxEntriesVisited changed from 256 to 32; all other settings stayed unchanged.
+The prior settings are backed up at
+state/collector/persistent/inventory-slice-settings-before.json. At 79 seconds
+Claude increased from 13,383 to 13,399, with 16,793 still dirty. This is an
+observed startup interval, not a controlled speedup ratio or completion ETA.
+See inventory-slice-daily-activation.json and capture-fairness-live-samples.jsonl.
+The three large M1 publications remain pending at this later checkpoint.
+
+Cursor's bounded read-only follow-up confirms start() still has a fourth
+advanceInventoryDuringPublication loop in addition to the independent capture,
+HQ-upload and M1-upload loops. runCaptureOnce already advances inventory, and
+both scans synchronously occupy the Runtime actor. Removing the duplicate loop
+is the smallest remaining code lead; it was not edited or tested in this slice.
+The real sample was in the capture loop's inventory walk, so deleting the other
+loop alone is not proven to remove all scheduling delay. Existing replica-held
+discovery/capture and stop/join tests are the relevant regression surface.
+
+A Daily Claude interrupted reservation was paging the complete unbound catalog
+before applying source, locator and generation checks. A read-only live query
+selected one candidate from 21,719 unbound captures in 393.85 ms. ArchiveCatalog
+now applies those existing exact filters before LIMIT; frozen boundaries, the
+legacy persisted cursor and subsequent manifest/ambiguity checks remain. No
+schema, index or cache was added. Worker recovery uses this optional query filter.
+
+Cursor, dispatched through Herdr, added cooperative yielding between independent
+capture/recovery units without yielding inside a snapshot or transaction lease.
+The capturing guard stays held across yields. Daily maxCaptureFiles is now 8
+(previously 32) to bound each legacy capture page; the 1 GiB byte ceiling remains.
+
+Live validation of the same 798,716,532-byte manifest took 8.246 s on HQ and
+89.36 s on M1 under concurrent Collector traffic; both responses matched the
+manifest hash. The sample showed manifest decompression work, not an isolated
+network benchmark. Manifest/publication PUT request timeouts are now 180 s;
+other requests remain 30 s, with a 240 s URLSession resource timeout. Manifest
+HEAD 200 skips redundant PUT, as existing object dedup already does. HEAD is
+only a hint: publication acceptance still validates durable manifest/chunk bytes
+before ACK. No receiver change or verification bypass was introduced.
+
+Parent reviewed the four changed macOS files against the prior package manifest.
+Catalog tests pass 46/0; final worker tests pass 106/0 (63.967 s, no skips), and
+three existing runtime stop/join checks pass. The 35-second loopback response
+delay failed at the old 30-second timeout and passes at 180 seconds for both
+manifest and publication PUTs. The first whole worker run failed two historical
+unfiltered-pagination fixture assumptions. Fixtures now verify a persisted old
+checkpoint is cleared before negative recapture and a real one-candidate page
+allows the next reserved source to progress; the final complete rerun is green.
+No failure log was overwritten. Ten actual-package CLI/two-generation replica
+and HQ Web IPC checks pass in 35.023 s.
+
+Only Daily Collector was deployed, PID 2687 at
+/Users/bing/.engram-shadow-core-20260911/daily/collector-capture-fairness-20260912/bin/EngramCollector.
+The actual loaded CollectorCore framework SHA-256 is
+7d85b9a6fbf27af748d90907303a00d447e3a8d28e831fe0ae17624854afa1e7;
+the unchanged launcher SHA alone does not identify this update. Package-wide
+checks, source stability and live lsof/hash verification pass. Original job and
+settings are preserved in persistent/capture-fairness-{job,settings}-before.*.
+HQ/M1 receivers, HQ Service, privacy revision 4 and old indexer are unchanged.
+
+At 74 seconds after startup the previous Claude reservation was gone and its
+captured count moved from 13,374 to 13,375 (16,817 still dirty). The three large
+M1 publications remain pending at this checkpoint. This proves interrupted
+recovery progressed, not sustained throughput, complete catchup or retirement.
+A later three-second startup sample was in bounded inventory enumeration;
+steady-state resource acceptance remains open. Missing Mimo/Cline originals
+remain low priority and do not require another user answer.
+
+Evidence under output/collector-goal-20260908: capture-recovery-filter-live-query.json,
+recovery-filter-worker-red.log, recovery-filter-green.log,
+capture-fairness-progress-red.log, delayed-manifest-timeout-behavior-red.log,
+capture-fairness-filtered-final.log, delayed-timeout-final-worker-suite.log
+(final runtime section), capture-fairness-parent-review.json,
+large-manifest-latency.json, large-manifest-m1-sample.json,
+capture-fairness-build-result.json, capture-fairness-binary-verified.log,
+capture-fairness-daily-collector-activation.json and
+capture-fairness-live-samples.jsonl. The Daily startup sample remains private at
+state/collector/persistent/capture-fairness-after-20260912.txt.
+
+## Targeted Cursor observation deployed (2026-09-12)
+
+The live Collector sample identified repeated full modern Cursor walks during
+one capture. Cursor, dispatched through Herdr, changed observe to select the
+requested ID across every permitted workspace/project parent, opening and
+statting payloads only for that ID. Two observations, generation/root identity,
+bounded enumeration, duplicate matching IDs and existing privacy checks remain.
+The parent rejected direct openat(requested-ID) lookup because APFS folding can
+resolve a different byte spelling. Final code enumerates actual UTF-8 names and
+requires an exact match before opening; no cache or new configuration was added.
+Full discovery and captureModern still perform their existing global checks.
+
+The unrelated FIFO-payload regression failed before the optimization. The
+parent's case/normalization regression also failed against the first shortcut;
+both pass in the final 45-test source suite. Filesystem folding assumptions use
+XCTSkipUnless on unsupported test volumes; this Mac ran the regression normally.
+Parent inspected source and logs and verified that exactly CollectorCursorSource
+and its source test file changed since the prior package provenance. See
+cursor-observe-per-id-red.log, cursor-observe-exact-utf8-red.log and
+cursor-observe-exact-utf8-final.log. Four actual-package checks pass (15.933s):
+bounded CLI, resident stop/reopen, and modern/legacy Cursor two-generation
+replica plus HQ FTS/Web IPC chains (cursor-observe-binary-verified.log).
+
+Only Daily Collector was updated, now PID 94843 at
+/Users/bing/.engram-shadow-core-20260911/daily/collector-cursor-observe-20260912/bin/EngramCollector. Its loaded CollectorCore framework SHA-256 is
+c05c117505105dbc8f4729148709efcec47e90195b110eebecc559b14aff2506; the launcher executable SHA alone is unchanged.
+Package-wide verification and live lsof confirm the new framework, and the
+activation receipt preserves the prior job/executable for rollback. No settings,
+receivers, HQ Service or old indexing service changed in this rollout. See
+cursor-observe-build-result.json, cursor-observe-daily-collector-activation.json,
+cursor-observe-loaded-framework.json and delivery-core-active.json.
+
+No controlled live speedup or idle resource acceptance is claimed. Full backfill
+continues. Source review confirms captureOnce is still synchronous work inside
+one actor, so separate upload tasks can queue behind a whole capture cycle;
+cooperative yielding or smaller batches have not been implemented or measured.
+A publication's total age spans many requests and is not a per-request timeout.
+The 1 GiB capture ceiling remains necessary for faithful large histories.
+This remaining performance lead does not reopen the completed Kimi/legacy
+recovery. Missing Mimo/Cline originals stay a low-priority autonomous search.
+All evidence paths above are under output/collector-goal-20260908.
+
+## Kimi mixed shard recovery and Cursor legacy pagination (2026-09-12)
+
+Kimi files from different shard families may share a numeric index. Collector,
+archive validation and native replay now preserve both context_1.jsonl and
+context_sub_1.jsonl, while duplicate indices inside one family still refuse.
+Replay uses the primary file first, then numeric index and UTF-8 filename order;
+this stable order does not claim wall-clock chronology. Original bytes, privacy
+rules and skip tiers remain unchanged. The parent inspected Cursor's Herdr work
+and actual failing/passing evidence: 57 affected Kimi/parity tests pass across
+kimi-mixed-family-green.log (25 Core) and
+kimi-mixed-family-collector-replay-green.log (26 Collector, 6 replay). The first
+combined run included a test compilation failure; the corrected focused rerun
+passed. The original mixed-family regression failed with invalidCapture.
+
+Cursor legacy enumeration used to stop at SQL NULL composer rows. The bounded
+read-only query now skips only unique NULL entries without associated bubbles
+before pagination. Duplicate keys and orphan bubble rows still reach existing
+refusal checks; no source row is removed. All 58 legacy source/ownership tests
+pass after a genuine pagination RED. On Daily, all 64 non-NULL composer rows are
+now captured (previously 15), four NULL rows remain untouched, the locator's
+acknowledged revision equals dirty revision 28 and its error is cleared. HQ has
+52 accepted publications at this checkpoint: seven index-ready and 45 explicitly
+quarantined as parse.noVisibleMessages. Capture completeness does not imply all
+64 entries contain readable conversation. Replica catchup remains in progress.
+See cursor-legacy-recovery-progress.json and cursor-legacy-tombstone-*.log.
+
+Three source-stable arm64 Release packages pass package-wide hash verification,
+and nine checks against those actual packages pass (25.184 seconds), including
+Kimi and legacy Cursor two-generation capture/replica/HQ FTS/Web IPC chains.
+Daily Collector PID 93014, HQ Receiver PID 69192, HQ Service PID 69214 and M1
+Receiver PID 26997 use kimi-legacy-20260912 packages. Per-role activation receipts
+preserve previous jobs and executable paths for rollback; settings are unchanged.
+Collector executable SHA stayed unchanged because the changed code is in its
+bundled EngramCollectorCore framework, whose SHA-256 is
+ e41419d9dbab268d21149d5070c768deb53f16b18004c30a99f432c3f63d6874.
+The parent verified that the live process loads the new framework path.
+See kimi-legacy-build-result.json, kimi-legacy-binary-verified.log,
+kimi-legacy-*-activation.json and delivery-core-active.json.
+
+The previously rejected real Kimi session is now HQ index-ready: sequence 426,
+45 files / 12,217,702 raw bytes and 1,853 normalized messages. An independent
+read of its 44 context files counted 82 user, 801 assistant and 970 tool records.
+Authenticated HTTPS traversed all 39 pages / 4,258,762 UTF-8 payload bytes,
+checking every ordinal, offset and payload hash against complete-tail markers.
+Actual desktop/mobile reading renders real content without horizontal overflow;
+the deployed dark list/detail layout also passes return and scroll restoration.
+See kimi-recovery-web-full-transcript.json, kimi-recovery-ui.json and
+web-reading-layout-live-dark.json. M1 subsequently acknowledged the publication. Both replicas were independently
+read back: all 45 original files, manifest, chunks, combined bytes and per-file
+offsets match their SHA-256 values (kimi-recovery-live-bytes.json).
+The other six Kimi residuals are empty contexts.
+Original Cursor SQLite inspection found eight sessions with 345 visible messages
+and 56 metadata-only records, plus four NULL rows. All eight readable sessions
+are now HQ index-ready with the same aggregate count. See
+cursor-legacy-original-visibility.json. All eight authenticated Web transcripts
+subsequently passed full pagination, ordinals, offsets and payload hashes (345
+messages; cursor-legacy-web-full-transcripts.json). The viewer session expired
+during the first probe and was renewed before the successful full check.
+
+Per the user's updated priority, missing Mimo/Cline originals are a low-priority
+autonomous search, not a request awaiting their reply or a core-delivery blocker.
+Exact original profile roots and direct child backup leads were rechecked on
+Daily/HQ/M1 without broad disk traversal; no new backup lead was found. See
+mimo-cline-profile-backup-leads.json. Windsurf originals remain preserved but
+unreadable. Full backfill and Daily old-service retirement are still open.
+A live Collector sample also identified repeated modern Cursor directory walks;
+Cursor has a bounded follow-up through Herdr, not yet accepted or deployed.
+All named evidence is under output/collector-goal-20260908.
+
+## Resident capture scheduling and original Web reading layout (2026-09-12)
+
+The measured backfill bottleneck was a shared cycle waiting for both replicas:
+Claude capture stayed at 7,296 while M1 uploaded large Codex histories. Cursor,
+dispatched through Herdr, separated bounded resident capture and the two serial
+replica loops; one-shot runOnce still awaits the complete cycle. Existing disk,
+privacy, generation and claim fences remain. A held-M1 regression first failed
+with one capture/one HQ ACK, then passed with the new capture and second HQ ACK
+before any M1 ACK. Stop joins the loops and inventory ownership can reopen.
+Parent inspected the code and actual RED/GREEN logs: 70 Runtime plus 15 selected
+publication tests pass (85 total, resident-capture-green.log).
+
+The parent compared historical src/web/views.ts at 5013bab7 and restored the
+centered 960px container instead of the narrow desktop master/detail sidebar.
+List and conversation now occupy separate views, with a visible desktop/mobile
+return button. Opening starts at the conversation top; returning restores the
+list position. No new frontend framework, dependency or product Node entrypoint.
+The real-browser layout RED measured a 336px list and no desktop return button;
+preview measures a 920px list/reading area with working return and scroll
+restoration. Light and dark previews use actual HTTPS data; mobile list/detail
+have no horizontal overflow. The navigation regression went RED then GREEN;
+all 54 Web script tests pass, and Biome/diff checks pass. Preview assets were
+intercepted. Subsequent real HTTPS checks with no interception pass in light
+and dark mode, including mobile detail, return and scroll restoration:
+web-reading-layout-live.json and web-reading-layout-live-dark.json. Login
+expired during preview and was renewed; receiver restart also required login.
+
+Live source classification narrowed the residuals: 196 of 451 dirty Copilot
+locators are aliases with captured event siblings and recognized conversation;
+255 have no event file or recognized index row. Reads were complete within a
+1 MiB per-file cap. Kimi has six empty context files and one 977,990-byte context
+with 21 user/140 assistant rows; all seven have one registry hash match, disproving
+the earlier ambiguous-registry suspicion. No source was deleted or falsely ACKed.
+See copilot-residual-classification.json and kimi-residual-classification.json.
+The nonempty Kimi session contains distinct context_1.jsonl (852,555 bytes) and
+context_sub_1.jsonl (33,211 bytes). Parent verified both hashes; the collector
+rejects their shared numeric shard index. The earlier 45-members-versus-32-file
+budget explanation was rejected: that budget counts primaries, not members.
+Native replay also lacks a tie-breaker; a faithful correction remains pending.
+See kimi-shard-collision-live.json. No budget increase was made.
+
+Both source-stable arm64 Release packages pass integrity verification. Seven
+actual-package checks pass (16.804 seconds), covering bounded CLI, resident
+termination/reopen and two-generation Claude/Codex/Pi/Copilot chains. Daily
+Collector PID 91679 and HQ Receiver PID 24472 now run resident-flow-layout-20260912;
+activation receipts preserve previous executables and rollback jobs. Settings
+were not changed; HQ Service and M1 Receiver were not restarted. Collector SHA-256
+is fad26be1f9766601cff467f4bc7c9729372c4c9daf0681741f16fa1d0625c985;
+Receiver SHA-256 is 7088277a301df3d05437d13ef114d991d2781ede3fe81826a94cfe82dee4de6f.
+About one minute after activation Claude captured locators rose from 7,296 to
+7,360, and Copilot dirty locators fell from 451 to 397 while replica work remained.
+This proves resumed progress, not complete backfill or steady-state resource
+acceptance. All named evidence is under output/collector-goal-20260908.
+
+## Resident discovery, resumable object delivery and Copilot claims deployed (2026-09-12)
+
+Daily Collector is now PID 90279 at collector-backfill-flow-20260912. Its
+executable SHA-256 is 155922e619a25f7b73ab8d59cb7086ad142dd826f54801005812c8eea13d5523.
+Package-wide hashes and the source-stable arm64 Release build were verified.
+The existing privacy revision 4, exclusions, 1 GiB capture cap, eight upload
+claims per replica and initial backfill budgets are unchanged. The previous
+Collector is preserved with job/settings rollback paths in
+backfill-flow-daily-activation.json. No HQ Service or M1 restart was performed.
+
+Three scoped changes address observed delays. Resident mode now advances the
+existing bounded inventory/event machinery while a publication cycle awaits
+replicas; public runOnce retains its single-cycle behavior. Both resident loops
+are joined/cancelled together and only SQLite contention is retried. A real
+nonresponding TCP replica reproduced missing directory discovery before this
+change; the corrected test passes (0.316 seconds in the focused run). The full
+69 Runtime tests pass in object-head-servicecore-final.log alongside 15 focused
+publication tests, 84 total / zero failures / 34.744 seconds. An old negative
+fixture used Grok as unsupported even though this goal already added support;
+it now uses the deliberately unknown identifier unknown-source.
+
+Copilot index-only claims can claim their preferred primary outside the current
+batch, using existing file-set claim logic. Aliases are acknowledged only after
+a durable capture; generation changes retain dirty work. Store RED/GREEN logs
+and copilot-alias-genchange-green.log cover the regression. Object delivery now
+uses the receiver's existing authenticated HEAD endpoint: 200 skips a duplicate
+object PUT, 404 sends bytes, all other failures defer without ACK. Every HEAD
+and PUT retains fresh policy and current-claim checks. The first HEAD RED had
+an unwired observation hook and is not transfer evidence; the corrected
+object-head-dedup-red-observed.log records the actual old PUT and missing HEAD.
+The final 84-test run includes corrected HEAD, privacy and retry checks.
+
+Seven actual packaged-binary checks pass in backfill-flow-binary-verified.log
+(14.743 seconds): bounded CLI capture, resident shutdown/reopen, Claude/Codex/Pi
+two-generation chains, and both Copilot auxiliary-update paths. Copilot's
+previous assertion confused reserved sequence numbers with generation counts.
+Reservations can consume sequence values without creating a new publication;
+the test now checks increasing sequence and explicitly expects one then two HQ
+generations. Exact two-publication/two-replica counts, bytes, identity and Web
+contents are still checked. Earlier binary logs retain the failed assertions.
+
+Live evidence explains the delivery issue: a 676,703,625-byte Codex capture had
+all 81 objects already present on M1 (81 authorized HEAD 200 results in 6.442s),
+yet the old sender retried every PUT. See codex-large-existing-chunks.json; HEAD
+is metadata evidence, not an independent content-hash read. Current backfill
+snapshots show delivery work remaining; inflight rows may include claims from a
+prior process, so they are not individually proof of active network transfers.
+After activation Pi reconciliation reached requested/completed 17/17 with no
+active scan while replica work remained. Claude inventory moved from 7,054
+captured / 23,138 dirty at this turn's first check to 7,296 / 22,896 in the latest
+snapshot. Full capture, replica catchup and idle-resource acceptance remain open.
+
+All seven restored Pi sources reached both replicas on the earlier subtree
+release, before the latest flow deployment. Their 899,687 original bytes,
+manifests, chunks and whole-source hashes match both live replicas
+(recovered-pi-live-bytes.json). Five retain skip classification. The two normal
+sessions have 366 and 6 messages; authenticated real HTTPS traversal verified
+all fragment ordinals, offsets and payload hashes over eight and one pages
+(recovered-pi-366-web-full-transcript.json, recovered-pi-6-web-full-transcript.json).
+An expired browser login first returned 401; renewed login then passed. No native
+session ID was substituted for the new capture-bound catalog ID.
+
+Actual mobile rendering exposed an empty bubble for assistant tool-only
+messages. The renderer now omits that empty text container while keeping role,
+tool input/output and message identity. Two focused RED cases and all 53 Web
+script tests pass; Biome and diff whitespace checks pass. HQ Receiver is PID
+96611 at remote-server-web-tool-only-20260912, executable SHA-256
+28deae08d50c6f00d744aad07ac45a909b83791493a0c1159ad0f853118134b9.
+The Release package and all hashes were verified; rollback is in
+web-tool-only-hq-activation.json. Actual HTTPS mobile rendering has six messages,
+one tool call, zero empty text bubbles and no horizontal overflow. Preview and
+live screenshots match exactly. See web-tool-only-live.json and
+output/playwright/web-tool-only-live-20260912.png. This small presentation fix
+is not a claim that the whole legacy Web experience has been fully restored.
+
+Remaining scope: full historical catchup; Copilot/Kimi/Cursor-legacy residual
+classification; Mimo 43/Cline 3 missing originals awaiting any separate backup
+location; Windsurf originals preserved but not Web-readable; steady-state Mac
+cost and old heavyweight-service retirement. Antigravity remains deferred.
+All named JSON/log evidence is in output/collector-goal-20260908 in this worktree.
+
+## Collector subtree discovery deployed; Windsurf originals preserved (2026-09-12)
+
+Parent reviewed the repeated-directory correction: a later event reopens the
+named frontier row and invalidates the local walker cursor; a targeted-only
+scan cannot satisfy a pending full reconciliation. Cursor's 287 selected
+CollectorCore tests pass in bounded-directory-replay-1.log. A source-stable
+arm64 Release package passed package verification; five actual-binary tests
+passed (10.837 seconds) covering bounded CLI capture, resident shutdown/reopen,
+and two generations through independent replicas plus HQ Web IPC for Claude,
+Codex and Pi (subtree-backfill-binary.log). These tests do not establish full
+real-history coverage or steady-state resource use.
+
+Daily Collector switched from PID 84858 to PID 88344 at the existing launchd
+label, using collector-subtree-backfill-20260912. Executable SHA-256:
+0d0fc6b511104f99825af012cd223acf27934c44e1284708cb614b15bcdfc2a6.
+All package hashes were checked on Daily before activation. Privacy revision 4,
+exclusions, 1 GiB capture cap, eight upload claims per replica and disk floor
+remain unchanged. Initial catch-up budgets are now 256 entries, 128 candidates,
+32 directory opens, 512 KiB metadata and 32 capture attempts per bounded pass.
+Job/settings rollback copies are recorded in subtree-backfill-daily-activation.json.
+The first live check still had the restored seven Pi locators undiscovered;
+a later check found all seven, with zero replica ACKs or HQ generations yet
+(recovered-pi-progress-latest.json). Their Web acceptance remains open. HQ and M1
+were not restarted by this deployment.
+
+Two direct-child Windsurf PB originals (2,271,442 bytes) were copied from Daily's
+source-defined cascade root into private recovery packages on Daily, HQ and M1.
+Stable source identity/size/timestamps and every copy's SHA-256 were verified.
+Evidence: windsurf-raw-independent-backups.json; checksum-list SHA-256:
+9e3aa5f2a2a9aa6e2473111da772e090631c3240b39b2119337e5f7b418b8369.
+This is original-byte preservation, not Collector publication or Web readability;
+no provider app/API was started or queried.
+
+Cursor's subsequent source review confirmed a Copilot retry hole: a dirty
+checkpoint index whose preferred events.jsonl is outside the claimed batch
+is deferred as unavailable; losing aliases also remain dirty after a durable
+file-set capture. Parent verified the claim/winner branch against source and
+dispatched a bounded fix using existing Cursor/Cline primary-claim and alias-ACK
+patterns. The 451 live dirty indexes are not all proven lost conversations;
+no-conversation indexes and already-included dependencies require separation.
+Kimi's seven unavailable primaries and the Cursor-legacy DB have different paths.
+
+Evidence files above are under output/collector-goal-20260908 in this worktree.
+
+## Unbound history preservation and directory-discovery correction in progress (2026-09-12)
+
+The original refusal subset now has 1521/1556 dual-ACK captures, with 13 of the
+previously eligible 1534 still awaiting both receipts (subtree-before-refusal-progress.json).
+The remaining 22 incomplete-metadata captures (Claude 7, Qwen 7, Kimi 7,
+Gemini 1) total 221,387 source bytes. Their original unbound manifests, chunks,
+and capture records were copied into private Daily/HQ/M1 recovery directories;
+every manifest, chunk, whole-source hash, package file and checksum-list hash
+matches (unbound-history-independent-backups.json). Privacy revision 4 and the
+empty exclusion policy were checked before backup. These are independent raw
+recovery copies, not successful Collector publications or searchable Web sessions.
+
+A broader inventory check found 30,192 discovered Claude locators, 6,988 with a
+capture and 23,204 dirty; 23,120 dirty entries had no failure, 84 were unavailable.
+Most are subagent files. Copilot has 451 unavailable dirty locators; Kimi has 7.
+These counts are not replica or Web acceptance (inventory-backfill-latest.json).
+Six legacy Claude profile projects roots resolve to the same physical default
+root; enrolling duplicate roots would not recover their missing historical files.
+Mimo archive alias checks found 8,582 HQ/84 Daily captures under Mimo-profile
+locators, but none match the 43 missing basenames or native ID suffixes
+(mimo-archive-alias-reconciliation.json). Alternative HQ profile roots likewise
+had no matches (mimo-hq-alternate-roots.json). A user question requesting any
+separate pre-migration Mimo/Cline backup location is pending; other work continues.
+
+Cursor's read-only investigation and parent source inspection confirmed that
+ItemIsDir events currently force whole-root continuity recovery, discarding the
+same callback's ordinary file events until reconciliation. The restored Pi
+folder reached the pending frontier of scan 8D598EAA-251C-4603-9F2D-FB8DC7D5ACA2;
+this was slow recovery, not a dead collector. The seven restored locators and
+new-Web generations remain absent in recovered-pi-progress-latest.json.
+A later three-second live process sample shows active upload/authorization work,
+so an earlier upload-idle observation applies only to that window. Sample remains
+private at daily/state/collector/persistent/collector-backfill-sample-20260912.txt;
+physical footprint was 66 MiB, peak 151 MiB, with about 123 GiB filesystem space
+available. This is a busy-backfill sample, not steady-state lightweight acceptance.
+
+Cursor is implementing bounded directory-subtree discovery using the existing
+frontier/checkpoint machinery. The first focused run exposed fixture selection failures; the corrected
+265-test run passes (bounded-directory-discovery-2.log). No candidate is
+deployed or accepted because the overlapping-event regression remains open. Parent review additionally
+requires a regression for repeated/overlapping directory events during an active
+scan: ON CONFLICT DO NOTHING must not acknowledge a completed directory without
+rediscovery. Full reconciliation must remain mandatory after genuine event loss.
+Parent prepared, but did not run, activate-subtree-backfill-role.py: after a
+verified Collector package it will preserve privacy revision 4, the 1 GiB byte
+cap, existing upload claim limit and disk floor, while using bounded initial
+backfill budgets (256 entries, 128 candidates, 32 directory opens, 512 KiB
+metadata, 32 capture attempts). Existing job/settings backups provide rollback;
+normal-load acceptance and eventual budget reduction remain required.
+
+## Bounded collector directory discovery (2026-09-12)
+
+Cursor implemented the accepted latency fix in the collector-server-web
+worktree only. Ordinary directory-created or directory-renamed FSEvents now
+stay in the same callback as file events and schedule durable bounded subtree
+discovery through existing `collector_frontier` / active-scan tokens. The
+checkpoint transaction does not bump `requested_revision`. Watching applies
+the file batch first, then advances an already-active targeted scan; it does
+not call `beginBootstrap` when no scan is active, so it cannot accidentally
+insert a full-root `''` frontier. True overflow, MustScanSubDirs, root/mount
+epoch wrap, directory removal, unknown types, and unsafe directory paths still
+force full reconciliation. `opencode` and Cursor-legacy roots also keep full
+reconciliation if a directory event appears. `finishBootstrap` still has no
+deletion sweep.
+
+Focused `EngramCollectorCore` tests on the existing DerivedData tree:
+265 selected tests, 0 failures
+(`output/collector-goal-20260908/bounded-directory-discovery-2.log`). Covered
+classes: `CollectorNativeEventStreamTests`, `CollectorEventCoordinatorTests`,
+`CollectorInventoryStoreTests`, `CollectorInventoryOwnerTests`. No live
+collector writes or restarts, no Web or packaging, no schema/config layer.
+
+Known limits remain: directory remove/rename-out can leave a gap; files not
+named in the same callback appear only after the subtree walk; a directory
+created during a full recovery scan is found only if that parent listing has
+not finished, otherwise the later watching batch enqueues it; targeted walks
+still share per-cycle bootstrap budget with other recovering roots. Parent
+owns packaging and any live rollout.
+
+## Old Web presentation restored and seven Pi histories recovered (2026-09-12)
+
+Cursor restored source-colored assistant labels, rounded conversation bubbles,
+compact cards and filters, and bounded preview labels on still-collapsed
+Tool/System disclosures. Pi/Grok source colors are explicit. Visible login and
+Advanced labels remain; search/source controls keep accessible wrapped labels.
+Parent's real-browser check caught source and Search on separate rows; CSS order
+now keeps them together while Advanced occupies the next row. The browser RED
+is web-restoration-browser-preview-red.json. Parent reran all 51 script tests
+(web-restoration-final.log). Source-stable arm64 Release build and package-wide
+verification pass (web-library-build-result.json). HQ Receiver alone moved to
+PID 2160, executable remote-server-web-library-20260912/bin/EngramRemoteServer;
+its prior package/job remain available in web-library-hq-remote-server-activation.json.
+
+The actual HTTPS viewer passes desktop 1200px/mobile 390px, expanded Advanced
+controls fit, source and Search share a row, reload restores 50 cards, and the
+real Grok long transcript displays 90 messages through 23 automatic pages in
+4.347s with zero manual continuation clicks. This measures the complete drain,
+not the first DOM insertion. No asset interception or synthetic content was used
+(web-restoration-browser-live.json; output/playwright/web-restoration-*-live-20260912.png).
+Candidate and actual dark-mobile screenshots were also inspected. An actual
+System disclosure expands to 518,879 characters without horizontal overflow;
+its collapsed summary is 106 characters including the System label
+(web-library-disclosure-live.json). Native suites were not rerun for
+this HTML/CSS/JavaScript delta; compilation, focused script tests and live
+browser behavior validate the affected path.
+
+Exact missing-history reconciliation found all seven Daily-missing Pi files on
+HQ. Their native header IDs and filenames match the existing indexed IDs. The
+seven files total 899,687 bytes; independent HQ/M1 recovery copies and manifest
+hashes match (recovered-pi-independent-copy.json). These are recovery copies,
+not Collector publication receipts. HQ already indexes all seven: five skip,
+one premium (366 messages), one normal (6). The native IDs are not exposed by
+the new capture-only Web catalog, so a native-ID HTTP probe did not establish
+Web readability. Parent restored the verified copies to their absent original
+Daily Pi paths with exclusive creation, creating the absent project directory;
+no existing source file was overwritten (recovered-pi-daily-restore.json).
+Collector publication and new-Web readability remain pending: after several
+minutes daily-pi requested revision 13/completed 11 has no matching locators.
+Cursor is diagnosing that discovery delay read-only; no service was restarted.
+
+Mimo 43 and Cline 3 missing locators have no corresponding readable exact path
+or binding in the checked Daily/HQ legacy stores. M1's legacy index is an unused
+2026-04-12 snapshot containing only three Gemini rows, and its legacy archive DB
+is absent. A no-open-process/no-WAL, stable-stat immutable read checked that old
+snapshot after ordinary read-only open failed; it is not current M1 runtime
+proof (missing-history-exact-reconciliation.json). Alternate Daily Mimo/default
+Claude roots and current Pi root had no matching missing basenames. These checks
+do not prove global loss; other approved recovery stores remain to reconcile.
+Fresh original-refusal progress is 1433/1556 dual-ACK (web-library-live-progress.json).
+Full coverage, remaining metadata cases and daily old-service retirement remain
+open. Antigravity remains deferred.
+
+## Web long-message continuation deployed (2026-09-12)
+
+Cursor added automatic continuation while a message fragment is incomplete,
+retaining request-epoch cancellation and duplicate-request fencing. Normal
+history pagination stops at a complete-message page boundary; tool/system
+messages remain collapsed. Parent independently reran all 48 Web script tests.
+The HQ Receiver-only Release package built with unchanged source hashes across
+the build and passed package-wide checksum verification. Activation moved only
+HQ RemoteServer from PID 76117 to PID 87476; Collector, Service, M1, privacy
+revision and ingest ledger were not changed. Rollback job and prior executable
+are recorded in web-continuation-hq-remote-server-activation.json.
+
+The actual HTTPS viewer, with no asset interception or synthetic transcript,
+automatically loaded 23 pages and displayed 90 real Grok messages in 4.749s with
+zero manual Load more clicks. Ordinary history continuation remains available.
+Reload restored the valid viewer cookie and 50 cards. Desktop/mobile had no
+horizontal overflow (web-continuation-browser-live.json; output/playwright/
+web-continuation-{desktop,mobile}-live-20260912.png). The duration measures the
+whole automatic drain, not the time of the first individual DOM insertion.
+The known empty-first-page failure is resolved. Native tests were not rerun for
+this JavaScript-only delta; Release compilation, script behavior tests and real
+browser rendering cover the changed path.
+
+A fresh read-only Daily query found 1368 of the original 1556 captures confirmed
+by both replicas (web-continuation-live-progress.json), up from 1212. This is
+backfill progress, not full-history acceptance. Cursor is separately comparing
+the original Web presentation read-only; historical locator reconciliation and
+old heavy service retirement remain open. Antigravity remains deferred.
+
+## Native root compatibility, Web readability, and real Grok compaction (2026-09-12)
+
+Combined native-web-compat Release packages are active: HQ Service PID 75956,
+HQ RemoteServer PID 76117, daily Collector PID 84858. Fresh ps checks match every
+exact executable path (native-web-compat-live-processes.json). M1 receiver is
+unchanged. Package-wide verification and source stability checks pass; seven
+actual-process Cursor/Gemini/Copilot/Grok two-generation tests pass in 29.797s
+(native-web-compat-build-result.json, native-web-compat-binary-final.log).
+Daily privacy revision 4 preserves zero exclusions and retries old refusals.
+Per-role persistent/native-web-compat-*-before.* backups preserve the old jobs
+and collector settings; activation receipts contain the exact rollback paths.
+
+Publication now accepts observed Pi/Qwen/OpenCode cwd /private/tmp through a
+no-symlink physical directory walk, avoiding Foundation's abbreviation to /tmp.
+Any project exclusion still withholds that special root. Gemini cwd / follows
+the existing unrestricted filesystem-root rule. General lexical, relative,
+traversal, symlink, identity and policy-configuration checks remain unchanged.
+Three failing repros cover these four formats; 115 privacy/OpenCode tests pass
+(native-root-compat-{red,green}.log). The same 1556-capture copied private fixture
+now has 1534 eligible and 22 incomplete-metadata captures, with no invalid-root
+bucket (native-web-compat-audit/live-fixture-histogram.json). Latest recorded live
+progress has 1212 original captures acknowledged by both replicas; eligibility
+and those ACKs do not prove complete historical coverage.
+
+The Web viewer now renders a DOM-only Markdown subset with headings, lists,
+tables, emphasis, code blocks and Copy; HTML stays inert and unsupported file
+links retain literal targets. Tool/system bodies remain collapsed. Cursor fixed
+cookie-session restoration on reload using the existing read-only sessions API,
+with epoch guards against stale login/logout responses. Wide tables scroll in a
+local wrapper; parent added normal word wrapping so headers do not become vertical
+letters. Forty-five browser-script tests pass and the owned test file passes
+Biome (web-richtext-final.log). Candidate desktop/mobile and wide-table preview
+checks pass; the latter reproduces 548px document width before the fix and 390px
+afterward. Real deployed assets restore 50 session cards after reload. A real
+17-message Cursor transcript renders 21 rich paragraphs without desktop/mobile
+overflow; overview/Grok-list return 200 in 1119/35ms. Evidence:
+native-web-compat-presentation-live.json and output/playwright/web-richtext-live-*
+show real data without asset interception; web-richtext-browser-preview.json
+separately identifies synthetic candidate rendering.
+
+A live Grok fileset of 284,341,056 B exposed the old aggregate replay cap.
+Captured Grok now uses the existing 1 GiB / 32 MiB JSONL budgets; native defaults
+and other formats' caps remain unchanged. The corrected cheap fileset fixture
+reaches missing CAS above 100 MiB and retains rejection above 1 GiB; the captured
+8 MiB line case passes while native parsing remains bounded. Two focused tests
+pass (grok-captured-budget-green.log). Earlier invalidManifest/unsupported-shape
+fixture failures are not claimed as product RED evidence; the live ledger's
+parse.fileTooLarge supplies the original real failure evidence.
+
+During the verified HQ service stop, exactly one known quarantined Grok ledger
+row was reset to pending after saving its original state in private
+persistent/native-web-compat-grok-ledger-before.json. Source data, generations,
+and FTS rows were not edited; bootstrap failure had conditional row rollback.
+The existing archive then reached index_ready in one new attempt with 395
+messages (grok-large-replay-live.json). All 284,341,056 captured bytes and every
+manifest/chunk hash match HQ and M1 (grok-large-live-bytes.json). The fileset
+includes seven real compaction segments and a 278,611,574 B updates.jsonl.
+Full HTTPS reading returns 395 normalized messages including all seven labeled
+compaction archives, 30 pages, 4,407,109 UTF-8 bytes, every payload hash, ordinal
+and offset verified, in 4.789s (grok-large-web-full-transcript.json).
+
+Real deployed-browser inspection exposed a remaining UX defect: opening this
+Grok session initially paints zero messages because its first message spans
+multiple pages; users must currently click Load more before seeing any body.
+native-web-compat-browser-live.json records the failure. Cursor owns the bounded
+automatic-fragment-continuation fix in WebUIRoutes.swift and its script tests;
+it is not in the deployed package. Parent resumes with its diff/tests, a real
+Grok first-paint browser check, then an HQ Receiver-only update. Full historical
+coverage, the 22 metadata-only cases, missing historical locators, and daily old
+service retirement remain unfinished. Antigravity remains explicitly deferred.
+
+## Rootless Cursor, Gemini snapshots, and Copilot long captures (2026-09-12)
+
+The source-compat Release Collector and Service packages are deployed on daily
+(PID 83345) and HQ (PID 25785); exact executable paths were rechecked with ps.
+Privacy revision 3 retries old refusals with the same empty exclusion policy.
+Package-wide hashes and source stability checks pass. Rollback jobs/settings are
+preserved in each role's persistent/source-compat-*-before.* files; receipts are
+output/collector-goal-20260908/source-compat-*-activation.json.
+
+Cursor implemented rootless modern/legacy capture admission only for policies
+without project exclusions. Invalid, conflicting, typed, and symlink evidence
+still withholds publication. Parent fixed Gemini JSONL snapshot message witnesses
+to follow native $set/rewind/type precedence, and captured Copilot parsing now uses
+the captured JSONL budget. Cursor added Copilot to the worker's 32 MiB line budget.
+True failing repros and GREENs cover these paths; full privacy is 76/76 and six
+real-process Cursor/Gemini/Copilot two-generation checks pass in 28.701s.
+See collector-privacy-proof-full.log and source-compat-binary-final.log.
+
+The new bundled tool checks the same private 1556-capture fixture: 1525 eligible,
+22 incomplete metadata, 9 invalid roots. All 117 Cursor and two Copilot captures
+are eligible; 27 Gemini snapshots are eligible, two expose cwd /, and one has no
+conversation witness. Evidence: source-compat-audit/live-fixture-histogram.json.
+This replaces the expected 29 Gemini releases with the observed 27; the two root
+refusals were not bypassed in this deployment.
+
+Three newly admitted real archives match captured CAS bytes and every chunk and
+manifest hash on both replicas: Copilot 8,658,699 B, Cursor 1,128,364 B, Gemini
+9,642 B (source-compat-live-bytes.json). Cursor's 17 messages / one page and
+Copilot's 263 messages / six pages complete real HTTPS reading with all payload
+hashes, ordinals, and offsets verified (source-compat-*-web-full-transcript.json).
+The sampled Gemini generation has one message and tier skip; it is parsed and
+archived but is not evidence of normal search visibility. After browser cookie
+reauthentication, overview and three source lists return 200 (1045/23/5/28ms;
+source-compat-web-live.json). No full-history or old-service retirement claim.
+
+The remaining nine roots are now reproduced: seven /private/tmp records
+(Pi/Qwen/OpenCode) encounter Foundation abbreviation to /tmp, and two Gemini
+records use /. A narrowly scoped physical-directory check and unrestricted-policy
+allowance pass 115 privacy/OpenCode tests (native-root-compat-{red,green}.log).
+These root changes and Cursor's DOM-only Web rich-text changes are not deployed
+at this checkpoint. Parent browser preview now verifies DOM-only Markdown/code,
+literal file-link preservation, inert HTML, desktop/mobile layout, and local
+scrolling for a 20-column table (web-richtext-browser-preview.json). Browser RED
+found document width 548 at a 390px viewport; GREEN is 390 with local table scroll.
+Preview also exposed the pre-existing missing cookie-session restore on reload.
+Cursor fixed it using the existing read-only sessions API, with stale login/logout
+protection; reload now restores 50 session cards without credential entry. The
+final parent Vitest run passes 45 cases (web-richtext-final.log); Biome formatted
+and checked the owned test file. Previews use intercepted candidate assets and a
+synthetic transcript, not a deployed-Web claim.
+
+Live ledger inspection found a separate Grok archive (sequence 367, 284,341,056 B)
+quarantined as parse.fileTooLarge. The exact archive remains present. Cursor owns
+captured-only Grok budget repros/fix next; parent owns final packaging and live
+acceptance. See source-compat-file-too-large.json. This existing quarantined work
+will need a targeted replay after the parser fix, not merely a service restart.
+
+## Fork ancestry, filesystem-root capture, and long-message redaction (2026-09-12)
+
+The copied-fixture census identifies all 877 Codex identity-conflict captures as
+explicit forked_from_id ancestry, with no unlinked IDs or mixed-source records.
+SourceMetadataProjection now keeps the first native identity while recognizing
+only explicitly linked ancestor headers; every cwd is still checked. Unlinked
+identities, foreign-source records, and malformed identity evidence remain
+withheld. Cursor implemented the bounded fix through Herdr; parent checked the
+source and three focused RED/GREEN logs (codex-fork-ancestry-{red,green}.log).
+
+A separate counts-only root probe found 419 Claude captures with literal cwd /,
+plus 15 sampled single-ID Codex and two MiniMax captures. Foundation independently
+confirmed these shapes (privacy-audit/root-shapes-foundation-result.json). A
+publication-only allowance now preserves / for Claude/Codex formats when there
+are no exclusions. Any project exclusion still withholds /, and policy
+configuration / remains invalid. Missing, relative, symlink and traversal rules
+are unchanged. Cursor's focused RED/GREEN and full 25 metadata / 74 privacy tests
+pass (filesystem-root-cwd-{red,green,regression}.log). The probe's five Pi and one
+Qwen noncanonical roots remain unresolved; Python path normalization alone did
+not detect the Foundation differences.
+
+Pi captured replay and publication now allow lines through 32 MiB. The real
+9 MiB test exposed two additional issues: its original 1 MiB byte-fetch harness
+cap, then slow full-message redaction on every page. Both generations reached
+index_ready in the retained v2 fixture, but the shared 90s test deadline expired.
+Increasing only the test budget to 240s exposed a real per-request unavailable
+failure in v3: the first 49-page drain took 81.49s. Production's 2s request limit
+was not raised. TranscriptRedactionPolicy now uses necessary literal prefixes
+in case-folded bytes to skip impossible matches; all ten regexes remain unchanged.
+A 9 MiB no-secret fixture falls from 1.51-1.72s to 0.041-0.046s, preserving bytes
+(pi-redaction-prefix-{red,green}.log). The 9 MiB first-page regression takes 0.087s;
+85 transcript, export and metadata tests pass, including all secret families and
+Unicode case folding (redaction-prefix-regression.log). The combined Release packages pass package-wide integrity checks and source
+provenance checks (privacy-compat-build-result.json). The real Codex fork at cwd /
+passes two generations in 6.270s, retaining the first native ID and actual cwd;
+the Pi 9 MiB chain passes in 19.958s with both replicas byte-exact and both
+49-page drains complete in 10.094s / 8.613s (privacy-compat-binary-final.log).
+Cursor independently reviewed the necessary-prefix gate and found no concrete
+counterexample; this is bounded review evidence, not an exhaustive proof.
+
+The accepted packages are live: HQ Service PID71769 at
+hq/service-index-privacy-compat-20260912 and daily Collector PID81365 at
+daily/collector-privacy-compat-20260912. Fresh ps checks match both exact paths.
+Receiver packages are unchanged. Daily privacy revision 2 triggers reevaluation
+with zero project exclusions; matching prior jobs/settings remain in persistent
+privacy-compat backups (privacy-compat-*-activation.json). The new-package tool
+was hash-verified on daily and ran only against the existing copied fixture:
+1379 of the original 1556 captures are now eligible (903 Codex, 419 Claude,
+55 Pi, 2 MiniMax), with 177 still withheld (124 roots, 51 incomplete metadata,
+2 Copilot limits). See privacy-compat-audit/live-fixture-histogram.json.
+Eligibility does not mean every upload or HQ import has completed. At the latest
+recorded live check, 111 original withheld captures have both ACKs
+(privacy-compat-live-after.json); background history catchup remains active.
+
+Three newly released real Pi captures (11,080,318 / 10,619,537 / 10,510,262 bytes,
+maximum physical line 1,436,998 bytes) match unchanged originals and all
+manifest/chunk hashes on HQ and M1 (pi-long-live-bytes.json). All three are
+index_ready. One actual normalized transcript completes HTTPS reading: 208
+messages, 8 pages, 991,810 UTF-8 bytes, every ordinal/offset/payload hash checked,
+585ms total (pi-long-web-full-transcript.json). This is the normalized text/tool
+projection, not all 11 MB of raw source; the largest normalized message is
+84,334 bytes. The separate binary fixture proves a 9 MiB text message.
+After expired-cookie reauthentication, overview/Pi-list/Codex-list return 200
+(684/33/50ms; privacy-compat-web-live.json). Full history, real Grok compaction,
+remaining metadata/root/limit cases, and old-service retirement are unfinished.
+
+Cursor's copied-metadata probe attributes the remaining 117 Cursor root refusals
+to absent cwd (107 modern, 10 legacy), not literal /. It is implementing focused
+rootless-session tests next, with no exclusions required and all malformed or
+explicit unsafe root evidence still rejected; this next fix is not deployed.
+
+## Grok binary chain, bounded privacy memory, and live activation (2026-09-12)
+
+The new three-role Grok packages passed a real-process two-generation test in
+3.038s: unchanged chat history, changed compaction segment, exact bytes and member
+hashes at both replicas, startup source authority, archive-only FTS queries, stable
+session identity, message roles/counts and usage. Evidence: grok-binary-final-v2.log.
+The prior grok-binary-final.log failure was a test-fixture overwrite guard, fixed by
+updating the existing synthetic segment; it is not a product failure.
+
+Grok privacy assessment previously retained the entire concatenated file set and
+copied the large auxiliary member. A focused 128 MiB fixture demonstrated
+268,664,832 bytes of additional process peak RSS, failing the 64 MiB regression
+threshold. Assessment now verifies chunk, whole-source and each member hash in a
+chunkwise pass, buffering only summary.json and prompt_context.json. The same
+isolated regression adds 163,840 bytes to the pre-existing process peak; this is
+not absolute process memory. All 72 CollectorPrivacyProofTests pass. Evidence:
+grok-privacy-memory-{red,green}.log and grok-privacy-streaming-regression.log.
+The revised Collector Release package passed package-wide integrity verification
+and the same real two-generation chain in 4.486s with the previously tested
+Receiver/Service packages (grok-binary-streaming-final.log). No policy was relaxed.
+
+The accepted packages are now active: HQ Receiver PID97784, M1 Receiver PID12098,
+HQ Service PID98208, daily Collector PID78702. Target directories end in
+remote-server-grok-20260912 / service-index-grok-20260912 / collector-grok-20260912.
+The daily package includes the bounded-memory privacy change; the other packages
+are unchanged from the successful first chain. Main executable hashes alone are
+not used as proof; Collector/Service behavior is in their bundled frameworks.
+Daily adds only /Users/bing/.grok/sessions. Existing package/config rollback copies
+are recorded in grok-*-activation.json. The actual generated Grok source instance
+was registered on HQ, restarting Service on the same package as PID1355. There
+are now 16 source bindings (grok-hq-source-activation.json). Both receivers respond
+HTTP200 after warmup. Three real four-member Grok captures (2,910,959 / 2,298,755 /
+2,640,993 bytes) match every original/member/manifest/chunk hash and raw byte on
+both HQ and M1 (grok-live-bytes.json); these samples contain no compaction segments.
+The real HTTPS Grok list/detail/messages requests all return HTTP200 and available;
+the initial page had 40 fragments and a continuation (grok-web-live.json). A follow-up
+full browser drain completed 62 messages / 3 pages / 454,789 UTF-8 bytes, verifying
+every ordinal, byte offset, and assembled payload SHA-256 through the final cursor
+(grok-web-full-transcript.json). This sample still does not cover real compaction
+segments or all historical sessions. Pi/Grok filter options are present in
+the live DOM. A Pi card was opened using the real filter/search controls and its
+mobile rendering was inspected (output/playwright/pi-live-grok-rollout-20260912.png).
+Full Grok catchup and a real compacted-session replay remain pending. Old services
+remain; raw sessions-by-source SQL counts also include native HQ indexing and must
+not be treated as counts of daily capture ingestion.
+
+A one-off histogram tool was built through Cursor in output/.../privacy-audit,
+using actual CollectorPrivacyProof.assess and per-capture root parse formats.
+Parent reviewed its source/mapping, exported a private APFS-cloned subset of the
+daily CAS plus a SQLite backup (quick_check ok), and ran the movable tool against
+that copy. It does not open live catalog/CAS through mutating constructors or
+change live policy. 1,556 distinct withheld publications classify as 877
+conflictingSourceIdentity, 571 invalidProjectRoot, 57 limitsExceeded, and 51
+incompleteMetadata. No excludedProject/eligible/error buckets occurred; the live
+policy has zero excluded roots. This establishes refusal reasons, not that every
+refusal is incorrect. Codex contributes all 877 identity conflicts; Pi contributes
+55 limit refusals. Evidence: privacy-audit/live-histogram.json. The private fixture
+remains under daily/privacy-audit-20260912/fixture; no raw content or credentials
+were copied into shared docs. Cursor's read-only copied-CAS probe confirms 55 Pi withheld captures have physical
+lines above 1 MiB and at most 32 MiB, with only 10-1,062 records. The initial small
+Codex sample covers identity-consistent refusals, not the 877 conflicts, so it does
+not establish the cause of those conflicts (privacy-audit/probe-shapes-result.json).
+Parent corrected a source-reading error: Pi captured replay still uses .default
+(8 MiB), not .capturedJSONL (32 MiB). Cursor owns the minimal worker plus Pi captured
+parser limit correction and failing production-path tests. That follow-up is not
+yet accepted or deployed.
+
+## Pi live Web confirmation and Grok incremental acceptance (2026-09-12)
+
+A fresh read of the live HQ database shows the previously blocked 798,716,532-byte
+Codex publication at arrival8900 is index_ready with one attempt and no failure;
+intake has advanced past arrival9240. The old zero-Pi observation is stale. The
+daily Pi inventory has captured all 566 known files; uploads continue. The targeted
+Codex unavailable/dirty backlog query now returns zero (this does not establish
+complete historical coverage or zero pending publications).
+
+After renewing the browser's expired viewer session, real HTTPS Pi list, detail,
+and message requests all returned HTTP200. The sampled transcript reports
+available and returns three fragments with no next cursor. No credentials or
+message content are included in the receipt. Evidence:
+output/collector-goal-20260908/pi-web-live.json.
+
+The Web source dropdown omitted Pi and Grok despite backend source support.
+The production HTML regression failed on the missing Pi option; both options and
+friendly source labels are now added. All 37 shipped-script/presentation tests
+pass. Evidence: pi-grok-web-filter-{red,green}.log under the same output directory.
+This UI change is local until the next Receiver rollout.
+
+The parent added a real-process Grok two-generation binary test using the existing
+Collector/two independent replicas/HQ harness. It checks unchanged chat_history,
+changed compaction-only content, exact concatenated/member bytes, explicit startup
+authority, archive-only search, stable session identity, message roles/counts, and
+usage. The old deployed packages fail this test with Collector earlyExit(70), as expected
+for unsupported Grok configuration (grok-binary-red.log). New three-role packages
+are being built. Cursor added the Grok dirty-event owning-primary remap; the actual
+worker event and runtime scan/rescan tests both pass (0.207s / 0.533s), confirmed in
+grok-integration-incremental-runtime-green.log. The earlier runtime log is a
+compile failure, not a behavioral RED. No Grok live rollout has occurred in this
+slice.
+
+Independent source review identifies a remaining daily-memory concern: Grok
+privacy assessment concatenates the whole file set and copies every member while
+only parsing two metadata files. The real largest updates member is 278,611,574
+bytes. The live 1 GiB capture budget is passed into privacy limits, so the default
+256 MiB limit is not the live blocker. A per-chunk verification pass can preserve
+all integrity checks while buffering only summary/prompt metadata. This follow-up
+is not implemented or memory-profiled yet. Cursor is preparing an output-only
+privacy histogram tool using copied catalog/CAS inputs; no live policy is changed.
+
+## Pi receiver admission, live rollout, and large intake recovery (2026-09-12)
+
+A new real-process two-generation Pi test reuses the existing collector/independent
+replica/HQ Web IPC harness and asserts exact raw bytes, stable logical identity,
+messages, model, and positive per-message/aggregate usage. The old Collector exited
+70. The new Collector captured and published locally, but both replicas stayed
+pending: ArchiveStore's single-file publication allowlist omitted Pi. The focused
+receiver regression failed with invalidPublication. Adding only Pi to that list
+passed all 55 ArchivePublicationStoreTests. The final Collector/Receiver packages
+and existing overview-fts-map Service then passed the complete Pi binary chain in
+3.513s. Evidence: output/collector-goal-20260908/pi-binary-{red,green,final}.log
+(the first green attempt is a retained failure), pi-replica-{red,green}.log.
+
+Both new Release packages passed source-stability and package-wide hash checks.
+HQ RemoteServer now runs PID14124; M1 RemoteServer PID8156; both use
+remote-server-pi-20260912. Daily Collector PID75773 uses collector-pi-20260912 and
+adds only /Users/bing/.pi/agent/sessions to its roots. Existing policies and the
+1 GiB daily capture budget remain unchanged. Current root inventory finds 566
+regular Pi logs / 1,115,620,095 bytes, max 59,961,418 bytes, no file symlinks;
+223 was the prior old-index-locator subset, not the complete current root.
+Pi's actual generated source instance/epoch was added to the owner-only HQ source
+authority file, then Service was restarted as PID25457 on its unchanged package.
+The live registry now has 15 source bindings. Job/settings/source-authority backups
+are recorded in pi-{hq,m1,daily}-*-activation.json and pi-hq-source-activation.json.
+No old daily indexer was retired.
+
+M1 publication-index warmup returned 503 for approximately 4m13s, then completed
+and returned HTTP200 through the configured HTTPS9443 route. Its process was
+observed alive throughout; it was not restarted during warmup. The unrelated
+legacy RemoteServer PID3387 and existing routes were preserved. Three stable real
+Pi publications (321,454 / 162,598 / 150,324 bytes) were read from both replicas and
+compared to the original files; exact bytes, manifest/chunk/whole-source hashes,
+and unchanged source stat identity all match. Evidence: pi-live-bytes.json.
+Pi capture/replication is live; HQ Pi indexing/Web verification is still pending.
+
+The HQ discovery cursor had stopped at arrival8899: the next Codex manifest covers
+798,716,532 bytes / 96 chunks. Two HTTPS metadata requests each took 8.53s because
+the existing endpoint verifies all referenced bytes, exceeding the configured 5s
+intake timeout. HQ intake now uses an existing supported 30s timeout and 128 MiB
+per-run transfer budget (formerly the default 32 MiB). No code/API/integrity rules
+changed and the fresh-settings runtime needed no restart. All 96 chunks are now
+present and the cursor advanced to8909. Evidence: hq-large-manifest-latency.json,
+hq-large-intake-activation.json, hq-large-intake-progress.json. Subsequent backlog
+and full-history completion remain unverified.
+
+Cursor's compaction-preservation helper passed 11 actual tests, independently
+reviewed by the parent: original bytes survive source removal, optional INDEX and
+multiple segments are retained, creation/change/removal changes the dependency
+snapshot, and symlinks are rejected. The real Grok root has six compaction
+directories / 18 members / 6,206,519 bytes, max eight members per session, within
+the existing 64-member limit. Evidence: grok-compaction-preserve-green.log and
+grok-compaction-member-inventory.json. The archived-Markdown parser/FTS patch was
+reviewed; a copied FTS test predicate was rejected as a verifier. Cursor is now
+implementing actual source-scoped archive FTS and the complete Grok wiring with
+production-path tests. That ongoing slice is not shipped or accepted yet.
+
+## Overview FTS rowid lookup and Grok file-set capture (2026-09-12)
+
+The remaining overview scan traversed unrelated FTS5 body overflow pages because
+session_id is UNINDEXED. A production-producer regression with 16 ready sessions
+and 32 MiB unrelated FTS text failed with 8,272 cache-miss pages. Ready counts now
+use the existing fts_map rowid index and corroborate the actual FTS session ID;
+missing tables, missing mappings, stale rowids, and wrong-session mappings retain
+the original exact membership fallback. No schema, request budget, or readiness
+predicate was relaxed. All 44 WebMetadataProducerTests pass, including the page-I/O
+regression and mapping-fallback cases. Evidence: output/collector-goal-20260908/
+overview-fts-map-{red,green}.log and their xcresults.
+
+A disposable database clone preserved all 14 stream counts. Baseline / mapped /
+warm baseline / repeated mapped aggregate times were 1,386 / 309 / 797 / 159ms;
+these sequential timings are not an OS cold-cache benchmark. The production
+page-read regression establishes the reduced I/O independently. Evidence:
+overview-fts-map-benchmark.json.
+
+The Service Release package passed source-stability/package-hash verification and
+three actual-process integration tests. Only HQ Service was replaced: PID80992,
+service-index-overview-fts-map-20260912. RemoteServer PID62509 remains on the Web
+presentation package. The first probes two seconds after activation returned fast
+503s (1-3ms) before Service was listening; they are retained in
+overview-fts-map-live-startup.json. After listening,
+first overview returned 200 in 795ms, then 101/101ms for all 14 streams; the previous
+package measured 1,043/1,006/1,001ms immediately before rollout. Evidence:
+overview-fts-map-live-{before,after}.json and overview-fts-map-service-index-activation.json.
+Rollback preserves web-presentation Service and overview-fts-map-job-before.plist.
+After 74 seconds without a probe, all three overview requests again returned 200
+in 735/106/109ms (overview-fts-map-live-after-idle.json). This verifies new-process
+and short-idle reads, not indefinite uptime or an OS-wide cold-cache benchmark.
+
+Cursor through Herdr wH:p2 applied the bounded Grok collector helper, descriptor
+validation, and project inclusion. Parent independently verified six helper tests:
+preferred primary, exact small CAS file-set bytes, explicit absents, primary/member
+symlink rejection, and >100 MiB auxiliary-file observation. The large-file test
+only observes a sparse file; it is not a large CAS round trip. Grok runtime wiring
+and full-history fidelity remain unshipped/unverified. Evidence: grok-fileset-green.log.
+Parent also independently passed both Pi enumeration/privacy tests; paired with the
+previous two Pi replay/registry checks, the candidate has local component proof
+but no real-host Pi rollout yet (pi-enumeration-privacy-parent.log).
+A bounded content-aware check of one actual compacted Grok session established a
+preservation gap: chat_history has 182 current-window records, whereas
+compaction/segment_000.md contains 118 turn headings, 117 without containment of
+current chat bodies. The checkpoint holds five stubs already present in chat;
+updates use RPC session/update envelopes that the current parser does not decode.
+The four-core-file draft omits this historical Markdown. Parent inspected the
+structure/containment receipts, and Cursor is now extending exact raw capture to
+compaction/INDEX.md and segment_*.md before parser/runtime integration. Original
+message roles from the Markdown are not yet established and must not be invented.
+Evidence: grok-compacted-session-{comparison,containment}.json. This is one
+confirmed sample, not an all-session completeness claim.
+
+A fresh read-only daily audit found 69 unchanged-category unavailable dirty Codex
+locators, all regular and never captured, totaling 5,706,812,981 bytes (previously
+225 locators / 11,570,278,584 bytes). All 69 were retry-due; this is continuing
+catch-up, not proof that full-history coverage is finished. Evidence:
+codex-backlog-live-fts-fix.json. Old daily indexing remains retained.
+
+## Web presentation restoration and password title redaction (2026-09-12)
+
+The HQ viewer now carries forward the historical Web compact navigation,
+source colors, two-line cards, dates, and light/dark presentation. Desktop and
+390px mobile browser measurements show a 56px navigation bar and no horizontal
+overflow; mobile detail titles retain the full text while clamping to three lines.
+Evidence: output/collector-goal-20260908/web-presentation-live-result.json and
+output/playwright/web-restored-{desktop,desktop-dark,mobile}-20260912.png.
+
+A real title exposed a natural-language password assignment during visual review.
+The shared read-time redactor now covers Chinese password assignments and English
+assignments containing punctuation; redactionRevision is transcript-redaction-v2.
+Raw archives are unchanged. Two existing secret-bearing titles are masked in the
+live viewer; a third title is a password question and correctly remains readable.
+Synthetic reproductions failed before the fix. All 56 native metadata/continuation,
+37 Web UI, and three actual-package integration tests pass. Evidence:
+web-password-native-green.log, web-presentation-green.log, web-presentation-binary.log.
+
+HQ Service PID62354 and RemoteServer PID62509 run the web-presentation-20260912
+packages. Both were rechecked against live processes; activation receipts and
+web-presentation-job-before.plist preserve rollback to overview-mobile packages.
+The first overview request nevertheless returned HTTP503 after 2,004ms; following
+requests returned 200 in 995/984ms. Cold overview stability remains OPEN: the prior
+covering generation index fixed BLOB overflow reads but did not eliminate all
+first-request costs. Full-history coverage, Grok/Pi rollout, and daily old-index
+retirement remain incomplete. Cursor has delivered an unapplied Grok four-member
+file-set patch at this checkpoint; subsequent implementation is recorded separately.
+
+## Overview overflow-page regression and mobile title repair (2026-09-12)
+
+The live Web overview still returned HTTP503 in 2,075 ms before this update.
+A production-producer regression with 64 ready generations and 32 MiB of opaque
+transcript bodies measured 8,399 SQLite cache-miss pages. Reading trailing scalar
+authority columns traversed body overflow pages even though SQL never selected
+the BLOB. A covering generation-metadata index plus an explicit ready-count index
+selection avoids those reads without changing predicates or the two-second budget.
+The new regression and all 41 WebMetadataProducerTests pass; the read-page guard
+requires fewer than 1,024 pages. Three migration tests and two Pi replay/registry
+tests independently pass, including repeated migration of an existing generation
+without changing its stored row. Evidence: output/collector-goal-20260908/
+overview-covering-{red,green}.log and overview-migration-pi-parent.log.
+
+A disposable APFS clone of the existing rollback database was used for query
+experiments; neither live data nor the rollback backup was modified. The covering
+plan preserves every stream count. Cold original / forced covering / warm original
+aggregate timings were 2,694 / 404 / 465 ms; warm-cache improvement alone is not
+accepted as proof. The page-I/O regression supplies the independent mechanism
+check. Evidence: overview-covering-benchmark.json.
+
+Cursor through Herdr wH:p2 limited mobile detail titles to three 18px lines and
+retained the full text plus title attribute. Parent independently passed all 35
+Web UI tests (mobile-title-parent-vitest.log). An attempted live CSS preview was
+blocked by the existing CSP; no CSP policy was relaxed. Both Release packages
+passed source-stability and package-wide hash checks, and all three actual-process
+integration tests pass (overview-mobile-binary.log). HQ now runs Service PID32524
+and RemoteServer PID32604 from the overview-mobile-20260912 packages. Each role
+retains overview-mobile-job-before.plist and its previous package for rollback;
+the additive index does not require reverting transcript data.
+
+Production HTTPS overview requests now return 200 in 1,381 / 920 / 916 ms for all
+14 streams. The mobile heading measures 18px, three lines / 70.17px, preserves its
+complete 120-character title, and has no horizontal overflow. The parent inspected
+the screenshot output/playwright/mobile-title-live-20260912.png. Evidence:
+overview-mobile-live-result.json and overview-mobile-{service-index,remote-server}-activation.json.
+These fix the observed timeout and oversized mobile heading; broader restoration
+of the original Web presentation remains open. Historical src/web/views.ts at
+5013bab7 has a compact navigation bar, two-line cards and source-specific colors
+that the new viewer has not fully carried forward.
+
+Grok adapter and test drafts were excluded from the deployed package's Xcode
+project. Parent review found staging-directory identity/cwd fallbacks and staging
+mtime fallback; missing-metadata parity and absent-sibling decoy coverage are still
+required. Cursor removed its temporary SourceName.grok case for the Web package
+and froze source for packaging. After package validation, the parent released Cursor
+to finish only the Grok adapter and its tests; integration remains unshipped. Pi
+replay/registry tests are verified locally, but Pi is not yet configured on the daily collector. Full historical coverage, privacy-withheld
+classification, legacy path recovery and daily old-index retirement remain open.
+
+Read-only live metadata now shows five captures above 100 MiB with both replica
+ACKs and HQ index_ready. The largest is 208,962,578 bytes / 50,127 normalized
+messages. These new observations are ACK/ledger evidence, not a fresh byte-level
+comparison or complete Web read. Evidence: largest-capture-status-20260912.json.
+
+Cursor's bounded daily Codex locator audit was independently rechecked: 225
+unavailable dirty locators still exist as regular files, have unchanged observed
+sizes, and have never been captured; none exceed the configured 1 GiB cap. The
+largest is 798,716,532 bytes. The count is slowly decreasing (235 -> 226 -> 225),
+so it is not a proven terminal stall. Generic unavailable does not identify whether
+remaining cycle budget, source checks or reservation admission caused deferral.
+Evidence: codex-backlog-parent-stat.json. No settings or source files were changed
+by this diagnostic.
+
+## Large normalized history storage and request-aware Web paging (2026-09-12)
+
+Final v2 packages are deployed on HQ: Service PID57345 and RemoteServer PID57358
+run service-index-large-history-20260912 and remote-server-large-history-20260912.
+The refreshed actual-package run passes all four tests; the 114,348,154-byte
+fixture is exact on both replicas and all 10,001 messages reconstruct through
+594 IPC pages in 101.571 seconds. Complete package verification was repeated
+after testing, and activation independently checked executable paths and PIDs.
+Evidence: output/collector-goal-20260908/large-binary-green-v2.log,
+large-history-v2-build-result.json and large-history-{service-index,remote-server}-activation.json.
+The original Service main binary hash is unchanged because shared frameworks
+carry the changes; package-wide SHA256SUMS and source provenance were verified.
+
+Daily Collector PID66877 now runs with a 1 GiB capture budget using the already
+validated capture-read-fixes package. Other budgets, source identity, privacy and
+replica targets are preserved. The private collector persistent directory keeps
+large-history-settings-before.json and large-history-budget-activation.json.
+M1 receiver PID86201 was rechecked and its volume has 345 GiB available. The
+first three real >32 MiB publications (80,845,534 / 39,186,125 / 38,247,465 bytes)
+were independently downloaded from HQ and M1: manifest, chunk and whole-source
+hashes match, and the reconstructed bytes are identical. All three are index_ready.
+The Codex publication uses v2 with 13,558 messages. A logged-in browser read all
+13,558 messages through 276 production HTTPS pages in 32.196 seconds, checking
+every fragment offset, ordinal and complete payload SHA-256. Evidence:
+live-large-history-{bytes,ingest,web}.json and large-history-live-result.json.
+
+Live desktop inspection confirms 19 messages, 10 UI-font human bodies and nine
+closed tool/system rows; desktop and 390px mobile have no horizontal overflow.
+Screenshots: output/playwright/web-readable-detail-{desktop,mobile}-20260912.png.
+The overview API still returned HTTP503 while login, filtering and detail worked;
+that fault remains open. Long technical titles also remain visually oversized on
+mobile. Full source coverage, Pi/Grok integration and old-index retirement are
+not complete. Cursor returned a Pi-only candidate through Herdr wH:p2 and reports an
+unsupportedCaptureShape RED followed by four targeted GREEN checks. The parent
+has requested exact logs; these claims and the candidate still require independent
+review. Pi changes are not in the deployed packages.
+
+Cursor via Herdr wH:p2 added v2 normalized storage with per-message rows and an
+ordered hash/role/size manifest. Existing v1 arrays and hashes remain readable;
+additive migration retains the legacy constraints and foreign keys. V2 supports
+100,000 messages, 1 GiB aggregate encoded content and 128 MiB per encoded message.
+Full v2 reads now decode a database cursor incrementally; raw UTF-8 lower bounds
+reject oversized input before allocating a complete encoded array.
+
+The parent added request-aware Web reads, sparse global message ordinals and
+lookahead preservation. Pages read only matching rows, retain cursor/visibility/
+policy fencing, and advertise the full generation count. FTS authority snapshots
+include the new storage metadata. A reproduced final-match hasMore bug was fixed
+by Cursor. Core commit, readiness and index-job tests now pass 179/179 in
+output/collector-goal-20260908/large-storage-final-green.log. Web metadata,
+provider, continuation, IPC and wire tests pass 93/93 in
+large-binary-red-web-green-v2.log. That invocation skipped the binary test because
+Xcode did not forward its unprefixed environment variables; it is not binary
+acceptance. The corrected runner forwards TEST_RUNNER variables explicitly.
+
+The actual-binary regression uploaded 114,348,154 bytes to both isolated replica
+processes with exact chunk/whole-source equality. The old Service never produced
+a readable generation within 240 seconds (large-binary-red-v5.log). Initial test
+attempts had an existing-file fixture guard, missing TEST_RUNNER environment,
+and a child-process 30-second deadline; those are not product RED evidence.
+The first v2 package read all 10,001 messages through 594 Web IPC pages with
+matching complete content. Its sole test failure was a reused fixture assertion
+requiring tier=normal; the large fixture now verifies any visible tier and actual
+v2 storage/count/row evidence instead. That first candidate took 163 seconds and
+has not been deployed.
+
+Sampling identified ImplementationDigestExtractor's repeated canonical substring
+scans as the slow commit path. A packaged 26 MiB assistant-body repro took 53.034
+seconds. Foundation string search with an ASCII-only literal fast path retains
+canonical matching for Unicode and checks markers across the full input. The
+same XCTest now takes 4.797 seconds; all nine digest tests pass in
+digest-large-green-v2.log. The intermediate canonical-only change still took
+27 seconds and did not pass the performance regression.
+
+Cursor also repaired the Web renderer: tool/system rows use closed details even
+without toolCalls; user/assistant bodies use the UI font; fragment assembly keeps
+Uint8Array chunks and consolidates once instead of storing one JS number per byte.
+The parent reviewed the code and independently passed all 34 behavioral Vitest
+checks (web-readability-parent-vitest.log). All eight native route tests also pass (web-readability-routes.log); refreshed
+Service/RemoteServer package acceptance passed as recorded above. The live screenshot
+output/playwright/web-current-20260912.png captures the pre-fix presentation.
+
+An online SQLite backup of the HQ derived index passed quick_check and contains
+8,242 generations; the private role persistent directory contains
+large-history-before.sqlite and large-history-backup.json. Raw archives remain
+unchanged. The final v2 package was activated after acceptance as recorded above; rollback
+keeps both the previous jobs and this derived-database backup.
+
+Read-only daily metadata/stat checks confirm Pi is an independent existing tree
+with 230 indexed rows and 223 regular files; its capture adapter is missing.
+Cursor located the historical Swift parser at 5013bab7. Grok's 359 recorded
+chat_history.jsonl paths and Mimo's 43 .claude-mimosg paths are absent; this does
+not establish archival data loss. A bounded depth-three Grok root inspection
+found 54 current chat_history.jsonl files within the first 1,000 entries, so Grok
+also needs capture integration. Cursor located its existing Swift parser at
+5013bab7; current Grok coverage must not be inferred from the stale index paths. Evidence: legacy-source-path-check-20260912.json.
+Full historical coverage, actual large-file rollout, idle resource acceptance
+and retirement of the old daily indexer remain open; the goal stays active.
+
+## Deployed capture/read fixes and verified large JSONL parsing (2026-09-12)
+
+The parent reproduced quadratic long-line scanning: StreamingLineReader rescanned
+its accumulated prefix after every 64 KiB read. A 26 MiB line took 42.468 seconds
+and failed the ten-second regression. Tracking the searched offset and using
+memchr reduced the same test to 0.259 seconds, retaining EOF, oversized-line and
+UTF-8 behavior. Cursor's speculative Data-relinearization and exact-cap concerns
+were rejected using the measured result and the guard-before-append ordering.
+
+Captured Codex/Claude parsing now processes JSONL records without retaining the
+whole raw-object array, with bounded 1 GiB files, 32 MiB lines and 100,000 visible
+messages. Ordinary local adapter limits remain unchanged. All 230 adapter tests
+passed, including files above 100 MiB, long lines and histories above 10,000
+messages. A parity fixture initially expected a generic Claude tool result to be
+visible, contrary to the existing adapter's filtering; it now uses the supported
+User-has-answered tool-result form and retains exact local/captured equality.
+HQ replay admission uses the captured JSONL limit for these two formats; all 53
+replay tests passed, including an actual >100 MiB chunked CAS reconstruction.
+
+Collector privacy assessment and the Claude source-routing hint now admit 32 MiB
+JSONL lines while retaining full-source checks and project exclusions. The initial
+long-line test failed at privacy admission; the first fix exposed the separate
+Claude hint cap. After fixing both, all 91 publication worker tests passed.
+Together with the earlier 39 overview tests this validates the current minor-fix
+candidate. Release Service and Collector packages passed build, complete package
+hash verification and source-stability checks. HQ Service PID90603 now runs
+service-index-capture-read-fixes-20260912; daily Collector PID63309 runs
+collector-capture-read-fixes-20260912. Each private role persistent directory keeps
+capture-read-fixes-job-before.plist for rollback. Settings and the 32 MiB live
+capture budget are unchanged. Parent ps checks confirmed the new executables,
+HQ receiver PID2369 and retained daily Service PID25371.
+
+The authenticated live overview returned 503 at 2012 ms before deployment. After
+startup its first probe still timed out, followed by 200 at 1271/548 ms; a subsequent
+three-probe run returned 200 at 1011/548/549 ms. Real source filtering and a 19-message
+CommandCode detail also passed. The startup timeout remains a recorded limitation.
+Two delivered VSCode publications were independently reconstructed on both replicas,
+with matching manifests/chunks/whole-source hashes and 1,187 bytes per replica.
+The held pre-update reservation is still advancing through recovery; remaining
+VSCode locators have not been declared complete. Rollout evidence:
+capture-read-fixes-build-result.json, capture-read-fixes-{hq,daily}-activation.json,
+capture-read-after-web{,-stable,-messages}.txt and capture-read-vscode-bytes.json.
+
+Large normalized storage remains intentionally unfinished. Cursor via Herdr wrote
+behavioral RED coverage for >10,000 messages, >100 MiB normalized payloads,
+readiness, additive schema migration and corruption. The initial large fixture
+failed prematurely at a single-chunk size invariant; the corrected fixture reaches
+the actual commit cap. The agreed next implementation retains v1, adds bounded
+per-message rows and a hash-verified ordered manifest for v2, and permits selective
+range reads without decoding the entire history. The storage implementation was
+released to Cursor after the package source snapshot; it is not part of the deployed
+packages and remains unverified. The live capture budget remains 32 MiB and old daily indexing
+continues. Read-only live verification found two VSCode publications acknowledged
+by both replicas; this is not proof of all five locators or meaningful chat content.
+
+Evidence under output/collector-goal-20260908/: long-line-scan-red.log,
+captured-jsonl-green-sample.txt, large-history-storage-red-parser-green.log,
+parser-replay-green-storage-payload-red.log (230 adapter tests pass; storage RED;
+old compiled replay-bound test failed), large-history-replay-green.log (53 pass),
+long-line-privacy-{red,green,green-v2}.log (only green-v2 is successful), and
+capture-read-before-web-authenticated.txt. The first captured-jsonl-green run was
+cancelled after profiling identified the prefix scan; it is not a passing result.
+
+## Deployed CommandCode and recovery fairness; verified fresh VSCode repair (2026-09-11)
+
+HQ Service PID41839 and daily Collector PID60312 now run the source-fixes-20260911
+packages. CommandCode unknown-project privacy handling and recovery reservation
+rotation are deployed. Daily maxRecoveryCandidates increased from 8 to 64;
+maxCaptureBytes remains 32 MiB. All 44 actual CommandCode publications were
+independently reconstructed on HQ and M1: manifests, chunks and whole-source hashes
+agree, totaling 5,002,726 raw bytes per replica. HQ stores unknown cwd as empty;
+the real Web reader displayed 19 messages from one of these sessions.
+Evidence: output/collector-goal-20260908/source-fixes-{hq,daily}-activation.json,
+source-fixes-commandcode-all-bytes.json and source-fixes-commandcode-web-v2.txt.
+
+The parent independently reproduced a second VSCode delay: a fresh reservation
+scanned unrelated recovery history before capture. New-only reservation admission
+now prevents reuse of a held reservation; fresh VSCode work captures immediately,
+while preexisting reservations keep the original recovery path. The failing repro
+reported zero captures and a held reservation. All 90 publication worker tests
+now pass, including crash recovery, rotation, and same-claim new-only fencing.
+The Web overview revalidation now reloads only the authority binding instead of
+recounting all stream statistics; all 39 producer tests pass. Cursor via Herdr
+reviewed the retained authority/policy/schema checks. These two fixes are local,
+not deployed. Evidence: vscode-fresh-red-v2.log and vscode-fresh-overview-green.log
+(129 tests, zero failures) in the same output directory. Live overview most recently
+returned 503 at 2047 ms; the local passing tests do not prove the live timeout fixed.
+
+The captured Codex/Claude parser has local streaming changes awaiting validation.
+A separate 1 GiB Collector configuration ceiling passed RED/GREEN; it does not
+raise the live capture budget or remove privacy, replay and normalized-store caps.
+Large-history normalized storage and paged Web reading remain in progress. Existing
+CHANGELOG entries describe earlier states, including now-stale undeployed CommandCode
+and process IDs. Current executable paths were rechecked on all three hosts and
+recorded in delivery-core-active.json; daily old Service PID25371 remains running.
+Full history coverage, legacy-source reconciliation and idle-resource acceptance
+are still required before retiring the old indexer. Antigravity remains deferred.
+
+## Expanded live sources and fixed expired Web sessions (2026-09-11)
+
+The daily Collector now has 13 roots, using existing machine/stream identities;
+HQ has 14 source-authority bindings for 13 source families (Cursor has two roots,
+and the default Claude root also produces MiniMax). Extra Claude profile roots
+resolve to the same default projects directory, so no duplicate roots were added.
+The daily capture budget is 32 MiB. Settings and authority backups remain private
+under each role's state/persistent/source-expansion-*-before.json paths.
+Antigravity remains deferred. Configured sources are not a coverage claim.
+
+Twelve actual publications, including modern/legacy Cursor, OpenCode, Copilot,
+Gemini, Kimi, Qwen, Qoder and iFlow, were reconstructed independently from both
+replicas: manifest, chunk and whole-source hashes agree. The initial sampling
+script's 2 MiB response cap was too small for a real chunk; the corrected sampler
+uses each verified chunk's declared size. source-expansion-bytes-v2.json is the
+successful evidence. Live OpenCode capture disproved a proposed 16 MiB SQLite
+limit blocker: the live snapshot path can clone the source without the fallback
+stream-copy charge. No SQLite limit was raised.
+
+Cursor via Herdr fixed a separate Web regression: an expired cookie previously
+left private controls visible with an unhelpful 401. Current authenticated GET
+401s now clear private views and restore login; stale responses cannot expire a
+newer request epoch, and failed credential POSTs remain login failures. The parent
+independently passed 31 JavaScript tests and eight native route tests, built and
+verified the Release package, and updated only the HQ receiver. PID2369 runs
+hq/remote-server-web-expiry-20260911; the private rollback plist is
+state/remote-server/persistent/web-expiry-job-before.plist. Real HTTPS browser
+checks passed initial overview200, cookie removal -> Session expired/login shown/
+workspace hidden, and successful re-login/overview200. No auth lifetime changed.
+
+Source expansion currently runs daily Collector PID58058, HQ Service PID83332,
+and M1 receiver PID86201. All four current core executables were independently
+rechecked and delivery-core-active.json corrected. Old services remain retained.
+At the latest source snapshot, HQ/M1 had 5,764/5,775 acknowledged publications;
+these are publication counts, not unique-session completeness. HQ still had 758
+privacy-withheld deliveries, including all 44 CommandCode logs.
+
+CommandCode logs on the daily host omit cwd and use lossy, non-absolute directory
+slugs. The parent reproduced invalidProjectRoot and changed the projection/parser
+to preserve an unknown project instead of inventing a path. A CommandCode proof
+can have no project root only when the current policy has zero project exclusions;
+any exclusion invalidates that proof and requires actual root evidence. Invalid
+explicit paths, conflicting identity/root evidence, source authority, byte hashes,
+and fresh-policy checks remain enforced. The reproduction failed before the fix;
+67 privacy tests, 23 projection parity tests, a real runtime/two-replica byte
+integration, and HQ captured-source replay with an unknown project passed. The production Collector/Service have not received this fix yet.
+
+Remaining blockers are explicit. The largest observed Codex file is 798,716,532
+bytes with a 25,418,119-byte line; the largest Claude file has 62,117 records,
+including 15,002 user and 24,067 assistant records. Existing capture, privacy line,
+HQ parser file/line/message, and normalized payload limits still block complete
+history. Raising only the daily byte setting cannot solve these paths. VSCode has
+five unavailable locators; the held first reservation does NOT prove a capture
+exception. The parent's source check found the global recovery budget can be
+exhausted before VSCode capture begins. Cursor owns a bounded reproduction/fix in
+CollectorVSCodeSource.swift, CollectorPublicationWorker.swift and
+CollectorPublicationWorkerTests.swift; this cause is not yet proven by a failing
+test. No new source adapter or live VSCode mutation was made.
+
+Evidence: output/collector-goal-20260908/source-expansion-{daily,hq}-activation.json,
+source-expansion-bytes-v2.json, source-expansion-progress-v2.json,
+large-history-observed-limits.json, web-expiry-{build-result,remote-server-activation}.json,
+web-expiry-{browser,relogin}-check.txt, web-expiry-routes-20260911.log,
+commandcode-root-{red,green}.log, commandcode-parity-green.log and
+commandcode-runtime-green.log and commandcode-replay-green.log. All packages retain dirty-worktree provenance.
+Full historical coverage, daily indexer retirement and idle-resource acceptance
+remain incomplete; the migration goal remains active.
+
+## Restored Web presentation and removed overview scan timeout (2026-09-11)
+
+The user identified that the new viewer looked worse than the existing Web UI.
+Repository history confirms the native transcript Web UI was deleted in #103
+(fad8df7d), and the older TypeScript Web surface in #104 (c515e037). Cursor,
+dispatched through Herdr pane wH:p2, reused the native slate/green visual language
+from 11ccd124 in the current Swift RemoteServer viewer. The parent reviewed and
+finished the patch: responsive list/detail panes, source selection and badges,
+project labels, role bubbles, collapsed tool details, explicit empty states,
+auth-dependent controls, and readable fallback titles. Existing same-origin auth,
+text-only rendering, fragment assembly, and continuation fencing remain in place.
+No Node server, frontend framework, CDN, or new dependency was introduced.
+
+Live browser review reproduced overview HTTP503 preventing login from loading
+sessions. The viewer now loads the list first and treats overview as optional;
+stale or failed overview requests cannot replace a newer session view/status.
+The parent also reproduced the server-side scale failure with 1,024 ready
+sessions and 16,384 unrelated FTS documents under the existing two-second deadline.
+Replacing a correlated FTS EXISTS scan with one uncorrelated membership query
+preserves authority joins and binary identity comparisons. The new real-producer
+test failed with unavailable before the one-line SQL change and passed afterward;
+all 39 producer tests passed. Cursor independently reviewed equivalence for
+collation, NULLs, duplicates, and unchanged authority predicates.
+
+Validation: 26 shipped-JavaScript behavior tests, 48 native Web route/auth/metadata
+tests, 39 metadata producer tests, scoped Biome, and diff whitespace checks passed.
+Release Service and RemoteServer builds and package verification passed. The
+final title fallback was checked by failing/passing JavaScript tests, a subsequent
+RemoteServer Release build, and the deployed asset. Packages retain explicit
+dirty-worktree provenance; the base revision is not a public release revision.
+Service package: output/collector-goal-20260908/web-restoration-packages-20260911/EngramService.
+Final Web package: output/collector-goal-20260908/web-restoration-packages-v2-20260911/EngramRemoteServer.
+
+Updated only the approved HQ core jobs: Service PID67309 now runs
+~/.engram-shadow-core-20260911/hq/service-index-web-20260911/bin/EngramService;
+receiver PID67455 runs the sibling remote-server-web-20260911 package. Prior
+packages remain intact, with owner-only web-restoration-job-before.plist backups
+under each role's state/persistent directory. Install receipts and the active
+core process record were updated. Daily Collector PID45026, M1 receiver PID86201,
+and the old daily/HQ/M1 services were independently confirmed running afterward.
+No old indexer was retired and no existing source data was removed.
+
+After removing all browser preview routes, the deployed HTTPS viewer passed
+14 requests (login204, all reads200). Three same-origin overview probes returned
+200 in 469/288/294 ms. Browser checks covered Claude filtering/detail, message
+paging from 50 to 100, an empty search, mobile list/detail navigation, 390px width
+without horizontal overflow, and visually inspected light/dark screenshots.
+The logged-in engram-live browser remains open for the user. The request archive
+also retains earlier preview failures; only IDs33-46 are the final deployed slice.
+Evidence: output/collector-goal-20260908/web-restoration-browser-observations.json,
+web-overview-live-probe.txt, web-overview-scale-{red,green}.log,
+web-restoration-routes.log, web-ui-final-vitest.log, and
+output/playwright/web-restored-{desktop,mobile,dark}-20260911.png.
+
+Remaining migration work is unchanged. Read-only daily index metadata revealed
+additional Claude profile directories and legacy grok/pi/mimo source labels that
+the current Collector configuration/17-source enum does not cover. The existing
+profile format can cover extra Claude roots once their current identity/privacy
+configuration is verified. Other enabled sources, historical recovery, and the
+daily indexer exit remain open; Antigravity is deferred. Recorded absolute
+locators that are not regular files are NOT proof of loss (they may be virtual,
+stale, or offloaded). Counts and scope caveats are retained in
+output/collector-goal-20260908/web-followup-daily-source-coverage.json.
+Full-project suites, all-source migration, and reboot recovery were not run in
+this focused Web repair. The overall goal remains active.
+
+## Codex/Claude core candidate activated through Herdr-assisted delivery (2026-09-11)
+
+The user approved proceeding with the practical delivery plan (GO). The core path
+is now persistent: daily Collector, HQ index-only Service plus receiver, and an
+independent M1 receiver. Browser: https://macmini-hq.tail1cb16.ts.net:8443/web/.
+Existing services, source files, HQ HTTPS443 and M1 nginx8443 remain intact.
+This is a parallel Codex/Claude rollout, NOT completion of the all-source goal or
+shutdown of the daily local index. Antigravity remains deferred.
+
+Cursor was dispatched through Herdr pane wH:p2 for bounded inventory fixes and
+regressions; parent reviewed changes, ran RED/GREEN, built packages and operated
+real hosts. Final Collector behavior: rotate fresh capture roots; do not re-dirty
+unchanged files on a new reconciliation scan; prefer unattempted publications
+within each root; rotate upload roots independently for each replica. No privacy,
+ACK or skip-tier rules were relaxed. Regression failures reproduced each changed
+case, including upload root starvation at budgets 1 and 2; final CollectorCore
+suite passed 620 tests. Packaged Codex/Claude two-generation integration tests
+passed (2 tests, no skips), including Claude authority provisioned by Service CLI.
+
+Two ten-minute isolated runs exposed and verified Claude capture and upload
+progress. The last three-minute mixed-source run added 129 Codex ACKs and 124
+Claude ACKs on EACH replica. All temporary processes joined and temporary mappings
+were removed between runs. Two real Claude publications (110903 and 90486 bytes)
+were independently reconstructed and hash-checked from both replicas. Live HTTPS
+browser login, overview, filtered list, detail and messages passed; screenshots
+were visually inspected. Transcript contents, including historical instructions
+and historical API errors, were treated only as data.
+
+Corrected the earlier HQ backlog interpretation: all 1424 prior parsed records
+were tier=skip; all 181 eligible prior records were index_ready. They were not an
+FTS backlog. Historical cwd=/ files remain locally retained but fail the existing
+project-root metadata admission; retry ordering no longer monopolizes fresh work.
+Other enabled source families have not yet been provisioned in the new core.
+
+The final package is output/collector-goal-20260908/delivery3-collector-package-20260911
+(dirty-worktree provenance; base revision is not a committed release identifier).
+New LaunchAgents are com.engram.collector on daily, com.engram.service-index on HQ,
+and com.engram.capture-core.receiver on HQ/M1. Credentials and job environment
+values are private on each host, never copied into these records. The first
+activation attempt rolled back after the M1 process-path check failed; a retry
+that waits for the expected executable succeeded. The new HQ Service initially returned
+503 for overview under Background process classification. Switching ONLY that
+new job to Interactive restored overview (direct IPC 1.323 seconds, then HTTPS200).
+Background classification remains on Collector/receivers. The original HQ plist
+is retained privately; full causal attribution of timing is not claimed.
+
+Final Collector empty-source smoke: 60 seconds, sampled mean CPU 1.583% of one core,
+peak RSS 16.531 MiB, clean exit. The three-minute real historical catchup sampled
+11.413% CPU and 53.734 MiB peak RSS. These different workloads are not a before/after
+performance comparison or proof of full-inventory idle resource behavior.
+
+Evidence under output/collector-goal-20260908/: delivery3-verification.json,
+delivery3-candidate-binary-20260911-result.json, delivery-upload-fairness-green-20260911.log,
+delivery3-empty-idle.json, delivery2-claude-bytes.json, delivery-core-active.json,
+delivery-core-process-check.json, delivery-core-progress-verified.json and
+delivery-core-browser-requests.txt. Live browser session engram-live is intentionally
+left open and logged in. Rollout/rollback details: delivery-core/README.md.
+
+CHECKS_RUN: 620 CollectorCore tests; two packaged integration tests; three bounded
+real-host runs with cleanup; dual-replica raw-byte sample; post-activation progress
+and process checks; real browser rendering/read flows; package checksums; diff check.
+CHECKS_NOT_RUN: machine reboot/autostart recovery and complete all-source/history
+migration (outside this verified core slice); daily full-inventory idle benchmark
+(history remains in catchup). Next: provision remaining required source families
+before retiring the old local index; keep existing data and rollback available.
+
+## Approved real-host 30-minute pilot completed; cutover gate remains unmet (2026-09-11)
+
+Daily Collector ran for 1800.144 seconds, ending 06:56:25 UTC with exit 0.
+The watcher joined it, requested the other three isolated processes to stop,
+and independently confirmed all four PIDs absent. Service exited 0; both receivers
+exited via requested SIGTERM (-15), with mapping cleanup exit 0. HQ Serve exactly
+matches its original HTTPS443 configuration; M1 Serve is empty again. Original
+Engram service/receiver PIDs and start times match preflight. M1 nginx still owns
+8443 (PIDs 1318/1457). All 74 installed package checksum entries still match.
+Pilot archives, ledgers and private logs remain; no production cutover occurred.
+
+Final daily inventory: 1,675 Codex publications; HQ and M1 each acknowledged 1,618
+and retain 57 pending. Claude published none. Equal ACK counts do not prove complete
+byte equality: independent reconstruction/hash validation covered two publications.
+HQ has 181 index_ready, 1,424 parsed, and 13 quarantined (parse.noVisibleMessages)
+ledger records, with 1,605 Codex sessions. Backlogs remain; no complete migration claim.
+Actual HTTPS browser login, list, detail, messages, positive and negative search passed.
+
+Daily Collector mean of 1,755 ps CPU samples is 8.276 percent, peak RSS 62.594 MiB.
+These are sampled process statistics, not exact cumulative CPU accounting or idle-state
+capacity certification. HQ Service sampled CPU 18.342 percent and peak RSS 430.031 MiB;
+HQ compilation during the pilot confounds isolated-load interpretation. Resource and
+Claude-coverage gates do not support a lightweight cutover. Disk growth was not measured
+against a quantitative start baseline.
+
+The private HQ ingest URL changed from loopback HTTP to the already approved HQ HTTPS
+origin during this pilot without restarting Service. Ingest then advanced; the cause
+of the native HTTP behavior remains unproven. Original settings are preserved privately.
+The fresh-root rotation fix below passed 617 component tests but was not packaged or
+installed into this pilot. Next implementation verification must cover actual-package
+fairness and resource behavior before proposing another bounded real-host run.
+Antigravity remains deferred.
+
+Evidence (local output/collector-goal-20260908/): pilot-final-audit.json,
+pilot-final-process-completions.json, pilot-inventory-final.json,
+pilot-replica-bytes-verified.json, pilot-browser-observations.json,
+pilot-browser-requests-final.txt, root-fairness-local-closeout.json.
+Browser screenshots are under output/playwright/real-pilot-*-20260911.png.
+CHECKS_RUN: actual 30-minute pilot, process/Serve baseline comparison, package checksums,
+replica byte sample, live browser flows, 617 CollectorCore tests, git diff --check.
+CHECKS_NOT_RUN: full-history coverage and updated-package real-host test (pilot incomplete
+coverage and unchanged package); quantitative disk growth (no start-size baseline).
+
+## Fresh-root fairness regression fixed locally during unchanged pilot (2026-09-11)
+
+Actual pilot Claude backlog prompted a source-order fairness regression. Cursor
+wrote the fixture; parent fixed initializer capture-before-init compilation and
+made first-root contents change every cycle, so the backlog stays capturable.
+RED-v2: later root got zero captures over six cycles with maxCaptureFiles=1.
+The maxCaptureFiles=2 variant did not fail; do not claim that stronger repro.
+
+Added an in-memory rotating first-root index for fresh captures. Shared file/byte
+budgets and recovery ordering remain unchanged; no cursor advance when recovery
+already spent the full file budget. Selected regression passed. Full CollectorCore
+initial run had four assertions due to the earlier identity initializer missing
+from the explicit dependency-test allowlist. Added only that precise source path;
+full rerun passed 617 tests, zero failures. Cursor reviewed budgets/recovery; recovery
+can still defer fresh capture, and that broader behavior is not claimed fixed.
+
+Evidence: output/collector-goal-20260908/root-fairness-local-closeout.json,
+root-fairness-component-20260911-red-v2.log,
+root-fairness-full-component-20260911-v2.{json,log,xcresult}.
+CHECKS_RUN: failing fairness regression, selected GREEN, all 617 CollectorCore tests,
+source review and scoped whitespace check.
+CHECKS_NOT_RUN: new Release packaging, deployed fairness verification, and another
+resource run; current approved pilot deliberately retains its original package.
+Pilot cleanup watcher remains live; final 30-minute closeout is still pending.
+
+## Approved real-host shadow pilot running; dual replicas and browser reached (2026-09-11)
+
+User explicitly approved the revised 30-minute pilot. Four packages were copied
+into the exact isolated roots and every SHA256SUMS entry verified after transfer.
+Daily --initialize succeeded using its existing machine ID (no identity mint).
+Private credentials/configuration were generated only under approved shadow state.
+HQ HTTPS8443 and M1 HTTPS9443 mappings were added; existing HQ443 mapping and M1
+nginx8443 preserved. Both replica authenticated reads from daily returned HTTP200.
+
+Daily Collector PID5600 started at 06:26:25 UTC with a 1800-second supervisor;
+HQ receiver PID85753, M1 receiver PID53119, HQ Service PID94280 have separate
+supervisors and bounded deadlines. pilot-closeout-watch.py (exec session33517)
+waits for Collector completion, then requests the other three roles stop and
+checks their completion/PIDs. Receiver supervisors remove only the owned HTTPS
+mapping if its current target matches; archives/ledgers remain preserved.
+
+First two actual publications were fetched from both replicas; manifest/chunk/full
+hashes and reconstructed bytes match (pilot-replica-bytes-verified.json). HQ local
+HTTP intake initially made no checkpoint progress; switching only its private
+captureIngest.baseURL to the approved HQ HTTPS origin began intake (>331 sessions,
+19 ready at the observation). Original private settings preserved. Root cause is
+not yet established; HTTP200 with urllib did not prove native transport behavior.
+Real Chrome browser login204 and overview/list/detail/messages200 verified at
+https://macmini-hq.tail1cb16.ts.net:8443/web/. Screenshot saved and visually read:
+output/playwright/real-pilot-detail-20260911.png; request receipt under pilot-browser-requests.txt.
+
+Initial daily bootstrap samples (~497sec) averaged 7.44% one-core CPU, peak RSS
+49.92MiB; not a final 30-minute resource result. Claude has dirty locators but no
+publication while first-root Codex backlog consumes each cycle; source-order
+starvation is suspected from the worker loop. Cursor is writing an isolated
+regression test only; running role packages remain unchanged.
+CHECKS_RUN: fresh target/process baseline, transferred hashes, identity bootstrap,
+HTTPS authenticated reads, independent replica byte reconstruction, browser login
+and read requests, intermediate resource/ledger observations.
+CHECKS_NOT_RUN: final 30-minute observation/cleanup, Claude publication/read proof,
+full source retirement and production cutover; pilot still running. No claim that
+the daily host is lightweight or fully migrated. Antigravity remains deferred.
+
+## Shadow proposal corrected for HTTPS admission and existing M1 listener (2026-09-11)
+
+Filled local-only HQ Service and HQ/M1 receiver environment templates; no secrets
+were generated. Cursor review identified that Collector rejects non-loopback HTTP,
+so the proposed M1 HTTP endpoint was invalid. Parent verified endpoint() source
+and revised both receiver bindings to loopback with tailnet HTTPS origins.
+M1 /usr/local/bin/tailscale reports macmini-m1.tail1cb16.ts.net and no Serve
+mappings. A combined lsof query printed nginx listening on 8443 despite exit1;
+therefore 8443 is occupied. Separate 9443 and 18787 probes had empty stdout/stderr
+and exit1. Revised requested mappings: HQ8443 and M1 9443; preserve HQ443 and M1 nginx.
+
+The revised README supersedes the earlier single-mapping authorization question.
+It requires freshly copying effective privacy exclusions at materialization,
+failing on unreadable policy or unsafe paths, instead of trusting the empty
+snapshot template. Templates remain non-runnable credential placeholders.
+Evidence: output/collector-goal-20260908/real-host-shadow-proposal-20260911/,
+m1-shadow-tls-preflight-20260911.json, m1-shadow-port-9443-20260911.json.
+CHECKS_RUN: native configuration source review; read-only M1 Tailscale/listener
+probes; template structural assertions; documentation whitespace checks.
+CHECKS_NOT_RUN: native template loading with real credentials, host writes, pilot
+processes or HTTPS mapping creation; revised transaction awaits user authorization.
+
+## Real-host shadow transaction prepared for review (2026-09-11)
+
+Read-only live process probes at 03:40 UTC observed HQ Service PID30392 and daily
+Service PID25371 environment with no ENGRAM_REMOTE_ARCHIVE_V2_CONFIG_JSON or
+ENGRAM_DISABLED_SOURCES override; M1 had no Service process. Only selected fields
+were emitted; raw environments and secrets were not retained. Receipts:
+output/collector-goal-20260908/effective-service-policy-{hq,daily,m1}-20260911.json.
+HQ Tailscale Serve currently owns HTTPS443 -> 127.0.0.1:10101; preserve it. Saved
+hq-shadow-tls-preflight-20260911.json proposes separate HTTPS8443 -> loopback18787.
+Local lsof showed no selected-port listeners; M1 lsof produced no 18787 listener
+output. These observations must be refreshed immediately before activation.
+
+Prepared real-host-shadow-proposal-20260911/{README.md,daily-collector-settings.json}
+with exact hosts, package artifacts, isolated paths, credentials handling, four
+processes, tailnet mapping, acceptance checks and stop/rollback boundary. Initial
+pilot enrolls only daily default Codex/Claude roots; no source retirement, no M1
+identity allocation, and no claim of full historical coverage. Existing ingestion
+continues. Separate W6 shadow authorization is still required before host writes.
+Cursor completed the bounded integration review with no confirmed wiring defect;
+second identity at a different path remains an operational preflight limitation.
+CHECKS_RUN: three remote/local read-only probes; live TLS status/help and port
+inspection; proposal JSON invariants; scoped Markdown whitespace verification.
+CHECKS_NOT_RUN: actual host installation and pilot; authorization pending.
+
+## New-machine bootstrap reaches both replicas and HQ with Release packages (2026-09-11)
+
+Added a separate actual-binary bootstrap test. RuntimeFixture(seedStores: false)
+creates no identity/spool/capture stores; existing callers retain default seeded
+fixtures. Two one-shot Collector processes create the identity and spool, exit,
+and are joined before resident process checks. The first publication must use
+the minted UUID. Existing two-generation exact-byte dual-replica ACK, HQ source
+authority, messages and Web IPC assertions are reused without pre-seeding HQ DB.
+
+Old Collector package RED returned CLI64 at first initialization (one test failed).
+Fresh arm64 Release Collector build and role package verification passed. New
+Collector plus separately verified source-authority Service and existing
+RemoteServer passed all seven selected binary tests: no skips/failures; package
+file hashes remained stable. Independent ps executable-path inspection found no
+selected package processes left. Three Collector installation previews now select
+the new package; each dry-run verifies it and keeps activation disabled with
+launchctl NOT_RUN. No host was deployed or assigned a machine identity.
+
+Evidence under output/collector-goal-20260908/: identity-binary-red-20260911.log,
+identity-collector-release-20260911.{json,log},
+identity-collector-package-20260911/{SOURCE-PROVENANCE.json,SHA256SUMS},
+identity-binary-green-20260911-{invocation,result}.json,
+identity-binary-green-20260911.{log,xcresult}, identity-binary-cleanup-20260911.json.
+Package provenance is dirty/base-only and snapshots sources after build; it does
+not claim a before/after build source-stability attestation or a committed tree.
+CHECKS_RUN: Release build, package verify-only, seven actual-package integration
+tests, package hash comparison, process cleanup check, three installation dry-runs,
+and scoped whitespace check.
+CHECKS_NOT_RUN: rendered browser on the new package combination, fresh resource
+measurement, and real-host shadow/cutover; previous rendered/resource evidence
+belongs to its named artifacts and does not prove live-host readiness.
+Next: finish real-host identity/privacy/TLS configuration and present the bounded
+shadow transaction. Antigravity remains deferred.
+
+## First-machine Collector identity initialization implemented and verified locally (2026-09-11)
+
+Added explicit `EngramCollector --initialize-identity ABS` and a create-once
+`CollectorIdentityInitializer`. It creates only a new private parent and
+`archive.sqlite` containing a UUID, refuses existing targets, checks descriptor
+and path identity, fsyncs, and verifies readback. It starts no collection, reads
+no credentials, and creates no index/spool/CAS. Existing hosts continue borrowing
+identity through --initialize. Added the file to project.yml and regenerated via
+XcodeGen; no hand edit of the generated project.
+
+Actual old-package CLI RED: 1 failed / 49 passed (unsupported flag returned 64).
+New Debug arm64 CLI GREEN: 52 passed, no skips. Component verification: 28 passed
+across new identity, existing borrowed identity, and spool tests. Initial compile
+failure exposed the explicit source list; v2 exposed a test assumption that a
+closed WAL catalog remains borrowable. The corrected migration test reopens the
+owning ArchiveCatalog and proves UUID persistence without weakening the reader.
+Cursor implemented the two new component files through Herdr; parent inspected,
+integrated CLI/build registration, and independently ran all stated checks.
+
+Evidence: output/collector-goal-20260908/identity-initialization-closeout-20260911.json,
+identity-cli-red-20260911.log, identity-cli-green-20260911-v2.log,
+identity-initialization-component-20260911-v3.{json,log,xcresult}, and
+identity-initialization-build-20260911.{json,log,xcresult}.
+CHECKS_RUN: selected 28 Swift tests; actual 52 native CLI tests; Debug arm64 build;
+scoped Biome and whitespace checks.
+CHECKS_NOT_RUN: fresh Release packaging, new-identity full dual-replica chain, and
+live-host allocation/deployment; next-stage verification remains pending.
+The command cannot discover a different pre-existing identity elsewhere on a
+host. Resolving known identity paths remains an operator prerequisite; no actual
+M1 identity has been allocated. Antigravity stays deferred.
+
+## Real-host prerequisites and current HQ package preview reconciled (2026-09-11)
+
+Read back the three completed prerequisite probes under
+`output/collector-goal-20260908/collector-prerequisites-{hq,daily,m1}-20260911.json`
+(03:17 UTC). HQ and daily Mac have the default archive identity catalog and
+owner-only WAL/SHM files; M1 has no catalog at that exact default path. This is
+not evidence that M1 lacks a remote archive server identity, nor proof that no
+alternate collector identity exists. No catalog contents were opened. Configured
+privacy exclusions are empty on HQ/daily, but live environment overrides remain
+unverified; M1 settings are absent. Do not treat defaults as effective policy.
+
+Regenerated `core-shadow-install-previews-20260911/hq-service-index.json` with
+`source-authority-service-package-20260911`; the planner verified the package and
+kept deploymentAuthorized=false, activation disabled, and launchctl NOT_RUN.
+Recorded the separate foreground initial source-authority argument explicitly;
+the persistent generated wrapper does not carry this bootstrap argument.
+Cursor review and parent source inspection confirmed that Collector initialization
+only borrows identity; the existing first allocator belongs to ArchiveCatalog.
+Dispatched a bounded explicit create-once identity component and tests in Herdr
+wH:p2; CLI integration and independent RED/GREEN remain pending. This does not
+authorize minting a replacement identity on any live host. Antigravity remains deferred. No deployment,
+service restart, machine-ID allocation, or production configuration write occurred.
+
+CHECKS_RUN: three probe receipts inspected; source identity/privacy implementation
+read; HQ installation planner dry-run passed; Markdown diff whitespace check.
+CHECKS_NOT_RUN: live identity query, effective environment policy, real-host shadow,
+and production cutover; prerequisites and bounded host transaction remain pending.
+
+## Explicit HQ source admission passes component and packaged binary verification (2026-09-11)
+
+Added owner-only bounded source-authority loading and index-only, gated atomic
+initial provisioning. Runner accepts --capture-source-authority-file, loads it
+before runtime/database directory work and provisions after migration before
+producers. Identical bindings are idempotent; conflicts, overlaps, changed epochs
+and disabled sources roll back the batch. No incoming publication auto-approval.
+
+Parent fixed test helper Darwin.link shadowing and moved test fixtures under the
+workspace to avoid macOS temporary-path aliases without relaxing file admission.
+XcodeGen included both new files. Component v4:13 tests/0failures. Updated HQ
+Service Release build and package verify-only passed. New Service retains explicit
+dirty/base-only provenance; prior Collector/RemoteServer packages are unchanged.
+
+Packaged binary exec75325 joined0:6 tests/0skips/0failures, including the new
+two-generation test that requires HQ DB absent before startup and supplies only
+the authority file, plus five prior data/recovery cases. All package file hashes
+stable; independent process-path check found no package executables left running.
+Evidence: output/collector-goal-20260908/source-authority-closeout-20260911.json,
+source-authority-binary-green-20260911-result.json and related .log/.xcresult.
+This closes the tested initial-admission gap, not real-host rollout or later-epoch
+operator approval. Real host installation/configuration still remains unperformed.
+
+## Unseeded HQ source-admission regression reproduces the production gap (2026-09-11)
+
+Added testRealHQProvisionsExplicitSourceAuthorityWithoutSeededDatabase by sharing
+the existing two-generation Codex assertions. Its new provisioning branch writes
+only explicit authority JSON and requires the HQ database to be absent; it never
+opens/migrates/seeds that database. RED against the prior validated packages:
+exec35820 joined1, xcodebuild65, one test failed on the HQ-read deadline. Retained
+HQ database inspection confirmed publications1, source registry0, epoch history0,
+normalized generations0, sessions0. Packaged processes were absent afterward.
+Evidence: output/collector-goal-20260908/source-authority-binary-red-diagnosis-20260911.json
+and source-authority-binary-red-20260911.log/.xcresult. Preserve failed fixture.
+
+Parent wired optional --capture-source-authority-file through existing strict path
+parsing before runtime/database directory work, then awaits gated initial source
+provisioning after migrations and before producer construction. Cursor is finishing
+the new component/tests and an explicit index-only check. No post-change build or
+GREEN result yet; new files still require XcodeGen inclusion and independent review.
+
+## Real-host planning identifies missing production source admission (2026-09-11)
+
+Parent and Cursor independently traced HQ source authority. Current production
+Service has no call to CaptureIngestSourceRegistry.provision/approveEpoch; the
+binary fixture provisionHQ calls provision directly after migration. Intake
+settings explicitly keep source admission external. Thus the verified packages
+prove replica/HQ behavior given seeded authority, not an operator-complete new
+installation. Real-host deployment must not substitute ad hoc database writes.
+Source evidence: macos/EngramCoreWrite/CaptureIngest/CaptureIngestSourceRegistry.swift
+(provision), macos/EngramService/Core/ServiceCaptureIngestConfiguration.swift, and
+macos/EngramServiceCoreTests/CollectorBinaryShadowIntegrationTests.swift (provisionHQ).
+
+Next implementation: an explicit owner-only bounded initial-authority JSON file
+consumed by HQ Service before intake loops, through ServiceWriterGate and one
+writer transaction. Existing identical bindings are idempotent; conflicting
+roots/identities/epochs reject without partial writes. No automatic admission
+from incoming publications or automatic epoch approval. Cursor owns only the
+new ServiceCaptureSourceAuthority component and its tests; parent owns CLI/Runner
+wiring and a binary test that does not seed authority tables. Component API is
+pending. Existing packages/performance/browser receipts remain valid for their
+stated conditional scopes; real-host rollout remains unperformed.
+
+## Current packages pass rendered HTTPS browser acceptance locally (2026-09-11)
+
+Ran the bounded browser fixture against the actual three role packages. Chrome
+UI login returned204; overview, sessions, positive search, session detail, three
+messages and no-match search returned200 (six reads). Visually inspected the
+screenshot: both generations appear with user/assistant/assistant roles. No-match
+search cleared results; browser console had zero errors/warnings. Default CLI
+Chromium was absent, so installed Chrome was used. A run-code filename invocation
+closed the automation session; direct fill/click commands completed verification.
+
+Browser closed, matching owner-only stop signal sent, exec80670 joined exit0.
+One test passed without skips/failures; all regular package hashes unchanged.
+Independent checks confirmed fixture removed and no packaged executable remained.
+This is local synthetic HTTPS/browser evidence, not tailnet/real-history acceptance.
+Evidence: output/collector-goal-20260908/packaged-browser-observations-20260911.json,
+packaged-browser-shadow-20260911-result.json and output/playwright/packaged-core-
+{detail,requests,console,no-match}-20260911 artifacts. No host services changed.
+
+## Packaged core integration and read-only host target preflight pass (2026-09-11)
+
+Read-only SSH/local probes confirmed daily Mac, HQ and M1 reachable and arm64.
+All six exact planned paths per host are absent with no symlink ancestors.
+Daily still runs the App-bundled Service; HQ runs its existing Service and archive
+server; M1 runs its existing archive server. No Collector cutover occurred.
+Evidence: output/collector-goal-20260908/shadow-targets-{daily,hq,m1}-20260911.json.
+
+Ran five existing binary integration cases against actual v2 package executables,
+not DerivedData product paths: Codex/Claude/Cursor generations plus Collector
+pending-M1 and HQ durable-ready crash recovery. Exec23666 joined exit0, five tests
+passed with no skips/failures. Every regular package file hash stayed unchanged;
+an independent post-run process-path check found no packaged executable alive.
+This proves isolated synthetic core paths, not rendered browser or real-host
+acceptance. Evidence: packaged-core-shadow-20260911-{invocation,result,cleanup}.json
+and .log/.xcresult under output/collector-goal-20260908.
+
+## Current role packages and six isolated installation previews pass (2026-09-11)
+
+Cursor repaired copied Collector/Service Mach-O packaging by normalizing only
+@rpath/libswift_Concurrency.dylib to the OS-attested absolute system install name
+before signing (and before Service rpath removal). Strict dependency closure is
+unchanged; arbitrary Swift rpath libraries still reject. Parent reviewed the
+exact additive script delta and independently ran175 packaging tests: all passed.
+New test formatting was corrected; scoped Biome check exits0 with39 pre-existing
+info diagnostics. The original failed package and measured binaries are preserved.
+
+Packaging exec52984 joined exit0: Collector, Service and RemoteServer package and
+verify-only receipts all pass. Every bundle carries dirty/base-only metadata and
+its source provenance in the package hash manifest. Supplemental NIO/Swift
+packaging inputs are distinct from measured performance inputs. Evidence:
+output/collector-goal-20260908/current-release-arm64-inventory-20260911-v4-packages-v2
+and inventory-v4-packaging-tooling-review.json.
+
+Actual installation preview exposed expected-home being incorrectly checked as a
+writable state file. Added two reproductions (RED2fail/15pass), then excluded only
+expected-home from that check; settings, credentials, database/socket isolation
+remain enforced. GREEN17/17 and scoped lint pass. Six real-package local previews
+now pass for daily/HQ/M1 collectors, HQ index, HQ archive and M1 archive. All
+activation flags remain disabled; no host directory was created or service run.
+Remote target availability, settings contents, credentials and real-host shadow
+acceptance remain unverified. Evidence: expected-home-plan-{red,green,lint}.log
+and core-shadow-install-previews-20260911/ under output/collector-goal-20260908.
+
+Cursor caught the inverse home boundary: a user context must not be inside a
+package, releases/current, wrapper or job directory. Added two regressions
+(RED2fail/17pass) and a directional guard, preserving the valid ancestor case.
+Final GREEN19/19 and lint pass; rerunning all six stored CLI invocations produced
+identical disabled plans. Evidence: expected-home-inverse-{red,green,lint}.log
+and core-shadow-install-previews-20260911/verification-current-planner.json.
+
+## Current Collector resource gate passes; packaging exposes a dependency blocker (2026-09-11)
+
+V4 exec95076 joined with exit0. Independent raw recomputation passed all checks:
+1800.005792834 seconds, 1801 samples, CPU1.7326376415 percent of one core, maximum
+RSS19.015625 MiB, all1140 requests and3 authentication attempts successful. Append
+p95 was3.623401875 seconds; sessions/detail/messages p95 were0.153066625,
+0.150356625 and0.053505166 seconds. All746 sources and8 linked artifacts remained
+stable; the one test had no skips/failures. Independent ps verified all8 owned
+child PIDs absent. This is synthetic loopback proof, not daily-Mac or tailnet
+acceptance. Evidence: current-release-arm64-inventory-20260911-v4-independent-
+verification.json and -cleanup-verification.json under output/collector-goal-20260908.
+
+Local packaging exec36546 then exited1 during Collector package verification:
+unresolved packaged dependency @rpath/libswift_Concurrency.dylib. Preserve the
+failed package and log in current-release-arm64-inventory-20260911-v4-packages.
+No complete package set or deployment is claimed. Cursor is diagnosing whether
+runtime copying or dependency validation needs repair; no production change.
+
+Parent traced the unresolved weak load to copied GRDB-dynamic: its Concurrency
+install name is @rpath/libswift_Concurrency.dylib with /usr/lib/swift LC_RPATH.
+The OS dyld shared-cache API confirms the absolute system library exists. Cursor
+owns a bounded test-first normalization fix in Collector/Service packagers and
+their tests. Source build products and failed packages remain unchanged. The
+retry runner now requires an exact reviewed packaging-script delta and writes to
+a fresh packages-v2 directory; product source drift still rejects packaging.
+Evidence: output/collector-goal-20260908/swift-concurrency-packaging-diagnosis-20260911.json.
+
+## Core package preparation is gated on the current performance result (2026-09-11)
+
+Added output-only package-verified-inventory-v4.py to require the terminal and
+independent v4 PASS receipts, unchanged measured source files and linked artifact
+hashes before creating three local role packages. It invokes existing package
+and verify-only scripts, preserves dirty-source provenance separately from the
+base revision, and never builds or deploys. A negative preflight correctly exited
+1 for the missing terminal receipt and created no package directory. Python AST,
+three packaging shell syntax checks and installation-planner Node syntax passed.
+Evidence: output/collector-goal-20260908/inventory-v4-package-preflight-20260911.json.
+The successful packaging path remains unexecuted while exec95076 runs. Cursor
+is reviewing core package/shadow readiness read-only through Herdr wH:p2.
+
+Parent adjudication corrected three review assumptions: the shared planner already
+supports remote-server installation dry-runs; missing M1 app settings does not
+prove missing archive identity (the dated authenticated status reports serverID
+m1, HTTP200); explicit dirty-source provenance is sufficient for local candidate
+packaging without claiming a committed build. Host activation remains separate.
+Evidence: output/collector-goal-20260908/core-readiness-adjudication-20260911.json.
+
+Cursor reviewed the output-only packaging runner. Parent added a build-process
+preflight and checked the post-build source receipt, embedded dirty/base-only
+metadata and source provenance in each package, and regenerates its regular-file
+manifest before verify-only. NIO resources and Swift toolchain dependencies are
+pinned separately as packaging-time inputs, not claimed as measured artifacts.
+Revised syntax and missing-terminal/no-output rejection passed; successful package
+execution is still pending performance completion.
+
+## Antigravity deferred by user; core collector goal remains active (2026-09-11)
+
+The user explicitly deferred Antigravity because it is not the main requirement.
+This supersedes the source-work priority in the preceding entries: Antigravity
+cache/PB investigation and implementation are not current-stage blockers. Preserve
+existing data and unapplied drafts; deferral does not assert migration coverage.
+Focus remains lightweight collection, HQ parsing/indexing, independent M1 copies
+and browser access. Performance exec95076 is still running; no final acceptance
+result is available. Keep compiled sources frozen until measurement completes.
+
+## Actual Antigravity caches take precedence over empty Windsurf caches (2026-09-11)
+
+Read-only metadata counts found Antigravity cache JSONL candidates HQ58/daily58/M1
+zero; provider PB candidates12/61/7; recognized CLI transcript path candidates
+22/172/0. No counts were truncated. These are file candidates, not validated or
+unique sessions, archive acknowledgements or HQ-search proof. The current CLI
+implementation therefore cannot be treated as proof for all actual Antigravity
+cache data. No payloads, credentials, provider APIs or applications were opened.
+
+Source review shows Antigravity cache semantics differ from Windsurf:
+AntigravityAdapter.swift:51-109 uses a summary fallback; :230-241 prefers metadata
+pbSizeBytes then an external PB stat before cache size; :446+ falls back to a
+bounded raw-cache-prefix cwd heuristic. A copied Windsurf parser would lose parity
+or consult a live original from HQ. Cursor is assessing the minimum faithful
+capture/context/replay design read-only. All Windsurf drafts remain unapplied;
+its four-file HQ draft was produced but is not an executed integration result.
+
+The two daily Windsurf PB candidates have sizes43357 and2228085 bytes and
+modification timestamps2024-12-01/08 UTC. /Applications/Windsurf.app is absent;
+that does not prove every alternate install is absent. Treat these as legacy raw
+preservation candidates, not exported/readable history or permission to install.
+Evidence: output/collector-goal-20260908/actual-cache-and-provider-candidates-20260911.json.
+
+Performance exec95076 remains live with435 observed samples and276 successful
+completed requests, no final summary. GOAL active. Preserve source freeze, finish
+measurement, and base the next source work on actual Antigravity cache semantics.
+
+## Real Windsurf inventory corrects cache-only migration assumption (2026-09-11)
+
+Read-only direct-child metadata checks show the default Windsurf cache directory
+has zero entries on HQ, daily Mac and M1. No counts were truncated. Its earlier
+existence was not evidence of cached historical transcripts. Source-defined
+.codeium/windsurf/cascade is absent on HQ/M1; daily Mac has two regular .pb file
+candidates. Their contents/session validity were not read or verified. Daily Mac
+has no Windsurf-matching executable in the process query and no default daemon
+discovery directory. No provider API, credential access, application launch or
+payload transfer was performed.
+
+Retained TS code defines those roots in src/adapters/windsurf.ts:39-42 and its
+export client discovers port/token in grpc/cascade-client.ts:213-241. Thus cache
+patches alone cannot migrate the two PB candidates, and an empty cache cannot
+prove absent provider history. Preserve this actual-source issue for authorized
+migration/export planning; do not deploy a cache feature as a substitute.
+Evidence: output/collector-goal-20260908/windsurf-real-source-inventory-20260911.json.
+
+While performance exec95076 remains live, prepared unapplied routing and runtime
+test drafts: windsurf-cache-routing-implementation.patch SHA256
+7e6acef96747207932b73ebbf48a77e2b1defc44581db1f6343d22f5853891dc and
+windsurf-cache-runtime-tests.patch SHA256
+6f481f4612bbb51f7d697876fa83bc70a92b8b8e7912587c55a771285a80156b.
+Both apply preflights passed, source files untouched, no compilation/execution.
+Cursor is finishing an output-only HQ descriptor/registry/replay/commit patch;
+asked not to expand this speculative cache work before actual-source reconciliation.
+All three v4 Release build receipts report exit0; performance result remains
+pending. GOAL active; real preservation/parse/search requirements remain open.
+
+## Inventory validation open optimization passes Collector regression (2026-09-11)
+
+Cursor changed only the two validation-only directory opens in
+CollectorInventoryOwner.swift to reuse openStorageValidationDirectory with empty
+hooks. Startup component walks, before/after fences, descriptor/private-mode and
+file identities, sidecars, SQLite HAS_MOVED and cancellation remain unchanged.
+Parent inverse-hash verification proves the delta is exactly two calls plus the
+helper comment, and one new method in CollectorInventoryOwnerTests.swift.
+The test verifies that a same-inode inventory symlink is rejected at entry and
+before commit, with rollback and descriptor cleanup.
+
+Full Collector regression inventory-open-regression-20260911 completed:
+exec81850 exit0,609 tests,zero failures; the new method passed. Actual diff and
+Cursor's bounded follow-up review found no remaining issue in this slice.
+This is not yet a CPU acceptance result.
+
+Started run-current-release-performance-inventory-v4.py, exec95076, prefix
+current-release-arm64-inventory-20260911-v4. It rebuilds the three arm64 Release
+binaries and repeats the unchanged1800-second workload. Parent holds sole build
+slot; no compiled source edits until the runner is joined. Cache patches stay
+unapplied. Evidence: output/collector-goal-20260908/inventory-open-optimization-receipt-20260911.json
+and inventory-open-regression-20260911.{log,json,xcresult}.
+GOAL active. Next join exec95076 and run verify-inventory-performance.py, checking
+resource thresholds, all requests, actual test execution, hashes and child cleanup.
+
+## Second CPU diagnostic identifies remaining inventory path walks (2026-09-11)
+
+The v3-artifact diagnostic completed: exec63482 exit0, external sample exit0,
+120-second hold and cleanup passed, all8 child PIDs independently absent, artifact
+hashes unchanged. No performance acceptance was evaluated. The sample contains
+validateStorageFilesystem -> openDirectory -> openAbsolute/openComponent and
+nested SQLite validation frames that repeat inventory path walks. Parent source
+review found two validation-only calls at CollectorInventoryOwner.swift:1064 and
+:1222; shadow/live validation already uses the single absolute O_NOFOLLOW_ANY
+helper. These stacks justify a candidate, not a quantified CPU savings claim.
+
+After joining the diagnostic, narrowed Cursor via Herdr to only
+CollectorInventoryOwner.swift and CollectorInventoryOwnerTests.swift: replace the
+two validation directory opens with the existing helper, leave startup opens and
+all descriptor/private-mode/identity/SQLite HAS_MOVED/cancellation checks intact.
+Parent owns the build slot and will inspect actual diff and run regressions.
+Evidence: output/collector-goal-20260908/fast-poll-cpu-diagnostic-receipt-20260911.json
+and current-release-fast-poll-cpu-profile-20260911-sample.txt.
+
+Prepared run-current-release-performance-inventory-v4.py and
+verify-inventory-performance.py, prefix current-release-arm64-inventory-20260911-v4.
+Syntax/plan checks passed; NOT started. Workload, targets and1800-second window
+are unchanged. All Windsurf cache patches remain unapplied. GOAL active.
+
+## Fast-poll full resource rerun still fails CPU (2026-09-11)
+
+The unchanged 1800-second workload completed with exec28705 exit65: one test,
+zero skips, one threshold failure. CPU2.2130104496% of one core still exceeds2%;
+maxRSS21.328125MiB, weightedMeanRSS19.337524MiB. All1140 requests and3auth attempts
+succeeded. p95 seconds: append3.835043375, sessions0.200865917,
+detail0.156198041, messages0.055873167. Independent raw recomputation agrees:
+1801 samples, window1800.010127166s, largest gap1.01008175s. This lower CPU reading
+than v2 is insufficient for acceptance and does not isolate causal savings.
+
+All746 sources and8linked artifacts remained stable. All8 child PIDs were joined
+and independently absent via ps (exit1); the failed fixture remains intentionally
+retained. Evidence: output/collector-goal-20260908/current-release-arm64-fast-poll-20260911-v3-*
+and fast-poll-performance-failure-receipt-20260911.json. Independent verifier
+verify-fast-poll-performance.py exited1 for the genuine threshold failure.
+
+Started run-fast-poll-cpu-profile.py against the same v3 binary provenance,
+exec63482 (xcodebuild83896), prefix current-release-fast-poll-cpu-profile-20260911.
+This is a quiescent diagnostic, not another acceptance measurement. Cursor wH:p2
+has a read-only task to identify remaining idle costs without relaxing storage,
+identity, cancellation, polling or workload requirements. Parent owns build slot.
+
+Cache privacy patches were revised and independently checked: private tuple
+replaces invalid Result failure type; every decoded path is retained within
+aggregate budgets; canonical single-file JSONL shape is enforced; real Windsurf
+invalid-shape fixtures replace the wrong-source negative. Both apply preflights
+pass. Implementation SHA6d4f77897137268b7f1b65c4355d9dfddc88fd55841cdbfd6c7b4077003eaeac;
+four-test patch SHAe195a86022f7767798b2bd430bcec7bbedbbc2476f0ec2d4938012040c58425d.
+Evidence: revised cache privacy receipt (actual filename
+output/collector-goal-20260908/windsurf-cache-privacy-revised-draft-review-20260911.json).
+All cache patches remain unapplied/uncompiled; static readiness is not GREEN.
+GOAL active. Next join diagnostic63482, inspect its sample and make the next
+bounded CPU fix before another full resource acceptance run. No live rollout.
+
+## Windsurf cache privacy test draft independently reviewed (2026-09-11)
+
+Cursor produced three unapplied privacy test methods using existing capture,
+assess, policy and withheld-reason APIs. Parent reviewed header-derived identity,
+CAS-only assessment after source deletion, conflicting later headers, excluded
+paths in ignored records, missing first cwd, partial/malformed input, limits,
+policy reassessment and missing CAS objects. Native visible-message parity stays
+in the separate adapter draft; privacy tests do not prove normalization.
+
+Parent git apply --check passed. Patch SHA256:
+19378083167716ebcc871c67b0982e27e9505837a1524d1ffe7d424f310fd5af.
+Parent additionally prepared Windsurf cache HQ replay coverage as the unapplied
+output/collector-goal-20260908/windsurf-cache-replay-tests.patch (one test method;
+SHA256 0da20d10658e7e942386dd3129f8947857f34e460c8982d3fdff4d7d52f1fa34).
+It covers explicit cache binding at ordinary/custom-transcripts roots, metadata
+identity independent of filename, canonical message projection, wrong-format
+parsing, corruption refusal and staging cleanup. Apply preflight passed; Cursor
+review and actual RED/GREEN remain pending. Cursor is also preparing an unapplied
+implementation patch limited to CollectorPrivacyProof.swift. No builds/source
+edits are allowed while performance exec28705 is live.
+
+Cursor replay review was adjudicated: existing unsupported cache admission is
+intentional feature RED, not a reason to weaken custom-root or integrity checks.
+Accepted its early-return concern and changed the draft loop to continue, so a
+failed first root does not skip later cases. Updated patch SHA256:
+67e19c2f4ee4a66a368d683f5205528bc22fac92aaeb2ab4682bfeaaf95de25b.
+Apply preflight passed again; nothing was applied/compiled. Evidence:
+output/collector-goal-20260908/windsurf-cache-replay-draft-review-20260911.json.
+
+The initial privacy implementation draft was independently marked CHANGES_REQUESTED:
+its Result failure type lacks Error conformance; decoded paths are discarded from
+the proof and aggregate budgets, preventing pre-upload revalidation; and source
+checking alone does not enforce cache replay shape. Cursor was asked to revise
+only output patches and add path-budget/alias-drift/shape tests. Evidence:
+output/collector-goal-20260908/windsurf-cache-privacy-implementation-review-20260911.json.
+The earlier privacy-test hash identifies the reviewed initial draft, not the
+pending expanded draft. Do not apply the implementation merely because its
+patch preflight passes. Performance exec28705 was polled live; 1052 samples and
+668 completed successful requests were observed, not a completed window.
+
+No source was edited; all746 measured-source hashes still match. The missing
+windsurfCascadeCache enum case is expected compile RED, not an executed result.
+Evidence: output/collector-goal-20260908/windsurf-cache-privacy-tests.patch and
+windsurf-cache-privacy-draft-review-20260911.json. Performance exec28705 remains
+live, without a terminal summary. Do not apply patches or rebuild until joined.
+
+The 15 physical-root inventory rows are not the 17 adapter count: factory
+SessionAdapterFactory.swift:145-158 registers MiniMax/LobsterAI over the shared
+Claude adapter, and CollectorRuntime.swift:537-543 adds their policy source set
+for the default Claude format. This explains counting only; it is not actual
+provider/profile/history coverage or retirement approval. GOAL remains active.
+
+## Windsurf cache registry tests drafted during live resource measurement (2026-09-11)
+
+Cursor delivered four unapplied registry tests covering the explicit proposed
+windsurfCascadeCache token, source/format mismatches, overlap across hook/cache
+roots, disjoint roots, and a custom cache root named transcripts. Parent reviewed
+actual fixtures and corrected a copied hook assertion: a valid cache shape outside
+the approved root must report locatorOutsideRoot, not unsupportedCaptureShape.
+The corrected patch passed git apply --check; no patch was applied or compiled.
+It does not establish header identity or parser/privacy/runtime integration.
+
+Evidence: output/collector-goal-20260908/windsurf-cache-registry-tests.patch
+SHA256 9e23bce62d5958382d330c37b1b2a40f0b8c1b74a9466479309420fc2894f782;
+windsurf-cache-registry-draft-review-20260911.json records source equality and
+observed samples. All746 measured-source hashes matched the build snapshot.
+Performance exec28705 was polled live, bootstrap completed and steady samples
+are accumulating; no terminal result or resource PASS is claimed. Next join the
+existing producer, verify its full window, then execute cache test RED/GREEN.
+
+## Live-root polling optimization passes regressions; resource rerun started (2026-09-11)
+
+Cursor implemented the bounded CollectorRuntime.startEventsIfNeeded optimization:
+live non-recovery coordinators use the existing sourceRootIsUnavailable probe;
+missing/replaced sources suspend, while recovery or absent coordinators retain
+full enrollment. Parent inspected persisted identity and before/after storage
+validation in CollectorInventoryOwner. No new cache or public API was added.
+Parent caught an async XCTest autoclosure before compiling; Cursor corrected it.
+
+The targeted service regression completed with exit0: 179 tests, zero failures,
+including all three new runtime cases. The loss/replacement and missing-storage
+cases protect observable outcomes but do not independently force every internal
+probe branch; direct source review supplements these tests. The recovery case
+requires enrollment to complete the requested revision. Evidence:
+output/collector-goal-20260908/fast-poll-service-regression-20260911.{log,json,xcresult}.
+
+Started run-current-release-performance-fast-poll-v3.py, exec28705, prefix
+current-release-arm64-fast-poll-20260911-v3. It rebuilds all three arm64 Release
+binaries before the unchanged 1800-second synthetic loopback workload. Result is
+pending; the earlier 2.308% CPU failure remains valid. All three Release build
+receipts now report exit0, and the runner has advanced to the dedicated xcodebuild
+performance test (PID27275 observed live). No final sample/summary existed at that
+check. Do not edit compiled files
+or run another build until this producer is joined. Windsurf cache patches remain
+unapplied. This is not daily-Mac performance or authorization for live rollout.
+
+While builds ran, parent verified that current HQ registry/replay admission only
+accepts Windsurf hook shape (CaptureIngestSourceRegistry.swift:194-242,
+CaptureIngestReplay.swift:100-113, ArchiveSourceDescriptor.swift:301-320).
+A native cache parser alone cannot complete cache ingest. The next slice needs
+an explicit binding parse format, header-derived identity, and wrong-format /
+overlapping-root coverage, not filename-based format inference. The accepted
+spec:441-446 keeps cache adapters cache-only; no provider API access is implied.
+Cursor is reviewing this pipeline read-only through Herdr wH:p2.
+
+After the user's online confirmation, read-only SSH to bing@100.75.72.13 returned
+Mo-Mo-MacBook-Pro.local and EngramService PID25371; no Collector or RemoteServer
+matched the named process query. Herdr pane wH:p2 remains accessible; no approval
+prompt was needed. GOAL active. Next join exec28705 and independently verify raw
+performance results, artifact stability, request counts, and child cleanup.
+
+## CPU profile identifies repeated root-activation work (2026-09-11)
+
+The existing quiescent diagnostic completed with test exit0 and external sample
+exit0. The 120-second hold and cleanup passed, all8 child PIDs are absent, the
+fixture was removed, and all measured artifact hashes stayed unchanged. The
+10-second stack sample belongs to the verified owned Collector executable. This
+is diagnostic evidence, not a resource PASS or replacement for the failed window.
+
+Stacks include startEventsIfNeeded -> enrollAndActivateRoot -> GRDB reads and
+activateEnrolledRoot, plus repeated validateStorageFilesystem/openat work. Cursor's
+source comparison confirms that the old baseline initialized coordinators once,
+whereas the current availability loop re-enters enrollment every poll. Parent
+identified a bounded candidate using existing sourceRootIsUnavailable checks for
+already-running coordinators while keeping full enrollment/recovery paths. This
+must retain persisted-binding, physical-root and storage checks; simply skipping
+validation is not acceptable. Cause/savings are not yet proved by a fixed run.
+
+After joining diagnostic exec25349, assigned Cursor only CollectorRuntime.swift
+and CollectorRuntimeTests.swift for the minimal fix and safety coverage. Parent
+owns the sole build/verification slot. Windsurf cache patches remain unapplied.
+Evidence: output/collector-goal-20260908/current-cpu-diagnostic-receipt-20260911.json
+and current-release-cpu-profile-20260911-{sample.txt,result.json,run/}.
+GOAL active. Next review actual diff, run regressions, rebuild Release and repeat
+the unchanged1800-second workload; do not reinterpret the earlier CPU failure.
+
+## Current 30-minute resource gate failed on CPU (2026-09-11)
+
+The arm64 Release measurement completed and exec session12823 joined with exit65:
+1 test,0 skipped,1 threshold failure. Full window1800.009586s,1801 samples;
+collector average CPU2.3081616593% of one core exceeds the <=2% target.
+Maximum sampled RSS20.4375MiB passes. All60 append verifications and360 each
+sessions/detail/messages requests succeeded, as did all3 authentication attempts.
+p95 seconds: append3.969604, sessions0.182081, detail0.162802, messages0.061053.
+All8 owned children joined and their old PIDs are absent. Source and8 linked
+artifact hashes remained unchanged. Failure fixture and socket root were retained
+by the test; they were not silently removed or reused.
+
+Parent independently recomputed CPU/RSS/window/gaps and nearest-rank p95 from
+raw evidence; values agree with the test summary. This is an actual failed gate,
+not an incomplete-window or request-success substitute. An exploratory split
+shows average CPU2.591% in first8s of each30s append period versus2.205% during
+the remaining22s; it motivates idle-path investigation but does not prove cause.
+
+Started the existing quiescent CPU profile diagnostic on the same Release
+artifacts (exec25349), with an automatic10-second sample after checking the owned
+collector PID executable path/hash. This diagnostic is not a resource acceptance
+rerun. Cursor is reviewing changes since the historical c8a9cdc4 baseline read-only;
+no fix is accepted before stack evidence. Windsurf cache patches remain unapplied.
+Evidence: output/collector-goal-20260908/current-performance-failure-receipt-20260911.json,
+current-release-arm64-20260911-v2-independent-verification.json, original logs/xcresult/summary/raw samples, and run-current-cpu-profile.py.
+GOAL active; daily-Mac resource acceptance and full real source coverage remain open.
+
+## Windsurf captured-cache draft reviewed, not applied (2026-09-11)
+
+Cursor returned the output-only native scan/test patch, then fixed parent review
+feedback about awaited results inside XCTest autoclosures and missing summary
+parity. Final ownership returned at Herdr state1738. Parent inspected the revision,
+split test and implementation patches, and ran git apply --check on all three
+successfully. Both targeted macos source hashes still match the performance
+source-before snapshot. No compiled file changed and no new build was started.
+
+The draft covers metadata-ID identity despite a different filename, source-deleted
+replay parity, metadata-only refusal, malformed/oversized input and hook/cache
+separation. These are proposed tests, not executed results. Measurement exec12823
+remains live; after terminal verification apply tests first, record RED, then apply
+implementation and run native/parity checks. Archive/privacy/collector/HQ cache
+integration remains required afterward. Evidence and patch hashes:
+output/collector-goal-20260908/windsurf-cache-native-draft-review-20260911.json.
+GOAL active; neither the cache feature nor the resource gate is complete.
+
+## Windsurf legacy-cache gap scoped while resource test runs (2026-09-11)
+
+Parent and Cursor (Herdr done1734) verified the existing Swift cache format:
+header id/createdAt with optional title/updatedAt/cwd, followed by user/assistant
+messages. Identity comes from the header, not filename. Metadata-only caches
+remain noVisibleMessages. Current collector/HQ Windsurf admission accepts only
+hook transcripts, so redirecting a cache root into the hook format is not a
+compatible migration. Existing cache bytes also cannot prove provider-original
+history or recover absent tool/model data.
+
+Assigned Cursor an unapplied output-only patch for a captured-cache native scan
+and focused compatibility/failure tests, including filename != header id and
+source-deleted replay. No compiled source is edited while exec session 12823
+continues its 1800-second performance measurement. The draft is not an implemented
+feature or a passing test; archive/privacy/collector/HQ wiring remains afterward.
+Evidence: output/collector-goal-20260908/windsurf-cache-assessment-and-performance-wait-20260911.json.
+GOAL active. Current sample window remains incomplete; no final resource verdict.
+
+## Daily Mac reached through verified tailnet identity (2026-09-11)
+
+Filtered Tailscale status matched the known Mo Mo MacBook Pro to
+macbook-pro.tail1cb16.ts.net / 100.75.72.13. It initially reported offline,
+then online. SSH with strict existing host-key checking to that address succeeded,
+refreshing only named settings fields and exact path lstat metadata. Settings
+remain runtimeRole local, with cline/iflow/lobsterai disabled. Windsurf remains
+enabled in settings; its legacy cache exists and default transcripts directory
+is absent, as on HQ/M1. No provider transcript or database was opened.
+
+Named-process inspection found no EngramCollector or Engram App process, but
+EngramService PID 25371 from /Applications/Engram.app/Contents/Helpers/EngramService
+was running since September 5. A single ps observation reported 31.6% CPU and
+690640 KiB RSS; this is not a representative performance window or a claim that
+all cost is indexing. It establishes that the daily Mac has not cut over to the
+collector role. No process was stopped or configuration changed.
+
+Collector/Service package dry-runs passed and created no package directories.
+RemoteServer has no --dry-run option and rejected that probe; actual packaging
+and verify-only remain pending after the measurement. The original performance
+exec session 12823 remains live with hundreds of steady samples and no summary.
+Cursor finished target/template review (done1731); parent then assigned a bounded
+read-only Windsurf legacy-cache coverage assessment, because hooks-only proof
+cannot retire a still-enabled cache source on these actual hosts.
+
+Evidence: output/collector-goal-20260908/daily-mac-tailnet-20260911.json,
+inventory-daily-mac-20260911-tailnet.json, runtime-daily-mac-20260911.json,
+current-arm64-package-dry-runs-20260911.json. GOAL remains active.
+
+## Current arm64 steady window and authenticated archive metadata (2026-09-11)
+
+All three current Release builds exited 0 and lipo verified arm64. The dirty
+source manifest contains 746 files unchanged across the builds. Cursor via
+Herdr independently reconciled actual linker/copy destinations with all recorded
+product/framework paths, returning done1727. General runner robustness issues
+(explicit cwd/DerivedData, recognizing another v2 runner, terminal skip counting)
+remain follow-ups; no current-run invalidation was found. The explicit base
+revision field must not be represented as the dirty source identity.
+
+The actual performance test passed bootstrap: 256 publications at both local
+replicas and 256 normal HQ sessions; steady_begin was recorded. Exec session
+12823 remains live. The 1800-second verdict is pending. CPU/RSS covers only the
+collector process; this synthetic loopback workload does not prove real daily-Mac
+I/O, tailnet latency, or complete provider coverage. No further builds or compiled
+source edits are assigned during the measurement.
+
+Authenticated read-only GET /v2/archive/status at the observed live HQ and M1
+listeners returned 200 with serverIDs hq/m1. Launch wrappers source separate
+archive-v2.env files; old general env files were insufficient/stale for this
+check. Credentials were used only in memory, not printed or stored in evidence.
+Configured roots are archive-v2-hq and archive-v2-m1 on their respective hosts.
+Both APIs report revision 2b31a40abe50a02955eea8e3b73037adb43be5ff, last archive
+mutation August 23, and zero cumulative server errors. The 100-entry recent-error
+buffers contain historical 404/401 records ending September 5, not a current
+incident finding. None of these metadata proves newest source capture, dual
+publication acknowledgements, byte recovery, or full HQ transcript readiness.
+The historical daily Mac hostname failed DNS resolution; no fresh daily inventory.
+
+Evidence: output/collector-goal-20260908/performance-steady-start-and-live-archive-20260911.json
+and referenced receipts. All live actions were metadata reads; no hooks,
+archive payload writes, deployments or service restarts. GOAL remains active.
+
+## Execution restored and live listener addresses verified (2026-09-11)
+
+After the user restarted the session with full access, Herdr wH:p2 and process
+visibility both recovered. The goal tool reports active. The execution preflight
+passed with no matching old runner/xcodebuild, so the prepared arm64 runner was
+started under exec session 12823. The previous attempt remains incomplete, with
+no fabricated Service exit code. Cursor is independently reviewing the runner
+read-only; no compiled source edits or competing builds are assigned.
+
+Read-only lsof identified actual TCP 8787 listeners: HQ 100.125.101.60 and M1
+100.108.19.20. Health GETs at those addresses both returned ok. Earlier loopback
+GETs failed because these listeners bind tailnet addresses, not 127.0.0.1; those
+failures are retained and are not classified as outages. Health does not establish
+archive durability, source coverage or HQ transcript readiness. No live service
+was changed. Current arm64 build/measurement remains in progress, not accepted.
+Evidence: output/collector-goal-20260908/resumed-execution-20260911.json,
+listener-{hq,m1}-20260911.json, health-tailnet-{hq,m1}-20260911.json and
+current-release-arm64-20260911-v2-* artifacts.
+
+## Goal blocked by execution permissions (2026-09-11)
+
+After the same sandbox access blocker recurred across three consecutive goal
+turns, the goal tool returned blocked. Herdr exits 1 (PermissionDenied); the
+prepared runner execution preflight exits 2 because the process table is not
+readable. Collector Release has an exit-0 receipt; Service/RemoteServer and the
+performance run have no terminal receipt. The unchanged Service log does not
+prove termination. No replacement build, restart, deployment or sandbox bypass
+was attempted. Local runner preparation is complete; meaningful continuation
+requires restoring authorized Herdr/process visibility, then resuming the goal
+and reconciling the original runner. Full real-host acceptance remains incomplete.
+Evidence: output/collector-goal-20260908/goal-blocked-20260911.json.
+
+## arm64 performance runner prepared; execution access still unavailable (2026-09-11)
+
+Prepared output/collector-goal-20260908/run-current-release-performance-arm64-v2.py
+without altering the original runner or receipts. Builds explicitly request
+ARCHS=arm64 and ONLY_ACTIVE_ARCH=YES; actual lipo output must be exactly arm64
+before measurement. The runner refuses existing builds or an unreadable process
+table. Acceptance additionally requires a real synthetic PASS summary and unchanged
+source/linked artifacts; xcodebuild exit 0 by itself is insufficient.
+
+CHECKS_RUN: Python syntax compilation and --plan succeeded. Actual
+--check-execution-access exited 2 because pgrep cannot read the process table.
+No new build/test was started. Herdr still returns PermissionDenied. The original
+Collector receipt remains exit 0; Service has no terminal receipt and unchanged
+176166-byte log, which is not proof of completion or termination.
+CHECKS_NOT_RUN: arm64 builds and 30-minute measurement, because existing execution
+cannot be reconciled under the current sandbox; real-host acceptance remains open.
+Evidence: output/collector-goal-20260908/current-release-arm64-v2-preflight-receipt.json.
+Resume by restoring normal Herdr/process visibility, reconciling the original
+runner, then using the arm64 runner. This does not bypass the sandbox or authorize
+host rollout. GOAL remains active; no product code changed.
+
+## Current host inventory and Release measurement preparation (2026-09-11)
+
+Cursor via Herdr wH:p2 completed two read-only acceptance/producer reviews,
+returning done state 1700. Parent inspected the inventory producer and refreshed
+HQ locally and M1 through the existing macmini-m1 SSH target, adding only the
+exact Windsurf transcript path to the lstat inventory. Both hosts have the old
+cache and lack the default transcript directory. HQ settings report local; M1
+settings are absent (the displayed local role is a script fallback). Actual
+process roles, complete source history, per-replica durable receipts and HQ reads
+remain unverified. No source content/DB reads, hooks, deployment or restart.
+
+Static daemon cutover scan and boot-daemon --validate-only both exited 0.
+Prepared an artifact-only runner with dirty-source hashes and recursive linked
+artifact fingerprints for three current Release builds and the existing 30-minute
+synthetic loopback test. Collector build exited 0, with x86_64/arm64 universal
+output. The runner currently passes that architecture string into a test that
+requires arm64, so this attempt cannot establish a performance PASS. Do not
+reuse old c8a9cdc4 performance results for current source.
+
+During execution, the session sandbox changed: Herdr returned PermissionDenied,
+the old exec handle 50559 became unknown, and process listing was denied. Service
+has a build log but no terminal receipt at observation; execution status is unknown.
+Do not duplicate or interrupt builds based on this observation failure. Next:
+reconcile the existing runner/process, retain any preflight failure, then arrange
+an explicitly arm64 Release run. Real-host coverage/retention acceptance remains
+separate. Evidence: output/collector-goal-20260908/real-host-acceptance-20260911.json,
+its inventory receipts, current-release-20260911-* and run-current-release-performance.py.
+GOAL remains active. No product code changed in this slice.
+
+## Windsurf standalone binary and rendered browser chain (2026-09-11)
+
+Fresh Collector, Service and RemoteServer Debug builds passed. The Windsurf hook
+binary test publishes two native JSONL generations to two independent local replicas,
+checks exact raw bytes, removes all original inputs, then starts HQ. HQ commits two
+generations into one native session identity and serves FTS/Web user/assistant/tool/user.
+Tool JSON is compared structurally with the full code_action object. No time/model/cwd
+is invented; collector creates no product index and provisioning seeds no product rows.
+
+Cursor via Herdr wH:p2 implemented the test file only and returned ownership done1690.
+Parent independently reviewed the source, built and ran the producer:1 test,0 failures,
+8 linked Mach-O artifacts unchanged. Browser login204, all6 API reads200, source-filtered
+positive search, four-message detail and no-match search verified in the same run.
+Screenshot was visually inspected; console had0 errors/0 warnings. Closed only the owned
+browser, atomically wrote its matching stop signal with0600 mode, joined the producer,
+and verified fixture/credential removal with no matching live test process.
+
+Evidence: output/collector-goal-20260908/windsurf-binary-browser-receipt.json and linked
+build/test/browser artifacts. This is synthetic local evidence; actual provider hook
+support, retention/history completeness, independent real HQ/M1 storage, daily Mac
+I/O/RSS/latency, Release/full CI and cutover remain unverified. No live provider profiles
+read, hooks installed or remote services changed. GOAL remains active. Cursor is mapping
+existing rollout/resource/retention verifiers read-only to move toward real acceptance.
+
+## Windsurf configured Runtime publication and frozen recovery (2026-09-11)
+
+Explicit Windsurf roots now enter Runtime validation, bounded POSIX observation and
+publication Worker admission. Nil or windsurfHookTranscript selects the dedicated
+format. Enumeration selects only direct visible JSONL files; nested/cache/pb and
+symlink entries are excluded. Existing capture/privacy/HQ shape gates still require
+the transcripts layout; this change installs no hooks or automatic profile discovery.
+
+Parent selection red608/1 preceded Cursor implementation of three activation files
+via Herdr wH:p2 (ownership returned done1675). Parent added three Runtime scenarios:
+two generations with exact bytes on both independent local replicas and stable stream
+identity; interrupted reservation recovery after deleting the source tree, preserving
+sequence/epoch/manifest/root binding; and nil-format escaped exclusion after50KB with
+zero remote publications/ACKs. Each asserts no local product index. First-generation
+bytes are checked before the second write, not fetched again afterward in that case.
+
+Final Runtime3/0, Collector608/0 and Service176/0. Obsolete unsupported-Windsurf
+constructor/observeRoot negatives were updated; unsafe-path coverage remains. Cursor
+read-only review done1680 confirmed activation/default/recovery gates and scoped claims.
+All build handles joined; scoped diff checks passed. Evidence:
+output/collector-goal-20260908/windsurf-runtime-receipt.json with command/log/xcresult.
+
+Next Cursor owns only CollectorBinaryShadowIntegrationTests.swift to add two-generation
+Windsurf native binary replay, deleting originals before HQ starts. Fresh binaries and
+rendered browser checks follow ownership return. Real profiles/hooks, history/retention,
+HQ/M1 independent host persistence, resource budgets, Release/full CI and cutover remain
+unverified. GOAL stays active.
+
+## Windsurf full-archive path privacy proof (2026-09-11)
+
+Windsurf hook capture now has a dedicated privacy assessment using the strict shared
+shape and native identity, immutable CAS hash/size checks, and bounded full-file line
+scanning. It reuses the JSON escape decoder without reconstructing objects or messages.
+No prefix cwd is inferred: observed absolute path candidates are policy evidence only.
+Empty evidence, excluded paths, malformed escapes/UTF8, aliases, bad CAS and budget
+exhaustion withhold publication. Existing Antigravity callback behavior is unchanged.
+
+Cursor via Herdr wH:p2 implemented only CollectorPrivacyProof.swift; parent authored
+and ran tests, reviewed source and corrected concrete gaps. Initial red60/7 showed
+missing admission. First63/5 exposed prose paths and aliases with missing leaves.
+Parent added full candidates plus prose prefixes and ancestor checks; focused63/0,
+Collector604/0. Punctuation red64/4 then Collector605/0, followed by sentence/depth
+red65/2. Final Collector606/0 after sentence punctuation handling and a256-slash
+bound before filesystem work, root-byte bound and duplicate-evidence fast path.
+
+Coverage includes source deletion, escaped nested rules/tools/unknown fields beyond
+50KB, CAS-split Unicode escapes, whole paths with spaces/Unicode, single-path budgets,
+policy changes, corrupted objects, missing alias leaves, and deep-path withholding.
+Evidence: output/collector-goal-20260908/windsurf-privacy-receipt.json plus exact
+command JSON/log/xcresult files. Build handles joined; scoped diff checks passed.
+Cursor review done1666 confirmed those fixes. Parent then reproduced a mixed allowed-
+path plus excluded file-URI bypass66/2: ignoring URI-only evidence was insufficient.
+Local file URIs now decode percent escapes before policy checks; foreign hosts and
+credentials withhold, ordinary web URLs are not local paths. Final Collector607/0.
+
+Path candidate extraction is deliberately conservative and may withhold safe prose
+or valid deep paths. Real profile false-withhold rate and I/O/RSS/latency are not
+measured. Runtime selection/publication and source-deleted recovery, native binaries,
+browser, provider history/retention, real HQ/M1 persistence and cutover remain open.
+No provider hooks installed or live profiles read. GOAL stays active.
+
+## Windsurf hook HQ admission and immutable archive verification (2026-09-11)
+
+Added the dedicated windsurfHookTranscript format, strict shared schema1 single-file
+shape, lexical native identity, factory route, and HQ registry/replay/commit gates.
+Configured root must match the transcript directory exactly. Capturer preserves the
+canonical hook locator across source removal; other-source normalization is unchanged.
+Replica admission uses the same shape predicate, with idempotent publication ACK.
+
+Parent source-deletion test initially failed1/1 for the absent format. Cursor via
+Herdr wH:p2 implemented three HQ files and returned ownership at done1650. Parent
+implemented shared boundaries and independently tested. Core617/0 verifies replay,
+commit and FTS after deleting original inputs, byte-for-byte CAS preservation including
+rules_applied, forged identity rejection, wrong root/format/layout and corrupt input.
+User/planner normalized text remains intentional; immutable raw bytes preserve metadata.
+Cursor review done1652 found no source/root/identity bypass in the HQ delta.
+
+Replica red54/1 rejected the new valid source before the predicate was added; final
+replica54/0. Collector598/0, metadata projection22/0 and Windsurf/native parity14/0
+passed. All build/test handles are joined. Scoped diff checks passed. Evidence:
+output/collector-goal-20260908/windsurf-hq-receipt.json and named JSON/log/xcresult files.
+
+Windsurf privacy proof, runtime selection/publication, restart recovery, binary/browser
+chain and real profile/host support remain open. No hooks installed, live profiles read,
+services restarted or external deployments performed. Next inspect decoded path evidence
+across full raw CAS without message reconstruction or invented workspace identity.
+Real HQ/M1 persistence, resource budgets, Release/full CI and cutover remain unverified;
+GOAL remains active. Cursor completed the readonly privacy map at done1654; its
+proposed eligibility conditions still require parent implementation and failing tests.
+
+## Windsurf native hook frozen transcript replay (2026-09-11)
+
+Added WindsurfAdapter.scanCapturedHookTranscript for bounded replay of official
+nested hook JSONL from immutable staging bytes. Logical canonical transcripts/id.jsonl
+controls identity independently of the physical filename; replay survives source removal.
+User/planner text maps to native roles. Code actions and unknown steps preserve full
+JSON objects as tool content, including type, status and sibling metadata. Missing
+time/model/workspace stay absent or empty; no workspace is inferred from a file path.
+Legacy cache discovery/parsing and TypeScript tooling remain unchanged.
+
+Parent added source-deletion, identity, malformed layout/record and budget tests;
+initial red failed compilation because the API was missing. Cursor via Herdr wH:p2
+implemented the adapter only and returned ownership at done1642. First suite12/0
+passed, but parent review and Cursor confirmation identified lost tool envelopes.
+A new behavioral repro failed13/2; parent retained the full object and counted all
+JSON objects toward the existing message cap, including malformed objects. Final
+Windsurf and AdapterParityTests14/0 passed. All xcodebuild handles are terminal.
+
+Evidence: output/collector-goal-20260908/windsurf-native-receipt.json plus named
+command JSON, logs and xcresult bundles. Final Cursor readonly review is pending.
+Next add dedicated format/shape, source metadata/privacy and HQ admission/commit
+before enabling runtime selection. No provider hooks were installed or profiles read.
+Windsurf whole chain, real HQ/M1 storage, resources, Release/full CI and cutover remain
+open; GOAL is active. This parser does not establish historical source completeness.
+
+## Antigravity standalone binary and browser evidence reconciliation (2026-09-11)
+
+Fresh Collector, Service and RemoteServer Debug builds passed. The source-deleted
+Antigravity CLI integration run completed 1 test with 0 failures and 8 linked
+Mach-O artifacts unchanged. Source inspection confirms both generations are checked
+byte-for-byte on both independent local replicas before original inputs are deleted;
+HQ starts afterward and verifies native identity, four messages and FTS reads.
+
+Recovered the successful run's actual browser request and console buffers: auth204,
+all five API reads200, no console errors or warnings. Inspected its screenshot and
+snapshot showing four messages and the read tool call. Closed only the owned
+antigravity-goal browser; the successful fixture is absent. The 300-second browser
+hold expired normally; no valid stop-file signal was sent in that run.
+
+Preserved the separate first attempt (exit65, 1/1): malformed credential input was
+corrected, but stop-file permissions failed the private-file gate. Its no-match
+search passed; that check was not repeated in the successful producer run. Do not
+merge the two runs into a claim of one fully successful browser checklist.
+Evidence: output/collector-goal-20260908/antigravity-binary-browser-receipt.json.
+No production source edits in this reconciliation. Real profiles/hosts, independent
+HQ/M1 persistence, resource budgets, Release/full CI and cutover remain open.
+Cursor via Herdr wH:p2 is reviewing the Windsurf native hook JSONL implementation
+boundary without editing files or installing hooks. GOAL remains active.
+
+## Antigravity CLI Runtime publication and source-deleted recovery (2026-09-10)
+
+Configured Antigravity CLI brain roots now reach the bounded POSIX walk and publication
+worker. Nil or explicit antigravityCLITranscript selects the dedicated format. Only direct
+session/.system_generated/logs/transcript.jsonl is selected; hidden session IDs, cache/.pb,
+symlinks and deeper distractors remain excluded. Existing nofollow directory access remains.
+
+The capturer preserves the canonical enumerated locator for the strict CLI layout instead
+of applying host-dependent Foundation aliases to its logical identity. Physical classifier
+and stable generation checks remain; other sources/cache normalization is unchanged. No
+inventory schema or recomputed alias candidates were added. HQ provisions the same lexical
+brain root. A failing1/2 replay/commit test established the old /private/var -> /var mismatch;
+the corrected test retains the original root and commits/FTS after source deletion.
+
+Cursor implemented three activation files via Herdr; parent selection red598/1 preceded
+implementation. First Runtime2/3 exposed an omitted Worker init source whitelist; parent
+fixed it, then verified two focused Runtime cases and added default-format privacy coverage.
+Final Core614/0, Collector598/0, Service173/0. The three new Runtime tests cover two generations
+to two independent local HTTP replicas, interrupted unpublished-CAS recovery after source
+deletion with unchanged sequence/epoch/manifest/root binding, and escaped excluded paths
+never acknowledged by replicas. No local product index is created in these fixtures.
+Cursor final review (done1559) found no further missing gate or identity defect.
+
+Evidence: output/collector-goal-20260908/antigravity-runtime-receipt.json with exact command
+receipts, logs and xcresult bundles. Scoped diff checks passed; every build handle is joined.
+Fresh standalone binary/HQ/Web and browser evidence, real profiles/hosts, resource budgets,
+Release/full CI and production cutover remain unverified. Antigravity cache/.pb remains
+separate; full local synthetic source-family count stays15 and GOAL remains active.
+
+## Antigravity escaped-path privacy coverage (2026-09-10)
+
+A failing55-test run exposed3 exclusions bypassed by JSON slash/Unicode escapes after the
+native50KB cwd window. Collector now inspects quoted-string escapes within each already
+bounded UTF8 line, retains at most one decoded string, and applies existing path/root policy
+to decoded strings and unquoted raw spans. It does not build JSON objects or reconstructed messages.
+Native cwd and HQ parsing remain unchanged. Final Cursor delta review (Herdr done1550)
+reported no additional finding after the duplicate-root correction. Standard escapes and Unicode surrogate pairs
+are handled; malformed/truncated escapes, decoded unsafe roots and budget overflow withhold.
+
+Cursor found that rescanning raw quoted text could count escaped spellings as extra roots.
+A safe escaped fixture with maxProjectRoots1 reproduced57/1; the helper now scans unquoted
+spans and decoded tokens separately, retaining the native cwd union without raw duplication.
+Focused checks progressed55/3 ->55/0 ->57/0; final full Collector597/0 after that correction. New coverage includes
+allowed escaped text, invalid/lone surrogate sequences, decoded NUL, root count limits and
+a Unicode escape spanning two CAS chunks. Scoped diff checks passed. Evidence:
+output/collector-goal-20260908/antigravity-escaped-privacy-receipt.json and named JSON/log/
+xcresult receipts. No Runtime enablement, real profiles, real hosts, resource measurements,
+Release/full CI or whole binary/Web chain. Native raw cwd remains a heuristic.
+
+Cursor supplied a readonly four-file Runtime map via Herdr: Runtime format admission,
+POSIX exact hidden-directory selection, Worker format/recovery and Inventory locator binding.
+This is a candidate, not verified implementation. Root identity must remain stable after
+source deletion; recomputing Foundation normalization after disappearance is not sufficient
+proof. Next implement and test that boundary before live selection/publication. Full source
+families remain15 and GOAL active.
+
+## Antigravity CLI HQ admission and frozen commit/index verification (2026-09-10)
+
+A dedicated antigravityCLITranscript format now admits only schema1 single-file CLI logs
+with the exact session/.system_generated/logs/transcript.jsonl replay layout. Collector
+privacy, HQ registry/replay and replica admission share one strict shape predicate.
+Registry and replay require the exact configured root plus relative path; arbitrary ancestor
+roots, generic JSONL, cache layouts and opaque .pb files remain excluded. Native logical
+identity now uses lexical byte validation rather than host filesystem normalization.
+
+Cursor implemented four admission files through Herdr and returned ownership. Parent
+independently added source-deleted ExactSourceCapturer replay/commit/FTS, registry, malformed
+replay and idempotent replica tests. Review found that a forged, internally consistent
+parsed identity could pass generic commit validation. A failing1/1 repro established this;
+commit now rebinds both parsed and raw identity to the frozen session directory.
+
+Initial1/1 failed on the missing format. IntermediateCore614/1 runs exposed two fixture
+assumptions: realpath /private/var differs from existing single-file Foundation-normalized
+locators, and JSONSerialization escapes slashes by default while native cwd is raw-byte
+heuristic. The test now provisions the descriptor-normalized root before deleting sources
+and explicitly emits unescaped slashes. No global capture normalization or native cwd
+semantics were changed. These remain concrete Runtime/profile acceptance concerns.
+
+Final Cursor delta review (Herdr done1540) confirmed both identity fixes and shared privacy
+shape reuse, with no additional finding in those deltas.
+
+Final: Archive/IngestCore614/0, replica53/0, Collector594/0, projection22/0, native/parity23/0.
+Evidence: output/collector-goal-20260908/antigravity-hq-receipt.json and named log/JSON/xcresult
+receipts. Scoped diff checks passed. No Runtime enablement, live profile reads, deployment,
+Release/full CI, real-host or resource checks. Escaped/Unicode-escaped raw paths require an
+explicit privacy decision before Runtime admission. Next: consistent live-root identities,
+bounded hidden-directory observation/publication, then source-deleted dual-replica native
+binary/Web verification. Full local synthetic source families remain15; GOAL active.
+
+## Antigravity CLI metadata and full-stream privacy foundation (2026-09-10)
+
+Shared canonical logical identity and native50KB cwd inference now support the dedicated
+antigravityCLITranscript format and captured adapter factory routing. Collector assessment
+requires the exact session/.system_generated/logs/transcript.jsonl relative layout, schema1,
+single-file capture and absent foreign contexts. Cursor implemented the assessment via Herdr;
+parent tests exposed an absolute/relative helper mismatch (51 tests,3 failures). Parent fixed
+identity binding and exact layout; the focused rerun passed51/0.
+
+Review then identified that prefix-only root evidence misses excluded paths after50KB.
+The final assessment scans every CAS chunk as bounded UTF8 raw text lines while hashing;
+it carries split lines/scalars across chunks, validates every inferred directory against
+root budgets, aliases and exclusions, and rejects malformed EOF or excessive lines.
+Native cwd still uses only50KB. No JSON parsing, message reconstruction, second CAS read,
+Runtime enablement or HQ admission was added. The parent independently reviewed Cursor's
+returned implementation and verified post-window exclusions and cross-chunk Unicode paths.
+
+Final checks: privacy54/0, Collector594/0, shared projection22/0 and native/parity23/0.
+Evidence: output/collector-goal-20260908/antigravity-privacy-receipt.json and the named
+antigravity-fullstream-{privacy,collector}, antigravity-prefix-{projection,native} logs,
+JSON command receipts and xcresult bundles. Scoped diff whitespace checks passed.
+Raw path inference is the native regex, not semantic JSON decoding or a substitute for HQ
+strict message parsing. Real profiles, resource budgets, cache/.pb coverage, Runtime/HQ
+integration, source-deleted binary/Web chain, Release/CI and real hosts remain unverified.
+Full local synthetic source-family count remains15 and the overall GOAL remains active.
+
+## Antigravity captured CLI parser and supported Windsurf export lead (2026-09-10)
+
+AntigravityAdapter now exposes scanCapturedCLITranscript for an immutable physical file
+and a canonical absolute logical brain-transcript locator. It derives identity from the
+logical session directory, strictly reads captured JSONL, and reuses native message/info
+normalization and the bounded raw-prefix cwd helper. Ordinary CLI/cache behavior remains
+covered by existing tests. This is a parser foundation, not Collector or HQ admission.
+
+Cursor implemented only the adapter through Herdr wH:p2 and returned ownership (done1166).
+The parent independently added six tests covering all three brain aliases after deleting
+original directories, arbitrary staged filenames, tools/errors/parent and usage semantics,
+malformed/non-object/invalid UTF8 records, file/line/message limits, tool-only/empty outcomes,
+logical layout rejection and the50KB raw cwd boundary without message truncation.
+First build exposed async XCTest-autoclosure mistakes in the new tests. The next23-test run
+had3 assertions: relative logical paths were accepted, and an old static test required the
+Self.cwdInferenceByteLimit spelling. The parent added canonical absolute path validation
+and restored that spelling; final17 Antigravity plus6 parity tests passed23/0, exit0.
+No parser golden output changed. Physical staging remains a caller-owned immutable input;
+the existing FileHandle prefix reopen is not a new nofollow or OS isolation boundary.
+
+Evidence: output/collector-goal-20260908/antigravity-native-receipt.json and
+antigravity-native-{first,second,green}.{json,log,xcresult}. Scoped diff checks passed and
+all own test processes joined. Antigravity capture privacy/path selection, Runtime/HQ
+routing, replica and rendered browser chains remain open; source-family count stays15.
+No full CI/Release, provider calls, hooks installation, real profiles/hosts/resources,
+source retirement, commit/push or deployment ran in this slice.
+
+Official documentation checked2026-09-10 redirects the Windsurf hooks page to
+[Devin Cascade hooks](https://docs.devin.ai/desktop/cascade/hooks#post_cascade_response_with_transcript).
+Its full-conversation JSONL export offers a supported acquisition candidate; the100-file
+retention limit requires prompt durable capture. Installed-version support and historical
+backfill remain unverified. See output/collector-goal-20260908/windsurf-official-hook-evidence.json.
+This supersedes treating an undocumented Markdown JSON RPC as the only possible next step.
+The new transcript shape needs its own parser rather than the old flat cache adapter.
+
+## HQ obsolete-generation recovery without current-head regression (2026-09-10)
+
+A valid publication with a lower sequence than the current same-authority native identity
+head must not overwrite current data. Previously the commit guard threw staleGeneration,
+and the Service worker left the work processing until lease expiry, repeatedly attempting
+an update that can never be applied. The committer now distinguishes that exact condition
+as obsoleteGeneration; all generic stale/concurrency/duplicate and sequence-conflict cases
+keep their prior handling. The worker records quarantine.obsolete_generation through the
+existing claim, policy, binding and transaction fences, clears the claim/retry deadline,
+and leaves publication/raw CAS intact. This is a retained, unapplied older snapshot, not a
+new parsed generation or a corrupt-source claim. No ledger schema migration was needed.
+
+Three worker regressions cover late arrival, restored CAS after a newer generation parsed,
+and an actual index_ready generation. They verify the older archive still replays with its
+original model, both publication rows remain, current session/identity heads/normalized
+messages/FTS/index jobs stay identical, expired claims are not reacquired, and unrelated
+work continues. The Core older-sequence regression still requires no product mutation.
+Cursor (Herdr wH:p2, same session, done1153) reviewed the split/fences with no findings;
+the parent checked the source and actual tests rather than relying on that report alone.
+
+Verification: ingest-obsolete-red reproduced two staleGeneration failures across 60 tests;
+initial green passed 60/0. The added readiness case initially assumed one FTS row per
+session (actual three); the oracle now checks a real keyword match and whole-table
+preservation. Final Worker passed 61/0, Archive/CaptureIngest Core passed 611/0.
+Runtime first failed two setup guards because the required process-home marker was absent;
+the ignored runner now creates a private checkout-local .engram-demo-test-home.* directory,
+passes both required runner variables, retains the existing DerivedData cache and removes
+only its own home after success. Final actual Runtime suite passed 13/0 and joined exit 0.
+
+Evidence: output/collector-goal-20260908/ingest-obsolete-receipt.json and matching
+{ingest-obsolete-red,ingest-obsolete-ready-final,ingest-obsolete-core,
+ingest-obsolete-runtime,ingest-obsolete-runtime-isolated}.{json,log,xcresult}.
+All own processes joined; scoped diff checks passed. No fresh standalone binary/browser
+scenario, full CI/Release, real hosts, provider API, push, deployment or source retirement
+ran in this slice. Generic concurrency/duplicate claim recovery is not newly proven.
+
+Windsurf discovery remains bounded: existing JSON list/trajectory requests are in the
+retained TS client, but ConvertTrajectoryToMarkdown is only demonstrated through gRPC.
+Its JSON twin is unverified. Raw acquisition must preserve the full workspace summary for
+privacy rather than the TS first-workspace projection. The cutover test's RPC-name ban
+covers five enumerated old app/parser/cache files, not all Collector product code.
+Cursor is investigating whole-trajectory JSON completeness as an alternative raw export
+surface; no native coverage or new provider protocol support is claimed. Source count
+remains 15 local synthetic families and the full GOAL remains active.
+
+## VSCode native binary/browser validation and HQ same-batch ordering (2026-09-10)
+
+VSCode now has a complete local synthetic Collector -> two independent HTTP replicas ->
+HQ native replay/index/search -> rendered Web chain. The binary fixture captures two
+journal generations with workspace metadata and embedded external configuration, verifies
+exact bytes at both replicas, deletes all original inputs before starting HQ, and requires
+two parsed generations under one native session identity with three final messages.
+Collector creates no product index. This raises local synthetic source coverage to 15;
+it does not establish real-host/profile/resource acceptance.
+
+Binary fixture setup initially failed because the private directory helper is nonrecursive,
+then because the private file creator refuses rewriting an existing journal. Both fixture
+issues were corrected using existing helper patterns. The next actual binary run exposed
+an HQ bug: intake records with equal second-resolution created_at values were ordered by
+publication digest, allowing generation 2 before generation 1, which then threw
+staleGeneration. ServiceCaptureIngestWorker now retains creation-time priority and orders
+ties by stream tuple, sequence, then digest; commit monotonicity guards remain intact.
+
+The deterministic worker regression first exposed an incorrect fixture digest direction
+(58 tests/1 assertion), then reproduced the actual sequence inversion and staleGeneration
+(58 tests/2 failures). Final ServiceCaptureIngestWorkerTests passed 58/0. Cursor, dispatched
+through Herdr wH:p2, identified an older randomized digest-min test whose oracle became
+stale; it now checks earlier sequence across native sessions, and the final suite passed.
+This change only fixes same-time ties: older arrivals or delayed eligibility with different
+creation times can still hit staleGeneration and require further integrity work.
+
+Fresh Debug Collector/Service/RemoteServer builds all passed (vscode-order-20260910).
+The standalone binary test and browser producer each passed 1/0 with eight recursively
+linked local Mach-O fingerprints stable before/after; system/SDK dependencies are labeled
+unhashed. Playwright Chrome verified login 204, reads 200, VSCode source/query results,
+all three rendered messages, and a no-match result; console had zero errors/warnings.
+The detail screenshot was visually inspected. The owned browser was closed, matching
+private stop marker consumed, producer joined exit 0, and fixture removal verified.
+
+Evidence: output/collector-goal-20260908/vscode-binary-browser-receipt.json,
+ingest-batch-order-red-v2.{json,log}, ingest-batch-order-final.{json,log},
+vscode-binary-order-green.{json,log}, vscode-browser-producer.{json,log};
+output/playwright/vscode-browser-{receipt.json,detail.png,detail.yml,no-match.yml,requests.txt,console.txt}.
+These ignored local receipts supplement the tracked narrative, not a committed CI record.
+No Release/full CI, real HQ/M1 operations, profile inventory, aggregate resource checks,
+source retirement, push or deployment ran in this slice.
+
+Cursor also traced Windsurf's existing cache producer: retained src/adapters/windsurf.ts
+sync calls live Cascade RPC, obtains Markdown, parses locally and writes JSONL; the Swift
+adapter only reads that cache. Merely watching cache files would not satisfy native
+lightweight acquisition with HQ parsing. Bounded raw export and Swift transport reuse
+are the next source investigation; no live provider request was made.
+
+## VSCode metadata-change recapture and source-deleted Runtime recovery (2026-09-10)
+
+The existing captured-dependency range pager now serves both Cursor and VSCode, retaining
+bounded rows, fair root rotation, time gating and guarded dirty updates. Its internal APIs
+were renamed for both sources. VSCode's unchanged probe compares file generations and
+named directory identities without reading primary/workspace/external payload. Changed,
+missing or unsafe dependencies request normal recapture/privacy checking. Owner ingress
+keeps only native primary journal events; sidecars and cache files cannot occupy independent
+session claims. Workspace/external changes are covered by periodic captured-input observation.
+
+Runtime tests verify three generations with an unchanged primary: initial folder workspace,
+changed workspace referencing external configuration, then external-only configuration change.
+The last two keep identical raw file-set bytes but distinct capture IDs/frozen configuration.
+Both independent local HTTP replicas receive exact bytes. Another Runtime test first leaves
+publication unacknowledged, stops, deletes source and external configuration, and restarts;
+original publication and root binding are preserved while frozen CAS reaches both replicas.
+No product index is created. Observer tests also cover absence becoming present, source
+replacement, malformed replacement payload and symlink detection with no leaked descriptors.
+
+Evidence: `output/collector-goal-20260908/vscode-metadata-runtime-receipt.json`.
+Sidecar RED78/2 proved four queued locators instead of one. Initial extended Runtime RED169/1
+exited with CancellationError (not claimed as conclusive proof of the notification cause).
+After implementation Service169/0 passed; final source-delete coverage raised it to170/0.
+Full Collector589/0 passed, including thirteen observer tests. Final handles joined exit0;
+scoped diff checks passed and previous failures remain available.
+
+Cursor persistence review finished done1120 with one suggested weaker test oracle, rejected:
+reopened reservation equality already checks round-trip, while comparison to independent
+fixture context enforces unchanged frozen bytes/generation. ExactSourceCapturer validates and
+copies that context rather than rewriting it. Cursor now reviews only stat-only observation
+and the bounded pager (working1121, verdict pending). Fresh binary/HQ-search/browser evidence,
+aggregate changed-capture I/O and scheduling/profile/resource/real-host/remaining-source/
+Release/CI/cutover gates remain open. Full local source-family count stays14; GOAL remains active.
+
+## VSCode initial headless Runtime capture and dual HTTP publication (2026-09-10)
+
+Explicit VSCode Runtime roots and parse format now route through native-depth POSIX journal
+selection and a Worker file-set capture branch. The branch freezes metadata, reserves the
+schema11 snapshot, validates live snapshot before/after exact capture and uses existing
+privacy-gated independent publication. It charges embedded configuration in capture and
+reservation-recovery allowance; overflow does not silently fall back to primary size.
+Before reading a newly reserved primary it consults the existing bounded recovery pager,
+so a restart can reuse matching immutable capture rather than reread the same journal.
+
+The new Runtime integration test starts two independent local HTTP replica stores, verifies
+exact journal+workspace bytes, restarts without another primary capture, and checks that no
+product index was created. Source selection also excludes workspace sidecars, cache/nested
+paths and hidden workspaces. Evidence: `output/collector-goal-20260908/vscode-runtime-initial-receipt.json`.
+Service RED169/2 was invalidConfiguration. Intermediate169/5 included one VSCode repeat-capture
+failure, fixed by recovery reuse, and four legacy Cursor ownership assertions; all169 passed
+in the final rerun. The legacy first-failure cause remains unassigned. Collector585/3 exposed
+stale unsupported-vscode negative examples; replacing them with still-unsupported Windsurf
+and adding positive binding/selection coverage yielded586/0. Final handles joined exit0 and
+scoped whitespace checks passed. Earlier logs remain available.
+
+This is initial Runtime publication, not complete VSCode source-family acceptance. Workspace
+sidecar routing, bounded external-configuration change observation, non-primary queue
+starvation prevention, metadata-only recapture and source-delete Runtime recovery remain.
+Repeated metadata observation reads still require aggregate I/O-budget validation. No fresh
+VSCode binary/HQ-search/browser chain or real-host verification was run. Cursor remains in
+read-only persistence review (working1113, no verdict). Full local family count stays14;
+remaining sources/profiles/resources/Release/CI and separately authorized cutover remain open.
+
+## VSCode POSIX observation and schema 11 reservation persistence (2026-09-09)
+
+The metadata-only VSCode observer selects the primary journal and present/absent workspace,
+freezes bounded external configuration after admission, respects native folder precedence,
+and rechecks named source/workspace/chat directories and external file generation. Missing
+nested configuration parents cannot redirect reads to a same-named ancestor decoy; unsafe
+symlinks remain errors. Eleven focused observer tests cover selection, precedence, exact
+raw bytes, absence, symlinks, directory replacement and byte limits.
+
+Collector inventory schema11 persists canonical, hashed VSCode configuration separately
+from file-set members and other source contexts. Reservation reload validates source/context
+exclusivity, and publication checks the exact frozen manifest binding. Six persistence tests
+cover database reopen after source deletion, changed-context rejection, corruption without
+row loss, legacy publication/ACK migration preservation, transaction rollback, referenced
+absence and maximum64KiB configuration. Runtime source admission remains unconnected.
+
+Evidence: `output/collector-goal-20260908/vscode-persistence-observer-receipt.json`.
+Parent test compile initially needed one missing try; behavior RED127/6 then proved VSCode
+reservation rejection. New helper registration required an explicit project.yml entry before
+pinned XcodeGen2.45.4. Registered Collector584/6 exposed four stale dependency-list assertions
+and two Cursor fixture file/directory path errors. After correction and another context-boundary
+test, full Collector585/0 passed. Worker87/6 exposed stale unknown-version11 expectations;
+using12 for the unknown version and11 for current schema yielded Worker87/0. All final runner
+handles joined exit0; scoped diff whitespace checks passed. Earlier failures remain recorded.
+
+Parent took ownership of both new files after intentionally pausing Cursor's edit turn;
+Herdr confirmed done1111 before generation/build, without restarting the session. Cursor is
+now read-only reviewing Store/persistence (working1113; verdict pending). The earlier
+ancestry-test concern was withdrawn after checking that workspaceURL names the directory;
+the actual fixture mistakes were the symlink and byte-budget paths. Full local source-family
+coverage stays14; Owner/Worker/Runtime integration, external-config recapture, fresh binaries,
+browser, real HQ/M1, resource and release/cutover verification remain open. No external writes.
+
+## VSCode Collector identity, privacy and frozen-context byte allowance (2026-09-09)
+
+Collector metadata now projects only VSCode journal identity mutations, matching native
+reset/set/delete/root-change semantics without reconstructing conversation history.
+Frozen workspace metadata preserves native folder/configuration precedence and cwd,
+while privacy checks every configured project folder against current exclusions.
+Composite CAS verification streams bounded primary records, retains only bounded workspace
+metadata, validates hashes/member boundaries, and rejects incomplete or malformed identity
+and unknown/remote project roots. External configuration bytes count toward both privacy
+and snapshot capture allowance, with checked overflow arithmetic.
+
+Evidence: `output/collector-goal-20260908/vscode-collector-foundation-receipt.json`.
+Native projection RED19/26 assertions to final20/0; privacy behavior RED48/8 assertions
+(after correcting a fixture-only `/var` symlink ancestor) to final49/0. Registered Collector
+regression passed567/0. Snapshot-budget RED124/2 assertions proved omitted32 bytes and
+missing overflow rejection; after the fix, full registered Collector passed568/0.
+All final runner handles were joined with exit0; scoped diff whitespace check passed.
+
+Herdr Cursor pane `wH:p2` remains working on only the new VSCode POSIX observer and tests.
+Parent review found pre-read budget, missing-parent/ancestor decoy, and named-ancestry
+fencing gaps; Cursor acknowledged them. Those files are not yet frozen, generated into the
+project, compiled or accepted. Persistence, runtime integration, whole-cycle embedded-byte
+accounting, fresh binaries/browser and real HQ/M1 verification remain open. No deployment
+or cutover occurred; local synthetic full-family coverage remains14 and GOAL stays active.
+
+## VSCode HQ native replay, parsed commit, FTS and replica admission (2026-09-09)
+
+HQ now recognizes explicitly provisioned VSCode format/source bindings and schema7
+file-sets. Replay restores exact members, reads the workspace through no-follow directory
+and file descriptors with bounded size/hash checks, revalidates its frozen external
+configuration reference and uses the native journal parser. It never opens the external
+configuration path. Existing staging verification covers all member identities and hashes
+before/after parsing. The writer validates native transcript size independently of captured
+workspace bytes. Replica publication admits only the schema7 VSCode shape and retains its
+canonical manifest and idempotent ACK; generic schema2 VSCode manifests remain inadmissible.
+
+Actual source-tree deletion test now runs ExactSourceCapturer -> CAS -> HQ native replay
+-> parsed writer commit -> recoverable FTS job -> exact search hit, preserving native ID,
+project and both messages. Tests cover configuration-reference substitution, wrong configured
+root, workspace symlink replacement, frozen configuration absence and context-stripped
+schema2 rejection at both HQ and replica. Collector automatic VSCode roots/metadata/privacy
+are not yet enabled; the composite format is not accepted by single-file metadata consume.
+
+Retained REDs: initial Swift test type-check expression limit; HQ609/3 missing format;
+async XCTest-autoclosure test compilation; commit610/1 bindingChanged from omitted registry
+shape admission; subsequent610/1 invalidReplay from aggregate-vs-native size; replica52/1
+invalidPublication from omitted admission. Final Archive/Ingest611/0, replica52/0 and
+Collector562/0 passed, actual exit0, all producers joined. Commands, failures and11 source
+hashes are in `output/collector-goal-20260908/vscode-hq-receipt.json`. Scoped diff check passed.
+
+Herdr Cursor schema review finished done1093. Its generic-schema2 decode observation is
+true but not a product bypass: explicit downgrade rejection tests now prove the HQ/replica
+boundary. Its proposed removal of the locator for missing configuration was rejected:
+referenced absence is distinct from no reference and must retain the URI binding. Future
+Collector acquisition must independently fence absence and check every relevant privacy
+root; native first-folder metadata is not upload authority. The HQ scoped review is
+working1094 and is not credited as completed.
+
+Next: bounded external workspace acquisition, mutation identity projection and privacy,
+then resident Runtime lifecycle, independent HTTP replicas and fresh binary/browser chain.
+Complete local family count stays14. Other source/profile/resource, real HQ/M1, Release/CI
+and separately authorized cutover/retirement gates remain open; full GOAL stays active.
+
+## VSCode schema 7 frozen external configuration and exact capture (2026-09-09)
+
+Archive schema7 now carries a source-specific frozen VSCode workspace context. The
+closed file-set declares one workspace chat JSONL and workspace.json, with explicit
+workspace absence when appropriate. External configuration is stored as exact bounded
+bytes with its original absolute locator, regular-file generation and matching SHA256;
+a locator without the complete byte/generation/hash tuple records absence. Partial
+provenance, oversized/nonregular content, wrong source/layout and schema downgrades fail
+validation. Context path identity uses UTF-8 bytes, not Unicode-equivalent String equality.
+
+ExactSourceCapturer retains workspace bytes during its existing stream, validates that
+native folder/configuration precedence references the frozen external locator, and fences
+the already-opened members before commit. Workspace bytes are capped before reading;
+embedded external bytes count toward maximumByteCount. External-file acquisition and
+its no-follow generation/absence fences remain the caller's responsibility and are not
+yet wired into the VSCode Collector. No live external file is read by this capture primitive.
+
+Model RED81/2 rejected unsupported schema7; GREEN81/0 followed. A positive fixture was
+corrected to declare present workspace.json when an external reference exists. Two test
+compilation errors (SourceObservation type and catalog manifest field) are retained.
+Actual capture RED85/2 exposed omitted external-byte budgeting and reference matching;
+GREEN85/0 passed after implementation. Final Archive/Ingest606/0 and Collector562/0
+passed with exit0, all producers joined. Tests delete the external configuration before
+capture and whole source tree afterward, recover exact context bytes from CAS, preserve
+unchanged primary chunks across context-present/absent identities and prove idempotence.
+Exact commands, errors and five source hashes:
+`output/collector-goal-20260908/vscode-archive-context-receipt.json`.
+
+Herdr Cursor native seam review completed done1074 with no findings, independently
+consistent with the prior native20/0 tests. Its schema/context review was working1075
+at this record. Next: bounded external acquisition/privacy, HQ format/registry/factory/
+replay/commit with restored-workspace reference revalidation, then Runtime, replica and
+binary/browser chains. Complete local family count remains14. Natural profiles/resources,
+real HQ/M1, Release/CI and separately authorized cutover/retirement remain open; GOAL active.
+
+## VSCode native frozen-workspace replay foundation (2026-09-09)
+
+Added an internal captured-source entry to the native VSCode adapter. It preserves
+logical filename fallback after journal ID deletion and resolves workspace cwd from
+explicit frozen workspace.json and optional external configuration bytes. Relative
+folders resolve against the original configuration URI. Absent frozen data never
+falls back to files on the replay host. Live parsing retains the same folder/configuration
+and first-dictionary uri/path precedence, model/usage absence and mutation semantics.
+Immutable replay rejects malformed records and incomplete scans instead of accepting
+an apparently complete shortened transcript.
+
+Actual behavioral RED:19 tests/8 assertion failures demonstrated staging filename/cwd
+dependence and malformed-line tolerance through a temporary native wrapper. Green19/0,
+then expanded final20/0 (14 VSCode tests plus6 parity tests), all producers joined.
+Coverage deletes original transcript and external configuration, replays under two
+renamed staging paths, compares native messages/times/identity, injects misleading live
+workspace/configuration files and verifies frozen absence and native precedence.
+Commands, retained RED and two source hashes are recorded in
+`output/collector-goal-20260908/vscode-native-foundation-receipt.json`.
+
+Herdr Cursor contract review completed at done1072; native source confirms the external
+configuration dependency. Its first-folder recommendation applies to native cwd selection,
+not upload privacy: all relevant workspace roots still require exclusion/ambiguity checks.
+The scoped implementation review was working1073 at this record. No production changes.
+
+This is native replay foundation only: typed archive bytes/generation/hash/absence context,
+bounded Collector acquisition/privacy, HQ registry/factory/commit, Runtime, independent
+replicas and binary/browser chains remain next. Full local source-family count remains14;
+real profiles/resources/HQ/M1/Release/CI/cutover gates and full GOAL stay open.
+
+## MiniMax and LobsterAI resident capture, independent replicas and rendered Web (2026-09-09)
+
+Default-Claude roots now select the native effective source before reserving ordered
+capture. A no-follow FD reads bounded metadata only until the first nonempty native
+message model; logical LobsterAI paths and forced Claude profiles avoid hint reads.
+The hint shares one per-cycle byte ceiling equal to maxCaptureBytes, caps each line
+at the existing privacy limit, and verifies the FD/path generation after reading.
+Admission/exhaustion/change defers without ACK. Full frozen-CAS privacy still rejects
+later source/cwd disagreement or incomplete metadata; the hint never authorizes upload.
+
+Reservations reload their effective source from schema10 streams. Allocation, exact
+capture and saved-CAS recovery use that same source; upload independently checks the
+publication's persisted stream source. Runtime policy admits derived labels for default
+Claude formats only; forced custom profiles retain Claude classification. No new product
+parser/index or overlapping physical roots were added to Collector.
+
+Actual tests cover Claude→MiniMax→LobsterAI→Claude on one root with stable distinct
+instances and per-source sequences, exact dual-replica bytes, post-CAS crash/source
+removal, forced profiles, later conflicting models, shared hint budgets after failed
+captures, and whole Runtime restart with all three source roots' files deleted and
+pending offline publications. Runtime sends the original publication digests after
+restart without recreating the absent physical root. A settings-format rewrite still
+invalidates the live worker; reopening default format uses a distinct truthful MiniMax
+stream instead of extending the old forced-Claude stream.
+
+Final Collector562/0, Service167/0 and Worker87/0 passed, actual exit0. Retained failures:
+initial test credential-policy setter compilation error, behavioral Worker82/6 RED,
+first implementation compile errors (throw marker/timespec comparison), and EOF-test
+87/2 oracle failure. The EOF correction preserves the existing incomplete-line privacy
+hold: raw bytes and source are captured at exact budget, then the newline-completed
+new generation publishes. No production guard was relaxed for that test.
+
+Fresh Debug Collector/Service/Remote builds passed. Each source's actual binary chain
+passed1/0 across two generations with stable identity, exact messages/native usage,
+independent raw replicas, HQ native replay/commit/FTS and Web IPC. Both rendered browsers
+verified login, source filter/search, exact3messages and no-match; screenshots were
+visually inspected. MiniMax's driver first requested absent bundled Chromium (corrected
+to installed Chrome) and filled an entire synthetic credential JSON, producing two
+retained401s; credential-field login then returned204 and reads200. LobsterAI had zero
+console errors/warnings. The requests CLI stdout correction is retained as driver evidence.
+Both browsers, binary producers and owned fixtures are closed/removed; eight local
+linked Mach-O hashes stayed stable for each run. System/SDK dependencies remain unhashed.
+
+Herdr Cursor's scoped migration and source-hint reviews returned no findings (done1064
+and1070). Its final capture-plumbing-next phrase was stale relative to the source and
+executed chain; the EOF supplement was parent-verified outside that review. Exact commands,
+retained failures, seven source hashes and browser/build receipts are linked from
+`output/collector-goal-20260908/derived-source-chain-receipt.json`. Scoped diff check passed.
+
+Local synthetic source-family chain evidence now covers14 families. Remaining families
+are VSCode, Windsurf and Antigravity; actual runtime/profile inventory, natural-input
+I/O/RSS/latency, lifecycle/recapture corners, real HQ/M1 identity/catalog, current
+Release/CI and separately authorized production cutover/retirement remain open. No
+production deployment, service restart or source retirement occurred. Full GOAL is active.
+
+
+## Shared-root source-stream schema migration (2026-09-09)
+
+Collector publication schema 10 adds an explicit effective-source dimension to the
+stream primary key. Existing ordinary allocation selects only the configured source;
+this does not yet enable derived-source collection. The parent implemented the change
+after an actual schema9 DDL RED. An isolated Python SQLite experiment rejected deferred
+DROP/recreate: foreign_key_check was empty but COMMIT failed. The product now uses its
+owned GRDB queue, disables foreign keys outside the migration transaction, copies and
+replaces the stream table, checks references before commit, and restores the original
+foreign-key setting on success or failure. No child table/receipt is rewritten.
+
+Matching current-root revisions inherit their known source. Historical revisions keep
+an explicit empty unresolved source, preserving their instance/epoch/sequence and child
+records without guessing from current configuration. Normal allocation never selects
+the empty source. No root revision is fabricated and no existing stream identity is reset.
+
+Actual GRDB tests prove schema9 saved-CAS reservation recovery after source deletion,
+unchanged publication/ACK bytes, stable instance/epoch/sequence, distinct source keys,
+historical unresolved preservation across reopen, and injected pre-commit rollback to
+schema9 with foreign keys reenabled before a successful retry. Final full Collector
+562/0 and Worker81/0 passed with actual exit0; earlier Service160/0 passed on the same
+production source. Updated schema-version expectations and the ordinary publication
+fixture seed, preserving unknown-version rejection at11. Scoped diff check passed.
+Evidence: `output/collector-goal-20260908/shared-source-schema-receipt.json` and its exact
+command receipts, retained SQL RED/experiment and four source hashes.
+
+Herdr Cursor reviewed the design and received a test-only task. The coordinator froze
+that task at observed done state1062 before editing its test scope, then independently
+implemented and ran the final migration tests; no unreturned worker tests are credited.
+Next: bounded effective-source observation and durable reservation/capture routing,
+then source-deleted recovery to both replicas and fresh native binaries/Web. This is
+storage migration only: complete local source-family coverage remains12; actual-host,
+resource, Release/CI and authorized cutover gates remain open. Full GOAL stays active.
+
+
+## MiniMax and LobsterAI truthful HQ replay and replica admission (2026-09-09)
+
+Admit explicitly labeled MiniMax/LobsterAI single-file archives with the default
+Claude parse format. Custom profiles remain Claude-only. Source bindings, manifests
+and native scans still must agree; wrong-source content is quarantined. Independent
+source bindings can share a physical root, while overlapping roots for the same
+source remain rejected. Replica admission retains the explicit source and idempotent ACK.
+
+New tests cover logical-path classification independent of staging, cross-source
+rejection, and actual exact-byte capture followed by source deletion, native replay,
+commit and FTS. MiniMax and LobsterAI using the same native ID remain two sessions,
+with native messages and usage preserved. The first full-chain fixture failed because
+its physical macOS temporary-root alias differed from the capturer-standardized locator;
+normalizing the registered fixture root fixed it without relaxing path fencing.
+
+Validation: initial HQ RED 596/7 and replica RED 51/2; first HQ GREEN attempt 596/1
+retained an obsolete unsupported-source expectation. Correct rejection is now binding
+mismatch; supplemented GREEN 597/0. Full native commit final 598/0 and replica 51/0,
+all final producers exited 0. Scoped diff check passed. Exact commands, retained failures
+and seven source hashes: `output/collector-goal-20260908/derived-claude-foundation-receipt.json`.
+
+Herdr Cursor wH:p2 reviewed shared-root stream design read-only. Its one-stream proposal
+was challenged against the explicit `(machineID, source, configured root)` map at design
+lines 492-497; the current newly expanded format table is implementation, not independent
+spec evidence. Cursor completed its correction at Herdr state sequence 1056: one Claude
+binding authorizing derived sources violates the existing map contract; retain one
+physical root and distinct effective-source bindings/streams. Parent verified the cited
+contract and current immutable binding/overlap guards. No source-authority guard or
+Collector inventory schema was relaxed.
+Next: implement shared-root per-source streams, persist effective source before capture, and
+verify restart recovery/dual-replica Runtime delivery. Fresh binaries/Web, actual hosts,
+resource gates, Release/CI and cutover were not run for these sources. Complete local
+source-family coverage remains 12; this HQ foundation does not complete the full GOAL.
+
+
+## Cline resident collection, independent replicas and rendered Web (2026-09-09)
+
+Enabled Cline roots in the Swift resident Collector, stat-only discovery, bounded
+event ingress, durable reservations/recovery and replica admission. Selected UI or
+legacy arrays use the previously verified frozen file-set/native-HQ replay path.
+The existing Cursor primary-claim transaction now validates Cursor/Cline authority
+explicitly. A Cline pending sibling is claimed before capture and acknowledged only
+after actual durable selected bytes, preventing the executed one-file-budget restart
+recapture. Cross-task remaps and stealing an in-flight primary are rejected.
+
+Executed REDs exposed invalid discovery/runtime admission, missing reservation
+snapshot routing, repeated post-restart capture, and ENOENT escaping a capture
+cycle. Cline source disappearance now defers while preserving the reservation so
+recovery checks saved CAS first. Source return may require one cycle to clear an
+uncaptured old reservation and a later bounded cycle to capture; the original
+single-cycle test oracle was corrected after observed cycle200 cleanup/cycle201
+capture, followed by three settled cycles. Saved-CAS recovery after task removal
+preserves the original sequence/epoch and reaches both replicas.
+
+Final local checks: Collector560/0, replica49/0, Worker80/0, Service160/0. Fresh
+Debug Collector, Service and RemoteServer builds all exited0. Actual two-generation
+Cline binary chain passed1/0: exact bytes in independent local replicas, stable HQ
+session identity, native messages/positive usage, FTS/Web IPC and no Collector
+product index. All eight recursively linked local Mach-O artifacts stayed identical
+before/after execution; external system/SDK references remain explicitly unhashed.
+Playwright login204, source=cline search/detail/three exact messages/no-match200,
+zero console errors/warnings and a visually inspected screenshot passed. Browser,
+owned child processes and the successful fixture were closed/removed. An assertion
+script initially treated expected-message objects as strings; it was corrected
+before the successful producer stop. Receipts:
+`output/collector-goal-20260908/cline-chain-receipt.json` and
+`output/playwright/cline-browser-receipt.json`.
+
+Herdr Cursor authored two Runtime tests and reviewed the Cline claim path; parent
+reviewed actual edits and independently ran verification. Source adjudication is in
+`output/collector-goal-20260908/cline-review-adjudication.json`: event failures request
+reconciliation rather than silently acknowledging batches; no claimed data loss or
+reachable stuck sibling was demonstrated. Mixed unsafe/healthy event latency and
+late-event/crash rechecks remain additional coverage/resource questions. New
+bootstrap scan IDs conservatively re-dirty unchanged file candidates, so this is
+not a zero-reread guarantee across arbitrary reconciliations.
+
+Twelve configured source families now have local chain evidence. Remaining families
+are minimax/lobsterai (effective sources sharing Claude roots), vscode, windsurf and
+antigravity; full natural-source/profile/resource, real-host HQ/M1, M1-local identity,
+Release/CI and authorized production cutover acceptance remain open. The GOAL stays
+active. No commit, push, deployment, production restart or source retirement.
+
+## Cline captured-array privacy and native replay foundation (2026-09-09)
+
+Added a metadata-only Cline task selector that prefers ui_messages.json and permits
+claude_messages.json only with an explicit absent-UI snapshot. POSIX no-follow
+checks reject unsafe UI entries and release descriptors. Added the helper to the
+explicit Collector target using pinned XcodeGen 2.45.4; dependency-isolation tests
+continue to reject product parser/index frameworks in the Collector.
+
+Captured Cline uses a schema-2 one-file set, preserving the task-directory identity
+and legacy preference proof. Collector privacy reads CAS through bounded incremental
+JSON-array framing, rejects malformed/conflicting/excluded metadata and binds policy
+to the immutable capture. HQ replay validates the file-set shape and complete array,
+then uses native Cline message/usage parsing with the frozen logical locator. Native
+live parsing behavior is unchanged. Source removal, task identity, positive usage,
+wrong format, absent-proof mismatch, malformed arrays, arbitrary chunk splits,
+UTF-8/escapes, record budgets and nesting limits have executable coverage.
+
+Herdr Cursor wH:p2 authored the selector and four reader/projection tests. Parent
+reviewed actual edits, corrected an invalid depth fixture, added privacy/HQ rejection
+cases and independently ran all verifiers. The initial missing-format RED had
+593 tests/1 failure. A subsequent initializer compile failure, test-only /var alias
+refusal and four stale target-source assertions are retained as separate attempts.
+Final checks: Archive/Ingest 594/0, Collector 559/0, projection 17/0, Service 153/0;
+all producer exits are 0. Receipt and candidate hashes:
+`output/collector-goal-20260908/cline-foundation-receipt.json`.
+
+Cline is NOT yet enabled in Runtime and does not increase complete source coverage.
+Next: add a Cline preferred-primary claim transaction using the existing Cursor
+claim pattern, capture the selected UI under budget 1, and acknowledge an old legacy
+claim only after durable capture. Validate UI arrival, restart and failure before
+wiring events/Worker/Runtime and replica admission, followed by actual native-binary
+HQ/FTS/browser proof. The current Cursor method cannot be reused unchanged because
+it requires the probe in snapshot.present; a Cline legacy alias is intentionally not
+present in the UI snapshot. Source profile coverage, real hosts, M1 local identity,
+resource bounds, Release/CI and authorized production cutover remain open. No commit,
+push, deployment, service restart or source retirement was performed.
+
+## iFlow native collector-to-browser chain and Runtime saved-CAS restart (2026-09-09)
+
+Extended the existing Swift exact-source path to iFlow: explicit source/format
+authority, project/session-*.jsonl discovery, native metadata projection and privacy
+proofs, replica single-file admission, and HQ captured-source replay. Live parser
+behavior is unchanged; captured replay strictly rejects malformed records and uses
+the native parser with the frozen logical locator. It preserves source identity,
+messages and usage rather than relabeling MiniMax models or staging-directory names.
+
+Herdr Cursor wH:p2 authored iFlow Runtime increment/restart and whole Runtime
+saved-CAS restart tests, then reviewed the integration. Parent implemented and
+independently verified. The saved-CAS test closes the seeding Owner/Catalog before
+removing the source and starting resident Runtime; both replicas recover the exact
+original bytes, sequence and epoch without changing the root binding.
+
+Evidence: `output/collector-goal-20260908/iflow-chain-receipt.json` records source
+hashes and logs. Initial replay RED591/1 established missing format registration.
+Runtime RED153/1 exposed the missed RemoteServer source allowlist; fixed admission
+and added a direct idempotent-ACK test rather than increasing the timeout. Final
+checks: archive/ingest592/0, metadata parity13/0, Collector551/0, Service153/0,
+replica49/0. Three fresh Debug binary builds passed (`iflow-linked-*`).
+
+`iflow-browser-fixture.json` verifies two real Collector generations, independent
+local HQ/M1 archive bytes, HQ native ingestion, FTS/Web IPC, logical identity,
+messages and positive usage; one binary test passed with eight linked Mach-O
+artifacts unchanged. Rendered Chrome verified iflow source filtering, the appended
+message's aurora query, all three messages and a negative query. Screenshot:
+`output/playwright/iflow-messages.png`; browser receipt, snapshots, HTTP204/200 and
+zero-error/zero-warning console evidence are adjacent. Self-signed loopback TLS was
+fixture-only. Browser closed, stop token matched the run, producer joined exit0,
+and the owned successful fixture was removed.
+
+Review adjudication: strict archive parsing is intentional. Sidecar-only raw bytes
+may be archived while native noVisibleMessages prevents a browsable HQ session;
+receipt counts are not parsed-session coverage. VS Code remains composite JSONL
+with workspace.json and potentially external .code-workspace dependencies.
+
+Remaining: native Runtime invalidRoot/stop and later recapture races; remaining
+actual source families/profiles, natural per-host resource evidence, current
+Release/CI, M1 local identity/catalog, and authorized production cutover. This is
+local synthetic acceptance, not production completion. Full GOAL stays active;
+no commit, deploy, service restart or source retirement occurred.
+
+## Collector stale-source observer isolation (2026-09-09)
+
+Herdr Cursor wH:p2 authored a deterministic modern Cursor RED using a concrete
+stale Runtime root set. After durable CAS capture but before publication, removing
+the whole source root caused cursorObservationPage to throw ENOENT before recovery.
+Parent implemented the fix; Cursor completed a scoped read-only review (done992).
+
+Owner sourceRootIsUnavailable checks owned storage independently, requires the exact
+active/enrolled binding, and confirms only missing paths or changed root identity.
+Worker retries observation with confirmed-unavailable roots removed. Every retry
+removes at least one configured root, so retries are bounded. Other failures,
+including storage/configuration/cancellation errors, propagate. Saved-CAS recovery
+and replica uploads remain available; filtered uncaptured reservations stay pending.
+
+Verification under isolated test HOME: cursor-midcycle-root-red73/1, initial
+Worker green73/0, final cursor-midcycle-root-service151/0 (Worker75, Runtime49,
+replay27), and cursor-midcycle-root-collector550/0. New boundary tests prove the
+original reservation resumes when its original source directory returns, and
+simultaneous missing source/inventory does not suppress storage failure or send
+replica publications. All build/test producers exited and were joined.
+Evidence: `output/collector-goal-20260908/cursor-midcycle-root-receipt.json`
+contains exact logs/checks and source hashes. `git diff --check` passed.
+
+Remaining: whole Runtime saved-CAS reservation restart, native invalidRoot/stop
+races, source disappearance during uncaptured recapture after observations, fresh
+actual binaries, remaining real source/profile/resource coverage, Release/CI,
+M1 local identity/catalog and production cutover. Full GOAL remains active;
+no deployment, commit or source retirement was performed.
+
+## Collector unavailable-root startup and restart isolation (2026-09-09)
+
+Herdr Cursor wH:p2 implemented the Owner/Worker split; parent implemented and
+independently verified Runtime lifecycle wiring. Coordinators are keyed by their
+configured slot, so a missing root cannot shift another root's event binding.
+Unavailable roots retry enrollment on later cycles; late appearance uses full
+restart reconciliation/bootstrap. Existing bindings are never replaced implicitly.
+
+A publication-only Owner API reinstalls an existing matching binding with storage,
+owner and cancellation fences. Worker live observers, registry checks, uncaptured
+recapture and dirty claims honor the Runtime's exact UTF-8 root set; immutable
+recovery and replica delivery still consider all configured roots. Missing roots
+remain unregistered until observable; uncaptured work stays pending when excluded.
+
+Validation: `output/collector-goal-20260908/runtime-missing-root-red-v2.log`
+ran 147 tests with one expected missing-root ENOENT failure. The earlier RED was a
+GRDB test-helper compile error, not behavioral evidence. Final
+`runtime-missing-root-green.log` ran 148 tests with zero failures;
+`runtime-missing-root-collector.log` ran 550 with zero failures. New tests prove
+healthy-source delivery beside an absent root, late-source bootstrap, and pending
+archive delivery after restart with a missing/replaced source while retaining the
+original binding. Late-source fixtures are staged and renamed atomically.
+
+Evidence and source hashes: `output/collector-goal-20260908/runtime-missing-root-receipt.json`.
+Remaining: mid-cycle disappearance after the availability snapshot, whole Runtime
+saved-CAS reservation restart coverage, fresh actual binaries, real-host source and
+resource acceptance, Release/CI, M1 local identity/catalog, and production cutover.
+Cursor review (Herdr done978) and source inspection confirm a remaining window:
+modern Cursor cursorObservationPage can validate a now-missing root after Runtime
+freezes its available set, throwing before recovery/uploads. Deterministic repro
+and isolation of this path are the next work; epoch protections remain intact.
+These local checks do not complete the full GOAL. No deployment or commit.
+
+## Cursor legacy comparison budget and binary/Web verification (2026-09-09)
+
+Continued the collector/server/Web GOAL with Herdr Cursor wH:p2. Parent added a
+shared per-cycle prior-CAS comparison allowance; Cursor implemented the legacy
+binary harness and runner selector and reviewed the resource path read-only.
+
+Legacy dedup now reserves manifest plus raw-body bytes before bounded CAS reads.
+The allowance is shared across legacy roots in a Worker cycle. Exhaustion defers
+the current ID without advancing/ACKing it; the persisted page resumes next cycle.
+An individually oversized prior capture is an optional comparison and falls back
+to bounded current capture instead of permanent starvation. This caps comparison
+I/O separately from new-capture bytes, not total process I/O, source cloning or RSS.
+
+The new actual-binary test configures globalStorage explicitly for Collector and HQ,
+verifies schema 6 rows in independent local HQ/M1 archives, then native HQ ingest,
+FTS and Web IPC. Changing only workspace.json ownership produces the next capture
+with unchanged global database/WAL, stable session identity and updated cwd. The
+opt-in browser hold reuses existing isolated loopback HTTPS and credential helpers.
+The default modern Cursor runner/test behavior is preserved.
+
+The first binary test reached both archives but HQ Service exited with dyld status
+6: its standalone executable lacked a sibling-framework rpath. Added executable
+and PackageFrameworks search paths in `macos/project.yml`, preserving the bundled
+`../Frameworks` path. Pinned XcodeGen 2.45.4 regenerated only the two Service build
+configuration groups. All three Debug products were rebuilt afterward; no binary
+patching or inherited DYLD environment workaround was used.
+
+Validation (under `output/collector-goal-20260908/` unless noted):
+- `cursor-legacy-comparison-budget-red2`: 71 tests / 3 failures; actual bounded CAS
+  reads totaled 4,484 bytes against 2,242 bytes. Initial RED replaced a composer row
+  and legitimately changed rowID; the corrected fixture inserts only an unrelated key.
+- `cursor-legacy-comparison-budget-green`: 71/0. Final affected Service classes:
+  `cursor-legacy-resource-service-final`, 146/0 including oversized-prior fallback.
+- `cursor-legacy-resource-collector-final`: full CollectorCore 550/0.
+- `cursor-legacy-linked-{collector,service,remote}-binary-build`: each exit 0.
+- `cursor-legacy-browser-fixture`: legacy binary chain 1/0, no skips; all eight local
+  linked Mach-O artifacts unchanged before/after. The prior failing dyld log remains
+  at `cursor-legacy-service-linker-red.txt` and the failed fixture is retained.
+- `cursor-legacy-modern-binary-regression`: original modern binary chain 1/0, no
+  skips; the same eight-artifact stability check passed.
+- Playwright Chrome rendered login, Cursor source filter, constellation search,
+  Legacy shadow title, new-owner project and both exact messages. Negative query
+  returned No sessions found; console had zero errors/warnings (one informational
+  password-form accessibility message). Screenshot inspected at 1440x1000; existing
+  minimal UI remains. Explicit fixture certificate bypass is not production TLS proof.
+  Browser closed, private run-bound stop file delivered and successful fixture removed.
+- `git diff --check` passed for changed source, project and documentation files.
+
+Evidence: `output/collector-goal-20260908/cursor-legacy-resource-binary-receipt.json`,
+`output/playwright/cursor-legacy-browser-receipt.json`, and
+`output/playwright/cursor-legacy-messages.png`. Receipts retain exact source and
+binary hashes, commands, failed attempts and scope limits. Cursor's initial schema
+2 description was corrected against the actual schema 6 source and binary test.
+
+No commit/push/deploy/restart of production services, production store access or
+source retirement. Remaining actual families/profiles, natural resource behavior,
+full absent-root Runtime lifecycle, current Release/CI, M1-local identity/catalog
+and real-host deployment/cutover acceptance remain open. Full GOAL stays active.
+
+## Cursor legacy ownership and paired-source observation (2026-09-09)
+
+Continued the active collector/server/Web GOAL in the existing HQ worktree.
+Herdr Cursor wH:p2 implemented the bounded stat-only ownership page and paired
+modern-removal Runtime test; parent integrated the observer, schema 9 state,
+source-unavailable handling and independent verification.
+
+The Worker rotates one explicit legacy root per second, pages at most 64 workspace
+records, and hashes the modern peer ID set. The source helper bounds directory
+membership enumeration, does not read source content or run SQLite, excludes
+symlinks/hidden directories, distinguishes missing storage, and observes ownership
+JSON/database/WAL attributes. Schema 9 persists membership, per-workspace hashes,
+main/peer hashes, initialization and page cursor. Changed membership restarts the
+page; ownership/peer changes atomically dirty the global database without ACKing
+it. Stable failures coalesce; recovery requests another ownership walk.
+
+Observer cursor reads/failure hints retain storage/owner fences without requiring
+a live source. Successful observation retains enrolled-root fencing while allowing
+source disappearance before commit. Missing/replaced roots during dirty claims
+are deferred so already durable publications can still reach replicas; database
+and other errors continue to propagate. This proves the Worker seam, not the full
+Runtime startup/event-stream lifecycle with absent roots.
+
+Validation (logs, invocations, xcresults under `output/collector-goal-20260908/`):
+- `cursor-legacy-peer-observer-red`: compiled 143 tests / 9 assertions failed with
+  the new observer call disabled; ownership-only and peer-removal omissions reproduced.
+- `cursor-legacy-observer-explicit-missing-root-red`: compiled 70 tests / one failure
+  on live-root validation before saved-CAS recovery with explicit legacy config.
+- `cursor-legacy-observer-collector-final`: full CollectorCore 550/0, exit 0.
+- `cursor-legacy-observer-service-final4`: affected Service classes 144/0, exit 0.
+- `cursor-legacy-observer-focused-repeat`: three key cases each repeated three
+  times, 9/0, exit 0. Ownership changes and peer removal produce typed legacy CAS
+  and both local HTTP ACKs while global main/WAL remain unchanged. Missing source
+  recovery preserves original bytes, sequence/epoch and subsequent Worker cycles.
+- Changed Swift/doc whitespace checks passed. Receipt with exact source hashes:
+  `output/collector-goal-20260908/cursor-legacy-observer-receipt.json`.
+
+Evidence corrections: an earlier missing-root fixture selected only legacy layout,
+not legacy configuration; its failure was on the modern observer and is not the
+legacy RED. The fixture now configures explicit legacy roots. Publication sequence
+is per stream, so the peer test selects a typed legacy manifest instead of `.last`.
+Fixed-count asynchronous waits exposed incomplete progress; final tests wait on
+bounded durable dirty/replica state and pass repeated runs. Failed attempts remain
+available. The next-cycle RED surfaced cancellation during error/teardown rather
+than a clean source-error assertion; final repeated-cycle behavior is verified.
+Cursor's review found no self-writing observer path, but its reference to native
+sibling events was inaccurate: the new supplemental stat observer supplies this
+wake, and the native stream remains bound to globalStorage.
+
+No commit, push, deployment, service restart, production-store transaction or source
+retirement. Prior-CAS aggregate read budgets, fresh binaries/HQ/FTS/rendered Web,
+actual source/profile coverage, real-host/resource/Release/CI and M1-local identity
+acceptance remain open. The full GOAL remains active.
+
 All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
 ## [Unreleased]
+
+### Cursor legacy automatic runtime walk and scoped-content dedup (2026-09-09)
+
+Continued the active lightweight collection / HQ index / independent M1 archive /
+Web goal in the same HQ worktree. Herdr Cursor wH:p2 implemented the shared legacy
+ownership lease and its tests; parent connected the actual Worker walk, schema 8
+session ledger and Runtime regression, then adjudicated Cursor's read-only review.
+
+A bounded page now discovers IDs and freezes session rows/ownership using one
+private global SQLite snapshot. Lease calls share clocks and output/ownership
+budgets, normalize errors at the call boundary, and refuse escaped leases and
+source changes. Existing single-session capture delegates to the same lease.
+
+Explicit legacy roots now enter the Worker initial walk. Each exact UTF-8 ID is
+reserved, captured and independently published using the existing saved-CAS retry
+contract. The per-root/revision/session ledger records capture IDs in the same
+transaction as publication and page advancement. An unchanged session is compared
+to verified prior CAS bytes (including ownership, raw row IDs/keys/storage/values,
+locator and native identity); only shared database/WAL generations are ignored.
+A valid unchanged skip advances the page without creating another publication or
+prematurely acknowledging the database. Missing/corrupt prior CAS falls back to
+recapture rather than dropping current source data. Schema 7 migration preserves
+dirty work; old v1 fixture reconstruction now drops the new table explicitly.
+
+Validation:
+- Actual compiled Runtime RED: `cursor-legacy-autowalk-runtime-red4`, 141 tests /
+  one assertion failure, first automatic legacy capture remained zero.
+- Shared lease: `cursor-legacy-lease-ownership-green3`, 28/0, exit 0.
+- Full CollectorCore: `cursor-legacy-autowalk-collector-final`, 542/0, exit 0.
+  Includes ledger/publication atomic rollback, skip fencing, no new publication,
+  pending dirty state, and schema 7-to-8 migration.
+- Combined affected Service classes: `cursor-legacy-autowalk-service-final`,
+  142/0, exit 0. Runtime captures two opaque composer IDs with max one capture per
+  cycle across restart, both local HTTP replicas ACK, CAS bodies keep frozen cwd,
+  reservations drain and database work reaches ACK. After an unrelated DB write,
+  an explicit durable reconciliation proves dirty revision actually increased
+  while publication count remains two; this cannot pass solely due to a delayed
+  native callback. Worker also rejects missing/legacy modern peers at construction.
+- Failed compile attempts (test async/try and lease private access) are retained,
+  not counted as behavioral RED. Lease budget assertions initially swallowed
+  expected throws; fixtures now propagate them. Full Collector's earlier 541/2
+  reflected expected table inventory and incomplete v1 fixture table removal,
+  both corrected without weakening preserved-data checks.
+- Commands, source hashes, logs and xcresults:
+  `output/collector-goal-20260908/cursor-legacy-autowalk-receipt.json`.
+
+Review disposition: invalid Worker peer configuration now fails at construction
+and is not swallowed by walk deferral. The suggestion that modern suppression
+caused the original RED was rejected: that test is standalone and its RED predates
+walk implementation. The implemented live modern-ID predicate is only provisional;
+peer removal/event invalidation and ownership-only workspace observation remain
+open. No complete paired-source suppression claim is made. Prior-CAS comparison
+resource use and all real-host/resource/Release/CI gates still require evidence.
+Fresh Collector/HQ/FTS/rendered Web binaries are not covered by these module tests.
+No commit, push, deployment, service restart, production-source access, or Docker.
+Full GOAL remains ACTIVE_NOT_COMPLETE.
+
+### Cursor legacy explicit roots and uncaptured retry (2026-09-09)
+
+Continued the full active collector/HQ/M1/Web goal through the existing Herdr
+Cursor pane wH:p2. Parent added explicit `cursorLegacy` and optional
+`cursorModernRootID` configuration, inventory schema 7 persistence/migration,
+byte-exact root equality and revision fencing, legacy-only bootstrap selection,
+and stat-only main/WAL event coalescing. Runtime validates complete paired-root
+references before opening the owner; per-root Store enrollment remains independent
+of peer enrollment order. Existing modern and non-Cursor defaults are preserved.
+
+Cursor implemented typed uncaptured legacy reservation retries. One frozen body
+is compared against the reserved main/WAL generation and ownership, then persisted
+under the original sequence/epoch. Changed or unavailable uncaptured sources release
+the reservation while retaining dirty work; encoded-body budget exhaustion retains
+the reservation. Tests use actual User/globalStorage and sibling workspaceStorage
+ownership, and both independent local HTTP archives restore the exact body bytes.
+
+Parent independently reviewed source and corrected the final corrupt-locator
+fixture. Store reload already re-binds canonical hashed contexts to the configured
+root: a forged locator is rejected before source I/O while its row and dirty work
+remain intact. The earlier review claim that reload checked only hashes was false;
+no reload protection was removed. Cursor's proposed additional source/source overlap
+and basename restrictions were not adopted without a demonstrated unsafe behavior;
+explicit input roots, bounded source selectors and output/identity overlap guards
+remain authoritative.
+
+Validation (isolated synthetic fixtures; no production operations):
+- `cursor-legacy-rootconfig-collector`: complete CollectorCore 536 tests, zero
+  failures, exit 0, including root persistence/migration, bootstrap and event tests.
+- `cursor-legacy-uncaptured-worker-final2`: complete PublicationWorker 68 tests,
+  zero failures, exit 0. Actual ownership-only changes keep global main/WAL and
+  raw/native payload sizes unchanged; missing-source and encoded-budget paths tested.
+- `cursor-legacy-uncaptured-service2`: Runtime 45 and Cursor/Kimi/OpenCode replay
+  27 passed. Its sole failure among 140 tests was the subsequently corrected Worker
+  fixture, so this is not reported as an all-green combined Service run.
+- Initial retry RED contains three compiled `invalidCapture` failures plus unrelated
+  old-schema assertions. Retained failed attempts include missing `try` in a parent
+  Runtime test, early fixture property access, empty frozen cwd, foreign-root
+  `unknownRoot`, and the parent's incorrect hash-only reload test expectation.
+- Exact commands, source hashes, logs and xcresults are recorded in
+  `output/collector-goal-20260908/cursor-legacy-rootconfig-retry-receipt.json`.
+
+Remaining: root discovery now queues the physical database, but Worker initial
+legacy walk is not wired. Reuse one private snapshot per bounded page, implement
+modern-ID and unchanged scoped-content suppression with durable cursor advancement,
+and observe ownership-only workspace changes. Fresh binaries/HQ/FTS/rendered Web,
+all enabled real source profiles/hosts, resource windows, current Release/CI and
+separately authorized retirement remain unverified. No commit, push, deployment,
+service restart, production-source access or Docker was performed. Full GOAL remains
+ACTIVE_NOT_COMPLETE.
+
+### Cursor legacy paginated discovery and durable recovery (2026-09-09)
+
+Continued the full active lightweight-collector/HQ-index/M1-copy/Web goal in the
+existing HQ worktree. Herdr Cursor wH:p2 implemented only the legacy discovery
+source/tests; parent implemented and tested typed Store/Owner reservations and
+Worker saved-CAS recovery, then independently verified Cursor source and hashes.
+
+Discovery is key-only, bounded by existing private snapshot/SQLite budgets, and
+ordered by exact UTF-8 bytes. Opaque IDs retain punctuation and normalization.
+LIMIT+1 rejects duplicate keys across a page edge. Multiple pages and row export
+reuse one WAL snapshot with its private SQLite SHM permitted; raw main/WAL fences
+remain enforced. Native value/embedded-ID validation stays in scoped row capture.
+
+Publication schema 6 adds canonical hashed legacy context plus a dedicated walk
+cursor fenced by database/WAL generation and dirty revision. Publishing one
+session atomically advances the page but does not acknowledge/release the whole
+shared-database claim. Reopen preserves reservations, ordering and two independent
+replica intents. An old capture cannot advance a new WAL or ownership-event walk.
+Migration retains old work; corrupt context fails closed without deleting it.
+Worker recovery now searches the exact legacy logical locator and verifies context
+and capture ID before completing the original reservation. A synthetic saved-CAS
+reopen test delivers byte-identical bodies to two independent local HTTP replicas
+with original sequence/epoch. Its dirty work is deliberately fixture-seeded: this
+is not initial source discovery, natural-input or full CollectorRuntime evidence.
+
+TDD evidence under output/collector-goal-20260908/: initial parent build failed
+because the collaborator test helper was mid-edit (not behavior RED). Discovery
+RED20/9 and Store RED110/4 compiled; discovery first GREEN failed on private SHM
+and a fixture insertion-order oracle. Corrected discovery then passed. Parent
+boundary review produced duplicate/same-lease RED22/3; final discovery22/0.
+Store GREEN112/0 includes six new tests; two later migration/corruption tests pass
+in the final full suite. Recovery first stopped at event routing (outside the
+saved-reservation fixture); corrected RED-v2 failed four recovery/ACK/publication
+assertions. Worker GREEN63/0 passed. Initial full Collector532/1 exposed the old
+Kimi schema5 assertion; only that expected version changed, retaining its data
+preservation checks. Final Collector532/0 passed, exit0; diff check passed.
+
+Herdr Cursor accepted Store/Owner and Worker recovery matching; parent checked
+actual source, tests and receipts. Exact source hashes, retained RED/GREEN logs,
+review receipt and remaining scope: cursor-legacyreservation-receipt.json and
+cursor-legacyreservation-herdr-review.txt in that output directory. No new Swift
+files were added and no XcodeGen run was needed. Full Service/App/Core/MCP, fresh
+binary/HQ/FTS/rendered Web, Release/CI and real-host/resource gates were not run.
+Next: paired-root automatic discovery, modern same-ID and scoped-content dedup,
+then uncaptured retry/runtime wiring and full host/source acceptance. Existing
+legacy uncaptured reservations still fall into the modern fallback; that route is
+not claimed complete. No commit/push/deploy/restart/Docker/retirement occurred.
+
+### Post-migration Cursor legacy privacy admission (2026-09-09)
+
+Resumed on HQ in `collector-server-web-20260905` at HEAD `91ccb9a5`,
+preserving the pre-existing uncommitted collector work. Current source confirmed
+that schema 6 legacy CAS/native replay had landed but privacy assessment only
+accepted modern Cursor file sets. CollectorPrivacyProof now admits the legacy
+shape from verified CAS bytes, checks the full original generation and byte-exact
+context against the decoded body, then applies enabled-source, frozen-root,
+project exclusion and resource limits. Missing CAS or unsafe roots remain withheld.
+No live source database is reopened; conversation rows remain opaque.
+
+Four tests in CollectorPrivacyProofTests cover absent source admission, policy
+revocation, missing cwd, byte/root/record limits, missing CAS, symlink roots and
+opaque BLOB rows. Actual RED: 39 tests, 7 failures in the two new test methods,
+xcodebuild exit 65. Initial GREEN: 39 tests, zero failures, exit 0. Expanded full
+EngramCollectorCore: 518 tests, zero failures, exit 0. `git diff --check` passed.
+Evidence: `output/collector-goal-20260908/cursor-legacyprivacy-{red,green}.log`,
+matching xcresult bundles, and `cursor-legacyprivacy-final.{log,json,xcresult}`.
+The final command was `python3 output/collector-goal-20260908/run-cursor-check.py
+cursor-legacyprivacy-final all`, using the existing isolated test home.
+
+The PublicationWorker suite also passed: 62 tests, zero failures, exit 0; evidence
+is `output/collector-goal-20260908/cursor-legacyprivacy-service.{log,json,xcresult}`.
+A newly launched Cursor CLI reported a locked keychain and routed worker delivery
+failed, but neither described the existing Herdr Cursor pane. After the user
+explicitly allowed the HERDR_ENV skill exception, review was dispatched through
+`herdr agent prompt wH:p2` to the existing Cursor Grok session
+`ce28841e-33cc-45ad-a817-62858abb52a0`; working and final done states were verified.
+Cursor returned accept with no actionable findings. Parent checked the cited
+context equality and HQ generation/identity contracts against source. The optional
+extra assessor-specific tamper test was identified as coverage, not a product bug;
+existing HQ tamper coverage is not counted as a new test run. Review receipt:
+`output/collector-goal-20260908/cursor-legacyprivacy-herdr-review.txt`.
+HQ/Web, fresh Release/CI, actual-host acceptance and resource measurements
+were not run for this bounded change. Next: paired-root legacy discovery alongside
+CollectorPublicationWorker's modern capture path, modern same-ID suppression, revisions/reservations/retry and
+independent HTTP ACK. No commit, push, deploy, restart or Docker occurred.
+
+### Cursor legacy CAS and native HQ ingest admission (2026-09-09)
+
+Added an explicit Cursor legacy manifest context and opt-in schema 6. The closed
+single-file layout is session.cursor-legacy.json; it cannot mix with file sets,
+OpenCode sqliteSession or older schemas. Default schema 1 and existing source
+branches remain unchanged. The context binds the logical shared database, opaque
+composer ID, frozen cwd, WAL generation, raw row byte count and native byte count.
+Main generation remains the original database stat, not the encoded body size.
+
+ExactSourceCapturer now writes the canonical body through immutable CAS/catalog
+with a distinct capture-ID domain covering the context, generation and body hash.
+Encoded budgets, machine ownership, reopen and idempotence are checked. Native
+byte count remains a computed body property: NUL-stop plus UTF-8 repair matches
+SQLite column_text/String(cString:), and can exceed both raw and encoded bytes.
+The old body JSON encoding is unchanged. The manifest bounds raw row bytes by
+encoded bytes; it does not incorrectly bound native bytes by encoded bytes.
+
+HQ replay admits this shape with its 128 MiB encoded cap, then performs a bounded
+nofollow read from sealed staging. The factory requires the original full main
+generation and checks it, WAL, cwd and both counts against the decoded body before
+native replay. Original files are never a fallback. Registry eligibility binds
+the actual database to configuredRoot/state.vscdb; composer suffixes containing
+slashes, dotdot or percent/underscore are opaque IDs rather than filesystem paths.
+Commit validates native ID, frozen cwd and native size. Successive versions update
+one session, persist complete messages, and reach FTS index_ready.
+
+Actual REDs are retained: capture tests 10/30, first HQ tests 10/10 and replica
+48/1. After schema/CAS implementation, HQ 10/18 exposed the remaining shape and
+registry gates; replica 48/1 exposed invalidPublication. An initial capture-test
+failure came from JSONSerialization localized key order, not product encoding;
+the existing canonicalTestJSON helper corrected it. Parent also corrected test
+assumptions about native UTF-8 expansion and canonicalized owned staging paths.
+No product canonicalization or custody check was weakened to make tests pass.
+
+The same original Cursor/Grok pane supplied ten contract tests and independently
+reviewed protocol/HQ boundaries. Parent ran all checks and extended the real
+Collector WAL fixture through a saved body, source User deletion, Collector CAS
+and CoreRead/CoreWrite HQ replay, matching full native metadata/messages. Two
+independent local ArchiveStore fixtures retain and acknowledge two versions
+idempotently and recover identical bytes after reopen. This is not HTTP/runtime
+or real-host ACK evidence.
+
+Final gates: Archive/Ingest 590, Collector 514, affected Service 133, native/parity
+52 and replica 48, all zero failures and exit 0. Twelve producers are terminal and
+joined; eighteen frozen input hashes and all command/log/result records verified.
+Pinned XcodeGen 2.45.4 added only six registration lines. Evidence:
+output/collector-goal-20260908/cursor-legacycapture-receipt.json.
+
+Next: legacy privacy admission, paired-root discovery and modern same-ID
+suppression, scoped-content revisions/reservations/retry and actual independent
+HTTP ACK through CollectorRuntime, followed by fresh binaries and rendered Web.
+All enabled profiles, real HQ/M1-local identity and natural inputs, measured
+resource relief, current Release/CI and separately authorized host cutover remain
+open. No commit/push/deploy/restart/Docker/live source database access occurred.
+
+### Cursor legacy durable body and captured-only native replay (2026-09-09)
+
+ArchiveCursorLegacySession now persists one scoped composer plus owned bubble rows,
+original TEXT/BLOB/NULL classes and rowids, logical database locator, main/WAL
+source generations and coherent frozen cwd. Canonical decoding revalidates kind,
+computed raw counts, byte-exact keys/IDs, normalized paths, regular generations,
+row ordering/uniqueness and embedded-conversation exclusivity. Bounds are16384
+rows,16MiB total raw values,16MiB total keys and128MiB encoded bytes. Raw archive
+bytes remain distinct from native String(cString:) payload-size accounting.
+
+Collector ownership captures now bridge to this body without rebinding the source
+locator. HQ's native read module reconstructs only validated rows in a private
+in-memory SQLite table and reuses existing Cursor SQL/message/usage parsing. No
+live source discovery, workspace lookup, stat-based transcript cache or default
+file-URL inference is used for captured replay; frozen project names are lexical.
+Original SQLite conversion, including NUL truncation and invalid-UTF8 replacement,
+and all existing live/modern paths remain unchanged.
+
+The original Cursor/Grok pane supplied eight test cases and bounded source review;
+parent independently verified RED: Collector514/2 (missing body bridge and lost
+BLOB type) and Core8/34 (validation/replay absent). One build attempt failed for a
+missing try and is retained. Parent corrected a fixture's exact budget to include
+composer bytes, added pure N+1 value/key failures, surviving conflicting live
+source, empty TEXT/BLOB/NULL, zero/negative rowids and parser-byte-limit coverage.
+An additional Service test runs actual Collector capture -> canonical file ->
+source User deletion -> CoreRead decode/native replay, comparing complete metadata
+and messages across module boundaries. No global/workspace database is exported.
+
+Grok identified potential file-URL directory inference on the archived path. An
+owned local Foundation probe confirmed filesystem-dependent directory inference;
+this was not evidence of a live SQLite reopen. Captured initialization now drops
+live path fields and avoids archived-path URL creation. Final affected checks were
+rerun after this refinement: Archive/Ingest569/0, native Cursor/parity52/0 and
+Service133/0. Collector514/0 passed with its inputs unchanged by the adapter-only
+refinement. Final gate producers exited0; all twelve producers were joined.
+Thirteen frozen input hashes,
+twelve command/log/result records, retained RED/build failure and pinned
+XcodeGen2.45.4's fourteen additive source/test registrations are verified in
+output/collector-goal-20260908/cursor-legacybody-receipt.json.
+
+This completes a local durable body/native replay primitive, not legacy transport
+or production acceptance. Next: explicit Cursor context/manifest/CAS/factory binding,
+legacy discovery and same-ID modern suppression, scoped revision/retry/reservation
+handling, independent HQ/M1 ACK, then HQ FTS/Web and actual binaries. Every enabled
+source/profile, real HQ/M1-local identity, natural inputs, daily-Mac resource relief,
+current Release/CI and separately authorized production cutover remain open. No
+commit/push/deploy/restart/Docker/live source database access occurred.
+
+### Cursor legacy coherent workspace ownership (2026-09-09)
+
+CollectorCursorLegacyOwnership.capture now binds scoped raw rows and frozen cwd
+using one private global state.vscdb snapshot. It reads only the two fixed
+ItemTable ownership keys, combines workspace links with global headers, and keeps
+cwd empty for absent/conflicting proof. Single-folder local file URIs are required;
+configuration (including null), file selections, hidden/symlink workspaces and
+nonlocal URIs cannot create ownership. Composer IDs compare UTF-8 bytes. Present
+malformed/unreadable eligible ownership inputs withhold rather than trusting the
+remaining candidate. Workspace/global databases are never exported as sessions.
+
+Workspace main/WAL, workspace.json, absent inputs and User/workspace directory
+generations are revalidated across the capture. SQL opens private snapshots only;
+raw rows and headers share the same global image. JSON/index bytes share a bounded
+ownership budget, separate from original row payload bytes; directory and SQL work
+are bounded too. The existing raw-row reader was factored for lease reuse without
+changing native adapters or enabling legacy publication.
+
+The same Cursor/Grok pane supplied twenty tests and direct-source review. Parent
+verified the initial thirteen-test RED (nineteen assertions), then GREEN13. Three
+parent boundary cases expanded RED to23/4: UF_HIDDEN directories supplied cwd, and
+staging under workspaceStorage mutated source-directory times before rejection.
+The SHM replacement case already refused via the directory generation fence.
+Eligibility now checks UF_HIDDEN; staging separation against User is checked before
+any global clone. Final variants cover both User/workspaceStorage staging with no
+staged source files or directory-time mutation, plus exact ownership-byte success.
+
+Final Collector513/0 includes all twenty-three ownership cases, sixteen raw-row
+cases and existing capture/dependency/modern/OpenCode/lease tests. Affected
+Service132/0 passed. All producers exited0 for these final gates and are joined;
+RED logs/result bundles remain unchanged. Pinned XcodeGen2.45.4 added only the new
+ownership source/test registrations. Evidence, six run receipts and nine current
+input hashes: output/collector-goal-20260908/cursor-ownership-receipt.json.
+
+Next is a Cursor-specific durable representation and captured-only native replay,
+then discovery/same-ID modern suppression, reservations/retry/dual ACK/FTS/Web and
+actual binaries. ArchiveSQLiteSessionContext remains opencodeSessionImage only.
+Raw Data bytes must not be equated with native sizeBytes: native SQLite string
+conversion truncates NUL and can replace invalid UTF-8 before size accounting.
+Preserve raw bytes and prove native metadata separately with parity fixtures.
+This in-memory rows/cwd primitive is not upload authority. Batch/large-host resource
+behavior, other enabled sources/profiles, actual HQ/M1-local identities, natural
+inputs, current Release/CI and authorized production retirement remain open.
+No commit/push/deploy/restart/Docker/live source database access occurred.
+
+### Cursor legacy scoped raw rows and custody fences (2026-09-09)
+
+Added CollectorCursorLegacySource.exportRows using the existing private main/WAL
+snapshot lease. It exports exactly one composerData row and, only without a
+nonempty embedded conversation, owned bubbleId rows in physical rowid order.
+Literal percent/underscore, case and NFC/NFD spellings remain distinct. Actual
+competing composer delimiters refuse export. Malformed JSON, NULL, embedded NUL,
+invalid UTF-8 and BLOB bubble values remain length-delimited raw data. TEXT in a
+UTF-16 database is converted by SQLite to logical UTF-8 before byte accounting.
+This API is a raw-row primitive, not privacy or upload authorization.
+
+The same Cursor/Grok pane supplied fourteen fixture tests and source review; the
+parent corrected byte-identity expectations and fixture issues, independently
+ran RED/GREEN, and added two repros for hidden ROWID and exact output budgets.
+First six-test RED had ten failures. Expanded fourteen-test RED had two product
+failures after isolating the genuine no-WAL fixture with PERSIST_WAL=0 and natural
+checkpoint/close. A constant uppercase generated ROWID repro expanded RED to
+fifteen tests/three failures. A sixteen-test budget RED then exposed SQLite
+schema/record overhead incorrectly charged to the raw output cap.
+
+Fixes require an ordinary two-column rowid table, keep private main/WAL sealed
+while allowing SQLite's private SHM, and revalidate original source-root identity,
+main/WAL generations and journal absence after reading. SQL runs only against
+private staging, with VM/time/record allocation bounds and independent complete
+output row/byte limits. No prefix is returned on budget exhaustion. SQLite record
+allocation allows bounded header/schema overhead while exact raw-byte caps remain
+enforced. Existing raw-only snapshot validation was preserved.
+
+Final local checks: Collector490/0, including all sixteen legacy cases and the
+existing modern/OpenCode/lease/dependency tests; affected Service132/0. Both
+producers exited0 with TEST SUCCEEDED. Pinned XcodeGen2.45.4 added only the two
+new Swift registrations; the explicit target dependency expectation gained only
+the new collector source. All intermediate compile, fixture, product and target
+allowlist failures remain in their original logs/result bundles. Evidence and
+current source hashes: output/collector-goal-20260908/cursor-legacy-rows-receipt.json.
+The helper run-cursor-check.py now accepts the legacy selector.
+
+Next: coherent workspace/global ownership snapshots and frozen cwd, same-ID
+modern suppression, legacy durable representation/discovery/retry/dual ACK and
+HQ native replay/FTS/Web. Full-DB private cloning is separately bounded from row
+output; large-source resource behavior still needs measurement. This slice did
+not run fresh standalone binaries, rendered Web, Release/CI, real-host natural
+input or production cutover. All enabled sources/profiles and HQ/M1-local identity
+and retirement gates remain part of the active goal. No commit/push/deploy/restart
+or production source database access occurred.
+
+### Cursor modern native binaries, quiet capture and rendered Web (2026-09-09)
+
+The local Cursor modern chain now carries initial, WAL-only, metadata-only and
+transcript-append generations through native Collector, independent HQ/M1
+RemoteServers, HQ Service/FTS and authenticated rendered Web. Exact member bytes,
+stable source/session identity, native metadata and all three final messages are
+checked. This is synthetic local evidence; no host is approved for retirement.
+
+The first binary run exposed invalid consecutive-publication sequence assertions:
+reservations can consume sequence numbers without new publications. Assertions
+now require monotonic stream order. An additional actual-binary quiet-window RED
+proved a real repeated-work problem: four publications but last_sequence161,
+primary dirty161/ack160 and an outstanding reservation after10s without writes.
+Cursor events now fingerprint the full dependency generations and absence slots,
+excluding SHM/journal, and reuse inventory event deduplication without clearing
+pending dirty/claim/retry state. Owner RED75/21 became Collector473/0 and
+Service129/0, but the next binary run still timed out after its first publication.
+Its stored fingerprint exactly matched the first archived manifest: WAL changes
+had not reached event ingress. The retained evidence is not a new-fingerprint /
+old-capture acknowledgement mismatch.
+
+An owned SQLite/FSEvents probe observed WAL4152->8272->12392 at two commits while
+the writer remained open, with callbacks only after close. Cursor now performs
+one bounded known-locator metadata page per second, rotating roots/pages and
+using the existing capture-file budget. The primary-key range is limited before
+filtering; probes stat only declared captured members/absence slots via confined
+descriptors, with no directory enumeration, payload reads or live SQLite query.
+A changed clean capture hint marks work dirty only while capture ID/revision
+still match; it never changes event checkpoints or ACKs. Normal capture retains
+all generation/privacy/CAS/replica fences. The in-memory pager is a scheduling
+hint; bootstrap remains durable. Runtime's existing now argument is seconds.
+
+Three no-event worker REDs (62 tests/16 assertions) cover a real held WAL writer,
+metadata-only changes, unchanged idle and two sessions under maxCaptureFiles1.
+Parent corrected fixture-only async XCTest autoclosures, seeded a nonempty WAL
+before capture and aligned test clocks to seconds before running RED. Final
+Collector474 and affected Service132 passed, exit0. Three fresh native builds
+passed; final CLI/binary35 had34 passes, one existing opt-in browser skip and no
+failures. Cursor completed in9.454s with four publications, lastSequence7 stable
+for2s and drained dirty/reservation/scan work. Eight local linked artifacts were
+stable before/after every binary run. This does not establish long-run CPU/RSS.
+
+Playwright verified login204, overview/search/detail/messages/no-match200,
+source=cursor, latest title/project, three complete messages and no-match clearing;
+console had0 errors/0 warnings. Parent viewed both1280x900 screenshots. The first
+browser run failed only when the parent supplied a0644 stop file to the existing
+0600 control contract; its fixture/logs/render evidence remain preserved. The
+second run installed a complete0600 stop file atomically, passed1 test in157.509s,
+closed its named browser and removed its owned fixture; eight artifacts stayed
+stable. Test-only loopback self-signed TLS is not production trust evidence.
+
+Evidence: `output/collector-goal-20260908/cursor-binary-web-receipt.json` records
+source/log hashes, all RED/GREEN and build receipts, the held-WAL probe and a
+correction to the initial runner's skipped-test count parsing. Historical receipts
+were not rewritten. Render evidence: `output/playwright/cursor-browser-receipt.json`
+and `output/playwright/cursor-native-web-v2.png`. Same Cursor/Grok pane supplied
+tests and read-only reviews; parent verified the actual artifacts independently.
+Legacy export/frozen ownership, other enabled profiles, real hosts/natural input,
+current Release/CI/resource windows and separately authorized cutover remain open.
+No commit, push, deployment, production service restart, production write or old-path retirement occurred.
+
+### Cursor modern HQ native replay, commit and FTS (2026-09-09)
+
+HQ now registers an explicit Cursor parse format and admits only the existing
+closed modern schema2 file set. Captured replay builds the declared modern
+locator without live/home/legacy discovery, preserves native primary timestamps,
+rejects unbound stage metadata, and maps the output path to the logical locator.
+Commit binds raw/native IDs to the captured layout and uses native main+transcript
+size rather than aggregate WAL/meta bytes. Legacy shared database and mismatched
+session shapes remain refused, along with wrong root/epoch/format bindings.
+
+Actual factory RED17/32 assertions followed a compile-only fixture correction.
+Core RED559/6 established missing format admission; the next559/4 exposed SQLite
+SHM creation inside sealed replay directories. A readonly connection now creates
+owned SHM before sealing and remains alive through parse; cleanup closes it after
+the final verifier. All existing directory/member identities and byte hashes
+remain enforced. The supplemental main-only fixture initially retained source
+sidecars: no-WAL560/3 and560/1 were fixture failures, with a compile-only attempt
+between them. A diagnostic observed PERSIST_WAL=1. Disabling persistence through
+SQLite before checked close produced real absent-WAL bytes and a clean1/1 product
+sqliteUnreadable failure. Captured replay now uses an escaped immutable file URI
+only when WAL is absent; present WAL keeps normal readonly behavior. No source
+sidecar unlink or database-byte editing was used to establish that fixture.
+
+Real Collector capture and reopened CAS/catalog, after original-tree deletion,
+now replay through HQ with complete native info/messages parity. Core tests cover
+paired transcript precedence/live metadata overlay, WAL-only messages, pure
+transcript time fallback, checkpointed main-only recovery, native-size forgery
+and consistent native-ID rebinding. Accepted sessions run through the actual
+IndexJobRunner with no source adapters; persisted-message FTS MATCH returns the
+session and the ingest ledger reaches index_ready.
+
+Final Archive/Ingest560, affected Service129 and native Cursor adapter/projection52
+passed, all exit0. Command receipts, actual
+RED interpretation, logs, xcresults and source hashes:
+output/collector-goal-20260908/cursor-hq-native-receipt.json. Grok supplied bounded
+tests/review; parent checked fixtures, added registry/Collector-to-HQ coverage,
+implemented the changes and independently ran the tests.
+
+Fresh standalone binary transport/HQ/Web and authenticated rendered-browser
+evidence remain next. Legacy scoped composer export/frozen ownership, remaining
+enabled sources/profiles, real hosts/identities/natural input, current Release/CI
+and resources remain open. No operational transition, source retirement, Docker,
+commit or push occurred. Full goal stays active; retirement stays CLOSED.
+
+### Cursor modern runtime delivery and interruption recovery (2026-09-09)
+
+Modern Cursor now flows from bounded discovery and bootstrap/events through
+transcript-first durable claims, worker capture, privacy, publication and two
+independent local HTTP replicas. WAL/meta events select the paired transcript
+primary; hidden paths, unrelated members and SHM/journal payloads stay excluded.
+Alias-to-primary claiming does not steal an existing claim or acknowledge work
+before durable capture; newer dirty revisions survive acknowledgement. Runtime
+accepts omitted/cursor format and rejects incompatible format/registry settings.
+ArchiveStore accepts only the closed modern schema2 shape, continuing to reject
+legacy shared databases and mismatched session members.
+
+Real SQLite fixture tests cover four generations: initial capture, WAL-only,
+live meta-only and a meta change while runtime is stopped. Both independent
+loopback receivers retain exact main/WAL/meta/transcript bytes, with stable
+primary generation and source identity. An excluded durable capture is sent
+after policy revision/restart even after its original source trees are deleted.
+Independent ArchiveStore tests additionally verify durable idempotent ACKs.
+
+Grok supplied runtime and replica tests and reviewed the runtime changes. Its
+recovery finding became two worker regressions: actual RED129/1 showed a
+proven-uncaptured missing Cursor primary threw invalidCapture and blocked the
+cycle. Extending the existing Kimi-specific fallback to Cursor abandons only
+that reservation and preserves unacknowledged dirty work. Restoring the primary
+then captures on a later sequence. A durable-but-unpublished capture instead
+recovers its original sequence/epoch after source deletion and catalog reopen.
+
+Final Collector471, affected Service129 and replica Store47 passed, zero failures,
+actual producer exits0. Earlier behavior REDs, compile-only attempts, fixture
+corrections, commands, logs, xcresults and source hashes are retained in
+output/collector-goal-20260908/cursor-runtime-receipt.json. The old invalid-source
+owner test now uses unsupported vscode, since Cursor is intentionally admitted.
+No schema migration or new product source file was needed for this checkpoint.
+
+This is local runtime/HTTP/storage proof, not real HQ/M1 host or standalone
+binary acceptance. HQ Cursor native replay/commit/FTS/Web, legacy scoped export
+and frozen ownership, remaining sources/profiles, real identities/natural input,
+current Release/CI/resources and authorized production transition remain open.
+No Docker, commit, push, deployment, service restart or production data change
+occurred. The complete goal remains active and retirement remains CLOSED.
+
+### Cursor modern durable reservations and byte-exact recovery identity (2026-09-09)
+
+Cursor modern dependency snapshots now cross reserve, durable dependency write,
+reload and finish validation in CollectorInventoryStore. The source helper
+projects bounded shape/generations into the existing closed schema2 validator;
+placeholder hashes never become stored capture evidence. Paired sessions retain
+transcript as primary, otherwise store.db. Every captured member generation and
+absence must match, including auxiliary-only changes. Existing publication
+schema5 tables/columns and schema2 capture identity are reused without migration.
+
+Catalog/database reopen followed by original-tree removal still completes the
+catalog-loaded captured version, produces one publication intent and two pending
+replica rows, and clears only its reservation. A new auxiliary generation cannot
+replace the old capture. Missing/incorrect snapshots, wrong primary, unrelated
+members and corrupted persisted generations fail closed. Tests at this layer
+supply synthetic sealed bytes/generations; planted SHM/journal are excluded-member
+noise, not proof that live capture admits an active journal. Pending replica rows
+are local intent, not transport ACK or real-host evidence.
+
+Actual initial Collector RED466/17 assertions established the missing branches;
+10 unexpected XCTest reports came from positive unwrap failures. First GREEN466/1
+then isolated NFC/NFD dependency-path aliasing through Swift String equality.
+Expanded source/inventory RED102/6 proved the same byte-distinct handle could
+read/overwrite recovery state and abandon the original reservation. Cursor-only
+UTF8 path comparisons now supplement existing equality at pending retry and the
+shared reservationRow boundary, retaining all existing generation/context checks.
+The mismatch becomes a no-op across finish, abandon and recovery read/write.
+
+The same Cursor/Grok pane supplied four durable tests and two scoped source
+reviews. Parent required canonical path ordering and a real catalog-reloaded
+capture instead of an in-memory value; parent added two shape/match tests and
+the Unicode lifecycle regression. Final review done575 found no remaining
+actionable issue. Final parent Collector466 and affected Service124 passed,
+zero failures, exit0. All five producers are terminal/joined. No Core source
+changed, so prior Archive/Ingest553 was not rerun or promoted to fresh evidence.
+
+Evidence: output/collector-goal-20260908/cursor-reservation-receipt.json contains
+commands, logs, xcresults, source/log hashes, RED interpretation and review scope.
+Runtime discovery/snapshot bridging, Cursor root/worker admission, independent
+HQ/M1 transport, HQ replay/commit/FTS/Web, legacy ownership/export and actual
+host/profile/natural-input/binary/Release/CI/resource/retirement gates remain
+incomplete. No Docker, commit, push, deployment, restart or production data
+change occurred. Full goal remains active; retirement stays CLOSED.
+
+### Cursor captured-only metadata privacy and bounded SQLite reader (2026-09-09)
+
+Cursor modern privacy assessment now verifies the canonical CAS manifest, every
+chunk, aggregate bytes and each file-set member before reading metadata. It
+materializes only captured main/WAL bytes in owned private staging; it never
+opens the original source locator. The shared lease preserves 0700/0600 custody,
+no-follow path checks, generation fences, cleanup and bounded copy/deadline work.
+The reader admits an ordinary meta table, reads current key-0 text with a narrow
+SQL authorizer, and bounds SQLite VM work and metadata bytes. WAL-only rows,
+checkpointed WAL-mode main files with absent/empty WAL, cancellation, mutation,
+unsafe schemas, duplicate rows and invalid text are covered. SQLite open and
+individual filesystem calls are not interruptible by the VM progress handler.
+
+Privacy uses the shared native hex-first/live-overlay projection. It retains
+both recognized stored/live roots, rejects excluded/conflicting/invalid roots,
+malformed present metadata and untrusted transcript-only cwd, and binds the
+complete capture and current policy. Stored and live metadata each consume one
+record-budget slot. Default source policy is unchanged. Format.cursor does not
+enable HQ replay: the factory explicitly returns unsupportedVirtualLocator until
+that integration is implemented. Raw historical main/WAL residue remains raw;
+this is not byte scrubbing or an extension of the default-Claude root exception.
+
+Actual reader RED89/46 preceded implementation; initial GREEN89/1 exposed WAL
+symlink error classification, then Collector458 passed. Privacy RED14/16 preceded
+assessment. Initial Service121/10 failed because Foundation standardized a
+physical /private/var CAS root into the /var symlink; diagnostic14/10 confirmed
+unsafePath. Keeping the supplied staging URL fixed it without relaxing the
+no-follow boundary. Service121 then passed. Extended16/1 was a new forgery-fixture
+canonical-decoder mistake, corrected by constructing then canonically encoding
+the mutated model. Record-budget RED17/1 proved two inputs bypassed maxRecords=1;
+the narrow count fix passes. Earlier compile-only attempts are labeled separately.
+
+Final parent runs all exited0: Service124, Collector459, and Archive/Ingest553.
+New end-to-end cases delete originals, reopen CAS, prove WAL-only metadata,
+reject a member-hash forgery despite valid CAS/aggregate hashes, and preserve
+physical staging paths. Same Cursor/Grok pane supplied reader/privacy tests and
+source review. Its implicit-rowid authorizer concern was withdrawn after actual
+PK fixture evidence; new PK/WITHOUT ROWID/explicit-index coverage passes with the
+allowlist unchanged. Parent also corrected its next-stage store-first suggestion:
+reserved primary must be transcriptRelativePath ?? storeRelativePath. Reusing
+inventory schema5 remains a hypothesis to prove through reservation/restart REDs.
+
+Evidence: output/collector-goal-20260908/cursor-captured-privacy-receipt.json,
+including exact command receipts, log hashes, xcresults, source hashes, failures
+and parent adjudication. All parent producers are terminal/joined; pane done567.
+No Docker, commit, push, deployment, restart or production data change occurred.
+Cursor durable reservations/runtime/independent replicas/HQ ingest/FTS/Web,
+legacy scoped export/ownership, actual enabled profiles/hosts/natural input,
+fresh binaries/Release/CI/resources and retirement remain incomplete. Full goal
+stays active; retirement gates stay CLOSED.
+
+### Cursor shared metadata selection and raw-history privacy evidence (2026-09-09)
+
+Extracted native modern Cursor metadata selection into
+SourceMetadataProjection.cursorModernMetadata and wired CursorAdapter to use it.
+The original hex decoder body is identical after function-name normalization.
+Stored key-0 hex/UTF-8 object decoding, current SQL query/error handling, optional
+live meta.json reads and live-over-stored overlay remain native behavior. Empty,
+null or non-String cwd overrides never revive the stored cwd; effective cwd is
+String plus trim. No-store sessions supply neither metadata input. The helper
+also exposes stored/live raw cwd strings, byte-distinct deduplication, and
+malformed/non-String flags for future conservative privacy checks. These flags
+do not change native display or authorize uploads.
+
+The same Cursor/Grok pane drafted four helper tests. Parent added a concrete
+NFC/NFD byte-distinction case and ran actual RED12/60 assertions, exit65, before
+implementation. Final52 passed: projection12, native Cursor32, title-index6 and
+parse-entry2. Affected Service113 and full Collector449 passed with zero failures
+and actual exit0. Same-pane source review done553 found no actionable gap. All
+parent test producers are terminal and joined. No new file/target required a
+project regeneration.
+
+A synthetic Python SQLite probe and a new native raw-history case establish
+that main/WAL can retain older metadata while native SQL selects a new cwd.
+The native case covers UTF-8 and hex WAL metadata, original-tree deletion,
+CAS/catalog reopen, exact saved bytes and full native replay. Its initial6/10
+failures were fixture-only: the shared scan helper requires user+assistant
+(eight assertions) and Foundation escaped slashes in the original metadata hex
+(two assertions). Added the missing assistant and compared exact serialized
+metadata; corrected6 passed without weakening product assertions.
+
+The accepted design checks source-recognized structured metadata, not arbitrary
+path-shaped strings in messages or historical physical residue. Do not claim a
+current key-0 query scrubs all older raw bytes, or silently flatten/sanitize the
+schema-2 capture because the probe found residue. Current stored and live cwd
+are both recognized evidence; a losing stored root must not be omitted. Parent
+rejected the initial suggestion that two allowed Cursor roots automatically
+permit upload: the explicit multi-root exception applies to default Claude.
+Cursor eligibility remains unimplemented and no new privacy policy is enabled.
+
+Evidence: output/collector-goal-20260908/cursor-metadata-projection-receipt.json
+links commands/logs/xcresults/current hashes; cursor-raw-wal-privacy-probe.json
+and cursor-hex-decoder-extraction.json retain the independent checks. Prior
+native replay/source receipts are historical where these files changed. Next
+build the bounded captured-only main/WAL metadata reader, then privacy proof,
+durable reservations/recovery, independent publication and HQ ingest/FTS/Web.
+Legacy export/ownership, fresh binaries/Release/CI and actual-host transition
+remain unverified. The original goal stays ACTIVE and retirement stays CLOSED.
+
+
+### Cursor sealed raw file sets in schema 2 and durable native replay (2026-09-09)
+
+Added a closed modern Cursor file-set predicate and a sealed-member CAS entry
+point using existing schema 2. No new schema/context or reconstructed SQLite
+image is introduced. ArchiveCapturedFile carries immutable bytes and original
+per-file generation; captureCursorModernFileSet never opens the logical source
+or substitutes staging inode/time. Byte-sorted member streams reuse existing
+8 MiB chunking, file-set identity, canonical manifests and catalog publication.
+ModernCapture now retains its original root, and persistModern passes those
+sealed members directly into durable storage after source removal.
+
+The wire allows one store and/or one same-byte-ID transcript, plus same-store
+WAL/meta only. Transcript is the preferred entrypoint. Missing WAL/meta slots
+are explicit when a store exists; SHM/journal, unrelated files, sibling sessions
+and observation-only missing primary directories never enter the representation.
+All original per-file generations/hashes are retained. Empty WAL membership and
+auxiliary-generation changes alter capture identity even with unchanged stream
+bytes and primary generation. Native session size remains main plus transcript;
+wire byte count includes auxiliary members and must stay distinct at HQ commit.
+
+The existing Cursor/Grok pane drafted two model tests with seven valid layouts
+and malformed identity/member/locator cases. Parent added three CAS tests and
+implemented after actual ArchiveModel/capturer RED77/10 assertions, exit65.
+GREEN77 passed. Tests cross an 8 MiB chunk boundary, persist with nonexistent
+source paths, reopen the catalog with identical canonical capture bytes/time,
+and reject invalid members/generation sizes, budgets and machine IDs. Five
+native replay tests then failed at the persistModern stub (RED5/5, exit65).
+After wiring persistence, all five delete original inputs before CAS write,
+close/reopen the catalog and CAS, reconstruct only saved manifest/chunk bytes,
+restore original mtimes and compare full native info/messages. Only filePath is
+mapped back to the original native logical locator in this fixture harness.
+
+Final affected Service112, ArchiveV2/CaptureIngest553 and full Collector449
+passed, zero failures, actual exit0. The 553 run selects the 20 test classes in
+those two directories, not the entire app/Core suite. All producers joined.
+Same-pane source review done545 found no actionable correctness issue; its
+comment-placement note had already been corrected. No runtime allowlist,
+replica admission or HQ ingest route was enabled for Cursor by these methods.
+
+Evidence: output/collector-goal-20260908/cursor-sealed-archive-receipt.json links
+commands/logs/xcresults and current source hashes. Earlier composite receipt
+hashes are historical before root binding/persistence and CAS replay assertions.
+Next: captured-input privacy/native metadata, durable reservations/recovery,
+independent replica transport, then HQ replay/commit/FTS/Web. Legacy scoped
+composer rows and frozen ownership remain required. Fresh binaries/Release/CI,
+real profiles/natural input/resources and approved production transition remain
+unverified. The full multi-machine objective stays ACTIVE; retirement stays CLOSED.
+
+
+### Cursor raw modern composite capture and native replay (2026-09-09)
+
+Modern Cursor capture now seals exact per-session store.db/WAL, sibling meta.json
+and paired JSONL bytes with their original generations. It performs no source
+SQLite opens or JSON parsing. SHM/journal remain safety observations, not payload;
+rollback journals refuse capture. Aggregate payload/directory budgets, source
+membership and private-pair generation fences cover the complete capture. The
+raw-pair validator expires with its lease. This supersedes the earlier assumption
+that modern SQLite needs a reconstructed image; legacy shared state.vscdb still
+requires per-composer scoped extraction and frozen ownership.
+
+Initial capture RED27/13 assertions became GREEN27, Collector446 and native
+replay5. Replay compares full native info/messages after original-tree deletion,
+with only filePath mapped back to its logical locator. Cases cover paired JSONL
+precedence and empty metadata overlay, committed WAL-only rows, transcript-only,
+DELETE mode and absent metadata. Fixture writers remain open through capture;
+positive fixtures never corrupt SQLite-owned SHM or plant rollback journals.
+Affected Service112 passed. All actual producer exit statuses were checked.
+
+Same-pane Grok review found that discovery did not check the aggregate deadline
+inside directory enumeration and a disappearing payload returned unsafePath.
+Deterministic initial/final deadline and payload-disappearance RED32/4 assertions
+reproduced both; Scanner now checks the shared clock during walks and entries,
+and payload ENOENT reports sourceChanged. Final Collector449 and affected
+Service112 passed, zero failures, actual exit0. Clone versus streaming copy caps
+remain intentionally distinct from logical snapshot and total retained-byte caps.
+
+Evidence: output/collector-goal-20260908/cursor-composite-capture-receipt.json
+records source hashes, commands, logs, xcresults and review adjudication. All
+listed producers are terminal. This is local custody/native-replay proof only;
+Cursor durable CAS/manifest integration is the active next step, followed by
+privacy/reservations, independent replica transport and HQ replay/FTS/Web.
+Legacy coverage, fresh native binaries/Release/CI, actual profiles/natural input,
+resource measurements and approved production transition remain unverified.
+No Cursor runtime upload or source retirement gate is enabled.
+
+
+### Cursor private SQLite snapshot custody and OpenCode reuse (2026-09-09)
+
+Extracted physical main/WAL custody from CollectorOpenCodeSource into
+CollectorSQLiteSnapshotLease and added Cursor withModernStoreSnapshot as the
+second source consumer. The helper opens source files with read-only no-follow
+descriptors, clones or streams them into owned private staging, and never opens
+live SQLite. Original main/WAL generations, pathname bindings and root identity
+are fenced around copying; rollback journals refuse and source SHM is never
+copied. Descriptor ancestry rejects staging inside source roots, including path
+aliases. Private main/WAL generations and absent SHM/journal are verified before
+consumer admission; owned-FD cleanup covers success and thrown errors.
+
+Cursor validates the caller-observed exact ID/store path and all known
+metadata/transcript dependencies, binds the selected main/WAL generations, and
+checks relevant directory identities at seal. Tests read committed WAL rows
+from the private image after original source removal and reject stale/forged
+context or dependencies changed during copying. This seals only the database
+component: exact JSONL/meta bytes, immutable composite representation, scoped
+privacy, durable publication, legacy per-composer export/frozen ownership and
+Cursor HQ replay/FTS/Web remain pending. No Cursor upload route is enabled.
+
+OpenCode retains its public error types, SQL lease deadline/VM budgets and
+per-session export. Its pagination/export SQL region (21,990 bytes) and captured
+privacy region (6,056 bytes) are byte-identical to pre-extraction source. The
+physical extraction additionally checks source-root identity after main copy
+and validates the complete staged pair. Historical extraction script/baseline
+are evidence only; later integrity refinements are in current source.
+
+The same Cursor/Grok pane froze 13 new shared-lease tests and reviewed the
+Cursor binding and physical paths. Parent added three Cursor consumer tests and
+a six-arm private-pair integrity case. Actual initial RED ran69 tests with76
+assertion failures, exit65; old OpenCode36 remained green. Initial GREEN69 left
+two failures: WAL truncation returned a generic I/O error before generation
+validation, and the fixture opened a fresh WAL-mode private main READONLY.
+A native libsqlite3 probe demonstrated open0/query14 in that mode versus query0
+with READWRITE plus query_only; only the private fixture helper was corrected.
+WAL mutation is now checked before copying. Separate private-pair RED ran70
+with12 assertions, exit65; altered main/WAL, added WAL, linked WAL/SHM and an
+unexpected journal all now refuse before body admission. Final focused70,
+full Collector438 and affected Service107 passed with zero failures and actual
+producer exit0. Service covers runtime/publication recovery and native Kimi /
+OpenCode replay. All parent producers are joined; the pane is done533.
+
+Evidence: output/collector-goal-20260908/cursor-sqlite-snapshot-receipt.json
+contains exact source hashes and all RED/GREEN log/xcresult paths;
+opencode-sql-extraction-equality.json and sqlite-private-open-mode-probe.json
+record independent checks. Pinned XcodeGen2.45.4 generated the explicit source
+entry and the dependency allowlist remains closed. Previous native-binary hashes
+are historical for this changed candidate; no fresh product binary, Release/CI,
+real-host natural input/resource, full profile coverage or retirement acceptance
+is claimed. CHANGELOG/MEMO and the source checklist retain all operational gates
+CLOSED; the original multi-machine goal remains active.
+
+### Cursor modern dependency discovery foundation (2026-09-09)
+
+Added CollectorCursorSource metadata-only discovery for the explicit Cursor
+chats/projects root. It joins byte-identical native IDs across the two native
+layouts, preserves store-only/transcript-only sessions, and records exact known
+missing dependencies. Main/WAL/SHM/journal/meta/transcript generations are
+observed without opening source contents or SQLite. The bounded no-follow walk
+compares directory identities and recognized membership across two observations,
+refuses duplicate primaries, unsafe paths and concurrent input changes, and
+excludes native-hidden child directories. Unrelated files never become payload.
+SHM/journal observations are safety inputs, not upload members or proof of a
+coherent SQLite snapshot. No runtime/upload/HQ route is enabled by this slice.
+
+The same authorized Cursor/Grok pane authored and froze the initial 13 tests;
+the coordinator independently reviewed them and implemented after actual RED
+(13 tests, 41 assertion failures, xcodebuild exit65). Initial focused GREEN
+passed13. Full Collector417 exposed only the missing explicit source allowlist
+entry (four assertions); that exact path was added without widening dependency
+permissions. Parent separately reproduced native hidden-directory drift with
+14 tests/one failure, then corrected dot-hidden and UF_HIDDEN variable children.
+Final full Collector418 passed with zero failures/skips and actual exit0.
+Pinned XcodeGen2.45.4 generated the project; no manual project edits. Every
+parent producer is terminal. The same pane completed bounded source review.
+
+Review follow-up: parent reproduced total-call budget doubling and the temporary
+inheritable dup descriptor (16 tests/two failures, exit65), then used one shared
+remaining budget and F_DUPFD_CLOEXEC. A native syscall probe showed macOS
+fdopendir restores CLOEXEC; only the preceding dup window was accepted. Parent
+also reproduced unrelated child symlinks blocking discovery (17 tests/one
+failure, exit65) and matched native skip behavior without following links;
+configured roots, fixed layout directories and primary/sidecar links still
+refuse. The existing byte-preserving entry decoder is reused. No concrete UTF8
+normalization defect or hypothetical future descent bug is claimed. Final full
+Collector421 passed, zero failures/skips, actual exit0; this supersedes418 above.
+Cursor pane is done at sequence524 and all parent producers are joined.
+
+The source-grounded Cursor capture contract retains legacy composer-row export
+and frozen multi-file workspace ownership, modern private WAL-safe SQLite plus
+JSONL/meta capture, distinct session-info versus indexing-identity size/time,
+and staged absolute-locator rebinding. Duplicate/symlink refusal is a collector
+safety requirement, not a claim that native discovery already rejects them.
+The dated default-source metadata receipt reports118 paired modern sessions,
+52 stores with WAL and legacy files present; no source DB/body was opened and
+actual profile enablement is not inferred from those counts.
+
+Evidence: output/collector-goal-20260908/cursor-discovery-receipt.json records
+all RED/GREEN producer exits, counts, full logs/xcresults and current source
+hashes. cursor-capture-contract.md records the next implementation requirements;
+cursor-default-source-metadata-20260909.json is dated metadata-only evidence.
+Cursor coherent capture, schema/CAS/privacy, durable runtime/independent replicas,
+HQ native replay/FTS and rendered Web remain pending for modern and legacy paths.
+Other enabled families/profiles, real hosts/identity/natural inputs/resource
+budgets, current Release/CI and the separately confirmed production transaction
+remain open. All source-retirement gates stay CLOSED; the full goal stays active.
+
+### Kimi native binary chain and rendered Web acceptance (2026-09-09)
+
+The same Cursor/Grok pane extended only CollectorBinaryShadowIntegrationTests
+with a three-generation Kimi fixture; the coordinator independently reviewed it,
+rebuilt the native Collector, Service and RemoteServer, and ran the binaries.
+The fixture first publishes context plus native wire usage, then adds a context
+shard, then changes only the project registry. Both independent real replica
+processes return exact manifest/object bytes. Assertions cover schema 5, closed
+membership, scoped cwd/native identity, ordered sequence/epoch/source instance,
+unchanged primary generation, changed capture identity and identical transcript
+chunks for the registry-only version. Actual HQ Service intake/FTS and Web IPC
+preserve the same stored session, full messages/usage, context-only size and the
+updated project. Collector creates no product index. HQ data/index rows are not
+manually seeded after the HQ process starts.
+
+Three current Debug product builds passed with actual exit 0. The CLI/binary
+regression ran 34 tests: 33 passed, one existing opt-in Codex browser hold skipped,
+zero failures. All eight transitive local executable/framework hashes stayed
+identical across the run. The separate Kimi HTTPS/browser fixture passed one
+selected test in 202.812 seconds with actual exit 0 and the same eight local
+artifact hashes stable before/after. These current hashes supersede historical
+OpenCode binary hashes for this candidate; system/SDK libraries are recorded as
+external rather than falsely claimed hashed.
+
+Parent-driven Playwright verified real login, source=kimi plus query=aurora,
+session detail, all three expected role/content messages, and the third-version
+project second-kimi-project. A no-match search returned No sessions found and
+cleared stale detail/messages. Parent viewed the 1280x900 screenshot and confirmed
+visible content without clipping. The first login attempt mistakenly submitted
+the whole synthetic credential JSON rather than its credential field; the
+server returned401. The corrected field returned204 and subsequent overview,
+search, detail, messages and no-match requests returned200. This explains the
+sole browser console error; warnings were0. No clean-console claim is made.
+The browser used a test-only loopback self-signed TLS certificate with
+ignoreHTTPSErrors; this is not production TLS trust evidence. Node was used only
+for the temporary test TLS helper, never as a product runtime.
+
+Evidence: output/collector-goal-20260908/kimi-{collector,service,remote}-binary-
+build.{json,log}, kimi-binary-cli-regression.{json,log,xcresult}, and
+kimi-browser-fixture.{json,log,xcresult}; output/playwright/kimi-browser-receipt.json,
+kimi-native-web.png, kimi-detail-snapshot.yml, kimi-no-match-snapshot.yml,
+kimi-browser-requests.txt and kimi-browser-console.txt. The owned browser session
+engram-kimi-20260909 is closed; the fixture stop request was matched by runID,
+all owned child processes joined through the test cleanup, and the exact fixture
+directory is verified absent. Parent producers95615/90864/46951 are joined;
+Cursor's bounded read-only fixture review ended done at sequence504. git diff
+--check passed. No production source change was needed in this tranche.
+
+This supersedes the pending Kimi local binary/FTS/rendered-Web checkpoint only.
+The full objective remains active: actual enabled source/profile inventory and
+remaining source-family support, separate standard/Orca/bundled Codex evidence,
+M1-local identity, natural real-host collection, current Release/CI, persistent
+Web/TLS/resource behavior and authorized retirement remain open. No commit,
+push, deployment, installed-service restart, Docker or real-host write occurred.
+
+### Kimi HQ native replay, bound commit and FTS (2026-09-09)
+
+Kimi schema-5 file sets now enter the existing HQ CaptureIngest source registry
+and verified composite replay path. The native factory calls KimiAdapter's
+captured-input helper instead of the previous failing scaffold. The same
+Cursor/Grok pane implemented only KimiAdapter and SessionAdapterFactory; the
+coordinator reviewed their actual diff and owns CoreWrite integration and tests.
+The helper uses frozen project context and captured primary mtime, preserves the
+native parser's messages, tools, usage and context-only size, and rewrites only
+the staged filePath back to the logical locator. Captured input identity excludes
+the original registry; no registry is synthesized in the verified staging tree.
+Default live Kimi parsing retains its existing behavior.
+
+Commit validation requires a valid closed Kimi layout, exact native ID and raw
+ID binding to captured context, exact captured cwd, and an overflow-checked sum
+of context member bytes excluding wire.jsonl. A registry-only recapture retains
+the native identity and updates the same stored session; workspace names are not
+incorrectly recomputed from changed cwd. Existing publication, epoch, binding,
+identity, writer and FTS readiness fences remain in use.
+
+Executable evidence (actual xcodebuild producer exits, never wrapper exits):
+
+- kimi-hq-factory-red: 6 tests, 4 failures, exit65; the old two native replay cases
+  passed while new factory and HQ-format cases failed. Factory GREEN: 6/0, exit0.
+- kimi-hq-commit-red: 63 tests, 4 assertions failed, exit65; valid context-size
+  commits failed while aggregate wire-inclusive size was accepted.
+- kimi-hq-identity-red: after the size correction, 63 tests/4 assertions failed,
+  exit65; forged consistent native identity and changed cwd were accepted.
+- kimi-hq-native-core-green: 563 tests passed, exit0; 548 Archive/CaptureIngest
+  cases plus 15 native Kimi adapter/indexer regressions.
+- kimi-hq-service-green: 107 passed, exit0 (57 publication worker, 41 Runtime,
+  six Kimi factory/native/HQ replay, three OpenCode replay).
+- kimi-hq-fts-commit-green: final focused commit suite 63 passed, exit0. Native
+  captures were replayed and committed after original source/registry removal;
+  the real IndexJobRunner used no adapters, consumed persisted messages, made
+  the ledger index_ready and returned the expected session from FTS MATCH aurora.
+  Both initial and registry-only versions indexed into one stored session.
+
+Full argv/exit receipts, logs and xcresults live under
+output/collector-goal-20260908/ with the names above (work crossed midnight).
+All parent producers are terminal/joined; Cursor's bounded read-only contract
+review finished in the same pane/session at state sequence 500. git diff --check
+passed. Existing root MEMO, retirement checklist and progress receipt are synced.
+No project generation, commit, push, Docker, deployment, installed-service restart
+or real-host write occurred in this tranche.
+
+This supersedes the previous Kimi HQ registry/replay/commit/FTS pending note.
+These are local domain and HTTP-fixture results, not a rebuilt Collector ->
+RemoteServer -> Service binary chain or rendered Web proof. Current linked
+native binaries must be rebuilt before Kimi browser acceptance; prior OpenCode
+binary hashes cannot describe this changed candidate. Actual enabled-source and
+profile coverage, three distinct Codex runtimes, M1-local identity, natural host
+inputs, Release/CI, persistent Web/TLS/resource evidence and authorized retirement
+remain open. The full multi-host objective remains ACTIVE_NOT_COMPLETE.
+
+### Kimi Runtime publication and independent replica admission (2026-09-08)
+
+The same neighboring Cursor/Grok pane implemented the six frozen Collector
+integration files; the coordinator reviewed the actual source and owns privacy,
+replica admission and executable verification. Runtime accepts Kimi roots with
+an explicit canonical, non-overlapping projectRegistryPath and nil/kimi format.
+Bounded enumeration selects workspace/session/context.jsonl; shard/wire events
+redirty the owning primary. Existing per-root registry pagination also covers
+Kimi, retaining its durable legacy column names and reopening behavior.
+Publication reserves the complete schema-5 file set and scoped context before
+capture, then recovers only matching immutable CAS evidence under the configured
+registry authority. Source/registry absence does not prevent reauthorization of
+an already captured publication after a privacy-policy change.
+
+Kimi privacy assessment reads captured manifest/chunks only, verifies aggregate
+and member bytes, enforces source/line/record/root budgets across all members,
+and requires native conversation evidence plus the frozen cwd. It honors source
+and directory exclusions without sending unrelated registry rows. ArchiveStore
+now admits the validated closed Kimi file-set shape through existing durable
+reference validation. No schema or acceptance durability shortcut was added.
+
+Validation: the prior Runtime behavioral RED ran two tests with four failed
+assertions at invalidConfiguration; privacy RED ran ten tests with four failed
+assertions; corrected replica RED ran one test and failed invalidPublication.
+After implementation, focused privacy 10 and Runtime 2 passed. Final full
+Collector 404, affected Service 103 (57 worker, 41 Runtime, two native Kimi replay,
+three native OpenCode replay), ArchivePublicationStore 45 and publication routes
+13 passed, with actual xcodebuild exits 0 and all producers joined. Runtime
+fixtures exercised primary/shard/wire/registry-only generations and compared
+manifest and object bytes from both independent loopback HTTP replicas. The
+excluded-capture test deleted source and registry, restarted under policy rev2,
+and uploaded the original publication to both replicas without a product index.
+Supplemental tests verify persisted registry pagination across DB close/reopen
+and reject missing/overlapping registry configuration or incompatible format.
+
+Receipts and full logs: output/collector-goal-20260908/kimi-runtime-{red-v2,green,
+collector-regression,service-regression}.{json,log,xcresult}, kimi-privacy-{red,
+green}.*, kimi-replica-{red-v2,green}.* and kimi-replica-routes-green.*. The first
+replica RED used a non-test scheme and ran no tests (exit66); the store GREEN
+included a misspelled route selector and proves only the 45 store tests. The
+separate correctly selected routes receipt proves all 13 route tests. These
+setup limitations are retained rather than counted as test coverage.
+
+Cursor's subsequent read-only review found a real missing-input recovery gap:
+known-uncaptured Kimi reservations threw invalidCapture on primary/registry loss,
+preventing later work in that cycle. The coordinator reproduced it with actual
+Service RED 102/one failure (kimi-uncaptured-recovery-red), then added a typed,
+Kimi-only catch around the initial uncaptured preflight. It releases that stale
+reservation while preserving dirty work; the generic matcher and post-CAS capture
+checks remain unchanged. The two-arm repro now proves restoration creates a
+later sequence with both ACKs. A separate interrupted-after-CAS test proves the
+original sequence/epoch survives primary+registry removal and completes from
+immutable bytes. Service final passed 103/zero failures, actual exit 0:
+kimi-uncaptured-recovery-green.{json,log,xcresult}. Cursor's final review approved
+this narrow boundary and explicitly rejected a global matcher catch, which could
+also affect the post-CAS check. This is a reproduced and fixed gap, not a pending
+finding or a claim about real-host recovery.
+Final post-fix full Collector also passed 404/zero failures, actual exit 0:
+output/collector-goal-20260908/kimi-runtime-collector-final.{json,log,xcresult}.
+
+This supersedes the previous Kimi Runtime/privacy/transport pending checkpoint.
+HQ CaptureIngestParseFormat, replay and commit are still unwired for Kimi;
+SessionAdapterFactory's Kimi branch deliberately remains a failing scaffold.
+Native adapter replay is not HQ ingestion/FTS/Web acceptance. Fresh linked native
+binaries, actual enabled sources/profiles, distinct Codex runtimes, real-host
+inputs/identity, Release/CI, production Web and retirement remain unverified.
+The full goal stays active. No commit, push, deployment, service restart, Docker
+or production write was performed in this tranche.
+
+### Kimi immutable schema and durable recovery (2026-09-08)
+
+Kimi cwd provenance now travels in explicit archive schema 5, separate from
+Gemini schema 3 and OpenCode schema 4. ArchiveKimiProjectContext binds workspace,
+native session, cwd and registry locator/generation/SHA without transporting the
+shared registry. The file-set contract admits only that session's context.jsonl,
+native signed numeric shards and exactly present-or-absent wire.jsonl. Duplicate
+shard order, foreign dependencies, context mixing, wrong source/session binding,
+relative/dot-segment locators and schema downgrades are refused. Schema 1 remains
+the default, and existing schemas 1-4 keep their canonical representation.
+ExactSourceCapturer includes context in file-set identity and emits schema 5.
+
+Inventory publication schema 5 adds distinct canonical kimi_context_bytes/SHA
+columns. Its transactional migration preserves schema 1-4 reservations; reserve,
+load and publication completion bind source, primary generation, closed membership
+and exact context. Corruption fails closed while retaining the immutable record.
+A registry-only change gives identical transcript bytes a different capture ID;
+new context cannot complete an older reservation. Injected publication failure
+rolls back both replica obligations and leaves the reservation recoverable.
+Closing/reopening the SQLite queue, removing the original source/registry and
+finishing from captured CAS all execute in the new tests. The observer now places
+its typed context directly into the durable snapshot; callers no longer assemble
+this connection in test code.
+
+Parent RED evidence: model 38 tests/one unsupported-schema failure; persistence
+six tests/nine assertions failed across five cases; independent model review
+reproduced two accepted invalid locators, alongside a separate empty-file test
+SHA fixture correction. A further observer-connection RED ran 14/two failures
+before the direct snapshot bridge. Parent owns the locator fix and bridge. Cursor
+pane wK:pH implemented only the authorized protocol and persistence files, then
+reviewed the four storage surfaces read-only (done seq488). Parent inspected the
+actual source and independently ran all verifiers; no graph result from another
+checkout was used as source proof.
+
+Final checks passed: Archive/Ingest 543; complete Collector 399; Service affected
+classes 98 (publication worker 55, Runtime 38, Kimi native replay two, OpenCode
+native replay three). All producer exits are zero and joined. Kimi's two replay
+cases now recover cwd from a canonical schema-5 manifest round-trip after source
+removal, preserving full native info/messages, context-only size and wire/no-wire
+time behavior. They no longer depend on an in-process-only cwd projection. The
+existing publication migration test now expects version 5 and rejects future
+version 6; the new test separately covers a version-4 DB missing Kimi columns.
+Pinned XcodeGen 2.45.4 added only four references for the new persistence test.
+
+Evidence: output/collector-goal-20260908/kimi-schema-five-red.*,
+kimi-schema-five-review.*, kimi-persistence-{red,green}.*,
+kimi-observer-durable-context-red.*, kimi-schema-core-regression.*,
+kimi-schema-collector-final-v2.*, kimi-schema-service-final.* and
+kimi-schema-project-generation.diff. Exact argv, logs and xcresults are retained.
+CHECKS_NOT_RUN: Kimi Runtime/source observation scheduling, captured-input privacy,
+actual replica transport, HQ registry/commit/FTS and browser; those connections
+remain the next implementation. Current Release/CI, rebuilt binary-chain proof,
+real-host enablement/natural-input/resource/retirement checks remain unverified.
+Only isolated fixture databases were migrated; no installed service, host role,
+production data, commit or push changed. Future installation/rollback must account
+for the inventory version rather than point an older binary at a v5 spool.
+
+The full objective remains active, including all remaining enabled sources and
+profiles, separate Codex runtimes, M1-local identity and actual host retirement.
+This checkpoint supersedes only the earlier Kimi in-process provenance limit.
+
+### Kimi scoped dependencies and native CAS replay foundation (2026-09-08)
+
+CollectorKimiSource now observes a session's exact context.jsonl and native
+context_N/context_sub_N shards plus optional wire.jsonl with explicit absence.
+The metadata-only helper records regular-file generations, rejects symlink/FIFO
+members and ambiguous numeric shard ordering, limits declared dependencies to
+64 and directory work to 4096 entries, and fences two observations around root,
+session, membership and registry identity. Transcript bodies remain unparsed on
+the Collector side. The external kimi.json read is bounded to 64 KiB and supplies
+only one scoped work_dirs mapping plus its original locator/generation/SHA;
+shared configuration and other sessions' fields are not copied into the mapping.
+Native workspace-hash/kaos precedence and unique last-session fallback are kept.
+
+Parent wrote and executed the observation RED: 11 tests, four missing-implementation
+failures. Cursor pane wK:pH implemented only the helper, then reviewed it read-only.
+Parent reproduced two further defects with 13 tests/two failures: an unrelated
+non-object work_dirs entry blocked native cwd resolution, and a hash-selected row
+retained another session's unnecessary last_session_id. The minimal correction
+skips non-object rows and emits last_session_id only for session fallback. Final
+full Collector: 392 tests passed, zero failures, including 13 Kimi cases and the
+three product-dependency boundary checks. Cursor is done at sequence 478; all
+parent xcodebuild producers were joined before editing their inputs.
+
+Two independent Service tests passed using the existing native KimiAdapter:
+observe -> actual exact file-set capture/CAS -> delete original source directory
+and shared registry -> reconstruct bytes and generation mtime -> native replay
+using only the scoped registry. Full info (after logical-path normalization),
+messages, roles/tool calls, numeric shard order, timestamps, 96/12/cache4/3 usage,
+cwd and context-only native size agree. Both present-wire and absent-wire fallback
+time paths execute. Whole registry/sibling secrets are absent from captured bytes.
+This test transports the scoped context in-process, not inside the archive wire
+schema; it does not establish Collector Runtime, publication, HQ registry/commit,
+FTS, browser or real-host Kimi coverage.
+
+Pinned XcodeGen 2.45.4 generated exactly 12 new Kimi source/test reference lines
+with zero removals. project.yml and the explicit Collector source allowlist were
+updated; no product parser behavior changed. The first generator invocation used
+its containing directory, so the subsequently selected test ran zero cases; its
+receipt is explicitly invalid and is not RED evidence. The first GREEN encountered
+fixture-only ENOTDIR; realpath fixture roots fixed it. The first Service attempt
+failed to compile because its test lacked EngramCoreRead import. These attempts
+are retained separately from passing receipts. No commit/push/deployment or
+installed-service change occurred. CHECKS_NOT_RUN: current candidate Release/CI,
+Kimi Runtime/HQ/network/browser and real-host retirement; these require the next
+implementation and separately authorized operational transaction.
+
+Evidence: output/collector-goal-20260908/kimi-observer-red-v2.{json,log,xcresult},
+kimi-registry-projection-red.*, kimi-collector-final.*, kimi-native-cas-replay-v2.*,
+and kimi-project-generation.diff. Exact argv and producer exit codes are retained.
+Next: bind scoped Kimi provenance into the immutable manifest/reservation schema,
+then implement dependency/registry dirty observation, captured-input privacy,
+independent replica publication and native HQ replay/size/identity commit. All
+remaining actual sources/profiles, distinct Codex runtime roots, M1-local identity,
+real hosts/natural inputs, Release/CI, production TLS, resources and retirement
+remain part of the active full objective.
+
+### OpenCode native process chain and rendered Web acceptance (2026-09-08)
+
+Fresh Debug EngramCollector, EngramRemoteServer and EngramService builds passed.
+The new binary shadow case keeps a synthetic OpenCode writer attached to WAL,
+commits two generations without changing main-DB bytes, and starts the actual
+Collector plus independent local hq/m1 RemoteServer processes. Both replicas must
+return the same schema-4 per-session image and exact DB/WAL provenance. An archived
+sibling sentinel never enters the scoped image. HQ Service performs intake, CAS
+transfer, native replay, commit, FTS and Web IPC; the fixture seeds only source
+registration before Service starts. The same native/stored session advances to a
+new publication and transcript generation, preserving prior messages, roles,
+96/12/cache4/3 usage and native payload size. Final assertions also check direct
+sessions_fts MATCH/content, virtual locator, image-size versus payload-size, source
+main/WAL bytes and absence of a Collector product index.
+
+The initial actual OpenCode process test passed. CLI plus all existing binary
+shadow cases ran 33: 32 passed, one existing opt-in Codex browser hold skipped.
+All eight recursively linked local Mach-O artifacts retained identical hashes
+before/after each run. A Swift compatibility dependency is supplied by the macOS
+dyld shared cache; its presence was verified through _dyld_shared_cache_contains_path
+and recorded separately from hashed local artifacts. Initial fingerprint discovery
+stopped before tests until this dependency was resolved, not silently ignored.
+
+Independent Playwright acceptance then exercised the enhanced OpenCode fixture
+with its existing test-only HTTPS proxy and 300-second bounded hold. The first
+browser preparation ran the ordinary process case because the runner had not
+forwarded hold variables through TEST_RUNNER_; it is not browser evidence. After
+correct forwarding, the browser logged in, filtered source=opencode/query=aurora,
+opened the native task and rendered all three expected messages. A no-match query
+returned No sessions found. Auth returned 204 and overview/search/detail/messages
+returned 200, including the exact ready transcript generation. Console: zero
+errors/warnings. Parent viewed the 1280x900 screenshot and checked content/roles
+without clipping; this is functional rendering, not a visual-design review.
+The browser was closed, the exact runID stop file requested orderly shutdown, the
+hold test passed, and its owned fixture was removed. Eight artifact hashes stayed
+stable. Self-signed loopback TLS used ignoreHTTPSErrors; production trust was not
+validated. The Node helper is test-only TLS plumbing, not a product runtime.
+
+Evidence: output/collector-goal-20260908/opencode-*-binary-build.{json,log},
+opencode-binary-chain-first.*, opencode-binary-cli-regression.*,
+opencode-browser-fixture-v2.*; output/playwright/opencode-browser-receipt.json,
+opencode-native-web.png, opencode-positive.yml, opencode-no-match.yml and
+opencode-network.txt. Complete argv/exit logs and xcresults are retained. Cursor
+pane wK:pH reviewed admission and test assertions read-only; parent owned the test
+changes, builds and browser. No product code changed during this checkpoint.
+
+Remaining: full actual enabled-source/profile coverage, distinct Codex runtime
+roots, M1-local identity, real-host natural-input acceptance, current Release/CI,
+production Web/TLS and resource/retirement gates. Local synthetic process/browser
+acceptance does not authorize replacing installed services or retiring indexing.
+No commit, push, deployment or production data mutation was performed.
+
+### OpenCode HQ native replay and identity-bound commit (2026-09-08)
+
+This supersedes the preceding HQ-admission placeholder. CaptureIngestSourceRegistry
+now provisions the OpenCode parse format and accepts only schema-4 scoped images,
+with the captured database locator exactly equal to configuredRoot/opencode.db.
+Nested or outside databases, unapproved epochs, incompatible formats and legacy
+whole-database shapes remain rejected. Replay writes only session.sqlite into its
+owned staging tree and verifies immutable bytes before/after native parsing; the
+client's original database locator is lexical metadata and is never opened.
+
+The captured OpenCode adapter validates rollback-mode SQLite geometry, schema,
+single-session identity, message/part ownership and native payload size, then
+awaits the existing native scanForIndexing implementation on the staged path.
+Only filePath is restored to the original logical virtual locator. Native ID,
+messages, CJK content, token/reasoning/cache usage and parent/dispatched semantics
+are preserved. Commit uses nativePayloadByteCount rather than SQLite image size.
+Dispatched children remain skip and do not enqueue FTS jobs; ordinary sessions
+create the existing index jobs.
+
+Parent ran an actual initial RED: 93 commit/registry tests, four missing-format
+failures. Cursor implemented five released HQ files only. A test stat.mode type
+conversion and three adapter optional-string coalescing compile failures were
+corrected and their receipts retained. Expanded independent review ran 135 tests
+and found two assertions in one real identity-rebinding case: a self-consistent
+replacement scan/nativeIdentity/rawSourceSessionID could commit under a different
+ID from the immutable context. Parent fixed commit validation to bind both
+scan.info.id and rawSourceSessionID exactly to context.nativeSessionID.
+
+Final verification passed 553 tests: the 20 ArchiveV2/CaptureIngest classes plus
+16 existing native OpenCode selectors. Nine new commit/replay cases cover normal
+and dispatched sessions, wrong image-size semantics, wrong native ID/payload,
+sibling sessions, foreign message/part ownership and identity rebinding; one new
+registry case covers source/root/epoch fences. Three Service tests also passed,
+including actual CollectorOpenCodeSource.snapshot -> Collector CAS -> HQ registry
+and CaptureIngestReplay after deleting the original DB/WAL directory. Exact native
+info/messages/parent identity are compared against the pre-capture native scan.
+
+Evidence under output/collector-goal-20260908/: opencode-hq-native-commit-red,
+opencode-hq-native-red-v2, opencode-hq-native-review, opencode-hq-native-review-v2,
+opencode-hq-native-core-green and opencode-snapshot-hq-pipeline-green, each with
+JSON argv/exit receipts, full logs and xcresults. All producers are joined; Cursor
+pane wK:pH is frozen. No commit, push, deployment or production mutation occurred.
+
+Remaining: actual rebuilt Collector/RemoteServer/Service process-chain acceptance,
+OpenCode FTS/Web query proof, full enabled-source/profile coverage, M1-local
+identity, real-host natural input, current Release/CI, rendered Web, resource and
+retirement gates. These local native tests do not prove the actual hosts switched
+or that the daily Mac's old indexing services can be retired.
+
+### OpenCode Runtime delivery, privacy and restart recovery (2026-09-08)
+
+This supersedes the earlier unwired Runtime/privacy checkpoint. OpenCode roots
+now enumerate only opencode.db and map WAL events to the primary. Persistent
+main/WAL fingerprints avoid restarting unchanged walks. The worker uses one
+private snapshot lease per bounded batch, budgets session images, commits each
+publication and cursor together, and releases deferred claims while retaining
+unfinished work until matching-pair EOF. Captured-image privacy checks verify
+CAS bytes, native identity, project directory, relational ownership, payload
+size and budgets without semantic message parsing or opening the original DB.
+Excluded sessions remain locally durable and can be reauthorized from CAS.
+
+Parent independently corrected two Cursor compile errors before executing the
+privacy suite: the Runtime root guard closed its closure early, and a Store
+static helper needed Self. Privacy/source tests passed 36; full Collector passed
+379. Runtime tests prove WAL-only commits reach two independent local HTTP
+replicas without changing source bytes or creating a local product index. A
+three-session, one-image-per-cycle test proves restart resumes B/C after excluded
+A, reaches EOF, and reauthorizes A after deleting the source. Two worker tests
+prove CAS-only interruption recovery without originals and safe abandonment of
+an uncaptured reservation after source change. The first broader run failed only
+the new tests' duplicate fixture teardown; correction passed 54 worker + 38
+Runtime tests. The async fixture compile correction and failed runs are retained.
+
+Cursor's frozen review identified a real policy-change latency defect: privacy
+withholding inherited up to one day of transport-style backoff. Parent reproduced
+it with 18 deferrals, an unchanged-policy restart, original DB removal and a new
+policy; HQ incorrectly remained at zero ACKs. The fix stores the complete privacy
+policy SHA in existing collector_metadata and atomically resets only pending
+privacyWithheld attempts/deadlines when that SHA changes, serially before upload.
+Unchanged policy, inflight/acknowledged rows and transport deadlines are preserved;
+every transmission still performs fresh authorization. Final Runtime/worker run
+passed 93 (38 + 55), including the reproduced policy-change case. The final
+full Collector rerun after this fix also passed 379.
+
+Evidence: output/collector-goal-20260908/opencode-image-privacy-{red,green,green-v2,green-v3}.*,
+opencode-walk-runtime-green{,-v2}.*, opencode-wired-collector-regression.*,
+opencode-wired-service-{regression,green}.*, privacy-policy-requeue-{red,green}.*,
+and opencode-wired-collector-final.*.
+Each producer has complete argv/exit JSON, log and xcresult. All tests use owned
+synthetic paths and local replica services, not real HQ/M1 hosts. Cursor session
+6c129436-254a-4a13-8753-587b5049e3e2 in pane wK:pH implemented the released files
+and reviewed read-only; parent owned test execution and the final fixes.
+
+Remaining: HQ registry/replay/commit support is absent; the captured adapter's
+OpenCode branch is still an explicit failure placeholder behind closed HQ
+admission. Native CLI/binary acceptance, actual enabled sources/profiles,
+M1-local identity provisioning, real-host natural input, current Release/CI,
+rendered Web, resource acceptance and retirement remain open. No commit, push,
+deployment, restart or production data mutation was performed.
+
+### Durable OpenCode session walks and replica format admission (2026-09-08)
+
+The inventory domain now persists a main/WAL generation pair and the last
+completed native session ID per configured root. A per-session reservation stores
+canonical SQLite context with its digest independently of the existing 2-KiB
+recovery cursor. Finishing a session commits its publication, both pending replica
+rows and cursor advancement in one transaction. It retains the dirty claim;
+only matching-pair EOF without a pending reservation acknowledges that claim.
+An empty walk does not invent a capture ID. A newer dirty event remains pending.
+Root revision changes reset walk state while old records retain revision fences.
+Same-pair restart resumes after the completed ID. Old-generation CAS recovery may
+publish its reserved capture but cannot advance a different WAL walk or release
+the current owner's claim. These are inventory APIs; Runtime has not wired them.
+
+Publication schema 4 migrates versions 1/2/3 without dropping reservations and
+rejects unknown versions before ownership changes. Native context, source path,
+regular DB/WAL generations, strict byte-order session progression and capture
+identity are validated. ExactSourceCapturer.sqliteSessionImageCaptureID is the
+shared identity implementation used by both CAS capture and inventory validation;
+this extraction does not change the prior schema-4 identity domain.
+
+Parent-authored RED ran 52 inventory tests with six unavailable-walk failures.
+Cursor implemented only the scoped inventory/owner/reservation files. Expanded
+independent review ran 56 tests with five assertions: missing or mismatched walk
+fences could reserve, and an unrelated physical locator could enter the walk.
+The two fence subcases were then isolated in fresh fixtures and reproduced the
+same five assertions. Parent fixes require the OpenCode source, opencode.db
+primary and matching persisted DB/WAL pair. Final full Collector passed 373,
+including ten new walk/recovery tests. Publication worker regression passed 52,
+including actual legacy-schema 1/2/3 column removal, migration to 4, reservation
+completion and unknown-schema 0/5/non-numeric refusal. Owner/configuration
+boundaries, old publication retention and transaction rollback remain covered.
+
+Replica ArchiveStore now admits the validated schema-4 OpenCode session-image
+shape while continuing to reject a schema-1 OpenCode publication. A real SQLite
+fixture is stored in two independent local ArchiveStore directories identified
+as hq and m1; two WAL provenance versions preserve exact manifest/image bytes and
+idempotent ACKs. This is local storage acceptance, not network delivery to actual
+hosts or native HQ parsing. The first test attempt failed fixture directory mode
+validation; after using owned 0700 directories, an actual invalidPublication RED
+was captured and the narrow source-shape guard was extended. Store 44 and route 13
+passed. An initially unmatched plural route selector ran only the 44 store tests;
+ArchivePublicationRouteTests was then selected explicitly and all 13 ran.
+Full ArchiveV2/CaptureIngest 527 also passed after shared identity/shape changes.
+
+Evidence under output/collector-goal-20260908/:
+opencode-durable-collector-green (373), opencode-durable-worker-green (52),
+opencode-replica-admission-green (44), opencode-replica-route-green (13), and
+opencode-walk-identity-core-green (527), with complete JSON argv/exit receipts,
+logs and xcresults. REDs and fixture/selector corrections remain retained.
+
+Final read-only review identified fail-closed behavior for corrupt walk JSON or
+inconsistent SQLite-context bytes/digest. No ordinary transaction path or live
+corruption was demonstrated: each tuple is written atomically. Those reports
+are not treated as reproduced restart regressions, and uncertain reservations
+are not automatically deleted to recover progress.
+
+Remaining integration: WAL observation and worker paging/capture/recovery,
+captured-image privacy metadata validation, Runtime/source-format admission,
+HQ native replay/commit and the actual two-generation binary chain. In particular,
+withheld sessions need a durable policy-bound outcome before pagination can skip
+them; a changed live pair cannot recreate an old reservation's missing image.
+Full enabled-source coverage, M1-local identity, actual hosts/natural input,
+Release/CI, rendered Web, resource acceptance and retirement remain required.
+No commit, push, deployment, service restart or production data mutation occurred.
+
+### OpenCode private snapshot leases and schema-4 CAS capture (2026-09-08)
+
+The Collector now opens SQLite only on a disposable private database image.
+Source main/WAL files are opened relative to retained directory descriptors,
+cloned with fclonefileat where supported, or copied with an aggregate bounded
+pread fallback. The pair is fenced before sealing, including WAL absence and
+rollback-journal refusal. Source SHM is not opened by SQLite. A scoped lease
+pages at most 64 native IDs per call and exports multiple isolated session images
+without restaging the database. Sealed images remain usable after source writes
+or removal; before-seal root/name changes are refused. Staging uses private modes,
+retained directory identities and FD-relative cleanup. Clone instrumentation
+counts userspace copied bytes only, not kernel I/O or physical storage cost.
+
+The parent recovered and verified the actual prior RED receipts before editing.
+Private-lease RED ran 25 tests with six failures (unavailable stubs, budget error,
+and actual source SQLite/SHM mutation); its first implementation passed 25.
+Additional tests ran 29 with three assertions across two failures: repeated pages
+reset the VM budget, and staging alias refusal used a generic error. The latter
+already refused the read; it was not an accepted alias escape. Cursor repaired
+only CollectorOpenCodeSource.swift. One ProgressState now spans the entire lease,
+and staging parent/child/main identities are rechecked before SQLite open.
+Deadline overflow was a static finding, followed by a passing regression, not an
+executed crash RED. Post-seal source removal and exact-budget streaming passed.
+
+ExactSourceCapturer.captureSQLiteSessionImage now writes explicit schema-4
+manifests and ordinary bounded CAS chunks without reopening the logical source.
+Identity has a separate domain and includes native scope, DB/WAL provenance,
+layout and image hash. The existing structured-capture commit path is shared
+with schema 2/3 and preserves idempotent canonical timestamps and missing-manifest
+repair. Image length remains independent of original database stat size.
+The actual capture RED ran 32 tests with four failures against the unavailable
+stub. A test-only expected/actual machine-ID ordering was corrected to match the
+existing API. The implementation passed 32; adding cross-8-MiB chunk/repair
+coverage and running all ArchiveV2/CaptureIngest classes passed 527.
+
+Final full Collector regression passed 363. Its preceding run had 189 assertions
+in one test because XCTest's equality autoclosure swallowed the expected budget
+exception; the test now evaluates the throwing page call before asserting its
+value. No product relaxation was needed. Both native parity tests passed after
+original-source deletion, including snapshot -> schema-4 CAS -> reconstructed
+SQLite -> native adapter, with complete metadata/messages, positive usage,
+parent/dispatched identity and sibling exclusion. These are local fixtures and
+native adapter checks, not the Runtime publication or HQ ingestion chain.
+
+Evidence lives under output/collector-goal-20260908/: final receipts/logs/xcresults
+are opencode-image-capture-core-regression (527),
+opencode-private-lease-collector-green-v2 (363), and
+opencode-image-cas-native-parity (2). Original RED and failed-test receipts are
+retained. The same neighboring Cursor session remained scoped to this worktree;
+all builds/tests and final evidence adjudication were run by the parent.
+
+The prior foundation's missing lease/CAS statements are superseded by this entry.
+OpenCode still has no Runtime admission, durable multi-session reservation and
+pagination, captured-image privacy proof, replica source admission or HQ ingest
+integration. First-session completion must never clean a root before remaining
+session images are durably captured; WAL generation changes must restart a fenced
+walk without losing progress. Existing Runtime WAL-only dual-replica acceptance
+remains an admission RED. Remaining source formats, M1-local identity, current
+Release/CI, actual-host natural input, rendered Web, resources and retirement
+remain open. No commit, push, deployment, restart or production mutation occurred.
+
+### OpenCode WAL snapshot foundation and explicit image provenance (2026-09-08)
+
+OpenCode is the next missing database source in the full Collector goal. The
+actual WAL-only Runtime fixture creates committed rows without changing the main
+file; Runtime admission then fails with invalidConfiguration (one test, two
+assertions). This is an executed source-support RED, not upload/HQ acceptance.
+The schema-4 model now explicitly identifies an opencodeSessionImage, native
+virtual locator/session ID, native payload size and optional observed WAL stat.
+Main generation remains the real observed DB stat; it is not synthesized from an
+image hash or size. Schema 1/2/3 remain unchanged and cannot carry this context.
+Model 33 and complete ArchiveV2/CaptureIngest 523 passed after an initial actual
+unsupported-schema RED. A separate test-fixture canonical key-order correction
+is retained; it was not a product serialization change.
+
+The parent authored scoped SQLite export tests before releasing the single
+CollectorOpenCodeSource.swift implementation file to the neighboring Cursor
+Grok. Six initial tests had nine actual failures against the unavailable stub.
+Additional tests cover missing-SHM offline WAL, raw typed/empty cells, concurrent
+commits, ancestor symlinks, removed main path, byte/row/VM budgets, cancellation,
+unknown large columns and hot rollback journals. The first integration attempt
+stopped at an Int/off_t compile diagnostic before executing tests. The next run
+had three fixture-construction failures (WAL/SHM persisted after writer close) and
+one hot-journal error-classification failure. Owned fixtures were corrected and
+hot journals now receive explicit refusal before a private copy is attempted.
+All 18 initial foundation/dependency checks then passed.
+
+Further source review had actual REDs: a live root replaced by a symlink after
+reading was accepted, and an absent-WAL transition returned a generic unavailable
+error instead of being caught by the private pair fence.
+The copy now fences WAL presence as well as generation; the live path reconfirms
+root identity after reading. Source FD opens/preads use O_NONBLOCK so a FIFO does
+not wait for a writer. The 21 focused tests passed, followed by full Collector 351
+and native adapter image parity. Two more executed offline REDs exposed failure
+to initialize a private WAL-index for a checkpointed DB without sidecars, and
+missing post-read root validation on the private path. Only the disposable copy
+now opens READWRITE with query_only; the source is never opened writable. The
+private path also reconfirms the source root. Final full Collector 353 and native
+adapter parity 1 passed. The native test removes original source files before
+replay and matches complete metadata/messages, positive usage, parent identity
+and dispatched classification while excluding sibling bytes.
+
+Runtime, CAS publication, privacy and HQ source admission remain unimplemented
+for OpenCode; do not call this foundation a supported replacement. Final receipts
+are `opencode-collector-final-green` and `opencode-native-image-final-parity`.
+Final read-only review confirms no session-list/lease API or root-level reuse.
+It also identifies a remaining static gap: after initial root-FD validation,
+sidecar/private-copy/SQLite opens still use paths; a changed root may be read
+before final rejection, and SQLite's internal sidecar opens lack the explicit
+nonblocking guard. This is not a reproduced hang or returned private-data claim.
+Close that gap before source admission. Snapshot batching and continuous resource
+behavior also remain unverified.
+
+A synthetic Python SQLite 3.53.4 mode=ro probe read committed WAL and preserved
+main/WAL bytes, while SHM reader marks changed. This probe is not evidence about
+the Swift-linked SQLite or production databases. SQLite's official WAL model
+explains snapshot read boundaries and read-only sidecar requirements:
+https://www.sqlite.org/wal.html (checked 2026-09-08). The intended active-database
+path uses a bounded read transaction; a private main/WAL copy is a missing-sidecar
+fallback, whose eventual batching/resource limits still need runtime acceptance.
+
+Evidence: `output/collector-goal-20260908/opencode-*.{json,log,xcresult}`, especially
+`opencode-wal-runtime-red`, `opencode-snapshot-foundation-red`,
+`opencode-image-model-green-v2`, `opencode-schema-core-regression`, and
+`opencode-readonly-probe.json`. Source is local and uncommitted. Remaining source
+families, M1 identity, actual roots/runtime profiles, Release/CI/browser/natural
+input/resources and real-host retirement remain open; the overall goal is active.
+
+### Gemini native binary chain and commit-size correction (2026-09-08)
+
+This supersedes the incomplete Gemini checkpoints below for the local candidate.
+Collector registry observation now persists its generation and pagination cursor,
+including restart between pages, absent/present transitions, offline changes and
+configured-locator changes. Native-root schema-2 recovery does not depend on an
+unused registry; schema-3 recovery retains its original captured authority.
+Runtime/worker 88 passed after the actual locator-change RED.
+
+The first actual binary run passed registry-only changes but hit the native-root
+Web deadline. Both replicas had acknowledged the retained first capture; HQ had
+one processing claim and no sessions. The manifest contained 564 bytes: 404 of
+transcript, 133 of project root and 27 of sidecar. A real capture/replay/commit
+repro then demonstrated the old size guard rejected the valid native result and
+accepted an invalid aggregate-size result (two tests, three failures). The earlier
+fixture-only path failure is retained separately. Gemini commit validation now
+requires the primary transcript size, matching the native parser, while other
+sources retain their existing size contract and auxiliary integrity is verified
+independently. The retained process did not log the exception; its deadline alone
+is not proof of a parser hang or a root-event race. Cursor Grok independently
+reviewed the retained evidence and distinguished old binaries from current source.
+
+Full ArchiveV2/CaptureIngest regression passed 519 tests; the final complete
+CollectorCore regression passed 333 tests after the locator-change fix. All three
+fresh Debug builds succeeded. Both actual Gemini binary cases then passed (4.288s native-root,
+2.897s registry-only): two generations, unchanged primary bytes/stat, new capture
+identity, exact independent local HQ/M1 replica bytes, stable native session
+identity, preserved messages/usage, updated HQ FTS/Web IPC and no Collector
+product index. All eight recursively linked local Mach-O artifacts were unchanged
+across execution; system/SDK references are listed but not hashed. Test deadlines
+were unchanged. This is synthetic local evidence, not rendered-browser or live
+host acceptance.
+
+Evidence: `output/collector-goal-20260908/gemini-native-size-commit-red-v2.*`,
+`gemini-archive-ingest-final-green.*`, `gemini-{collector,service,remote}-final-build.*`,
+and `gemini-binary-final-green.{json,log,xcresult}`. Initial failed binary fixtures
+and receipts are retained. The full objective remains active: remaining enabled
+DB/composite/cache sources, actual profiles/runtime roots, M1-local identity,
+current Release/CI, natural input, rendered Web, resource and retirement gates
+remain open. No commit, push, deployment, production mutation or Docker occurred.
+
+### Gemini captured context, HQ replay, and integration REDs (2026-09-08)
+
+Gemini now has a typed, project-scoped registry projection in schema-3 file-set
+manifests. Schema 2 remains the representation for native transcript/project-root/
+sidecar bytes without derived context. The projection records only the chosen
+cwd plus registry locator, stat generation and digest; the shared registry is
+never uploaded or relabeled as a native .project_root. Exact capture includes
+this provenance in identity, preserving identical raw bytes as distinct captures
+when only registry context changes. Actual model/capture REDs are retained;
+all 58 foundation tests now pass.
+The later complete ArchiveV2/CaptureIngest regression passed 517 tests.
+
+HQ and replica admission accept only a transcript, its real project-root slot,
+and one same-project session-ID sidecar slot. HQ binds the declared sidecar to
+the final native ID before invoking the native Gemini parser in the private
+replay tree. Captured-only project lookup cannot read the host registry. Tests
+delete original inputs before replay, preserve native messages/usage/dispatch
+metadata, and exercise a final JSONL ID update after 8 KiB. A wrong-sidecar
+positive replay had actual RED before the binding guard. The native token
+oracle was corrected to subtract cached input and include thoughts/tool output;
+parser semantics were not changed. Extended Core 145 passed. Replica storage
+43 and publication routes 13 passed separately; the first storage command used
+an unmatched route class selector, so its 43-test result is not route evidence.
+
+The neighboring Cursor Grok authored Collector-owned schema-3 reservation,
+metadata discovery, privacy and runtime wiring. The coordinator wired the new
+source through pinned XcodeGen 2.45.4 and independently tested the draft. Three
+Swift compile diagnostics were fixed before behavior tests ran. Collector 329
+then had eight assertions: four real metadata defects (large native-size $set
+line ignored; invalid final ID restored from an earlier header), plus four stale
+explicit-source-list assertions. Runtime/worker 81 had fourteen assertions:
+stale registry context published after beforeCapture mutation, changed registry
+configuration recovered/published and removed a durable reservation, three stale
+schema-version assertions, one registry-only fallback deadline, and one separate
+CancellationError. The cancellation is not promoted into a proven root cause.
+Same-path durable recovery after live registry change already passed.
+
+Additional privacy 36 had six assertions: the four metadata failures plus a
+registry projection bypassing an excluded nonempty native project root and a
+wrong sidecar witness receiving an eligible proof. Original-source removal with
+captured native-root privacy passed. Cursor independently confirmed missing
+outside-root registry observation and the fresh-capture/recovery conflation.
+These failures are now the bounded repair task; they are NOT a completed
+Collector integration. Source-list expectations were updated, genuine schema-1/2
+column-absence migration tests were added, and context-pair corruption tests await
+execution. No current Gemini binary/Release/CI/real-host acceptance is claimed.
+
+The first bounded repair then passed full Collector 333 and Runtime 36. The
+85-test Runtime/worker run had only three new observer failures: only 64 of 65
+known sources became dirty, absent-to-present registry changes were forgotten,
+and a registry change while stopped was forgotten. A separate one-test/four-
+assertion RED showed schema-2 native-root durable recovery was blocked merely
+because an unused registry was configured. Fresh registry fencing, derived
+context authority retention, genuine schema-1/2 column migration, context-pair
+corruption refusal, and same-path durable context recovery passed in that run.
+Cursor now owns the observer paging/restart and unused-dependency repairs;
+a restart-between-pages test and two Gemini binary chains are authored but
+unverified. Prior cancellation remains historical; the complete Runtime rerun
+passed all 36 tests without reproducing it.
+
+Evidence: `output/collector-goal-20260908/gemini-*.{json,log,xcresult}`. Passing
+receipts: `gemini-core-extended-green`, `gemini-remote-green`, and
+`gemini-remote-routes-green`. Executed integration failures:
+`gemini-collector-behavior-red`, `gemini-runtime-worker-integrated-red`, and
+`gemini-privacy-boundary-red`. Full enabled-source coverage, M1-local identity,
+real-host/natural-input acceptance, current Release/CI/rendered Web/resource
+gates and retirement remain open. All changes are local and uncommitted.
+
+### Copilot composite replay, replica integrity, and Collector review (2026-09-08)
+
+The local Copilot continuation now accepts native schema-2 file sets at HQ and
+both independent replica receivers. HQ reconstructs a private, descriptor-owned
+session tree, invokes the existing native Copilot adapter, and preserves logical
+source identity after the original input disappears. Tests cover events versus
+checkpoint fallback, workspace/body dependencies, cross-chunk checkpoint bytes,
+and tampering before/after parsing. An incremental member-hash verifier rejects
+false member hashes even when the aggregate digest is correct. HQ replay/registry
+70 tests and Remote publication store/routes 54 passed; the later 70-test HQ run
+also asserts positive input/output/cache token preservation.
+
+The neighboring Cursor Grok implements Collector-owned files; the coordinator
+owns independent tests, HQ/Remote changes and project wiring. Collector now
+records dependency generations and absence in versioned publication reservations,
+selects recovery from those immutable snapshots, and assesses privacy from CAS.
+Initial integrated Runtime/worker 67 tests reached both Copilot two-generation
+chains and reserved-B recovery successfully; one test-only duplicate cleanup
+failed, then was corrected. The original configuration-admission RED is superseded.
+
+Independent review reproduced two silent coverage defects: a 64 KiB prefix
+selected checkpoints despite a later conversation, or missed a late checkpoint
+row; hidden and uppercase-extension checkpoint bodies were omitted. Directory
+discovery is now stat-only lexical candidate discovery. Native preference runs
+under publication byte eligibility, fenced by matching dependency observations;
+truncation never proves absence. Full Runtime 30 passed after that change,
+including both late-content cases. Reserve-time missing snapshots and mismatched
+primary generations also had actual RED before their guards were added.
+
+Additional review reproduced and fixed explicit empty YAML identity being treated
+as absent, and loading a Copilot reservation whose dependency child rows were
+all removed. Loaded reservations now enforce source/snapshot/primary-generation
+binding; absent workspace identity retains native directory fallback, while an
+explicit empty identity is rejected. A further checkpoint-only/no-workspace-ID
+RED exposed missing recognition of a valid captured checkpoint index. The
+coordinator reused the existing metadata row predicate for that path. Final full
+CollectorCore passed 327 tests; Runtime/worker passed 73, including legacy schema
+migration, unknown-version refusal and reserved-B recovery. A suspected one-file
+budget starvation was disproved by an executed passing test and the persisted
+round-robin claim cursor; no speculative scheduling change was made.
+
+Three fresh Debug executables built successfully. The combined real-binary/CLI/
+Runtime/worker run executed 103 tests: 101 passed, one opt-in browser-hold skip,
+and one checkpoint Web deadline. Read-only inspection of the retained fixture
+proved both durable ACKs, the HQ normalized payload and the intentional native
+single-message skip tier. The spec preserves skip visibility; changing product
+tiering would be wrong. Only the checkpoint fixture was changed to two native
+entries, including a hidden uppercase-extension member, so normal Web visibility
+is applicable. Both Copilot binary cases then passed: two generations of exact
+bytes at both replicas, unchanged primary generation, distinct capture identity,
+stable native session/stream identity, HQ FTS/generation and Web IPC content.
+All eight recursively identified local linked Mach-O artifacts remained identical
+before/after both runs; system/SDK dependency references are listed but unhashed.
+The entire 103-test set was not rerun after this test-fixture-only correction.
+
+Evidence under `output/collector-goal-20260908/`: `copilot-hq-positive-usage-green`
+(70), `copilot-remote-green` (54), `copilot-collector-green` (327),
+`copilot-runtime-green` (73), three `copilot-*-build` receipts,
+`copilot-binary-and-runtime-green` (retained exit65), and
+`copilot-binary-checkpoint-fixture-green` (two passed, exit0), each with full logs,
+JSON receipts and test result bundles where applicable. The synthetic skip
+adjudication is `copilot-checkpoint-skip-adjudication.json`. Earlier RED/compile/
+fixture failures remain retained; names containing green/red do not override
+recorded producer exits. All test/build producers joined.
+
+No new Release, current-candidate CI, real-source deployment, host retirement,
+or rendered-browser acceptance is claimed. Full enabled-source coverage, Gemini
+sidecar/registry provenance, database/cache sources, real instances/profiles,
+M1-local identity provisioning and final per-host resource/retirement gates remain
+part of the unchanged active objective.
+
+### Declared file-set capture foundation and Copilot acceptance RED (2026-09-08)
+
+Archive manifests now support an explicitly requested, unbound schema-2
+`fileSet` layout while preserving schema-1 defaults and canonical bytes. A
+file set records the primary entrypoint, UTF-8-ordered present paths with exact
+POSIX generations, offsets, byte counts and hashes, plus declared absent paths.
+Capture streams one aggregate 8 MiB chunk series across member boundaries,
+checks the total byte budget before reading, pins regular-file descriptors and
+no-follow directory identities, and revalidates all members before publication.
+Auxiliary-only changes and absent-to-empty transitions have distinct capture
+identities even when the primary generation or concatenated bytes are unchanged.
+This captures explicitly declared dependencies; it does not discover a complete
+native source dependency set or enable Gemini/Copilot Runtime, privacy or HQ.
+
+The neighboring Cursor Grok implemented the capture branch and subsequent path/
+FD corrections; the coordinator owns descriptor/model corrections and tests.
+Independent tests first reproduced model acceptance of unsorted members and
+nonregular file modes. A bounded Darwin realpath probe then proved Foundation
+standardization rewrites physical /private/var paths into the /var symlink,
+with different outcomes for existing and absent entries. The physical-path test
+failed pathOutsideRoot. File-set-only lexical normalization preserves physical
+paths without following links; legacy normalization remains unchanged.
+
+After the path correction, 52 tests exposed three actual leaked-parent-FD
+assertions on missing nested directories and post-read directory removal.
+Immediate FD ownership in all three relative walks fixed those failures.
+The 54-test foundation gate passed, including whole-read member races, FIFO/
+symlink rejection, empty sets, aggregate budgets and cancellation/late mutation
+after a full chunk was actually staged. A broader current-product regression
+passed: ArchiveV2/CaptureIngest 501 (including the 54), full CollectorCore 320,
+Remote publication 51, and Runtime/worker 64; zero failures or skips.
+
+The next two Copilot Runtime tests are now compiled, executed RED: both reject
+native source=copilot at Runtime.open with invalidConfiguration (two tests,
+four assertions). They require auxiliary-only workspace changes and checkpoint
+body changes with start-only events to preserve an unchanged primary generation,
+archive every dependency's exact bytes, and obtain two independent replica ACKs.
+They have not reached discovery, capture, recovery or upload. Keep these REDs
+visible until the complete native path is implemented; do not count the earlier
+936 regression tests as a green suite containing these new acceptance tests.
+
+Next: bounded Copilot dependency discovery and membership fencing through
+capture, dependency snapshots in durable reservations/recovery, explicit schema
+migration that prevents old binaries ignoring snapshots, captured-only privacy,
+Remote admission and HQ replay. Gemini must resolve exactly the session-ID
+sidecar and retain registry-only cwd through honestly labeled project-scoped
+derived evidence; copying all sibling sidecars, uploading the shared registry,
+or silently omitting registry fallback was rejected during proposal review.
+
+Evidence: `output/collector-goal-20260908/file-set-{physical-path-red,fd-review-red,
+foundation-green,core-regression,collector-regression,remote-regression,
+runtime-regression}.{log,json,xcresult}` and
+`copilot-composite-runtime-red.{log,json,xcresult}`. All producers joined.
+No commit, push, Release package, current-head CI, real-host mutation, source
+retirement, deployment or new rendered-browser acceptance occurred.
+
+### Qoder and CommandCode preserve native semantics across Collector, replicas and HQ (2026-09-08)
+
+The neighboring Cursor Grok implemented the ten scoped Collector/projection/
+parser/HQ files; the coordinator independently reviewed the diff and owned
+Remote admission plus discovery, privacy, registry, runtime and binary tests.
+Native source/format pairs now support Qoder and CommandCode, including omitted
+format defaults. Qoder retains its direct/project-level/nested subagent layouts,
+raw transcript identity versus child index identity, skip tier and native model/
+usage semantics. CommandCode excludes checkpoint JSONL files, keeps the first
+recognized explicit cwd, decodes the directory slug only as a fallback, and
+uses captured generation mtime when source timestamps are absent. Both reuse
+native message parsing with strict captured-record validation and physical/
+logical path separation. No product parser/index dependency entered Collector.
+
+Executed RED: discovery 2 tests rejected invalidBinding; Remote 2 rejected
+invalidPublication; Core replay/registry 8 rejected absent parse formats;
+Runtime 3 rejected invalidConfiguration; actual old Collector binary 2 exited
+70. The first Runtime attempt was a test-only missing-try compile failure,
+retained separately and not counted as behavior RED. Parent review also caught
+unrecognized-record identity selection, first-cwd overwrite and nested Qoder
+discovery omissions before final validation; dedicated parity/identity cases
+now cover these native semantics. Excluded/conflicting captures still receive
+zero remote ACKs while private local capture remains allowed.
+
+GREEN: Core parser/parity/replay/registry 146, full CollectorCore 320, Remote
+publication store/routes 51, Runtime/worker 64; zero failures. Adapter parity
+fixture validation passed. All three Debug builds passed. Native CLI/shadow
+acceptance ran 28 tests: 27 passed, one opt-in HTTPS/browser hold skipped.
+Qoder and CommandCode each crossed two generations through real Collector,
+independent HQ/M1 RemoteServer stores, HQ Service indexing/FTS and Web IPC reads,
+with exact bytes, stable identity, messages and native usage verified.
+
+Evidence refinement: Collector and Service executable hashes alone stayed
+unchanged because updated code lives in dynamic frameworks. A further two-case
+binary run therefore hashed all eight recursively linked local build artifacts
+before/after; both cases passed and every local artifact stayed identical.
+External SDK/system dependencies are listed but not hashed. A first strict
+all-local dependency assumption failed before test execution on a Swift system
+compatibility library; it was corrected in the artifact collector, not product
+code. Do not characterize executable-only hashes as a full runtime fingerprint.
+
+Evidence: `output/collector-goal-20260908/native-pair-*.{log,json,xcresult}`,
+particularly `native-pair-binary-green` and `native-pair-linked-artifacts-green`.
+All coordinator test/build producers were joined; Cursor has no build task.
+No commit, push, deploy, real-source retirement or production mutation occurred.
+The local implementation is not current Release/CI, rendered-browser or real-host
+acceptance. The full goal remains active. Source review of Gemini and Copilot
+confirms auxiliary registry/root/sidecar and YAML/checkpoint dependencies;
+`gemini-copilot-next.md` is a proposal for a genuine composite representation,
+not permission to drop dependencies or claim these sources supported.
+
+### Qwen reaches both replicas and HQ Web reads through current native binaries (2026-09-08)
+
+The neighboring Cursor Grok implemented the Qwen Collector/projection/parser
+seams in this worktree. Coordinator-owned tests and source review found and
+closed the Remote publication-reference and HQ eligibility source gates that
+format dispatch alone did not cover. Qwen remains `qwen`, uses its native
+`project/chats/*.jsonl` layout, and preserves native identity, messages, model
+and token usage. Captured parsing reuses the native Qwen info/message logic,
+rejects malformed records, and separates logical source paths from staging.
+The Collector keeps bounded metadata-only privacy assessment and no product
+index; legacy reclamation scope is unchanged.
+
+Qwen Runtime (two tests), replay (two tests), and actual Collector binary
+(one test) first failed on missing configuration/format support or exit 70.
+A later Remote test proved `invalidPublication`, then its one-line source gate
+passed the 49-test publication store/route suite. HQ eligibility had a separate
+one-test/four-assertion RED and passed all 36 registry tests after its gate fix.
+These are distinct admission checks, not interchangeable format-dispatch proof.
+
+Captured files without timestamps exposed a real parity bug: HQ used staging
+mtime (`2026-09-08`) instead of the source generation mtime (`2020-09-13`).
+After that executed RED, replay forwards manifest `generation.mtimeNs` to the
+Qwen parser's timestamp fallback. Live Qwen fallback and other formats remain
+unchanged. The affected parser/parity/replay/registry classes passed 134 tests;
+the later eligibility-only change passed the 36-test registry suite separately.
+
+CollectorCore passed all 316 tests. Runtime/publication-worker classes passed
+61 tests. New Debug Collector, Service and RemoteServer builds each exited 0.
+The actual three-program CLI/shadow suite passed 25 tests with one opt-in browser
+hold skipped, zero failures and producer exit 0. The new Qwen case proves two
+source generations, independent exact-byte HQ/M1 ACKs, stable native/index
+identity, HQ FTS search and Web IPC transcript/message/usage reads. Binary hashes
+were identical before and after the run. This is local synthetic acceptance,
+not real-host Qwen collection, rendered-browser acceptance or a Release package.
+
+Initializer follow-up independently checked the Grok-authored hot-journal, dirty
+WAL and symlink fixtures: all nine initializer tests passed. A control copy
+proves actual rollback/replay before each victim comparison. Main and sidecar
+bytes stayed unchanged on the rejected victim. The additional open-time mutation
+hypothesis is refuted for these tested GRDB paths; the earlier confirmed clean
+replacement schema-write race and its RED/GREEN remain separately documented.
+Failed compile/invalid-hot-journal fixture attempts were retained. The initial
+Qwen privacy Runtime assertion was corrected to permit private local envelopes
+while requiring zero remote ACKs; existing privacy behavior was not relaxed.
+
+Evidence: `output/collector-goal-20260908/qwen-*.{log,json,xcresult}`,
+`initializer-dirty-victim-attempt-cacheflush-runtime.{log,json}`, and
+`progress.json`. One wrong Remote executable-scheme test attempt exited 66
+without tests; the corrected Core scheme produced the actual RED above.
+All coordinator and Cursor build processes were joined. No production state,
+source retirement, commit or push occurred in this continuation. Full enabled
+source coverage, real-host provisioning/continuous input, new Release/CI and the
+separately reviewed production transaction remain pending. The next-source
+Qoder/CommandCode proposal is local-only and has no implementation authority
+beyond the ongoing goal; verify its source claims before using it.
+
+### Native collector initialization and custom-profile collection advance the full goal (2026-09-08)
+
+The active objective remains lightweight daily-host collection, independent HQ/M1
+archives, HQ parsing/indexing, and browser-based complete reads for every enabled
+source. The prior frozen default-Claude replay is only one acceptance boundary.
+The existing neighboring Cursor Agent (Grok 4.6) in pane `wK:pH` authored the
+nondefault-Claude tests and implementation in this worktree; main was not edited.
+
+The native Collector now has explicit `--settings ABS --initialize`. It creates
+only a new private spool, reads the existing machine identity before mutation,
+initializes its own marker/capture catalogs and CAS directories, and never opens
+an existing destination for repair. It does not read upload credentials, start
+workers, or enroll source roots. The dry-run installer includes this native step;
+it still has no apply/activation mode. Interrupted/failed partial initialization
+is retained for inspection and requires a fresh destination.
+
+Two native CLI tests first failed against the previous packaged executable
+(exit 64, four assertions). The full CLI class then passed 17 tests. Independent
+review identified a path/fd race before SQLite schema writes; a deterministic
+replacement test proved an unrelated fixture DB grew from 8,192 to 12,288 bytes.
+The fix uses mode=rw and validates the opened connection, held/named identity and
+HAS_MOVED before schema SQL. CollectorCore passed 311 tests, zero failures. The
+additional temporary-root alias and source-list fixture failures are preserved;
+no identity/path fence was relaxed. Final independent review remains pending.
+
+Collector root settings now optionally declare `parseFormat` as `codex`,
+`claudeDefault` or `claudeCustomProfile`, validated against the source. Missing
+format retains the original mapping. The worker carries this authority into
+privacy assessment and proof reuse; a settings format rewrite invalidates live
+authority. A custom Claude profile can retain source `claude-code` for MiniMax
+model records, matching its existing HQ parser contract. Default-profile derived
+source refusal, privacy rules, inventory schema and existing HQ instance-format
+immutability remain unchanged.
+
+The custom-profile RED executed seven tests: four target scenarios failed at
+configuration/native startup and three protective invariants passed. After the
+Grok implementation, the affected full Service classes passed 84 total tests,
+83 passed/one opt-in browser-hold skip/zero failures. They include actual native
+Collector -> independent RemoteServers -> HQ -> Web IPC, two generations, exact
+bytes, messages/usage/tier, and default-HQ reinterpretation refusal. Collector is
+the new Debug candidate; unchanged Service/RemoteServer packages are aff8353c.
+This is local synthetic evidence, not new Release or live-profile acceptance.
+
+Native CLI/package/installer tests passed 125/125 and changed JS/TS Biome checks
+passed. XcodeGen 2.46 introduced unrelated generated embedding/order drift;
+regeneration with the hash-verified CI-pinned 2.45.4 retained only the required
+new source/test references. No direct Xcode project edits were made.
+
+Read-only named-settings/default-path checks on daily Mac, HQ and M1 found 13,
+13 and six configured-enabled source IDs with at least one standard path present.
+These are presence/configuration observations, not active-session counts or
+runtime environment verification. Qwen and the database/composite/cache source
+paths remain uncovered by the Collector. No production role or source was
+changed, retired or restarted; no Docker was used. New Release, host initialization,
+source-by-source replacement, CI and concrete production cutover remain pending.
+
+Evidence and active resume state: `output/collector-goal-20260908/progress.json`,
+its complete RED/GREEN logs and xcresults, and bounded host inventory receipts.
+
+### Frozen HQ/M1 Claude replay passes with explicit startup limitation (2026-09-08)
+
+This closes the same-corpus replay pending in earlier entries. Implementation
+`aff8353c88a9c189a418dc9da3dffe9c49a2af5d` passed Tests run 34129561290 and
+CodeQL run 34129561378. Collector, Service and RemoteServer Release builds passed;
+all 75 HQ and seven M1 package manifest entries and signatures were verified.
+No product source was changed during this deployment-verification turn.
+
+The unchanged ten-file, 26,100,521-byte frozen Claude corpus produced ten local
+publications. Both physical replicas independently confirmed nine publications
+and 26,080,787 exact source bytes each. The remaining capture is still withheld
+as `incompleteMetadata`. HQ has four index-ready premium sessions, four parsed
+skip sessions, and one `parse.noVisibleMessages` quarantine. Web search and all
+956 visible messages across 12 pages passed independent payload-hash checks,
+with authenticated UI pagination, safe cookie attributes, cleared credentials,
+logout then 401, zero page errors and no narrow-screen overflow. Indexed Web-read
+p95 was 121.3 ms; this is not append-to-search latency.
+
+The 1800.010-second, 359-sample live window measured Collector mean CPU at
+1.3600% of one core and maximum sampled RSS at 19.59 MiB. Publication count
+remained ten, with nine ACKs and one privacy-withheld row per replica. All seven
+trial roles were stopped and joined, trial ports were released, and the three
+legacy HQ/M1 processes retained their exact PIDs/start times/executable paths.
+Both old health probes still returned 200/ok (liveness evidence only). The ten
+frozen source hashes remained unchanged; no permanent cutover was performed.
+
+The first new shadow attempt again exited 70 and remains preserved. An isolated
+diagnostic build located a preflight ctime-equality rejection on HQ for an empty
+seed transferred with preserved timestamps: SQLite changed ctime while size and
+mtime remained stable. The successful replay exclusively created the identical
+seed bytes and fsynced them, without a SQLite pre-open or warmed helper. Product
+fences remain unchanged. The underlying OS/SQLite metadata behavior and general
+cold-start compatibility of timestamp-preserving seed transfers remain open.
+Earlier static-GRDB and marker-content hypotheses were not sustained.
+
+One historical index receipt reported 155 messages where the frozen sample has
+363. Both the c8a9cdc4 and aff8353c shipped parser frameworks were actually loaded
+and produced identical full-corpus results; all eight HQ normalized-message
+hashes match both versions. The failed legacy-count comparison is retained, but
+that receipt lacks a matching source hash/index boundary and is not a complete
+frozen-source oracle. Its coverage remains UNKNOWN. The earlier local Service
+test's possible directory-renaming effects also remain UNKNOWN after the scoped
+metadata review; no before-state baseline or justified recovery move exists.
+
+Evidence: `output/hq-claude-shadow-replay-v2-20260907/report.md`, its private
+receipts, and `output/hq-claude-shadow-replay-20260907/cold-start-adjudication.md`.
+The bounded snapshot result is not original-root discovery, natural append
+latency, all-profile coverage, full-source deployment or merge authorization.
+Documentation-head CI is recorded separately from implementation/package CI.
+
+### Bounded local directory-impact follow-up (2026-09-07)
+
+Before replaying the frozen HQ corpus, the failed Service test's source/log path
+was reconciled with current Claude profile settings. Read-only immediate metadata
+checks covered 244 Claude, eight Qoder and 22 CommandCode directories. None had
+ctime, mtime or birthtime in the 13:20:49-13:27:51 UTC incident window. No completed
+mutation receipt or before-state baseline exists, so the effect verdict remains
+UNKNOWN; no recovery move is justified. The review changed no source directories.
+See `output/hq-claude-shadow-replay-20260907/directory-impact-review.md` and the
+private metadata receipt. The five source/test/spec hashes still match the
+locally verified candidate; the approved next steps are branch CI, Release
+packaging and a separate replay of the same ten frozen files.
+
+
+### Grok-authored Claude multi-root privacy amendment verified locally (2026-09-07)
+
+Default-profile Claude captures whose derived source is `claude-code` can now
+upload multiple recognized working roots when every root passes the existing
+lexical, alias and exclusion checks. The same immutable-CAS pass retains at most
+64 byte-distinct roots and 65,536 UTF-8 bytes by default. Cached proofs retain and
+revalidate all roots before every request. First-cwd project selection, native
+identity, source classification and original bytes remain unchanged; Codex,
+forced profiles and other derived sources retain their conflict refusal. The
+design contract was amended with the code; no manifest or database schema changed.
+
+The user assigned implementation to Grok. Two broad Grok requests timed out and
+remain recorded; smaller Grok 4.5 requests authored the tests and implementation.
+The first compiled RED had two behavior failures, including one helper throw.
+Coordinator review found premature root-budget rejection of enabled MiniMax:
+23 privacy tests then had one failure, which Grok corrected by deferring the new
+limit decision until final source classification. Coordinator integration also
+corrected a missing `try`, async XCTest autoclosures and the HTTP tests' incorrect
+assumption that replica workers execute serially. Grok's final Unicode-exclusion
+allegation was refuted by actual Swift comparison behavior and four captured-CAS
+NFC/NFD exclusion cases; the raw FAIL verdict remains preserved with adjudication.
+
+Final xcresult summaries independently confirm CollectorCore 305 passed, zero
+skips/failures; Service 1,153 passed, five opt-in skips, zero failures; and four
+projection parity tests passed. The two added actual HTTP tests also pass in
+isolation and in the full Service run. The final Service invocation used all
+three newly built native Debug binaries and an explicitly isolated process HOME.
+Collector, Service and RemoteServer Debug builds passed. Collector and Service
+xcresults each contain one QoS priority-inversion runtime warning; these are not
+zero-warning runs. New Release packages, remote CI, the frozen ten-file real
+shadow replay and the 30-minute acceptance were not run for this candidate.
+
+The first full-Service invocation lacked process-home isolation and entered
+`GroupedDirReconcile` during startup maintenance. A retained process sample
+identified that path; the coordinator stopped the verified owned test runner and
+its Xcode automatic restart. That maintenance path can rename source directories,
+so effects on original local source directories remain UNVERIFIED. Do not claim
+this failed invocation preserved them. The corrected private-HOME OptionalAI
+suite passed all 11 tests. A subsequent isolated full run failed only two explicit
+HOME-location guards; using the required checkout-local `.engram-demo-test-home.`
+prefix produced the final full-Service pass. No product shutdown code was changed.
+
+Fresh synthetic CLI-first capture with a complete provisioned spool succeeded.
+Two earlier new probes omitted mandatory CAS directories and are retained as
+fixture failures; the original HQ preparation already created those directories,
+so they do not explain the earlier HQ exit 70. Its root cause remains UNVERIFIED.
+No remote operation, commit or push occurred in this implementation turn.
+
+Evidence: `output/hq-claude-multiroot-fix-20260907/summary.json`,
+`review-adjudication.md`, Grok invocation/result receipts, RED and GREEN logs and
+xcresults, `service-hang.sample.txt`, stop receipts, and CLI probe records. The
+real snapshot shadow remains NOT_READY until the same corpus is independently
+replayed with this amendment; skip/incomplete/quarantine cases must stay explicit.
+
+### HQ Claude remediation design reviewed; cold startup not reproduced (2026-09-07)
+
+Grok completed a bounded abstract design consultation; source review confirmed
+that Claude multi-root eligibility must check every recognized cwd both during
+assessment and before each upload. The reviewed proposal preserves first-root
+selection, source identity, raw bytes and existing negative cases, with bounded
+local proof storage and no protocol/schema change. Extra digests/scans and a
+dual-ACK-only end-to-end criterion were rejected. No product patch was made.
+Three fresh local empty-source Collector CLI probes exited zero with unchanged
+capture-main hashes; they do not reproduce or fix the earlier HQ exit 70.
+See `output/hq-claude-remediation-design-20260907/reviewed-plan.md`, its Grok
+invocation/result receipts and `cold-start-probes.json`. Implementation/TDD and
+same-corpus real replay remain pending; no new remote operation was performed.
+
+### HQ Claude bounded real-data shadow exposes the multi-root privacy gap (2026-09-07)
+
+The user authorized the first HQ/M1 isolated shadow transaction only: at most
+ten Claude sessions and 100 MB, with existing services and ingestion retained.
+The selected ten recent top-level Claude JSONL files total 26,100,521 bytes.
+Collector discovery currently accepts a whole projects root rather than an exact
+file allowlist, so this run used stable, hash-recorded real-source snapshots in
+an owner-only projects-layout directory. It is snapshot replay, not direct
+original-root discovery, natural append coverage, or cutover approval.
+
+HQ (`Bing-HuaQiao.local`, `100.125.101.60`) and M1 (`Bing-M1-MacMini.local`,
+`100.108.19.20`) each received a separate archive instance under
+`/Users/bing/.engram-shadow-20260907-0900/`. All 75 Release package manifest
+entries passed local and HQ verification; M1 verified its seven RemoteServer
+entries. The packages identify source revision
+`c8a9cdc4b922515e3cfe56bc15377f56df33f29c`. The real HQ machine UUID was read
+from the live archive metadata and explicitly sealed into separate identity
+markers and an independent capture catalog. Fresh task-only credentials/keys,
+private homes, a separate HQ database/socket, loopback listeners and an SSH
+HQ-to-M1 tunnel isolated the run. No existing credentials, provider settings,
+Keychain, launchd jobs, production pointers, or original session files were changed.
+
+The overall result is **SHADOW_NOT_READY**. Ten local publications were created,
+but only four received both ACKs. Independent reads from both physical replicas
+verified each manifest, chunk and whole-source hash against the frozen original
+bytes: four files and 8,801,820 bytes per replica, with different arrival journals.
+The packaged privacy assessor classified the remaining six as five
+`conflictingProjectRoots` and one `incompleteMetadata`; those generations were
+not uploaded. Do not disable privacy checks or reinterpret the six pending rows
+as completed replication. HQ parsed three generations, all `skip`, with 54,
+200 and 387 normalized messages. Their tier, role and message/human-turn counts
+match the selected original paths in the live legacy index; stored normalized
+payload hashes also validate. The fourth intake was quarantined with
+`parse.noVisibleMessages`. There are zero FTS rows and zero Web-visible sessions.
+
+Chrome 152.0.7977.76 verified actual HTTPS login 204, overview/list 200, the empty
+session view, cleared credential input, secure/HttpOnly/Strict cookie attributes,
+desktop/narrow rendering without horizontal overflow, logout 204 and a subsequent
+401. This is an authentication/empty-visibility pass, not search/transcript
+acceptance. Browser CLI attempts failed; the bounded single-process Playwright
+probe also initially used a Fetch response status method incorrectly. Those
+verifier failures remain retained; the corrected probe completed and closed its
+browser/context. No product source was modified for the trial.
+
+The first Collector CLI invocation exited 70 before enrolling roots or publishing;
+its root cause remains UNVERIFIED. A temporary helper then ran one bounded cycle
+through the same packaged Release CollectorRuntime (two captures and one ACK per
+replica), and the subsequent CLI invocation continued the same owned spool.
+Consequently, this combined corpus is not exclusively CLI-produced evidence.
+The diagnostic cycle and first failure are recorded separately rather than
+presented as a clean startup pass.
+
+All trial children were stopped and joined; the two RemoteServers terminated by
+requested SIGTERM, while Collector, HQ Service and the HQ tunnel exited zero.
+Local SSH/TLS helpers also exited and their ports were released. At 09:18:42 UTC,
+the pre-existing HQ Service/RemoteServer PIDs 30392/83925 and M1 RemoteServer PID
+3387 retained their executable paths; both original RemoteServer liveness probes
+returned 200/`ok`. This does not assert full production data health.
+No commit, push, merge, full-host activation or old-ingestion retirement occurred.
+
+Evidence is local-only under `output/hq-claude-shadow-20260907-0900/`:
+`summary.json`, `evidence-manifest.json`, `evidence/privacy-assessments.jsonl`,
+`evidence/hq/replica-verification.json`, `evidence/hq/hq-index-verification.json`,
+`evidence/browser-verification.json`, screenshots and shutdown/preservation
+receipts. Private logs and task credentials remain inside owner-only roots;
+do not publish this artifact directory. Next: specify and test multi-working-root
+privacy/identity behavior, keeping every excluded-root check, then rerun this same
+frozen corpus. Original-root incremental coverage and the 30-minute natural
+append stage remain unexecuted; initial cold-start failure remains separate.
+
+### W6 synthetic Release performance passes; Claude binary coverage added (2026-09-07)
+
+The handed-off `c8a9cdc4b922515e3cfe56bc15377f56df33f29c` measurement completed
+naturally at 14:39:17 CST; it was not restarted or resampled. XCTest and its
+xcresult report one passed test, no skips/failures/runtime warnings. Independent
+raw-record recomputation and the existing read-only `verify-performance.mjs`
+agree: bootstrap 166.510060s, steady window 1,800.010043s, 1,801 samples,
+CPU 1.648439% of one core, maximum sampled RSS 24.093750 MiB, time-weighted
+mean RSS 23.566971 MiB. All 1,140 attempts succeeded: 60 appends and 360 reads
+each for sessions/detail/messages, with respective p95 latencies
+3.800301/0.200195/0.198147/0.075098s. All three authentications succeeded,
+including the fixed 600/1,200-second refreshes with the unchanged 900-second
+cookie lifetime. The fixed 256-file/16-directory/64-KiB corpus, eight active
+files, 1,000-ms poll, schedules, deadlines and CPU/RSS/latency limits are unchanged.
+Recorded host: arm64 MacBook Pro, macOS 27.0 build 26A5425a, ten logical CPUs
+and 64 GiB RAM. Append confirmations allow at most four concurrent operations;
+each of the three read endpoints allows one. Other host work was not stopped
+or adjusted; the measured CPU denominator is one core, not all ten.
+
+The final source hashes and exact 248 normal/two-message, four normal/nine-message,
+four premium/ten-message buckets, 316 publications and 632 ACKs are mandatory
+executed harness assertions before the final corpus receipt. Independent source
+review verified their failure propagation; raw artifacts independently show all
+256 final hashes, exactly eight changed files and eight joined owned children.
+The successful temporary fixture was removed by the runner, so these database
+facts are not an independent post-run SQLite remeasurement. Append admission
+timestamps and internal request timeouts cannot be reconstructed solely from
+the raw attempt records. Both earlier complete CPU failures (`9e90471b` and
+`87cc453c`) and their retained fixtures remain failures and were not altered.
+This PASS is synthetic loopback evidence, not healthy-tailnet or real-host proof.
+
+All 75 entries in the three complete Release package manifests were independently
+rehashed against `output/native-release-c8a9cdc4-20260907/` and its build receipt.
+Verify-only/load rejection probes and installation dry-runs passed again without
+installation or activation. CollectorCore SHA256 is
+`ab469579d709ed185fcad2258387c45c73f6c3eb9b7f65756d30e9ab2f28ab44`;
+the receipt SHA256 remains
+`562a67479dbab88732615116691f8784bdb2df60c9f08708803dee12c5726c1a`.
+Unchanged top-level executable hashes do not hide this framework change.
+Performance evidence: `/tmp/engram-performance-c8a9cdc4-v1.{log,xcresult}`,
+the package root's `performance-run-v1/`, and
+`/tmp/engram-w6-handoff-performance-independent-v1.log`.
+Package checks: `/tmp/engram-w6-handoff-{package-verify,install-plans}-v1.log`.
+
+The Claude integration test uses the same real Collector, two independent
+RemoteServers, HQ Service and Web IPC with synthetic `.claudeDefault` input.
+It checks two exact-byte/dual-ACK generations, stable native/session identity,
+changed generation, complete message prefixes, roles, timestamp strings, model,
+positive per-message and aggregate usage, and normal tier. Only authority is
+fixture-seeded; normalized messages come from actual binary replay. The original
+Codex test and all existing browser/recovery bodies remain byte-identical.
+
+First execution failed because Claude discovery deliberately rejects root-level
+JSONL: the retained inventory completed scanning with zero locators/publications.
+The Claude-only correction creates `synthetic-project/claude-session.jsonl` under
+the configured root. Second execution reached one dual-ACK/index-ready generation
+but the reused Codex append helper rejected the nested parent. A Claude-only
+append helper now retains exact prefix verification, sorted JSON/newline and
+synchronized FileHandle writing without changing the shared helper or deadlines.
+These are test-fixture failures, not product behavior RED. Both failed sources
+(`/tmp/engram-w6-claude-draft-v{1,2}.swift`), logs, xcresults and temporary fixtures
+are retained. The corrected full binary integration suite passed six tests with
+one opt-in browser-hold skip and zero failures in 15.989s; Claude actually passed
+in 2.908s. Independent review returned SPEC PASS / QUALITY APPROVED.
+Evidence: `/tmp/engram-w6-handoff-binary-shadow-v{1,2,3}.{log,xcresult}`.
+
+Full Service regression then reported 1,156 total tests: 1,151 passed, five
+opt-in/live skips and zero failures in 122.720s, with actual producer exit 0.
+The xcresult contains one reader QoS runtime warning. Claude also passed in that
+run (2.886s). The runner verified the workspace-private Foundation home; all
+three explicit `c8a9cdc4` packaged binaries and their `TEST_RUNNER_` duplicates
+were supplied. Performance, CPU-profile, TLS-probe and browser-hold opt-ins
+remained off, and live offload stayed skipped. Evidence:
+`/tmp/engram-w6-handoff-full-service-v1.{log,xcresult}`. Lint exited 0 (one
+existing warning and 40 informational diagnostics, no fixes), archive safety
+and all five invariant gates passed; logs are
+`/tmp/engram-w6-handoff-{lint,archive-safety,invariants}-v1.log`.
+
+Exact product-head Tests `34089038847`, Dependency Review `34089038897` and
+CodeQL `34089038877` all succeeded; CodeQL Gate completed at 06:42:21 UTC.
+These results belong to `c8a9cdc4`, not the later test/docs commit. The later
+candidate changes only this test and three records; product source, dependencies,
+build routing and the entire performance harness/profile remain equal to the
+measured revision. Its own PR-head CI is a separate post-push check.
+Node-job success is not a dependency-audit pass: the existing optional audit
+reported four high transitive findings and exit 1 in
+`/tmp/engram-ci-c8a9cdc4-node.log:1197-1224`; `test.yml` keeps continue-on-error.
+No dependency or workflow change is included in this tranche.
+
+The updated source-retirement checklist still blocks whole W2-W6 completion:
+W3 item 5 needs named-host enabled-source inventories and approved roots; W6
+item 3 needs healthy-tailnet latency and a separately bounded real-host shadow
+transaction. Synthetic Claude coverage does not prove actual profiles or roots.
+Old ingestion remains required for every unproved/unsupported enabled source.
+No real credentials, Keychain, provider access, SSH, network configuration,
+retirement, production installation, merge or W7 action was performed.
+
+### Storage revalidation avoids duplicate absolute component walks (2026-09-07)
+
+Only the shadow/live revalidation opens use a private, strict-path helper with
+one `openat(O_RDONLY | O_DIRECTORY | O_NOFOLLOW_ANY | O_CLOEXEC)` each. It retains
+caller cancellation checks, real descriptor observation, fstat validation and
+failure closure. Initial opens, generic primitives, inventory/database identity,
+both physical ancestor walks, permission refusal, commit fences and rollback
+remain byte-identical outside the narrow seam. This is not whole-validator
+atomicity, a total-syscall budget, or a cache of filesystem identities.
+
+Six appended tests preserve every old test byte. The first attempted run failed
+to compile two test-only `stat` calls; replacing them with following `fstatat`
+controls allowed execution. The next run identified two incorrect fixture
+assumptions: an existing rejected Data alias was treated as an accepted owner,
+and Foundation's literal `%00` path was mistaken for a zero byte. Test-only
+corrections kept the real eight-open budget, existing alias refusals and raw-NUL
+primitive rejection; no production contract was widened.
+
+Final RED ran 73 Owner tests: only the budget test failed, with four expected
+assertions (76 opens/closes instead of eight, intermediate identities and three
+live descriptors instead of at most two), zero unexpected errors. The minimal
+implementation then passed the complete CollectorCore suite: 295 tests, zero
+skips/failures, including all 73 Owner tests. New safety cases cover same-inode
+leaf/ancestor symlinks, actual `EACCES` parent-read revocation at entry/commit,
+rollback, missing/non-directory routes, joined pre/post-open cancellation and
+failure cleanup. Startup-invalid-URL and raw-NUL primitive coverage are reported
+separately from runtime revalidation. Independent source/actual-log review
+returned SPEC PASS and QUALITY APPROVED; inverse transforms reproduced both
+the RED source and original HEAD bytes exactly.
+
+Evidence: `/tmp/engram-storage-validation-root-red-v{1,2,3}.{log,xcresult}` and
+`/tmp/engram-storage-validation-root-green-v1.{log,xcresult}`. Three Debug
+products rebuilt successfully in
+`/tmp/engram-storage-validation-debug-{Collector,Service,RemoteServer}-v1.log`.
+The full Service regression then passed 1,155 tests with five opt-in/live skips
+and zero failures in 110.018s, using all three explicit Debug binaries and the
+private expected home (`/tmp/engram-storage-validation-full-service-v1.{log,xcresult}`).
+The new diagnostic correctly skips without its explicit opt-in. A new
+clean-revision Release package and unchanged 30-minute acceptance window are
+still required. Existing CPU failures are retained and remain failures.
+
+### Synthetic CPU profile isolates storage-path validation candidate (2026-09-07)
+
+An explicitly opted-in diagnostic reuses the unchanged 256-file bootstrap,
+then holds a quiescent corpus for 120 seconds without scheduled append/Web/SQL
+traffic. It does not execute performance acceptance or replace either retained
+30-minute failure. The existing performance path is byte-identical after
+removing the 121 added diagnostic lines. Independent source review approved
+that separation before execution.
+
+The real Release `87cc453c` diagnostic passed one test in 286.413s, including
+bootstrap and joined cleanup of eight owned children. Root checked the ready
+receipt, executable hash/path, PID/start identity and bounded hold window before
+sampling only that owned Collector for 30 seconds. The sampler completed before
+the hold ended; the result records `diagnosticOnly=true`,
+`performanceMeasured=false`, `acceptanceEvaluated=false`, and successful cleanup.
+Evidence: `/tmp/engram-cpu-idle-profile-87cc453c-v1.{log,xcresult}`,
+`/tmp/engram-cpu-sample-87cc453c-v1.log`, and
+`output/native-release-87cc453c-20260907/cpu-idle-profile-v1/`.
+
+Active sample stacks repeatedly traverse `validateStorageFilesystem` directory
+opens and the separate-storage ancestor walks. Most wall samples are waiting;
+stack counts are not CPU percentages or proof of causal improvement. The next
+TDD candidate is limited to the two shadow/live validation opens. Initial
+opening, inventory/database validation, both physical ancestor walks, permission
+refusal, commit fences and rollback must remain intact. No performance gate has
+passed and no real-host or production authority is implied.
+
+### Second full Release window still fails CPU; exact-head CI passes (2026-09-07)
+
+Committed/pushed `87cc453c` contains the bounded drained-queue optimization,
+final-tier oracle and evidence updates. Three Release builds, complete packages,
+verify-only/load probes and installation dry-runs passed from clean tracked
+source in `output/native-release-87cc453c-20260907/`. The Collector executable
+is unchanged; its dynamically linked CollectorCore changed (SHA-256
+`cc70f650cbd46495855965ede78b44c23b51aa7378533030dbfb868f218c0cb1`), and the complete
+package manifest was verified. No installation or production process was started.
+
+The unchanged 256-file/16-directory/64-KiB/1,000-ms synthetic profile completed
+bootstrap in 166.227953s and the entire steady window in 1,800.006246s, but CPU
+still failed: 38.1718205 CPU seconds, 2.120649% of one core, exceeding the budget
+by 2.171696 CPU seconds. Maximum sampled RSS was 23.890625 MiB. All 60 appends
+and 360 reads per endpoint succeeded: p95 append 3.837440s, sessions 0.209764s,
+detail 0.208502s, messages 0.073711s. Three authentications succeeded. Independent
+raw accounting and read-only SQLite checks confirmed 256 sessions in the expected
+248/4/4 source-tier-message buckets, 316 publications and 632 ACKs. Both recorded
+`threshold` entries describe the same CPU failure; no final-content failure remains.
+All eight owned children joined. Failed fixture and artifacts remain intact.
+Evidence: `/tmp/engram-performance-87cc453c-v1.{log,xcresult}`,
+`/tmp/engram-performance-87cc453c-independent-failure.log`, and the new package
+root's `performance-run-v1/`. This is not a PASS or evidence of causal speedup.
+
+Exact-head Tests `34083556529`, CodeQL `34083556503` and Dependency Review
+`34083556461` all passed. CI Service ran 1,154 tests with 26 skips and no failures;
+CollectorCore ran 289 with no failures. Evidence:
+`/tmp/engram-ci-87cc453c-swift-unit.log`,
+https://github.com/bbingz/engram/actions/runs/34083556529 and
+https://github.com/bbingz/engram/actions/runs/34083556503.
+Next: separately labeled synthetic CPU profiling before another implementation
+change. Per-host source inventory, healthy-tailnet measurements and W7 remain
+unverified and require their separate authority.
+
+### Drained collector claim queues avoid write transactions (2026-09-07)
+
+Two bounded read-only availability probes now skip the original claim transaction
+only for a fully drained dirty queue or replica queue (and validated zero dirty
+budget). Caller-thread cancellation checks surround the read; exact owner and
+dirty-root checks share its snapshot. Any non-ACK publication, including deferred,
+in-flight or old-root work, retains the unchanged original selection transaction.
+The positive write bodies, cursor behavior, schema and commit fences are unchanged.
+
+Seven added Store tests cover idle/zero-budget commits, real SQL VM counters over
+2,048 ACK locators and 4,096 ACK replica rows, busy/deferred cursor behavior,
+replica isolation, stale owners/roots/invalid input, pre-cancellation and rollback.
+The corrected fixture produced RED: 46 tests, 17 assertion failures and no
+unexpected errors, with all 39 older tests passing. First implementation retained
+three VM-budget failures: the dirty query selected the primary key and used
+10,252 steps despite LIMIT 1. Specifying the existing matching partial index
+fixed this without schema changes or relaxed thresholds. The complete native
+CollectorCore suite then passed 289 tests, including all 46 Store cases, with
+zero skips/failures. Evidence: `/tmp/engram-collector-idle-probe-root-red-v2`,
+`/tmp/engram-collector-idle-probe-root-green-v1`, and
+`/tmp/engram-collector-full-idle-probe-root-green-v2`, each `.log`/`.xcresult`.
+These establish bounded query behavior, not a measured CPU improvement. A new
+revision-bound Release window is still required; old failed artifacts are kept.
+Independent review of the exact Store/test pair returned SPEC PASS and QUALITY
+APPROVED after reading the v2 test results. Three explicit Debug products rebuilt
+successfully (`/tmp/engram-idle-probe-debug-{Collector,Service,RemoteServer}-v1.log`).
+The subsequent full Service suite passed 1,154 tests with four opt-in/live skips
+and no failures in 115.693 seconds, with explicit Collector/Service/RemoteServer
+and Node fixture binaries (`/tmp/engram-service-full-idle-probe-v1.{log,xcresult}`).
+Post-probe cancellation is statically checked; the new dynamic cancellation test
+covers pre-cancellation only. The retirement checklist metadata was refreshed
+without changing any real-host/source/runtime UNVERIFIED field.
+
+### Final-session oracle and late-response browser verification (2026-09-07)
+
+The final performance oracle now checks all source/tier/message-count buckets,
+not a filtered count of normal sessions. Six independent fixture contracts first
+produced two failures with the old predicate, then passed with the fixed query:
+248 Codex normal sessions with two messages, four normal with nine messages,
+and four premium with ten messages. All original workload, CPU/RSS/latency,
+source-hash and 316-publication/632-ACK assertions remain unchanged. Root gates:
+33 focused tests passed, followed by 1,154 Service tests with four opt-in/live
+skips and no failures. Independent exact-diff review returned SPEC PASS and
+QUALITY APPROVED. Evidence: `/tmp/engram-performance-tier-root-{red,green}-v1`
+and `/tmp/engram-service-full-tier-fix-v1`, each with `.log` and `.xcresult`.
+This fixes an oracle defect; the old measured CPU failure remains a failure.
+
+The real-browser stale-read check now passes using response-stage Chromium
+interception of the original successful sessions request, not a re-fetch or
+fabricated response. The original GET was held at 200 with real private items;
+the real logout returned 204 and cleared UI/cookies before unchanged response
+delivery. The original handler then completed successfully without any private
+DOM repaint, and a subsequent browser read returned 401. The owned browser was
+closed before the fixture's normal stop; native cleanup exited 0. Evidence:
+`output/playwright/stale-read-20260907/{browser-stale-read-cdp-v1.log,findings.md}`,
+its signed-out screenshot, and `/tmp/engram-browser-stale-read-root-v2.{log,xcresult}`.
+Earlier re-fetch probes returning 403 remain failed diagnostics.
+
+Revision `70e362fa` Tests workflow `34081472925` completed successfully, including
+CI Gate. Its formerly failing Service cases passed in job `101617489065`; the
+full CI Service suite ran 1,148 tests with 26 skips and no failures. Local opt-in
+evidence and CI skips remain distinct. Evidence: `/tmp/engram-ci-70e362fa-swift-unit.log`
+and https://github.com/bbingz/engram/actions/runs/34081472925.
+CodeQL Swift jobs were still running at the last check; no all-CI claim is made.
+
+### Completed performance window and isolated Service CI invocation (2026-09-07)
+
+The revision-bound `9e90471b` Release measurement finished its entire 1,800.008-
+second steady window, but **failed**. Raw accounting reports 1,801 samples,
+collector CPU 2.144809% of one core (limit 2%), maximum sampled RSS 23.765625 MiB,
+and mean sampled RSS 22.148696 MiB. All 60 append attempts and all 360 reads per
+endpoint succeeded: p95 append 3.608020s, sessions 0.199356s, detail 0.193499s,
+messages 0.066965s. All three scheduled authentication attempts succeeded with
+the unchanged 900-second cookie lifetime. These are synthetic loopback results,
+not healthy-tailnet acceptance. The test exited 65 with `threshold` and
+`wrong_content`; it joined its owned children and retained the failed fixture.
+Evidence: `/tmp/engram-final-performance-9e90471b-v1.{log,xcresult}` and
+`output/native-release-9e90471b-20260907/performance-run-v1/`.
+
+Independent read-only raw-sample and SQLite inspection separated the failures:
+CPU really exceeded its budget; the final test incorrectly expected 256 normal
+sessions after all appends. Actual publication/ACK/session counts are 316/632/256,
+with 252 normal and four premium sessions. The first four active sessions reached
+ten messages and correctly satisfy the existing project-bound premium rule.
+The tier oracle needs a regression/fix; CPU needs measured diagnosis. Neither
+changing that oracle nor passing latency thresholds makes this run a PASS.
+
+Commit `7349261e` Linux coverage passed 1,757 tests with 108 skips; macOS script,
+Remote Swift and UI smoke jobs passed. Its `swift-unit` job `101613128561` failed
+two Service tests before Runner entry because `ENGRAM_DEMO_EXPECTED_HOME` was
+absent (`ServiceCaptureIngestRuntimeTests.swift:275,429`). The full downloaded
+job log is `/tmp/engram-ci-7349261e-swift-unit.log`. A new CI contract produced
+actual RED, one failure and all 39 older cases passing. The minimal workflow
+fix runs the full Service suite in a subshell with one checkout-local 0700
+temporary home and four command-scoped fixed/expected HOME variables, without
+changing HOME, other suites, product code, skips, or adding deletion.
+Root GREEN passed 40/40; targeted lint and test typecheck exited 0. Evidence:
+`/tmp/engram-ci-service-home-root-{red,green,lint,types}-v1.log`.
+The two-file independent gate passed SPEC PASS / QUALITY APPROVED, including
+exact preservation of older tests/workflow and Bash environment inheritance.
+New-head native CI remains required; old-head CI is not relabeled successful.
+
+The stale-read browser probe is still incomplete: the API re-fetch produced
+403 before a successful response could be held. Both probe logs are retained
+under `output/playwright/stale-read-20260907/`; the bounded native setup/hold/
+cleanup test passed in 303.475 seconds, which is not browser acceptance.
+Real-host enablement/root inventory, healthy-tailnet evidence and W7 remain
+unverified and are not authorized by these local checks.
+
+### Committed native roles, revision-bound packages and CI platform correction (2026-09-07)
+
+Subsequent correction validation: five focused script files passed 279/279,
+zero skips, exit 0 (`/tmp/engram-ci-platform-root-green-v1.log`), with serial
+workers in 21.52 seconds during the ongoing steady measurement. Initial lint
+reported formatting only; formatting the four affected files restored targeted
+lint and test typecheck (`/tmp/engram-ci-platform-{format,lint-green,types-green}-v1.log`).
+The unformatted independent gate proved exact inverse-byte preservation of all
+older assertions; the formatted inverse-normalization review also passed
+SPEC PASS / QUALITY APPROVED. The fix guards
+exactly 12 Apple-tool cases on non-Darwin, retains their macOS execution, leaves
+Linux coverage unfiltered, and preserves all listener checks. New-head Linux
+coverage is still required. Product sources and all three measured executable
+hashes were rechecked unchanged. Existing W5 evidence reconciliation identified
+one remaining browser gap: an actual delayed successful GET after logout;
+the new auth-write ordering receipt does not substitute for that stale-read case.
+
+The authorized 57-path source tranche was normally committed and pushed as
+`9e90471b3b34cb0d8d41c236483a6278e68ceb66` to Draft/open PR #446. No private
+fixture, output artifact or SQLite sidecar was staged. Post-commit project gates
+passed 10/10 (`/tmp/engram-final-clean-project-gates-9e90471b.log`). All three
+new Release builds exited 0 from unchanged tracked sources; complete revision-
+bound packages are in `output/native-release-9e90471b-20260907/{collector,service,remote}`.
+Actual verify-only, constrained load probes and public installer dry-runs passed
+with package snapshots unchanged, private home/install targets absent, and no
+activation. Collector/Service launch-template dry-runs passed; the legacy Remote
+wrapper has no separate launch dry-run. Evidence: `/tmp/engram-final-release-*-9e90471b.log`,
+`/tmp/engram-final-package-*-9e90471b.log`,
+`/tmp/engram-final-native-{verify-load,install-plans}-9e90471b.log`, and the new
+root's `performance-build-evidence.json` with executable and package-manifest hashes.
+
+The revision-bound long performance test is running, not passed. It verified
+256 dual-replica publications and 256 HQ normal sessions after 165.594 seconds
+of bounded bootstrap, then entered the unchanged 1,800-second steady window.
+Its artifact root is `output/native-release-9e90471b-20260907/performance-run-v1`;
+producer log/result is `/tmp/engram-final-performance-9e90471b-v1.{log,xcresult}`.
+The earlier zero-revision/TLS failure remains intact. Light coordinator checks
+and normal host work continue; other work is not stopped or tuned for measurement.
+This remains synthetic loopback, not healthy-tailnet or real-host acceptance.
+
+Exact-head Node CI job `101610264349` failed coverage with 13 failures, 1,755
+passes and 96 skips; build/typecheck/lint/knip and the macOS script job passed.
+The failures are 12 Apple-tool-dependent tests admitted to Linux and one TLS
+listener test hardcoding macOS's lsof path. Independent read-only diagnosis
+confirmed the four-file boundary. A new independent-lsof CI contract produced
+actual RED, one failure with all 38 older tests passing
+(`/tmp/engram-ci-native-tools-root-red-v1.log`). Only test platform guards, trusted-
+PATH lsof lookup and independent Linux tool provisioning are being corrected;
+Swift code and measured packages remain frozen. No correction GREEN, new-head
+CI or full W6 completion is claimed yet. Production W7 remains unauthorized.
+
+### W6 native browser auth-order acceptance and source integration gate (2026-09-07)
+
+The subsequent complete Service run with three explicit Debug binaries exited 0:
+1,148 tests, four skips, zero failures (`/tmp/engram-service-full-final-native-v1.{log,xcresult}`).
+Skips are the separately run TLS probe/browser hold, the pending long performance
+opt-in, and the existing unauthorized live-offload test. Actual native CLI and
+rename/crash shadow cases ran in this full suite. Pinned XcodeGen 2.45.4 staged
+drift and cached diff checks passed (`/tmp/engram-final-staged-project-drift-v1.log`).
+The authorized 57-path source commit is ready; this does not close the remaining
+clean-revision package, resource measurement or new-head CI gates.
+
+Actual delayed-login/queued-logout browser verification passed on the rebuilt
+Debug native chain. The fresh login cookie was used by the single serialized
+logout; the private view cleared immediately, browser cookies ended empty, and
+both ordinary browser reads and explicit fresh-cookie replay with exact Origin
+returned 401. All network responses came from the real private test server.
+The actual final receipt is `output/playwright/auth-order-20260907/browser-auth-order-v5.log`;
+probe failures v1-v4 remain intact and are explained in that directory's
+`findings.md`. Independent review approved only the exact observed-204 plus
+exact ERR_ABORTED completion diagnostic, not general suppression of failures.
+The two native hold/cleanup runs exited 0 with one test each; evidence is
+`/tmp/engram-browser-auth-order-root-{v1,v2}.{log,xcresult}`. Browser contexts
+closed before private atomic stop requests and owned cleanup. Current multiword
+keyboard search and three-message narrow rendering were also checked visually.
+
+The final read-only integration gate returned SPEC PASS / QUALITY APPROVED for
+the 57-path source tranche, not full W6. Main rechecked current integration
+hashes. Explicit native full Service regression, clean-revision Release packages,
+30-minute performance and new-head CI remain separate pending verifiers. CI
+does not supply native binary opt-in variables; its skipped CLI/shadow/performance
+tests cannot substitute for local actual-binary evidence. W7 stays unauthorized.
+
+### W6 independent security review, Web auth ordering and native TLS proof (2026-09-07)
+
+Subsequent native Remote Debug/Release builds both exited 0; the corrected
+Remote Core test command passed 398/398 (`/tmp/engram-remote-full-auth-order-green-v2.{log,xcresult}`).
+The earlier `...-v1` invoked the build-only Remote scheme and exited 66 with no
+tests; it is an operator selector error, not a product test failure. Full scripts
+with the explicit native Collector passed 602 with two existing dirty-project
+drift skips (`/tmp/engram-scripts-full-auth-order-green-v1.log`). Browser auth-order
+verification is prepared but not run; its isolated probe gained bounded reads
+and sanitized failure handling so token-bearing request errors cannot escape.
+
+The bounded Collector-side six-axis independent review returned PASS / APPROVED:
+fresh privacy before every HTTP stage, strict role/replica authority, durable
+sequence and per-replica ACK fences, the explicit two-source boundary, capability-
+only handling of unsupported receivers, and join-before-owner-release shutdown.
+It covered the current Collector entrypoint/five Core files and three CaptureShared
+diffs with actual assertions and prior 282/34/18/15-test logs, not real-host source
+retirement or final-candidate CI. Main rechecked the nine current file hashes.
+
+Service/Remote review found a concrete Web auth ordering blocker: a delayed
+successful login could set a fresh cookie after logout had revoked the prior
+cookie and painted signed out. Epoch checks only protected rendering. Four
+additive shipped-JS/cookie-order cases produced three failures with 13 passes;
+a minimal auth-write FIFO now registers its node before waiting, preserves the
+first synchronous dispatch, releases successors on every settlement, and keeps
+logout's immediate clearing/error truth. No backend cookie/API/TTL changed.
+Actual 16/16 passed before and after formatting; typecheck/lint passed and
+native Debug RemoteServer build exited 0. Independent review closed the blocker
+and returned PASS / APPROVED for the scoped six-axis Service/Remote source/test
+review. Evidence: `/tmp/engram-web-auth-order-root-{red,green}-v1.log`,
+`/tmp/engram-web-auth-order-formatted-green-v2.log`,
+`/tmp/engram-web-auth-order-{types,lint}-v1.log`, and
+`/tmp/engram-web-auth-order-native-remote-debug-v1.log`. Native browser cookie
+ordering and final Remote regression are separate follow-up verifiers.
+
+A new TLS-only native probe reproduced the long-run client failure without
+starting product binaries or generating corpus/performance samples. Its first
+actual run passed 14 unchanged pure tests but failed the TLS case: all three
+requests had zero observed challenge callbacks and URLError -1202. Explicitly
+passing the same strongly held delegate to async bytes, with shared unchanged
+strict origin/host/port/leaf validation, restored observed callbacks. The second
+run rejected both incorrect pins but the positive request timed out because the
+test assumed a bound non-listening Darwin socket immediately refuses connection.
+A bounded local socket check instead observed a one-second connect timeout.
+
+The probe now uses an owned nonblocking listener that accepts and resets one
+connection, without HTTP stubs. Reset and request tasks join before FD cleanup;
+all pin checks, original three oracles, five-second request bounds, certificate
+generation and long workload remain unchanged. Both source changes passed
+independent review and exact inverse-hash checks. Actual third execution passed
+15/15: real helper HTTP 502 for the matching leaf, explicit rejection of both
+incorrect pins, 0.335-second owned lifecycle, four children joined and successful
+fixture removal. Evidence: `/tmp/engram-performance-tls-probe-root-{red-v1,green-v2,green-v3}.{log,xcresult}`
+and `output/native-package-diagnostic-20260907/tls-probe-run-{v1,v2,v3}/tls-result.json`.
+The v3 trace observes the session callback, not the task callback; no claim about
+natural task-callback exercise is made. Failed v1/v2 fixtures remain preserved.
+This is a TLS contract PASS, not the still-pending 30-minute performance result,
+system trust/Keychain mutation, complete W6 or W7 approval.
+
+### W6 native launch plans and first performance execution (2026-09-07)
+
+Subsequent parent-guard correction added only two lines per packager, passed
+168/168 and independent SPEC PASS / QUALITY APPROVED. The current public native
+verify/install-plan harness again passed three roles with unchanged packages
+and absent targets (`/tmp/engram-native-install-plans-parent-guard-v3.log`).
+Full scripts first passed 560 with 40 skips because no Collector binary was
+supplied; a correctly opted-in native retry passed 598 with only two existing
+dirty-project drift skips (`/tmp/engram-scripts-full-role-templates-native-green-v2.log`).
+Typecheck, TS build, knip, Archive V2 safety and invariants passed. Initial lint
+failed only the two new test files' formatting; formatting those files alone
+restored lint exit 0 and 168/168 tests (`/tmp/engram-lint-role-templates-green-v2.log`
+and `/tmp/engram-role-templates-formatted-green-v2.log`). Lint still reports
+nonblocking style/config diagnostics; unrelated files were not changed.
+
+Fresh `gh pr view 446` confirms remote HEAD remains `92c7e3cf` and the PR is
+Draft/open. Its Tests CI Gate, CodeQL Gate and dependency review succeeded;
+that old-head evidence does not cover the uncommitted candidate. W6's six-axis
+current-candidate independent review is now in progress, alongside the bounded
+TLS-only test draft. No new commit/push or W7 operation was performed here.
+
+Collector/Service launch-template implementation passed actual 164/164 script
+tests, exit 0 (`/tmp/engram-role-launch-templates-root-green-v1.log`). Independent
+review then found a source-role-parent symlink gap not covered by those tests.
+Four additive absent/empty-output cases produced actual four failures with all
+164 older cases passing (`/tmp/engram-role-parent-template-root-red-v1.log`).
+The minimal parent guard and its final GREEN remain pending; the first GREEN
+is not an approval of that missing boundary.
+
+Actual new native Collector/Service diagnostic packages including templates
+both exited 0 (`/tmp/engram-native-{collector,service}-package-diagnostic-v2.log`).
+A one-off harness executed the public installation dry-run against these two
+packages and the prior Remote package; all three performed native verification,
+left complete package snapshots unchanged and left every install/job/state
+target absent. Collector/Service wrapper launch dry-runs also emitted the exact
+native argv/environment without executing roles. The legacy Remote wrapper has
+no dry-run and was not executed. Evidence: `/tmp/engram-native-install-plans-v2.log`
+and `output/native-package-diagnostic-20260907/verify-install-plans-v2.mjs`.
+Plans are declarative, not rendered files or an installation. All-zero source
+revision explicitly remains an uncommitted synthetic candidate, not provenance.
+
+Independent source review approved the performance authentication schedule;
+the preceding 33/33 native regression already covers its pure test. The first
+actual opt-in long run then failed before steady state in 135.536 seconds:
+HTTPS authentication rejected the private self-signed leaf with URLError -1202
+(underlying TLS -9813). Observed resource samples are zero; no latency/CPU/RSS
+result exists. The runner marked every unperformed attempt and authentication
+as incomplete/cancelled, joined all eight owned children, and retained the
+failed synthetic fixture. Producer exit 65 and exact evidence are in
+`/tmp/engram-collector-performance-root-v1.{log,xcresult}` and
+`output/native-package-diagnostic-20260907/performance-run-v1/summary.json`.
+Next is bounded fixture trust diagnosis and test-first correction, not system
+trust/Keychain changes, a performance pass, real-host rollout or W7 authority.
+
+### W6 installation-plan and recovery fixture gates (2026-09-07)
+
+Subsequent combined native retry passed 33/33 with producer exit 0: three
+recovery/rename/positive-usage cases, the old binary happy path, 15 CLI cases,
+13 unchanged accounting contracts and the new authentication schedule case.
+All owned children joined before successful fixture removal. The Collector
+retry proves no duplicate durable HQ acceptance, not zero idempotent HTTP
+re-POSTs. Evidence: `/tmp/engram-binary-recovery-auth-root-v2.{log,xcresult}`.
+Independent installer/CI source review returned PASS / APPROVED; the auth
+runner wiring review and actual 30-minute performance run remain separate.
+
+Added a repository-only `scripts/plan-headless-install.mjs`. It has no apply
+mode: public CLI verifies a native package and regular/unaliased role templates,
+then prints role-specific release/current/wrapper/disabled-plist targets and
+bindings. It never reads credential/settings contents, writes targets, starts
+roles or calls launchctl. Pure planning remains explicitly unverified; actual
+host identity, rendered-byte review and installation require W7 authorization.
+Initial tests produced 11 failures/one pass, then 12/12 GREEN. Independent review
+found missing template wiring; additive tests produced six failures/nine passes,
+then 15/15 GREEN. Evidence: `/tmp/engram-install-plan-root-{red,green}-v1.log`
+and `/tmp/engram-install-template-wiring-root-{red,green}-v1.log`.
+
+The actual Remote diagnostic package passed public installation dry-run with
+all planned target paths still absent (`/tmp/engram-install-native-remote-plan-v1.json`).
+Its all-zero revision remains synthetic/nondeployable. Collector/Service
+template prerequisites are still in implementation. Their revised contract
+draft produced 64 failures/100 passes, with explicit no-alias manifest oracles
+and source-template pre-output checks; `/tmp/engram-role-launch-templates-root-red-v2.log`.
+Only native wrapper suites are Darwin-specific; package integrity remains
+cross-platform. A new workflow contract failed once with 37 old cases passing,
+then passed 38/38 after the existing macOS script lane gained the two package
+tests and installer-plan tests. Combined installer/workflow gate is 53/53;
+`/tmp/engram-role-launch-ci-root-{red,green}-v1.log` and
+`/tmp/engram-install-ci-final-green-v1.log`. Test typecheck exited 0.
+
+First real recovery execution passed the old binary happy path, 15 CLI cases,
+and HQ post-ready SIGKILL/restart, but failed the new rename and pending-replica
+cases. Retained fixtures identified a directory-URL equality guard before any
+usage append, and an authenticated GET racing the restarted owned M1 listener.
+Fixture-only corrections now compare exact parent path bytes and require the
+same durable M1 page before restarting Collector, without changing old bodies
+or 25/30-second bounds. Retry is pending. Evidence:
+`/tmp/engram-binary-recovery-usage-root-v1.{log,xcresult}`.
+
+Independent performance review found a separate fixture expiry defect: the
+product cookie lasts 900 seconds but the workload lasts 1800. A new pure auth
+schedule case produced actual notImplemented RED. The first selector attempt
+ran zero tests and is not RED (`...-red-v1`); the correctly named case is
+`/tmp/engram-performance-auth-schedule-root-red-v2.{log,xcresult}`. The candidate
+now logs in before steady state and records fixed 600/1200-second refreshes
+separately, with locked cookie state and no 401 retry or product TTL change.
+All 13 prior pure tests and profile/accounting bytes remain unchanged. New
+combined regression and long Release measurement remain pending.
+
+Source-checklist review corrected the Lobster row from an unproved opt-in test
+claim to a primitive allow-list entry only. No host coverage/retirement claim,
+commit, push, production operation or W7 authority follows from these gates.
+
+### Native package loading and source-retirement boundary (2026-09-07)
+
+The rebuilt Release RemoteServer and actual Collector/Service/RemoteServer
+diagnostic packagers all exited 0. Separate verify-only calls passed for each
+role. A one-off native loading harness then repeated verification with complete
+package content/mode/symlink snapshots and ran only Collector help, Service's
+invalid explicit-home rejection, and RemoteServer's missing-token rejection.
+All matched their expected exit status, left package snapshots unchanged and
+created no private home. This verifies native dyld loading and pre-runtime
+boundaries, not running-service health or installation. Evidence:
+`/tmp/engram-web-query-native-remote-release-build-v1.log`,
+`/tmp/engram-native-{collector,service,remote}-package-diagnostic-v1.log`,
+`/tmp/engram-native-{collector,service,remote}-verify-only-v1.log`, and
+`/tmp/engram-native-package-verify-load-v1.log`; harness and package roots are
+under `output/native-package-diagnostic-20260907/`.
+
+These packages deliberately carry an all-zero synthetic sourceRevision because
+their inputs are the uncommitted candidate. They are not deployable revision
+proof. Final clean-revision packaging, new launch templates, installation
+dry-run, performance and additional binary recovery/usage cases remain pending.
+
+Added `docs/reviews/2026-09-07-collector-source-retirement-checklist.md`: all 17
+registered sources are mapped to the current two-source Collector runtime
+boundary. A local machine check confirms one row per enum case and three
+separate Codex runtime rows, each with six UNVERIFIED diagnostic fields.
+Grok/Pi missing adapters are separate. No real enablement/root/capture/HQ
+inventory or retirement was performed; all enabled unproved sources retain
+their old ingestion path. The checklist still requires independent review.
+
+The preceding full regression after the browser/manifest fixes passed Remote
+398/398 and scripts 514 passed/two existing dirty-project conditional skips;
+test typecheck exited 0. Evidence:
+`/tmp/engram-remote-full-browser-manifest-green-v1.{log,xcresult}`,
+`/tmp/engram-scripts-full-browser-manifest-green-v1.log`, and
+`/tmp/engram-types-browser-manifest-green-v1.log`. These do not cover the later
+in-progress test drafts. W6 and new-head CI remain incomplete; W7 is unchanged.
+
+### Native HTTPS browser fix, package manifests and performance accounting (2026-09-07)
+
+Real browser verification exposed a multiword search defect: URLSearchParams
+serialized spaces as plus while the HTTP component decoder intentionally
+preserves literal plus. Two added shipped-JS cases failed and the literal-plus
+control plus old nine cases passed. Independent review approved the test oracle
+and one-line client-only percent-space serialization fix; root reran 12/12.
+Evidence: `/tmp/engram-web-query-encoding-root-{red,green}-v1.log`.
+
+After rebuilding native RemoteServer, the real private HTTPS browser flow passed
+keyboard multiword search, three complete messages, HTTP fragment hashes and
+exact normalized content/roles/timestamps, desktop/narrow rendering, credential
+clearing, strict secure cookie attributes, logout and post-logout 401. Both
+binary integration tests passed with exit 0. The first browser attempt remains
+failed: an operator created the stop file before chmod, correctly triggering the
+strict reader. The retry atomically published an already-0600 stop request after
+closing the browser, joined all owned roles and removed only its successful
+fixture. Evidence: `/tmp/engram-binary-browser-root-v{1,2}.{log,xcresult}`,
+`/tmp/engram-web-query-native-remote-build-v1.log` and
+`output/playwright/binary-shadow-20260907/browser-v{1,2}-findings.md`.
+
+Service's two nested-SHA256SUMS cases produced RED (2 failed/66 passed); the
+two-line fix now passes 68/68 including source preflight and no-GRDB-fallback
+checks. Collector and RemoteServer independently reproduced the same bug (four
+failed/69 passed), then their four-line fixes passed 73/73. Each enumerator now
+excludes only the root manifest. Native package loading is still separate.
+Evidence: `/tmp/engram-service-package-nested-source-root-{red,green}-v1.log`
+and `/tmp/engram-collector-remote-nested-manifest-root-{red,green}-v1.log`.
+
+The declared synthetic performance accounting has actual RED (12 failed/one
+profile case passed) followed by root 13/13 GREEN. CPU uses raw per-counter
+Mach-tick deltas and recorded timebase; RSS is time-weighted mean plus sampled
+maximum. Gaps, process identity changes and missing/failed attempts cannot
+become zero samples or vanish from the denominator. The opt-in real-workload
+entry remains a separate notImplemented RED; no resource measurement occurred.
+Evidence: `/tmp/engram-collector-performance-accounting-root-{red,green}-v1.{log,xcresult}`
+and `/tmp/engram-collector-performance-orchestrator-root-red-v1.{log,xcresult}`.
+Rename/crash/positive usage, native packages, source retirement, the full
+30-minute Release window and new-head CI remain unfinished; W7 is not authorized.
+
+### Native role builds and shared-boundary regressions (2026-09-07)
+
+Collector, Service and RemoteServer Release builds each completed with producer
+exit 0. The products are universal arm64/x86_64 build outputs from the current
+uncommitted candidate, not clean-revision packages or deployment artifacts.
+Evidence: `/tmp/engram-collector-native-release-build-v1.log`,
+`/tmp/engram-service-native-release-build-v1.log` and
+`/tmp/engram-remote-native-release-build-v1.log`.
+
+The shared explicit-credential extraction's full App/Core regression completed:
+Core 1,737 tests with one existing performance skip, App 1,175 tests, zero
+failures and producer exit 0. UI tests were explicitly excluded. Evidence:
+`/tmp/engram-app-core-shared-credential-full-green-v1.{log,xcresult}`.
+
+Root independently reran the initial Service package contract suite, 59/59
+passing. Independent review nevertheless found that both file enumerations
+omit every nested SHA256SUMS basename rather than only the root manifest.
+That exact-file-set gap remains blocking pending an additive RED and narrow fix;
+the test review also requests public packing-source preflight coverage.
+Evidence: `/tmp/engram-service-package-root-green-v1.log` and
+`macos/scripts/package-service.sh`. Native packaging remains unverified.
+The bounded private HTTPS/browser test draft passed independent review and is
+entering actual execution; its setup/hold gate alone is not browser acceptance.
+No production, real credential, system trust or network configuration changed.
+
+### Two-generation native shadow spine and test-only TLS (2026-09-07)
+
+The first real Collector -> two independent RemoteServer processes -> HQ
+Service -> typed Web IPC test now passes with producer exit 0 in 2.919 seconds.
+Both generations verify replica journal separation, durable ACKs, GET manifest
+and chunk hashes/exact source bytes, HQ search/readiness, normalized message
+content/roles/timestamps, absent-not-invented usage, normal tier, and the complete
+unchanged first-generation message prefix. HQ is seeded only with source/epoch
+authority; sessions, normalized payloads, ingest state and FTS start empty.
+Evidence: `/tmp/engram-binary-shadow-first-root-v3.{log,xcresult}`.
+
+The first two attempts were fixture failures, not production RED: v1 omitted
+Codex session_meta.payload.timestamp and was quarantined parse.malformedJSON;
+v2 parsed one user message correctly as skip, so it could not satisfy search.
+Only fixture metadata and a complete initial user/assistant exchange changed;
+parser/tiering/visibility and the 25-second deadline were not relaxed. Failed
+private fixtures were retained after joining owned processes. Independent test
+review approved the boundary and verified that reversing the shared subprocess
+helper delta restores the previous 15-test file byte-for-byte.
+
+Actual Service negative startup checks pass 3/3 alongside the prior 11 boundary
+and 15 CLI tests (29/29). The rejected processes leave no private runtime home,
+DB or socket artifacts. Native RemoteServer Debug and the full MCP regression
+(270/270) also pass. Evidence:
+`/tmp/engram-service-binary-launch-cli-green-v1.{log,xcresult}`,
+`/tmp/engram-binary-shadow-remote-build-v1.log` and
+`/tmp/engram-mcp-shared-credential-full-green-v1.{log,xcresult}`.
+
+The test-only Node-core TLS adapter binds loopback, uses explicit synthetic
+certificate/key files without system trust changes, and preserves Web request
+and response fields. Root captured 28 failures/one pass before implementation,
+then independently ran all 31 tests successfully after lifecycle/read safety
+review. Evidence: `/tmp/engram-collector-shadow-tls-root-{red,green}-v1.log`.
+This is not a product Node entrypoint or browser acceptance. HTTPS/browser hold,
+rename/crash and positive-usage cases, the declared 30-minute resource/latency
+window, per-source retirement, native packages and new-head CI remain open.
+Service standalone packaging has a separate 58-fail/one-pass RED and is still
+being implemented: `/tmp/engram-service-package-root-red-v1.log`.
+
+### Explicit Service launch boundary for synthetic shadow tests (2026-09-07)
+
+Service now accepts optional expected-home and capture-credentials-file flags.
+Both use strict raw absolute paths before URL construction; expected home is
+compared byte-for-byte against Foundation's actual home before any owned startup
+activity. Explicit capture credentials remain lazy, use the shared owner-only
+NOFOLLOW file reader, validate bounded printable ASCII tokens, and never fall
+back to Keychain on failure. Without the new flags the existing lazy credential
+fallback and DB/socket path behavior remain unchanged.
+
+The corrected Unicode fixture retained distinct UTF8 bytes. Actual RED ran 11
+tests with 10 failures (six unexpected stub throws), then the minimal production
+change passed all 11. Independent production review is SPEC PASS / QUALITY
+APPROVED. Full Service regression passed 1124 tests with one existing skip and
+zero failures, producer exit 0. Evidence:
+`/tmp/engram-service-explicit-launch-{red-v2,green-v1}.{log,xcresult}` and
+`/tmp/engram-service-full-explicit-launch-green-v1.{log,xcresult}`.
+The native Service Debug build also passed:
+`/tmp/engram-service-explicit-launch-binary-build-v1.log`.
+
+This supersedes the preceding entry's Service TEST-DRAFT status only. Actual
+binary negative startup checks and the new two-generation Collector/replica/HQ
+shadow fixture are still being verified. The test-only TLS helper is not yet
+implemented; its initial 1-pass/17-skip draft is not behavioral RED. Complete
+W6 binary/browser, rename/crash, resource, source coverage and native package
+gates plus new-head CI remain pending. No real-host, credential, Keychain,
+network-configuration or W7 deployment operation was performed.
+
+### Native Collector lifecycle and disk-admission observability (2026-09-07)
+
+The enabled native Collector CLI now runs a bounded once cycle or a resident
+loop with TERM/INT/HUP cleanup. Explicit file credentials use a single lazy
+snapshot, component-relative NOFOLLOW descriptors, owner-only regular-file
+checks and bounded reads; there is no home or Keychain fallback. All 12 initial
+real-CLI cases and 34 publication-worker cases pass together (46/46), followed
+by 18/18 runtime cases and 15/15 CLI cases after disk admission was forwarded
+and exposed as a seventh JSON object alongside the unchanged six counters.
+No-sample state is notEvaluated; sampled inventory/capture values retain Int64
+bytes and null for an unevaluated volume. No host-health inference is made.
+Independent implementation/JSON gates are SPEC PASS / QUALITY APPROVED.
+Evidence: `/tmp/engram-collector-cli-disk-combined-{red-v3,green-v1}.{log,xcresult}`,
+`/tmp/engram-collector-runtime-disk-forward-{red,green}-v1.{log,xcresult}`,
+`/tmp/engram-collector-cli-disk-json-red-v1.{log,xcresult}` and the CLI sub-suite
+in `/tmp/engram-cli-status-service-boundary-gates-v1.{log,xcresult}`. The last
+combined command exits 65 because the separate Service boundary stubs are RED;
+its Collector CLI sub-suite has 15 tests and no failures.
+
+The first CLI integration build failed on a nonexistent envelope field and an
+async assertion; those were fixture/compiler corrections, not behavioral RED.
+The next attempt stalled in Foundation waitUntilExit despite isRunning=false.
+The coordinator sampled the exact test process, interrupted only that owned
+xcodebuild, and retained its unfinished fixture. The helper now observes a
+pre-run termination callback with a bounded async join. Evidence:
+`/tmp/engram-collector-cli-integration-red-v{1,2}.log` and
+`/tmp/engram-collector-cli-red-hang-sample-v1.txt`.
+
+The packager's additional Frameworks-alias and extra-dependency REDs preceded
+a fixed two-framework closure; all 30 tests pass and the independent finding
+gate is approved. Native Release packaging/actual packaged loading remain
+pending. Evidence: `/tmp/engram-collector-package-r3fw-r1extra-root-{red,green}-v1.log`.
+The credential reader was extracted into Shared/Security for the explicit
+Service entry needed by synthetic W6. After extraction, the Debug CLI builds,
+Collector 282/282 including dependency guards pass, and CLI/package scripts
+pass 71/71. Existing Shared-directory source rules also include the passive
+reader in App/MCP; no Collector-to-product dependency was added. Evidence:
+`/tmp/engram-collector-cli-shared-credential-build-v1.log`,
+`/tmp/engram-collector-shared-credential-full-green-v1.{log,xcresult}` and
+`/tmp/engram-collector-cli-package-shared-root-green-v1.log`.
+
+Service expected-home/file-credential entry is still in TEST-DRAFT/RED, not
+enabled or verified. A Unicode fixture originally lost byte distinction in URL
+normalization; its raw-string correction is being reverified. Full real-binary
+shadow, private TLS/browser, 30-minute resource/latency evidence, complete source
+coverage, native packages and new-head CI are not complete. Real-host shadow
+requires separate authority, as does W7. No real credential, Keychain, host
+network configuration or production mutation was performed.
+
+### Collector loop, CLI rejection and complete Service regression (2026-09-07)
+
+Collector Runtime now retries only SQLite BUSY/LOCKED at the existing interval;
+other terminal failures remain terminal. Its wait API joins the loop, propagates
+cancellation, and does not release Owner until explicit stop. Three behavioral
+RED cases preceded the minimal change; all 16 runtime tests pass, with independent
+SPEC PASS / QUALITY APPROVED. Evidence:
+`/tmp/engram-collector-runtime-loop-{red-v2,green-v1}.{log,xcresult}`.
+The full Collector suite passes 282/282 after correcting three stale test schema
+assumptions: the v1 fixture removes the four publication tables, the current
+schema whitelist includes them, and the Owner assertion checks empty publication
+rows rather than absent tables. Production schema behavior was not changed for
+these test corrections. Evidence:
+`/tmp/engram-collector-full-runtime-green-v{1,2}.{log,xcresult}`.
+
+Full Service regression initially exposed two source-scanner failures after
+the approved backend-factory reorder: an inverted String range and a missing
+post-task remoteSync marker. Both tests now end at the immediate livePublishSignal
+declaration while retaining all startup and V2 ordering assertions. Independent
+patch review approved the correction; the focused 31 tests and full 1093 tests
+pass, with one pre-existing skip and producer exit 0. Evidence:
+`/tmp/engram-runner-scanner-green-v1.{log,xcresult}` and
+`/tmp/engram-service-full-runtime-green-v{1,2}.{log,xcresult}`.
+
+The native CLI argument/default-OFF tranche passes all 41 static/real-binary
+checks after the exit-70 scaffold RED. Enabled credentials and resident lifecycle
+remain the next implementation slice, with 12 separately reviewed integration
+tests; these are not yet GREEN. Evidence:
+`/tmp/engram-collector-cli-native-root-red-v1.log` and
+`/tmp/engram-collector-cli-off-native-root-green-v1.log`.
+Package path hardening passes 27 synthetic tests after six executable RED cases,
+but independent review still rejects a Frameworks ancestor alias and incomplete
+validation of additional manifested dependencies. Those follow-up regressions
+are being drafted; native package acceptance remains closed. Evidence:
+`/tmp/engram-collector-package-r1r2r3-root-{red,green}-v1.log`.
+This supersedes the earlier pending loop/full-suite status, not the W3-W6
+completion boundary. Disk admission observability, real binary end-to-end,
+resource/coverage gates and new-head CI remain unfinished. No production or W7
+operation, real credential action, network change or deployment is authorized.
+
+### Collector restart and Service startup composition gates (2026-09-07)
+
+Service Runner now constructs both throwing legacy backends before allocating
+capture readers or starting tasks. The safe structural RED executed one test
+with eight assertion failures; after the minimal reorder, all 13 runtime tests
+pass with producer exit 0, including both failing local-backend factories,
+actual Web IPC, cancellation, and writer reacquisition. Independent Runner
+review is SPEC PASS / QUALITY APPROVED. Evidence:
+`/tmp/engram-runner-startup-order-red-v1.{log,xcresult}` and
+`/tmp/engram-runner-startup-green-v1.{log,xcresult}`. No leaking failure path was
+deliberately executed before the reorder; this is structural RED, not runtime RED.
+
+Collector Runtime's 13 tests now pass with exit 0, including native append,
+dual replica ACKs, cold-WAL restart and ownership release. Owned capture
+preflight uses existing-main mode=rw with query_only SQL under the exclusive
+Owner, while borrowed identity readers remain unchanged. The first diagnostic
+failed because GRDB.read resets query_only on exit; its corrected fixed-SELECT
+probe verified query_only, UPDATE rejection and unchanged main bytes. A second
+real restart RED located a post-close content fence: the preflight connection
+could checkpoint committed WAL when it became the final connection. Keeping
+preflight alive until the validated owned catalog opens preserves pre-writer
+content checks and post-writer inode/private-path checks, and removes that false
+rejection without weakening borrowed readers. Evidence:
+`/tmp/engram-collector-wal-mode-probe-v{1,2}.{log,xcresult}`,
+`/tmp/engram-collector-restart-fence-probe-v1.{log,xcresult}` and
+`/tmp/engram-collector-runtime-owned-wal-green-v{1,2}.{log,xcresult}`.
+The diagnostic's mode=ro SQLite14 warning is intentional; it is not a failed
+production run. Background terminal-error/cancellation and transient-busy
+recovery are still under test preparation, not yet approved.
+
+The collector packager now uses actual PackageFrameworks/GRDB-dynamic.framework
+and requires both frameworks' Versions/A entities. Independent executable REDs
+preceded the layout corrections; all 21 synthetic package checks pass with
+exit 0. Evidence: `/tmp/engram-collector-package-grdb-dynamic-root-{red,green}-v1.log`
+and `/tmp/engram-collector-package-core-layout-root-{red,green}-v1.log`.
+A native EngramCollector tool target and compile-only exit-70 scaffold build
+successfully; this is not implemented CLI or native-package acceptance.
+Evidence: `/tmp/engram-collector-cli-stub-build-v1.log`. Full combined suites,
+real binary/package/browser integration, resource targets, all-source retirement
+and new-head CI remain pending. All current changes remain local/uncommitted;
+W7, production credentials, network changes and deployment remain excluded.
+
+### Runtime composition gates and independent boundary findings (2026-09-06)
+
+The consumer parser-revision fence now compares UTF-8 bytes; its NFC/NFD RED
+preceded the minimal repair, and all 23 consumer tests pass. Exact capture now
+admits the reserved generation and remaining byte budget on the opened source
+descriptor before streaming or publishing; three executable REDs preceded the
+repair and all 15 ExactSourceCapturer tests pass. Evidence:
+`/tmp/engram-consumer-revision-{red,green}-v1.{log,xcresult}` and
+`/tmp/engram-capture-fd-admission-{red,green}-v1.{log,xcresult}`.
+
+Service capture runtime composition has three independent bounded intake,
+replay and capture-only FTS loops, a single fresh strict policy snapshot and
+separate producer-join/reader-close boundaries. Its ten tests pass with producer
+exit 0, including actual Web handler detail/messages while the replica returns
+503 or credentials are missing. The first GREEN attempt failed four helper
+assertions because metadata alone deliberately has no transcript generation;
+the helper now exercises the real handler without weakening existing assertions.
+Evidence: `/tmp/engram-runtime-composition-gates-v1.{log,xcresult}` and
+`/tmp/engram-capture-runtime-green-v2.{log,xcresult}`. Runner wiring is not done.
+
+Collector publication's original 28 tests pass in the composition run; exactly
+two additive FD/CAS admission tests fail (11 assertions, zero unexpected).
+Independent review found another liveness gap: an uncaptured locator whose
+parent directory disappears retains its reservation and blocks its root.
+An additive nested-directory regression is pending before repair. CAS volume
+query RED passes the original 23 tests and fails six new tests; the measurement
+must use the actual private CAS root FD, preserve cancellation and reject root
+replacement without repair. Evidence: `/tmp/engram-cas-volume-red-v1.*`.
+
+Collector Runtime remains under TDD, not a shipped executable. Its first
+12-test RED includes a closed-WAL fixture lifetime mismatch being corrected;
+borrowed identity-catalog read-only guarantees are not relaxed. SQLite warnings
+in publication fixtures were traced to deleting their capture directory while
+the fixture still retains its ArchiveCatalog pool. A narrow explicit catalog
+close fence is under TDD; no production database or old fixture cleanup is
+authorized by this finding.
+
+The collector package script passed 16 focused tests after its recorded RED,
+but independent review found that copied framework symlinks must be rejected
+before thinning/signing can follow them. An additive regression is pending;
+no actual native collector package has passed. Evidence:
+`/tmp/engram-collector-package-root-{red,green}-v1.log`. Current changes remain
+uncommitted; prior-head CI is not current-diff validation. Complete W3-W6,
+all-source retirement, resource/real-binary gates and W7 remain unverified.
+
+Subsequent gates supersede the pending component checkpoints above: publication
+31/31 passed after the nested-parent RED and minimal ENOENT classification fix;
+independent review approved that bounded slice. Catalog lifetime 2/2 and CAS
+29/29 pass together with producer exit 0 and no vnode-unlinked warnings. The
+explicit close API was independently approved, and fixture cleanup now closes
+its catalog before releasing ownership and deleting only that fixture.
+Evidence: `/tmp/engram-runner-red-publication-green-v1.*` (publication PASS;
+Runner RED, overall exit 65), `/tmp/engram-catalog-lifetime-cas-green-v1.*`.
+
+Actual Service Runner composition now passes the original ten component tests
+and its new real Unix-socket search/detail/messages/cancellation test (11/11).
+Independent Runner review still blocks on two throwing legacy backend factories
+after runtime start but before cleanup installation; a safe startup-failure
+regression is next. The same command's separate Collector Runtime suite passed
+6/12 and failed 6/12: this SQLite build cannot open the owned cold-WAL catalog
+with mode=ro while its WAL is absent. A fixture-only rw/query-only probe is
+pending, not authority to relax borrowed identity readers. Evidence:
+`/tmp/engram-runtime-runner-green-v1.*` (overall producer exit 65).
+
+Package path preflight now passes 19/19 focused tests after its recorded
+symlink RED. Actual build products expose GRDB-dynamic.framework under
+PackageFrameworks, not the synthetic GRDB.framework alias; fixture correction
+and native dependency layout tests are next. No native package PASS is implied.
+Evidence: `/tmp/engram-collector-package-path-root-{red,green}-v1.log`.
+
+### Publication transport REDs and Web browser follow-up (2026-09-06)
+
+The composition tranche was committed/pushed as `92c7e3cf`; its Tests,
+Dependency Review and CodeQL workflows are successful. CodeQL
+`34036115005` was freshly confirmed complete; this supersedes the pending
+new-head CI checkpoint below. New publication/runtime work remains uncommitted.
+
+Central intake now has executable bounded retry, timeout, partial-response byte
+accounting, cancellation and atomic-checkpoint tests. The current 22-test run
+has the original 19 passing and exactly three new recovery tests failing
+(27 assertions, zero unexpected failures; producer exit 65). A capture/page
+larger than the per-run transfer budget makes no durable chunk progress, and
+the total-size precheck masks corrupt cached content. The tests freeze fixed
+8 MiB chunks plus 2 MiB tails under a 9 MiB run budget; their minimal repair
+is authorized but not yet GREEN. Evidence:
+`/tmp/engram-consumer-resume-red-v1.{log,xcresult}`. Collector publication
+schema/owner compiled in that run; the separate worker's 24-test GREEN is pending.
+
+Subsequent consumer GREEN v1 passed all 22 tests with zero failures, producer
+exit 0 (`/tmp/engram-consumer-resume-green-v1.{log,xcresult}`). Verified durable
+CAS chunks now survive bounded runs without a second recovery ledger; only
+missing objects download, while corrupt objects fail closed. Independent
+source review then identified a byte-exact parser-revision fence gap in the
+consumer's synthesized policy equality. One additional regression is being
+prepared before repair; full consumer review is not approved yet.
+
+Web behavior tests exercise the shipped JavaScript: nine tests and test
+typecheck pass (`/tmp/engram-web-behavior-green-v4.log`,
+`/tmp/engram-web-behavior-typecheck-v3.log`). The long synthetic demo's
+300-second hold exited 0 with one XCTest passing and a verified isolated
+Foundation home (`/tmp/engram-web-browser-long-green-v1.{log,xcresult}`).
+Root inspected `output/playwright/w5-transcript-narrow.png`: text wraps at the
+narrow viewport and the HTML-looking payload remains visible text. The browser
+worker additionally reported four-page exact Unicode reassembly, filters,
+empty search and signed-out 401; raw browser assertion evidence still needs
+root reconciliation. Its intercepted logout-race request returned 403, not
+the required delayed 200, so that scenario remains unverified, not a product
+failure or a completed race gate. No complete W3-W6 or W7 claim is added.
+
+### Capture-to-Web composition and reader integration (2026-09-06)
+
+Integrated the independently reviewed N4a inventory owner and T4a Service ingest
+worker, added the read-only normalized-transcript provider and wired actual
+generation admission into Web detail. The same-origin static viewer now supports
+authentication, search/filter, detail and message continuation. Existing Host,
+Origin, cookie, CSP, no-store and read-only IPC boundaries remain in force.
+The generated project adds only test dependencies for the composition fixture;
+CollectorCore still has no product-index/Service dependency.
+
+`CollectorWebDemoTests` now exercises synthetic JSONL through inventory/capture,
+privacy proof, an actual encrypted RemoteArchiveStore publication ACK/page,
+central CAS acceptance/replay, parsed commit, FTS-ready, real Unix-socket IPC
+and authenticated HTTP search/detail/messages. The source bytes remain unchanged.
+Capture/replica transfer are in-process: this is not the W6 real-binary,
+two-replica, restart/rename/resource or production acceptance gate.
+
+Evidence: executable REDs `/tmp/engram-demo-{service-red-v4,chain-red-v9,ui-red-v2}.*`
+preceded the corresponding implementations; focused Service GREEN v1 passed
+57/57, provider GREEN v1 16/16 and UI GREEN v1 7/7. Current central full
+Service v2 passed 1,009/1,010 (one existing opt-in live-offload skip), Collector
+v1 279/279, and Remote v2 398/398; each producer exited 0 and xcresult agrees.
+Service and Collector each retain one existing QoS runtime warning; Remote has
+none. Full logs/results: `/tmp/engram-demo-service-full-v2.{log,xcresult}`,
+`/tmp/engram-demo-collector-full-v1.{log,xcresult}` and
+`/tmp/engram-demo-remote-full-v2.{log,xcresult}`. Remote v1 exited 65 because its
+old unknown-route test expected `/web` to return 404; the test now separately
+proves both viewer URLs return 200 and genuine unknown routes retain 404,
+security headers and zero IPC. Production route code was not changed for this.
+Two boundary-script suites passed five tests; archive-safety, invariants and
+diff checks passed. Independent scoped source/spec review approved the provider
+and root composition; this does not certify the incomplete full W3-W6 plan.
+
+Test-environment incident: full Service v1 was stopped with exit 75. Its command
+incorrectly relied on ENGRAM_HOME, while default startup directory maintenance
+uses Foundation's process home and is not dry-run. A sampled owned test process
+was in that maintenance scan. Earlier real-provider read/rename impact is
+UNVERIFIED; no broader source inspection was authorized or performed to claim
+zero impact. The corrected runs use an existing task-private directory through
+both CFFIXED_USER_HOME and TEST_RUNNER_CFFIXED_USER_HOME. The standalone real
+XCTest preflight exited 0 and printed ENGRAM_DEMO_HOME_VERIFIED for that exact
+directory before full regression. Evidence:
+`/tmp/engram-demo-service-hang.sample`, `/tmp/engram-demo-service-full-v1.log`,
+`/tmp/engram-demo-home-preflight-v1.{log,xcresult}`. No production remediation,
+service restart, deployment or Docker operation followed this test incident.
+
+Browser evidence uses only the synthetic loopback fixture: keyboard login/search,
+actual transcript, empty search, logout and a 390px viewport were observed in
+`output/playwright/demo-*.png` (local-only). The first intentional 600-second
+hold exceeded XCTest's allowance and is not a successful test run; the fixture
+now budgets its intentional hold explicitly. Full long-message/XSS/stale/error
+browser acceptance remains W5 work, not inferred from static string checks.
+The corrected 90-second browser hold v2 exited 0 (one test, 90.305 seconds),
+with fresh keyboard login and real two-message rendering captured in
+`output/playwright/demo-transcript-v2.png`; console had zero errors before
+the fixture shut down normally. A later logout click occurred after shutdown
+and failed to connect; it is not additional logout evidence. The earlier live
+logout/cleared-screen observation remains the logout evidence. Full v2 test
+log/result: `/tmp/engram-demo-browser-v2.{log,xcresult}`.
+
+The previous head `79ee13ac` Tests, Dependency Review and CodeQL workflows were
+verified successful on PR #446; the PR remains Draft/open. This entry supersedes
+older pending-CI and donor-only checkpoints below without rewriting them. New
+head CI is separate. Next: persistent publication allocation, independent replica
+queues and real collector/central runtime composition, then full W5/W6 gates.
+W7 production, credentials and network changes remain outside authorization.
+
+Record clarification (2026-09-06): the A5d completed central Service/App/Core/MCP
+results above each older entry supersede earlier central-running/donor-only
+checkpoints retained below. The phrase "supersedes central-running above" in
+the historical Service result entry means the older entry below, not a running
+test in the current checkpoint. For9b, Tests and dependency review are complete;
+only CodeQL remains pending. Final integration/own-head CI is still separate.
+
+### A5d App/Core and MCP regression supplement (2026-09-06)
+
+Full central App (UI explicitly excluded) exited0, session55419: 2,901 total/
+2,900 passed/one existing Core performance skip/zero failures, including
+App1,175 and rerun Core1,726. Eleven existing writer QoS runtime warnings remain.
+Central MCP exited0, session97936:270/270 with no skip/failure/runtime warning.
+These cover the handler constructor/dispatch blast radius without changing
+source or requiring live services. Evidence:
+`/tmp/engram-a5d-central-{app,mcp}-v1.{log,xcresult,producer-exit0}`.
+Pinned staged driftv1 passed; the eight-path independent integration/record
+gate is in progress and old9b CodeQL still gates feature push. UI/browser,
+unchanged Remote/Collector full suites and production were not rerun for A5d;
+separate N4a donor Collector proof is not central evidence.
+
+T4a all57 additive REDv1 actually exited65, session27444:34 passed/23 failed,
+zero skips/runtime warnings. Twelve additions independently prove worker
+Replay-error hook, complete-binding and post-claim transaction fence gaps;
+targeted source-only correction is now under root verification. Ten old failures
+are synthetic SQL trace rendering: independent GRDB6.29.3 evidence approved
+`event.expandedDescription` in this temporary testDB instead of description
+with unexpanded parameters. A separate history fixture now proves its valid
+positive commit before deleting a sibling history row, then verifies scalar
+selection leaves that corrupted candidate pending/attempt0 with all WorkRow
+fields unchanged. It does not promise a valid commit amid corrupted sibling
+authority. All assertions remain; production Registry is unchanged. Independent
+fixture-only SPEC PASS / QUALITY APPROVED preceded both edits. Corrected tests
+`9719eacf...`, worker candidate `886ae224...`; focused GREENv1 is running.
+Evidence: `/tmp/engram-t4a-worker-additive-red-v1.{log,xcresult,producer-exit65}`
+and `/tmp/engram-t4a-worker-green-v1.*`. No T4a GREEN/runtime result follows yet.
+
+### A5d central full Service and script gates passed (2026-09-06)
+
+Central A5d Service v1 actually exited 0, session 34146: 936 total/935 passed/
+one existing opt-in live-offload skip/zero failures; one existing reader QoS
+runtime warning. All 23 new IPC and38 unchanged metadata tests passed against
+the exact integrated hashes. Ten script suites exited 0 (session30753),
+205 passed/two existing dirty-project conditional skips; test typecheck,
+archive safety, invariants and diff checks also returned 0. Evidence:
+`/tmp/engram-a5d-central-service-v1.{log,xcresult,producer-exit0}` and
+`/tmp/engram-a5d-tranche-{scripts,typecheck-test,archive-safety,invariants}.log`.
+This supersedes central-running above; final staged integration/record gate,
+commit and own-head CI are still pending. Previous9b CodeQL is still running.
+T4a57-test additive RED now runs separately in its donor; N4a remains donor-only.
+
+### A5d donor gate and central integration; N4a full GREEN (2026-09-06)
+
+Correction head `9b969a9c` Tests `34028552400` now succeeded, including its
+Swift unit job, and its watch producer 22869 exited 0. Dependency review also
+passed; CodeQL `34028552396` remains pending. The feature push still waits
+for that separate gate. No deployment or PR merge is authorized here.
+
+A5d full donor Service v1 exited 0 (session 4194): 925 total/924 passed/one
+existing live-offload opt-in skip/zero failures, one existing reader QoS
+warning. All 23 IPC and unchanged 38 metadata tests passed. Root's complete
+source/contract review plus executable RED, focused GREEN and this regression
+passes the independent donor SPEC/QUALITY gate. Exactly three matching files
+entered central: handler `69c25458...`, extension `1909d286...`, tests
+`97d13177...`. Pinned XcodeGen 2.45.4 adds eight references for the two new
+files; no donor project was copied. Central full Service v1 is running, not
+yet claimed. Evidence: `/tmp/engram-a5d-service-full-v1.{log,xcresult,producer-exit0}`,
+`/tmp/engram-a5d-central-service-v1.*`. Runner composition remains unavailable
+by default, and this slice is not running HQ metadata or browser acceptance.
+
+N4a's independently approved test-only correction removes the extra expectation
+that a SQLite connection remains reusable after external main-inode replacement.
+It retains unsafePath, normal hook return, replacement unchanged, original inode
+restoration and complete readonly SQL/live-byte rollback assertions, then
+explicitly closes Owner and asserts no fixture descriptors. No production reopen
+or SQLite bypass was added. Full donor Collector GREEN v2 actually exited 0,
+session 65577: 279/279, no failures/skips, one existing native-smoke QoS warning.
+All three storage matrices now reach all six targets. Source remains
+`69341422...`; final test hash `bc082c8c...`. Root's renewed source/acceptance
+review and this full result pass donor SPEC PASS / QUALITY APPROVED. N4a remains
+donor-only, not central/capture/privacy/uploader acceptance. Evidence:
+`/tmp/engram-n4a-owner-green-v2.{log,xcresult,producer-exit0}`.
+
+T4a additive draft has independent SPEC PASS / QUALITY APPROVED for executable
+RED only: 12 new cases cover full-binding changes before failure and after
+parsed/failure materialization, plus post-claim cancel/policy/clock SQL triggers.
+Exact inverse hashing recovers all original 45 tests/helpers, `d5cc9946...`;
+new 57-test hash `a80f2acd...` and source `174a0eab...` remain frozen. Actual RED
+waits for the serial build slot. Evidence: `/tmp/engram-t4a-additive-test-draft-gate.md`.
+Full W3-W6 and W7 remain incomplete/excluded; N4b is a read-only next-seam proposal.
+
+### CI correction pushed; independent next-slice verification continues (2026-09-06)
+
+The five-path CI correction passed final pinned drift and was normally
+committed/pushed as `9b969a9cae63f3de70227bde68d370284d7f7e23`, both commands
+actually exiting 0. PR #446 resolves to that exact head and remains Draft/open/
+unmerged. New dependency review `34028552602` succeeded; Tests `34028552400`
+and CodeQL `34028552396` are pending. Watch logs are
+`/tmp/engram-a5c-ci-fix-{tests,codeql}-watch.log`. Fixed 16.4 compatibility is
+not yet claimed, and no feature donor entered the correction commit.
+
+A5d focused GREEN v1 passed all 23 tests with zero skips/runtime warnings,
+actual session 52001 exit 0. Three accepted A5d hashes are handler `69c25458...`,
+extension `1909d286...`, tests `97d13177...`; producer remains `2aeb1355...`,
+and its test baseline has only the approved `61167657...` CI qualification.
+Root's complete source/contract review preceded this run. Full donor Service
+is now running; central integration and new-head CI remain separate. Evidence:
+`/tmp/engram-a5d-ipc-green-v1.{log,xcresult,producer-exit0}` and
+`/tmp/engram-a5d-service-full-v1.*`.
+
+N4a full GREEN v1 executed 279 tests: 276 passed/three failed/zero skips, one
+existing native-smoke QoS warning, actual session 58394 exit 65. A separate
+diagnostic-only test rerun, session 25434 exit 65, identifies all three errors
+at the final repeated operation after the first main-file substitution and
+restoration. Earlier unsafePath/normal-hook-return/replacement-unchanged/
+original-inode/full-readonly-rollback assertions passed. Apple SQLite logs
+vnode rename invalidation, then the repeated old connection fails query_only
+with IOERR; the remaining five matrix targets were not reached. This is not
+GREEN or a waiver. An independent review of the test's extra same-connection
+reuse expectation is pending; source remains frozen `69341422...`. Evidence:
+`/tmp/engram-n4a-owner-green-v1.*`, `/tmp/engram-n4a-owner-storage-diagnostic.*`.
+
+T4a's first 450-line candidate incorrectly typed the borrowed task as Task
+instead of UnsafeCurrentTask; source-only type correction is frozen at
+`174a0eab...`, without execution or behavior changes. Root's complete source
+review also found that full binding comparisons and post-claim transactional
+fences need explicit regression evidence. Only additive tests are now being
+drafted; all original 45 tests remain frozen and functional correction is
+closed until actual RED. No T4a/N4a/A5d central or W3-W6/W7 completion follows.
+
+### CI correction final integration gate passed (2026-09-06)
+
+Independent five-path staged review returned SPEC PASS / QUALITY APPROVED:
+binary index/worktree equality, exact inverse one-token test correction,
+unchanged production hash, actual 913-test result and pinned drift all agree.
+The final gate read the authoritative 16.4 compile failure and verified that
+the records do not claim fixed-head CI success. Normal corrective commit/push
+is next; donor feature files remain excluded. Existing `010a2c5d` Tests are
+failed, dependency review succeeded, and CodeQL remains independently pending.
+
+### Metadata test-helper Xcode 16.4 compatibility correction (2026-09-06)
+
+Exact `010a2c5d` Tests `34027689013` failed: swift-unit job `101471533185`
+did not execute tests because Xcode 16.4 could not infer generic R at
+WebMetadataProducerTests.swift:1469, `let records = lock.withLock { records }`.
+The authoritative job log is `/tmp/engram-a5c-ci-swift-unit-failure-raw.log`,
+lines 15667-15675; its toolchain path is `/Applications/Xcode_16.4.app`.
+Node, macOS scripts and UI smoke jobs passed; other workflow results remain
+separate. An initial log download was refused for ANSI escapes; the successful
+raw download used gh's explicit allow-escape-sequences option, actual exit 0.
+
+Independent read-only reviewer approved exactly `{ self.records }` as SPEC
+PASS / QUALITY APPROVED. Root made that one-token property qualification only;
+inverse comparison proves all 38 test bodies, fixtures and assertions unchanged,
+and production producer SHA256 remains `2aeb1355...`. Corrected test SHA256 is
+`61167657eea97fedbe975f42c6a100171bda38d8816cf9ee9e8191e0c65f284a`.
+Central full Service passed 912 with one existing opt-in live-offload skip,
+zero failures, all 38 metadata tests passing, one existing reader QoS warning
+and actual command session 2072 exit 0. Raw NULL-connection/misuse logs remain
+absent. Evidence: `/tmp/engram-a5c-ci-fix-central-service.{log,xcresult,producer-exit0}`.
+Pinned project drift and exact correction/diff checks passed. App/Core/MCP/
+Remote/Collector/Node suites were not rerun for this test-helper-only change.
+Local Xcode is 27.0 (27A5218g); Xcode.app and Xcode_16.4.app are absent at the
+checked standard paths. Fixed-head Xcode 16.4 CI remains mandatory and unverified.
+Final five-path correction gate and normal commit/push are next; no next-slice
+feature source is included in this CI correction candidate.
+
+A5d focused RED v1 actually exited 65: 23 total, 4 passed/19 failed, no skips/
+runtime warnings. All invalid-DTO/whole-frame fixture proofs ran without their
+own failures; failures correspond to the unavailable adapter stub. Only its
+extension source entered GREEN and root accepted the 97-line candidate for
+execution, with three-file source/test hashes separately frozen. The donor's
+38-test baseline received only the same approved self.records correction.
+A5d GREEN/full Service remains unverified; N4a/T4a remain donor source work.
+
+### Metadata producer pushed; worker/owner RED accepted (2026-09-06)
+
+A5c passed pinned staged drift v2 and was normally committed/pushed as
+`010a2c5d1b51fb1147bde0387fd427ccc60bd032` (commit/push actual exit 0).
+PR #446 still resolves to that exact head and remains Draft/open/unmerged.
+New Tests `34027689013`, CodeQL `34027689037` and dependency review
+`34027689022` are pending; none inherit the prior head's green evidence.
+Watch logs: `/tmp/engram-a5c-{tests,codeql}-watch.log`.
+
+T4a v5 now executes 45 tests: 2 passed, 43 failed, zero skips/runtime warnings,
+actual command session 50046 exit 65. Independent real Replay fixture
+classifications no longer fail after the canonical temporary-root correction;
+the remaining 100 assertions (34 unexpected notImplemented throws) match the
+worker stub. Only worker source now enters GREEN; test SHA256 is frozen at
+`d5cc9946154f85d1d3e25d56e7a9e1ff43c3d178ac6cca0b307f5bb542935bf8`.
+Evidence: `/tmp/engram-t4a-worker-red-v5.{log,xcresult,producer-exit65}`.
+
+N4a's 24-test draft passed independent root SPEC/QUALITY review and exact
+inverse baseline comparison. RED v1 was compile-only; four added try tokens
+correct the new borrowed-task rethrows calls/joins. Full Collector RED v2
+then passed all 255 old tests and failed all 24 new tests with notImplemented,
+zero skips, one existing native-smoke QoS warning, actual session 50205 exit 65.
+Only Owner source enters GREEN; test SHA256 is frozen at
+`ac52336fdb6a3832690d582a57b5f4a3304b4e10d5cb1f903b32306a9e5296b4`.
+Evidence: `/tmp/engram-n4a-test-draft-gate.md` and
+`/tmp/engram-n4a-owner-red-v{1,2}.{log,xcresult,producer-exit65}`.
+
+A5d's three-file/23-test draft passed root independent SPEC/QUALITY review;
+root added pinned donor references and is running focused IPC RED v1. Source
+implementation remains closed until actual behavioral failure is verified.
+The A5c producer and its 38 tests remain frozen. Evidence:
+`/tmp/engram-a5d-test-draft-gate.md`, `/tmp/engram-a5d-ipc-red-v1.*`.
+No donor worker/owner/IPC source is integrated into central yet. Runner,
+capture/upload, browser/full W3-W6 and W7 remain incomplete or excluded.
+
+### Metadata producer final staged gate passed (2026-09-06)
+
+Independent seven-path review returned SPEC PASS / QUALITY APPROVED with no
+blocking findings. It checked index/worktree equality, the unchanged producer
+and 38-test hashes, eight generated PBX additions, pinned staged drift,
+central/donor/focused xcresults and logs, and the four record surfaces. Root
+separately refreshed PR #446: exact prior head `843d0038` still has successful
+Tests `34024026924`, CodeQL `34024026923` and dependency review `34024026926`;
+the PR remains Draft/open/unmerged. Normal commit/push is now next; new-head
+CI remains unverified. A stale test-draft header comment and an existing
+WeakMutability warning are nonblocking and were not changed after hash freeze.
+
+T4a RED v1/v2 failed only compilation; v3/v4 executed but exposed real replay
+fixture staging-path errors, so they are not accepted as clean behavioral RED.
+The coordinator corrected only imports and the temporary-root fixture using
+the existing ReplayTests Darwin.realpath pattern; RED v5 is pending. Production
+staging defenses remain unchanged. N4a/A5d remain separate TEST-DRAFT work.
+No Runner, browser, full W3-W6, production, W7, merge or release claim follows.
+
+### Metadata producer integrated with central Service regression (2026-09-06)
+
+A5c passed independent SPEC PASS / QUALITY APPROVED and was copied into central
+with exact source/test SHA256 `2aeb1355...` / `5c7a3843...`. Coordinator's pinned
+XcodeGen 2.45.4 generation adds exactly eight PBX reference lines for these two
+files; an initial PATH-generator expansion was replaced by the pinned output
+before central testing, without hand-editing the project. No Runner, handler,
+DTO/client, Remote, Collector, App or MCP production file changed in this slice.
+
+Donor full Service v1 exposed three old IPC source scanners with five failed
+assertions, not an A5 failure. Runner already matched central; the exact three
+current central test hunks were copied into that donor. Donor full v2 then
+passed 901 with one existing live-offload opt-in skip. Central full Service
+passed 912 with the same skip, zero failures, including all 38 A5 tests. Both
+commands actually exited 0; each result has one reader QoS runtime warning,
+and neither contains the earlier NULL-connection/misuse logs. Existing
+Sendable/AppIntents build warnings remain recorded in full logs.
+Artifacts: `/tmp/engram-a5c-service-full-v{1,2}.*` and
+`/tmp/engram-a5c-central-service-full.*`; the producer-exit records distinguish
+the donor baseline failure, correction and separate central result.
+
+The ten relevant script suites passed 205 with two conditional project-drift
+skips; test typecheck, Archive V2 safety and all five invariant gates exited 0.
+Logs are `/tmp/engram-a5c-tranche-{scripts,typecheck-test,archive-safety,invariants}.log`.
+Unchanged App/Core/MCP/Collector/Remote suites were not rerun for this isolated
+Service addition. Final staged-project drift and integration/record gate are
+pending before normal commit/push; new-head CI is not yet claimed.
+
+T4a's final 45-test draft (`248ada53...`, stub `5aeffcbf...`) passed root's
+independent corrected draft gate and entered coordinator-owned executable RED;
+it remains unimplemented. N4a is a separate two-file TEST-DRAFT. The reviewed
+A5d IPC adapter contract is frozen with three-file TEST-DRAFT only, explicit
+handler-entry deadline and separate client-cancel/server-drain evidence. Runner
+policy composition, browser, full W3-W6 readiness and W7 remain incomplete.
+
+### Metadata lifecycle RED/GREEN and independent next-slice draft gates (2026-09-06)
+
+A5c GREEN v2 and v3 each ran all 37 tests but failed the same three NUL
+assertions. The decoder preserves complete TEXT metadata bytes, but GRDB's
+String fixture binding itself used NUL-terminated sqlite3_bind_text. A separate
+exact-hex fixture proof exited 65, observing `73616665` instead of
+`7361666500736563726574`. The fixture now binds Data through CAST AS TEXT and
+asserts both full stored bytes and TEXT storage, without relaxing omission
+expectations. The original 37 tests then passed.
+
+Raw SQLite logs revealed a separate lifecycle defect despite empty xcresult
+runtimeWarnings: explicit DatabaseSnapshot.close preceded its deinit COMMIT.
+An added real SQLite statement/close trace regression failed both snapshots
+with only CLOSE rather than COMMIT then CLOSE; all original 37 passed in that
+38-test RED run. The minimal source fix lets GRDB release snapshots in its
+own transaction/connection order. Focused GREEN v4 independently passed 38/38,
+zero skips/runtimeWarnings, actual exit 0, and no NULL-connection/misuse logs.
+One build-tool AppIntents metadata extraction warning remains. Frozen source
+SHA256 is `2aeb1355725b20591792d6885c7abdcffaeac8f31a4b89b0ce176de46243ef18`;
+tests are `5c7a38436dd4cbf7ccf9276b18e3460fd5180c209b34d997c678c731ae6dae99`.
+Evidence: `/tmp/engram-a5c-nul-fixture-proof.*`,
+`/tmp/engram-a5c-lifecycle-red.*`, `/tmp/engram-a5c-metadata-green-v4.*`.
+The separate full donor Service suite and independent A5c source/spec gate
+are in progress; central integration and handler/Runner wiring remain unverified.
+
+T4a's corrected 99-line stub/1420-line test draft still failed root's complete
+independent gate: associated-value syntax, contaminated selection fixtures,
+misclassified missing CAS, unkeyed/vacuous trace proof and cancellation
+registration races remain draft corrections, not executed RED. Evidence:
+`/tmp/engram-t4a-second-draft-gate.md`. N4a's amended Owner-only queue-free
+precommit storage fence passed independent feasibility and root source checks;
+the acceptance is frozen in the plan and only a two-file TEST-DRAFT is active.
+No W3-W6 completion, runtime/production change, W7, merge or release is claimed.
+
+### Native-stream CI complete; producer and worker gates remain separate (2026-09-06)
+
+Exact `843d00384ee93a99ced8942e66a511fc7e920f3d` now has all three workflows
+successful: Tests `34024026924`, dependency review `34024026926` and CodeQL
+`34024026923`, including both Swift analyses and CodeQL Gate. Watch command
+sessions 39666 and 50283 both exited 0; logs are
+`/tmp/engram-n3b2-{tests,codeql}-watch.log`. PR #446 remains Draft/open/unmerged.
+This supersedes earlier pending CI checkpoints, not full W3-W6 readiness.
+
+A5c's 965-line donor producer compiled only after one mixed-array inference
+correction to separate argument appends. GREEN v1 exited 65 before testing;
+the corrected 967-line source is SHA256
+`d93b03848c24c0563d6dde392c462b0fc018152352752572732b0920f821b35c` and GREEN
+v2 is running against the unchanged 37-test SHA `2d535a3e...`. Artifacts are
+`/tmp/engram-a5c-metadata-green-v{1,2}.*`; no GREEN result or integration yet.
+The first T4a two-file draft failed root's complete independent test-design
+gate on compile defects, unjoinable fixture barriers, incorrect pending versus
+processing rollback assertions, misleading trace checks and missing separate
+authority/cancellation cases. It remains TEST-DRAFT correction, not executable
+RED. Full findings are `/tmp/engram-t4a-initial-draft-gate.md`. N4a's Owner dirty
+claim/ack/defer proposal is a separate read-only feasibility gate; no N4 code.
+
+
+### Service worker acceptance and native-stream CI follow-up (2026-09-06)
+
+Exact N3-B2 head `843d00384ee93a99ced8942e66a511fc7e920f3d` now has successful
+Tests `34024026924` and dependency review `34024026926`; CodeQL `34024026923`
+remains in progress. Tests watch command session 39666 exited 0; its full log
+is `/tmp/engram-n3b2-tests-watch.log`. This supersedes earlier pending Tests
+checkpoints without asserting CodeQL or overall completion.
+
+The independent supplemental T4a feasibility gate returned SPEC PASS / QUALITY
+APPROVED, resolving scalar preselection versus manifest eligibility, exact
+due/order predicates, transaction-local post-claim-clear fences, cancellation
+ownership, public replay barriers and trace access through writer.write. The
+accepted contract is frozen in the implementation plan. Only two new Service
+worker source/test files enter TEST-DRAFT in the ingest donor; root owns routing
+and actual RED. T4b no-job readiness/recovery and runtime wiring remain separate.
+A5c GREEN remains source-only under its frozen 37-test contract, not completed.
+
+
+### Metadata producer corrected draft and executable RED (2026-09-06)
+
+The coordinator independently read the corrected two-file A5c draft completely
+and passed its SPEC/QUALITY test-design gate. The source still threw
+notImplemented; the 1,708-line test file freezes 37 methods with SHA256
+`2d535a3ee7a381cfe069c2d9b7c2d53dee860b68a5d7e2ddc6d31072f17aa41a`.
+The draft now tests real entered SQLite interruption/join, actual readonly/
+authorizer/trace behavior, independent WAL snapshot release and weak deinit,
+cursor binding/bounds, individually armed authority revocation, scalar-ready
+positive/negative baselines, full-string redaction and valid DTO envelope limits.
+
+First execution was compile-only failure: the Web donor lacked the existing
+bounded CAS overloads used by its synchronized Replay. Root copied only the
+already-verified central `EngramCaptureShared/ImmutableArchiveCAS.swift`, SHA256
+`d4f202b8c564ad585be7b4b686aaf11a0e8d8cfb2796d873e7f9b10989178137`, into that
+donor and verified both A5c hashes unchanged. No central source was changed.
+Corrected RED v2 then executed 37 tests: five passed, 32 failed, zero skips or
+runtime warnings, command session 16960 exit 65. The 61 assertions and 29
+unexpected errors are not the failed-test count. Failures reflect absent
+producer behavior, including unentered SQL, not fixture/schema failures.
+Artifacts are `/tmp/engram-a5c-metadata-red-v{1,2}.*`; independent gate and
+follow-up are `/tmp/engram-a5c-corrected-draft-gate.md`.
+Only the producer source now enters GREEN; tests remain frozen. No Service
+handler/Runner wiring, browser or full W3-W6/W7 result is claimed.
+
+### Native-stream push and next-slice preparation (2026-09-06)
+
+N3-B2 was normally committed/pushed as
+`843d00384ee93a99ced8942e66a511fc7e920f3d`; both commands exited 0.
+Logs are `/tmp/engram-n3b2-tranche-{commit,push}.log`; pinned staged drift v2
+also passed. Exact prior-head `18c9bc06` Tests, CodeQL and dependency review
+were all successful before push. PR #446 remains Draft/open/unmerged at the
+new SHA. Its dependency review `34024026926` passed; Tests `34024026924`
+and CodeQL `34024026923` are still running, not inherited successes.
+
+A5c remains a separate two-file test-draft correction. The proposed next T4a
+slice connects one Service-owned claim through real CAS replay to an atomic
+parsed commit, with cold construction and cancel/stop join. It is not yet
+accepted or implemented. Initial skip/no-job readiness and restart recovery
+remain a following T4b obligation. Neither proposal closes runtime wiring,
+uploader, browser, full W3-W6 or W7. No merge, deployment, production source,
+provider/credential, SSH or Docker operation occurred.
+
+### Native-stream final candidate gate (2026-09-06)
+
+Independent ten-path index/record/source review passed SPEC PASS / QUALITY
+APPROVED, with matching index/worktree bytes, six unchanged implementation/
+routing hashes and verified local test/xcresult evidence. Pinned staged drift
+v1 passed (`/tmp/engram-n3b2-staged-drift-v1.log`). Prior-head CI remains
+separately verified; normal commit/push and the new head's CI are next.
+
+Terminology clarification: earlier entries' numeric "producer" identifiers
+refer to execution-tool command sessions, not operating-system process IDs.
+Central Collector command session 34387 completed with actual exit code 0;
+its log records xcodebuild PID 16425. The exit marker was written after the
+completion was harvested. This is not a conflicting PID or a new test run.
+Historical entries remain intact. The one smoke QoS warning and all stated
+runtime/W3-W6/W7 exclusions remain unchanged.
+
+### Native-stream central verification checkpoint (2026-09-06)
+
+This supersedes the donor-only and pending-CodeQL checkpoint below. Exact
+`18c9bc06588f5e473424ea338b8879c2213d892f` now has successful Tests
+`34019524050`, CodeQL `34019524056` and dependency review `34019523987`.
+PR #446 remains Draft/open/unmerged at that SHA.
+
+N3-B2 passed the supplemental independent smoke/routing gate (SPEC PASS /
+QUALITY APPROVED). The coordinator integrated three frozen native source/test
+files, the target dependency guard, and minimal explicit source/CoreServices
+routing with XcodeGen 2.45.4; the generated project adds only 16 lines.
+All six implementation/routing hashes match the reviewed candidate. The full
+central Collector run passed 255/255 with zero failures/skips, actual producer
+34387 exit 0, and one retained setup-semaphore QoS runtime warning:
+`/tmp/engram-n3b2-central-collector-full-v1.{log,xcresult,producer-exit0}`.
+Ten scoped script suites passed 205 with two existing dirty-project conditional
+skips; test typecheck, archive safety and all five invariant gates passed.
+Their logs are `/tmp/engram-n3b2-tranche-{scripts,typecheck-test,archive-safety,invariants}.log`.
+Unchanged App/Core/Service/MCP/Remote suites were not rerun for this isolated
+Collector-only integration; new-head CI remains a separate gate.
+
+The ten-path candidate awaits pinned staged drift, independent final
+index/record review, normal commit/push and its own CI. The real smoke proves
+only temporary-root default-backend callback delivery, not native replay,
+kernel drops, normalization-form identity end-to-end or W6 latency. A5c's
+two-file test-draft correction ownership transferred from Grok to the bounded
+Web worker; SQL implementation remains closed pending independent draft review
+and actual RED. No full W3-W6, runtime producer, uploader, browser, merge,
+deployment or W7 completion is claimed.
+
+### Native-stream GREEN, real callback smoke, and metadata draft correction (2026-09-06)
+
+Exact A5b `18c9bc06` Tests `34019524050` completed successfully, including
+Swift unit, Remote/package, UI smoke and CI Gate (07:45:31 UTC). Its dependency
+review already passed; CodeQL `34019524056` remains separately pending.
+
+N3-B2 native source passed independent SPEC PASS / QUALITY APPROVED against the
+frozen 58-test contract. The coordinator harvested full donor Collector GREEN:
+254/254, no failures/skips/runtime warnings, actual producer 9444 exit 0,
+`/tmp/engram-n3b2-native-green-v1.{log,xcresult}`. Source SHA256 is
+`2f6aadd57cccda39333ee4be201d7f50b89f66d14f9349729463f788d6a143cc`;
+all 58 test bytes remain frozen. These tests inject native API faults, not
+kernel events. Their drain error is explicitly injected after a completed
+barrier, not proof of safe release after an incomplete drain.
+
+A separate coordinator-owned real default-backend smoke used only its own
+temporary root. V1 and V2 failed with continuityLoss; independent raw probes
+observed root ItemIsDir flags `0x2c100` in the same batch as file `0x19100`,
+so whole-batch reconciliation was correct. V1 also assumed NFC callback bytes,
+while the observed filename was NFD. No production decoder was changed.
+An immediate setup FlushSync alone yielded no setup callback and did not fence
+the first batch. V3 first observed a live setup callback, then flushed/drained
+the setup stream before starting the real adapter and appending a preexisting
+Chinese-named file. It passed 1/1, actual producer 5221 exit 0, with one setup
+semaphore QoS runtime warning. Full donor Collector then passed 255/255,
+zero failures/skips and the same one runtime warning, producer 60190 exit 0.
+Logs and xcresults are
+`/tmp/engram-n3b2-real-smoke-v{1,2,3}.*` and
+`/tmp/engram-n3b2-native-full-v2.*`; raw probe v1-v3 files are retained separately.
+The native source, old tests and new smoke remain donor-only pending the
+supplemental independent smoke/routing gate and central integration.
+
+A5c's initial two-file draft failed independent test-design gates: real-schema
+fixture constraints, continuation preconditions, lease release, fresh authority,
+count units, redaction, SQL observer validity, entered-work cancellation and
+valid-envelope pressure required correction before executable RED. Grok owns
+only those draft corrections; SQL implementation remains closed. No Service
+producer, uploader, browser, complete W3-W6, merge, deployment or W7 pass is claimed.
+
+### A5b push, native-stream RED and metadata-producer acceptance (2026-09-06)
+
+Exact T3b `6a33a42a` completed Tests `34017787159`, dependency review
+`34017787161` and CodeQL `34017787170`; CodeQL Gate ended at 07:31:39 UTC.
+The approved nine-file A5b tranche was normally committed/pushed as
+`18c9bc06588f5e473424ea338b8879c2213d892f`, both producer exits 0. Full logs:
+`/tmp/engram-a5b-tranche-{commit,push}.log`; pinned staged drift v2 also passed.
+PR #446 remains Draft/open/unmerged. New-head dependency review `34019523987`
+succeeded; Tests `34019524050` and CodeQL `34019524056` remain pending.
+
+N3-B2's independent test-draft gate required one additive negative raw-count
+case. The original 57 cases/helpers remain byte-identical after removing only
+that method and five mechanical compile corrections (one SinceNow cast, two
+try calls and their two try-await propagations). The first attempt was only
+a compile failure, not behavioral RED. Full RED v2 then executed 254 tests:
+the old 196 all passed; all 58 native tests failed, zero skips/runtime warnings,
+actual producer exit 65. `/tmp/engram-n3b2-native-red-{v1,v2}.*` retains both.
+Root-owned routing adds the native file and CoreServices SDK with exact source
+and framework dependency assertions, which passed in RED. Frozen test SHA256
+is `5e82fbe154fc2c95bb1d7f6c2584bea9529a427a24f657358b39bbd229a6a313`.
+Only the native source now has GREEN implementation authority; no real watcher
+or complete Collector runtime has been validated.
+
+A5c's amended metadata-only acceptance passed independent feasibility gates.
+The canonical plan freezes readonly immediate-lock-failure SQL, bounded hard
+snapshot/cursor lifetimes, fresh authority checks, scalar readiness counts,
+redaction and full-envelope budgets. Two-file test-draft work is separate from
+implementation. The coordinator synchronized exactly 15 previously verified
+central ingest foundation files into the Web donor and checked all final bytes;
+the four frozen A5b files and shared DTO/client hashes remain unchanged. These
+are donor baselines, not new central changes or new test results. The initial
+capture-only corpus is not full W6 legacy/source coverage. No merge, deploy,
+provider/credential access, SSH, Docker or W7 action occurred.
+
+### A5b metadata HTTP central candidate and T3b push (2026-09-06)
+
+Final nine-path integration/record review passed SPEC PASS / QUALITY APPROVED.
+The independent reviewer checked index/worktree equality, all four hashes,
+the old-test inverse and all three xcresults plus actual producer exits.
+Pinned staged drift v1 passed; `/tmp/engram-a5b-staged-drift-v1.log`.
+Exact T3b Tests `34017787159` subsequently succeeded, superseding the pending
+checkpoint below; dependency review also succeeded and CodeQL `34017787170`
+is still running. A5b is ready for the authorized normal commit, while its
+push still waits for that prior-head CodeQL gate and new-head CI is unverified.
+Empty xcresult runtimeWarnings does not erase compiler/toolchain warnings in
+the retained raw logs. No N3-B2 or A5c implementation enters this candidate.
+
+T3b was normally committed/pushed as
+`6a33a42ad7cd7a5c23347b1e15f1b91c72605814`, both producer exits 0;
+full outputs are `/tmp/engram-t3b-tranche-{commit,push}.log`.
+Its dependency review `34017787161` succeeded. Tests `34017787159` and
+CodeQL `34017787170` remain pending, separate from this new local candidate.
+
+The coordinator independently approved A5b SPEC PASS / QUALITY APPROVED
+against the bounded W5 metadata HTTP contract. Three typed GET routes use
+one stored four-operation Surface and the dedicated read client, with no
+generic command forwarding or capability loader. Literal plus/Unicode bytes,
+strict fields/integers, 4,096-byte encoded queries, detail no-query policy,
+safe error mapping and encoded response limits are tested through HTTP.
+The valid-DTO budget supplement first produced two genuine failing tests;
+all 19 new test bodies remained frozen through implementation. One obsolete
+unmounted-route test now proves the default client's three exact IPC commands,
+no capability token, and safe unsupported-Service responses. Three older
+factory wrappers adapt to Surface without changing their assertions. Removing
+only these authorized differences reproduces the entire old integration test
+file exactly: SHA256
+`01e7b6790cbcc1cee4fd32728af412fa53989b970299188247ae92b1833a82a0`.
+
+Focused donor GREEN passed 68/68 and complete donor Remote passed 391/391,
+zero skips/failures/runtime warnings, actual producer exits 0. Artifacts:
+`/tmp/engram-a5b-http-green-v1.*` and `/tmp/engram-a5b-remote-full-v1.*`.
+Four files entered central by unchanged SHA256: Routes `a1983073`, App
+`b8d31048`, old integration tests `765790a4`, and new metadata tests `bd8c3057`.
+Pinned XcodeGen adds only four test references. The complete central Remote
+suite independently passed 391/391 with no skips/failures/runtime warnings,
+producer exit 0; `/tmp/engram-a5b-central-remote-full-v1.*`. Its raw build log
+also retains an Xcode launch-diagnostics warning; no test failure is attributed
+to that warning. Ten scripts passed 205/two dirty-project conditional skips;
+test typecheck, archive safety and five invariants exited 0. Logs are
+`/tmp/engram-a5b-tranche-{scripts,typecheck-test,archive-safety,invariants}.log`.
+
+Core/Service/App/MCP/Collector full suites are not rerun for this Remote-only
+product change; their source and dependency routing are unchanged. The new
+HTTP success fixtures do not prove a running Service metadata producer,
+real transcript authority, handler-task cancellation/orphan freedom, browser
+acceptance or full W3-W6. Those remain incomplete. Final integration/record
+review, staged drift and new-head CI remain separate; the next push waits for
+the immutable T3b head's CI. A5c is read-only proposal work and N3-B2 remains
+an isolated test draft. No merge/deploy/provider/credential/SSH/Docker/W7 action.
+
+### T3b authority-fenced FTS central candidate and N3-B1 push (2026-09-06)
+
+The independent final ten-path integration and record/index gates subsequently
+passed SPEC PASS / QUALITY APPROVED. All ten worktree files matched the index,
+the four frozen donor hashes and scanner-only change remained unchanged, and
+pinned staged drift v2 exited 0. SQLite sidecars remain excluded. This candidate
+is ready for the authorized normal commit/push; new-head CI is still pending.
+
+Final combined-gate follow-up: exact pushed `5073f3f8` now has successful
+Tests `34016074877`, dependency review `34016074843`, and CodeQL `34016074803`;
+the latter Gate completed at 06:49:03 UTC. This supersedes its pending
+checkpoint below. T3b central App v1 exposed one stale source-scanner assertion
+at `ViewMainThreadReadTests.swift:481`, not a product failure: 2,901 total,
+2,899 passed, one failed, one skipped, producer exit 65. Only its expected
+`markNotApplicable` call string gained the fresh `capturePolicy` argument.
+App v2 passed 2,901 total/2,900 passed/one existing skip/zero failures, including
+App 1,175/1,175 and the rerun Core suite, with 11 GRDB QoS warnings. MCP passed
+270/270 with no skips/failures/runtime warnings; both actual producers exited 0.
+Artifacts: `/tmp/engram-t3b-central-app-full-{v1,v2}.*` and
+`/tmp/engram-t3b-central-mcp-full-v1.{log,xcresult,producer-exit}`.
+Pinned staged project drift v1 exited 0; `/tmp/engram-t3b-staged-drift-v1.log`.
+The final candidate has ten paths including the additional scanner-only test.
+Remote/Collector full suites are not rerun for this CoreWrite-only product
+change; their source and dependency routing are unchanged. Browser/UI smoke,
+capture runtime and W6 end-to-end remain unverified. The independent final
+integration/record gate, commit/push and new-head CI are still pending.
+
+N3-B1 passed its final independent nine-path integration/record gate and was
+normally committed/pushed as `5073f3f8cedbe99022a817b954f4438ee9fb8427`.
+Both producers exited 0; `/tmp/engram-n3b-tranche-{commit,push}.log` retains
+the complete output. Exact-head Tests `34016074877` and dependency review
+`34016074843` succeeded; CodeQL `34016074803` remains in progress. PR #446
+is still Draft/open/unmerged. No later donor or candidate result describes
+that pushed SHA.
+
+T3b's independent supplemental implementation gate is SPEC PASS / QUALITY
+APPROVED after executable policy-revocation, epoch-history, sibling-registry,
+overlap, tier and canonical-root regressions. Selection/count/backlog/finalize
+share an ownership-first SQL predicate; unavailable capture authority never
+falls through to a legacy adapter. A single joined read-only task loads the
+bounded normalized snapshot. Readiness, optional first-FTS embedding requeue,
+and finalization share the writer transaction, with fresh policy checks and
+cancellation/deadline fences. Retry writes require the unchanged frozen job
+and authority tuple and persist only bounded stable corruption codes.
+
+The supplemental suite passed 45/45; complete donor Core passed 1,713 total,
+1,712 passed, one existing skip, zero failures and 11 GRDB QoS warnings.
+Artifacts: `/tmp/engram-t3b-runner-sibling-green-v3.*` and
+`/tmp/engram-t3b-runner-core-full-v3.{log,xcresult,producer-exit}`.
+Earlier RED and failed GREEN artifacts remain, including the Swift SQL-string
+inference error and the NUL fixture corrected to bind bytes then CAST AS TEXT.
+The original 35 tests plus helpers are byte-identical after removing only the
+ten contiguous supplementary methods: SHA256
+`c28b5eb4ea2bd64680b6eac669a93574ae720a9f548eb53c441d4df06b44d545`.
+Independent review rechecked this inverse proof and corrected its initial
+missing-artifact statement and assertion-count/test-case-count conflation.
+
+Exactly four donor files were integrated with matching hashes: Runner
+`46cbaf4e`, Policy `75f66933`, new tests `edf8bc92`, and Round5 scanner
+`c02d2788`. Round5 changes only two scanner end boundaries and one expected
+fresh-policy finalize call. The pinned generated project adds four test-file
+references; project.yml and all other donor edits remain excluded. Complete
+central Core passed 1,726 total/one existing skip/zero failures/11 QoS warnings;
+Service passed 875 total/one existing skip/zero failures/one reader QoS warning.
+Both actual producers exited 0. Evidence:
+`/tmp/engram-t3b-central-{core,service}-full-v1.{log,xcresult,producer-exit}`.
+Ten script suites passed 205 cases with two dirty-project conditional skips;
+test typecheck, archive safety and all five invariant gates exited 0. Logs:
+`/tmp/engram-t3b-tranche-scripts.log` and
+`/tmp/engram-t3b-tranche-{typecheck-test,archive-safety,invariants}-v2.log`.
+App/MCP combined verification, staged drift, final integration/record gate,
+commit/push and new-head CI remain pending.
+
+A5b remains donor-only and unmounted. Its first attempt was a compile-only
+failure from two old factory closure return types, not behavioral RED. Only
+two messagesOnly wrappers corrected that setup. RED v2 then ran 66 tests:
+the old 49 all passed; 13 of 17 new metadata HTTP tests failed, zero skips or
+runtime warnings, producer exit 65. Evidence: `/tmp/engram-a5b-http-red-v2.*`.
+Two additive valid-DTO query/response budget tests passed independent draft
+review and await executable RED; all original 17 bytes remain unchanged.
+Only after RED may the single obsolete unimplemented-metadata-404 test be
+migrated to the default client's safe unsupported-service IPC contract.
+
+The two supplemental budget tests subsequently produced real RED: both failed,
+zero passes/skips/runtime warnings, nine assertions, actual producer exit 65.
+DTO construction/round-trip prerequisites passed; only the unmounted HTTP
+contracts failed. `/tmp/engram-a5b-http-budget-red-v1.*` retains the artifacts.
+Grok may now implement only Routes/App and migrate that one obsolete method;
+all 19 new test bodies are frozen. This remains excluded from T3b integration.
+The native-stream proposal also passed independent gates after explicitly
+rejecting cursor zero and retaining conservative directory reconciliation:
+the frozen Owner/Store only marks locators, not subtree frontiers. The adapter
+must not advance a directory-only cursor while silently missing descendants.
+Two-file test-draft preparation is authorized; no native implementation or
+kernel callback acceptance is claimed.
+
+These are bounded foundations: capture policy defaults OFF and the runtime
+caller, capture offload support, initial no-job skip consumption, native
+FSEvents, uploader, Service metadata producer, browser and full W3-W6 remain
+incomplete. Scalar eligibility does not scan publication/manifest BLOBs;
+coherent external corruption of those records is not a proven repair path.
+No merge/deploy, provider/credential access, Docker, SSH or W7 action occurred.
+
+### N3-B1 coordinator central integration candidate (2026-09-06)
+
+Live exact-head verification now confirms `8a53174b` Tests `34013832379`,
+dependency review `34013832384` and CodeQL `34013832367` all succeeded.
+Remote Swift completed at 06:05:00 UTC and CodeQL Gate at 06:05:08 UTC.
+PR #446 remains Draft/open/unmerged; no result is attributed to an unpushed SHA.
+
+The coordinator's independent N3-B1 implementation gate is SPEC PASS / QUALITY
+APPROVED for the generic fake-stream lifecycle slice: synchronous bounded
+callback admission; restart-before-stream recovery fencing; durable checkpoints
+only after Owner commits; history completion plus the exact scan fence before
+watching; loss sealing/gap persistence; stop sealing before draining entered
+work; and no closure of the borrowed Owner. The native stream and runtime caller
+remain separate. The donor source and tests were copied into the central branch
+with verified SHA256 `5a1a3b2292d8187ba8d502d8799f035629cf87542eddb34d3ffae2581bd95725`
+and `0cd97dbceb5bc61a1c39a2b788eda0bdd89b550224024c2f6699449d986a24b9`.
+The dependency guard adds only the Coordinator source; project.yml adds that
+same explicit source and the project was regenerated, not hand-edited.
+
+The central complete Collector suite passed 196/196 with no skip, failure or
+runtime warning and actual producer exit 0. Evidence:
+`/tmp/engram-n3b-central-collector-full-v1.{log,xcresult,producer-exit}`.
+Ten script suites passed 205 cases with two existing dirty-project conditional
+skips; test typecheck, archive safety and all five invariant gates passed.
+Their logs are `/tmp/engram-n3b-tranche-{scripts,typecheck-test,archive-safety,invariants}.log`.
+Pinned staged project drift and the final integration/record gate are pending.
+App/Service/MCP/Core/Remote were not rerun for this isolated Collector-only
+source addition; no product target or shared source changed in this candidate.
+New-head CI, commit and push are separate pending gates.
+
+The first staged drift run correctly rejected project output from the default
+generator. The pinned CI generator regenerated it; comparison against HEAD
+now shows exactly eight added Coordinator source/test references, with no
+unrelated target/embedding change. After staging that generated output, drift
+v2 passed with exit 0 (`/tmp/engram-n3b-staged-drift-v2.log`); the failed first
+log is retained at `/tmp/engram-n3b-staged-drift.log`. The final candidate is
+exactly nine paths, 1,786 additions and no deletions before this record addendum.
+The complete central Collector run was then repeated against the final pinned
+project: 196/196 passed with no skips, failures or runtime warnings, producer
+exit 0; `/tmp/engram-n3b-central-collector-full-v2.{log,xcresult,producer-exit}`.
+
+T3b stays donor-only: its first fence correction passed 74/74 and complete
+Core 1,706 with one existing skip, but independent re-review found sibling
+registry and invalid-tier eligibility gaps. Four additional cases produced
+real RED among 43 tests (39 passed, four failed, no skips, producer exit 65).
+Further authority-shape cases and the narrow SQL correction are in progress;
+no blanket retry write is authorized for stale/invalid bindings. The first
+revocation test now also observes real vector deletion and verifies rollback
+of seeded semantic_chunks. These tests do not enter the N3-B1 candidate.
+A5b remains unmounted in its donor, pending its strengthened draft gate/RED.
+Full W3-W6, native callbacks, uploader and browser acceptance remain incomplete;
+no merge, deployment, provider/credential access, Docker or W7 action occurred.
+
+### T3b fence regressions and N3-B1 donor verification (2026-09-06)
+
+Exact pushed `8a53174b` now has successful Tests `34013832379` and dependency
+review `34013832384`. CodeQL `34013832367` remains in progress: its Swift
+product and TypeScript jobs passed, while the remote-server job is separate.
+The earlier pending Tests statement below is superseded by this live check.
+
+The T3b donor passed its first 35 capture FTS tests with actual producer exit 0,
+but full Core returned exit 65: 1,703 tests, 1,700 passed, one existing skip,
+and two failed Round5 source-scanner tests (three assertions). Their old scan
+stopped at the new ownership guard's early return, before the real retry and
+finalize calls. The coordinator minimally corrected those scanner boundaries
+and the expected fresh-policy finalize call; the next run passed all 36 Round5
+tests. No existing behavioral assertion was removed.
+
+Independent first-pass T3b review approved the initial implementation, but the
+coordinator added three executable regressions for policy revocation inside
+the actual readiness writer and missing/revoked registry epoch history. The
+supplemental RED executed 74 tests: 71 passed and all three new tests failed
+with eight assertions, actual producer exit 65. It directly observed a revoked
+policy still committing readiness, and invalid history remaining due at zero
+retry delay. The original 35 capture test bodies remained unchanged. A narrow
+follow-up now rechecks policy before and after finalization and requires the
+current indexed epoch-history tuple in the shared eligibility predicate;
+follow-up GREEN and independent re-review remain pending. Logs and xcresults:
+`/tmp/engram-t3b-runner-{red,green,core-full}-v1.*` and
+`/tmp/engram-t3b-runner-fence-{red,green}-v1.*`. GRDB QoS warnings remain visible.
+
+The N3-B1 donor's frozen 27-test fake-stream coordinator suite first produced
+real RED (27 failed, exit 65), then GREEN (27 passed, exit 0). The full Collector
+suite subsequently passed 196/196 with no skips, failures or runtime warnings;
+the coordinator independently inspected both raw logs and xcresult summaries.
+The only old dependency-test change is one explicit Coordinator source entry;
+the other old source/test files remain frozen. Artifacts are
+`/tmp/engram-w3-posix-red.1chyCC/collector27-n3b1-coordinator-{red-v3,green-v1}.*`
+and `collector196-n3b1-coordinator-green-v1.*` in that directory. Its independent
+implementation gate and central integration are still pending. Fake-stream
+tests do not establish native FSEvents or runtime lifecycle acceptance.
+
+A5b metadata HTTP handlers remain unmounted in a separate donor. Root draft
+review requested actual typed-reader rejection observations, metadata IPC
+roundtrips, continuation/filter/budget cases and honest cancellation evidence
+before executable RED. None of T3b, N3-B1 or A5b is in the pushed head. Full
+W3-W6 remains incomplete; no merge, deployment, credentials, provider access,
+Docker or production W7 operation occurred.
+
+### A5a/N3-A pushed after correction-head CI success (2026-09-06)
+
+Live GitHub verification confirmed all three workflows for exact correction
+`5995ad66bad8d827f311dd04fef81f287a4d70be` successful: Tests `34012392893`,
+CodeQL `34012392888` and dependency review `34012392885`. The CodeQL Gate
+completed at 05:20:30 UTC; its product and RemoteServer Swift analyses passed
+independently. The earlier pending checkpoint is superseded, not inferred
+from local Xcode-beta or from another SHA.
+
+The independent final feature gate returned SPEC PASS / QUALITY APPROVED at
+13:12 CST, verifying exactly nine staged paths (2,378 additions/four deletions),
+all five implementation/test SHA256 values, local raw/xcresult/producer gates,
+records and pinned project drift. A final coordinator read confirmed unchanged
+hashes, index/worktree equality and `git diff --cached --check` success. Normal
+commit and push both exited 0, producing
+`8a53174b182baba1c2d671dcc6b42dfdd3eaf408`; complete logs are
+`/tmp/engram-a5a-n3a-tranche-{commit,push}.log`. Pre-existing SQLite sidecars
+were not staged. The new head's dependency review `34013832384` passed;
+Tests `34013832379` and CodeQL `34013832367` are running, not yet accepted.
+
+N3-B1's two-file fake-stream coordinator/API test draft separately passed
+SPEC PASS / QUALITY APPROVED at 13:20 CST. The coordinator added its explicit
+donor-only source route and generated the donor Xcode project; executable RED
+is authorized but no GREEN or native FSEvents acceptance is recorded. T3b's
+separate 35-test draft and compile-only policy/runner seams are under independent
+review, with production processing unchanged. These donor drafts are absent
+from `8a53174b`. Runtime wiring, uploader, HTTP read routes/static reader and
+full W3-W6 acceptance remain incomplete. No merge, deployment, credentials,
+provider access, Docker or W7 operation occurred.
+
+### A5a/N3-A final local integration and correction-head CI checkpoint (2026-09-06)
+
+The five-path test-only CI correction passed independent final SPEC PASS /
+QUALITY APPROVED at 12:42 CST, the pinned staged Xcode project drift check,
+and exact staged scope/hash checks. It was normally committed and pushed as
+`5995ad66bad8d827f311dd04fef81f287a4d70be`, both producers exiting 0;
+see `/tmp/engram-t3a-ci-annotation-{commit,push}.log`. It contains only the
+readiness fixture annotation and four records, not the five A5a/N3-A files.
+At 12:48 CST, Draft PR #446 remained open/unmerged at that exact SHA:
+dependency review `34012392885` succeeded, Tests `34012392893` was running,
+and CodeQL `34012392888` was queued. Xcode 16.4 compatibility is not yet proved.
+
+Follow-up: Tests `34012392893` subsequently succeeded, including Swift unit,
+UI smoke and CI Gate. The coordinator downloaded the complete Swift job log
+with producer exit 0 to `/tmp/engram-5995-swift-unit-ci.log`: the actual
+Xcode_16.4.app compile path is recorded from line 296, readiness passed all
+38 cases at lines 10082-10083, and complete Core passed 1,681 tests with one
+existing skip and zero failures at lines 12595-12597. This closes the earlier
+Xcode 16.4 compilation gap for the exact correction SHA. Swift CodeQL remains
+pending and is not inferred from successful Tests.
+
+The separate A5a/N3-A feature candidate remains exactly five source/test files,
+all byte-identical to the independently approved donor implementations:
+Web models `3a7edfd6`, client `570968ce`, client tests `b5a5bed3`, inventory
+Owner `b3a0acc0` and Owner tests `80705fb6`. No project source routing changed.
+Complete central Remote 372, Service 875 (one existing credential skip),
+App 1,175, MCP 270 and Collector 169 all passed with zero failures and actual
+producer exits 0. The App scheme also ran Core 1,681 (one existing performance
+skip), not a distinct extra population. Corrected Core then passed the same
+1,681/one skip/zero failures independently. Raw logs, xcresults and exit records
+are `/tmp/engram-a5a-central-{remote,service,app,mcp}-full.*`,
+`/tmp/engram-n3a-central-collector-full.*` and
+`/tmp/engram-t3a-ci-annotation-core-full.*`. The Service reader QoS warning
+remains visible. Ten script suites passed 207/207 with no skips, and test
+typecheck, archive safety and all five invariants passed; see
+`/tmp/engram-a5a-n3a-tranche-{scripts,typecheck-test,archive-safety,invariants}.log`.
+
+The final feature integration/record gate and its own commit/push remain
+pending. Do not push this feature candidate until all required correction-head
+CI succeeds; passing local features cannot be attributed to that test-only SHA.
+N3-B1 fake-stream recovery coordination and T3b capture FTS consumption are
+separate bounded proposals. No native event stream, Service metadata producer,
+HTTP read route, static browser reader, uploader, W6 integration or production
+acceptance is implied. SQLite sidecars stay excluded; no merge, deployment,
+provider/credential access, Docker or W7 action was performed.
+
+### T3a CI test-helper type inference correction (2026-09-06)
+
+Live Tests run `34011185057` for exact pushed `f683ff71` failed before any
+Swift unit or UI smoke assertions executed. Both jobs used the logged
+`/Applications/Xcode_16.4.app` compiler and MacOSX15.5.sdk; all fourteen
+compiler errors (seven per job) concern the same optional-array inference
+in `CaptureIngestReadinessTests.parsed`, lines 555-574. UI screenshot
+comparison subsequently failed because the build produced no test manifest.
+Node, macOS scripts/fixtures and Remote/package jobs succeeded. CodeQL is
+still separate and in progress. Full failure evidence is retained at
+`/tmp/engram-f683-tests-ci-failed.log`, especially lines 4181-4258,
+4288-4291 and 8418-8495. This is a compile-only regression, not behavioral RED.
+
+Independent correction review returned SPEC PASS / QUALITY APPROVED at
+12:36 CST. The coordinator changed exactly one test-helper declaration to
+`let messages: [NormalizedMessage] = messages ?? [...]`. All 38 test bodies,
+default fixture messages, production files, workflow and toolchain settings
+remain unchanged. Test SHA changed from `9085d40c` to `266603b7`.
+The complete local Core regression is running at
+`/tmp/engram-t3a-ci-annotation-core-full.*`. This Mac has only Xcode-beta.app;
+its passing builds cannot prove Xcode 16.4 compatibility. The correction-head
+CI is mandatory and pending. The correction commit must contain only this
+test file plus the four existing records, excluding all five A5a/N3-A
+implementation/test paths and pre-existing SQLite sidecars.
+
+Before that correction, the local A5a/N3-A combined regressions completed:
+Remote 372/0, Service 875/one existing credential skip/0, App 1,175/0,
+MCP 270/0 and Collector 169/0; all tool producers exited 0. The App scheme
+also reran Core 1,681/one existing performance skip/0, not another distinct
+population. Logs/xcresults/exits are `/tmp/engram-a5a-central-{remote,service,app,mcp}-full.*`
+and `/tmp/engram-n3a-central-collector-full.*`. Service retains the existing
+reader QoS warning. Ten scripts passed 207/207 with no skips (project routing
+is unchanged); test typecheck, archive safety and all five invariants passed
+at `/tmp/engram-a5a-n3a-tranche-{scripts,typecheck-test,archive-safety,invariants}.log`.
+These five feature files remain locally integrated but uncommitted and are
+not evidence that the failed pushed SHA or future correction SHA passed CI.
+Their final integration/record gate remains separate. New T3b/N3-B work is
+paused at read-only proposals while this CI failure takes priority.
+
+The corrected complete local Core then passed 1,681 tests, one existing
+performance skip, zero failures, tool producer 97659 exit 0 at 12:39:10 CST.
+Raw log and xcresult agree at `/tmp/engram-t3a-ci-annotation-core-full.*`.
+A byte comparison against HEAD after removing only the explicit annotation
+proved all 38 test bodies and fixture values unchanged. No Core production
+or routing source differs from the failed head. The final five-path correction
+record gate and normal commit/push follow; the authoritative Xcode 16.4
+correction-head CI remains pending, and no such pass is inferred locally.
+
+### A5a metadata and N3-A event-ingress central integration (2026-09-06)
+
+T3a was committed and pushed as `f683ff71e7e555956b4854c21174090d72981df2`;
+the normal commit/push producers exited 0 (`/tmp/engram-t3a-tranche-{commit,push}.log`).
+Draft PR #446 remains open/unmerged. At 12:28 CST its dependency review
+`34011185046` passed; Tests `34011185057` and CodeQL `34011185083` still run.
+This supersedes the earlier ready-to-commit checkpoint, not its test evidence.
+
+A5a passed independent SPEC PASS / QUALITY APPROVED at 12:18 CST. Its
+complete donor Remote suite was already harvested at 12:14:52: 372/372,
+zero failures/skips, tool producer 53830 exit 0; the reviewer independently
+confirmed that correction at 12:27. See `/tmp/engram-a5a-metadata-red.DxXICo/remote372-green.*`.
+The coordinator integrated exactly Models `3a7edfd6`, Client `570968ce`,
+and WebReadClientTests `b5a5bed3`; the full post-integration central Remote
+suite then passed 372/372, zero failures/skips, tool producer 4470 exit 0.
+Raw log and xcresult agree at `/tmp/engram-a5a-central-remote-full.*`.
+Shared Service source inclusion requires further Service/App/MCP regression;
+Service is running and the remaining combined gates are pending. The three
+existing paths require no project.yml or generated project edits.
+
+N3-A also passed independent SPEC PASS / QUALITY APPROVED at 12:27 CST.
+The first RED stopped at missing test-only `try` syntax; the second included
+a failed NFC/NFD positive-control fixture because URL.path normalized its
+spelling. Only those fixture corrections were authorized. Corrected RED v3
+passed all old 156 cases and failed only the new 13; GREEN v1 then passed
+169/169, zero failures/skips, tool producer 5005 exit 0. Full raw logs,
+xcresults and producer exits are `/tmp/engram-w3-posix-red.1chyCC/collector169-n3a-event-{red,red-v2,red-v3,green-v1}.*`.
+The coordinator read the implementation and tests, then integrated exactly
+Owner `b3a0acc0` and tests `80705fb6`. The ordinary entry fences exact enrolled
+configuration, current-owner activation and physical root identity. All four
+raw-input budgets include duplicate paths and all expected/next checkpoint
+UTF-8 segments. Oversize/gap handling persists only reconciliation; it never
+accepts a path prefix or advances the checkpoint. The borrowed cancellation
+check brackets Store's pre-commit hook so cancellation rolls back atomically.
+The central complete Collector gate remains pending; no routing change is needed.
+
+The five source/test files are the only implementation candidate. Four existing
+records carry the checkpoint; pre-existing SQLite sidecars remain excluded.
+T3b FTS consumer and N3-B native events are read-only design preparation, not
+implemented runtime wiring. Service metadata producers, HTTP read routes/static
+reader, uploader, source coverage, packages and W6 remain incomplete. No
+provider/credential access, production helper launch, Docker, deployment,
+merge/release or W7 action is authorized or claimed by this checkpoint.
+
+### T3a complete central regression gates (2026-09-06)
+
+The coordinator independently completed the four affected full targets with
+the frozen T3a files: Core 1,681 and Service 875 (one existing skip each),
+App 1,175 and MCP 270, zero failures and actual producer exits 0. Raw logs
+and xcresult summaries agree at `/tmp/engram-t3a-central-{core,service,app,mcp}-full.*`;
+the App scheme also reruns Core, not another distinct test population.
+The Core skip is the existing performance opt-in; Service skips its existing
+live-credential case. The Service result retains its existing reader QoS warning.
+Ten script suites passed 205 tests with two existing conditional drift skips;
+test typecheck, archive safety, five invariant gates and diff checks passed.
+See `/tmp/engram-t3a-tranche-{scripts,typecheck-test,archive-safety,invariants}.log`.
+Remote and Collector source/dependencies are unchanged by this data-layer
+slice, so their complete suites were not rerun for this candidate.
+
+At 11:55 CST exact prior head `4216479b80dd3043e912d0f2aeb73f23a2f002cc`
+has successful Tests `34009528242` and dependency review `34009528240`;
+CodeQL `34009528232` remains in progress. The T3a final central integration/
+record gate, staged project drift and new-head CI remain pending. Its source
+hashes remain NormalizedStore `c70145c9`, Readiness `17d0e7b4`, tests `9085d40c`.
+
+Separately, A5a's 31 metadata tests plus 18 legacy client tests passed an
+independent executable-draft gate. Protocol helpers now require actual IPC
+even for unsupported responses; cancellation fixtures distinguish immediate
+stub rejection from an in-flight peer. Production remains DTO scaffolds and
+three unsupported methods. The first actual RED build is running at
+`/tmp/engram-a5a-metadata-red.DxXICo/red-v1.*`, not yet RED evidence.
+N3-A's separate donor has 13 additive event-ingress tests (43 Owner tests)
+and fail-closed entry scaffolds; its independent draft gate is pending.
+No Runner/provider/HTTP read wiring, native FSEvents, upload queues, full
+W3-W6, browser or production acceptance is claimed by this checkpoint.
+
+A5a follow-up: the first attempt stopped at a test-only missing `_ in`
+closure parameter, producer 85169 exit 65; it is not behavioral RED.
+Only that syntax changed. Corrected RED ran all 49 tests: 27 failing test
+cases, 22 passing, 483 assertion failures including six unexpected failures,
+producer 71143 exit 65. The old client had only its intentional allowlist
+failure; its other 17 tests passed. The coordinator then implemented only
+the two DTO/client files, keeping the test SHA `b5a5bed3` frozen. First
+GREEN passed 49/49, zero failures/skips, producer 19927 exit 0. Raw logs
+and xcresult agree at `/tmp/engram-a5a-metadata-red.DxXICo/{red-v2,green-v1}.*`;
+the original `red-v1` and source snapshots remain. This is donor-only:
+full Remote regression, independent implementation review and integration
+remain pending. The legacy message method and its 256 KiB ceiling are
+unchanged; the three metadata methods have a separate 255 KiB whole-
+envelope limit, no capability loader, bounded typed fields and cancellation.
+N3-A then passed independent SPEC TEST-DRAFT PASS / QUALITY APPROVED;
+only its executable RED is authorized, not GREEN or native event wiring.
+
+The final central T3a integration/record gate subsequently returned SPEC
+PASS / QUALITY APPROVED at 12:10 CST, independently verifying all eight
+candidate paths, frozen source hashes, additive project routing and complete
+central test artifacts. The coordinator now stages exactly those eight
+paths for pinned project drift; prior-head CodeQL and new-head CI remain
+separate pending gates. Pre-existing SQLite sidecars stay excluded.
+
+The coordinator subsequently verified all four staged implementation/routing
+hashes against the working tree and passed pinned staged project drift
+(`/tmp/engram-t3a-tranche-staged-drift.log`) and cached diff checks. Live
+GitHub reads now confirm exact prior `4216479b` Tests `34009528242`,
+dependency review `34009528240` and CodeQL `34009528232` all succeeded;
+CodeQL Gate completed 12:11:58 CST. Draft PR #446 remains open/unmerged
+at that head. The eight-path T3a candidate is ready for the authorized
+normal commit/push; its new-head CI is separate and not yet available.
+
+Separately, A5a's complete donor Remote Core run passed 372/372 with zero
+failures/skips, producer 53830 actual exit 0; raw log and xcresult agree at
+`/tmp/engram-a5a-metadata-red.DxXICo/remote372-green.*`. Its independent
+implementation gate is running, and its code remains excluded from T3a.
+N3-A's first run was compile-only; the second executed 169 but exposed a
+Unicode-path fixture positive-control failure. The coordinator approved
+only three missing `try` markers and one explicit NFC configuration input,
+preserving every assertion and all production bytes. The third full RED
+ran 169: all old 156 passed, all new 13 failed, zero skips; raw 75 failures
+(11 unexpected), producer 75055 exit 65. The corrected Unicode controls
+pass. Root independently compared all old test names and both raw/xcresult
+evidence at `/tmp/engram-w3-posix-red.1chyCC/collector169-n3a-event-red-v3.*`.
+Only Owner implementation is now authorized for GREEN; tests `80705fb6`
+and Store/POSIX/routing remain frozen. Prior failed attempts stay preserved.
+
+### N2 pushed and independently approved T3a integrated (2026-09-06)
+
+N2 was committed/pushed as `4216479b80dd3043e912d0f2aeb73f23a2f002cc`,
+exactly ten approved files, actual commit/push exits 0; logs are
+`/tmp/engram-n2-tranche-{commit,push}.log`. PR #446 is draft/open/unmerged
+at that SHA. At 11:44 CST its dependency review `34009528240` succeeded;
+Tests `34009528242` and CodeQL `34009528232` are in progress. The previous
+T2 head's success is not evidence for this new head.
+
+T3a then passed an independent source/test/evidence gate, SPEC PASS /
+QUALITY APPROVED. The coordinator integrated only its three exact files:
+NormalizedStore `c70145c9`, Readiness `17d0e7b4`, and 38-case tests
+`9085d40c`; pinned generation added twelve project lines without changing
+project.yml. Required readiness now has a data-layer API for bounded,
+canonical normalized artifact reads and exact-generation atomic FTS/map/
+shadow/job/ledger/ready-head commits. Neither a stored receipt nor an
+owned prepared value substitutes for fresh parser/source/current-state
+authority. The implementation does not wire a Runner, Service provider,
+HTTP read producer or optional AI work. Synchronous JSON decoding has
+acceptance checkpoints, not a claimed interruptible latency bound.
+
+The central full Core suite has started in an isolated worktree-local
+test home; `/tmp/engram-t3a-central-core-full.log` is running evidence,
+not a pass. Combined Service/App/MCP gates remain pending. The previously
+reported donor 129/129 does not replace these central gates. A5a now has
+31 metadata test methods plus the old 18 client tests, plain DTO scaffolds
+and three fail-closed client methods in its separate donor; syntax parsing
+passed, independent test-draft review and executable RED are pending.
+Only the old allowlist expectation anticipates the three newly authorized
+read commands. N3-A remains additive tests/scaffolds only. No full W3-W6,
+runtime, source coverage, browser or deployment acceptance is claimed.
+
+### N2 central owner integration and T3a donor GREEN (2026-09-06)
+
+At 11:26 CST, live GitHub reads confirmed all three workflows for exact
+T2 head `e94c05004aa9739ef54291d813fa1d8cee7815e4` succeeded: Tests
+`34007018809`, dependency review `34007018820`, and CodeQL `34007018811`
+(CodeQL Gate completed 11:18:22 CST). This supersedes the earlier pending
+checkpoint, not the CI requirement for any later commit.
+
+N2 passed independent SPEC PASS / QUALITY APPROVED, then entered the central
+worktree by the frozen Owner/POSIX/test hashes `1d0513de` / `40518878` /
+`7104bacc`. The coordinator added only one CollectorCore source path and
+one target-dependency expectation; pinned XcodeGen 2.45.4 generated exactly
+eight additive Owner project lines. The donor's older Remote/Web source
+list and project were not copied over the central routing. This owner is
+default OFF, requires explicit storage/known-root paths (tested synthetically),
+keeps its inventory under a separate exclusive lock, and does not start
+FSEvents, capture/upload, product indexing, providers or runtime services.
+
+The coordinator's complete central Collector suite passed 156/156 with
+zero failures/skips, producer 64757 exit 0. Raw log and xcresult agree:
+`/tmp/engram-n2-central-collector156.{log,xcresult,producer-exit}`;
+log 1159-1160 covers the independent-process owner/CLOEXEC test, 1219 the
+30 Owner cases, and 1463-1473 the full suite. The ordinary fixture uses a
+unique 0700 directory under its checkout; production support for the
+special `/private/var` alias combination remains unverified. The two prior
+donor fixture failures remain recorded below, not relabeled as GREEN.
+
+Ten central script suites passed 205 tests with two existing conditional
+project-drift skips (producer 41336 exit 0); test typecheck, archive safety,
+five invariant gates and diff checks passed. Evidence is
+`/tmp/engram-n2-tranche-{scripts,typecheck-test,archive-safety,invariants}.log`.
+Core/Service/App/MCP/Remote production and target dependencies are unchanged
+by this Collector-only slice, so those full suites were not rerun. The final
+central routing/record gate, staged project drift and new-head CI are pending.
+
+Separately, the coordinator's T3a donor now has 38 tests and two implemented
+data-layer files. Genuine scaffold RED executed 129 tests: all old 91
+passed, 37 new cases failed and the SQL-projection witness passed (producer
+81518 exit 65). An earlier missing `try` compile failure is retained and
+not counted as behavioral RED. The first GREEN had two failing test cases:
+both newer-generation fixtures contained only one user message, correctly
+triggering existing skip policy and FTS cleanup. Independent source review
+approved adding assistant messages and explicit non-skip/job prerequisites;
+all old job/stale-generation/last-good FTS assertions and both production
+files stayed unchanged. The corrected GREEN passed 129/129, zero failures/
+skips, producer 9884 exit 0; log 1291-1303 and xcresult agree at
+`/tmp/engram-t3a-readiness-red.0SJiqN/green-v2.*`. The failed `red-v1`,
+genuine `red-v2` and failed `green-v1` remain in the same evidence directory.
+T3a implementation review/integration remain pending; no T3a code enters
+the N2 candidate. A5a is still an interrupted donor draft. N3-A is limited
+to additive test/scaffold preparation in its separate donor, not GREEN.
+No runtime wiring, full W3-W6, browser or production acceptance is claimed.
+
+The final N2 central integration/record gate returned SPEC PASS / QUALITY
+APPROVED at 11:35 CST. The coordinator staged exactly the ten approved
+paths, excluded the pre-existing SQLite sidecars, and passed pinned staged
+project drift (`/tmp/engram-n2-tranche-staged-drift.log`) and cached diff
+checks. The authorized commit/push is next; new-head CI remains pending.
+
+### N2 donor GREEN and T3a test-first continuation (2026-09-06)
+
+At 11:03 CST, exact T2 head `e94c05004aa9739ef54291d813fa1d8cee7815e4`
+has successful Tests `34007018809` and dependency review `34007018820`.
+CodeQL `34007018811` still has both Swift builds in progress. The next
+push still waits for that head's full gate; PR #446 is draft/open/unmerged.
+
+N2's third complete donor run passed all 156 tests, zero failures/skips,
+actual producer 74479 exit 0. The coordinator independently read its raw
+log and xcresult: `/tmp/engram-w3-posix-red.1chyCC/collector156-n2-owner-green-v3.*`,
+log 235-238, 255-267, 295, 539-549. The 30 N2 tests and old 126 tests all
+pass. The independent-process test asserts both blocked/open child exits
+and mode-specific N2 markers; successful child output/PIDs are not printed
+in this log. The separate old C1 identity marker at line 405 is not N2 proof.
+
+The first two GREEN attempts are retained failures, not acceptance: v1
+156/34 failures/26 unexpected (producer 20205 exit 65), v2 156/32/24
+(97825 exit 65). Their ordinary synthetic fixture used the special macOS
+temporary-path alias: `/var` failed no-follow traversal, while physical
+`/private/var` failed the frozen C1 canonical-path contract. Only the
+ordinary fixture initializer changed, first to realpath and then to one
+unique 0700 task-owned directory under its checkout. All 30 test bodies,
+assertions and the custom real-firmlink fixture stayed byte-identical;
+both production source hashes remained `1d0513de` / `40518878`.
+The accepted fixture file is `7104bacc080de3450b3dbe05aebe97b6c905f2e6d4b55107b88854e1f2bd87f1`.
+Production support for the `/private/var` alias combination is not repaired
+or claimed. N2 independent review and central integration remain pending.
+
+The coordinator resumed the interrupted T3a donor slice with 34 new
+data-layer tests; both original fail-closed source scaffolds remain
+unchanged. Syntax-only Swift parsing passed after correcting an initial
+command-path typo. Pinned XcodeGen 2.45.4 added exactly 12 project lines
+for these three files; project.yml did not change. Independent test-draft
+review and actual executable RED remain pending. No runtime consumer,
+provider, Web metadata implementation, full W3-W6 or deployment acceptance
+is claimed by this checkpoint.
+
+### T2 pushed; next-wave drafts remain isolated (2026-09-06)
+
+The nine-file T2 candidate was committed/pushed as
+`e94c05004aa9739ef54291d813fa1d8cee7815e4`, with actual commit and push
+exits 0 (`/tmp/engram-t2-tranche-{commit,push}.log`). Draft PR #446 is
+open/unmerged at that exact SHA. At 10:39 CST its Tests `34007018809`,
+CodeQL `34007018811` and dependency review `34007018820` had started;
+none is yet claimed successful. This follows the prior `9fd6db26`
+three-workflow success, not inherited CI for the new head.
+
+N2 remains donor-only and not GREEN-tested. T3a has only two fail-closed
+source scaffolds (93 lines total), no test file yet; A5a has seventeen new
+metadata-model test methods but no matching DTO/API implementation or RED.
+Both stopped workers reported usage limits, so the coordinator preserves
+their unfinished drafts without counting them as validated work. No worker
+draft, unrelated SQLite sidecar, deployment or live configuration entered
+this push. Full W3-W6 remains in progress.
+
+### T2 central full-target verification (2026-09-06)
+
+The coordinator's four affected targets passed with the exact integrated T2
+hashes and generated project unchanged. Full logs and xcresults share the
+`/tmp/engram-t2-central-` prefix:
+
+| Check | Actual result | Producer / log evidence |
+| --- | --- | --- |
+| Core, `core-full` | 1,643 total; 1,642 passed, one existing opt-in performance skip, zero failed | 15387 exit 0; log 3421-3422 (T2 47), 5984-5994 |
+| Service, `service-full` | 875 total; 874 passed, one existing live-credential test skip, zero failed | 18946 exit 0; log 3002, 3775-3785 |
+| App scheme, `app-full` | App 1,175/0; the scheme also reran Core 1,643 with its one existing skip, zero failures | 53175 exit 0; log 7433-7435, 10022-10032; xcresult 2,818 total/2,817 passed/one skipped |
+| MCP, `mcp-full` | 270 passed, zero failed/skipped | 99172 exit 0; log 779-789 |
+
+Ten script suites passed 205 tests with two existing conditional project-drift
+skips, producer 47233 exit 0 (`/tmp/engram-t2-tranche-scripts.log`). Test
+typecheck, archive safety, five invariant gates and `git diff --check` passed;
+logs are `/tmp/engram-t2-tranche-{typecheck-test,archive-safety,invariants}.log`.
+The Service xcresult contains a reader QoS warning, not a test failure; no cause
+is attributed. UI/browser, live credential and performance acceptance were not
+run. Collector/Remote source and dependency boundaries are unchanged by T2 and
+their full suites were not rerun; previous `9fd6db26` evidence stays separate.
+
+At 10:32 CST the prior `9fd6db26` Tests/Dependency Review and CodeQL Swift
+Remote checks passed; CodeQL Swift product remains in progress. The next push
+still waits for that exact-head gate. A5a and T3a workers stopped on reported
+usage limits: only unfinished test/scaffold drafts exist in their donors,
+and none enters this candidate. N2 remains an isolated implementation draft.
+No commit, new-head CI, runtime wiring, full W3-W6 or production acceptance is
+claimed by this local checkpoint.
+
+The final central integration/record gate subsequently returned SPEC PASS /
+QUALITY APPROVED for exactly nine staged paths, independently checking the
+four source hashes, target membership, logs and xcresults. The coordinator
+then verified `9fd6db26` CodeQL `34005267336` successful; its CodeQL Gate
+completed at 10:33:35 CST. That prior head now has all three CI workflows
+successful. Only the authorized T2 commit/push and its separate new-head CI
+remain for this candidate; N2/T3a/A5a are excluded. Producer numbers above
+are harvested command handles, not operating-system PIDs inferred from logs.
+
+### T2 history GREEN and N2 physical-alias RED checkpoint (2026-09-06)
+
+At 10:12 CST the coordinator rechecked Draft PR #446 at exact head
+`9fd6db26d9d02fc77f3e0a5918b4cd831d6b36d3`: Tests `34005267338`
+and dependency review `34005267340` succeeded; both Swift jobs in CodeQL
+`34005267336` remained running. The PR is still draft/open/unmerged.
+
+T2's bounded-result follow-up passed its actual focused GREEN: Claim 30,
+Commit 47 and legacy Ledger 14, total 91 passed/zero failures/skips,
+producer 97663 exit 0. The coordinator verified the matching xcresult,
+four frozen source hashes and `/tmp/engram-capture-history-green.5Gk4S0/green.log`
+(lines 250, 257, 303, 347, 378-390). This bounds history rows delivered into
+Swift, not SQLite scan work. Independent review and central full-target
+integration gates are still pending; the donor is not yet integrated.
+
+N2's complete RED executed 155 tests: the old 126 passed and all 29 new
+owner tests failed on fail-closed scaffolds (81 assertions, 28 unexpected
+throws), actual producer 89835 exit 65. Evidence is
+`/tmp/engram-w3-posix-red.1chyCC/collector155-n2-owner-red.log` and xcresult.
+One additive firmlink test then covered equal/ancestor/descendant overlap
+between real Users and Data-volume paths. Its three physical dev/inode and
+non-symlink positive controls plus unchanged-file snapshots passed; its only
+three failures rejected `notImplemented` as a security result. Producer
+23347 exited 65; the coordinator independently read raw lines 174-198,
+the exit record and xcresult at the same directory's `n2-owner-firmlink-red.*`.
+The original 29 tests remain byte-identical. The 30-test file is frozen as
+`c1cd35860fbbc642e4e6c669fb814f149c563f4e8c2a0f2085aaf949bb54cda9`;
+only Owner and minimal shared POSIX helpers are now authorized for GREEN.
+No N2 process-lock child probe or GREEN acceptance has run.
+
+A5a metadata DTO/test preparation is bounded to the existing Foundation-only
+models, typed client and client tests; HTTP/runtime/provider files remain
+frozen. Unknown observations remain nullable, and publication/task/logical-
+session counts have distinct units. The first production transcript provider
+will require matching parsed/ready/current metadata generations and recheck
+authority/visibility on every page. Older artifacts remain durable but this
+phase does not promise historical last-good transcript reads. No production,
+browser, full W3-W6, credentials or deployment acceptance is implied.
+
+T2's independent exact-four-file gate then returned SPEC PASS / QUALITY
+APPROVED. The coordinator read the complete review, rechecked the four
+hashes and applied only those files to the central worktree. Writer means
+`Indexing/SessionSnapshotWriter.swift`, not `Database/EngramDatabaseWriter.swift`;
+the latter is unchanged. XcodeGen 2.45.4 generated exactly eight additive
+project lines and no project.yml change; the resulting project hash is
+`44a0620ad9be710381b0890554f4cf42be10f5b5eb4ada8ebfc9925d5c3a993f`.
+The coordinator's full Core producer 15387 is now running with the isolated
+workspace home and `/tmp/engram-t2-central-core-full.{log,xcresult}`.
+Full Core/Service/App/MCP results are pending. T3a is limited to three new
+normalized-store/readiness/test scaffolds in its donor, with no runtime edits.
+
+### N1/A4 pushed; bounded-history follow-up remains isolated (2026-09-06)
+
+The eleven-file N1/A4 candidate was committed and pushed as
+`9fd6db26d9d02fc77f3e0a5918b4cd831d6b36d3`. The coordinator observed actual
+commit and push exits 0, with logs at `/tmp/engram-n1-a4-tranche-{commit,push}.log`.
+Draft PR #446 remains open and unmerged at that exact head. New Tests
+`34005267338`, CodeQL `34005267336`, and dependency review `34005267340`
+were in progress on the initial live check. The post-commit project-drift
+test suite passed 10/10, including the two formerly conditional skips
+(`/tmp/engram-n1-a4-tranche-xcodeproj-tests-postcommit.log`, producer 13297
+exit 0); this is not another full 207-test rerun.
+
+T2 and N2 are not in this commit. T2's two added history tests preserve the
+original 45 assertions/methods and production hashes: the SQLite ROW trace
+counts result rows delivered into Swift, while thirteen non-head corruption
+variants preserve strict identity/type validation. Their RED is next; the
+89-test GREEN belongs to the preceding donor version. No runtime/provider,
+browser, deployment, credentials or live data acceptance is implied.
+
+T2's added tests then ran: producer 84161 exited 65, with two tests/one
+assertion failure/zero unexpected failures. The result-row bound measured
+66 versus the maximum four; the thirteen-variant corruption test passed.
+The coordinator read `/tmp/engram-capture-history-red.je6Upz/red.log`
+(lines 1808-1828), matching `.xcresult`, and unchanged hashes, then approved
+only the version helper's MAX/invalid-count aggregate replacement. That
+minimal patch is prepared but not GREEN-verified. N2's 29-test owner/root
+scaffolds were fully reviewed; the coordinator added one explicit source
+and its matching dependency-guard entry, then generated only eight additive
+project lines. All N2 work remains donor-only and its first full RED is next.
+
+### Root enrollment integration and HTTP full-suite follow-up (2026-09-06)
+
+Draft PR #446 remains open and unmerged at `1523487b`. Its exact-head Tests
+`34003169069`, CodeQL `34003169055` and dependency review `34003169052` all
+passed; the CodeQL Gate completed at 09:43 CST. These results cover that
+immutable commit, not the subsequent uncommitted candidate.
+
+N1's independent read-only gate returned SPEC PASS / QUALITY APPROVED.
+The coordinator integrated only the Store and its tests, verifying exact
+SHA-256 equality with the reviewed donor (`161afd9d...c5335` and
+`1a840c64...25795`). Its own complete central Collector run then passed
+126/126, including Inventory 39/39, actual producer 48671 exit 0. Evidence:
+`/tmp/engram-n1-central-collector126.log` (lines 1178, 1321-1331) and matching
+`.xcresult`. This implements persisted physical bindings, owner-run activation
+and byte-exact owner fencing, not filesystem ownership or a running collector.
+
+A4's corrected full Remote Core run passed 341/341 with no skips or failures,
+including the existing Users-firmlink test and all 49 actual HTTP tests.
+Evidence is `/tmp/engram-a4-remote-full-green2.T4e8t8/a4-remote-core-full-green.log`
+(lines 781, 1530-1542) and matching `.xcresult`; A-run producer 55968 exited 0.
+Only the isolated test home moved under the donor worktree. The command and
+exit record in that directory explicitly identify themselves as post-run
+transcriptions, not producer-created contemporaneous files. All three A4
+production hashes and the corrected test hash remain frozen. Independent A4
+review and central integration are pending. T2's frozen 89-test GREEN is in
+progress; N2 is test/scaffold preparation only. No W3-W6 end-to-end, browser,
+production, merge or deployment acceptance is claimed.
+
+A4's independent gate subsequently returned SPEC PASS / QUALITY APPROVED.
+The coordinator integrated all four exact reviewed hashes and generated only
+eight additive project lines for the two new Swift files using XcodeGen 2.45.4.
+Its own full central Remote Core run passed 341/341, actual producer 31291
+exit 0: `/tmp/engram-a4-central-remote341.log` (lines 2713, 3462-3474) and
+matching `.xcresult`. The central candidate also passes the archive safety
+gate, typecheck and five invariant gates. T2's donor run completed 89/89,
+producer 6167 exit 0 (`/tmp/engram-capture-commit-green.2YjMch/green.log`,
+lines 1554, 1647, 1678-1690). Its per-identity version calculation currently
+materializes every historical generation, so a test-first bounded-result
+follow-up precedes its independent quality gate and integration. This is a
+memory-bound correction, not a claim that SQL history scanning is constant-time.
+
+The coordinator is preparing a bounded N1+A4 commit while T2/N2 stay in donor
+worktrees. Ten central script suites passed 205 tests with two pre-existing
+conditional project-drift skips, producer 74970 exit 0
+(`/tmp/engram-n1-a4-tranche-scripts.log`). Typecheck and all five invariant
+gates exited 0 with logs under the same `/tmp/engram-n1-a4-tranche-` prefix.
+Core/Service/App/MCP production source is unchanged in this candidate and
+those four suites were not rerun; their prior-commit full-target results
+remain explicitly separate. Central combination/routing review and staged
+project drift are the remaining pre-commit gates; new-head CI is pending.
+
+The central combination/routing gate then returned SPEC PASS / QUALITY
+APPROVED. The coordinator independently verified all six source/test files
+and the generated project byte-for-byte between the index and worktree,
+and the pinned staged project-drift gate exited 0
+(`/tmp/engram-n1-a4-tranche-xcodeproj.log`). Exactly eleven files are staged;
+unrelated SQLite sidecars remain excluded. This candidate is ready for the
+authorized normal commit/push; its future SHA and CI are not yet verified.
+
+### Persisted root and HTTP integration RED checkpoint (2026-09-06)
+
+The preceding POSIX/T1/Web-auth candidate was committed and pushed as
+`1523487bbea97837043ada1ae6a3603157bb98c5` to still-open Draft PR #446.
+The coordinator harvested both commit and push producers with exit 0; their
+logs are `/tmp/engram-posix-claim-auth-tranche-{commit,push}.log`.
+At 09:19 CST, exact-head Tests `34003169069` and dependency review
+`34003169052` passed; CodeQL `34003169055` was still in progress. The
+post-commit project-drift script suite also passed 10/10, including its two
+previously conditional skips (`/tmp/engram-posix-claim-auth-tranche-xcodeproj-tests-postcommit.log`).
+This is not a new full 207-script rerun or production verification.
+
+N1 donor-only enrollment tests then produced a real complete Collector RED:
+124 tests, 52 assertion/error failures (23 unexpected), B-run producer 57197
+exit 65. Inventory's 37 tests account for all failures; the other 87 tests
+have zero failures. An independent pre-existing-API regression demonstrates
+that canonically equivalent but byte-different owner IDs bypass the old
+Swift String write fence in both directions: stale markDirty,
+requestReconciliation and registerRoot calls do not reject the old owner,
+and dirty rows/requested revisions change. Those ten failed assertions are
+distinct from the new binding stubs and missing-schema preconditions.
+The coordinator read the complete new test patch, exact source hashes and
+raw failure evidence: `/tmp/engram-w3-posix-red.1chyCC/collector124-n1-red.log`
+(lines 354-363, 591-593) and matching `.xcresult`. N1 GREEN is not yet verified.
+
+Two further pure old-API owner-claim regressions were added before any Store
+implementation changed. Producer 6107 exited 65 with two tests/26 failed
+assertions/zero unexpected failures: byte-different new owners fail to reclaim
+old work, while both original and substituted-owner stale tokens can ACK or
+defer it. Each operation has an independent fixture in both Unicode directions.
+The coordinator read all assertions and verified the unchanged Store SHA.
+Evidence is `/tmp/engram-w3-posix-red.1chyCC/n1-claim-owner-red.log`
+(lines 178-212), `.xcresult`, and `.producer-exit`. The 39 Inventory tests are
+now frozen for the minimal Store-only schema/activation/owner-fence GREEN.
+
+A4's four-file actual-HTTP draft is also donor-only. The coordinator reviewed
+all 49 tests and fail-closed scaffolds, then regenerated the donor project
+with XcodeGen 2.45.4. Its tests exercise App.run and count real AF_UNIX accepts
+and frames; the Unicode fixture is a short DTO fidelity check, not an
+oversized full-transcript acceptance test. Actual A4 RED remains pending;
+T2 atomic parsed-commit tests are still in preparation. Runtime consumers,
+FSEvents, two-replica queues, static Web UI and W6 remain incomplete. No
+merge, release, credentials, live configuration, deployment or production
+process was changed.
+
+HTTP RED follow-up: A-run producer 74732 exited 65 after executing all 49
+integration tests, with 498 failed assertions and zero unexpected failures.
+The coordinator verified current frozen hashes and read the log: configuration
+and pre-store credential checks fail directly, while many authenticated-read
+cases stop at the missing login route's 404 and do not exercise their deeper
+branches. The real legacy v1/archive/MCP compatibility case passes. Evidence is
+`/tmp/engram-a4-web-red.qFtRDE/a4-web49-red.log` (lines 1065-1704) and matching
+`.xcresult`. The three-file A4 GREEN implementation is authorized but not
+verified; the 49-test input remains frozen.
+
+T2 RED follow-up: the first combined run compiled and executed 89 tests but
+42 T2 cases stopped at a noncanonical ACK timestamp in the new fixture,
+before reaching commit behavior. Producer 22338 exited 65; the original
+evidence remains `/tmp/engram-capture-commit-red.tHQY2s/red.{log,xcresult}`.
+Only the test's timestamp constant changed from seconds-only to the existing
+24-byte millisecond contract, without changing any production validation.
+The corrected run, producer 77971 exit 65, executed T2 45 tests/100 failed
+assertions/zero unexpected failures; the frozen 30 claim and 14 legacy ledger
+tests all passed. The coordinator read the full test source, the one-line
+fixture patch, frozen hashes, and raw result summaries in
+`/tmp/engram-capture-commit-red-fixed.4tzJft/red.log` (lines 246, 439, 470-474)
+and matching `.xcresult`. Missing commit/schema behavior is now reproduced;
+the later trigger/last-good assertions still require GREEN execution.
+
+The T2 identity fixture also explicitly preserves an unproved same-native-ID
+local row and its insights/user state alongside an independent capture
+namespace. Native ID/path coincidence is not same-machine provenance and
+never creates an alias. Occupied proposed IDs without a binding, redirected
+stored IDs, or wrong authoritative owners are rejected. Legacy exact-proof
+alias reconciliation remains a separate W4/W6 cutover prerequisite.
+
+N1 GREEN follow-up: full donor Collector passed 126/126, producer 69826 exit 0
+without retries or test changes. Inventory 39/39 includes all 18 N1 methods;
+the other 87 tests also pass. The coordinator checked hashes and the actual
+log at `/tmp/engram-w3-posix-red.1chyCC/collector126-n1-green-v1.log`
+(lines 402, 545-555). Independent review and central integration are pending.
+
+A4 GREEN follow-up: the first focused run passed 48/49; its sole failure was
+the short Unicode fixture cutting inside the ASCII prefix, so its own
+byte-count-versus-character-count assertion failed. Only that fixture cut
+changed to after the first Chinese character; every assertion and all three
+production hashes remain unchanged. The corrected focused run passed 49/49,
+producer 2898 exit 0, with evidence at
+`/tmp/engram-a4-web-green2.FrBGop/a4-web49-green.log` (lines 926-938).
+The first full Remote Core run then executed 341 tests with one unexpected
+failure, producer 79346 exit 65: the pre-existing Users-firmlink fixture
+cannot construct its physical home alias when the isolated test home is under
+`/tmp`. This is separate from the passing 49-test HTTP result. The full-run
+log is `/tmp/engram-a4-remote-full-green.58AK1y/a4-remote-core-full-green.log`
+(lines 787, 1539-1552). A workspace-local isolated test home with independently
+verified alias/physical inode identity is being prepared for the complete
+rerun; no test is skipped and no real user home or production code is changed.
+
+### POSIX enumeration and ingest work-lease checkpoint (2026-09-06)
+
+The preceding inventory/CAS/replay/IPC/builder tranche was committed and pushed
+as `09de6304c020abc5f0d8cdcb85522c870595fbdd` to still-open Draft PR #446.
+Tests `34001362091` and dependency review `34001362277` passed for that exact
+head. At the 08:44 CST check, CodeQL `34001362241` still had both Swift builds
+in progress; TypeScript passed. No merge, release, deployment, credentials,
+live configuration, or production process changes were made.
+
+The next local candidate contains the independently approved native POSIX root
+enumerator and its 33 tests. The coordinator's complete central Collector run
+passed 107/107, producer 52580 exit 0 (`/tmp/engram-posix-central107-full.log`).
+A separate real held-DIR test then reproduced seven failed assertions when an
+already-cancelled task entered a still-owned Walker. The minimal six-line
+entry catch now resets the cursor and rethrows the original cancellation.
+The donor's complete Collector run passed 108/108, B-run producer 72642 exit 0;
+the coordinator independently read the patch, source hashes, and test log.
+Evidence is `/tmp/engram-w3-posix-red.1chyCC/walker-entry-cancel-{test,implementation}.patch`
+and `{walker-entry-cancel-red,collector108-walker-entry-cancel-green}.log` in
+that directory. The entry-cancellation follow-up gate and central integration
+remain pending. This is not FSEvents, uploader, or collector-process acceptance.
+Follow-up: the exact two-file entry-cancellation review returned SPEC PASS /
+QUALITY APPROVED. Both frozen hashes are now integrated; the coordinator's
+complete central Collector passed 108/108, producer 19173 exit 0
+(`/tmp/engram-posix-central108-full.log` and matching `.xcresult`). This
+supersedes the pending entry-gate/integration checkpoint, not the runtime gaps.
+
+The T1 ingest work-lease slice passed its independent SPEC PASS / QUALITY
+APPROVED gate and is integrated by exact two-file SHA. It adds bounded leases,
+canonical-publication fencing, typed failure-only transitions, and idempotent
+schema extension without snapshot/readiness promotion. The corrected RED was
+30 tests/58 assertion failures, with the old 14 tests passing. The first GREEN
+exposed actual SQLITE_BUSY code 5 in the two-independent-writer claim test;
+it was not SQLITE_BUSY_SNAPSHOT 517. A zero-row UPDATE inside the claim
+savepoint reserves the writer before that transaction's first read. C-run
+producer 15640 then passed 44/44, and producer 31492 passed the single
+concurrency case 20 times without failure-retry mode. The coordinator separately
+read the complete new source and the raw test evidence. Logs:
+`/tmp/engram-capture-claim-red-fixed.SME13h/red.log`,
+`/tmp/engram-capture-claim-race-diagnostic.64X47l/diagnostic.log`,
+`/tmp/engram-capture-claim-lock-green.dJjELl/green.log`, and
+`/tmp/engram-capture-claim-race-repeat20.I5ayso/repeat20.log`.
+This does not guarantee arbitrary caller-owned earlier read snapshots, and
+does not implement T2 parsed/snapshot commit, the Runner, or full W4. Central
+full Core validation of the integrated T1 is running, not yet claimed passed.
+Follow-up: full central Core passed 1,596 tests/one existing performance skip/
+zero failures, producer 23643 exit 0; Service passed 875/one existing skip/zero
+failures, producer 58632 exit 0. Logs and matching `.xcresult` bundles are
+`/tmp/engram-posix-claim-tranche-{core,service}-full.*`. The App scheme is now
+running; the remaining combined gates and next-head CI are not yet passed.
+Follow-up: App passed 1,175/0 and repeated Core 1,596/one existing skip/0,
+producer 45236 exit 0 (`/tmp/engram-posix-claim-tranche-app-full.log`). MCP
+passed 270/0, producer 90144 exit 0 (`/tmp/engram-posix-claim-tranche-mcp-full.log`).
+Ten script suites passed 205/two existing conditional skips, producer 88565
+exit 0 (`/tmp/engram-posix-claim-tranche-scripts.log`). All five invariant gates
+also passed (`/tmp/engram-posix-claim-tranche-invariants.log`).
+
+The separate Web-auth donor passed 45/45 (routes 22, sessions 14, config 9),
+A-run producer 36240 exit 0. Its actual RED was 45 tests/363 assertions;
+the first implementation build instead executed zero tests because HTTPTypes
+marks its Host convenience alias unavailable. Replacing only that alias with
+the explicit field name preserved both authority and duplicate/raw-Host checks.
+Evidence: `/tmp/engram-w5-auth-red2.uA3zCc/w5-auth45-red.log`,
+`/tmp/engram-w5-auth-green.c2mGoL/w5-auth45-green.log`, and
+`/tmp/engram-w5-auth-green2.H8Fb7Q/w5-auth45-green.log`.
+Independent review, central integration, real App/HTTP wiring, static UI,
+browser acceptance, and W3-W6 end-to-end gates remain pending.
+Follow-up: the independent seven-file AUTH FOUNDATION gate returned SPEC PASS /
+QUALITY APPROVED against the central corrected GET contract. All seven frozen
+hashes are integrated, and the archive safety gate passed with the exact logout
+wrapper present. XcodeGen 2.45.4 regenerated ten total new-file references with
+40 additions and no deletions, independently inspected by the coordinator.
+The first central Remote command selected the executable scheme, which has no
+test action: producer 85207 exit 66, zero executed tests, preserved in
+`/tmp/engram-posix-claim-auth-tranche-remote-full.log`. The corrected
+EngramRemoteServerCore run is in progress with separate `remote-full2` evidence;
+this is a command-selection correction, not a production RED or passing suite.
+Final local follow-up: the corrected Remote Core run passed 292/292, producer
+53281 exit 0 (`/tmp/engram-posix-claim-auth-tranche-remote-full2.log` and
+matching `.xcresult`). All six central targets are now green: Core 1,596 and
+Service 875 (one existing skip each), App 1,175, MCP 270, Collector 108, and
+Remote 292, zero failures. Final ten-script rerun after auth integration is
+205 passed/two existing conditional skips, producer 11475 exit 0
+(`/tmp/engram-posix-claim-auth-tranche-scripts-final.log`). Test typecheck and
+all five invariant gates exited 0 (`*-typecheck-test.log`, `*-invariants-final.log`
+under the same prefix). Cross-slice integration review and prior-head CodeQL
+are pending; no new-head CI result or end-to-end/runtime readiness is claimed.
+
+Next donor-only RED preparation is limited to N1 persisted explicit root
+bindings/owner activation, T2 atomic parsed generations/snapshots/jobs, and
+A4 actual HTTP/auth/message-IPC wiring. These drafts are excluded from this
+central candidate. The coordinator synchronized only the already-approved
+builder/indexer/test trio into the ingest donor, matching frozen hashes;
+no new snapshot-builder behavior was introduced by that dependency sync.
+Prior-head CI follow-up: `09de6304` Tests `34001362091`, CodeQL `34001362241`
+and dependency review `34001362277` are all successful, independently refreshed
+before preparing the next commit. This supersedes the prior pending CodeQL
+checkpoint only; the current local candidate has no new-head CI result yet.
+The final integration-seam gate returned SPEC PASS / QUALITY APPROVED, then
+rechecked all 15 implementation/routing index-versus-worktree hashes after
+staging. The 19-file candidate contains only those files plus the four
+coordinator-owned records; both unrelated SQLite sidecars remain excluded.
+Pinned project drift passed after staging. Ready for the authorized normal
+commit/push and fresh-head CI; this is not full W3-W6 or production acceptance.
+
+### Inventory, snapshot construction and Web boundary checkpoint (2026-09-06)
+
+The signal correction is pushed as `166073471d40038abf150de6cad4e86c45970e28`
+in still-open Draft PR #446. Tests `33997356179`, CodeQL `33997356177`, and
+dependency review `33997356220` all completed successfully for that exact SHA.
+This supersedes the earlier pending correction-head CI checkpoint; the original
+`745de11d` script failure and its unproven interleaving remain historical facts.
+No merge, release, deployment, credential, or production configuration occurred.
+
+The next local tranche integrates the reviewed bounded CAS API, typed Web
+transcript IPC, inventory/dirty queue with injected bootstrap walker, and a pure
+snapshot builder reused by the existing full/tail indexer. Source copies match
+their frozen donor hashes; target routing was regenerated with XcodeGen 2.45.4.
+Independent inventory and builder gates returned SPEC PASS / QUALITY APPROVED.
+The inventory gate is `/tmp/engram-w3-inventory8-review.g7T8bG/review.md`.
+Existing untracked SQLite sidecars remain untouched and excluded.
+
+Coordinator integration evidence, all producer exits 0: bounded CAS Core 23
+(`/tmp/engram-cas-central-core.log`), CAS Collector 35
+(`/tmp/engram-cas-central-collector.log`), Web IPC 17 plus continuation 14
+(`/tmp/engram-web-transcript-ipc-central.log`), complete Collector 68
+(`/tmp/engram-inventory-central-68.log`), and builder 17 plus legacy parity 72
+and parse-once 38 (`/tmp/engram-builder-central-127.log`). Matching `.xcresult`
+bundles accompany these logs. The builder's real RED was 17 tests/115 assertion
+failures; its frozen tests passed after extracting the old algorithms, with
+full-only project fallback and legacy tail/Copilot behavior retained. Inventory
+coverage separately captured seven tests/six failed assertions in two cases
+before adding cancellation checks after enumeration and before committing a
+batch; the same seven then passed, followed by the full 68-test suite.
+
+Replay is now integrated with all five donor SHA256 values matching. Its donor
+17 tests plus 23 CAS tests passed, C-run producer 36029 exit 0
+(`/tmp/engram-capture-replay.xkk1lN/green.log`). Earlier RED attempts are retained.
+Fixture-only corrections made temp paths POSIX-canonical, used the real typed
+canonical manifest encoder, and asserted each staging mutation hook ran once;
+the corrected RED isolated four cleanup-error assertions and one CRLF blank-line
+failure. Minimal GREEN preserves the primary error through cleanup failures and
+accepts only JSON ASCII whitespace in the opt-in strict record reader. These
+donor results are not an integrated HQ ingest or last-good read-model proof.
+The independent bounded Replay5 gate is SPEC PASS / QUALITY APPROVED
+(`/tmp/engram-w4-replay5-review.AkYtNq/review.md`). Its appended erratum corrects
+run provenance and retracts an unreachable chunk-budget concern: validated
+manifest decode already enforces fixed 8 MiB chunks and an exact checked sum.
+The coordinator's first full combined Core run is 1,566 tests/one existing
+performance skip/zero failures, producer 56778 exit 0
+(`/tmp/engram-replay-tranche-core-full.log` and matching `.xcresult`).
+The complete Service suite also passed: 875 tests/one existing skip/zero
+failures, producer 88417 exit 0 (`/tmp/engram-replay-tranche-service-full.log`
+and matching `.xcresult`).
+The full App scheme then passed App 1,175/0 and repeated Core 1,566/one
+existing skip/0, producer 39984 exit 0
+(`/tmp/engram-replay-tranche-app-full.log` and matching `.xcresult`).
+
+POSIX adapter preparation exposed an inventory-domain bug: Foundation path
+standardization rejected a valid physical `/private/var` root and admitted `/`.
+Three added tests captured four failed assertions in two cases; the third
+test already preserved distinct Unicode byte spellings. The Store guard now
+reuses lexical relative-path validation after the leading slash, preserving
+exact UTF-8 without filesystem normalization. The unchanged 18 Store tests
+then passed within the donor's still-RED POSIX run; that overall 104-test run
+is not GREEN. The two-file independent gate passed and exact hashes were
+integrated; the central Collector 71-test run remains pending. Evidence:
+`/tmp/engram-w3-posix-red.1chyCC/collector104-root-lexical-{red,green-posix-red}.log`.
+The integration review subsequently confirmed a separate byte-binding gap:
+synthesized Swift String equality admitted NFC/NFD path substitution under the
+same root ID/revision. Three new coordinator tests captured 14 real assertion
+failures in two cases; explicit configuration equality now compares root ID
+and root path UTF-8 bytes, leaving source/revision value equality unchanged.
+The complete central Collector suite then passed 74/74, including Store 21/21,
+producer 69925 exit 0. This supersedes the pending central 71-test checkpoint;
+it does not claim a POSIX or FSEvents implementation. Evidence:
+`/tmp/engram-inventory-unicode-binding-red.log` (producer 74122 exit 65) and
+`/tmp/engram-inventory-unicode-binding-collector74-green.log`, with matching
+`.xcresult` bundles. The exact two-file follow-up review is pending.
+The final independent Unicode source/hash/log re-review returned SPEC PASS /
+QUALITY APPROVED; the preceding integration-seam review also passed. These
+bounded gates do not include the separate POSIX, claim, or Web auth candidates.
+
+The optional Web logout safety-gate exception is restricted to one exact
+`WebAuthRoutes.swift` path, the literal `/web/api/auth`, and one exact logout
+wrapper body. Wrong file/path, changed body, duplicate or generic registrations
+remain forbidden; existing v1 and v2-405 checks are unchanged. Ten new tests
+gave one expected RED/nine passes against the old script, then the complete
+49-test safety suite passed after the narrow gate change. Logs:
+`/tmp/engram-web-logout-gate-{red,green}.log`, producers 55684 exit 1 and 68295
+exit 0. Independent gate review is pending; this does not verify the future
+HTTP logout helper. Ten script suites passed 203/two existing conditional skips,
+and test typecheck, targeted Biome, shell syntax, adapter fixtures, invariant
+ledger and diff checks passed. Exact script log:
+`/tmp/engram-replay-tranche-script-full.log`.
+Follow-up independent review rejected the first allowlist implementation:
+an entire repeated path suffix bypassed the filename check, and a comment brace
+truncated the body check before additional operations. Both received new real
+RED tests. The root-relative resolved filename must now match exactly; the new
+wrapper body no longer strips comments, while legacy guard semantics remain
+unchanged. Complete safety tests now pass 51/51, producer 83882 exit 0;
+the two original review findings are retained, with final re-review pending.
+Logs: `/tmp/engram-web-logout-gate-path-collision-{red,green}.log` and
+`/tmp/engram-web-logout-gate-comment-brace-{red,green}.log`.
+Final independent source/hash review and nine in-memory negative/positive gate
+probes returned SPEC PASS / QUALITY APPROVED for the exact two files. This
+supersedes the earlier failed/pending allowlist gate, not the pending W5 HTTP
+authentication/session acceptance.
+With both review regressions included, the final ten script suites passed
+205 tests/two existing conditional skips, producer 21554 exit 0
+(`/tmp/engram-replay-tranche-script-final.log`). Final test typecheck also
+exited 0 (`/tmp/engram-replay-tranche-typecheck-test-final.log`). These supersede
+the earlier 203-test checkpoint, not its recorded intermediate results.
+
+The final two integrated targets passed in the coordinator's isolated test
+home: MCP 270/0 (producer 38673 exit 0,
+`/tmp/engram-replay-tranche-mcp-full.log`) and Remote 247/0 (producer 10053
+exit 0, `/tmp/engram-replay-tranche-remote-full.log`), with matching `.xcresult`
+bundles. All six full central targets are now verified: Core 1,566 and Service
+875 (one existing skip each), App 1,175, MCP 270, Remote 247, and Collector 74,
+zero failures. Post-Unicode invariant-ledger and archive-safety checks also
+exited 0 (`/tmp/engram-replay-tranche-{invariants,archive-safety}-post-unicode.log`).
+This supersedes pending integrated-suite checkpoints above. The new tranche's
+commit/push and exact-head CI are still pending; prior-head CI is not reused.
+
+A real Chrome 152 loopback probe confirmed that same-origin GET omits Origin,
+even with a custom header or an attempted script-supplied Origin; POST carries
+the expected Origin. A different-port origin produced a mismatched Origin or
+same-site/no-cors metadata, and custom-header CORS triggered preflight. This
+matches the [Fetch Origin algorithm](https://fetch.spec.whatwg.org/#origin-header)
+and [forbidden-header rule](https://fetch.spec.whatwg.org/#forbidden-request-header).
+Evidence: `/tmp/engram-web-origin-probe.l98sfy/{same-origin,cross-origin}-browser-verified.log`;
+the completed probe producer exited 0 and both fixture listeners/browser closed.
+The design now requires a fixed API header, retains exact Origin for login/logout,
+and permits missing Origin on authenticated GET only with all three exact
+same-origin fetch metadata checks. A present invalid Origin never falls back.
+Independent source/browser design review also passed; this is a design correction, not implemented Web security or browser
+acceptance. The full combined target gates above passed; next-head CI remains pending;
+real directory enumeration, ingest commit/aliases/normalized storage, HTTP UI,
+two-replica upload and W6 end-to-end verification are still unfinished.
+
+### Flock startup signal correction after pushed-head CI (2026-09-06)
+
+The combined foundation tranche was pushed as `745de11d` to Draft PR #446.
+Tests run `33996341619` failed only its macOS script job `101387497380`:
+the existing lock-retention fixture unexpectedly let a contender acquire the
+lock during child shutdown. Node quality/tests, Swift unit, Remote/package,
+and UI smoke jobs passed for that SHA; full UI was intentionally skipped.
+Dependency review passed; Swift CodeQL jobs were still running at this local
+checkpoint. No prior-head result is a new-head CI result.
+
+The old fixture announced readiness before installing its shell trap and used
+fixed 100/400 ms timing. It now installs the trap before readiness and uses
+explicit termination/release handshakes while preserving the lock assertions.
+The old fixture passed 12 local baseline repetitions, so the precise window
+behind the CI failure remains unproven. Independently, three new deterministic
+tests paused the real Popen return after child readiness and proved that the
+old wrapper released its lock on TERM, INT, or HUP while the child was alive.
+All three failed before the implementation change (six assertions). The
+wrapper now installs signal handlers before Popen, retains a startup signal,
+then forwards it and waits for the child. Its non-inheritable lock descriptor,
+busy exit convention, and existing detached-descendant behavior are unchanged.
+
+The unchanged three repro tests passed after the minimal implementation fix.
+The complete HQ suite passed 12/12; all four signal tests passed 12 consecutive
+repetitions. Ten script suites passed 195/195 with no skips, test TypeScript
+typecheck and targeted Biome passed, Python AST syntax validation passed, and
+`git diff --check` passed; all GREEN producers exited 0. Evidence:
+`/tmp/engram-745de11d-ci-macos-scripts.log`,
+`/tmp/engram-745de11d-flock-fixture-baseline.log`,
+`/tmp/engram-flock-startup-gap-signals-{red,green}.log`,
+`/tmp/engram-flock-startup-gap-full-green.log`,
+`/tmp/engram-flock-startup-gap-repeat-green.log`, and
+`/tmp/engram-flock-correction-{script-full,typecheck,biome}.log`.
+The independent two-file source/log review returned SPEC PASS / QUALITY
+APPROVED (`/tmp/engram-flock-review.OSmdGo/review.md`). Its child-ready ordering
+inference is not adopted: child readiness cannot prove that parent Popen has
+returned, so the original CI interleaving remains unproven. Correction-head
+CI is pending at this checkpoint.
+Only the wrapper, its fixture, and this bounded status documentation enter the
+correction commit. Subsequent bounded CAS source/test changes remain unstaged.
+No installed script, launchd job, production helper, Docker, deployment, merge,
+or release was touched; production behavior is not verified by these fixtures.
+
+### Privacy, registry, Web-read and optional-AI combined gate (2026-09-06)
+
+The coordinator completed all six full integrated XCTest targets with the
+frozen source in this tranche: Core 1,521/one existing performance skip/0,
+App 1,175/0, Service 858/one existing live-URL skip/0, MCP 270/0, Remote 247/0,
+and Collector 35/0. Every producer exited 0. The App scheme also reran Core
+1,521/one skip/0. The Remote run used the previously verified worktree-local
+XCTest home; its existing firmlink test passed with no product/test changes.
+This supersedes the dated local pending-suite statements below, not their
+recorded failures. Evidence: `/tmp/engram-w4-foundations-{core,app,service,mcp,remote,collector}-integrated.log`
+and matching `.xcresult` bundles. Tests used the existing Xcode-beta developer
+directory, arm64 destination, jobs 2, serial testing and explicit
+`TEST_RUNNER_CFFIXED_USER_HOME` forwarding to the isolated test home.
+
+Ten script suites passed 190 tests with two existing dirty-project conditional
+skips; all five invariant scripts and the adapter-parity fixture check passed.
+Logs: `/tmp/engram-w4-foundations-script-integrated.log`,
+`/tmp/engram-w4-foundations-invariants.log`, and
+`/tmp/engram-w4-foundations-adapter-fixtures.log`. Final C1 nine-file hashes and
+registry/client hashes still match their independently reviewed frozen sources.
+The read-only integrated routing/composition review returned PASS / APPROVED
+with no cross-slice blocker (`/tmp/engram-w4-integration-review.ydcybm/review.md`).
+The Web client intentionally has no capability-token loader; future same-UID,
+owner-only Service reads and HTTP viewer authentication are separate gates.
+
+Only this reviewed tranche is being committed: generation/format-bound privacy
+proof and read-only machine identity, durable source/epoch/parse-format registry,
+pure transcript continuation and typed client, optional-AI readiness/shutdown,
+and their exact target/test/doc routing. Inventory, bounded CAS API/replay and
+the real Web IPC handler continue in separate worktrees and are excluded.
+New-head CI is pending; the previous all-green CI belongs only to `248e64ab`.
+Local UI automation, a production snapshot provider, HTTP/browser integration,
+full collector/uploader, package/shadow/resource gates and W3-W6 completion are
+not claimed. No production helper, provider request, Docker, deployment, merge
+or release was run. Unknown pre-existing SQLite WAL/SHM fixture files remain
+unstaged and untouched.
+
+### C1 privacy and typed Web client integration checkpoint (2026-09-06)
+
+Integrated nine byte-identical C1 source/test files from the independently
+reviewed collector worktree, with only three explicit CollectorCore source-list
+additions. The same narrow metadata projection now feeds Claude/Codex parser
+selection and conservative CAS-generation privacy proof. Proof requires a fresh
+policy and full format binding before upload; the custom-profile-to-default
+change with an unchanged policy first failed two assertions, then passed.
+CollectorCore is 35/0 in the worker's final run; independent parser regression
+coverage is 273/0, including all four new projection-parity tests. Grok closed
+the format blocker with PASS / APPROVED. Evidence:
+`/tmp/engram-w3-c1.i68kFy/format-binding-red.log`,
+`collector-c1-format-green.log`, `core-adapter-parity-green.log`, and
+`collector35-source.sha256`. The coordinator verified all nine integration
+hashes. These are not inventory, uploader or source-retirement gates.
+
+The identity reader opens only an existing owner-only catalog and never repairs
+WAL sidecars or provisions a machine ID. The tests separately proved the latest
+identity from an independent live-WAL writer without altering main/WAL/SHM bytes,
+permissions or directory entries, rejected same-process writable SHM reuse and
+missing/orphaned SHM, and caught an owned SHM-mapping leak before the final
+unmap fix. SQLite's actually loaded library in this fixture was 3.54.0, not the
+older cached source VERSION file. The accepted guarantee is the independent-
+process bootstrap topology; the probe is not an atomic generic guarantee against
+a new same-process RW connection between unmap and query. Collector must not
+own a live Service catalog writer. Existing CAS reads also still lack an actual-
+object allocation cap; the next replay slice has a separate bounded-read TDD
+prerequisite, rather than treating declared manifest limits as that guarantee.
+
+Integrated the typed messages-only Web client and its 18 tests, plus five exact
+RemoteServer wire/kernel source inclusions; no DB framework dependency was
+introduced into that product target. Independent review found two blockers:
+the client confused the pager's 255 KiB generation budget with the kernel's
+256 KiB receive ceiling, and all-role results could skip message ordinals.
+After moving expensive synthetic payload preparation outside the transport
+deadline, the unchanged implementation produced a causal 18-test/4-assertion
+RED. The two minimal fixes passed the same 18 tests with unchanged test SHA;
+the independent gate returned PASS / APPROVED. Final client/test hashes are
+`7bfe0a76...b41ce` / `c9ca61fe...dd500`. Evidence:
+`/tmp/engram-web-read-client.RX3Dh5/review-red2.log` and `green.log`.
+Full transcript reassembly, payload hash verification across pages, the real
+Service command and HTTP/browser behavior remain later work.
+
+Two worker full Remote runs were 247 tests/one unexpected failure, solely in the
+existing Users-firmlink test. Foundation normalizes a temporary home under
+private/tmp back to tmp, so changing only that spelling did not repair the test's
+physical-path assumption. Source and assertions stayed frozen. The coordinator
+is rerunning the integrated Remote target with the previously verified isolated
+worktree-local home; the earlier two failures remain in `full-remote.log` and
+`full-remote2.log`. The new combined full Service gate has already passed:
+858 tests/one existing skip/zero failures, producer exit 0,
+`/tmp/engram-w4-foundations-service-integrated.log` and its result bundle.
+Other combined suites and new-head CI remain pending. No merge or deployment.
+
+### W4 registry, transcript and optional-AI local checkpoint (2026-09-05)
+
+Integrated explicit durable source-instance/root/epoch/parse-format authority.
+The registry has 35 tests, including ten new format cases: an old nullable
+format receives no inferred default or backfill; it remains quarantined, while
+still reserving its root for overlap checks. Epoch approval preserves format
+and compares the expected authority generation. The worker's combined
+registry/identity/ledger/migration RED was 72 tests/51 assertions failed, then
+72/0 with unchanged tests. Grok independently reviewed the exact format source
+and tests against the previously accepted 25-case registry and returned
+PASS / APPROVED. The coordinator integrated byte-identical final files
+(`63338ab1...5fa7f`, `ee4d25ab...4050`). Evidence:
+`/tmp/engram-w4-registry-format.tHpz0l/red.log` and `green.log`.
+No replay, operator IPC command, alias migration or snapshot write is implied.
+
+The separately reviewed normalized-message continuation DTO/pager is also
+integrated: 9 continuation and 5 wire tests passed in the first combined
+Service run, including full Unicode/tool/usage reconstruction, redaction before
+fragmentation, generation-bound cursors and outer Data/base64 escape budgeting.
+This pure layer still requires an authoritative snapshot provider and a real
+Service command; it is not a completed Web endpoint.
+
+Removed awaited embedding batches from initial/periodic required indexing and
+placed the existing bounded provider/backoff-guarded operations in an independent
+maintenance task. Initial eight tests produced an actual RED with 14 failed
+assertions; all eight passed after the minimal implementation. Independent
+review then caught missing explicit shutdown cancellation/join. Three added
+tests produced a real 11-test/5-failure RED, including premature runner return
+and writer-lock retention. Two production lines now cancel/join before writer
+drain and final checkpoint; the startup source assertion is scoped before
+shutdown so that legitimate shutdown joining is not forbidden. The same
+lifecycle tests passed 11/0, producer exit 0, and the independent slice gate
+returned PASS / APPROVED. Evidence:
+`/tmp/engram-w4-optional-ai-red.log`,
+`/tmp/engram-w4-optional-ai-shutdown-red.log`, and
+`/tmp/engram-w4-optional-ai-shutdown-green2.log` plus their result bundles.
+The first shutdown GREEN attempt used different XCTest-home forwarding,
+stalled in required backfill, and was cancelled (producer exit 73); it is not
+a passing gate or an attributed product regression.
+
+The earlier full Service attempt ran 855 tests/one existing skip and failed
+five assertions in three old source-text tests that demanded embedding work in
+its former location. Only those three structural anchors were updated to the
+new task composition; their guardrail assertions remain. Full combined Service
+and Core verification, remaining privacy/client closure and new-head CI are
+still pending. Existing foundation CI below characterizes only `248e64ab`.
+No production helper, provider request, deployment, merge or release was run.
+
+### Foundation exact-head CI closeout (2026-09-05)
+
+Commit `248e64ab63034378f5842c9e065ba671d8570a71` was pushed normally to existing
+Draft PR #446. Tests `33969590181`, CodeQL `33969590195` and dependency review
+`33969590247` all completed successfully for that exact head. The coordinator
+checked the final PR head/check rollup after both Swift CodeQL jobs and CodeQL
+Gate finished. Full UI and the unnecessary UI-smoke failure reporter were
+intentionally skipped; the separate CodeQL summary was neutral, not a failed
+required check. No merge, release or deployment occurred.
+
+The downloaded Swift CI log independently confirms Core 1,482/one existing
+performance skip/0, App 1,175/0, Service 833/one existing skip/0, MCP 270/0 and
+the newly required CollectorCore 9/0. Evidence:
+`/tmp/engram-foundation-ci-swift-unit-248e64ab.log`,
+`https://github.com/bbingz/engram/actions/runs/33969590181`,
+`https://github.com/bbingz/engram/actions/runs/33969590195`, and
+`https://github.com/bbingz/engram/actions/runs/33969590247`.
+This supersedes only the dated foundation checkpoint's pending-CI status below.
+Subsequent local continuation, registry, privacy and optional-AI work does not
+inherit this immutable head's passing CI.
+
+### Collector, shared IPC and intake-ledger foundations (2026-09-05; local integration)
+
+Integrated the separately verified W3 host-role and behavior-preserving
+capture-core slices into `codex/collector-server-web-20260905`. This is a
+foundation checkpoint, not completion of the no-index collector, central replay,
+or Web product. The coordinator compared every integrated source/test byte with
+the frozen worker trees (capture 16/16, role 14/14, excluding regenerated target
+routing), then regenerated the combined project with pinned XcodeGen 2.45.4.
+
+The App/MCP now read the same bounded, owner-only persisted runtimeRole before
+local-index access. Missing settings retain local behavior; invalid explicit or
+unsafe settings fail closed. Collector/replica reject local database access,
+service startup and automatic credential migrations; their App entry reports
+local-index unavailability and points to the HQ reader. Index role pins external
+process ownership before its initial probe, including an absent socket, and
+does not spawn, replace or stop that external service. Retained connection tasks
+and termination guards prevent queued reconnect work from publishing after quit.
+Index role still allows ordinary settings migration and explicit credential
+settings operations: lifecycle isolation is not a claim that all App settings
+activity is read-only.
+
+Role RED evidence: Core 9 tests/29 assertions, initial App 15 tests/74 assertions,
+and a corrected one-response-per-process MCP discovery test with 12 assertions.
+An additional real App-quit race failed one test/three assertions before the
+minimal task-retention/cancellation fix. Final focused GREEN is App 208, Core 9,
+MCP 5, all zero failures/unexpected failures and producer exits 0. Source and
+actual logs were independently read by the coordinator; W4 tests-only review
+performed by that implementing worker is not this role implementation gate.
+Local evidence: `/tmp/engram-host-role.mgi3Cv/{core-red.log,app-red.log,mcp-discovery-red.log,app-quit-red.log,app-green.log,core-green.log,mcp-green.log}`.
+
+Five capture files now live once in `macos/EngramCaptureShared`; both CoreWrite
+and the new CollectorCore compile those same sources. CollectorCore has an
+explicit 11-file capture list and GRDB-dynamic as its sole package dependency,
+with no product index, parser, Service or AI core. SourceName, exact-adapter
+conformance and the unchanged SQLite busy/checkpoint defaults were narrowly
+separated. Coordinator comparison verified four moved files unchanged after
+the expected import/constant routing, and the classifier adapter overload
+retains both original cancellation checks.
+
+A fresh isolated CollectorCore build/test passed 9/9, with dyld and actual
+dependency-graph/link evidence. Existing Core capture suites passed 129/129
+(Coordinator 35, Catalog 45, ExactCapturer 19, CAS 12, Models 12, SQLitePolicy 6).
+The first Core run failed only the old source-path inspection after the move;
+only that path literal changed before the identical suite passed. The archive
+safety gate now scans the moved directory while preserving one global object
+unlink and quarantine gate: new-location negatives first failed 9 assertions,
+then all 39 script tests passed. No deletion/receipt/reclamation authority was
+added. Grok's independent extraction-only review verified all 19 frozen hashes
+and returned PASS / APPROVED at approximately 20:49 CST; root separately has the
+tool-returned producer exit codes, which are not embedded in those raw logs.
+Local evidence: `/tmp/engram-w3-capture.TyQFgQ/{collector-first.log,collector-otool-L.log,core-focused.log,core-focused-final.log,safety-red.log,safety-final-green.log,source-final-build.sha256}`.
+
+The pure JSON wire envelopes and one socket-I/O engine are also integrated,
+byte-compared with the seven frozen worker source/test files. The new raw
+exchange has a monotonic total deadline, a pre-I/O/pre-allocation 256 KiB limit,
+same-user socket checks and one owned descriptor close. A Darwin socketpair
+reproduction showed MSG_DONTWAIT alone can block a large send; the exchange now
+keeps its owned descriptor nonblocking until close. Borrowed framing does not
+change caller descriptor flags; the general transport preserves its legacy
+inactivity timeout and capability-token behavior rather than claiming the raw
+exchange's total-budget contract. Final focused App 59/59 and Service 3/3 passed,
+producer exits 0. Grok independently returned PASS / APPROVED at approximately
+21:00 CST. Logs: `/tmp/engram-web-ipc.l9O7bZ/{red.log,green.log,green2.log,service3structural.log}`.
+This is not yet the typed Web client or an enabled HTTP reader.
+
+The first W4 identity and durable intake slice adds a byte-stable ImportRepo
+namespace projection, four bookkeeping tables and two indexes through the
+existing additive base-schema hook. Publications, per-parser work, replica
+arrivals and checkpoints commit in one inner savepoint even when a caller
+catches an error in its outer transaction. Duplicate intake preserves terminal
+work; conflicting stream tuples quarantine nonterminal work without retracting
+last-good parsed/index-ready generations. Pending intake grants no source/epoch,
+parser, session or FTS authority. Alias reconciliation and replay are later work.
+The unchanged 21 behavior tests first failed 55 assertions (exit 65), then the
+focused identity/ledger/migration suite passed 37/37 (exit 0). An independent
+source/log gate returned PASS / APPROVED. Logs and xcresults are under
+`/tmp/engram-w4-ingest.Tq3mq1/` (identity-ledger-red, identity-ledger-green,
+core-full); that isolated full Core run was 1,473/one existing performance skip/0.
+
+Combined integration Core passed 1,482/one existing performance skip/0. App's
+first full 1,175-test run found one old source-text assertion requiring an if
+instead of the equivalent, stronger role/test-mode guard. Only that structural
+assertion changed; the fixture-mode no-settings/Keychain-mutation behavior test
+was retained. The next full App run passed 1,175/1,175, and full Service passed
+833/one existing skip/0, all producer exits 0. Logs and xcresults:
+`/tmp/engram-w3-foundation-core-integrated`,
+`/tmp/engram-w3-foundation-app-integrated` (original structural failure),
+`/tmp/engram-w3-foundation-app-integrated2`, and
+`/tmp/engram-w3-foundation-service-integrated`.
+
+Final combined MCP 270/270, Collector 9/9 and Remote 229/229 also passed, with
+zero skips/failures and producer exits 0. Matching logs/xcresults are
+`/tmp/engram-w3-foundation-{mcp,collector,remote}-integrated`. Grok's read-only
+cross-slice integration gate returned PASS / APPROVED after checking actual
+target routing, additive migration, byte-exact identity, status/checkpoint
+protection and the App structural-test correction. Its first review preceded
+the final App/Service/MCP/Remote logs; coordinator verified those separately.
+
+CI now explicitly runs the isolated CollectorCore scheme through its existing
+required Swift-test helper. The new workflow regression first failed one test
+with 36 passing, then the unchanged 37-test suite passed after one workflow-line
+addition. Evidence: `/tmp/engram-w3-collector-ci-{red,green}.log`, producer exits
+1 and 0. Ten final script suites passed 190 tests with two existing dirty-project
+conditional skips; test TypeScript checking, focused Biome and all five invariant
+boundary gates passed (producer exits 0). Logs:
+`/tmp/engram-w3-foundation-{script-final,typecheck,biome,invariants-final}.log`.
+The separate CI-delta read-only review also returned PASS / APPROVED and checked
+the final App/Service/MCP/Collector logs. Actionlint passed for the changed
+workflow (`/tmp/engram-w3-foundation-actionlint.log`, producer 0).
+This tranche's pushed-head CI remains pending; local results are not remote CI.
+
+Next collector work is fixture-only identity reading and immutable metadata/
+privacy proof, before durable inventory and two-replica upload. No installed
+role/settings, source inventory, live catalog, credential, network, service or
+production DB changed. Separate test-fixture WAL/SHM sidecars of unproven origin
+are preserved and excluded from staging, not silently cleaned.
+
+### W2 exact-head CI closeout (2026-09-05)
+
+The receiver commit `874a63f13438785f7ad9a8d930682fcb687bf610` was pushed to
+existing Draft PR #446. Tests run `33965852625`, CodeQL `33965852598` (both Swift
+product and RemoteServer, including CodeQL Gate), and dependency review
+`33965852614` all passed for that exact SHA. Required Node, script/fixture,
+Remote Swift, product Swift and UI-smoke jobs passed. PR full UI, unchanged
+TypeScript CodeQL and the unnecessary smoke-failure reporter were intentionally
+skipped; the separate CodeQL summary was neutral, not a failed required gate.
+These remote results supersede the pending CI statements in the earlier dated
+W2 local checkpoint, without changing those historical observations.
+
+Evidence: `https://github.com/bbingz/engram/actions/runs/33965852625`,
+`https://github.com/bbingz/engram/actions/runs/33965852598`,
+`https://github.com/bbingz/engram/actions/runs/33965852614`. No merge or deployment
+was performed. Later worktree changes do not inherit this SHA's passing CI.
+
+### W2 durable collector publication receiver (2026-09-05; local gate)
+
+The default-OFF receiver now accepts canonical, separately versioned collector
+publications referencing unchanged unbound Claude/Codex archive-v2 manifests.
+It verifies referenced bytes and machine/source shape before returning a
+replica-bound capture ACK. A single encrypted immutable acceptance record is
+the durability/discovery commit point, with a shared lifetime filesystem lock,
+rebuildable lookup/sequence/arrival indexes, restart-stable journal cursors, and
+fail-closed handling of uncertain writes or changed journal ownership. Existing
+kind numbers, bound receipts, recovery/reclamation and archive MCP remain intact;
+capture ACKs do not imply HQ parsing, keyword readiness, or deletion authority.
+
+Four authenticated publication routes provide capabilities, acceptance, lookup
+and arrival pagination. Strict feature configuration and bounded canonical
+payloads/error codes are covered by tests. Enabling the switch warms the derived
+index independently; cold or poisoned intake returns 503 while old paths remain
+available. RemoteServer still compiles only narrow wire models, not DB-core
+dependencies. The guarantee is recorded in `docs/invariants.md`.
+
+Behavior RED evidence covers canonical models, strict opt-in configuration,
+new envelope kind, HTTP contracts and cold-to-ready discovery. A subsequent
+extended-year timestamp RED enforces the frozen 24-byte timestamp. Independent
+review found a real missing-journal-metadata bug: known lookup/list/accept
+returned ordinary not-found instead of unavailable. Its one-test/three-assertion
+RED precedes the narrow fix; ordinary unknown publication lookup remains 404.
+
+Coordinator verification at 19:56 CST: the final-built full Remote XCTest bundle
+passed **229 tests, zero failures and zero skips**, producer exit 0, in 17.4s.
+This includes Store 35, Routes 13, Models 14, Codec 8 and Config 24 suites,
+plus all legacy suites. The first 122-test combined attempt had one independent
+child-runner timeout (two assertions), not a demonstrated storage failure.
+Removing only inherited XCTest coordination/injection variables made the real
+child recovery pass in 0.460s; the full suite then passed without weakening
+original-ACK or disk-recovery assertions. Test homes remain task-owned; no live
+Engram home or production archive was used.
+
+Local-only logs: `/tmp/engram-w2-wire.qnAYrQ/{red.log,red-timestamp.log,green-final.log}`,
+`/tmp/engram-w2-storage.Zj81if/{red.log,metadata-red2.log,green-attempt1.log,green-restart-probe.log}`,
+and `/tmp/engram-w2-remote-full.log`. Earlier compiler (`Darwin.flock` naming),
+test-home firmlink, and nested-runner launch failures remain recorded separately
+from behavior RED. The canonical golden tests and five invariant boundary scans
+passed. Final independent read-only Store/Codec review checked the exact file
+hashes, metadata RED/fix, all 35 storage tests and child-runner assertions, then
+returned SPEC_COMPLIANCE PASS / CODE_QUALITY APPROVED at approximately 20:00 CST.
+The pure-model gate separately passed; coordinator review and the full suite
+cover HTTP/configuration integration. This tranche's PR CI is still pending.
+
+Pre-commit integration then caught two existing no-delete gate violations: the
+new metadata temporary variable did not use the allowed temporaryURL name, and
+publication routes duplicated DELETE registrations. Kept the gate unchanged,
+used the existing temporary cleanup convention, and reused ArchiveRoutes' sole
+enumerated auth-to-405 guard. A real 229-test rerun rejected the intermediate
+wildcard-fallback assumption with 45 assertions in two route tests: an existing
+GET/PUT path does not fall back to a wildcard DELETE method. Adding only the
+three publication paths to that existing enumerated guard fixed it without
+new deletion authority. All original 401/405 assertions remain unchanged.
+
+Final exact-source Xcode build/test at 20:14 CST passed 229/229, zero skips,
+producer exit 0: `/tmp/engram-w2-remote-final3.log` and
+`/tmp/engram-w2-remote-final3.xcresult`. The intermediate routing RED remains
+`/tmp/engram-w2-remote-final2.log`; the earlier `remote-final.log` selected the
+non-test executable scheme and exited 66 before tests, not a product failure.
+Nine script suites passed 143 tests with two existing dirty-project conditional
+skips in `/tmp/engram-w2-script-final-serial.log`. An unchanged HQ termination
+timing test failed during the concurrent attempt, then passed unchanged in the
+isolated 38-test and serial full-script reruns; no HQ implementation was edited.
+The original script failures remain in `/tmp/engram-w2-script-full-gates.log`
+and `/tmp/engram-w2-script-full-gates-green.log`. Direct archive no-delete and
+invariant boundary gates also pass; no safety allowlist was broadened.
+An independent worker checked the coordinator-authored final routing delta,
+reversed it in memory to match the original worker hashes, read the final
+229-test log, and returned PASS / APPROVED. This is distinct from self-review
+of that worker's original routes implementation.
+
+The next host-role, capture-core and shared socket/wire slices use independent
+worktrees at W1 head `638a8454`, keeping their source/project edits out of this
+receiver gate. No collector binary, HQ replay, Web reader, source-retirement
+proof, installation, merge, production credential or network change is claimed.
+
+### W1 exact-head CI closeout and next-wave isolation (2026-09-05)
+
+Draft PR #446 remains open and unmerged at
+`638a84544c90a43eade65ae8416818af6236e212`. Tests run `33961440699`, CodeQL
+`33961440704`, and dependency review `33961440741` all passed for that exact
+head. The earlier `52fcc86e` failure/cancellation evidence is not relabeled.
+PR full UI and unchanged CodeQL languages/targets were intentionally skipped;
+the separate CodeQL summary was neutral, while the required CodeQL Gate passed.
+
+Independent completed-job log checks confirm Core 1,452 (one existing skip),
+App 1,141, Service 833 (one existing skip), MCP 265, Remote 161, and UI smoke
+14, all with zero failures. The Remote job also built the Release package.
+Linux Node CI passed 1,539 with 25 platform skips (1,564 total). Locally,
+`npm run test:coverage` passed all 130 files / 1,564 tests after installing the
+worktree's locked dependencies; statement coverage was 77.69%. The initial
+local coverage attempt lacked the worktree-local `tsx` executable required by
+the screenshot-comparison harness; it was an environment failure, not three
+product regressions. No dependency upgrade or audit fix was performed.
+
+Evidence is local-only in `/tmp/engram-w1-ci-{node,remote,ui-smoke,swift-unit}-638a8454.log`,
+`/tmp/engram-w1-worktree-npm-ci.log`, and
+`/tmp/engram-w1-node-coverage-after-install-638a8454.log`; the failed first
+coverage log remains `/tmp/engram-w1-node-coverage-638a8454.log`.
+
+W2 receiver work now continues in the main implementation worktree. W3 host-role
+isolation is independently developing in `.worktrees/collector-host-role-20260905`
+on `codex/collector-host-role-20260905`, based on the same tested W1 head. This
+keeps its App/MCP/Core and project changes out of W2's commit and test inputs;
+heavy builds remain serialized. Neither next wave is closed by the W1 evidence.
+No merge, installation, production configuration/credential change, service
+restart, or production cutover was performed in this tranche.
+
+### W1 PR CI anchor correction (2026-09-05)
+
+The owner authorized commit/push and iterative CI through W6. W1 was committed
+as `52fcc86e85414294f273218664430b43b6df067a` and pushed to Draft PR #446
+(`https://github.com/bbingz/engram/pull/446`); no merge or deployment occurred.
+Tests run `33961291016` caught a new documentation anchor error: four backticked
+symbol names in External Service Ownership's Enforced-by line violated the
+existing checked-file-path contract. The earlier shell ledger gate did not
+cover that Vitest assertion and was not proof of the full script suite.
+
+Local reproduction: `npm test -- tests/scripts/invariants-ledger.test.ts` failed
+one of 12 tests with those exact symbols. Removed only their backticks, retaining
+the checked source path and all tests unchanged. The full eight-file macOS CI
+script suite then passed 135/135, exit 0. Local logs:
+`/tmp/engram-w1-invariant-anchor-red.log` and
+`/tmp/engram-w1-invariant-anchor-green.log`; original CI evidence:
+`/tmp/engram-w1-ci-script-gates-33961291016.log`. Remaining W1 CI jobs and the
+follow-up head still require successful completion before W2 implementation.
+
+### Collector/server/Web foundation (2026-09-05; W1 local only)
+
+The implementation worktree `codex/collector-server-web-20260905` starts from
+`625ecc9737c219f401200d3c2e301f537582ff11`. The complete target and seven-wave
+dependency plan are in
+`docs/superpowers/specs/2026-09-05-collector-server-web-design.md` and
+`docs/superpowers/plans/2026-09-05-collector-server-web.md`. The target is a
+no-index daily-Mac collector, HQ-owned parsing/indexing and a read-only native
+Web module, independent HQ/M1 archive copies, and an optional App. No offline
+local MCP requirement is assumed; this remains a stated design assumption.
+
+W1 repairs the independently sampled `SessionEmbeddingBackfill.pendingSessions`
+hot query, not the earlier startup FTS-enqueue query. A materialized ordered
+candidate batch plus non-correlated membership/selected-text aggregation avoids
+candidate-multiplied full FTS scans. Full-text row order, eligibility, job order,
+and limit semantics are preserved; no migration, index, or dependency was added.
+The deterministic old-query RED is 49,767,267 SQLite VM steps against a 500,000
+budget; the semantics test passed on old SQL. GREEN passes the budget and all
+22 focused embedding tests. This still scans the FTS corpus; it is not O(limit).
+
+The App now treats an adopted service as externally owned: quit detaches without
+shutdown or secret removal, health failures reconnect without replacement, and
+manual restart is connection-only. Existing App-owned process behavior remains.
+Four behavior tests include a suspended health probe returning after quit.
+The initial RED has three tests/ten failures (two thrown errors caused by the
+old shutdown/secret deletion); the cancellation mutation RED has one test/one
+failure. Final launcher GREEN is 56 tests, zero failures. The guarantee is
+recorded in `docs/invariants.md` as External Service Ownership; it does not fix
+initial ownership-unknown probe cancellation or implement collector-role startup.
+
+Both W1 diffs passed independent spec-compliance PASS/code-quality APPROVED
+reviews. Coordinator full Core: 1,452 tests, one existing disabled throughput
+benchmark skip, zero failures, producer exit 0. Local-only evidence:
+`/tmp/engram-embedding-fts-wave1.kD08Wi/{red-vm-reset.log,green.log}`,
+`/tmp/engram-collector-lifecycle.YKQOGn/{red.log,race-red.log,final-green.log,final-green.xcresult}`,
+and `/tmp/engram-collector-server-web-gates.jKa3wP/{core-full.log,core-full.xcresult,design-revised-boundaries.log}`.
+The earlier embedding `red.log` overcounted reused SQLite statements and is
+superseded by `red-vm-reset.log`. The design path/behavioral boundary wrapper
+passed its five registered scans; `git diff --check` passed.
+
+An owner-provided Grok pane was used through Herdr for independent read-only
+design review. Its initial FAIL/CHANGES_REQUESTED identified seven grouped
+contract gaps. The revised design records their adjudication: stable identity
+and old-data reconciliation, independent shadow catalogs, generation-bound
+privacy projection, real IPC content continuation, persisted App role gating,
+durable publication/epoch recovery, and explicit Web authority/threat boundaries.
+The bounded follow-up at approximately 17:03 CST returned design
+SPEC_COMPLIANCE: PASS / CODE_QUALITY: APPROVED and closed B1-B7 after source
+rechecks. W2 intake and W3/W4 interface boundaries are frozen. No new collector,
+publication endpoint, HQ ingest, or Web implementation is claimed by W1; the
+next slice is W2 wire models/fixtures and then receiver storage/routes.
+
+Full Core generated only two previously absent fixture sidecars (32 KiB SHM,
+empty WAL). After the test producer exited and `lsof` found no open handles,
+they were moved recoverably to
+`/tmp/engram-collector-server-web-gates.jKa3wP/test-generated-sidecars/`.
+The tracked fixture main file retained Git blob
+`41b13c349f078c261e16dffb8ba44dfe61ebce5b`, equal to HEAD. No source or production
+database was deleted. Final invariant-ledger plus all five boundary gates also
+passed in `final-invariants.log` under the same evidence directory.
+
+Full App/UI, remaining Service/MCP/Remote suites, CI, package/installation,
+production performance, source coverage, two-replica intake, Web/browser and
+cross-host cutover have not been verified for this tranche. No commit/push,
+Docker, SSH, install, production-data/config/credential write, service restart,
+public exposure, or production cleanup was performed. Production paths were not changed.
 
 ### Final build 1569 closeout (2026-09-05)
 

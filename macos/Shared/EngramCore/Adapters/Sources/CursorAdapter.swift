@@ -26,6 +26,9 @@ final class CursorAdapter: SessionAdapter, ModificationFilteredSessionAdapter, S
     private let messageCache = ParsedTranscriptCache()
     private let workspaceOwnership: CursorWorkspaceOwnershipResolver
     private let testHooks: CursorAdapterTestHooks
+    private let capturedPrimaryMtimeNs: Int64?
+    private let capturedWALAbsent: Bool
+    private let capturedLegacySession: ArchiveCursorLegacySession?
 
     init(
         dbPath: String = FileManager.default.homeDirectoryForCurrentUser
@@ -33,35 +36,167 @@ final class CursorAdapter: SessionAdapter, ModificationFilteredSessionAdapter, S
             .path,
         cursorDataRoot: URL? = nil,
         limits: ParserLimits = .default,
-        testHooks: CursorAdapterTestHooks = CursorAdapterTestHooks()
+        testHooks: CursorAdapterTestHooks = CursorAdapterTestHooks(),
+        capturedPrimaryMtimeNs: Int64? = nil,
+        capturedWALAbsent: Bool = false,
+        capturedLegacySession: ArchiveCursorLegacySession? = nil
     ) {
-        self.dbPath = dbPath
-        // An injected legacy DB path must not silently fall through to the
-        // process user's ~/.cursor (docs/invariants.md #6). Product factories
-        // pass the matching home explicitly; isolated fixtures default closed.
-        self.cursorDataRoot = cursorDataRoot ?? URL(fileURLWithPath: dbPath)
-            .deletingLastPathComponent()
-            .appendingPathComponent(".cursor-modern-unconfigured", isDirectory: true)
+        self.dbPath = capturedLegacySession == nil ? dbPath : ""
         self.limits = limits
         self.testHooks = testHooks
-        let databaseURL = URL(fileURLWithPath: dbPath)
-        let globalStorageURL = databaseURL.deletingLastPathComponent()
-        let workspaceStorageURL = globalStorageURL.lastPathComponent == "globalStorage"
-            ? globalStorageURL.deletingLastPathComponent().appendingPathComponent("workspaceStorage", isDirectory: true)
-            : nil
-        workspaceOwnership = CursorWorkspaceOwnershipResolver(
-            workspaceStorageURL: workspaceStorageURL,
-            globalDatabasePath: dbPath
-        )
+        self.capturedPrimaryMtimeNs = capturedPrimaryMtimeNs
+        self.capturedWALAbsent = capturedWALAbsent
+        self.capturedLegacySession = capturedLegacySession
+        if capturedLegacySession != nil {
+            // Even URL directory inference must not probe the archived path.
+            self.cursorDataRoot = URL(fileURLWithPath: "/", isDirectory: true)
+            workspaceOwnership = CursorWorkspaceOwnershipResolver(workspaceStorageURL: nil, globalDatabasePath: "")
+        } else {
+            // Injected legacy DBs do not discover the process user's ~/.cursor.
+            // Product factories pass the matching home explicitly.
+            self.cursorDataRoot = cursorDataRoot ?? URL(fileURLWithPath: dbPath)
+                .deletingLastPathComponent()
+                .appendingPathComponent(".cursor-modern-unconfigured", isDirectory: true)
+            let globalStorageURL = URL(fileURLWithPath: dbPath).deletingLastPathComponent()
+            let workspaceStorageURL = globalStorageURL.lastPathComponent == "globalStorage"
+                ? globalStorageURL.deletingLastPathComponent().appendingPathComponent("workspaceStorage", isDirectory: true)
+                : nil
+            workspaceOwnership = CursorWorkspaceOwnershipResolver(
+                workspaceStorageURL: workspaceStorageURL, globalDatabasePath: dbPath)
+        }
+    }
+
+    static func scanCapturedLegacySession(
+        _ session: ArchiveCursorLegacySession, logicalLocator: String,
+        limits: ParserLimits = .default
+    ) async throws -> AdapterParseResult<CapturedSourceScan> {
+        try Task.checkCancellation()
+        guard logicalLocator.utf8.elementsEqual(session.logicalLocator.utf8) else {
+            return .failure(.unsupportedVirtualLocator)
+        }
+        guard session.rawPayloadByteCount <= limits.maxFileBytes else {
+            return .failure(.fileTooLarge)
+        }
+        let adapter = CursorAdapter(dbPath: session.logicalDatabaseLocator, limits: limits,
+            capturedLegacySession: session)
+        switch try await adapter.scanForIndexing(locator: logicalLocator) {
+        case .failure(let failure): return .failure(failure)
+        case .success(let scan):
+            guard scan.info.id.utf8.elementsEqual(session.composerID.utf8),
+                  scan.info.cwd.utf8.elementsEqual(session.cwd.utf8) else { return .failure(.malformedJSON) }
+            return .success(CapturedSourceScan(scan: scan, rawSourceSessionID: session.composerID))
+        }
+    }
+
+    static func scanCapturedLegacySource(
+        physicalLocator: String, stagingRoot: String, logicalLocator: String,
+        context: ArchiveCursorLegacyContext, generation: ArchiveSourceGeneration
+    ) async throws -> AdapterParseResult<CapturedSourceScan> {
+        try Task.checkCancellation()
+        guard stagingRoot.hasPrefix("/"),
+              ArchiveReplayLayout.isNormalizedRelativePath(String(stagingRoot.dropFirst())),
+              physicalLocator.utf8.elementsEqual((stagingRoot + "/session.cursor-legacy.json").utf8),
+              logicalLocator.utf8.elementsEqual(context.logicalLocator.utf8) else {
+            return .failure(.unsupportedVirtualLocator)
+        }
+        // HQ seals and verifies this private file before/after the call. Bound
+        // the actual read too; direct callers cannot cause an unbounded read.
+        let descriptor = Darwin.open(physicalLocator, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard descriptor >= 0 else { return .failure(.sqliteUnreadable) }
+        defer { Darwin.close(descriptor) }
+        var info = stat()
+        guard Darwin.fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG else {
+            return .failure(.sqliteUnreadable)
+        }
+        guard info.st_size <= ArchiveCursorLegacySession.maximumEncodedByteCount else { return .failure(.fileTooLarge) }
+        var bytes = Data()
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
+            try Task.checkCancellation()
+            let count = buffer.withUnsafeMutableBytes { Darwin.read(descriptor, $0.baseAddress, $0.count) }
+            if count < 0 {
+                if errno == EINTR { continue }
+                return .failure(.sqliteUnreadable)
+            }
+            if count == 0 { break }
+            guard Int64(bytes.count) + Int64(count) <= ArchiveCursorLegacySession.maximumEncodedByteCount else {
+                return .failure(.fileTooLarge)
+            }
+            bytes.append(contentsOf: buffer.prefix(count))
+        }
+        let body: ArchiveCursorLegacySession
+        do {
+            body = try ArchiveCursorLegacySession.decodeCanonical(bytes)
+            guard body.databaseGeneration == generation, try ArchiveCursorLegacyContext(session: body) == context else {
+                return .failure(.malformedJSON)
+            }
+        } catch { return .failure(.malformedJSON) }
+        return try await scanCapturedLegacySession(body, logicalLocator: logicalLocator)
+    }
+
+    private func legacyDatabase(locator: String, path: String) throws -> Phase4SQLiteDatabase {
+        if let capturedLegacySession {
+            guard locator.utf8.elementsEqual(capturedLegacySession.logicalLocator.utf8) else {
+                throw ParserFailure.unsupportedVirtualLocator
+            }
+            return try Phase4SQLiteDatabase(cursorLegacySession: capturedLegacySession)
+        }
+        return try Phase4SQLiteDatabase(path: path)
+    }
+
+    static func scanCapturedSource(
+        physicalLocator: String, stagingRoot: String, logicalLocator: String,
+        replayLayout: ArchiveReplayLayout, capturedModificationNanoseconds: Int64?
+    ) async throws -> AdapterParseResult<CapturedSourceScan> {
+        try Task.checkCancellation()
+        guard let nativeID = ArchiveSourceDescriptor.cursorModernSessionID(replayLayout, locator: logicalLocator),
+              let entries = replayLayout.files, let primary = replayLayout.entrypointRelativePath,
+              let primaryEntry = entries.first(where: { $0.relativePath.utf8.elementsEqual(primary.utf8) }) else {
+            return .failure(.malformedJSON)
+        }
+        let root = URL(fileURLWithPath: stagingRoot, isDirectory: true)
+        guard physicalLocator.utf8.elementsEqual(root.appendingPathComponent(primary).path.utf8),
+              capturedModificationNanoseconds == nil || capturedModificationNanoseconds == primaryEntry.generation.mtimeNs else {
+            return .failure(.malformedJSON)
+        }
+        // Only declared members can supply metadata. An omitted WAL/meta file
+        // must not be borrowed from the physical staging tree.
+        for relative in replayLayout.absentRelativePaths ?? [] {
+            var info = stat()
+            guard Darwin.lstat(root.appendingPathComponent(relative).path, &info) != 0, errno == ENOENT else {
+                return .failure(.malformedJSON)
+            }
+        }
+        let modern = ModernLocator(sessionId: nativeID,
+            storeDBPath: entries.first(where: { $0.relativePath.hasSuffix("/store.db") })
+                .map { root.appendingPathComponent($0.relativePath).path },
+            transcriptPath: entries.first(where: { $0.relativePath.hasSuffix(".jsonl") })
+                .map { root.appendingPathComponent($0.relativePath).path })
+        // Construct exactly the captured locator; no home or legacy discovery.
+        let adapter = CursorAdapter(dbPath: root.appendingPathComponent(".no-legacy-db").path,
+            cursorDataRoot: root, capturedPrimaryMtimeNs: primaryEntry.generation.mtimeNs,
+            capturedWALAbsent: !entries.contains(where: { $0.relativePath.hasSuffix("/store.db-wal") }))
+        guard let confined = adapter.confinedModernLocator(modern),
+              let locator = encodeModernLocator(confined) else { return .failure(.malformedJSON) }
+        switch try await adapter.scanForIndexing(locator: locator) {
+        case .failure(let failure): return .failure(failure)
+        case .success(var scan):
+            if let failure = scan.parseFailure { return .failure(failure) }
+            guard scan.info.id.utf8.elementsEqual(nativeID.utf8) else { return .failure(.malformedJSON) }
+            scan.info.filePath = logicalLocator
+            return .success(CapturedSourceScan(scan: scan, rawSourceSessionID: nativeID))
+        }
     }
 
     func detect() async -> Bool {
-        JSONLAdapterSupport.fileExists(dbPath)
+        if capturedLegacySession != nil { return true }
+        return JSONLAdapterSupport.fileExists(dbPath)
             || JSONLAdapterSupport.isDirectory(cursorDataRoot.appendingPathComponent("chats", isDirectory: true))
             || JSONLAdapterSupport.isDirectory(cursorDataRoot.appendingPathComponent("projects", isDirectory: true))
     }
 
     func listSessionLocators() async throws -> [String] {
+        if let capturedLegacySession { return [capturedLegacySession.logicalLocator] }
         var legacy: [(id: String, locator: String)] = []
         if JSONLAdapterSupport.fileExists(dbPath) {
             let database = try Phase4SQLiteDatabase(path: dbPath)
@@ -95,7 +230,8 @@ final class CursorAdapter: SessionAdapter, ModificationFilteredSessionAdapter, S
         modifiedSince: Date,
         fileManager: FileManager
     ) async throws -> [String] {
-        try await listSessionLocators().filter { locator in
+        if let capturedLegacySession { return [capturedLegacySession.logicalLocator] }
+        return try await listSessionLocators().filter { locator in
             guard let modern = decodeModernLocator(locator) else {
                 guard let legacy = Self.parseVirtualLocator(locator),
                       let modifiedAt = try? fileManager.attributesOfItem(
@@ -111,11 +247,15 @@ final class CursorAdapter: SessionAdapter, ModificationFilteredSessionAdapter, S
     }
 
     func indexingInputIdentity(locator: String) -> IndexingInputIdentity? {
+        if capturedLegacySession != nil { return nil }
         guard let modern = decodeModernLocator(locator) else { return nil }
         return Self.compositeInputIdentity(modern)
     }
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        if let capturedLegacySession, !locator.utf8.elementsEqual(capturedLegacySession.logicalLocator.utf8) {
+            return .failure(.unsupportedVirtualLocator)
+        }
         if let modern = decodeModernLocator(locator) {
             return await parseModernSessionInfo(locator: locator, modern: modern)
         }
@@ -124,7 +264,7 @@ final class CursorAdapter: SessionAdapter, ModificationFilteredSessionAdapter, S
         }
 
         do {
-            let database = try Phase4SQLiteDatabase(path: locatorParts.dbPath)
+            let database = try legacyDatabase(locator: locator, path: locatorParts.dbPath)
             guard let composerRow = try database.query(
                 "SELECT value FROM cursorDiskKV WHERE key = ?",
                 bindings: ["composerData:\(locatorParts.composerId)"]
@@ -158,8 +298,12 @@ final class CursorAdapter: SessionAdapter, ModificationFilteredSessionAdapter, S
                 : firstUserText
             let displayTitle = Self.officialTitle(from: composerData)
             let sessionId = JSONLAdapterSupport.string(composerData["composerId"]) ?? locatorParts.composerId
-            let cwd = await workspaceOwnership.cwd(for: sessionId)
-            let project = cwd.isEmpty ? nil : URL(fileURLWithPath: cwd).lastPathComponent
+            let cwd: String
+            if let capturedLegacySession { cwd = capturedLegacySession.cwd }
+            else { cwd = await workspaceOwnership.cwd(for: sessionId) }
+            let project = capturedLegacySession != nil
+                ? cwd.split(separator: "/").last.map(String.init)
+                : (cwd.isEmpty ? nil : URL(fileURLWithPath: cwd).lastPathComponent)
             // Per-session size = this composer's raw JSON payload plus the raw
             // JSON of any separately-stored bubble rows. state.vscdb is shared
             // by every Cursor session, so measuring the whole file (the old
@@ -250,6 +394,9 @@ final class CursorAdapter: SessionAdapter, ModificationFilteredSessionAdapter, S
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> StreamMessagesResult {
+        if let capturedLegacySession, !locator.utf8.elementsEqual(capturedLegacySession.logicalLocator.utf8) {
+            throw ParserFailure.unsupportedVirtualLocator
+        }
         if let modern = decodeModernLocator(locator) {
             let result = try modernMessages(modern)
             return JSONLAdapterSupport.stream(
@@ -277,6 +424,7 @@ final class CursorAdapter: SessionAdapter, ModificationFilteredSessionAdapter, S
     }
 
     func isAccessible(locator: String) async -> Bool {
+        if let capturedLegacySession { return locator.utf8.elementsEqual(capturedLegacySession.logicalLocator.utf8) }
         if let modern = decodeModernLocator(locator) {
             return [modern.transcriptPath, modern.storeDBPath]
                 .compactMap { $0 }
@@ -302,12 +450,12 @@ final class CursorAdapter: SessionAdapter, ModificationFilteredSessionAdapter, S
         locator: String,
         locatorParts: (dbPath: String, composerId: String)
     ) async throws -> LegacyMessageReadResult {
-        let signature = ParsedTranscriptCache.Signature.forFile(locatorParts.dbPath)
+        let signature = capturedLegacySession == nil ? ParsedTranscriptCache.Signature.forFile(locatorParts.dbPath) : nil
         if let cached = await messageCache.cached(locator: locator, signature: signature) {
             return LegacyMessageReadResult(messages: cached, hasMoreMessages: false)
         }
         do {
-            let database = try Phase4SQLiteDatabase(path: locatorParts.dbPath)
+            let database = try legacyDatabase(locator: locator, path: locatorParts.dbPath)
             var composerData: Phase4AdapterSupport.JSONObject = [:]
             if let composerRow = try database.query(
                 "SELECT value FROM cursorDiskKV WHERE key = ?",
@@ -371,18 +519,19 @@ final class CursorAdapter: SessionAdapter, ModificationFilteredSessionAdapter, S
             guard messages.count <= limits.maxMessages else {
                 return .failure(.messageLimitExceeded)
             }
-            let metadata = try modernMetadata(modern)
+            let projection = try modernMetadata(modern)
+            let metadata = projection.metadata
             let firstUser = messages.first { $0.role == .user }?.content
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            let primaryModification = capturedPrimaryMtimeNs.map { Double($0) / 1_000_000 }
+                ?? Self.modificationMilliseconds(for: modern.transcriptPath ?? modern.storeDBPath)
             let createdAt = Phase4AdapterSupport.double(metadata["createdAtMs"])
                 ?? Phase4AdapterSupport.double(metadata["createdAt"])
-                ?? Self.modificationMilliseconds(for: modern.transcriptPath ?? modern.storeDBPath)
+                ?? primaryModification
                 ?? 0
-            let updatedAt = Self.modificationMilliseconds(for: modern.transcriptPath ?? modern.storeDBPath)
-                ?? createdAt
+            let updatedAt = primaryModification ?? createdAt
             let officialName = Self.officialTitle(from: metadata)
-            let cwd = JSONLAdapterSupport.string(metadata["cwd"])?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let cwd = projection.cwd
             let userCount = messages.filter { $0.role == .user }.count
             let assistantCount = messages.filter { $0.role == .assistant }.count
             let sizeBytes = [modern.storeDBPath, modern.transcriptPath]
@@ -456,7 +605,7 @@ final class CursorAdapter: SessionAdapter, ModificationFilteredSessionAdapter, S
             locator: storeDBPath,
             limits: limits
         )
-        let database = try Phase4SQLiteDatabase(path: storeDBPath)
+        let database = try modernDatabase(path: storeDBPath)
         let rows = try database.query("""
             SELECT CAST(data AS TEXT) AS data
             FROM blobs
@@ -487,33 +636,26 @@ final class CursorAdapter: SessionAdapter, ModificationFilteredSessionAdapter, S
         )
     }
 
-    private func modernMetadata(_ modern: ModernLocator) throws -> JSONLAdapterSupport.JSONObject {
-        var metadata: JSONLAdapterSupport.JSONObject = [:]
-        if let storeDBPath = modern.storeDBPath {
-            let database = try Phase4SQLiteDatabase(path: storeDBPath)
-            if let encoded = try database.query(
-                "SELECT value FROM meta WHERE key = '0' LIMIT 1"
-            ).first?["value"] ?? nil {
-                let data = Self.dataFromHex(encoded) ?? Data(encoded.utf8)
-                if let stored = try? JSONSerialization.jsonObject(with: data)
-                    as? JSONLAdapterSupport.JSONObject {
-                    metadata.merge(stored) { _, storedValue in storedValue }
-                }
-            }
-
-            let metaPath = URL(fileURLWithPath: storeDBPath)
-                .deletingLastPathComponent()
-                .appendingPathComponent("meta.json")
-            if let text = try? JSONLAdapterSupport.readString(
-                locator: metaPath.path,
-                limits: limits
-            ), let live = Phase4AdapterSupport.jsonObject(from: text) {
-                // The live per-chat metadata is authoritative over the older
-                // store.db snapshot, including an explicitly empty digest.
-                metadata.merge(live) { _, liveValue in liveValue }
-            }
+    private func modernMetadata(_ modern: ModernLocator) throws -> SourceMetadataProjection.CursorModernMetadata {
+        guard let storeDBPath = modern.storeDBPath else {
+            return SourceMetadataProjection.cursorModernMetadata(storedText: nil, liveText: nil)
         }
-        return metadata
+        let database = try modernDatabase(path: storeDBPath)
+        let storedText = try database.query("SELECT value FROM meta WHERE key = '0' LIMIT 1").first?["value"] ?? nil
+        let metaPath = URL(fileURLWithPath: storeDBPath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("meta.json")
+        let liveText = try? JSONLAdapterSupport.readString(locator: metaPath.path, limits: limits)
+        return SourceMetadataProjection.cursorModernMetadata(storedText: storedText, liveText: liveText)
+    }
+
+    private func modernDatabase(path: String) throws -> Phase4SQLiteDatabase {
+        // A captured main-only database may retain a WAL-mode header. Immutable
+        // mode reads those verified pages without requiring/creating sidecars.
+        // Never use it when a WAL member exists: that would ignore its frames.
+        let locator = capturedWALAbsent
+            ? URL(fileURLWithPath: path).absoluteString + "?immutable=1" : path
+        return try Phase4SQLiteDatabase(path: locator)
     }
 
     private static func modernMessage(from object: JSONLAdapterSupport.JSONObject) -> NormalizedMessage? {
@@ -700,20 +842,6 @@ final class CursorAdapter: SessionAdapter, ModificationFilteredSessionAdapter, S
             defer { free(resolved) }
             return String(cString: resolved)
         }
-    }
-
-    private static func dataFromHex(_ string: String) -> Data? {
-        guard string.count.isMultiple(of: 2) else { return nil }
-        var data = Data()
-        data.reserveCapacity(string.count / 2)
-        var index = string.startIndex
-        while index < string.endIndex {
-            let next = string.index(index, offsetBy: 2)
-            guard let byte = UInt8(string[index..<next], radix: 16) else { return nil }
-            data.append(byte)
-            index = next
-        }
-        return data
     }
 
     private static func modificationMilliseconds(for path: String?) -> Double? {

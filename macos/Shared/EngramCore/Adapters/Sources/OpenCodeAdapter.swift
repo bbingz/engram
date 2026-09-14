@@ -43,8 +43,66 @@ final class Phase4SQLiteDatabase {
         sqlite3_busy_timeout(database, 30000)
     }
 
+    /// Reconstruct only validated session rows. No source database or sidecar
+    /// is opened; query() retains the native SQLite-to-String conversion.
+    init(cursorLegacySession: ArchiveCursorLegacySession) throws {
+        guard sqlite3_open(":memory:", &database) == SQLITE_OK else {
+            sqlite3_close(database)
+            database = nil
+            throw ParserFailure.sqliteUnreadable
+        }
+        do {
+            try execute("CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value);")
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(database,
+                "INSERT INTO cursorDiskKV(rowid, key, value) VALUES (?, ?, ?)",
+                -1, &statement, nil) == SQLITE_OK, let statement else {
+                throw ParserFailure.sqliteUnreadable
+            }
+            defer { sqlite3_finalize(statement) }
+            for row in [cursorLegacySession.composer] + cursorLegacySession.bubbles {
+                try Task.checkCancellation()
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+                guard sqlite3_bind_int64(statement, 1, row.rowID) == SQLITE_OK,
+                      sqlite3_bind_text(statement, 2, row.key, Int32(row.key.utf8.count),
+                        Self.transientDestructor) == SQLITE_OK else { throw ParserFailure.sqliteUnreadable }
+                let status: Int32
+                if let value = row.value {
+                    if value.isEmpty {
+                        status = row.storage == .blob ? sqlite3_bind_zeroblob(statement, 3, 0)
+                            : sqlite3_bind_text(statement, 3, "", 0, Self.transientDestructor)
+                    } else {
+                        status = value.withUnsafeBytes { bytes in
+                            row.storage == .blob
+                                ? sqlite3_bind_blob(statement, 3, bytes.baseAddress, Int32(value.count), Self.transientDestructor)
+                                : sqlite3_bind_text(statement, 3, bytes.bindMemory(to: Int8.self).baseAddress,
+                                    Int32(value.count), Self.transientDestructor)
+                        }
+                    }
+                } else {
+                    status = sqlite3_bind_null(statement, 3)
+                }
+                guard status == SQLITE_OK, sqlite3_step(statement) == SQLITE_DONE else {
+                    throw ParserFailure.sqliteUnreadable
+                }
+            }
+            try execute("PRAGMA query_only=ON;")
+        } catch {
+            sqlite3_close(database)
+            database = nil
+            throw error
+        }
+    }
+
     deinit {
         sqlite3_close(database)
+    }
+
+    func execute(_ sql: String) throws {
+        guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else {
+            throw ParserFailure.sqliteUnreadable
+        }
     }
 
     func query(_ sql: String, bindings: [String] = []) throws -> [[String: String?]] {
@@ -127,6 +185,35 @@ final class OpenCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapter,
     ) {
         self.dbPath = dbPath
         self.limits = limits
+    }
+
+    /// Reads only the staged session image. Logical locators stay metadata.
+    static func scanCapturedSource(
+        physicalLocator: String,
+        logicalLocator: String,
+        context: ArchiveSQLiteSessionContext
+    ) async throws -> AdapterParseResult<CapturedSourceScan> {
+        try Task.checkCancellation()
+        guard exact(logicalLocator, context.databaseLocator + "::" + context.nativeSessionID),
+              !exact(physicalLocator, context.databaseLocator) else {
+            return .failure(.malformedJSON)
+        }
+        do {
+            try requireScopedCapturedImage(path: physicalLocator, context: context)
+        } catch let failure as ParserFailure {
+            return .failure(failure)
+        } catch {
+            return .failure(.malformedJSON)
+        }
+        switch try await OpenCodeAdapter(dbPath: physicalLocator).scanForIndexing(
+            locator: physicalLocator + "::" + context.nativeSessionID
+        ) {
+        case .failure(let error):
+            return .failure(error)
+        case .success(var scan):
+            scan.info.filePath = logicalLocator
+            return .success(CapturedSourceScan(scan: scan, rawSourceSessionID: context.nativeSessionID))
+        }
     }
 
     func detect() async -> Bool {
@@ -412,6 +499,118 @@ final class OpenCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapter,
             bindings: [sessionId]
         ).first
         return Phase4AdapterSupport.double(row?["time_created"] ?? nil)
+    }
+
+    private static func requireScopedCapturedImage(
+        path: String,
+        context: ArchiveSQLiteSessionContext
+    ) throws {
+        guard JSONLAdapterSupport.fileExists(path), !exact(path, context.databaseLocator) else {
+            throw ParserFailure.malformedJSON
+        }
+        let attributes = try FileManager.default.attributesOfItem(atPath: path)
+        guard let fileSize = (attributes[.size] as? NSNumber)?.int64Value, fileSize >= 100 else {
+            throw ParserFailure.malformedJSON
+        }
+        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path, isDirectory: false))
+        defer { try? handle.close() }
+        guard let header = try handle.read(upToCount: 100), header.count == 100,
+              header.starts(with: Data("SQLite format 3\0".utf8)),
+              header[18] == 1, header[19] == 1 else {
+            throw ParserFailure.malformedJSON
+        }
+        var pageSize = Int(header[16]) << 8 | Int(header[17])
+        if pageSize == 1 { pageSize = 65536 }
+        guard [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536].contains(pageSize),
+              fileSize % Int64(pageSize) == 0 else {
+            throw ParserFailure.malformedJSON
+        }
+
+        let database = try Phase4SQLiteDatabase(path: path)
+        try database.execute("PRAGMA query_only = ON")
+        try database.execute("PRAGMA temp_store = MEMORY")
+        try requireApplicationSchema(database)
+        let pageCount = try firstInteger(database, "PRAGMA page_count")
+        let pragmaPageSize = try firstInteger(database, "PRAGMA page_size")
+        let geometry = pragmaPageSize.multipliedReportingOverflow(by: pageCount)
+        guard !geometry.overflow, geometry.partialValue == fileSize,
+              pragmaPageSize == Int64(pageSize),
+              try firstInteger(database, "PRAGMA freelist_count") == 0 else {
+            throw ParserFailure.malformedJSON
+        }
+        guard try firstInteger(database, "SELECT count(*) AS value FROM session") == 1 else {
+            throw ParserFailure.malformedJSON
+        }
+        let sessionID = try database.query("SELECT id FROM session LIMIT 2").first?["id"] ?? nil
+        guard let sessionID, exact(sessionID, context.nativeSessionID) else {
+            throw ParserFailure.malformedJSON
+        }
+        guard try database.query(
+            """
+            SELECT 1 AS value FROM message
+            WHERE typeof(id) != 'text' OR typeof(session_id) != 'text'
+                OR session_id != ? COLLATE BINARY
+            LIMIT 1
+            """,
+            bindings: [context.nativeSessionID]
+        ).isEmpty else {
+            throw ParserFailure.malformedJSON
+        }
+        guard try database.query(
+            """
+            SELECT 1 AS value FROM part p
+            WHERE typeof(p.message_id) != 'text' OR NOT EXISTS (
+                SELECT 1 FROM message m
+                WHERE m.id = p.message_id COLLATE BINARY
+                    AND m.session_id = ? COLLATE BINARY
+            )
+            LIMIT 1
+            """,
+            bindings: [context.nativeSessionID]
+        ).isEmpty else {
+            throw ParserFailure.malformedJSON
+        }
+        guard try sessionPayloadSize(database: database, sessionId: context.nativeSessionID)
+            == context.nativePayloadByteCount else {
+            throw ParserFailure.malformedJSON
+        }
+    }
+
+    private static func requireApplicationSchema(_ database: Phase4SQLiteDatabase) throws {
+        let rows = try database.query("SELECT type, name, sql FROM sqlite_schema")
+        var tables = Set<String>()
+        for row in rows {
+            let type = (row["type"] ?? nil) ?? ""
+            let name = (row["name"] ?? nil) ?? ""
+            let sql = (row["sql"] ?? nil) ?? ""
+            if name.hasPrefix("sqlite_") { continue }
+            if type == "index" { continue }
+            guard type == "table", ["session", "message", "part"].contains(name),
+                  !sql.uppercased().contains("CREATE VIRTUAL TABLE") else {
+                throw ParserFailure.malformedJSON
+            }
+            tables.insert(name)
+        }
+        guard tables == Set(["session", "message", "part"]) else {
+            throw ParserFailure.malformedJSON
+        }
+    }
+
+    private static func firstInteger(
+        _ database: Phase4SQLiteDatabase,
+        _ sql: String,
+        bindings: [String] = []
+    ) throws -> Int64 {
+        guard let row = try database.query(sql, bindings: bindings).first,
+              let raw = row.values.compactMap({ $0 }).first,
+              let value = Int64(raw) else {
+            throw ParserFailure.malformedJSON
+        }
+        return value
+    }
+
+    private static func exact(_ lhs: String, _ rhs: String) -> Bool {
+        lhs.utf8.elementsEqual(rhs.utf8)
     }
 
     private static func splitVirtualLocator(_ locator: String) -> (dbPath: String, sessionId: String)? {

@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import SQLite3
 import XCTest
 @testable import EngramCoreRead
 @testable import EngramCoreWrite
@@ -8,6 +9,9 @@ import XCTest
 /// append-only detection, self-healing delete, one-time backfill, and the FTS job
 /// debounce). All temp DBs; no live DB.
 final class FTSIncrementalTests: XCTestCase {
+    /// Same 2048-identity fixture. Covering `(id,c0)` DELETE is ~6180 VM steps
+    /// (O(keys), not a seek). Payload virtual-table DELETE is ~20500.
+    fileprivate static let unmappedCoveringBound = 12000
     private var tempDir: URL!
 
     override func setUpWithError() throws {
@@ -38,6 +42,14 @@ final class FTSIncrementalTests: XCTestCase {
                 arguments: [sessionId]
             ).map { MapEntry(seq: $0["msg_seq"], rowid: $0["fts_rowid"], hash: $0["content_hash"] ?? "") }
         }
+    }
+
+    private func measureFtsHelperVM(_ db: Database, _ body: () throws -> Void) throws -> Int {
+        let probe = FtsHelperVMSteps()
+        probe.install(db)
+        defer { probe.remove(db) }
+        try body()
+        return probe.vmSteps
     }
 
     private func content(_ writer: EngramDatabaseWriter, _ sessionId: String) throws -> [String] {
@@ -260,6 +272,135 @@ final class FTSIncrementalTests: XCTestCase {
         XCTAssertEqual(s2Survives, rowids.count, "the ownership-guarded replace must not touch the reusing session's rows")
     }
 
+    func testFirstFillOwnedIdentityDeleteAvoidsFullScanAndKeepsUnrelated_repro() throws {
+        let writer = try makeWriter("first-fill-identity")
+        try writer.write { db in
+            for index in 0..<2048 {
+                try db.execute(
+                    sql: "INSERT INTO sessions_fts(session_id, content) VALUES (?, ?)",
+                    arguments: ["noise-\(index)", "noise-body-\(index)"]
+                )
+            }
+        }
+        try writer.write { db in
+            XCTAssertTrue(try FTSRebuildPolicy.hasOwnedContentIdentityIndex(db))
+            let coveringDelete = try measureFtsHelperVM(db) {
+                try db.execute(
+                    sql: """
+                    DELETE FROM sessions_fts
+                    WHERE rowid IN (
+                      SELECT id FROM sessions_fts_content
+                      INDEXED BY \(FTSRebuildPolicy.contentIdentityIndexName)
+                      WHERE c0 = ?
+                    )
+                    AND session_id = ?
+                    """,
+                    arguments: ["__covering_probe__", "__covering_probe__"]
+                )
+            }
+            let probe = FtsHelperVMSteps()
+            probe.install(db)
+            try FTSRebuildPolicy.replaceFtsContent(db, sessionId: "fresh", messages: ["fresh one"], summary: nil)
+            probe.remove(db)
+            fputs(
+                "FTS_UNMAPPED_VM firstFillDelete=\(probe.vmSteps) coveringDelete=\(coveringDelete) bound=\(Self.unmappedCoveringBound)\n",
+                stderr
+            )
+            XCTAssertLessThan(
+                coveringDelete,
+                Self.unmappedCoveringBound,
+                "covering identity DELETE of 2048 keys must stay under the payload-scan bound; observed \(coveringDelete)"
+            )
+            XCTAssertLessThan(
+                probe.vmSteps,
+                Self.unmappedCoveringBound,
+                "empty-map first fill must avoid unrelated FTS payload reads; covering-scans 2048 identity keys, not a seek; observed \(probe.vmSteps)"
+            )
+        }
+        XCTAssertEqual(try content(writer, "fresh"), ["fresh one"])
+        try writer.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT c1 FROM sessions_fts_content WHERE c0 = 'noise-0'"),
+                "noise-body-0"
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts_content WHERE c0 GLOB 'noise-*'"),
+                2048
+            )
+        }
+    }
+
+    func testInconsistentMapOwnedIdentityDeleteHealsUnmappedAndKeepsUnrelated_repro() throws {
+        let writer = try makeWriter("inconsistent-identity")
+        try writer.write { db in
+            for index in 0..<2048 {
+                try db.execute(
+                    sql: "INSERT INTO sessions_fts(session_id, content) VALUES (?, ?)",
+                    arguments: ["noise-\(index)", "noise-body-\(index)"]
+                )
+            }
+            try db.execute(sql: "INSERT INTO sessions_fts(session_id, content) VALUES ('s1', 'stale leftover')")
+            let noiseRow = try XCTUnwrap(
+                try Int64.fetchOne(db, sql: "SELECT rowid FROM sessions_fts WHERE session_id = 'noise-0'")
+            )
+            try db.execute(
+                sql: "INSERT INTO fts_map(session_id, msg_seq, fts_rowid, content_hash) VALUES ('s1', 0, ?, 'deadbeefdeadbeef')",
+                arguments: [noiseRow]
+            )
+        }
+        try writer.write { db in
+            let probe = FtsHelperVMSteps()
+            probe.install(db)
+            try FTSRebuildPolicy.replaceFtsContent(db, sessionId: "s1", messages: ["healed one", "healed two"], summary: nil)
+            probe.remove(db)
+            fputs("FTS_UNMAPPED_VM inconsistentDelete=\(probe.vmSteps) bound=\(Self.unmappedCoveringBound)\n", stderr)
+            XCTAssertLessThan(
+                probe.vmSteps,
+                Self.unmappedCoveringBound,
+                "inconsistent-map replace must avoid unrelated FTS payload reads; covering-scans 2048 identity keys, not a seek; observed \(probe.vmSteps)"
+            )
+        }
+        XCTAssertEqual(try content(writer, "s1"), ["healed one", "healed two"])
+        try writer.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT c1 FROM sessions_fts_content WHERE c0 = 'noise-0'"),
+                "noise-body-0"
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts_content WHERE c0 GLOB 'noise-*'"),
+                2048
+            )
+        }
+        XCTAssertEqual(
+            try writer.read { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 's1' AND content = 'stale leftover'")
+            },
+            0
+        )
+    }
+
+    func testUnknownIdentityIndexFirstFillStillReplacesAndKeepsUnrelated() throws {
+        let writer = try makeWriter("unknown-identity")
+        try writer.write { db in
+            try db.execute(sql: "DROP INDEX \(FTSRebuildPolicy.contentIdentityIndexName)")
+            for index in 0..<32 {
+                try db.execute(
+                    sql: "INSERT INTO sessions_fts(session_id, content) VALUES (?, ?)",
+                    arguments: ["noise-\(index)", "noise-body-\(index)"]
+                )
+            }
+            XCTAssertFalse(try FTSRebuildPolicy.hasOwnedContentIdentityIndex(db))
+            try FTSRebuildPolicy.replaceFtsContent(db, sessionId: "fresh", messages: ["fresh unknown"], summary: nil)
+        }
+        XCTAssertEqual(try content(writer, "fresh"), ["fresh unknown"])
+        XCTAssertEqual(
+            try writer.read { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts_content WHERE c0 GLOB 'noise-*'")
+            },
+            32
+        )
+    }
+
     // MARK: - Migration idempotency + one-time backfill from existing FTS rows
 
     func testMigrationBackfillsMapAndIsIdempotent() throws {
@@ -379,5 +520,30 @@ final class FTSIncrementalTests: XCTestCase {
             """) ?? false
         }
         XCTAssertTrue(claimableAfterMaxDelay, "content must be searchable within the max-delay bound of the first enqueue")
+    }
+}
+
+private final class FtsHelperVMSteps {
+    private(set) var vmSteps = 0
+
+    func install(_ db: Database) {
+        vmSteps = 0
+        guard let connection = db.sqliteConnection else { return }
+        var current: OpaquePointer?
+        while true {
+            current = sqlite3_next_stmt(connection, current)
+            guard let current else { break }
+            _ = sqlite3_stmt_status(current, SQLITE_STMTSTATUS_VM_STEP, 1)
+        }
+        sqlite3_trace_v2(connection, UInt32(SQLITE_TRACE_PROFILE), { _, context, statement, _ in
+            guard let context, let statement else { return 0 }
+            Unmanaged<FtsHelperVMSteps>.fromOpaque(context).takeUnretainedValue().vmSteps +=
+                Int(sqlite3_stmt_status(OpaquePointer(statement), SQLITE_STMTSTATUS_VM_STEP, 1))
+            return 0
+        }, Unmanaged.passUnretained(self).toOpaque())
+    }
+
+    func remove(_ db: Database) {
+        sqlite3_trace_v2(db.sqliteConnection, 0, nil, nil)
     }
 }

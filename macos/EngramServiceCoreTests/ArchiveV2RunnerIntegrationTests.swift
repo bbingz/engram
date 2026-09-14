@@ -19,7 +19,7 @@ final class ArchiveV2RunnerIntegrationTests: XCTestCase {
 
         let startupTask = try XCTUnwrap(source.range(of: "let initialScanTask = Task"))
         let startupTaskEnd = try XCTUnwrap(
-            source.range(of: "let remoteSync =", range: startupTask.lowerBound ..< source.endIndex)
+            source.range(of: "let livePublishSignal = LiveIngestPublishSignal()", range: startupTask.lowerBound ..< source.endIndex)
         )
         let startupTaskBody = String(source[startupTask.lowerBound ..< startupTaskEnd.lowerBound])
         XCTAssertTrue(startupTaskBody.contains("await archiveV2Coordinator.captureEnabled"))
@@ -504,8 +504,10 @@ final class ArchiveV2RunnerIntegrationTests: XCTestCase {
         XCTAssertTrue(handlerBlock.contains("archiveV2Coordinator: archiveV2Coordinator"))
 
         let initialTask = try XCTUnwrap(source.range(of: "let initialScanTask = Task"))
-        let remoteSync = try XCTUnwrap(source.range(of: "let remoteSync = try RemoteSyncCoordinator"))
-        let initialBlock = String(source[initialTask.lowerBound ..< remoteSync.lowerBound])
+        let initialTaskEnd = try XCTUnwrap(
+            source.range(of: "let livePublishSignal = LiveIngestPublishSignal()", range: initialTask.lowerBound ..< source.endIndex)
+        )
+        let initialBlock = String(source[initialTask.lowerBound ..< initialTaskEnd.lowerBound])
         XCTAssertTrue(initialBlock.contains("archiveV2Coordinator: archiveV2Coordinator"))
 
         let initialScanStart = try XCTUnwrap(source.range(of: "static func runInitialScan("))

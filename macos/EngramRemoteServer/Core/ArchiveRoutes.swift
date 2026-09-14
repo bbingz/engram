@@ -312,6 +312,9 @@ enum ArchiveRoutes {
             ("/v2/archive/receipts", "receipts"),
             ("/v2/archive/machines", "machines"),
             ("/v2/archive/status", "status"),
+            ("/v2/archive/publication-capabilities", "unknown"),
+            ("/v2/archive/publications", "unknown"),
+            ("/v2/archive/publications/:digest", "unknown"),
         ] {
             router.delete(RouterPath(path)) { request, _ in
                 await observed(request, endpoint: endpoint, telemetry: telemetry) {

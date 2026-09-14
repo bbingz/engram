@@ -77,6 +77,14 @@ enum EngramMigrations {
             -- session count refreshed by the status poll every ~10s, as an
             -- index-only scan instead of a full sessions-table scan.
             CREATE INDEX IF NOT EXISTS idx_sessions_visible ON sessions(hidden_at) WHERE hidden_at IS NULL;
+            -- Serves the web initial list key scan (visible top-level non-skip)
+            -- without heap-reading unrelated sessions overflow pages.
+            CREATE INDEX IF NOT EXISTS idx_sessions_web_list_keys
+            ON sessions(hidden_at, parent_session_id, suggested_parent_id, tier, start_time, id, source, authoritative_node)
+            WHERE hidden_at IS NULL
+              AND parent_session_id IS NULL
+              AND suggested_parent_id IS NULL
+              AND (tier IS NULL OR tier != 'skip');
             -- Serves remote-offload eligibility scans and read-path offloaded lookups.
             CREATE INDEX IF NOT EXISTS idx_sessions_offload_state ON sessions(offload_state);
 
@@ -550,6 +558,10 @@ enum EngramMigrations {
         try addSyncLedgerColumnsIfNeeded(db)
         try backfillFtsMapIfNeeded(db)
         try migrateAuxTablesToV2(db)
+        try CaptureIngestLedger.createSchema(db)
+        try CaptureIngestSourceRegistry.createSchema(db)
+        try CaptureIngestCommitter.createSchema(db)
+        try FTSRebuildPolicy.ensureOwnedContentIdentityIndex(db)
     }
 
     /// Idempotently add columns to `session_index_jobs` on legacy DBs whose CREATE

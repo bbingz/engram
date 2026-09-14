@@ -425,36 +425,44 @@ public enum SessionEmbeddingBackfill {
             let rows = try Row.fetchAll(
                 db,
                 sql: """
+                WITH pending AS MATERIALIZED (
+                  SELECT j.id AS job_id, j.session_id, j.status, j.retry_count, j.created_at
+                  FROM session_index_jobs j
+                  JOIN sessions s ON s.id = j.session_id
+                  WHERE j.job_kind = ?
+                    AND j.status IN ('pending', 'failed_retryable')
+                    AND s.hidden_at IS NULL
+                    AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
+                    AND j.session_id IN (
+                      SELECT session_id FROM sessions_fts WHERE LENGTH(TRIM(content)) > 0
+                    )
+                  ORDER BY
+                    CASE j.status WHEN 'pending' THEN 0 ELSE 1 END,
+                    j.retry_count,
+                    j.created_at,
+                    j.id
+                  LIMIT ?
+                )
                 SELECT
-                  j.id AS job_id,
-                  j.session_id AS session_id,
-                  NULLIF((
-                    SELECT GROUP_CONCAT(content, char(10))
+                  pending.job_id,
+                  pending.session_id,
+                  NULLIF(texts.content, '') AS content
+                FROM pending
+                JOIN (
+                    SELECT session_id, GROUP_CONCAT(content, char(10)) AS content
                     FROM (
-                      SELECT content
+                      SELECT session_id, content
                       FROM sessions_fts
-                      WHERE session_id = j.session_id
+                      WHERE session_id IN (SELECT session_id FROM pending)
                       ORDER BY rowid
                     )
-                  ), '') AS content
-                FROM session_index_jobs j
-                JOIN sessions s ON s.id = j.session_id
-                WHERE j.job_kind = ?
-                  AND j.status IN ('pending', 'failed_retryable')
-                  AND s.hidden_at IS NULL
-                  AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
-                  AND EXISTS (
-                    SELECT 1
-                    FROM sessions_fts ready
-                    WHERE ready.session_id = j.session_id
-                      AND LENGTH(TRIM(ready.content)) > 0
-                  )
+                    GROUP BY session_id
+                ) texts ON texts.session_id = pending.session_id
                 ORDER BY
-                  CASE j.status WHEN 'pending' THEN 0 ELSE 1 END,
-                  j.retry_count,
-                  j.created_at,
-                  j.id
-                LIMIT ?
+                  CASE pending.status WHEN 'pending' THEN 0 ELSE 1 END,
+                  pending.retry_count,
+                  pending.created_at,
+                  pending.job_id
                 """,
                 arguments: [IndexJobKind.embedding.rawValue, limit]
             )

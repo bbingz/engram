@@ -186,4 +186,131 @@ final class WindsurfAdapter: SessionAdapter, Sendable {
     func isAccessible(locator: String) async -> Bool {
         JSONLAdapterSupport.fileExists(locator)
     }
+
+    /// Replay a frozen official hook JSONL. Identity is the logical
+    /// `…/transcripts/{id}.jsonl` stem; the staged filename may differ.
+    /// Reads only `physicalLocator` bytes. Does not invent time, model, or cwd.
+    static func scanCapturedHookTranscript(
+        physicalLocator: String,
+        logicalLocator: String,
+        limits: ParserLimits = .default
+    ) async throws -> AdapterParseResult<CapturedSourceScan> {
+        try Task.checkCancellation()
+        guard let id = hookNativeID(logicalLocator: logicalLocator) else {
+            return .failure(.malformedJSON)
+        }
+        do {
+            let (objects, failure) = try JSONLAdapterSupport.readObjects(
+                locator: physicalLocator,
+                limits: limits,
+                reportFailures: true,
+                strictRecords: true
+            )
+            if let failure { return .failure(failure) }
+            var messages: [NormalizedMessage] = []
+            messages.reserveCapacity(objects.count)
+            for object in objects {
+                switch hookMessage(from: object) {
+                case .failure(let reason):
+                    return .failure(reason)
+                case .success(let message):
+                    messages.append(message)
+                }
+            }
+            guard !messages.isEmpty else {
+                return .failure(.noVisibleMessages)
+            }
+            let userCount = messages.filter { $0.role == .user }.count
+            let assistantCount = messages.filter { $0.role == .assistant }.count
+            let toolCount = messages.filter { $0.role == .tool }.count
+            let firstUserText = messages.first { $0.role == .user }?.content ?? ""
+            return .success(CapturedSourceScan(
+                scan: IndexingScan(
+                    info: NormalizedSessionInfo(
+                        id: id,
+                        source: .windsurf,
+                        startTime: "",
+                        endTime: nil,
+                        cwd: "",
+                        project: nil,
+                        model: nil,
+                        messageCount: messages.count,
+                        userMessageCount: userCount,
+                        assistantMessageCount: assistantCount,
+                        toolMessageCount: toolCount,
+                        systemMessageCount: 0,
+                        summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200)),
+                        filePath: logicalLocator,
+                        sizeBytes: JSONLAdapterSupport.fileSize(locator: physicalLocator),
+                        indexedAt: nil,
+                        agentRole: nil,
+                        originator: nil,
+                        origin: nil,
+                        summaryMessageCount: nil,
+                        tier: nil,
+                        qualityScore: nil,
+                        parentSessionId: nil,
+                        suggestedParentId: nil
+                    ),
+                    messages: messages
+                ),
+                rawSourceSessionID: id
+            ))
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let failure as ParserFailure {
+            return .failure(failure)
+        } catch {
+            return .failure(.malformedJSON)
+        }
+    }
+
+    /// Logical replay layout only. Does not consult a live transcripts root
+    /// or the staged physical name. Hidden stems and non-jsonl names fail.
+    private static func hookNativeID(logicalLocator: String) -> String? {
+        ArchiveSourceDescriptor.windsurfHookNativeID(logicalLocator: logicalLocator)
+    }
+
+    private static func hookTypeAndStatus(_ object: CascadeCacheSupport.JSONObject) -> (type: String, status: String)? {
+        guard let type = JSONLAdapterSupport.string(object["type"]), !type.isEmpty,
+              let status = JSONLAdapterSupport.string(object["status"]), !status.isEmpty else {
+            return nil
+        }
+        return (type, status)
+    }
+
+    private static func hookMessage(
+        from object: CascadeCacheSupport.JSONObject
+    ) -> Result<NormalizedMessage, ParserFailure> {
+        guard let header = hookTypeAndStatus(object) else {
+            return .failure(.malformedJSON)
+        }
+        switch header.type {
+        case "user_input":
+            guard let payload = JSONLAdapterSupport.object(object["user_input"]),
+                  let text = JSONLAdapterSupport.string(payload["user_response"]) else {
+                return .failure(.malformedJSON)
+            }
+            return .success(NormalizedMessage(role: .user, content: text))
+        case "planner_response":
+            guard let payload = JSONLAdapterSupport.object(object["planner_response"]),
+                  let text = JSONLAdapterSupport.string(payload["response"]) else {
+                return .failure(.malformedJSON)
+            }
+            return .success(NormalizedMessage(role: .assistant, content: text))
+        case "code_action":
+            guard JSONLAdapterSupport.object(object["code_action"]) != nil,
+                  let json = JSONLAdapterSupport.jsonString(object) else {
+                return .failure(.malformedJSON)
+            }
+            return .success(NormalizedMessage(role: .tool, content: json))
+        default:
+            guard let json = JSONLAdapterSupport.jsonString(object) else {
+                return .failure(.malformedJSON)
+            }
+            return .success(NormalizedMessage(role: .tool, content: json))
+        }
+    }
+
+
 }

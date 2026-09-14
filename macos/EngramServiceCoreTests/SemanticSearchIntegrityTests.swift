@@ -234,7 +234,9 @@ final class SemanticSearchIntegrityTests: XCTestCase {
             EngramServiceSearchRequest(query: "orphan recall", mode: "semantic", limit: 10)
         )
 
-        XCTAssertEqual(reader.immediateReadCount, 4)
+        // D11 adds one post-search insight-results immediate read after busy
+        // hydration (read 4) falls back. Hydration is still the busy slot.
+        XCTAssertEqual(reader.immediateReadCount, 5)
         XCTAssertEqual(response.searchModes, ["semantic"])
         XCTAssertEqual(response.items.map(\.id), ["s2"])
     }
