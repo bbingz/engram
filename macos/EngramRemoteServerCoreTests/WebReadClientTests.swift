@@ -1225,7 +1225,7 @@ final class WebMetadataClientTests: XCTestCase {
         do {
             let overview = try EngramServiceWebOverviewRequest()
             let sessions = try EngramServiceWebSessionsRequest()
-            XCTAssertEqual(overview.limit, 50)
+            XCTAssertEqual(overview.limit, 2)
             XCTAssertNil(overview.cursor)
             XCTAssertNil(overview.snapshotId)
             XCTAssertEqual(sessions.limit, 50)

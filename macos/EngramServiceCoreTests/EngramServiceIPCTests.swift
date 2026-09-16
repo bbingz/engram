@@ -4239,6 +4239,46 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(mixed.items.map(\.id), ["s1", "s2"])
     }
 
+    func testKeywordSearchSubTrigramHitsAreRecencyBounded_repro() async throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceReadProvider.swift")
+        let start = try XCTUnwrap(source.range(of: "private func shortTokenHitsCTE("))
+        let end = try XCTUnwrap(source.range(of: "private func indexExists(", range: start.lowerBound..<source.endIndex))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("INDEXED BY idx_sessions_activity_time"), body)
+        XCTAssertTrue(body.contains("JOIN fts_map m ON m.session_id = s.id"), body)
+        XCTAssertTrue(body.contains("LIMIT ?"), body)
+
+        let fixture = try MetadataSQLFixture()
+        defer { fixture.remove() }
+        try fixture.migrate()
+        try fixture.seedRegistry()
+        try fixture.seedBoundSession(id: "recent", start: "2026-09-03 12:00:00",
+                                     title: "测试 keep", indexReady: true)
+        for ordinal in 0..<64 {
+            try fixture.seedBoundSession(
+                id: String(format: "old-%02d", ordinal),
+                start: String(format: "2026-08-01 %02d:00:00", ordinal % 24),
+                nativeID: "native-old-\(ordinal)",
+                title: "测试 filler \(ordinal)",
+                indexReady: true)
+        }
+        try fixture.write { db in
+            XCTAssertFalse(try db.tableExists("sqlite_stat1"), "fixture must stay statistics-free like HQ")
+            try db.execute(sql: "DELETE FROM fts_map")
+            try db.execute(sql: """
+                INSERT INTO fts_map(session_id, msg_seq, fts_rowid, content_hash)
+                SELECT session_id, 0, rowid, '' FROM sessions_fts
+                """)
+            XCTAssertGreaterThan(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM fts_map") ?? 0, 60)
+        }
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: fixture.path)
+        let page = try await provider.search(
+            EngramServiceSearchRequest(query: "测试", mode: "keyword", limit: 10)
+        )
+        XCTAssertEqual(page.items.first?.id, "recent")
+        XCTAssertTrue(page.items.contains { $0.id == "recent" })
+    }
+
     // Web parity closeout: the HQ index carries the owned FTS layout plus the
     // covering `idx_sessions_fts_content_identity` index, which the search now
     // uses to resolve hit -> session_id without seeking content rows. Results

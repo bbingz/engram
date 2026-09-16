@@ -2,6 +2,11 @@
 
 ## Changelog Memo
 
+### 2026-09-15
+
+- [验证] 完整 scheme：RemoteServerCore 506、CoreTests 2013（1 skip）绿；ServiceCore 因 `testOverviewOrdersMachineThenInstance` 仍按默认 limit 取 3 条 stream 失败。测试改为显式 `limit: 3` 后 `WebMetadataProducerTests` 91/91。未提交、未部署。
+- [修复] HQ Web 六项残留（仅 collector worktree，未部署）：overview 省略 limit 50→2；会话列表 1–2 字不再对 `sessions_fts` 无界 LIKE（空页 + `query_too_short`，去 Search）；Search 短词 LIKE 按 recency/`fts_map` 封顶；Files `agents=all` 增加测试用覆盖部分索引 `idx_sessions_activity_id`（未 migrate HQ）；Health 改文案区分 skip 终态与空转写隔离。证据与未跑全套见 `CHANGELOG.md` 顶部。
+
 ### 2026-09-14
 
 - [修复] `agents=all`/`agents=only`（会话页「All」「Agents Only」、Stats 的 Agents 选项）在 HQ 规模下整体失效：默认 `hide` 带 `parent IS NULL AND suggested IS NULL` 两个等值，规划器自己会选覆盖部分索引 `idx_sessions_web_list_keys`；`all`/`only` 只剩 `hidden_at IS NULL` 一个索引约束，无统计的 HQ 库选 `idx_sessions_visible` 读全部 44k 可见会话行（其中 32k skip 层随即丢弃）。r14 实测：会话「All」1.85s，Tools all 503/2.08s，Files all 503/2.00s，「All」+ 搜索词 1.6–1.8s。`sessionsJoinSQL(agents:on:)` 对 `.all/.only` 把 `sessions s` 写成 `INDEXED BY idx_sessions_activity_time`（迁移自带的排除 skip 的部分索引），用于列表、总数（含搜索总数：线上 1.65s→0.02s）、工具、文件四类语句；页面新鲜度复查的 ID 批次（≤50 个）改为钉住主键（`primaryKeyJoinSQL`，仅当 `sqlite_master` 有 `sqlite_autoindex_sessions_1` 才加 hint），此前 `all`+搜索时它也走 visible 索引重读 44k 行（一次请求 1200 个采样中 950 个在这里）。r17 线上未缓存：会话 all 0.07s、all+xcodegen 0.13s、all+source+query 0.32s、Tools all 0.38–0.59s、Files all 1.14s（剩余最慢项，走非覆盖索引读 11.8k 行；覆盖索引需迁移，未做）。浏览器：「All」1–50 of 6,545、+xcodegen 1–50 of 122、Tools 按会话分组 agents=All 5,380 组、Files 有行、Child sessions 显示「No child sessions」而非「unavailable」。新增 `testAgentsAllPinsSessionsToSkipExcludingIndex_repro`，`WebMetadataProducerTests` 搜索用例增加 `.all` 断言。r15/r16/r17 依次激活（回滚 plist 均留），Grok lanes-10/11 106/106，lanes-12 105/106（唯一失败为已知负载敏感的 costs 用例，与改动语句无关，单跑通过）。

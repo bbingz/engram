@@ -2692,7 +2692,8 @@ enum WebUIRoutes {
               row(label, Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString("en-US") : "Not reported");
             }
             count("Captured files", stream.ingest && stream.ingest.publicationCount);
-            [["Pending", "pending"], ["Processing", "processing"], ["Parsed", "parsed"], ["Index ready", "indexReady"],
+            [["Pending", "pending"], ["Processing", "processing"],
+              ["Parsed (includes skip)", "parsed"], ["Indexed for search", "indexReady"],
               ["Retryable failures", "retryableFailure"], ["Quarantined", "quarantined"]].forEach(function (metric) {
               count(metric[0], tasks && tasks[metric[1]]);
             });
@@ -2706,6 +2707,14 @@ enum WebUIRoutes {
               ? stream.replicaACKs.map(function (ack) { return ack.serverId + ": " + healthTime(ack.observedAt); }).join("; ") || "None reported"
               : "Not reported");
             card.appendChild(metrics);
+            const parsedNote = document.createElement("p");
+            parsedNote.className = "health-note";
+            setText(parsedNote, "Skip-tier sessions stay Parsed and are not a search backlog.");
+            card.appendChild(parsedNote);
+            const quarantineNote = document.createElement("p");
+            quarantineNote.className = "health-note";
+            setText(quarantineNote, "Quarantined counts include empty transcripts (parse.noVisibleMessages), not a Cursor-only parser failure.");
+            card.appendChild(quarantineNote);
             const identity = document.createElement("details");
             const caption = document.createElement("summary");
             setText(caption, "Source identity");
@@ -2791,7 +2800,7 @@ enum WebUIRoutes {
             sessionPageSizes.push(size);
             sessionPage = sessionPageSizes.length - 1;
           }
-          if (!more && !(page.items || []).length) setText(sessionsNode, "No sessions found");
+          if (!more && !(page.items || []).length) setText(sessionsNode, page.warning || "No sessions found");
           (page.items || []).forEach(function (item) {
             const button = document.createElement("button");
             button.type = "button";

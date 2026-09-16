@@ -45,12 +45,24 @@ final class WebMetadataHTTPTests: XCTestCase {
             XCTAssertEqual(body.streams.count, 1)
             XCTAssertEqual(body.streams[0].machineId, Self.machine)
         }
-        XCTAssertEqual(recorders.overview.values.map(\.limit), [50])
+        XCTAssertEqual(recorders.overview.values.map(\.limit), [2])
         XCTAssertEqual(recorders.overview.values.map(\.snapshotId), [nil])
         XCTAssertEqual(recorders.overview.values.map(\.cursor), [nil])
         XCTAssertTrue(recorders.sessions.values.isEmpty)
         XCTAssertTrue(recorders.detail.values.isEmpty)
         XCTAssertTrue(fixture.requests.isEmpty)
+    }
+
+    func testOverviewOmittedHTTPLimitDefaultsToUIPageSize_repro() async throws {
+        let fixture = try fixture()
+        defer { fixture.stop() }
+        let recorders = A5bRouteRecorders()
+        try await withServer(surface: recordingSurface(recorders: recorders)) { server in
+            let cookie = try await Self.login(server)
+            let response = try await server.request("GET", "/web/api/overview", headers: Self.originHeaders + [("Cookie", cookie)])
+            XCTAssertEqual(response.status, 200)
+            XCTAssertEqual(recorders.overview.values.map(\.limit), [2])
+        }
     }
 
     func testOverviewContinuationPassesSnapshotIdAndCursor() async throws {

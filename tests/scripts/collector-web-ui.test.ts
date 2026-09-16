@@ -479,6 +479,22 @@ describe('native ranked search and readiness', () => {
 });
 
 describe('legacy session paging and search filters', () => {
+  it('shows the short-query warning instead of an empty list', async () => {
+    const ui = harness();
+    const pending = ui.call('loadSessions(false)');
+    ui.requests[0].resolve({
+      snapshotId: 'short',
+      totalCount: 0,
+      items: [],
+      warning: 'Use Search for 1-2 character filters (8s budget).',
+      warningCode: 'query_too_short',
+    });
+    await pending;
+    expect(ui.node('sessions').textContent).toBe(
+      'Use Search for 1-2 character filters (8s budget).',
+    );
+  });
+
   it('shows one page at a time and revisits previous pages without losing the cursor', async () => {
     const ui = harness();
     const first = ui.call('loadSessions(false)');
@@ -2017,6 +2033,12 @@ describe('native Health page and navigation', () => {
     expect(health.textContent).toContain('Codex');
     expect(health.textContent).toContain('Cursor');
     expect(health.textContent).toContain('Pending3');
+    expect(health.textContent).toContain('Parsed (includes skip)');
+    expect(health.textContent).toContain('Indexed for search');
+    expect(health.textContent).toContain(
+      'Skip-tier sessions stay Parsed and are not a search backlog.',
+    );
+    expect(health.textContent).toContain('parse.noVisibleMessages');
     expect(health.textContent).toContain('Retryable failures1');
     expect(health.textContent).toContain('Quarantined1');
     expect(health.textContent).toContain('Not reported');

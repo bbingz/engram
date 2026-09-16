@@ -1,5 +1,80 @@
 # Changelog
 
+## HQ Web residuals: overview default, CJK bounds, files covering index, Health copy (2026-09-15)
+
+Worktree-only on `codex/collector-server-web-20260905` (HEAD still `922a47b6` plus this
+diff). Not packaged, not activated, not merged to main (`625ecc97`). Live HQ stays
+service-index `web-parity-20260913-r17` / remote-server `r5`. Brief:
+`docs/superpowers/plans/2026-09-14-hq-web-residuals.md`. No Docker, no `~/.engram`
+writes, no HQ `ANALYZE`, no skip→`index_ready`, no r9–r17 reopen.
+
+1. **Omitted `GET /web/api/overview` limit 50 → 2.** `WebReadRoutes.overviewRequest`
+   and `EngramServiceWebOverviewRequest.init(limit:)` now default to the UI page
+   size. `pageRequest` still accepts 1...100. Other routes keep their own omitted
+   defaults. No `readyCount` / ledger rewrite. Pins:
+   `WebMetadataHTTPTests` omitted HTTP = `[2]`,
+   `testOverviewOmittedHTTPLimitDefaultsToUIPageSize_repro`,
+   `WebMetadataClientTests` constructor `overview.limit == 2`.
+
+2. **Sessions-list two-scalar `query` no longer unbounded-LIKE `sessions_fts`.**
+   `ServiceWebMetadataProducer.sessionFilter` returns `nil` when any searchable
+   term is below the trigram threshold (`CJKText.usesTrigramMatch`, still ≥3
+   scalars). The list returns an empty page with
+   `warning` / `warningCode` (`query_too_short`,
+   `"Use Search for 1-2 character filters (8s budget)."`). MATCH ≥3 and
+   identity-first search are unchanged.
+   `testSessionsShortQueryDoesNotScanFTSLike_repro` traces SQL;
+   `testSessionsOwnedMatchAndShortLikeKeepsConjunction` now uses two MATCH
+   terms (`"history keep"`).
+
+3. **Search sub-trigram LIKE is bounded.** `keywordSearch` builds
+   `shortTokenHitsCTE`: when `fts_map` and `idx_sessions_activity_time` exist,
+   recency walk `INDEXED BY idx_sessions_activity_time` + `JOIN fts_map` +
+   `LIKE` + `LIMIT ?`; else `FROM sessions_fts WHERE content LIKE ? LIMIT ?`
+   (minimal `seedSearchFixture`). Cap `shortQueryHitCap` =
+   `max(256, min(limit * 32, 2048))`. Insights LIKE untouched.
+   `testSQLiteReadProviderCJKTrigramTermsRankByRelevance_repro` still requires
+   MATCH for 3+ scalars. New
+   `testKeywordSearchSubTrigramHitsAreRecencyBounded_repro` (source-scan +
+   fixture).
+
+4. **Files `agents=all` covering partial, tests only.** Idempotent
+   `CREATE INDEX IF NOT EXISTS idx_sessions_activity_id ON sessions(id) WHERE
+   hidden_at IS NULL AND (tier IS NULL OR tier != 'skip')` in
+   `EngramMigrations.createOrUpdateBaseSchema`. `fileActivityJoinSQL` uses it
+   for `.all`/`.only`; `.hide` stays a plain JOIN.
+   `sessionsJoinSQL` / `idx_sessions_activity_time` for tools/list unchanged.
+   `testFileActivityCoveringActivityIdIndexIsUsedWithoutHeap_repro` EXPLAINs a
+   statistics-free fixture: must use `idx_sessions_activity_id`, never
+   `idx_sessions_visible`. SQLite reports `SCAN s USING INDEX
+   idx_sessions_activity_id` (index-only id list); do not require the word
+   `COVERING`. `testCreatesFreshCurrentSchema` lists the new index. No HQ
+   migrate.
+
+5–6. **Health copy only.** Labels `"Parsed (includes skip)"` and
+   `"Indexed for search"`; notes after the metrics `<dl>`:
+   skip-tier Parsed is not a search backlog, and quarantined counts include
+   empty transcripts (`parse.noVisibleMessages`), not a Cursor-only parser
+   failure. `ensureCurrentCaptureFTSJob` skip guard unchanged. No Cursor
+   adapter `_repro`.
+
+Focused verification (isolated `/tmp/engram-residuals-20260914` DerivedData /
+`CFFIXED_USER_HOME` where used; `CODE_SIGNING_ALLOWED=NO`): Task 1 HTTP/DTO
+tests; Task 2 producer `_repro` trio; Task 3 IPC CJK trio; Task 4
+`MigrationRunnerTests` covering + schema, `WebFileActivityProducerTests`,
+`testAgentsAllPinsSessionsToSkipExcludingIndex_repro`; Tasks 2/5/6
+`npm test -- tests/scripts/collector-web-ui.test.ts` 176/176 and
+`./node_modules/.bin/biome check` on that file. Shared `#query` placeholder
+reverted to `"Keywords"` (1–2 character guidance stays on the sessions-list
+empty-state warning only).
+
+Full schemes 2026-09-15 (`/tmp/engram-review-residuals-dd`):
+`EngramRemoteServerCore` 506/506, `EngramCoreTests` 2013/2013 (1 skip).
+`EngramServiceCore` 1580 with 11 failures; the only one caused by this
+default-limit change was `testOverviewOrdersMachineThenInstance` (three
+seeded streams vs omitted limit 2). That test now requests `limit: 3`.
+No live HQ timing claimed.
+
 ## `agents=all` / `agents=only` at HQ scale: pin the visible-session driver (2026-09-14, r15–r17)
 
 With the default `agents=hide`, every list, tool and file statement carries

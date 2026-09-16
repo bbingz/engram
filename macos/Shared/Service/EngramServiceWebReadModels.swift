@@ -284,7 +284,7 @@ struct EngramServiceWebOverviewRequest: Codable, Equatable, Sendable {
     let snapshotId: String?
     let cursor: String?
 
-    init(limit: Int = 50, snapshotId: String? = nil, cursor: String? = nil) throws {
+    init(limit: Int = 2, snapshotId: String? = nil, cursor: String? = nil) throws {
         try EngramServiceWebMetadataValidation.pageRequest(limit: limit, snapshotId: snapshotId, cursor: cursor)
         self.limit = limit
         self.snapshotId = snapshotId
@@ -609,7 +609,7 @@ struct EngramServiceWebSessionSummary: Codable, Equatable, Sendable {
 
 struct EngramServiceWebSessionsResponse: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
-        case snapshotId, observedAt, items, nextCursor, totalCount
+        case snapshotId, observedAt, items, nextCursor, totalCount, warning, warningCode
     }
 
     let snapshotId: String
@@ -617,14 +617,18 @@ struct EngramServiceWebSessionsResponse: Codable, Equatable, Sendable {
     let items: [EngramServiceWebSessionSummary]
     let nextCursor: String?
     let totalCount: Int64?
+    let warning: String?
+    let warningCode: String?
 
     init(snapshotId: String, observedAt: Int64, items: [EngramServiceWebSessionSummary],
-         nextCursor: String?, totalCount: Int64? = nil) {
+         nextCursor: String?, totalCount: Int64? = nil, warning: String? = nil, warningCode: String? = nil) {
         self.snapshotId = snapshotId
         self.observedAt = observedAt
         self.items = items
         self.nextCursor = nextCursor
         self.totalCount = totalCount
+        self.warning = warning
+        self.warningCode = warningCode
     }
 }
 
@@ -2215,7 +2219,9 @@ extension EngramServiceWebSessionsResponse {
             observedAt: try c.decode(Int64.self, forKey: .observedAt),
             items: try c.decode([EngramServiceWebSessionSummary].self, forKey: .items),
             nextCursor: try c.decodeIfPresent(String.self, forKey: .nextCursor),
-            totalCount: try c.decodeIfPresent(Int64.self, forKey: .totalCount)
+            totalCount: try c.decodeIfPresent(Int64.self, forKey: .totalCount),
+            warning: try c.decodeIfPresent(String.self, forKey: .warning),
+            warningCode: try c.decodeIfPresent(String.self, forKey: .warningCode)
         )
         try V.page(snapshotId: snapshotId, count: items.count, nextCursor: nextCursor)
         try V.time(observedAt)
@@ -2224,6 +2230,9 @@ extension EngramServiceWebSessionsResponse {
             try V.require(totalCount >= Int64(items.count))
         }
         try V.require(Set(items.map { Data($0.sessionId.utf8) }).count == items.count)
+        if let warning { try V.text(warning, maximumBytes: 1024) }
+        if let warningCode { try V.token(warningCode, maximumBytes: 64) }
+        try V.require((warning == nil) == (warningCode == nil))
     }
 
     func encode(to encoder: Encoder) throws {
@@ -2233,6 +2242,8 @@ extension EngramServiceWebSessionsResponse {
         try c.encode(items, forKey: .items)
         try c.encodeIfPresent(nextCursor, forKey: .nextCursor)
         try c.encodeIfPresent(totalCount, forKey: .totalCount)
+        try c.encodeIfPresent(warning, forKey: .warning)
+        try c.encodeIfPresent(warningCode, forKey: .warningCode)
     }
 }
 

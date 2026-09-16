@@ -1192,8 +1192,9 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             // Three phases, each bounded by the one before it:
             //  1. `mN_hits` / `mN`: per-token hit rows and candidate sessions.
             //     Tokens of >= 3 scalars (Latin or CJK) use trigram MATCH,
-            //     which is index-only; shorter tokens have no trigram and fall
-            //     back to a single LIKE content scan.
+            //     which is index-only; shorter tokens have no trigram and use
+            //     a recency-ordered LIKE through fts_map with an early-stop
+            //     LIMIT (unbounded content LIKE 503s the 8s Search budget).
             //  2. `top`: AND-join the candidates, probe `sessions` by primary
             //     key (CROSS JOIN fixes the order), apply filters, rank, LIMIT.
             //  3. `mN_best`: choose one matched row per LIMIT'd session and
@@ -1230,14 +1231,9 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     }
                     args.append(termMatches[index])
                 } else {
-                    ctes.append("""
-                        \(alias)_hits AS MATERIALIZED (
-                            SELECT rowid AS fts_rowid, session_id, 0.0 AS rank
-                            FROM sessions_fts
-                            WHERE content LIKE ? ESCAPE '\\'
-                        )
-                    """)
+                    ctes.append(try shortTokenHitsCTE(alias: alias, db: db))
                     args.append("%\(CJKText.escapeLikePattern(token))%")
+                    args.append(Self.shortQueryHitCap(limit: limit))
                 }
                 ctes.append("""
                     \(alias) AS MATERIALIZED (
@@ -2782,6 +2778,43 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
 
     private static func isSQLiteBusyOrLocked(_ error: DatabaseError) -> Bool {
         error.resultCode == .SQLITE_BUSY || error.resultCode == .SQLITE_LOCKED
+    }
+
+    private static func shortQueryHitCap(limit: Int) -> Int {
+        max(256, min(limit * 32, 2_048))
+    }
+
+    private func shortTokenHitsCTE(alias: String, db: GRDB.Database) throws -> String {
+        let mapped = try tableExists("fts_map", db: db) && indexExists("idx_sessions_activity_time", db: db)
+        if mapped {
+            return """
+                \(alias)_hits AS MATERIALIZED (
+                    SELECT f.rowid AS fts_rowid, s.id AS session_id, 0.0 AS rank
+                    FROM sessions s INDEXED BY idx_sessions_activity_time
+                    JOIN fts_map m ON m.session_id = s.id COLLATE BINARY
+                    JOIN sessions_fts f ON f.rowid = m.fts_rowid
+                    WHERE s.hidden_at IS NULL
+                      AND (s.tier IS NULL OR s.tier != 'skip')
+                      AND f.content LIKE ? ESCAPE '\\'
+                    LIMIT ?)
+            """
+        }
+        return """
+            \(alias)_hits AS MATERIALIZED (
+                SELECT rowid AS fts_rowid, session_id, 0.0 AS rank
+                FROM sessions_fts
+                WHERE content LIKE ? ESCAPE '\\'
+                LIMIT ?)
+        """
+    }
+
+    private func indexExists(_ name: String, db: GRDB.Database) throws -> Bool {
+        let count = try Int.fetchOne(
+            db,
+            sql: "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?",
+            arguments: [name]
+        ) ?? 0
+        return count > 0
     }
 
     private func tableExists(_ table: String, db: GRDB.Database) throws -> Bool {

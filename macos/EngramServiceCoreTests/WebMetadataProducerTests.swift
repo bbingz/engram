@@ -700,7 +700,9 @@ final class WebMetadataProducerTests: XCTestCase {
         try fixture.seedRegistry()
         let producer = try fixture.producer()
         defer { try? producer.stop() }
-        let page = try await producer.overview(try EngramServiceWebOverviewRequest(), requestId: requestId,
+        // Default overview page size is the UI's limit=2; this case needs the
+        // full three-stream order, so request an explicit page that fits it.
+        let page = try await producer.overview(try EngramServiceWebOverviewRequest(limit: 3), requestId: requestId,
                                                deadline: fixture.deadline())
         XCTAssertEqual(page.streams.map { Data("\($0.machineId)/\($0.sourceInstanceId)".utf8) },
                        ["\(machine)/\(instance)", "\(machine)/\(secondInstance)", "\(secondMachine)/\(secondInstance)"].map { Data($0.utf8) })
@@ -1895,9 +1897,45 @@ final class WebMetadataProducerTests: XCTestCase {
         let producer = try fixture.producer()
         defer { try? producer.stop() }
         let page = try await producer.sessions(
-            try EngramServiceWebSessionsRequest(query: "history xy", limit: 20),
+            try EngramServiceWebSessionsRequest(query: "history keep", limit: 20),
             requestId: requestId, deadline: fixture.deadline())
         XCTAssertEqual(page.items.map(\.sessionId), ["keep"])
+    }
+
+    func testSessionsShortQueryDoesNotScanFTSLike_repro() async throws {
+        let fixture = try MetadataSQLFixture()
+        defer { fixture.remove() }
+        try fixture.migrate()
+        try fixture.seedRegistry()
+        try fixture.seedBoundSession(id: "hit", start: "2026-09-03 12:00:00",
+                                     title: "测试 keep", indexReady: true)
+        try fixture.write { db in
+            let body = String(repeating: "测试 ", count: 4096)
+            for ordinal in 0..<32 {
+                try db.execute(sql: "INSERT INTO sessions_fts(session_id, content) VALUES (?, ?)",
+                               arguments: ["filler-\(ordinal)", body])
+            }
+            XCTAssertFalse(try db.tableExists("sqlite_stat1"), "fixture must stay statistics-free like HQ")
+        }
+        let statements = MetadataShortQueryStatements()
+        let producer = try fixture.producer(hooks: .init(prepareDatabase: { db in
+            db.trace(options: .statement) { event in
+                if case .statement(let statement) = event { statements.record(statement.sql) }
+            }
+        }))
+        defer { try? producer.stop() }
+        let page = try await producer.sessions(
+            try EngramServiceWebSessionsRequest(query: "测试", limit: 20),
+            requestId: requestId, deadline: fixture.deadline())
+        XCTAssertEqual(page.items, [])
+        XCTAssertEqual(page.totalCount, 0)
+        XCTAssertEqual(page.warningCode, "query_too_short")
+        XCTAssertEqual(page.warning, "Use Search for 1-2 character filters (8s budget).")
+        XCTAssertFalse(statements.values.contains { $0.contains("content LIKE") },
+                       statements.values.joined(separator: "\n---\n"))
+        XCTAssertFalse(statements.values.contains {
+            $0.localizedCaseInsensitiveContains("like") && $0.contains("sessions_fts")
+        }, statements.values.joined(separator: "\n---\n"))
     }
 
     func testSessionsOwnedMatchFallsBackWhenIdentityIndexIsAbsentOrWrong() async throws {
@@ -3921,6 +3959,14 @@ private final class MetadataSQLObserver: @unchecked Sendable {
             XCTAssertEqual(record.lock.withLock { record.productionDenials }, 0, record.description)
         }
     }
+
+}
+
+private final class MetadataShortQueryStatements: @unchecked Sendable {
+    private let lock = NSLock()
+    private var statements: [String] = []
+    func record(_ sql: String) { lock.withLock { statements.append(sql) } }
+    var values: [String] { lock.withLock { statements } }
 }
 
 private final class MetadataSnapshotLifecycleObserver: @unchecked Sendable {

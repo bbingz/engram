@@ -573,10 +573,12 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                 lease.sessionsTotal = prepared.total
             }
             let token = position.successor ?? Self.token()
+            let shortQuery = Self.sessionsShortQuery(request.query)
             let count = try Self.fittingCount(prepared.rows.count, limit: request.limit, fixed: position.count) { count in
                 try Self.encodedSuccessFrame(requestId: requestId, result: EngramServiceWebSessionsResponse(
                     snapshotId: lease.id, observedAt: lease.observedAt, items: prepared.rows.prefix(count).map(\.summary),
-                    nextCursor: prepared.rows.count > count ? token : nil, totalCount: prepared.totalCount))
+                    nextCursor: prepared.rows.count > count ? token : nil, totalCount: prepared.totalCount,
+                    warning: shortQuery?.warning, warningCode: shortQuery?.code))
             }
             let page = Array(prepared.rows.prefix(count))
             try self.hooks.afterPreparation?(.sessions)
@@ -612,7 +614,8 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             let next = try self.successor(lease, position: position, count: count, hasMore: prepared.rows.count > count,
                 last: page.last.map { .session($0.summary.startedAt, $0.summary.sessionId) }, proposed: token)
             let result = EngramServiceWebSessionsResponse(snapshotId: lease.id, observedAt: lease.observedAt,
-                items: page.map(\.summary), nextCursor: next, totalCount: prepared.totalCount)
+                items: page.map(\.summary), nextCursor: next, totalCount: prepared.totalCount,
+                warning: shortQuery?.warning, warningCode: shortQuery?.code)
             try Self.validate(result, requestID: requestId)
             return result
         }
@@ -1923,7 +1926,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
         // below instead, so the planner's row order does not matter.
         let rows = try Row.fetchAll(db, sql: """
             SELECT f.file_path, f.action, f.count, s.id, i.machine_id, i.source_instance_id
-            FROM session_files f \(Self.sessionsJoinSQL(agents: request.agents, on: "s.id = f.session_id COLLATE BINARY"))
+            FROM session_files f \(Self.fileActivityJoinSQL(agents: request.agents, on: "s.id = f.session_id COLLATE BINARY"))
             JOIN capture_ingest_identity_bindings i ON i.stored_session_id = s.id COLLATE BINARY
             \(Self.registryJoinSQL)
             WHERE \(predicates.joined(separator: " AND ")) AND f.count > 0
@@ -2305,8 +2308,12 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
     /// not be used where `s` has to be reached by primary key (the list's id
     /// batches and its identity-first search page).
     static let visibleSessionsIndex = "idx_sessions_activity_time"
+    static let fileActivitySessionsIndex = "idx_sessions_activity_id"
     static func sessionsJoinSQL(agents: EngramServiceWebAgentFilter, on: String) -> String {
         agents == .hide ? "JOIN sessions s ON \(on)" : "JOIN sessions s INDEXED BY \(visibleSessionsIndex) ON \(on)"
+    }
+    static func fileActivityJoinSQL(agents: EngramServiceWebAgentFilter, on: String) -> String {
+        agents == .hide ? "JOIN sessions s ON \(on)" : "JOIN sessions s INDEXED BY \(fileActivitySessionsIndex) ON \(on)"
     }
     /// The live id batch (the freshness re-check of one page, at most 50
     /// ids). With `agents=all` and a `query`, the plain join was planned from
@@ -2688,6 +2695,9 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             guard schema.fts else { throw ServiceWebMetadataError.unavailable }
             let terms = CJKText.searchableTerms(query)
             guard !terms.isEmpty else { return nil }
+            // Metadata path is 2s. Sub-trigram LIKE scans sessions_fts content
+            // (~777k HQ rows) and 503s the list. Search keeps the 8s budget.
+            if terms.contains(where: { !CJKText.usesTrigramMatch($0) }) { return nil }
             predicates.append(SessionSemanticSearchPolicy.searchableTierSQL)
             let matches = CJKText.ftsMatchTerms(terms)
             let owned = try Self.hasOwnedInternalFTSContent(db)
@@ -2697,21 +2707,8 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             } else {
                 identityIndex = false
             }
-            for (index, term) in terms.enumerated() {
-                if !CJKText.usesTrigramMatch(term) {
-                    // No trigram below 3 scalars, so the term costs one LIKE
-                    // content scan. A non-correlated IN materializes that scan
-                    // once per term; the earlier correlated EXISTS re-scanned
-                    // the whole content table for every outer row (44k sessions
-                    // on HQ). Terms of >= 3 scalars, CJK included, take the
-                    // MATCH branch: trigram MATCH is a substring match.
-                    predicates.append("""
-                        s.id COLLATE BINARY IN (
-                            SELECT session_id COLLATE BINARY FROM sessions_fts
-                            WHERE content LIKE ? ESCAPE '\\')
-                        """)
-                    arguments.append("%\(CJKText.escapeLikePattern(term))%")
-                } else if owned {
+            for index in terms.indices {
+                if owned {
                     // MATCH once; project UNINDEXED session_id from the owned
                     // shadow PK. Do not route through fts_map: a mapped row can
                     // miss the term while another same-id row hits.
@@ -2739,6 +2736,16 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             }
         }
         return SessionFilter(predicates: predicates, arguments: arguments, identityFirstSearch: identityFirstSearch)
+    }
+
+    private static let sessionsShortQueryWarning = "Use Search for 1-2 character filters (8s budget)."
+    private static let sessionsShortQueryWarningCode = "query_too_short"
+
+    private static func sessionsShortQuery(_ query: String?) -> (warning: String, code: String)? {
+        guard let query else { return nil }
+        let terms = CJKText.searchableTerms(query)
+        guard terms.contains(where: { !CJKText.usesTrigramMatch($0) }) else { return nil }
+        return (sessionsShortQueryWarning, sessionsShortQueryWarningCode)
     }
 
     private func sessionRows(_ db: Database, request: EngramServiceWebSessionsRequest,

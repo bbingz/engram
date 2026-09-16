@@ -63,6 +63,12 @@ enum EngramMigrations {
             CREATE INDEX IF NOT EXISTS idx_sessions_activity_time
                 ON sessions(hidden_at, COALESCE(end_time, start_time) DESC)
                 WHERE hidden_at IS NULL AND (tier IS NULL OR tier != 'skip');
+            -- Covers `SELECT s.id` for web file-activity agents=all/only
+            -- (join from session_files by id) so INDEXED BY does not heap-read
+            -- the 11.8k activity-index rows.
+            CREATE INDEX IF NOT EXISTS idx_sessions_activity_id
+                ON sessions(id)
+                WHERE hidden_at IS NULL AND (tier IS NULL OR tier != 'skip');
             CREATE INDEX IF NOT EXISTS idx_sessions_cwd ON sessions(cwd);
             CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project);
             CREATE INDEX IF NOT EXISTS idx_sessions_file_path ON sessions(file_path);

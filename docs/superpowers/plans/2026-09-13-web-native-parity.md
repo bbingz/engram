@@ -400,15 +400,11 @@ partial index and the page re-check id batch to the primary key: Sessions
 
 Residual risk, all pre-existing at HQ scale and now measured:
 
-- Two-scalar search tokens (`测试`, `go`) have no trigram and cost one LIKE
-  content scan, about 5–6s on 777k FTS rows; inside the 8s search deadline but
-  over the 2s metadata deadline when used as a sessions-list `query=` filter.
-  Re-measured 2026-09-14 (`query=修复`: 5.0s and 6.2s end to end, 3,191
-  matching sessions); `instr()` and `GLOB` over the same 379 MB take 5.8–6.5s,
-  so no operator swap helps. The remaining options are a design change:
-  recency-ordered early termination through `fts_map` (currently 1:1 with
-  `sessions_fts`, 777,464 rows), a short-term index, or per-lease memoization
-  of the hit set. Grows past the 8s deadline with the corpus.
+- Two-scalar search tokens (`测试`, `go`) — **closed in worktree 2026-09-15,
+  not deployed.** Metadata list no longer unbounded-LIKE `sessions_fts`
+  (empty page + `query_too_short`). Search `keywordSearch` bounds sub-trigram
+  LIKE via recency/`fts_map` + `LIMIT` (`shortQueryHitCap`). Live HQ 5–6s
+  numbers were not re-measured. See `CHANGELOG.md` 2026-09-15 residuals.
 - `/web/api/tool-analytics?groupBy=session` (fixed in r9, 2026-09-14): the
   cause was `Data.hash(into:)` hashing only the first 80 bytes, which made the
   `Data`-keyed group dictionary and session sets degrade to linear probing on
@@ -440,28 +436,21 @@ Residual risk, all pre-existing at HQ scale and now measured:
   fixtures, so a database-wide `ANALYZE` / `PRAGMA optimize` is not adopted;
   per-statement plan fixes remain the approach (children: unary plus on the
   privacy terms; `agents=all/only`: `INDEXED BY` the skip-excluding partial
-  index, id batches pinned to the primary key). Files `agents=all` (1.14s,
-  11.8k session rows through the non-covering activity index) is the slowest
-  request left; a covering partial index for the `.all` set would be a
-  migration and is not done.
-- `/web/api/overview` without `limit` defaults to 50 and computes all 17 HQ
-  capture streams in one request: 2.85s (`readyCount` 2.07s in total,
-  claude-code 0.84s and codex 0.74s; per-stream ledger `GROUP BY` 0.77s), a
-  deterministic 503. The Web UI requests `limit=2` over nine pages (slowest
-  pages 0.91s and 1.20s warm, all 200), so Health is unaffected; only the API
-  default does not fit HQ. Not changed.
-- Health's "Parsed" count is a terminal state, not a backlog: all 32,138
-  `parsed` heads on HQ are `tier = skip` (28,654 Claude Code subagents, then
-  codex explorer/worker/awaiter and Polycli `dispatched` roles).
-  `ensureCurrentCaptureFTSJob` creates no FTS job for skip sessions, so
-  readiness never promotes them to `index_ready` by design. The card reads
-  "Parsed 28,868 / Index ready 1,314" for Claude Code; a label or split count
-  would remove the ambiguity. Not changed.
-- Health shows the Cursor source with 56–57 quarantined parse failures. All 577
-  HQ ledger quarantines are `parse.noVisibleMessages` (claude-code 473, cursor
-  57, codex 35, qoder 5, vscode 5, opencode 2); this is the shared empty-
-  transcript class, not a Cursor-specific parser failure, and predates the
-  deployment.
+  index, id batches pinned to the primary key). Files `agents=all` covering
+  partial `idx_sessions_activity_id` landed in schema + producer EXPLAIN tests
+  (2026-09-15 worktree); **not migrated on HQ**.
+- `/web/api/overview` omitted `limit` — **closed in worktree 2026-09-15, not
+  deployed.** Default is now 2 (UI page size). Historical HQ omitted-50
+  measurement was 2.85s / 503; UI already paged `limit=2`.
+- Health's "Parsed" vs "Index ready" — **closed in worktree 2026-09-15, not
+  deployed.** Labels are `"Parsed (includes skip)"` / `"Indexed for search"`
+  plus a note that skip-tier Parsed is not a search backlog. Skip still has
+  no FTS job (`ensureCurrentCaptureFTSJob` unchanged).
+- Health Cursor quarantine — **closed in worktree 2026-09-15, not deployed.**
+  Copy states quarantined counts include empty transcripts
+  (`parse.noVisibleMessages`), not a Cursor-only parser failure. No adapter
+  change. Historical HQ: all 577 ledger quarantines were that class
+  (claude-code 473, cursor 57, …).
 
 ## Execution
 

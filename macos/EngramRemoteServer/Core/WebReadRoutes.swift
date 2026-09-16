@@ -353,7 +353,7 @@ enum WebReadRoutes {
 
     private static func overviewRequest(_ request: Request) throws -> EngramServiceWebOverviewRequest {
         let fields = try queryFields(request, names: overviewQueryNames)
-        let limit = try fields["limit"].map { try integer($0, name: "limit") } ?? 50
+        let limit = try fields["limit"].map { try integer($0, name: "limit") } ?? 2
         return try EngramServiceWebOverviewRequest(
             limit: limit, snapshotId: fields["snapshotId"], cursor: fields["cursor"]
         )

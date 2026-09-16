@@ -40,6 +40,7 @@ final class MigrationRunnerTests: XCTestCase {
         // Partial index backing the visible-session COUNT refreshed on the status poll.
         XCTAssertTrue(sessionIndexes.contains("idx_sessions_visible"))
         XCTAssertTrue(sessionIndexes.contains("idx_sessions_web_list_keys"))
+        XCTAssertTrue(sessionIndexes.contains("idx_sessions_activity_id"))
         XCTAssertTrue(sessionIndexes.contains("idx_sessions_fts_content_identity"))
         XCTAssertTrue(sessionIndexes.contains("idx_metrics_ts"))
         XCTAssertTrue(sessionIndexes.contains("idx_migration_log_state_started"))
@@ -211,6 +212,48 @@ final class MigrationRunnerTests: XCTestCase {
             plan.contains { $0.contains("USE TEMP B-TREE FOR ORDER BY") },
             "updated-desc browse must not filesort the visible session set; plan=\(plan)"
         )
+    }
+
+    func testFileActivityCoveringActivityIdIndexIsUsedWithoutHeap_repro() throws {
+        let writer = try EngramDatabaseWriter(path: databasePath("file-activity-covering.sqlite"))
+        try writer.migrate()
+        let indexSQL = try writer.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_sessions_activity_id'"
+            )
+        }
+        XCTAssertNotNil(indexSQL)
+        XCTAssertTrue(indexSQL?.contains("id") == true, indexSQL ?? "")
+
+        try writer.write { db in
+            XCTAssertFalse(try db.tableExists("sqlite_stat1"), "fixture must stay statistics-free like HQ")
+            try db.execute(sql: """
+                WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM n WHERE n < 80)
+                INSERT INTO sessions(id, source, start_time, end_time, file_path, hidden_at, tier)
+                SELECT printf('file-%04d', n), 'codex', '2026-09-01T00:00:00Z', NULL,
+                       printf('/tmp/file-%04d.jsonl', n),
+                       CASE WHEN n % 20 = 0 THEN '2026-09-02T00:00:00Z' END,
+                       CASE WHEN n % 25 = 0 THEN 'skip' END
+                FROM n;
+                INSERT INTO session_files(session_id, file_path, action, count)
+                SELECT id, '/tmp/App.swift', 'read', 1 FROM sessions WHERE hidden_at IS NULL AND (tier IS NULL OR tier != 'skip');
+            """)
+        }
+
+        let plan = try writer.read { db in
+            try Row.fetchAll(db, sql: """
+                EXPLAIN QUERY PLAN
+                SELECT f.file_path, f.action, f.count, s.id
+                FROM session_files f
+                JOIN sessions s INDEXED BY idx_sessions_activity_id ON s.id = f.session_id
+                WHERE s.hidden_at IS NULL AND (s.tier IS NULL OR s.tier != 'skip') AND f.count > 0
+            """).map { $0["detail"] as String }
+        }
+        let joined = plan.joined(separator: "\n")
+        XCTAssertTrue(joined.contains("USING INDEX idx_sessions_activity_id"), joined)
+        XCTAssertFalse(joined.contains("idx_sessions_visible"), joined)
+        XCTAssertFalse(joined.contains("SCAN sessions"), joined)
     }
 
     func testWebListKeysIndexIsAddedOnExistingRowsAndFollowsPartialPredicate_repro() throws {
