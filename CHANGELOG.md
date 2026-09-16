@@ -20,8 +20,11 @@ run 34801528201. No HQ package, no activate, no `~/.engram` writes.
    `check-swift-conventions.sh` ok.
 
 3. **Linux otool.** `assertOtoolParsesLoadPath` skips Mach-O load-command
-   parsing when `/usr/bin/otool` is absent. `collector-package.test.ts`
-   69/69.
+   parsing when `/usr/bin/otool` is absent. The unrepaired
+   `@rpath/libswift_Concurrency.dylib` closure test now
+   `skipIf` non-darwin, matching sibling traversal tests: without
+   otool the extracted gate reads an empty load list and returns 0.
+   `collector-package.test.ts` 69/69.
 
 4. **xcodeproj drift.** Regenerated `macos/Engram.xcodeproj/project.pbxproj`
    with the CI-pinned xcodegen so `check-xcodeproj-drift.sh` matches

@@ -1064,22 +1064,25 @@ function runExtractedConcurrencyNormalize(binary: string): {
 }
 
 describe('collector package copied system Swift Concurrency install name', () => {
-  it('still rejects unrepaired @rpath/libswift_Concurrency.dylib as a packaged Frameworks dependency', () => {
-    const root = makeTempRoot();
-    const bundle = join(root, 'bundle');
-    const probe = join(bundle, 'bin/probe');
-    mkdirSync(join(bundle, 'bin'), { recursive: true });
-    mkdirSync(join(bundle, 'Frameworks'), { recursive: true });
-    writeSyntheticMachOWithLoadDylibs(probe, [rpathSwiftConcurrency]);
-    assertOtoolParsesLoadPath(probe, rpathSwiftConcurrency);
+  it.skipIf(process.platform !== 'darwin')(
+    'still rejects unrepaired @rpath/libswift_Concurrency.dylib as a packaged Frameworks dependency',
+    () => {
+      const root = makeTempRoot();
+      const bundle = join(root, 'bundle');
+      const probe = join(bundle, 'bin/probe');
+      mkdirSync(join(bundle, 'bin'), { recursive: true });
+      mkdirSync(join(bundle, 'Frameworks'), { recursive: true });
+      writeSyntheticMachOWithLoadDylibs(probe, [rpathSwiftConcurrency]);
+      assertOtoolParsesLoadPath(probe, rpathSwiftConcurrency);
 
-    const result = runExtractedDependencyClosure(bundle, probe);
+      const result = runExtractedDependencyClosure(bundle, probe);
 
-    expect(result.status).not.toBe(0);
-    expect(result.output).toMatch(
-      /unresolved packaged dependency: @rpath\/libswift_Concurrency\.dylib/,
-    );
-  });
+      expect(result.status).not.toBe(0);
+      expect(result.output).toMatch(
+        /unresolved packaged dependency: @rpath\/libswift_Concurrency\.dylib/,
+      );
+    },
+  );
 
   it('rewrites the copied GRDB Concurrency rpath on Mach-O before codesign, not in verify-only', () => {
     const packaging = extractShellFunction(packageScript, 'package_collector');
