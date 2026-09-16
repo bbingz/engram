@@ -503,25 +503,7 @@ final class EngramMCPExecutableTests: XCTestCase {
             XCTFail("Expected tools/list result.tools array")
             return
         }
-        let expected = [
-            "codex",
-            "claude-code",
-            "copilot",
-            "gemini-cli",
-            "opencode",
-            "iflow",
-            "qwen",
-            "qoder",
-            "kimi",
-            "minimax",
-            "lobsterai",
-            "commandcode",
-            "cline",
-            "cursor",
-            "vscode",
-            "antigravity",
-            "windsurf",
-        ]
+        let expected = SourceName.allCases.map(\.rawValue)
 
         for toolName in ["list_sessions", "search"] {
             let tool = tools.first { $0["name"]?.stringValue == toolName }
