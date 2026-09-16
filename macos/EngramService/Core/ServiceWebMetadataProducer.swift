@@ -2697,9 +2697,12 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             guard !terms.isEmpty else { return nil }
             // Metadata path is 2s. Sub-trigram LIKE scans sessions_fts content
             // (~777k HQ rows) and 503s the list. Search keeps the 8s budget.
-            if terms.contains(where: { !CJKText.usesTrigramMatch($0) }) { return nil }
+            // Mixed queries keep MATCH on 3+ scalar terms and drop short
+            // tokens instead of aborting the whole filter.
+            let matchTerms = terms.filter { CJKText.usesTrigramMatch($0) }
+            guard !matchTerms.isEmpty else { return nil }
             predicates.append(SessionSemanticSearchPolicy.searchableTierSQL)
-            let matches = CJKText.ftsMatchTerms(terms)
+            let matches = CJKText.ftsMatchTerms(matchTerms)
             let owned = try Self.hasOwnedInternalFTSContent(db)
             let identityIndex: Bool
             if owned {
@@ -2707,7 +2710,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             } else {
                 identityIndex = false
             }
-            for index in terms.indices {
+            for index in matchTerms.indices {
                 if owned {
                     // MATCH once; project UNINDEXED session_id from the owned
                     // shadow PK. Do not route through fts_map: a mapped row can
@@ -2744,7 +2747,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
     private static func sessionsShortQuery(_ query: String?) -> (warning: String, code: String)? {
         guard let query else { return nil }
         let terms = CJKText.searchableTerms(query)
-        guard terms.contains(where: { !CJKText.usesTrigramMatch($0) }) else { return nil }
+        guard !terms.isEmpty, terms.allSatisfy({ !CJKText.usesTrigramMatch($0) }) else { return nil }
         return (sessionsShortQueryWarning, sessionsShortQueryWarningCode)
     }
 

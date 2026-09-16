@@ -38,6 +38,14 @@ run 34801528201. No HQ package, no activate, no `~/.engram` writes.
    `CollectorBinaryShadowIntegrationTests` (Kimi/Cursor reads) and
    `CollectorRuntimeTests` (Kimi relativePaths).
 
+6. **Sessions-list mixed query.** Aborting the metadata filter when *any*
+   term was sub-trigram emptied `Review P2 tests` (CaptureIngest runtime
+   repro). Keep MATCH on 3+ scalar terms and drop short tokens; warn
+   `query_too_short` only when every term is short. ByteKey tool-analytics
+   budget 3s → 8s for two 2s-capped calls under CI load. One-sided AI
+   stats `to:` uses today's local day so last-24h from ≤ to (hardcoded
+   2026-09-13 inverted after that date).
+
 Focused: `npm test -- tests/scripts/archive-v2-safety-gate.test.ts
 tests/scripts/swift-conventions.test.ts tests/scripts/collector-package.test.ts
 tests/scripts/collector-web-ui.test.ts` 312/312.

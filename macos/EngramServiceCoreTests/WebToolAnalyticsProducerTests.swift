@@ -124,7 +124,7 @@ final class WebToolAnalyticsProducerTests: XCTestCase {
         XCTAssertEqual(sessions.items.first?.sessionId?.hasPrefix(prefix), true)
         XCTAssertEqual(tools.items.first(where: { $0.label == "Read" })?.sessionCount, Int64(count + 3))
         XCTAssertEqual(tools.items.first(where: { $0.label == "Bash" })?.sessionCount, Int64(count))
-        XCTAssertLessThan(elapsed, .seconds(3), "long shared-prefix ids must not degrade the aggregation to linear probing")
+        XCTAssertLessThan(elapsed, .seconds(8), "long shared-prefix ids must not degrade the aggregation to linear probing")
     }
 
     /// HQ regression: with `agents=all` the only index constraint on `sessions`

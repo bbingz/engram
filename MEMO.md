@@ -4,7 +4,7 @@
 
 ### 2026-09-16
 
-- [修复] Collector PR #446 的 CI 闸门：archive-v2 精确允许 Web unlink/suggestion DELETE；R3 allowlist `npm_` 脱敏前缀；Linux 无 `/usr/bin/otool` 时跳过 Mach-O 解析，Concurrency 闭包测试改为 darwin-only；用 CI 钉住的 xcodegen 重写 `project.pbxproj`；macos-15 上给 Kimi/Cursor 测试数组标 `[String]`，避免被 GRDB `StatementArguments` 抢类型。证据见 `CHANGELOG.md` 顶部。未部署 HQ。
+- [修复] Collector PR #446 的 CI 闸门：archive-v2 精确允许 Web unlink/suggestion DELETE；R3 allowlist `npm_` 脱敏前缀；Linux 无 `/usr/bin/otool` 时跳过 Mach-O 解析，Concurrency 闭包测试改为 darwin-only；用 CI 钉住的 xcodegen 重写 `project.pbxproj`；macos-15 上给 Kimi/Cursor 测试数组标 `[String]`；会话列表混合查询只 MATCH 长词（`Review P2 tests` 不再空页）；AI stats 单端日期改用当天。证据见 `CHANGELOG.md` 顶部。未部署 HQ。
 
 ### 2026-09-15
 

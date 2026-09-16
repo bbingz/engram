@@ -1900,6 +1900,11 @@ final class WebMetadataProducerTests: XCTestCase {
             try EngramServiceWebSessionsRequest(query: "history keep", limit: 20),
             requestId: requestId, deadline: fixture.deadline())
         XCTAssertEqual(page.items.map(\.sessionId), ["keep"])
+        let mixed = try await producer.sessions(
+            try EngramServiceWebSessionsRequest(query: "history xy", limit: 20),
+            requestId: requestId, deadline: fixture.deadline())
+        XCTAssertEqual(Set(mixed.items.map(\.sessionId)), ["keep", "match-only"])
+        XCTAssertNil(mixed.warningCode)
     }
 
     func testSessionsShortQueryDoesNotScanFTSLike_repro() async throws {

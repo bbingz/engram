@@ -201,18 +201,28 @@ final class WebAiAuditProducerTests: XCTestCase {
         defer { fixture.remove() }
         let producer = try fixture.producer()
         defer { try? producer.stop() }
-        let fromOnly = try await producer.aiStats(.init(from: "2026-09-13"),
+        let today = Self.localDay(Date())
+        let fromOnly = try await producer.aiStats(.init(from: today),
                                                   requestId: requestID, deadline: fixture.deadline())
         XCTAssertTrue(fromOnly.timeRange.from.contains("T"))
         XCTAssertTrue(fromOnly.timeRange.to.contains("T"))
         XCTAssertLessThanOrEqual(fromOnly.timeRange.from, fromOnly.timeRange.to)
-        let toOnly = try await producer.aiStats(.init(to: "2026-09-13"),
+        let toOnly = try await producer.aiStats(.init(to: today),
                                                 requestId: requestID, deadline: fixture.deadline())
         XCTAssertTrue(toOnly.timeRange.from.contains("T"))
         XCTAssertTrue(toOnly.timeRange.to.contains("T"))
+        XCTAssertLessThanOrEqual(toOnly.timeRange.from, toOnly.timeRange.to)
         XCTAssertNoThrow(try EngramServiceWebAiStatsRequest(from: "2026-09-01"))
-        XCTAssertNoThrow(try EngramServiceWebAiStatsRequest(to: "2026-09-13"))
+        XCTAssertNoThrow(try EngramServiceWebAiStatsRequest(to: today))
         XCTAssertThrowsError(try EngramServiceWebAiStatsRequest(from: "2026-09-13", to: "2026-09-01"))
+    }
+
+    private static func localDay(_ date: Date) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone.current
+        calendar.locale = Locale(identifier: "en_US_POSIX")
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
     }
 
     func testNativeFractionalTimestampInCurrentSecondIsIncludedInLast24h() async throws {
