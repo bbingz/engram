@@ -2,6 +2,10 @@
 
 ## Changelog Memo
 
+### 2026-09-16
+
+- [修复] Collector PR #446 的 CI 闸门：archive-v2 精确允许 Web unlink/suggestion DELETE；R3 allowlist `npm_` 脱敏前缀；Linux 无 `/usr/bin/otool` 时跳过 Mach-O 解析；用 CI 钉住的 xcodegen 重写 `project.pbxproj`。证据见 `CHANGELOG.md` 顶部。未部署 HQ。
+
 ### 2026-09-15
 
 - [验证] 完整 scheme：RemoteServerCore 506、CoreTests 2013（1 skip）绿；ServiceCore 因 `testOverviewOrdersMachineThenInstance` 仍按默认 limit 取 3 条 stream 失败。测试改为显式 `limit: 3` 后 `WebMetadataProducerTests` 91/91。未提交、未部署。

@@ -1,5 +1,40 @@
 # Changelog
 
+## CI gates for collector PR #446 (2026-09-16)
+
+Unblocks Linux Node quality and macOS swift-unit on
+`codex/collector-server-web-20260905` after SHA `922a47b6` failed
+run 34801528201. No HQ package, no activate, no `~/.engram` writes.
+
+1. **Archive v2 DELETE allowlist.** `WebWriteRoutes` parent-link unlink
+   (`/web/api/sessions/:id/link`) and suggestion dismiss
+   (`/web/api/sessions/:id/suggestion`) are exact optional wrappers
+   beside the existing alias DELETE. They are not v2 archive mutations.
+   Gate still rejects any other remote-server `router.delete`. Tests:
+   `archive-v2-safety-gate.test.ts` 62/62; `check-archive-v2-safety.sh`
+   ok against the repository.
+
+2. **R3 `npm_` false positive.** `TranscriptRedactionPolicy.swift`
+   redacts `npm_` tokens; allowlist
+   `R3 macos/Shared/EngramCore/TranscriptRedactionPolicy.swift npm_`.
+   `check-swift-conventions.sh` ok.
+
+3. **Linux otool.** `assertOtoolParsesLoadPath` skips Mach-O load-command
+   parsing when `/usr/bin/otool` is absent. `collector-package.test.ts`
+   69/69.
+
+4. **xcodeproj drift.** Regenerated `macos/Engram.xcodeproj/project.pbxproj`
+   with the CI-pinned xcodegen so `check-xcodeproj-drift.sh` matches
+   swift-unit. Target list order and duplicate
+   `EngramRemoteServerCore` Embed Frameworks entries were the stale
+   delta.
+
+Focused: `npm test -- tests/scripts/archive-v2-safety-gate.test.ts
+tests/scripts/swift-conventions.test.ts tests/scripts/collector-package.test.ts
+tests/scripts/collector-web-ui.test.ts` 312/312.
+`./node_modules/.bin/biome check` on the archive-v2 test (formatted).
+PR #446 still draft until this push; HQ live stays r17/r5.
+
 ## HQ Web residuals: overview default, CJK bounds, files covering index, Health copy (2026-09-15)
 
 Worktree-only on `codex/collector-server-web-20260905` (HEAD still `922a47b6` plus this

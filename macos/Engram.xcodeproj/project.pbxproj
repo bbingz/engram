@@ -504,7 +504,6 @@
 		8118A0F5B6E307050DFB1368 /* GRDB-dynamic in Frameworks */ = {isa = PBXBuildFile; productRef = 5ECA21BBE2149F21F956D0F2 /* GRDB-dynamic */; };
 		81420BC730F6E83743685AAA /* ExpandableSessionCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2363A7466E2F5559010A452 /* ExpandableSessionCard.swift */; };
 		816DF8826F10ADFFE784021E /* EngramServiceError.swift in Sources */ = {isa = PBXBuildFile; fileRef = 444892AADC54BE2BA5FD6F3C /* EngramServiceError.swift */; };
-		8198931965241126D86AA10D /* EngramRemoteServerCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5C1C8678A914AA14E36D52FF /* EngramRemoteServerCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		8208F152898312B920C7C975 /* EngramCLIArchiveCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9EA21C83675B0312417C952B /* EngramCLIArchiveCommand.swift */; };
 		82AC9F191D52FA3BC6C9FD76 /* AGENTS.md in Resources */ = {isa = PBXBuildFile; fileRef = 5CDCAD62ECCF9F31008E376B /* AGENTS.md */; };
 		82C7155DEA1A37842F9061CE /* ArchiveLocatorClassifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48CAE54C8C3C96A6F0D3CBCD /* ArchiveLocatorClassifier.swift */; };
@@ -512,7 +511,6 @@
 		83E9E39603465DF186310CF3 /* CollectorSQLiteSnapshotLease.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8C1F72C36F834FF320E579A /* CollectorSQLiteSnapshotLease.swift */; };
 		84017D957758306E78CE6E9B /* CollectorMachineIdentityReaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEE3D50BCF8F87771B91B639 /* CollectorMachineIdentityReaderTests.swift */; };
 		843468ACAACC3D2E2E07F0C9 /* RuntimeRoleSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5B6995C326C21423639BF2 /* RuntimeRoleSettings.swift */; };
-		8459EBFCF9D8B7D931107A50 /* EngramRemoteServerCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5C1C8678A914AA14E36D52FF /* EngramRemoteServerCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		848608D03E3CE6BA9438B13F /* EngramServiceCommandHandler+WebGeneration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B2593028365948D3B7E0F62 /* EngramServiceCommandHandler+WebGeneration.swift */; };
 		84CA919848FE27F9DC670F7A /* EngramCoreWrite.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C3BD994C35766F89AECF7BB2 /* EngramCoreWrite.framework */; };
 		84DE6F56EC9786A2F82A6D4F /* CollectorOpenCodeSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DEB0B16A3CC3B18B0C2B200 /* CollectorOpenCodeSource.swift */; };
@@ -1250,7 +1248,6 @@
 				7E1BB42EC6862D1948836D27 /* EngramCoreRead.framework in Embed Frameworks */,
 				43E8E51E93CCD7E0222ABD6D /* EngramCoreWrite.framework in Embed Frameworks */,
 				45A7BD94E69760937E1A229A /* EngramCollectorCore.framework in Embed Frameworks */,
-				8198931965241126D86AA10D /* EngramRemoteServerCore.framework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1307,7 +1304,6 @@
 			dstPath = "";
 			dstSubfolderSpec = 10;
 			files = (
-				8459EBFCF9D8B7D931107A50 /* EngramRemoteServerCore.framework in Embed Frameworks */,
 				CE5ACE0C65F4594BC19CF4C3 /* EngramCoreWrite.framework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
@@ -3976,23 +3972,23 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				9FCF956C8AC992AD35121793 /* EngramCoreRead */,
-				66715EBDF64143B4B7424B90 /* EngramCoreWrite */,
-				E93D05FD88CD8EE4989F8132 /* EngramCollectorCore */,
-				A31A413D1D6DA803899DB118 /* EngramCollector */,
-				AFD480DF014D0B08FA3C768B /* EngramCollectorCoreTests */,
-				625906E26599963CA0363FA5 /* EngramCoreTests */,
-				0DFC19162331C57E93BD3D83 /* EngramServiceCore */,
-				1565AAD24D4ADE0D74FCB64A /* EngramServiceCoreTests */,
-				50CCD8ABB3B0D0D90287CF4D /* EngramService */,
 				CBCDC5ABCED1290D34EC5E45 /* Engram */,
 				6EFB8FB1AB1AF1754D7D12E2 /* EngramCLI */,
+				A31A413D1D6DA803899DB118 /* EngramCollector */,
+				E93D05FD88CD8EE4989F8132 /* EngramCollectorCore */,
+				AFD480DF014D0B08FA3C768B /* EngramCollectorCoreTests */,
+				9FCF956C8AC992AD35121793 /* EngramCoreRead */,
+				625906E26599963CA0363FA5 /* EngramCoreTests */,
+				66715EBDF64143B4B7424B90 /* EngramCoreWrite */,
 				790D3733722391768E6E845B /* EngramMCP */,
-				5729B9A54FF3E39F8C58A630 /* EngramRemoteServerCore */,
-				8FB9D4E7CB22CA508A1F4FC0 /* EngramRemoteServer */,
-				AD2DF7CFD4ED593A08D8EC0D /* EngramRemoteServerCoreTests */,
-				30D8E174D1B1B7E0305A85E7 /* EngramTests */,
 				4BEDF7101A8E6E1E3BE7587E /* EngramMCPTests */,
+				8FB9D4E7CB22CA508A1F4FC0 /* EngramRemoteServer */,
+				5729B9A54FF3E39F8C58A630 /* EngramRemoteServerCore */,
+				AD2DF7CFD4ED593A08D8EC0D /* EngramRemoteServerCoreTests */,
+				50CCD8ABB3B0D0D90287CF4D /* EngramService */,
+				0DFC19162331C57E93BD3D83 /* EngramServiceCore */,
+				1565AAD24D4ADE0D74FCB64A /* EngramServiceCoreTests */,
+				30D8E174D1B1B7E0305A85E7 /* EngramTests */,
 				3E8B4E524AA151B373A0BC91 /* EngramUITests */,
 			);
 		};

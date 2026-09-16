@@ -295,12 +295,16 @@ function runExtractedDependencyClosure(
 }
 
 function assertOtoolParsesLoadPath(binary: string, loadPath: string): void {
+  expect(lstatSync(binary).mode & 0o111).toBe(0);
+  if (!existsSync('/usr/bin/otool')) {
+    // Linux CI has no otool; Mach-O load-command parsing is macOS-only.
+    return;
+  }
   const otool = spawnSync('/usr/bin/otool', ['-L', binary], {
     encoding: 'utf8',
   });
   expect(otool.status).toBe(0);
   expect(otool.stdout).toContain(loadPath);
-  expect(lstatSync(binary).mode & 0o111).toBe(0);
 }
 
 function shippedLayoutSource(): string {

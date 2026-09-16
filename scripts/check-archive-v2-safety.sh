@@ -267,9 +267,10 @@ done < <(find "$ROOT_DIR/macos/EngramRemoteServer" -type f -name '*.swift' -prin
 (( ${#remote_server_files[@]} > 0 )) || fail "no remote-server production Swift files found"
 
 # Scan the entire production server surface, not only Archive*.swift. The
-# legacy mutable v1 route, two v2 auth->405 guards and optional exact Web logout
-# wrapper are the complete allowlist; moving a successful v2 route to another file
-# must not bypass this gate.
+# legacy mutable v1 route, two v2 auth->405 guards, optional exact Web logout
+# wrapper, and optional exact Web-write DELETEs (alias, session unlink,
+# suggestion dismiss) are the complete allowlist; moving a successful v2
+# route to another file must not bypass this gate.
 # Scan across newlines and reject common generic registration spellings too, so
 # neither formatting nor a method-based route can evade the explicit allowlist.
 node - "$ROOT_DIR" "${remote_server_files[@]}" <<'NODE'
@@ -277,6 +278,9 @@ const { readFileSync } = require('node:fs');
 const { resolve } = require('node:path');
 const webAuthRoutes = resolve(
   process.argv[2], 'macos/EngramRemoteServer/Core/WebAuthRoutes.swift',
+);
+const webWriteRoutes = resolve(
+  process.argv[2], 'macos/EngramRemoteServer/Core/WebWriteRoutes.swift',
 );
 
 const directDelete = /\brouter\s*\.\s*delete\s*\(/g;
@@ -297,10 +301,19 @@ const expectedWildcardGuardBody = [
 ].join(' ');
 const expectedWebLogoutBody =
   'request, _ in await logout(request, boundary: boundary, sessions: sessions)';
+const expectedWebAliasDeleteBody =
+  'request, _ in try await mutate(request, keys: removeKeys) { data in try await surface.removeAlias(try JSONDecoder().decode(EngramServiceWebRemoveAliasRequest.self, from: data)) }';
+const expectedWebUnlinkDeleteBody =
+  'request, context in try await mutate(request, keys: unlinkKeys) { _ in try await surface.unlink(try EngramServiceWebUnlinkRequest( sessionId: try pathSessionID(context.parameters.get("id")) )) }';
+const expectedWebSuggestionDeleteBody =
+  'request, context in try await mutate(request, keys: suggestionKeys) { data in let body = try JSONDecoder().decode(SuggestedParentBody.self, from: data) return try await surface.dismissSuggestion(try EngramServiceWebDismissSuggestionRequest( sessionId: try pathSessionID(context.parameters.get("id")), suggestedParentId: body.suggestedParentId )) }';
 
 let legacyCount = 0;
 let v2Count = 0;
 let webLogoutCount = 0;
+let webAliasDeleteCount = 0;
+let webUnlinkDeleteCount = 0;
+let webSuggestionDeleteCount = 0;
 
 function lineAt(source, index) {
   return source.slice(0, index).split('\n').length;
@@ -341,6 +354,15 @@ for (const path of process.argv.slice(3)) {
     const isWebLogout =
       resolve(path) === webAuthRoutes &&
       /^"\/web\/api\/auth"\s*\)\s*\{/.test(argument);
+    const isWebAliasDelete =
+      resolve(path) === webWriteRoutes &&
+      /^"\/web\/api\/settings\/aliases"\s*\)\s*\{/.test(argument);
+    const isWebUnlinkDelete =
+      resolve(path) === webWriteRoutes &&
+      /^"\/web\/api\/sessions\/:id\/link"\s*\)\s*\{/.test(argument);
+    const isWebSuggestionDelete =
+      resolve(path) === webWriteRoutes &&
+      /^"\/web\/api\/sessions\/:id\/suggestion"\s*\)\s*\{/.test(argument);
 
     if (isLegacy) {
       legacyCount += 1;
@@ -352,6 +374,36 @@ for (const path of process.argv.slice(3)) {
           ++webLogoutCount > 1) {
         console.error(
           'archive v2 safety gate failed: Web logout must be one exact session-only wrapper',
+        );
+        process.exit(1);
+      }
+      continue;
+    }
+    if (isWebAliasDelete) {
+      if (closureBody(source, directDelete.lastIndex) !== expectedWebAliasDeleteBody ||
+          ++webAliasDeleteCount > 1) {
+        console.error(
+          'archive v2 safety gate failed: Web alias DELETE must be one exact settings wrapper',
+        );
+        process.exit(1);
+      }
+      continue;
+    }
+    if (isWebUnlinkDelete) {
+      if (closureBody(source, directDelete.lastIndex) !== expectedWebUnlinkDeleteBody ||
+          ++webUnlinkDeleteCount > 1) {
+        console.error(
+          'archive v2 safety gate failed: Web unlink DELETE must be one exact parent-link wrapper',
+        );
+        process.exit(1);
+      }
+      continue;
+    }
+    if (isWebSuggestionDelete) {
+      if (closureBody(source, directDelete.lastIndex) !== expectedWebSuggestionDeleteBody ||
+          ++webSuggestionDeleteCount > 1) {
+        console.error(
+          'archive v2 safety gate failed: Web suggestion DELETE must be one exact dismiss wrapper',
         );
         process.exit(1);
       }
