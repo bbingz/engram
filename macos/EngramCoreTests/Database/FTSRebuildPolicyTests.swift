@@ -277,6 +277,120 @@ final class FTSRebuildPolicyTests: XCTestCase {
         XCTAssertTrue(state.activeRows.contains("legacy two"))
     }
 
+    func testContentIdentityIndexSurvivesOwnedWritesAndIsRecreatedAfterRenameSwap_repro() throws {
+        let writer = try EngramDatabaseWriter(path: databasePath("fts-identity-swap.sqlite"))
+        try writer.migrate()
+        XCTAssertTrue(try writer.read { db in try FTSRebuildPolicy.hasOwnedInternalFTSContent(db) })
+        XCTAssertTrue(try writer.read { db in try FTSRebuildPolicy.hasOwnedContentIdentityIndex(db) })
+
+        try writer.write { db in
+            try FTSRebuildPolicy.replaceFtsContent(db, sessionId: "s1", messages: ["alpha one"], summary: "alpha summary")
+            try FTSRebuildPolicy.replaceFtsContent(db, sessionId: "s1", messages: ["alpha one", "alpha two"], summary: "alpha summary")
+            try db.execute(sql: "INSERT INTO sessions_fts(session_id, content) VALUES ('s2', 'beta row')")
+            try db.execute(sql: "INSERT INTO sessions_fts(sessions_fts) VALUES ('integrity-check')")
+        }
+        XCTAssertEqual(
+            try writer.read { db in
+                try String.fetchAll(db, sql: "SELECT content FROM sessions_fts WHERE session_id = 's1' ORDER BY content")
+            },
+            ["alpha one", "alpha summary", "alpha two"]
+        )
+        try writer.write { db in
+            try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = 's2'")
+            try FTSRebuildPolicy.purgeFtsContent(db, sessionId: "s1")
+            try FTSRebuildPolicy.replaceFtsContent(db, sessionId: "s1", contents: ["rebuilt searchable row"])
+            try db.execute(sql: """
+                INSERT INTO sessions(id, source, start_time, cwd, file_path, size_bytes, sync_version, indexed_at)
+                VALUES ('s1', 'codex', '2026-01-01T00:00:00.000Z', '/tmp/p', '/tmp/s.jsonl', 42, 1, '2026-05-01T00:00:00Z')
+                """)
+            try db.execute(sql: """
+                INSERT INTO session_index_jobs(id, session_id, job_kind, target_sync_version, status)
+                VALUES ('s1:1::fts', 's1', 'fts', 1, 'completed')
+                """)
+            try db.execute(sql: """
+                INSERT INTO metadata(key, value) VALUES ('fts_version', '2')
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """)
+            try FTSRebuildPolicy.apply(db)
+            XCTAssertTrue(try FTSRebuildPolicy.hasOwnedContentIdentityIndex(db))
+            XCTAssertNil(try String.fetchOne(
+                db,
+                sql: """
+                SELECT name FROM sqlite_master
+                WHERE type = 'index' AND tbl_name = 'sessions_fts_rebuild_content'
+                  AND name = 'idx_sessions_fts_content_identity'
+                """
+            ))
+            try db.execute(sql: "INSERT INTO sessions_fts_rebuild(session_id, content) VALUES ('s1', 'rebuilt searchable row')")
+            try db.execute(sql: "UPDATE session_index_jobs SET status = 'completed' WHERE id = 's1:1::fts'")
+            XCTAssertTrue(try FTSRebuildPolicy.finalizeRebuildIfReady(db))
+        }
+
+        let after = try writer.read { db in
+            (
+                owned: try FTSRebuildPolicy.hasOwnedInternalFTSContent(db),
+                index: try FTSRebuildPolicy.hasOwnedContentIdentityIndex(db),
+                ftsSQL: try String.fetchOne(db, sql: "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions_fts'") ?? "",
+                contentSQL: try String.fetchOne(db, sql: "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions_fts_content'") ?? "",
+                rows: try String.fetchAll(db, sql: "SELECT content FROM sessions_fts WHERE session_id = 's1'")
+            )
+        }
+        XCTAssertTrue(after.owned, "renamed double-quoted FTS/content DDL must remain owned")
+        XCTAssertTrue(after.ftsSQL.contains("\"sessions_fts\"") || after.ftsSQL.contains("sessions_fts"))
+        XCTAssertTrue(after.contentSQL.contains("\"sessions_fts_content\"") || after.contentSQL.contains("'sessions_fts_content'"))
+        XCTAssertTrue(after.index)
+        XCTAssertEqual(after.rows, ["rebuilt searchable row"])
+        try writer.write { db in
+            try db.execute(sql: "INSERT INTO sessions_fts(sessions_fts) VALUES ('integrity-check')")
+            try db.execute(sql: "INSERT INTO sessions_fts(session_id, content) VALUES ('s3', 'post-swap')")
+            try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = 's3'")
+        }
+    }
+
+    func testContentIdentityIndexIsNotCreatedOnNonOwnedFTSAndDoesNotDropUnexpectedSQL_repro() throws {
+        let writer = try EngramDatabaseWriter(path: databasePath("fts-identity-unowned.sqlite"))
+        try writer.migrate()
+        try writer.write { db in
+            try db.execute(sql: "DROP TABLE sessions_fts")
+            try db.execute(sql: "CREATE TABLE fts_external(session_id TEXT, content TEXT)")
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE sessions_fts USING fts5(
+                  session_id UNINDEXED,
+                  content,
+                  content='fts_external',
+                  tokenize='trigram case_sensitive 0'
+                )
+                """)
+            try FTSRebuildPolicy.ensureOwnedContentIdentityIndex(db)
+            XCTAssertFalse(try FTSRebuildPolicy.hasOwnedInternalFTSContent(db))
+            XCTAssertFalse(try FTSRebuildPolicy.hasOwnedContentIdentityIndex(db))
+            XCTAssertNil(try String.fetchOne(
+                db,
+                sql: "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_sessions_fts_content_identity'"
+            ))
+        }
+
+        let owned = try EngramDatabaseWriter(path: databasePath("fts-identity-unexpected.sqlite"))
+        try owned.migrate()
+        try owned.write { db in
+            try db.execute(sql: "DROP INDEX idx_sessions_fts_content_identity")
+            try db.execute(sql: "CREATE INDEX idx_sessions_fts_content_identity ON sessions_fts_content(c0)")
+            let unexpected = try XCTUnwrap(try String.fetchOne(
+                db,
+                sql: "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_sessions_fts_content_identity'"
+            ))
+            try FTSRebuildPolicy.ensureOwnedContentIdentityIndex(db)
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_sessions_fts_content_identity'"
+                ),
+                unexpected
+            )
+            XCTAssertFalse(try FTSRebuildPolicy.hasOwnedContentIdentityIndex(db))
+        }
+    }
+
     private func seedRebuildState(_ writer: EngramDatabaseWriter, ftsVersion: String) throws {
         try writer.write { db in
             try db.execute(sql: """

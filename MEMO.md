@@ -2,8 +2,867 @@
 
 ## Changelog Memo
 
+### 2026-09-16
+
+- [修复] Collector PR #446 的 CI 闸门：archive-v2 精确允许 Web unlink/suggestion DELETE；R3 allowlist `npm_` 脱敏前缀；Linux 无 `/usr/bin/otool` 时跳过 Mach-O 解析，Concurrency 闭包测试改为 darwin-only；用 CI 钉住的 xcodegen 重写 `project.pbxproj`；macos-15 上给 Kimi/Cursor 测试数组标 `[String]`；会话列表混合查询只 MATCH 长词（`Review P2 tests` 不再空页）；AI stats 单端日期改用当天；costs 合计按 key 排序后再加，避免 Dictionary 迭代让快照/live freshness 误报 stale；MCP source enum 测试跟 `SourceName.allCases`（含 pi/grok）；collector inventory SQL 不用 Swift `5_000`。证据见 `CHANGELOG.md` 顶部。未部署 HQ。
+
+### 2026-09-15
+
+- [验证] 完整 scheme：RemoteServerCore 506、CoreTests 2013（1 skip）绿；ServiceCore 因 `testOverviewOrdersMachineThenInstance` 仍按默认 limit 取 3 条 stream 失败。测试改为显式 `limit: 3` 后 `WebMetadataProducerTests` 91/91。未提交、未部署。
+- [修复] HQ Web 六项残留（仅 collector worktree，未部署）：overview 省略 limit 50→2；会话列表 1–2 字不再对 `sessions_fts` 无界 LIKE（空页 + `query_too_short`，去 Search）；Search 短词 LIKE 按 recency/`fts_map` 封顶；Files `agents=all` 增加测试用覆盖部分索引 `idx_sessions_activity_id`（未 migrate HQ）；Health 改文案区分 skip 终态与空转写隔离。证据与未跑全套见 `CHANGELOG.md` 顶部。
+
+### 2026-09-14
+
+- [修复] `agents=all`/`agents=only`（会话页「All」「Agents Only」、Stats 的 Agents 选项）在 HQ 规模下整体失效：默认 `hide` 带 `parent IS NULL AND suggested IS NULL` 两个等值，规划器自己会选覆盖部分索引 `idx_sessions_web_list_keys`；`all`/`only` 只剩 `hidden_at IS NULL` 一个索引约束，无统计的 HQ 库选 `idx_sessions_visible` 读全部 44k 可见会话行（其中 32k skip 层随即丢弃）。r14 实测：会话「All」1.85s，Tools all 503/2.08s，Files all 503/2.00s，「All」+ 搜索词 1.6–1.8s。`sessionsJoinSQL(agents:on:)` 对 `.all/.only` 把 `sessions s` 写成 `INDEXED BY idx_sessions_activity_time`（迁移自带的排除 skip 的部分索引），用于列表、总数（含搜索总数：线上 1.65s→0.02s）、工具、文件四类语句；页面新鲜度复查的 ID 批次（≤50 个）改为钉住主键（`primaryKeyJoinSQL`，仅当 `sqlite_master` 有 `sqlite_autoindex_sessions_1` 才加 hint），此前 `all`+搜索时它也走 visible 索引重读 44k 行（一次请求 1200 个采样中 950 个在这里）。r17 线上未缓存：会话 all 0.07s、all+xcodegen 0.13s、all+source+query 0.32s、Tools all 0.38–0.59s、Files all 1.14s（剩余最慢项，走非覆盖索引读 11.8k 行；覆盖索引需迁移，未做）。浏览器：「All」1–50 of 6,545、+xcodegen 1–50 of 122、Tools 按会话分组 agents=All 5,380 组、Files 有行、Child sessions 显示「No child sessions」而非「unavailable」。新增 `testAgentsAllPinsSessionsToSkipExcludingIndex_repro`，`WebMetadataProducerTests` 搜索用例增加 `.all` 断言。r15/r16/r17 依次激活（回滚 plist 均留），Grok lanes-10/11 106/106，lanes-12 105/106（唯一失败为已知负载敏感的 costs 用例，与改动语句无关，单跑通过）。
+- [修复] Child sessions 的 r10「0.215s 冷」数据来自一份跑过 `ANALYZE` 的数据库副本；HQ 线上 `index.sqlite` 从未 ANALYZE、没有 `sqlite_stat1`，r10/r11 的 children 语句在线上仍是 1.53s/次（无统计时规划器假定任何索引等值只返回约 10 行，于是选了匹配全部 44k 可见会话的部分索引 `idx_sessions_visible (hidden_at=?)`，浏览器没报 503 只是因为差 0.3 秒到期限；「首个 1.08s 之后 0.03s」是 producer 的短期租约缓存，不是查询本身）。`childRows` 改用 `childVisibilitySQL`：三条隐私谓词写成 `+s.hidden_at IS NULL` / `+s.source = …` / `+s.authoritative_node = …`，一元加号让它们不再作为索引约束（SQLite 文档手法），同时排除了启用来源很少时通过传递等值 `s.source = i.source AND i.source IN (…)` 选中 `idx_sessions_source` 的第三种走法；此后无论有无统计、来源多少，多索引 OR 都是唯一便宜的计划。线上只读验证 0.08s（2,315 个 skip 层子会话的父会话）；service-index 切 `r13` 后经 remote-server 实测 children 重启后首个 0.088s、闲置后 0.013–0.019s（r11 为 1.29–1.69s）。测试改为 `testChildrenStatementUsesBothParentIndexes_repro`：对 producer 实际发出的语句在无统计 fixture 上 `EXPLAIN`，要求两条 parent 索引且不出现 `idx_sessions_visible`/`idx_sessions_source`/`SCAN s`/`SCAN i`（lanes-7 如预期在 `idx_sessions_source` 上失败，lanes-8 4/4）。r12 只去了 `hidden_at` 一项、未激活。
+- [修复] Stats→Files 在 r11 回填 190,039 行 `session_files` 后每次 503（2.00s）：采样显示快照读取 1.26s 且新鲜度复查再做一遍，其中 `fileActivityLabel`→`TranscriptRedactionPolicy.redact` 约 0.5s、`publishedProjectKey` SHA-256 约 0.25s（约 1.6 万个不同路径各算两遍）、`Row.fetchAll` 0.36s（CLI 中 `ORDER BY s.id, file_path, action` 的临时 B 树占 0.50s 语句的 0.46s）。`fileActivityRows` 去掉 ORDER BY，组权威改为对排序后的每行摘要再摘要（行序无关）；`FileActivityRecord` 只存 path/key/计数，label 在 `.item` 上惰性派生（只有返回页付脱敏成本）；key 用有界的 `FileKeyCache` 跨快照读/复查/后续请求复用；游标匹配改用记录上的 key。新增 `testFileActivityStatementIsUnsortedAndAuthorityIgnoresRowOrder_repro`。打包为 `r14`，激活与 HQ 时延见 `CHANGELOG.md` 顶部条目末尾。
+- [修复] HQ `session_files` 一直为 0 行的原因不是没有采集，而是启动期文件活动修复任务在自己的候选查询上就超时：`CaptureIngestFileActivity.repairCurrentGenerations` 的 `SELECT … ORDER BY g.generation_id LIMIT 4` 在 HQ 实测 14.7–15.6s（规划器从账本状态索引出发、把 38,780 个当前头全部连接后用临时 B 树排序再取 4 条），2 秒批次期限在取回后立即抛 `deadlineExceeded`，因此从未修复、从未落标记、从未写游标。改为从 `capture_ingest_generations` 出发的 `CROSS JOIN`（首批 5ms，游标 3 万行处 14ms），并把批中途超时改为保留已完成头与游标、单个头独占超时则本次启动跳过（HQ 有 44 个 5–87MB 的 v2 代与 93 个 >5MB 的 v1 代，此前整批回滚会让该批永远无法推进）。三条 `_repro` 测试修复前 0/3、修复后 107/107。改动随并行 Web 线的 `web-parity-20260913-r11` 上线：08:41–08:46 一次遍历修复 38,779 个头，`session_files` 190,039 行 / 22,925 会话。副作用：`/web/api/file-activity` 从「空」变为「贴线」，HQ 1.95–2.00s、200/503 交替（回填期间返回 409），读侧 `fileActivityRows` 的全表排序与二次聚合是下一项，未动。另：HQ 账本 577 条隔离全部是 `parse.noVisibleMessages`（cursor 57 条属此类，非 Cursor 专有解析失败）。详情见 `CHANGELOG.md`。
+- [验证] 09:00–09:30 对 HQ 全部 GET 读端点做了一轮只读时延扫描（r14 激活后 `file-activity` 1.25s 冷/0.34s 热，`fa-read` 关闭）。仍贴线或超线的只剩三处，均未改代码：(1) `/web/api/overview` 不带 `limit` 时默认 50，一次请求把 17 个采集流全算完，HQ 实测 2.85s（每流 `readyCount` 合计 2.07s + 账本分组 0.77s）稳定 503；浏览器用 `limit=2` 分 9 页请求（最慢页 0.91s/1.20s 热），所以 UI 不受影响，只是 API 默认值在 HQ 规模不可用。(2) 两字 CJK 搜索（如「修复」）走 `sessions_fts` 的 `LIKE` 全表扫描，HQ 777k 行/379MB 内容 5.0–6.2s，仍在 8 秒搜索期限内但会随语料增长越线；`instr`/`GLOB` 同为 5.8–6.5s，无免费加速，真正的选项是按时间序提前终止（fts_map 已 1:1 覆盖 777,464 行）或加短词索引，属设计决策。(3) Health 卡片「Parsed 28,868 / Index ready 1,314」（Claude Code）会被读成积压，实际 32,138 个 `parsed` 头全部是 `tier=skip`（28,654 条 `agent_role=subagent`）：`ensureCurrentCaptureFTSJob` 对 skip 不建 FTS 作业，readiness 永不推进到 `index_ready`，是设计上的终态而非积压，建议改标签或拆分计数。另在 `/tmp` 副本上验证了 Fable 提出的「HQ 无 `sqlite_stat1`」问题：`ANALYZE` 3.5s，children 原句自动改走多索引 OR，但 r11 前的 repair 候选查询仍 2.06s（我的 `CROSS JOIN` 重写不可省），会话列表首页近似语句从 1ms 变 18ms（临时 B 树排序），结论是不引入全库 ANALYZE，继续逐语句锁计划。
+- [修复] HQ 工具统计 session 分组超时的真因不是 I/O，而是 Foundation `Data.hash` 只哈希前 80 字节：HQ 会话 ID 约 196 字节且同一采集流共享前缀，`[Data: Group]`/`Set<Data>` 退化为线性探测（8k 键 9.4s vs `String` 键 12ms）。`ServiceWebMetadataProducer` 的 `toolAnalyticsRows`/`fileActivityRows`/`admittedAuditSessionIDs` 改用全字节哈希的 `ByteKey`，新增 4000 条长前缀会话的 repro 测试。service-index 先切 `web-parity-20260913-r9`，HQ 实测 `groupBy=session` 由 r8 的 503/1.6s 降到 0.73–0.90s（服务重启后首个请求 1.92s，仍贴近 2 秒期限），tool/project 不变；浏览器 Stats→Tools→按会话分组显示 5,378 组。Grok 四条 producer 线 113/114，唯一失败的 costs 用例与改动无关且复跑 3/3 通过（Release 构建并行导致的负载敏感）。r8 条目中的覆盖索引后续项已撤回。
+- [修复] 浏览器会话详情「Child sessions」页签在 HQ 返回 503：`childRows` 的 `(parent = ? COLLATE BINARY OR suggested_parent = ? COLLATE BINARY)` 显式 COLLATE 让 SQLite 放弃多索引 OR 优化，每次请求遍历全部 38,779 条身份绑定（首个请求 1.96–2.00s）。两列本就是 BINARY，去掉显式 COLLATE 结果不变，规划器改走 `idx_sessions_parent`/`idx_sessions_suggested_parent`。service-index 已切 `r10`（回滚 plist 已留），HQ 实测 children 0.215s 冷/0.028s 热，浏览器显示「No child sessions」（HQ 现有父子链接全部指向 skip 层子代理会话，按设计不展示）。新增 plan 断言 repro（3000 条填充会话 + 真实 ANALYZE）。HQ 就是本机，构建/测试并行时 Web 时延会明显上浮。详情见 `CHANGELOG.md`。
+
+### 2026-09-13
+
+- [部署] 原生 Web 已上 HQ：service-index 跑 `web-parity-20260913-r8`，remote-server 跑 `r5`，均有回滚 plist 与 SHA256 清单；编辑凭据已生成并注入（未入库）。浏览器验收登录、五页、别名增删写回、AI 配置表单通过。D15 迁移接口验收（21 服务 + 5 远端）。修复 HQ 规模三缺陷：搜索 8 秒超时改为分阶段 CTE（`xcodegen generate` 1.41s 冷/0.35s 热，两字词约 5–6s 仍在期限内）、片段 `<mark>` 原样显示、`aiProtocol: disabled` 导致设置不可用。工具统计 tool/project 分组 1.1–1.8s，session 分组仍超 2 秒（当时归因于 I/O，已被 09-14 条目纠正为 `Data` 哈希截断，r9 修复）。前端 175 项、Biome 通过；Grok 全量 Swift 三条线仅剩 2 项环境依赖与 1 项主机固有失败，磁盘满导致的 6 项已复跑 90/90 通过。分支 312 处改动未提交，交由所有者。详情见 `CHANGELOG.md`。
+
+- [验证] 原生摘要与配置收尾 4 项通过：完整保存、无提供商回退、拒绝会话先于凭据读取，以及 HTTP 保存后的真实配置读取。D13 合计 14 项原生／联调、6 项 HTTP／客户端；D14 为 9 项原生／联调、14 项远端回归。迁移接口继续推进，未部署；详情见 `CHANGELOG.md`。
+
+- [新增] AI 配置接口已接通：多行 prompt/style 可保存，GET 不再回显带账号或查询串的 URL，embedding 地址按原生 `aiBaseURL` 回退。8 项服务、14 项远端／客户端、1 项真实 HTTP／IPC 联调通过。未部署，详情见 `CHANGELOG.md`。
+
+- [新增] 保存笔记写入口通过 6 项原生／真实联调、10 项 HTTP／写客户端检查。摘要、标题和批量补标题界面已接好，167 项前端及桌面／手机模拟流程通过；发现原生保存摘要截为 200 字符，Cursor 正修复并接入生成接口，尚未部署。详情见 `CHANGELOG.md`。
+
+- [新增] Insights 原生读取通过 17 项服务／真实联调、11 项语义回归和 31 项 HTTP／客户端检查，元数据客户端专项已通过。保存笔记表单完成，160 项前端和手机模拟保存／读回通过；Cursor 正接真实写入口，未部署。旧接口实际是保存文本，已纠正清单。详情见 `CHANGELOG.md`。
+
+- [新增] Insights 搜索卡片和全文续读已接入；154 项前端检查、桌面／手机模拟渲染通过。Cursor 正修正仅有 Insights 向量时的搜索门槛，原生与真实 HTTP／IPC 联调待跑；尚未部署，全量写操作仍在范围内。详情见 `CHANGELOG.md`。
+
+- [新增] AI 调用记录、详情和统计已接通，聊天及向量请求均记录；149 项前端、47 项原生／联调／后台回归、110 项 HTTP／客户端检查通过。修复刚写入调用被统计漏掉的问题，未部署；继续 Insights 搜索。详情见 `CHANGELOG.md`。
+
+- [新增] 文件活动、用量和仓库页面已接入；手机显示改为卡片，142 项前端测试通过。15 项原生服务／真实采集联调及 106 项 HTTP／权限／客户端检查通过，未部署。详情见 `CHANGELOG.md`。
+
+- [新增] Stats 工具统计已接通，132 项前端、4 项服务统计及 100 项 HTTP／权限／客户端回归通过；桌面和手机页面已检查。文件活动写入／历史修复 9 项、真实采集到 Web 联调 1 项也通过；继续文件活动页面及其余能力，未部署。详情见 `CHANGELOG.md`。
+
+- [新增] Web 会话关系编辑已接入页面，128 项前端、47 项 HTTP／权限回归、21 项原生服务／真实数据库联调通过；桌面／手机模拟流程已检查，未部署。继续统计接口及文件活动数据补齐。详情见 `CHANGELOG.md`。
+
+- [新增] Web 子会话与时间线已完成本地联调：120 项前端、26 项服务／真实采集联调、45 项 HTTP／权限回归通过；桌面和手机页面已检查，尚未部署。继续接回会话关联与建议确认等写操作。详情见 `CHANGELOG.md`。
+
+- [新增] Web 来源启停配置已接通：114 项前端、7 项真实服务联调、56 项远端回归通过；全部停用后可重开，手动隐藏和其他配置保留。桌面／手机模拟验收通过，尚未部署；继续子会话／时间线。详情见 `CHANGELOG.md`。
+
+- [新增] Settings 别名编辑界面已接入，110 项前端及 24 项权限路由测试通过；桌面／手机模拟新增删除已检查。原生别名写入及真实 HTTP／IPC／数据库联调 8 项通过；84 项远端回归也通过；已派工来源配置开关，尚未部署。详情见 `CHANGELOG.md`。
+
+- [新增] Stats 费用界面及后端已通过 103 项前端、4 项费用及 111 项远端／权限测试，桌面／手机模拟渲染通过；编辑权限基础已验证，正接回别名新增／删除，写接口尚未接通。未部署。详情见 `CHANGELOG.md`。
+
+- [变更] 本轮全量范围已明确包含旧 Web 配置修改、别名删除等写操作；通过现有 Swift 服务写入口恢复，费用功能继续推进。详情见 `CHANGELOG.md`。
+
+- [变更] 恢复旧版深色及导航样式，桌面／手机渲染通过；搜索后端完整 97 项及 HTTP／界面 58 项通过，前端 99 项通过。费用功能接续开发，全量对齐和真实联调未完成，尚未部署。详情见 `CHANGELOG.md`。
+
+- [变更] Settings 后端 3+91 项组件测试通过；上一页／下一页、日期及纯工具会话筛选已接入本地界面，96 项前端测试通过，桌面／手机模拟渲染已检查。Cursor 正补后端精确总数与筛选；语义搜索等全量能力仍未完成，尚未部署。详情见 `CHANGELOG.md`。
+
+- [新增] Settings 四块旧版内容和五页导航已接入本地界面，92 项前端测试通过；桌面／手机模拟渲染已检查。路径型项目别名要求保留安全显示，后端正补回归验证；尚未部署。详情见 `CHANGELOG.md`。
+
+- [变更] 来源／项目选项接口已通过本地验证；统计接口 76+87 项测试通过，Stats／Health 页面及导航已接入，89 项 JS 测试通过，桌面／手机模拟数据渲染已检查。Cursor 正补 Settings；全量功能及真实端到端验收未完成，尚未部署。详情见 `CHANGELOG.md`。
+
+- [变更] 已补回 Agent 切换、时间和消息数，修复允许显示的 Agent 会话无法打开正文；首批后端 87+38 项及 UI 路由 8 项通过。来源／项目多选界面已接好，82 项 JS 测试通过；分页项目接口仍在修正，统计等完整能力尚未验收。详情见 `CHANGELOG.md`。
+
+- [变更] 已恢复旧 Web 全量对齐开发，确认此前界面功能缩水；本地 ID 跳转相关 74 项 JS 测试通过，Cursor 正补筛选接口，首轮后端仍有 1 项失败。尚未完成浏览器验收或部署，详情见 `CHANGELOG.md`。
+
+- [交付] 按要求先交付已部署版本供验收，后续开发暂停等反馈。Web 可用；当前 39 次追加通过，完整 CPU 结果仍待现有观察完成，旧原文不阻塞。入口和详情见 `CHANGELOG.md`。
+
+- [验证] 新包基线全文及前 18 次追加均通过，最慢 26.7 秒；资源观察仅余 Claude 复核。日常旧索引服务仍停用，App/设置未变，完整验收继续。详情见 `CHANGELOG.md`。
+
+- [优化] 新调度包已更新日常 Mac，17 项回归及 7 条实际包流程通过；定期检查改为 10 秒、事件检查最多 1 秒。本地同场景 CPU 为 0.52%，实机 30 分钟资源及 60 次追加验证已启动，尚未验收；旧程序和设置可回滚，旧原文不阻塞交付。详情见 `CHANGELOG.md`。
+
+- [修复] 缺正文重试已改为同批写入，10 项回归和 7 条实际包流程通过，本地同场景 CPU 从 4.27% 降至 3.38%，尚未部署。当前部署完整 30 分钟 CPU 13.18% 未达标、采样 RSS 55.7 MiB 达标。详情见 `CHANGELOG.md`。
+
+- [验证] 新版 60 次追加全部成功，p95 33.1 秒、最慢 63.3 秒；62 条完整消息和双端 126,976 字节原文通过，运行版本未变。CPU 稳态验收仍待 Claude 扫描完成。详情见 `CHANGELOG.md`。
+
+- [修复] 空闲批量读取优化已更新到日常 Mac，16 项相关测试及 7 条实际包流程通过。本地空目录 CPU 从 5.72% 降至 2.36%，缺失文件场景从 8.37% 降至 4.27%；实机仍在启动复核，完成后观察 30 分钟，尚未宣称达标。新版追加到搜索的 60 次实机验证也已排队，等待对应来源复核完成。旧记录查找不阻塞交付。详情见 `CHANGELOG.md`。
+
+- [修复] 已移除空闲协调器的一次重复状态读取，真实校验次数从 128 降到 64，8 项回归通过，尚未部署。首轮扫描已完成，但稳态 CPU 仍超标，正在对照测量后继续修复；旧记录不阻塞交付。详情见 `CHANGELOG.md`。
+
+- [验证] 当前包的重命名、采集器崩溃恢复、HQ 崩溃恢复 3 项测试通过；原始字节、身份和用量断言均保留。日常保活配置及同一进程已核实，资源观察仍待 3 个来源复核完成，详情见 `CHANGELOG.md`。
+
+- [修复] Kimi 空文件重试修复已上线，7 项回归及 4 条实际包流程通过；同 6 个空文件从 54 秒各重试 20 次，降为 124 秒各 1 次，未误标采集成功。新进程资源观察继续，详情见 `CHANGELOG.md`。
+
+- [排查] 6 个 Kimi 空文件在 54 秒内各重试 20 次，已定位到空内容分支；Cursor 正补最小修复和回归，尚未部署。旧记录查找不阻碍主线，详情见 `CHANGELOG.md`。
+
+- [验证] 新包 60 次追加均最终可搜索，p95 48.6 秒、最慢 84.6 秒，62 条完整消息及双端原文通过；4 次 HTTP 错误仍保留，严格检查未通过。资源观察仍待 Claude 复核完成（已复核 1,102 个目录），详情见 `CHANGELOG.md`。
+
+- [验证] 日常旧索引服务仍停用，App/设置哈希未变；新观察已记录 25 次搜索确认，Grok 复核完成，仅余 Claude（688 个目录已复核），详情见 `CHANGELOG.md`。
+
+- [排查] 新包首轮观察在基线阶段因 HTTP 超时退出，尚未追加；480 次传输对照未复现。追加源复核完成后新观察基线及首条追加（29.3 秒）通过，资源观察仍跟踪原进程，详情见 `CHANGELOG.md`。
+
+- [修复] 缺失源重试已收窄，189 项相关回归通过；新事件立即唤醒，分批采集和磁盘重试保持原节奏。4 条实际包流程也通过，日常采集器已更新；启动复核及新包资源/追加观察运行中，详情见 `CHANGELOG.md`。
+
+- [验证] 60 次追加均搜索确认，p95 41.2 秒、最慢 53.4 秒，62 条完整消息及双端原文通过；5 次轮询超时仍保留为失败。完整 30 分钟 CPU 为 18.95%、采样最大内存 40.33 MiB，CPU 未达标；Cursor 正修复缺失文件的一秒重复重试，旧原文不阻碍交付，详情见 `CHANGELOG.md`。
+
+- [验证] 日常旧索引服务仍停用，App/配置未变；原资源观察到等待上限退出，已接续相同目标的只读观察，未重启采集器。历史复核已完成 2,531 个目录，追加试运行继续，详情见 `CHANGELOG.md`。
+
+- [修复] Cursor 已补齐首次检查和清理路径，126 项测试及两条实际包流程通过，HQ 已更新；新一轮基线全文及首条追加（约 12.25 秒）通过，完整试运行和资源观察继续。上轮 7 次成功、53 次取消的记录保留，详情见 `CHANGELOG.md`。
+
+- [修复] Cursor 的索引正文检查修复已通过父审和 97 项测试，同样本工作量由 20,556 降至 139 步；两条实际包流程也通过，HQ 已更新并开始新一轮追加试运行。完整延迟与资源结果待测，旧原文不阻碍交付，详情见 `CHANGELOG.md`。
+
+### 2026-09-12
+
+- [排查] 追加完整试运行 54 次成功、4 次超时、2 次跳过，延迟未通过；续期正常，最终 60 条消息及双端原文通过。已定位索引更新前的全扫描，Cursor 正跑最小修复的回归，详情见 `CHANGELOG.md`。
+
+- [验证] 首轮追加测试因脚本遗漏 15 分钟登录续期而中止，25 次成功、3 次 401，原失败记录保留。重新登录后完整 30 条消息和双端 94,208 字节原文通过；Cursor 修正已通过父审和离线检查，新一轮完整试运行已启动，资源观察继续。详情见 `CHANGELOG.md`。
+
+- [验证] 追加试运行前 20 次全部成功；扫描仍需完成已排队的复核。日常 App/设置未变，旧索引服务仍停用，新 MCP helper 未打开旧状态库。完整资源和延迟结论仍待实测，详情见 `CHANGELOG.md`。
+
+- [验证] 原扫描仍在前进，已完成 2093 个目录；只读观察继续跟踪，完成后自动测量 30 分钟。追加延迟脚本已由 Cursor 修正并通过父审，实机试运行已启动，基线全文通过，前两次追加约 14/17 秒可搜索；完整结果仍待采样。详情见 `CHANGELOG.md`。
+
+- [优化] Web 搜索和总览优化已上线，最终 260 次读取全部成功；列表约 1 秒显示，搜索/总览 p95 为 646/1450 毫秒。采集器空轮询修复也已上线，217 项回归和 4 项实际包流程通过；当前仍重扫，30 分钟资源与追加延迟验收未完成。旧原文继续低优先级自查，无需提供备份。详情见 `CHANGELOG.md`。
+
+- [优化] HQ 已新增 Web 列表索引，58 项元数据、17 项迁移和 2 项实际包检查通过；首访列表 532 毫秒返回，约 1 秒显示会话，完整 260 次读取中列表/详情/消息/总览全部成功，列表 p95 188 毫秒；搜索仍有 2/20 次 503。Collector 补传继续，旧记录仍不阻塞交付，详情见 `CHANGELOG.md`。
+
+- [修复] Collector 的 10 秒观察间隔已上线，118 项回归、4 项实际包检查通过；重启补传窗口仍占单核 54.7%，尚未完成闲时验收。Web 首访错误处理已上线，70 项测试、2 项实际包及两种浏览器故障检查通过；正常首访仍收到两次后端 503，读取稳定性继续处理，详情见 `CHANGELOG.md`。
+
+- [优化] Web 搜索改为从命中会话开始连接，57 项回归和 2 项实际包检查通过，HQ 已更新；混合读取完成 18 轮，第 19 轮仍有 503，首访失败也未解决。Collector 的 10 秒观察间隔已通过 118 项测试，打包中，详情见 `CHANGELOG.md`。
+
+- [修复] Cursor 优化 Web 搜索并合并返回前校验，55 项回归和 2 项实际包流程通过，已更新 HQ；桌面/手机首访正常，连续测试第 7 轮搜索仍有 503，未标为全部解决。旧记录缺失继续低优先级自查，详情见 `CHANGELOG.md`。
+
+- [修复] Cursor 减少重复观察扫描，116 项回归和 4 项实际包检查通过；现场发现重启仍依赖旧服务身份库，已独立保存同一机器身份并恢复补传，新包运行中。重启重扫期间 CPU 仍高，Web 列表/搜索仍有 503，继续定位，详情见 `CHANGELOG.md`。
+
+- [排查] HQ 的另外 3 个 Cline 任务与缺失记录 ID 不同，Mimo 原路径也未匹配；旧原文继续低优先级自查，不再询问备份。已通过 Herdr 派 Cursor 修复重复目录扫描，详情见 `CHANGELOG.md`。
+
+- [修复] HQ 总览不再提前统计下一页，48 项回归和 2 项实际包检查通过并上线；线上单页约 0.9–1.0 秒，完整页面约 4.3 秒。日常补传 CPU 约单核 24.5%，已定位 Cursor 重复目录扫描线索，继续处理资源开销，详情见 `CHANGELOG.md`。
+
+- [修复] Web 总览已补齐分页并上线 HQ，59 项前端测试、2 项实际包流程通过；线上 9 页完整显示 17 个来源流，约 5 秒完成，桌面/手机画面正常。首轮浏览器曾超时，冷启动性能仍未验收，补传继续，详情见 `CHANGELOG.md`。
+
+- [修复] Cursor 经 Herdr 修复总览读取已映射大正文，正确样本从 8,292 页降到 79 页，47 项回归和 2 项实际包检查通过并上线；首次总览仍超时，尚未完全解决。719 份恢复原文已全部采集，双端仍排队补传，详情见 `CHANGELOG.md`。
+
+- [优化] Cursor 的两行总览查询优化已上线，45 项回归及 2 项实际包检查通过；后续访问约 262–437 毫秒，短间隔首访 1.804 秒，但重启首访仍超时，未宣称完全修复。恢复原文已采集 699/719 份，详情见 `CHANGELOG.md`。
+
+- [切换] 日常旧索引服务已停用，App 已切为采集角色，9 个旧 MCP 退出、8 个父会话保留；Collector 与双端补传继续，旧库 60,379 条记录及回滚包保留且完整性检查通过。HQ 列表正常，总览连续两次超时正在排查，详情见 `CHANGELOG.md`。
+
+- [验证] 30 分钟观察完成：HQ/M1 新确认 862/1,190 份，补传 CPU 平均单核 22.1%，内存峰值 122.5 MiB；五个来源的 97 条 Web 消息及 OpenCode 双端原文检查通过。旧库、App 和启动配置回滚备份已核验，切换须先停用旧 Service 自动拉起任务，详情见 `CHANGELOG.md`。
+
+- [核对] Cursor 经 Herdr 复核退出条件：历史队列清零不是统一前提，各来源替代覆盖及 App/MCP 角色切换仍须完成。日常仍有旧服务和 9 个旧 MCP；719 份恢复原文中 445 份已采集，同一轮 30 分钟观察继续，详情见 `CHANGELOG.md`。
+
+- [优化] Cursor 经 Herdr 将每端上传限为两份并行，110 项回归、2 项顺序测试、4 项实际包检查通过，日常采集器已更新。两轮实测确认量均高于基线；补传峰值内存约 211 MiB，后回落，尚非闲时验收。原文抽样核验通过，配置未变，详情见 `CHANGELOG.md`。
+
+- [验证] 恢复进度检查改为批量只读查询，父审复跑 0.58 秒；719 份 Claude 原文中 401 份已采集，另 318 份均在待扫描目录内。采集模式 App 隔离检查通过，截图权限不足未验证画面；旧服务继续保留，详情见 `CHANGELOG.md`。
+
+- [修复] Cursor 经 Herdr 完成 239 条历史误判修复，HQ 已部署；同类 240 条全部入库且 Web 详情可读，114 条探针仍跳过。42 项回归和 2 项实际包检查通过，原文及其他元数据校验未变；历史补传与旧服务收尾继续，详情见 `CHANGELOG.md`。
+
+- [修复] Cursor 修正审阅关键词误把主会话判为 skip；19 项回归、2 项实际包检查通过，HQ 已加载修复。恢复的 156 条 Codex 会话共 181,600 条消息全文校验通过；同类误判另 239 条待修复，详情见 `CHANGELOG.md`。
+
+- [恢复] Claude 旧记录已找回 722 份原文，其中 719 份约 1.87 GB 恢复至采集目录并逐份核验，另 3 份仅保留备份；补传入库仍在进行。Mimo/Cline 缺失记录低优先级自查，不再询问备份位置，详情见 `CHANGELOG.md`。
+
+- [恢复] 再从 HQ/M1 找回 129 份 Codex 原文；原清单 156 条非 skip Codex 记录的原文已全部补齐并核验，共约 2.17 GB。三份归档 Web 16/16/3 条消息完整通过，大批次仍待入库，详情见 `CHANGELOG.md`。
+
+- [恢复] Codex 样本原文双端核验、Web 9 条消息完整通过；另恢复 26 份约 412 MB 原文，三机副本核验通过、26 份已采集。HQ 又找到 268 条旧记录对应路径，身份和内容待核验，详情见 `CHANGELOG.md`。
+
+- [恢复] 另补齐 129 份 Kimi 历史文件的三机副本；旧归档中两份 Claude/Codex 原文已核验并安全恢复，待采集接入后再扩大批次。旧服务继续保留，详情见 `CHANGELOG.md`。
+
+- [恢复] 补齐 Codex 归档目录，两份原文共 230,237 字节双端核验通过，Web 23/3 条消息完整；日常 PID 32584、HQ 索引 PID 36446，程序包未变。另补齐 20 份暂缓原文与 244 份 Kimi 历史文件的三机恢复副本，详情见 `CHANGELOG.md`。
+
+- [修复] Cursor 经 Herdr 修复 `<synthetic>` 占位模型误报来源冲突；106 项回归及 4 项实际包检查通过。日常 PID 22878，受影响 Minimax 原文 689,687 字节已双端核验，Web 99 条消息完整通过，详情见 `CHANGELOG.md`。
+
+- [验证] 60 秒优先级对照未显示双端上传一致改善，已恢复后台策略，配置未变；Claude 已采集 22,051 个，剩余 8,141 个，继续补传，详情见 `CHANGELOG.md`。
+
+- [验证] 30 分钟观察完成，Claude 新采集 2,209 个，HQ/M1 新确认 786/753 个；仍有约 1.4/1.5 万个待上传，旧服务继续保留。查询改动无实测收益，未采用，详情见 `CHANGELOG.md`。
+
+- [验证] 新 App 正常模式隔离启动未打开旧库或启动服务；窗口显示仍未验证。日常仍有 12 个旧 MCP，最终切换须一并处理，当前均保留，详情见 `CHANGELOG.md`。
+
+- [上线] 一行改动复用已验证的重复项目路径，104 项回归与 4 项实际包检查通过；日常采集器 PID 16485，Claude 已采集 19,617、待采集 10,575，进入 30 分钟只读观察，详情见 `CHANGELOG.md`。
+
+- [上线] 采集与上传改用独立工作实例，7 项行为测试和 4 项实际包检查通过；日常采集器 PID 14584，旧服务保留。启动后 Claude 已采集 18,409、待采集 11,783，实机吞吐仍在观察，详情见 `CHANGELOG.md`。
+
+- [验证] 旧服务退出所需的完整 App 候选通过 30 项角色测试及实际内置 MCP 隔离检查；已修正本地包签名启动问题，尚未安装或停旧服务。Claude 已采集 17,777，待采集 12,415；Cursor 正验证上传与采集分离，详情见 `CHANGELOG.md`。
+
+- [上线] 两行路径类型提示减少重复文件查询，82 项存储测试和 4 项实际包检查通过；日常采集器 PID 11562，设置不变。Claude 已采集 16,169，待采集 14,023；继续运行观察，详情见 `CHANGELOG.md`。
+
+- [上线] 旧 Cursor 同批工作区读取改为复用，60 项相关测试和 4 项实际包检查通过；日常采集器 PID 8912，已核对加载包。启动后 Claude 已采集 15,090，待采集 15,102，详情见 `CHANGELOG.md`。
+
+- [进展] 日常采集器同包调至每轮 32 个文件，PID 6796；Claude 已采集 14,706，待采集 15,486。旧 Cursor 64 条已双端确认，读取复用优化仍在测试，详情见 `CHANGELOG.md`。
+
+- [修复] 删除重复目录扫描循环，6 项运行回归及 4 项实际包检查通过；日常采集器 PID 6192，详情见 `CHANGELOG.md`。
+- [完成] 三份约 799/677/513 MB 大记录均获得 HQ/M1 确认，六份服务端持久化回执已独立核对；普通历史补传及旧服务退出仍未完成。
+
+- [调优] 日常同一采集包改为每轮访问 32 个目录项，PID 4031；约 80 秒新增采集 16 个，仍有 16,793 个待采集，三份 M1 大记录未确认；重复扫描循环留待精简，详情见 `CHANGELOG.md`。
+
+- [上线] 中断恢复改为先筛选目标记录，大记录提交延长有限等待并跳过重复清单；155 项相关原生测试、10 项实际包检查通过，日常采集器 PID 2687，详情见 `CHANGELOG.md`。
+- [进展] 卡住 Claude 的旧恢复任务已清除，已采集从 13,374 增至 13,375；三份 M1 大记录及全量补传仍待实机确认。
+
+- [上线] Cursor 会话观察已只检查目标会话正文，45 项回归及 4 项实际包测试通过；日常采集器 PID 94843，详情见 `CHANGELOG.md`。
+- [未完成] 全量补传和旧服务退出仍在主线；尚未宣称空闲资源验收或实机提速比例。
+
+- [恢复] Kimi 同编号不同分片修复已上线；真实 1,853 条正文经 Web 39 页完整哈希核验，45 个原文件的 HQ/M1 副本均已逐块核验，详情见 `CHANGELOG.md`。
+- [修复] Cursor 旧库已越过 4 条空记录，64 条非空记录全部采集，原先仅 15 条；其中 8 条有正文的会话、345 条消息已通过 Web 全文核验，无正文记录仍明确隔离。
+- [验证] 57 项 Kimi、58 项旧库回归及 9 项实际包检查通过；当前四角色使用 kimi-legacy-20260912 包。
+- [优先级] Mimo/Cline 由代理顺手自查，不再等用户提供路径；主线继续补传、采集效率及旧服务退出，Cursor 经 Herdr 修复重复扫描。
+
+- [上线] 日常采集与双副本上传已独立推进；85 项回归和 7 项实际包测试通过，上线约一分钟 Claude 新增采集 64 个，详情见 `CHANGELOG.md`。
+- [恢复] Web 已改回居中列表与独立阅读页，补齐返回和滚动位置；54 项测试及实网明暗、桌面/手机检查通过。
+- [排查] Copilot 待处理已从 451 降至 397；Kimi 非空历史被两种同编号分片误拦，已确认文件不同，继续修复。
+
+- [上线] 日常采集器已部署持续目录扫描、Copilot 跨批次主文件认领及重复数据块跳传；84 项回归和 7 项实际包测试通过，详情见 `CHANGELOG.md`。
+- [恢复] 7 份 Pi 原文已双副本逐块核验；两条正常会话的 366/6 条 Web 正文完整通过，其余 5 条保留 skip。
+- [修复] 工具调用前的 Web 空白气泡已修复上线，53 项脚本测试及真实手机页面通过。
+- [未完成] Claude 最新仍有 22,896 个文件待采集；全量补传、缺失历史、Windsurf 可读性和旧服务退出继续处理。
+
+- [上线] 日常采集器已更新目录发现修复并适度提高补传预算；287 项核心测试及 5 项真实进程测试通过，Pi 恢复链路继续实测，详情见 `CHANGELOG.md`。
+- [保全] Windsurf 两份原始 PB（约 2.27 MB）已保存至日常/HQ/M1，哈希一致；尚未证明可在 Web 阅读。
+- [修复中] Copilot 索引文件存在首选正文跨批次导致反复推迟的问题，已交 Cursor 按现有模式修复；全量覆盖及旧服务退出仍未完成。
+
+- [保全] 22 份元数据不足的采集已保存至日常/HQ/M1，原始清单与数据块哈希一致；未冒充可搜索会话，详情见 `CHANGELOG.md`。
+- [进展] 原受阻子集已 1521/1556 双副本确认；Claude 另有约 2.3 万个已发现文件待采集，仍须全量核对。
+- [修复中] 新建目录触发整棵目录重扫已定位，Cursor 正补有界子树发现及回归测试，尚未上线；Mimo/Cline 另备份位置待用户补充。
+
+- [修复] 采集端普通建目录事件改为有界子树发现，不再整根重扫；265 项 CollectorCore 测试通过，尚未打包上线，详情见 `CHANGELOG.md`。
+- [未验证] 目录删除/迁出仍可能留下缺口；OpenCode 与 Cursor 旧库遇目录事件仍整根对齐；实机未重启。
+
+- [上线] 旧 Web 的紧凑筛选、来源色、气泡及折叠预览已恢复；51 项测试和实网桌面/手机检查通过，详情见 `CHANGELOG.md`。
+- [恢复] 找回 7 份 Pi 原文并核对 HQ/M1 副本，已恢复日常缺失目录；新采集发现延迟由 Cursor 排查。
+- [进展] 原受阻采集已有 1433/1556 份双副本确认；Mimo/Cline 历史缺口、全量验收与旧服务退出未完成。
+
+- [上线] 长消息自动续页已部署，真实 Grok 无需点击即显示 90 条消息；48 项测试及实网手机/桌面验证通过，详情见 `CHANGELOG.md`。
+- [进展] 原 1556 份受阻采集中已有 1368 份双副本确认；旧 Web 体验对照、全历史覆盖及旧服务退出继续处理。
+
+- [上线] 路径兼容、Grok 大历史与 Web 富文本/刷新恢复已更新；原 1556 份中 1534 份可上传，1212 份已有双副本确认，详情见 `CHANGELOG.md`。
+- [验证] 284 MB Grok 归档双副本一致；395 条正文含 7 段真实压缩历史，经 30 页完整哈希校验；7 项实际包测试通过。
+- [修复中] 实网发现长消息首屏须手动续页才显示，Cursor 正补自动读取；全历史覆盖与旧服务退出仍待完成。
+
+- [上线] Cursor 无目录会话、Gemini 快照与 Copilot 长行修复已更新 HQ/日常 Mac；原 1556 份中 1525 份可上传，详情见 `CHANGELOG.md`。
+- [验证] 三类真实采集双副本字节一致；Cursor 17 条、Copilot 263 条网页正文完整校验通过；Gemini 样本为 skip，未算正常搜索验收。
+- [开发] 剩余 9 份路径误拦已复现修复，115 项测试通过；Web 富文本、刷新恢复登录及手机宽表格预览通过，45 项页面测试通过，待打包上线。
+- [排查] 新发现一份约 284 MB Grok 原文已归档但被解析大小上限拒绝；Cursor 正补归档解析支持，详情见 `CHANGELOG.md`。
+
+- [上线] HQ/日常 Mac 已更新；原 1556 条拦截中 1379 条规则验证可上传，已有 111 条双副本确认，剩余继续补传及排查，详情见 `CHANGELOG.md`。
+- [验证] 三份真实 Pi 长行原文双副本字节一致；一份 Web 正文 208 条消息、8 页完整校验通过。
+
+- [修复] Codex 明确分叉祖先不再误判身份冲突；Claude/Codex 的 `/` 工作目录仅在无排除项时允许归档，25 项元数据、74 项隐私测试通过，详情见 `CHANGELOG.md`。
+- [修复] Pi 长消息暴露逐页脱敏过慢；9 MiB 无口令正文脱敏从约 1.6 秒降至约 0.04 秒，85 项正文/导出/总览测试通过；合并包两代链路已通过并上线，详情见 `CHANGELOG.md`。
+
+- [上线] Grok 三机接入完成，三份真实会话双副本字节一致，网页完整读取 62 条消息并校验哈希；全量及实机压缩历史仍待核对，详情见 `CHANGELOG.md`。
+- [修复] Grok 隐私检查改为逐块校验，128 MiB 夹具的额外内存峰值从约 256 MiB 降至约 160 KiB；72 项测试通过。
+- [排查] 1556 条隐私拦截已按真实规则分类，877 条身份冲突、571 条路径无效、57 条限额、51 条元数据不足；不是项目排除，详情见 `CHANGELOG.md`。
+
+- [验证] Pi 实网列表、详情和正文均返回 200；799 MB 堵塞任务已完成索引，详情见 `CHANGELOG.md`。
+- [修复] Web 补齐 Pi/Grok 来源筛选，先红后绿，37 项测试通过；尚未上线。
+- [开发] Grok 实际两代链路测试已补；Cursor 正验证压缩文件单独变化的增量发布，详情见 `CHANGELOG.md`。
+
+- [修复] Pi 接收端允许列表遗漏已修复；55 项接收测试及实际两代链路通过，详情见 `CHANGELOG.md`。
+- [上线] Pi 已接入日常采集及 HQ/M1 副本，实机根目录共 566 个日志；三份原文双副本逐字节一致，HQ 网页验证待完成。
+- [修复] HQ 被 799 MB 历史的清单请求超时卡住；调整已有超时/传输配置后游标恢复推进，详情见 `CHANGELOG.md`。
+- [验证] Grok 压缩历史原文采集 11 项测试通过；Cursor 正补解析、搜索与完整接入，尚未上线。
+
+- [修复] 总览全文表重复扫描已修复上线；44 项总览、3 项实际包测试通过，首次就绪请求 795ms，随后 101ms，详情见 `CHANGELOG.md`。
+- [验证] Cursor 的 Grok 文件集采集 6 项测试通过；尚未接入线上，完整历史仍需核对。
+- [排查] 实际 Grok 压缩会话另有 118 段历史存于 segment 文件；Cursor 正补原文采集，详情见 `CHANGELOG.md`。
+- [排查] 同口径未采集 Codex 日志从 225 降至 69 个，约 5.7 GB；旧索引继续保留。
+
+- [上线] 旧 Web 紧凑导航、来源色、日期与明暗布局已补回；56 项原生、37 项页面和 3 项实际包测试通过，详情见 `CHANGELOG.md`。
+- [修复] 已遮盖两条真实标题中的自然语言口令，原始归档不变；普通密码询问保留。
+- [未验证] 首次总览仍复现 2 秒 503；全历史补齐、Grok/Pi 上线和旧索引退出继续处理。
+
+- [修复] 总览统计误读正文溢出页已复现修复；41 项总览、5 项迁移/Pi 与 35 项页面测试通过，详情见 `CHANGELOG.md`。
+- [上线] HQ 总览连续三次成功（916–1381ms），手机标题三行且保留全文，详情见 `CHANGELOG.md`。
+- [未验证] 旧 Web 整体观感、Grok 接入、历史覆盖与旧索引退出继续处理；225 个现存 Codex 日志仍待采集。
+
+- [上线] HQ 大历史与正文阅读修复已上线；日常采集预算升至 1 GiB，详情见 `CHANGELOG.md`。
+- [验证] 三份真实大采集双副本逐字节一致；线上 13,558 条消息经 276 页完整读取，每条载荷哈希正确。
+- [未验证] 总览仍有 503，手机长标题仍偏大；Pi/Grok、全历史覆盖和旧索引退出继续处理，Cursor 已交回 Pi 候选，待独立验收。
+
+- [修复] 大历史分行存储与 Web 按页读取已实现，末页漏报已复现修复，详情见 `CHANGELOG.md`。
+- [验证] 179 项存储/索引与 93 项 Web 测试通过；114 MB 双副本字节一致，10,001 条消息经 594 页完整读出，最终实际包 4 项测试已通过并部署。
+- [修复] 长正文摘要从 53 秒降至 4.8 秒；9 项摘要、34 项页面及 8 项原生路由测试通过，已部署。
+- [排查] Pi 的 223 个现存日志尚未接入；Grok/Mimo 旧路径缺失，仍需核对归档，详情见 `CHANGELOG.md`。
+
+- [修复] 26 MB 长行读取从 42.5 秒降至约 0.26 秒；采集端长行限制和 HQ 大文件接入已补齐，详情见 `CHANGELOG.md`。
+- [验证] 230 项解析、53 项 HQ 重放、91 项采集测试通过；HQ/日常 Mac 已更新，当时实机预算为 32 MiB，后续提升见上。
+- [验证] Web 稳定后总览三次成功（548–1011ms），详情可读；两份 VSCode 日志双副本字节一致。
+- [未验证] 启动初次总览仍有超时；当时大历史入库与按页读取仍待实现；后续验证见上，全历史完整性和旧索引退出尚未完成。
+
+### 2026-09-11
+
+- [修复] CommandCode 与恢复轮转已部署；44 份日志在 HQ/M1 逐份字节及哈希一致，Web 可读，详情见 `CHANGELOG.md`。
+- [验证] 新 VSCode 采集拖延已复现修复，总览复核减少重复统计；129 项测试通过，两项修复尚未部署。
+- [未验证] 大历史解析、入库及分页读取继续补齐；旧索引保留，完整覆盖和轻量运行尚未验收。
+
+- [新增] 实机已扩展到 13 个采集根；12 条发布的 HQ/M1 字节及哈希抽样一致，详情见 `CHANGELOG.md`。
+- [修复] HQ Web 登录过期提示已上线，31 项页面、8 项原生路由和实网过期/重新登录验证通过。
+- [修复] CommandCode 无 cwd 的日志不再猜项目路径；无排除项时可归档，90 项隐私/元数据测试及本地双副本流程通过，尚未部署此修复。
+- [未验证] 大文件/长行/长会话限制、VSCode 恢复预算疑似饿死及历史完整性仍待处理；旧索引保留，目标继续。
+
+- [修复] Web 已复用旧版样式并更新 HQ：分栏、来源筛选、对话气泡、工具折叠和窄屏阅读完成，详情见 `CHANGELOG.md`。
+- [修复] 总览重复扫描 FTS 的超时已复现并修复；总览失败也不再阻断列表加载。
+- [验证] 26 项页面、48 项路由、39 项总览测试通过；实网 14 次请求成功，总览三次耗时 288–469ms。
+- [未验证] 多 Claude 配置目录、其他来源及历史覆盖仍待接齐，日常 Mac 旧索引尚未退出；完整目标继续进行。
+
+- [新增] Codex/Claude 新链路已常驻三机，浏览器可读真实会话；旧服务保留，完整角色切换尚未完成，详情见 `CHANGELOG.md`。
+- [修复] 采集/上传来源轮转、未变文件免重采、新记录优先；620 项测试及实机双源同步通过。
+- [验证] Claude 双副本字节抽样与网页详情通过；旧 1424 条 parsed 均为 skip，不是 FTS 积压。
+- [未验证] 其他来源接入、全历史补齐及重启恢复待完成；Antigravity 继续后置。
+
+- [修复] 后续源预算饿死已在预算 1 下复现并补轮转，617 项 CollectorCore 测试通过；未替换试运行包，详情见 `CHANGELOG.md`。
+
+- [验证] 新版 30 分钟试运行已完成，四进程退出、临时 HTTPS 撤下、原服务保留，详情见 `CHANGELOG.md`。
+- [验证] 双副本两条发布记录的字节抽样一致、真实浏览器登录/详情读取通过；HQ 接入改用已批准的 HTTPS 后推进，原配置保留。
+- [未验证] 本次 CPU 采样均值 8.28%、Claude 未发布；Codex 双副本各 ACK 1618/1675，尚不支持切换。
+
+- [修正] 试运行方案改为 HQ HTTPS8443、M1 HTTPS9443：Collector 拒绝远端 HTTP，M1 nginx 已占用 8443；保留现有服务，详情见 `CHANGELOG.md`。
+- [计划] 配置模板已补齐，启动前必须复制新读取的有效隐私排除规则；新版两条映射方案仍待授权，未生成凭据或写入主机。
+
+- [计划] 30 分钟真实主机试运行方案已就绪：日常 Mac 两类源、HQ 解析/Web、M1 副本，保留旧服务与 443 映射；等待本次主机写入授权，详情见 `CHANGELOG.md`。
+- [验证] HQ/日常 Service 未发现隐私/禁用源环境覆盖；独立 HTTPS 8443 方案已记录，尚未启用。
+
+- [验证] 新 Release Collector 从空存储初始化后，7 项实际包双副本/HQ 读取/恢复测试通过，包哈希不变、进程退出；三台安装预览已更新，详情见 `CHANGELOG.md`。
+- [未验证] 真实主机身份、隐私和 TLS 配置仍待核对，尚未部署或切换旧服务。
+
+- [新增] 首次采集身份初始化已接入独立命令；28 项 Swift 与 52 项实际 CLI 测试通过，不启动索引/采集，详情见 `CHANGELOG.md`。
+- [未验证] 新包及新身份全链路尚待验证；真实 M1 未分配身份，部署前仍须核对其他既有身份路径。
+
+- [排查] HQ/日常 Mac 默认采集身份目录存在，M1 该路径缺失；归档服务身份不可代替采集身份，已确认首次分配仍耦合本地归档 Service，Cursor 开始补显式初始化组件，详情见 `CHANGELOG.md`。
+- [验证] HQ 安装预览已改用支持显式源登记的新包并通过干运行；真实主机尚未部署，隐私环境覆盖仍待核实。
+
+- [验证] HQ 显式源登记完成：13 项组件测试及 6 项实际包集成测试通过，包含启动前无数据库的两代数据接入；包哈希一致、进程退出，详情见 `CHANGELOG.md`。
+- [未验证] 真实主机配置与切换尚未执行，旧服务继续运行。
+
+- [验证] 不预写 HQ 授权表的端到端测试已复现失败：收到 1 条发布，但源登记/epoch/会话均为 0；失败夹具保留，详情见 `CHANGELOG.md`。
+- [开发] 已接入显式登记文件启动参数；组件与 index 角色限制仍待完成编译验证。
+
+- [排查] 真实试运行准备发现 HQ 缺少生产源登记入口：现有集成测试预先写入授权表，不能据此宣称新安装流程完整，详情见 `CHANGELOG.md`。
+- [计划] Cursor 正补受控初始登记组件与测试；父代理负责启动参数及不预写登记表的端到端验证，尚未部署。
+
+- [验证] 新包本地 HTTPS 浏览器验收通过：登录 204、六次读取 200，三条消息与正反搜索正确；测试退出、夹具清理、包哈希一致，详情见 `CHANGELOG.md`。
+- [未验证] 真实主机数据与轻量运行仍待验收，尚未切换旧服务。
+
+- [验证] 实际角色包的 5 项双副本/HQ 读取/崩溃恢复测试通过，包哈希不变、测试进程已退出；三台主机隔离目标目录只读检查通过，详情见 `CHANGELOG.md`。
+- [未验证] 浏览器页面和真实主机数据链路仍待验收，旧服务保持运行。
+
+- [验证] 安装规划补齐反向目录边界，最终 19 项测试通过；六份安装预览重跑一致，详情见 `CHANGELOG.md`。
+
+- [验证] 三种当前角色包及独立校验全部通过；175 项打包测试通过，六份禁用状态的安装预览已生成，详情见 `CHANGELOG.md`。
+- [修复] 安装规划器误把用户主目录当作状态文件的问题已修复：先复现 2 项失败，再验证 17 项通过；真实主机尚未切换。
+
+- [排查] 打包失败已定位到 GRDB 的 Swift Concurrency 相对依赖；系统共享缓存确认库存在，Cursor 正按失败测试修复复制产物的依赖名，详情见 `CHANGELOG.md`。
+
+- [验证] 30 分钟复测及独立复算通过：CPU 1.733%、最高 RSS 19.02 MiB，1140 次请求和 3 次认证成功，8 个子进程已回收，详情见 `CHANGELOG.md`。
+- [排查] 实际 Collector 打包遇到 Swift Concurrency 依赖校验失败，失败产物保留；Cursor 正定位，尚未部署。
+
+- [修复] 打包准备脚本补齐每包未提交源码说明、构建进程检查及额外资源哈希；尚未执行打包，详情见 `CHANGELOG.md`。
+
+- [排查] 已纠正部署审查中的额外阻塞判断：远端已有安装预览支持，M1 归档身份有既有认证记录；本地候选包保留真实未提交源码证据，详情见 `CHANGELOG.md`。
+
+- [验证] 本轮性能验收前的打包拒绝检查通过，未创建产物；准备脚本会核对源码及二进制哈希，性能 exec95076 仍运行，详情见 `CHANGELOG.md`。
+
+- [决策] 用户明确暂缓 Antigravity，不作为当前阶段阻塞项；保留现有数据与未应用草稿，回到轻量采集、HQ 索引、M1 副本和浏览器主线，详情见 `CHANGELOG.md`。
+
+- [排查] Antigravity 实际缓存候选为 HQ 58 / 日常 Mac 58 / M1 0；CLI 候选 22 / 172 / 0，不能以 CLI 支持代替缓存覆盖，详情见 `CHANGELOG.md`。
+- [未验证] 原始 `.pb` 候选仍需保全与解析核实；Windsurf 两份候选来自 2024 年，默认应用路径不存在。v4 性能复测继续。
+
+- [排查] 三台 Windsurf 默认缓存均为空；日常 Mac 另有 2 个 `.pb` 候选文件，尚未读取内容或归档，不能以空缓存代表没有历史，详情见 `CHANGELOG.md`。
+- [未验证] 日常 Mac 没有 Windsurf 进程或默认 daemon 目录；缓存草稿不能替代原始历史迁移。v4 三个 Release 构建通过，性能结果待完成。
+
+- [修复] inventory 两处校验改用已有安全打开方法，保留全部身份与 SQLite 检查；609 项回归通过，详情见 `CHANGELOG.md`。
+- [未验证] 新一轮相同负载复测已启动（exec95076），尚无结果；缓存补丁继续未应用。
+
+- [排查] 第二轮诊断完整退出并清理，调用栈确认 inventory 逐层路径打开开销；Cursor 正做两处最小替换，仍待回归与完整复测，详情见 `CHANGELOG.md`。
+
+- [验证] 完整复测 CPU 2.213% 仍超过 2%，RSS 21.33 MiB；1140 次请求、3 次认证成功，独立复算一致，详情见 `CHANGELOG.md`。
+- [排查] 8 个子进程已回收；同产物诊断已启动（exec63482），Cursor 只读定位剩余开销。缓存隐私草稿已修正，仍未应用/编译。
+
+- [排查] 缓存隐私实现草稿发现编译类型、上传前路径复核及格式校验缺口，已退回 Cursor 修正；补丁未应用，详情见 `CHANGELOG.md`。
+
+- [验证] 缓存隐私测试草稿完成独立审查和应用预检，未应用/编译；746 个测量源码哈希一致，性能窗口继续，详情见 `CHANGELOG.md`。
+
+- [验证] 旧缓存注册测试草稿完成审查与应用预检，仍未应用/编译；性能复测已进入稳态采样，746 个源码哈希未变，详情见 `CHANGELOG.md`。
+
+- [修复] 已减少存活来源的重复注册，保留身份与存储校验；179 项回归通过，详情见 `CHANGELOG.md`。
+- [未验证] 同负载 30 分钟复测已启动（exec28705），尚无结果；日常 Mac SSH 在线，仍运行 Service、未运行 Collector。
+
+- [排查] CPU 调用栈出现每轮重复来源注册/激活及目录、数据库检查；诊断已完整退出并清理，详情见 `CHANGELOG.md`。
+- [未验证] Cursor 正修改最小轮询路径并保留绑定/存储校验，尚需回归和同负载 30 分钟复测；旧缓存补丁继续未应用。
+
+- [验证] 30 分钟资源验收失败：CPU 2.308% 超过 2% 目标，RSS 最大 20.44 MiB；1140 次请求和 3 次认证全部成功，独立复算一致，详情见 `CHANGELOG.md`。
+- [排查] 8 个子进程已回收，失败夹具保留；已启动同产物 CPU 调用栈诊断，旧缓存补丁暂不应用，GOAL active。
+
+- [验证] 旧缓存补丁完成静态审查，已拆分测试/实现且应用预检通过；源码哈希未变，尚未应用或编译，性能窗口继续，详情见 `CHANGELOG.md`。
+
+- [排查] 旧 Windsurf 缓存身份来自元数据 ID，与 hook 文件名身份不同；Cursor 准备未应用补丁，测量结束后再运行真实测试，详情见 `CHANGELOG.md`。
+
+- [排查] 已通过核实的 Tailscale 地址连接日常 Mac：仍为 local，Service 在运行、Collector 未运行；单点 CPU 31.6%、RSS 约 674 MiB，不能当作完整性能窗口，详情见 `CHANGELOG.md`。
+- [未验证] 三台都缺 Windsurf 默认 transcript 目录；Cursor 正只读核对旧缓存历史的采集覆盖，30 分钟性能测试仍在运行。
+
+- [验证] 三个 arm64 Release 构建通过，746 个源码文件保持一致；性能夹具双副本/HQ 的 256 份初始数据校验通过，已进入 30 分钟稳态采样，详情见 `CHANGELOG.md`。
+- [排查] HQ/M1 归档认证接口均返回 200，身份/配置目录各自独立；最近变更遥测仍为 8 月 23 日，历史错误不能当成本次故障。
+- [未验证] 日常 Mac 历史主机名无法解析；真实最新归档、恢复完整性与最终性能结果仍未验收，GOAL active。
+
+- [验证] 重启会话后 Herdr/进程访问恢复，GOAL active；旧构建已无匹配进程，arm64 新构建启动，Cursor 经 Herdr 只读复核运行器。
+- [验证] HQ/M1 实际 Tailscale 监听地址健康检查均返回 ok；完整归档与性能仍待验收，详情见 `CHANGELOG.md`。
+
+- [未验证] 同一权限阻塞连续三轮，GOAL 已标记 blocked；恢复本会话 Herdr/进程访问后继续核对旧构建，完整目标未完成，详情见 `CHANGELOG.md`。
+
+- [修复] 准备独立 arm64 性能运行器，保留旧尝试；架构、源码/产物稳定性与实际 PASS 结果均需满足，详情见 `CHANGELOG.md`。
+- [未验证] 语法/计划检查通过；进程可见性预检因权限失败而拒绝启动，没有新增构建。恢复 Herdr/进程可见性后先核对旧任务终态。
+
+- [排查] HQ/M1 只读清单已刷新：旧 Windsurf 缓存存在、默认 transcript 目录均不存在；M1 缺少设置文件，不能将默认值当成运行角色，详情见 `CHANGELOG.md`。
+- [验证] daemon 边界扫描和启动配置静态验证通过；当前 Collector Release 构建成功，30 分钟性能验收尚未完成。
+- [未验证] 权限切换后 Herdr 被拒、构建句柄失效；先核对现有进程终态再处理 arm64 测量配置，不重复启动构建，GOAL active。
+
+- [新增] Windsurf独立二进制与浏览器整链通过：删除源目录后HQ仍可检索两代、展示四条消息及完整工具对象，详情见 `CHANGELOG.md`。
+- [验证] 三个构建通过、测试1/0、8个产物哈希稳定；登录204、读取200、空搜索通过，控制台无错误，自有浏览器与夹具已回收。
+- [未验证] 真实HQ/M1、来源历史/留存与日常Mac资源验收仍开放；Cursor经Herdr核对现有验收脚本，GOAL active。
+
+- [新增] Windsurf常驻采集已向两个本地副本发布两代，源目录删除后可恢复未发布归档，详情见 `CHANGELOG.md`。
+- [验证] Runtime3/0、Collector608/0、Service176/0；默认格式隐私拒绝0ACK，不创建本地产品索引。
+- [未验证] Cursor经Herdr接续独立二进制测试；真实HQ/M1、资源与切换仍未验收，GOAL active。
+
+- [新增] Windsurf隐私检查扫描完整归档的转义路径，路径只作排除规则证据，不推断工作区，详情见 `CHANGELOG.md`。
+- [修复] 补上正文/标点路径遗漏和缺失末端的别名检查；增加路径深度上限；另修复混合file URI遗漏，最终Collector607/0。
+- [未验证] 保守匹配可能误拒安全文本，真实数据与开销未验收；常驻发布、恢复和整链仍待接通，GOAL active。
+
+- [新增] Windsurf专用归档已接HQ准入、回放、提交和全文检索；源删除后原始字节仍含规则元数据，详情见 `CHANGELOG.md`。
+- [验证] Core617/0、副本54/0、Collector598/0、身份22/0、原生/parity14/0；伪造身份、错误根目录与损坏内容被拒绝。
+- [未验证] 隐私证明和常驻采集仍未启用，Cursor经Herdr核对下一步；真实HQ/M1与资源验收仍开放，GOAL active。
+
+- [新增] Windsurf官方嵌套JSONL可在源目录删除后回放，逻辑文件名保持会话身份，详情见 `CHANGELOG.md`。
+- [修复] 工具步骤保留完整类型/状态/同级字段；失败复现13/2，修正后原生与parity14/0，畸形对象也计入数量预算。
+- [未验证] 尚未启用Windsurf常驻采集；格式、隐私及HQ准入是下一步，真实机器与完整性验收仍开放。
+
+- [验证] Antigravity 独立二进制重跑1/0、8个产物哈希稳定；浏览器四条消息和工具调用可见，登录204、读取200、控制台无错误，详情见 `CHANGELOG.md`。
+- [排查] 首轮失败来自停止文件权限；成功重跑按300秒期限退出并回收夹具，空搜索证据仅来自首轮，未混算成单次全通过。
+- [未验证] 真实HQ/M1、资源与切换验收仍未完成；Cursor经Herdr核对Windsurf接入边界，GOAL active。
+
+### 2026-09-10
+
+- [新增] Antigravity CLI 常驻采集已向两个独立本地副本发布两代；源目录删除后可恢复未发布归档，详情见 `CHANGELOG.md`。
+- [修复] CLI捕获保留原始规范定位符，避免路径别名改变HQ身份；补齐Worker初始化来源入口。
+- [验证] Core614/0、Collector598/0、Service173/0；覆盖默认格式隐私拒绝和恢复身份不变，独立二进制/浏览器及真实机器验收仍待完成，来源族仍15。
+
+- [修复] Antigravity隐私检查识别JSON斜杠与Unicode转义目录，补上原始扫描可漏过排除规则的问题，详情见 `CHANGELOG.md`。
+- [验证] 失败复现55/3；另修复转义目录重复计数的57/1复现，最终Collector597/0，覆盖跨块转义、代理对和目录预算。
+- [未验证] Runtime候选接入点已记录，来源根消失后的稳定身份、常驻发布和完整整链仍待实现；来源族仍15、GOAL active。
+
+- [新增] Antigravity CLI 已接通HQ/副本严格准入，源目录删除后仍可归档回放、提交并全文检索，详情见 `CHANGELOG.md`。
+- [修复] 提交重新绑定日志目录身份，拒绝伪造解析ID；身份提取统一为纯路径字节校验。
+- [验证] Core614/0、副本53/0、Collector594/0、投影22/0、原生/parity23/0；Runtime根身份与转义路径隐私仍待处理，来源族仍15、GOAL active。
+
+- [修复] Antigravity CLI 身份与回放目录严格绑定；隐私检查遍历全部归档，补上50KB之后的排除目录遗漏，详情见 `CHANGELOG.md`。
+- [验证] 隐私54/0、Collector594/0、投影22/0、原生/parity23/0；覆盖源删除、跨块路径/UTF8、损坏尾部和预算拒绝。
+- [未验证] Runtime发布、HQ准入与整链尚待接通；真实来源/机器和资源验收仍未完成，来源族仍15、GOAL active。
+
+- [新增] Antigravity brain 日志新增冻结文件回放入口；三种目录在删除源文件后保持原生身份、消息和工具语义，详情见 `CHANGELOG.md`。
+- [验证] 独立验收修正了逻辑路径校验，最终原生/parity 23/0；采集隐私、HQ 路由和整链仍待接通，来源族仍15。
+- [排查] Windsurf 官方文档提供完整会话 JSONL hook 导出线索；版本适用性、留存与历史补齐仍需验证，尚未安装 hook，GOAL active。
+
+- [修复] HQ 旧代晚到/归档重试恢复后，以 `quarantine.obsolete_generation` 明确停止重试，保留原始归档，不覆盖当前解析/读取头；详情见 `CHANGELOG.md`。
+- [验证] Worker 61/0、归档/摄入 Core 611/0、专用隔离主目录下 Runtime 13/0；已索引场景的消息、FTS 与索引任务保持不变，自有进程和临时主目录已收回。
+- [未验证] Windsurf 原始 JSON 导出完整性仍在核对，不能假设 Markdown JSON 接口可用；Antigravity、真实机器/资源与 Release/CI/切换仍待完成，来源族仍15、GOAL active。
+
+- [新增] VSCode 实际二进制与浏览器链路通过：原始输入全部删除后，HQ 从独立双副本解析两代、展示三条消息，本地合成来源族增至15；详情见 `CHANGELOG.md`。
+- [修复] HQ 同秒入队按哈希排序会先解析新代、拒绝旧代；改为同时间按来源流/序号排序。Cursor 找出的旧测试预期已同步修正，最终 Worker 58/0。
+- [验证] 三个 Debug 构建通过；二进制/浏览器各1/0、8个链接产物哈希稳定，浏览器与自有夹具已收回。
+- [未验证] 跨时间乱序/延迟代处理仍待补齐；Windsurf 原生导出、Antigravity、真实机器/资源与 Release/CI/切换尚未完成，GOAL active。
+
+- [新增] VSCode 已验证工作区/外部配置变化重采；未变化时只查文件元数据，侧文件不再独占采集队列。详情见 `CHANGELOG.md`。
+- [验证] 删除源目录与外部配置后，Runtime 仍用冻结归档完成双副本发布；Service 170/0、Collector 589/0，无产品索引。
+- [未验证] Cursor 正复核观察逻辑；新二进制、HQ 搜索与浏览器及真实机器/资源验收仍待完成，来源族仍14，GOAL active。
+
+- [新增] VSCode 首轮常驻 Runtime 已发布日志与工作区原始字节到两个独立本地 HTTP 副本，重启复用已有归档；详情见 `CHANGELOG.md`。
+- [验证] Service 169/0、Collector 586/0；未创建产品索引。旧 Cursor 所有权用例首次失败后整套重跑通过，首次原因仍未确定。
+- [未验证] 工作区/外部配置变动重采、侧文件事件路由、源删除恢复、整体 I/O 预算及实际二进制/浏览器尚待完成，来源族仍14，GOAL active。
+
+### 2026-09-09
+
+- [新增] VSCode 有界文件观察与 schema 11 配置持久化已接通，删除源目录后可恢复预留并创建独立双副本发布义务；详情见 `CHANGELOG.md`。
+- [验证] Collector 585/0、Worker 87/0；覆盖配置变化拒绝、损坏保留记录、旧回执迁移、事务回滚及 64 KiB 配置恢复。
+- [未验证] Cursor 正只读复核；常驻采集、配置变动重采及实际二进制/浏览器链路尚待接通，完整来源族仍为14，GOAL active。
+
+- [新增] VSCode 轻量身份投影与流式隐私检查已验证，工作区每个项目目录都核对排除规则；详情见 `CHANGELOG.md`。
+- [修复] 快照预算计入冻结外部配置并拒绝溢出；失败复现 124 项/2 断言，最终 Collector 568/0，身份 20/0、隐私 49/0。
+- [未验证] Cursor 正修正文件采集器的预算与路径绑定问题；持久化、常驻采集及完整链路未接通，完整来源族仍为14，GOAL active。
+
+- [新增] VSCode 归档已接 HQ 原生回放、数据库写入和全文检索；删除整个原工作区后仍可查到消息，详情见 `CHANGELOG.md`。
+- [修复] 补齐 HQ/副本准入并按原生日志大小校验；去掉上下文再降级 schema 的发布被拒绝。
+- [验证] Archive/Ingest611/0、副本52/0、Collector562/0；Cursor 模型审查两项意见已逐项裁定并留证。
+- [未验证] 常驻采集、隐私检查、真实双副本及二进制/浏览器链路仍待接通；来源族仍为14，GOAL active。
+
+
+- [新增] VSCode schema 7 保存外部配置原始字节、路径、代次和摘要；配置缺失也显式记录，详情见 `CHANGELOG.md`。
+- [修复] 采集时校验配置引用，并将外部配置计入字节预算；配置及源目录删除后可从 CAS 恢复上下文。
+- [验证] Archive/Ingest606/0、Collector562/0；实际失败复现与编译错误均保留。
+- [未验证] 有界外部文件采集、隐私检查、HQ 接入及完整链路仍待完成；来源族仍为14，GOAL active。
+
+
+- [新增] VSCode 原生回放可使用冻结工作区与外部配置，源删除或暂存路径变化后仍保留身份、项目和消息；详情见 `CHANGELOG.md`。
+- [验证] 失败复现19项/8断言失败，最终20项通过；覆盖原生路径优先级及缺失上下文不读取本机文件。
+- [未验证] 归档上下文、常驻采集、HQ 接入及二进制/浏览器链路尚待接通；完整来源族仍为14，GOAL active。
+
+
+- [新增] MiniMax/LobsterAI 已接通常驻采集、独立双副本、HQ 原生搜索及浏览器；同目录按真实来源分流，源目录删除后仍可恢复原归档。详情见 `CHANGELOG.md`。
+- [验证] Collector 562/0、Service 167/0、Worker 87/0；两条二进制链路各 1/0，浏览器与临时进程已清理。MiniMax 验证脚本首次凭据填充错误的两次 401 已保留，修正后通过。
+- [未验证] 本地合成来源链路覆盖 14 个族；VSCode/Windsurf/Antigravity、真实 profile/机器、资源和正式切换仍待完成，GOAL active。
+
+
+- [新增] Collector schema 10 可在同一根目录保存不同来源的独立流；旧 UUID、epoch、序号和回执保持不变。详情见 `CHANGELOG.md`。
+- [验证] Collector 562/0、Worker 81/0；真实 GRDB 覆盖源删除后恢复、发布/ACK 字节保留、历史来源不猜测及失败回滚。
+- [未验证] 来源识别与采集分流尚未接入；MiniMax/LobsterAI 完整链路、真实机器、资源和切换验收继续推进，GOAL active。
+
+
+- [新增] MiniMax/LobsterAI 的真实来源标签已获 HQ 和副本支持；源删除后仍可原生回放、写入与全文检索，相同会话 ID 保持独立。详情见 `CHANGELOG.md`。
+- [验证] 最终 Archive/Ingest 598/0、副本 51/0，进程退出码均为 0；保留失败复现及路径夹具修正证据。
+- [未验证] 共享目录的 Collector 来源分流与重启恢复仍待实现；完整本地来源数量保持 12，真实 HQ/M1、资源和切换验收未完成，GOAL active。
+
+
+- [新增] Cline 已通过实际原生二进制的双副本、HQ 搜索与浏览器链路；详情见 `CHANGELOG.md`。
+- [修复] 单文件预算下的主文件切换不再重复采集；采集中源文件消失会保留预留并重试，已存归档可在源删除后恢复发布。
+- [验证] Collector560/0、replica49/0、Worker80/0、Service160/0、binary1/0；三次新构建通过，浏览器零错误/警告，临时进程和目录已清理。
+- [未验证] 仍有五个来源族及实际配置、资源、真实 HQ/M1、Release/CI 和切换验收；混合异常事件与重扫读取预算继续保留，完整 GOAL active。
+
+- [新增] Cline 的主文件选择、受限数组隐私检查和 HQ 原生回放基础已验证；详情见 `CHANGELOG.md`。
+- [验证] Archive/Ingest 594/0、Collector 559/0、projection 17/0、Service 153/0；Cursor 经 Herdr 补测试，主代理独立执行。
+- [未验证] Cline 实时采集、主文件切换恢复、双副本和浏览器链路尚未接通；来源覆盖数量不增加，完整 GOAL 继续 active。
+
+- [新增] iFlow now reaches independent local replicas, HQ native parsing/FTS and rendered Web through fresh Swift binaries; exact messages, identity and positive usage verified. See `CHANGELOG.md`.
+- [修复] Filled the replica source-admission gap found by Runtime RED153/1; whole Runtime unpublished-CAS restart also preserves original bytes/sequence/epoch after source removal.
+- [验证] Core592/0, projection13/0, Collector551/0, Service153/0, replica49/0, binary1/0; eight linked artifacts stable, browser closed and successful fixture removed.
+- [未验证] Remaining source/profile/resource coverage, Runtime native-stop/recapture races, Release/CI, M1 local identity and production cutover remain open. Full GOAL stays active.
+
+- [修复] Modern Cursor stale-root observation no longer blocks saved-CAS recovery; bounded retries remove only confirmed-unavailable roots and preserve stored identity. See `CHANGELOG.md`.
+- [验证] RED73/1; final Service151/0 and Collector550/0. Original reservations resume after source return; missing inventory still fails closed without uploads.
+- [未验证] Whole Runtime restart/native-stop races, later recapture races, fresh binaries and real-host/source/resource/Release/CI/cutover gates remain open. Full GOAL stays active.
+
+- [修复] Missing configured roots no longer block healthy startup; late roots bootstrap, and restart delivers pending archives without rebinding missing/replaced sources. See `CHANGELOG.md`.
+- [验证] Behavioral RED147/1; Service148/0 and Collector550/0 passed. Herdr Cursor implemented Owner/Worker; parent independently verified Runtime and replica results.
+- [未验证] Mid-cycle disappearance, whole Runtime saved-CAS restart, fresh binaries and real-host/Release/CI/cutover gates remain open; full GOAL stays active.
+
+- [修复] Legacy prior-CAS comparisons now share a per-cycle read allowance; exhaustion resumes next cycle, and oversized optional comparisons do not starve current capture. See `CHANGELOG.md`.
+- [修复] Actual binary validation found missing standalone Service framework search paths; project.yml and pinned XcodeGen output corrected, all three Debug products rebuilt.
+- [验证] Collector550/0, Service146/0, legacy and modern binary chains1/0 each; eight linked artifacts stable. Rendered browser verified updated ownership, search and exact messages; fixture closed and removed. See `CHANGELOG.md`.
+- [未验证] Natural source/profile/resource coverage, absent-root Runtime lifecycle, Release/CI, M1 local identity and production cutover remain open. Full GOAL stays active.
+
+- [修复] Cursor legacy ownership/peer changes now trigger durable schema 9 rechecks; unchanged global main/WAL no longer prevent local Runtime recapture. See `CHANGELOG.md`.
+- [验证] Final Collector550/0, Service144/0 and three key cases repeated three times (9/0); missing-source Worker recovery keeps original bytes and both replica ACKs. See `CHANGELOG.md`.
+- [排查] Corrected layout-only legacy fixture, per-stream sequence selection and bounded asynchronous waits; failed evidence retained in the observer receipt.
+- [未验证] Prior-CAS resource bounds, full absent-root Runtime lifecycle, fresh binaries/Web and real-host/Release/CI acceptance remain open. Full GOAL stays active.
+
+- [新增] Cursor legacy now enters the actual Runtime paginated walk using one shared global snapshot per page; schema 8 records per-session capture IDs atomically. See `CHANGELOG.md`.
+- [验证] Runtime RED141/1 retained; final Collector542/0 and Service142/0 passed. Two sessions resume across restart to both local HTTP replicas; forced re-scan after unrelated DB writes adds no publications. See `CHANGELOG.md`.
+- [未验证] Ownership-only observation, modern peer removal/invalidation, prior-CAS resource bounds and fresh binaries/HQ/Web/real-host gates remain open. Full GOAL stays active.
+
+- [新增] Explicit Cursor legacy roots/paired-root config now persist in schema 7; bootstrap and main/WAL event routing are covered. See `CHANGELOG.md`.
+- [修复] Herdr Cursor implemented uncaptured retry; matching frozen bytes reach both local HTTP replicas, while changed ownership/source and budgets preserve recoverable work. See `CHANGELOG.md`.
+- [验证] Collector536/0 and final Worker68/0 passed; Runtime45/replay27 passed in the earlier mixed run. Corrupt locator reload fails closed and retains work. See `CHANGELOG.md`.
+- [未验证] Initial legacy walk, shared-page snapshot, modern-ID/content dedup, ownership-only observation, fresh binaries/HQ/Web and real-host gates remain open. Full GOAL stays active.
+
+- [新增] Cursor legacy now has bounded ID pages, typed durable reservations and saved-CAS recovery to two local HTTP replicas. Herdr Cursor wH:p2 implemented discovery and reviewed parent integration. See `CHANGELOG.md`.
+- [验证] Actual REDs retained; final Collector532/0 and Worker63/0 passed, with original bytes/sequence/epoch checked. See `CHANGELOG.md`.
+- [未验证] Paired-root automatic discovery, scoped-content dedup, uncaptured retry, fresh binary/HQ/Web and real-host/resource gates remain open. Full GOAL stays active. See `CHANGELOG.md`.
+
+- [修复] HQ continuation now admits Cursor legacy privacy proofs from verified captured CAS and frozen ownership; exclusion and resource limits remain enforced. See `CHANGELOG.md`.
+- [验证] Actual RED 39/7; initial GREEN 39/0; expanded Collector 518/0 and PublicationWorker 62/0, exit 0, plus diff check. See `CHANGELOG.md`.
+- [未验证] Herdr Cursor wH:p2 accepted the bounded change; discovery/revisions/retry/HTTP ACK and real-host gates remain open. See `CHANGELOG.md`.
+
+- [新增] Cursor legacy schema 6 now binds typed bodies in CAS and enters HQ native replay/commit/FTS; native UTF-8 size remains distinct from raw and encoded sizes. See `CHANGELOG.md`.
+- [验证] Final Core590, Collector514, Service133, native52 and replica48 passed; actual source-deleted Collector/CAS/HQ parity and independent local store reopen are covered. See `CHANGELOG.md`.
+- [未验证] Legacy privacy/discovery/revisions/retry/runtime HTTP ACK, fresh binaries/Web and all-source real-host/resource/retirement gates remain open. Full goal stays active. See `CHANGELOG.md`.
+
+- [新增] Cursor legacy now persists typed scoped rows and frozen cwd; CoreRead replays the saved body through native SQLite after source deletion. See `CHANGELOG.md`.
+- [验证] Actual REDs retained; final Collector514, Archive/Ingest569, native52 and Service133 passed, including cross-module capture/replay and captured-path isolation. See `CHANGELOG.md`.
+- [未验证] Legacy manifest/CAS/discovery/retry/dual ACK/FTS/Web/binaries, all-source real-host acceptance and authorized retirement remain open; full goal stays active. See `CHANGELOG.md`.
+
+- [新增] Cursor legacy now freezes raw rows and unique workspace cwd from one global snapshot plus fenced workspace inputs; ambiguous/malformed proof stays withheld. See `CHANGELOG.md`.
+- [修复] Actual RED closed UF_HIDDEN ownership and staging-inside-source mutation; final Collector513 and Service132 passed, exit0. See `CHANGELOG.md`.
+- [未验证] Next: Cursor-specific durable representation/native parity, discovery/retry/dual ACK/HQ/Web, then all-source real-host acceptance; raw bytes and native size are distinct. See `CHANGELOG.md`.
+
+- [新增] Cursor legacy now exports bounded, exact per-composer raw rows from private WAL-safe snapshots; frozen workspace ownership is still required before upload. See `CHANGELOG.md`.
+- [修复] Actual REDs closed source-journal, UTF-16, generated ROWID and exact-output-budget gaps. Final Collector490 and Service132 passed, exit0. See `CHANGELOG.md`.
+- [未验证] Next: frozen ownership, legacy discovery/retry/dual ACK/HQ/Web, then remaining profiles and real-host acceptance; total goal remains active. See `CHANGELOG.md`.
+
+- [修复] Cursor modern now suppresses duplicate event work and repairs held-open WAL notification gaps with bounded stat-only known-dependency pages. See `CHANGELOG.md`.
+- [验证] Actual REDs preserved; final Collector474, Service132, fresh native builds and CLI/binary35 (34 pass/1 existing skip) passed. Four publications settled at sequence7 with drained work. See `CHANGELOG.md`.
+- [验证] Rendered Cursor login/search/detail/three messages/no-match passed; browser v2 exited0 with stable artifacts and owned cleanup. First0644 stop-file failure remains recorded. See `CHANGELOG.md`.
+- [未验证] Legacy export/ownership, actual source profiles/hosts, new Release/CI/resource windows and authorized retirement remain open. See `CHANGELOG.md`.
+
+- [新增] Cursor modern archives now replay and commit through HQ with native identity, metadata, time and payload-size parity; persisted-message FTS reaches index_ready. See `CHANGELOG.md`.
+- [修复] Actual WAL replay failures led to private SHM initialization before sealing; existing byte/identity fences remain enforced. See `CHANGELOG.md`.
+- [验证] Final Archive/Ingest560, Service129 and native Cursor52 passed, exit0; all RED receipts are linked in `CHANGELOG.md`.
+- [未验证] Next: fresh Cursor binary/FTS/rendered-Web chain; legacy, remaining profiles, actual hosts and retirement remain open. See `CHANGELOG.md`.
+
+- [新增] Cursor modern runtime now delivers four exact-byte generations to two independent local HTTP replicas, including WAL-only and stopped-runtime metadata updates. See `CHANGELOG.md`.
+- [修复] Cursor uncaptured source loss now preserves retry work; durable unpublished captures recover original identity after source deletion/catalog reopen. See `CHANGELOG.md`.
+- [验证] Actual recovery RED129/1; final Collector471, Service129 and replica47 passed, exit0. Grok tests/review independently checked. See `CHANGELOG.md`.
+- [未验证] Next: Cursor HQ native replay/commit/FTS/Web and fresh binaries; legacy, real hosts, remaining profiles and retirement remain open. See `CHANGELOG.md`.
+
+- [新增] Cursor modern reservations now survive DB/catalog reopen and source removal using the original captured generation; two durable replica intents remain pending. See `CHANGELOG.md`.
+- [修复] Actual Unicode RED exposed wrong-version retry/recovery/abandon; Cursor UTF8 path checks now preserve the original reservation. See `CHANGELOG.md`.
+- [验证] RED466/17, remaining466/1 and expanded102/6 reproduced; final Collector466 and Service124 passed, exit0. Grok review done575; all producers joined. See `CHANGELOG.md`.
+- [未验证] Next: Cursor discovery/worker/runtime bridge, independent delivery and HQ/Web; legacy, actual hosts and retirement remain open. See `CHANGELOG.md`.
+
+- [新增] Cursor privacy now reads verified captured main/WAL metadata only and binds recognized roots/current policy; default policy and HQ admission stay closed. See `CHANGELOG.md`.
+- [修复] Reproduced CAS physical-path alias rejection and two-record budget bypass; preserved no-follow custody and enforced both metadata inputs. See `CHANGELOG.md`.
+- [验证] Final Service124, Collector459 and Archive/Ingest553 passed, exit0; WAL-only CAS, forged member hash and PK/index schemas covered. Grok finding adjudicated; all producers joined. See `CHANGELOG.md`.
+- [未验证] Next: durable reservations/restart with transcript-first primary, then independent replicas/HQ/Web; legacy, actual hosts, Release/CI and retirement remain open. See `CHANGELOG.md`.
+
+- [新增] Cursor native metadata selection is shared with future collector privacy checks; losing roots and malformed/type evidence are retained without changing display. See `CHANGELOG.md`.
+- [验证] RED12/60 reproduced; native/projection/index52, Service113 and Collector449 passed. Raw-history native6 passed after fixture-only corrections; Grok review done553. See `CHANGELOG.md`.
+- [未验证] Captured-only SQLite reading and Cursor privacy/reservation/publication/HQ remain next. Raw history is not a byte-scrubbing guarantee; all real-host/retirement gates stay open. See `CHANGELOG.md`.
+
+- [新增] Cursor sealed modern bytes now persist through existing schema 2/CAS with original provenance; five native cases replay reopened durable artifacts after source removal. See `CHANGELOG.md`.
+- [验证] Archive RED77/10 and persistence RED5/5 reproduced; final Archive/Ingest553, Collector449 and Service112 passed, exit0. Grok review done545. See `CHANGELOG.md`.
+- [未验证] Cursor privacy/reservations/replica delivery/HQ ingest remain next; legacy ownership/export and actual-host/Release/CI/retirement gates remain open. See `CHANGELOG.md`.
+
+- [新增] Cursor modern capture preserves original main/WAL/meta/JSONL bytes; five native replay cases survive original-source removal. Legacy scoped export remains pending. See `CHANGELOG.md`.
+- [修复] Actual REDs reproduced directory deadline and disappeared-payload classification gaps; final Collector449 and Service112 passed, exit0. See `CHANGELOG.md`.
+- [未验证] Cursor sealed-member CAS/manifest work is active; privacy, durable publication, HQ/Web and all actual-host/retirement gates remain unverified. See `CHANGELOG.md`.
+
+- [新增] Cursor now leases its observed store DB through shared private main/WAL custody; OpenCode reuses that physical path while its export/privacy SQL stays byte-identical. No live source SQLite opens. See `CHANGELOG.md`.
+- [验证] Demonstrated initial and private-pair REDs; final focused70, full Collector438 and affected Service107 passed, actual exit0. Source removal, dependency drift, staging integrity and cleanup covered; Grok review done533. See `CHANGELOG.md`.
+- [未验证] Cursor composite JSONL/meta capture, versioned transport/privacy, legacy row export/ownership and HQ/Web remain next; fresh binaries and all real-host/retirement gates remain open. See `CHANGELOG.md`.
+
+- [新增] Cursor modern metadata discovery now pairs chats/projects and fences main/WAL/meta/transcript changes, missing members, ambiguous IDs and unsafe paths; native-hidden children stay excluded. See `CHANGELOG.md`.
+- [验证] Discovery/hidden-directory and independent review issues have actual REDs; final full Collector421 passed, zero failures, exit0. Total-call budget, atomic CLOEXEC and native child-link skipping verified; explicit source boundary retained. See `CHANGELOG.md`.
+- [未验证] Cursor private snapshots, modern/legacy capture and HQ/Web integration remain pending; no runtime upload or source retirement is enabled by discovery alone. See `CHANGELOG.md`.
+
+- [验证] Fresh native Kimi Collector → independent replicas → HQ Service → FTS/Web passed three generations, including registry-only cwd change. CLI/binary 33 passed plus one opt-in skip; browser fixture passed; eight linked local hashes stayed stable. See `CHANGELOG.md`.
+- [验证] Playwright checked login, Kimi search/detail, three messages, updated project and empty search; screenshot inspected. Initial wrong JSON credential produced401, corrected login/data requests succeeded. Owned browser and fixture are closed/removed. See `CHANGELOG.md`.
+- [未验证] Local Kimi acceptance does not retire any real source: remaining families/profiles, distinct Codex runtimes, M1 identity, natural hosts, Release/CI and operational Web/resource gates remain open. See `CHANGELOG.md`.
+
+- [新增] Kimi HQ registry/replay/commit now uses native captured inputs, frozen cwd/mtime and context-only size; registry-only versions update one stored session. See `CHANGELOG.md`.
+- [修复] Reproduced and rejected wire-inclusive session size, consistent native-ID forgery and cwd drift from captured context. See `CHANGELOG.md`.
+- [验证] Archive/Ingest plus native Kimi 563, affected Service 107 and final commit/FTS 63 passed. Real IndexJobRunner consumed saved messages without adapters; FTS found the expected session after original inputs were removed. See `CHANGELOG.md`.
+- [未验证] Fresh native binary chain, rendered Kimi Web, actual hosts/profiles/identity, Release/CI and retirement remain open. The full goal stays active. See `CHANGELOG.md`.
+
+### 2026-09-08
+
+- [新增] Kimi Runtime now captures primary/shard/wire and registry-only changes, applies captured-input privacy, and uploads schema 5 to independent replicas; source/registry removal no longer blocks policy reauthorization of captured data. See `CHANGELOG.md`.
+- [验证] Full Collector 404, affected Service 103, replica store 45 and routes 13 passed; all xcodebuild producers exited 0. Runtime tests checked both replicas byte-for-byte and restart recovery; registry paging survives DB reopen. See `CHANGELOG.md`.
+- [修复] Reproduced and fixed uncaptured Kimi recovery blocking after missing inputs; dirty work retries, while already durable captures preserve the original publication sequence. See `CHANGELOG.md`.
+- [未验证] Kimi HQ ingest/commit/FTS/Web remains next. Real-host/profile/identity, fresh binaries, Release/CI and retirement gates stay open; the full goal remains active. See `CHANGELOG.md`.
+
+- [新增] Kimi schema 5 now binds scoped cwd to immutable capture and durable reservation identity; registry-only changes cannot overwrite an older reservation. See `CHANGELOG.md`.
+- [验证] Archive/Ingest 543, full Collector 399 and Service affected classes 98 passed. DB reopen/source removal/CAS completion, migration, corruption and rollback are covered; native replay uses persisted manifest context. See `CHANGELOG.md`.
+- [未验证] Kimi dirty observation scheduling, privacy, dual-replica transport and HQ/FTS/Web wiring remain next; real-host/Release/CI/retirement gates stay open. See `CHANGELOG.md`.
+
+- [新增] Kimi now has bounded context/shard/wire observation and per-session cwd projection; shared registry rows and unnecessary sibling session IDs stay out of the projection. See `CHANGELOG.md`.
+- [验证] Two reproduced registry defects fixed; full Collector 392 passed. Native Kimi CAS replay after original source/registry removal passed both wire and no-wire cases with full metadata/message parity. See `CHANGELOG.md`.
+- [未验证] Kimi provenance is not yet in the transport/reservation schema; Runtime, HQ commit and real-host replacement remain open. The full multi-host/source objective stays active. See `CHANGELOG.md`.
+
+- [验证] Rebuilt OpenCode Collector → independent local replicas → HQ Service → FTS/Web IPC passed for two WAL-only generations; CLI/binary suite: 32 passed, one opt-in Codex browser hold skipped. All 8 linked local artifacts stayed unchanged. See `CHANGELOG.md`.
+
+- [验证] Actual OpenCode HTTPS browser login/search/detail and three-message rendering passed; no-match search and console checks passed. Screenshot: `output/playwright/opencode-native-web.png`. Temporary browser/processes were joined and fixture removed. See `CHANGELOG.md`.
+
+- [未验证] Full actual-source/profile coverage, M1-local identity, real-host natural input, Release/CI, production TLS and retirement remain open; local process/browser gates supersede only earlier OpenCode gaps. See `CHANGELOG.md`.
+
+- [新增] OpenCode HQ registry, staged native replay and payload-size commit are connected; captured IDs are bound at commit and dispatched children remain skip. This supersedes the earlier HQ-placeholder notes below. See `CHANGELOG.md`.
+
+- [验证] Archive/Ingest plus native OpenCode regression 553 passed; actual Collector snapshot → CAS → HQ replay after original DB deletion passed with all 3 Service replay tests. Identity-rebinding RED was reproduced and fixed. See `CHANGELOG.md`.
+
+- [未验证] Rebuilt native process chain, OpenCode FTS/Web proof and all real-host/full-source/retirement gates remain open. See `CHANGELOG.md`.
+
+- [新增] OpenCode Runtime now delivers bounded session images to independent local HTTP replicas; restart, source removal, WAL-only input and CAS recovery are verified. This supersedes the earlier unwired Runtime/privacy notes below. See `CHANGELOG.md`.
+
+- [修复] Reproduced one-day privacy retry delay after policy change; persisted policy SHA now requeues pending privacy-withheld records while preserving transport backoff. Final Runtime/worker 93 and full Collector 379 passed after the fix. See `CHANGELOG.md`.
+
+- [未验证] HQ OpenCode registry/replay/commit, native binary chain, full actual-source coverage and real-host retirement remain open. See `CHANGELOG.md`.
+
+- [新增] OpenCode inventory now commits each session publication with its cursor atomically, preserves unfinished database work across restart/WAL changes, and migrates legacy reservations to schema 4. Runtime wiring remains open. See `CHANGELOG.md`.
+
+- [验证] Collector 373, publication worker 52, Archive/Ingest 527 and replica store/routes 44+13 passed; local HQ/M1 store fixtures preserve schema-4 images and provenance. This is not real-host delivery or HQ parsing. See `CHANGELOG.md`.
+
+- [新增] OpenCode private leases now reuse one fenced DB/WAL snapshot across bounded session pages; SQLite opens only staged files. Schema-4 image CAS preserves real provenance and idempotent recovery. See `CHANGELOG.md`.
+
+- [验证] Archive/Ingest 527, full Collector 363 and native replay 2 passed, including CAS reconstruction after source removal. Multi-session durable publication, privacy and HQ admission remain open. See `CHANGELOG.md`.
+
+- [新增] OpenCode schema-4 scoped SQLite image provenance passes model 33 and Archive/Ingest 523; real DB/WAL stats remain distinct from derived image bytes. See `CHANGELOG.md`.
+
+- [验证] Scoped OpenCode export passed full Collector 353 and native adapter parity after original-source removal; typed raw rows, WAL/offline paths and isolation are covered. Runtime/CAS/privacy/HQ integration remains open with an executed admission RED. See `CHANGELOG.md`.
+
+- [修复] Gemini HQ commit now preserves native transcript-size semantics; actual capture/replay/commit RED is fixed and Archive/Ingest 519 passed. See `CHANGELOG.md`.
+
+- [验证] Both rebuilt Gemini binary chains passed: auxiliary-only changes reached independent local HQ/M1 replicas and HQ FTS/Web IPC; all eight linked artifacts stayed unchanged. Final Collector 333 and Runtime/worker 88 passed. This supersedes the earlier incomplete local checkpoints below. See `CHANGELOG.md`.
+
+- [未验证] Remaining enabled DB/composite/cache sources, M1-local identity, real-host natural input, current Release/CI, rendered Web and retirement remain open. See `CHANGELOG.md`.
+
+- [验证] Gemini full Collector 333, Runtime 36 and Archive/CaptureIngest 517 passed; new observer paging/restart and unused-registry recovery REDs remain under repair. See `CHANGELOG.md`.
+
+- [新增] Gemini schema-3 project-scoped provenance and native HQ replay are implemented locally; Core 145 and replica storage/routes 43+13 passed. Shared registry bytes are not uploaded. See `CHANGELOG.md`.
+
+- [排查] Independent Collector/Runtime REDs exposed final-ID, registry fencing/observation, authority retention and privacy gaps; Cursor is repairing the bounded Collector paths. Gemini binary and real-host acceptance remain open. See `CHANGELOG.md`.
+
+- [新增] Copilot now has native composite HQ replay, per-member replica integrity, snapshot-bound recovery and stat-only Collector discovery with budgeted primary selection. See `CHANGELOG.md`.
+
+- [验证] Copilot HQ 70, Remote 54, Collector 327 and Runtime/worker 73 passed; three Debug builds and both two-generation binary chains passed. Single-checkpoint skip behavior was preserved; eight linked artifact hashes stayed unchanged. Real-host coverage remains open. See `CHANGELOG.md`.
+
+- [新增] Declared schema-2 file sets preserve exact auxiliary bytes and absence; physical-path and directory-FD defects have executed RED/GREEN. Native Gemini/Copilot enablement remains open. See `CHANGELOG.md`.
+
+- [验证] Foundation 54 passed; broader Core 501, Collector 320, Remote 51 and Runtime/worker 64 passed. Two new Copilot auxiliary-only acceptance tests are RED at configuration admission; they have not reached recovery/upload. See `CHANGELOG.md`.
+
+- [新增] Qoder and CommandCode now pass native Collector → independent HQ/M1 → HQ index/Web IPC for two synthetic generations, preserving native identity, cwd, time and usage. See `CHANGELOG.md`.
+
+- [验证] Core 146, Collector 320, Remote 51, Runtime/worker 64 passed; three Debug builds passed; CLI/shadow 27 passed/one opt-in skip. Two additional binary cases passed with all eight local linked artifacts unchanged. Real-host rollout and composite sources remain open. See `CHANGELOG.md`.
+
+- [新增] Qwen now passes native Collector → independent HQ/M1 → HQ index/Web IPC for two synthetic generations; captured timestamp fallback preserves original mtime. See `CHANGELOG.md`.
+
+- [验证] Collector 316; affected Core 134; later HQ registry 36; Remote publication 49; Runtime/worker 61 passed. Three Debug builds passed; native CLI/shadow 25 passed/one opt-in skip. Real-source rollout and remaining sources are still open. See `CHANGELOG.md`.
+
+- [新增] Native `--initialize` and Grok-authored custom-Claude profile mapping are implemented locally; full enabled-source collection/HQ/Web rollout remains active. See `CHANGELOG.md`.
+
+- [验证] CollectorCore 311 passed; affected Service classes 83 passed/one opt-in skip; native CLI/package/planner 125 passed. Initialization replacement race has deterministic RED/GREEN; final review and real-host acceptance remain pending. See `CHANGELOG.md`.
+
+- [验证] Same-ten HQ/M1 snapshot replay passed: nine exact-byte dual ACKs, four visible/956 verified Web messages, and 30-minute Collector mean CPU 1.36% / max sampled RSS 19.59 MiB. All trial roles stopped; old processes retained. See `CHANGELOG.md`.
+
+- [排查] Timestamp-preserving seed transfer triggers HQ preflight ctime rejection; byte-exclusive seed creation enables the bounded replay without relaxing guards. General cold-start compatibility and earlier local directory-impact uncertainty remain open. Old/new parser full-byte parity resolves the legacy-count oracle mismatch. See `CHANGELOG.md`.
+
+### 2026-09-07
+
+- [排查] Scoped metadata review found no incident-window timestamp in 274 current Claude/Qoder/CommandCode directories; effects remain UNKNOWN without a prior baseline. See CHANGELOG and the private impact receipt.
+
+- [修复] Grok-authored default-Claude multi-root ALL-pass proof/revalidation is locally verified: Collector 305 passed; Service 1,153 passed/5 opt-in skips; parity 4 passed; three Debug builds passed. Raw bytes, first project and other-source restrictions remain. See `CHANGELOG.md`.
+
+- [未验证] First full-suite process HOME was not isolated and entered directory maintenance; possible source-directory rename effects remain unverified. Final isolated suite passed. Original HQ exit 70 and same-ten real replay remain open. See `CHANGELOG.md` and `output/hq-claude-multiroot-fix-20260907/summary.json`.
+
+- [排查] Grok's multi-root proposal was source-reviewed: assess and revalidate every recognized cwd with bounded local proof storage; product patch pending. Three local empty-source CLI starts passed, leaving the earlier HQ exit 70 unexplained. See `CHANGELOG.md` and `output/hq-claude-remediation-design-20260907/reviewed-plan.md`.
+
+- [验证] HQ/M1 authorized real-data snapshot shadow is NOT_READY: 10 files/26.10 MB, four exact-byte dual ACKs; five multi-root and one incomplete-metadata capture withheld, three parsed sessions remain skip and one has no visible messages. Trial processes stopped; old services retained. Multi-root compatibility and the unexplained first CLI startup failure remain open. See `CHANGELOG.md` and `output/hq-claude-shadow-20260907-0900/summary.json`.
+
+- [验证] `c8a9cdc4` completed the unchanged 30-minute synthetic window: CPU 1.6484%, peak RSS 24.09 MiB, all latency/auth/content gates passed and eight children joined; exact product-head CI passed. Prior CPU failures remain preserved; this is not tailnet evidence. See `CHANGELOG.md`.
+
+- [新增] Synthetic Claude two-generation real-binary replay passed after two retained fixture-only corrections; full Service 1,156 tests/5 skips/zero failures and independent review passed. Product/profile unchanged; real host/source roots and bounded shadow authority still required. See `CHANGELOG.md`.
+
+- [修复] Two storage revalidation routes passed strict RED→GREEN (76 opens to 8); CollectorCore 295/295, Service 1,155 tests (5 skips) and independent safety review passed. Ancestor/DB/fence checks remain; new 30-minute Release acceptance is pending. See `CHANGELOG.md`.
+
+- [排查] Synthetic 120-second hold and bounded external sample completed with joined cleanup; storage-path validation is the next TDD candidate. Diagnostic-only, not acceptance; both CPU failures remain. See `CHANGELOG.md`.
+
+- [验证] `87cc453c` Tests/CodeQL passed, but the second full 30-minute Release window still fails CPU (2.121%); all other metrics and final content passed. Evidence retained; dedicated synthetic profiling is next. See `CHANGELOG.md`.
+
+- [修复] Drained claims avoid writes with bounded indexed probes; RED retained, CollectorCore 289/289 and Service 1,154 tests (4 skips) passed with independent approval. Thresholds stay unchanged; new Release CPU measurement is pending. See `CHANGELOG.md`.
+
+- [验证] Final-tier oracle RED→GREEN; 33 focused and 1,154 Service tests passed (4 skips). Real late-200 browser check and `70e362fa` Tests CI passed; CPU gate, host-source inventory and healthy-tailnet evidence remain open. See `CHANGELOG.md`.
+
+- [验证] 完整 30 分钟实测未过：CPU 2.145% 超 2%，RSS/追加/Web 延迟达标；4 会话正常升 premium 暴露最终计数断言错误，失败证据保留。CI 的 Service 私有 HOME 缺项已 RED→40/40 并独立批准，新 CI 与迟到 200 浏览器检查仍待验，详见 `CHANGELOG.md`。
+
+- [修复] CI 平台修正本机 279/279（零跳过）、格式/类型检查通过，产品与测量包哈希未变；新 Linux CI 仍待验。性能稳态继续，W5 尚需补真实迟到 200 读取不重绘的浏览器证据，详见 `CHANGELOG.md`。
+
+- [提交] `9e90471b` 已推送原 Draft PR；三角色可溯源 Release 包验证/只读安装计划通过，256 文件 bootstrap 后进入 30 分钟稳态。Linux CI 暴露 13 项工具平台边界，新增 CI 合同已 RED，仅修测试与工具保障，产品冻结，详见 `CHANGELOG.md`。
+
+- [验证] 显式三原生二进制的完整 Service 共 1148 项、4 跳过、零失败；CLI 与 rename/crash 实跑，固定版本暂存工程漂移通过，准备 57 路径源码提交。干净 revision 包、长性能及新 CI 仍未完成，详见 `CHANGELOG.md`。
+
+- [验证] 原生浏览器登录/退出竞态已过：新 cookie 被后续 DELETE 使用并在服务端撤销，退出后两种读取均 401；窄屏三消息已目视。57 路径源码集成门通过，全 Service 回归、干净 revision 包、长性能与新 CI 仍待验，详见 `CHANGELOG.md`。
+
+- [修复] 六维独立审查发现 Web 登录/退出 cookie 乱序，先 3 FAIL 再串行队列 16/16 并独立关闭；TLS 短探针区分回调缺失与端口假设，修正后 15/15、正确 pin 502/错误 pin 拒绝均实证。真实浏览器重验与 30 分钟性能仍待完成，详见 `CHANGELOG.md`。
+
+- [修复] 模板父目录 alias 已最小修复并独立通过，168 项全过；显式原生全脚本 598 项通过/2 既有跳过，lint/typecheck/build/knip/安全与不变量通过。TLS-only 复现和 W6 六维审查继续，旧 HEAD CI 不代表当前候选通过，详见 `CHANGELOG.md`。
+
+- [验证] 三角色原生安装计划与 Collector/Service wrapper dry-run 通过且未写目标；模板 164 项通过后独立发现父目录 alias 漏检，新增 4 项已 RED。首轮长测在 TLS 证书验证处失败、稳态样本为 0，已汇合自有进程并保留证据；33 项恢复/认证回归已过，详见 `CHANGELOG.md`。
+
+- [验证] 安装 dry-run/CI 合同合计 53 项通过，Remote 原生计划未写目标；新恢复两项 fixture 失败已定位修正待复跑，长测认证 TTL 缺口已先 RED，未改产品 TTL。角色模板与实际性能仍待验，详见 `CHANGELOG.md`。
+
+- [验证] 三角色原生诊断包独立 verify-only 与安全加载探针通过，包快照不变、未启动服务；17 来源退休清单已补，真实主机全为未验证。零 revision 测试包不是部署制品，启动模板/故障/性能/新 CI 仍待验，详见 `CHANGELOG.md`。
+
+- [修复] 真实浏览器发现多词查询空格变加号，单行客户端修正后 12/12 及原生 HTTPS 两项整链通过；三角色清单漏验分别 RED→Service 68、Collector/Remote 73 全过。性能统计 13 项已过但实测/故障/原生包/新 CI 未完成，详见 `CHANGELOG.md`。
+
+- [验证] Collector/Service/Remote Release 构建均退出 0；Core 1737 项（1 既有跳过）与 App 1175 项零失败。Service 打包 59 项虽全过，独立审查仍发现嵌套清单漏验；浏览器正在执行，原生包/性能/新 CI 未过门，详见 `CHANGELOG.md`。
+
+- [验证] 真实 Collector→双 Remote→HQ Service→Web IPC 两代链已过，保留字节/消息前缀与 normal 分层；Service/CLI 29 项、MCP 270 项、TLS helper 31 项通过。两次前序失败为 fixture 缺字段/单消息 skip；完整 browser、故障/性能/原生包及 CI 仍待验，详见 `CHANGELOG.md`。
+
+- [验证] Service 显式 HOME/凭据文件入口完成 RED→11/11 GREEN，生产增量独立批准；全 Service 1124 项（1 既有跳过）零失败，原生 Service 构建通过。真实二进制启动/整链与 TLS 仍待验，详见 `CHANGELOG.md`。
+
+- [验证] 原生CLI生命周期/双代双ACK已过，Worker磁盘状态34/34、Runtime透传18/18、CLI状态JSON15/15独立批准；包30项及提取后Collector282项通过，Service安全入口与真实整链仍在TDD，详见 `CHANGELOG.md`。
+
+- [验证] Collector全套282/282、后台循环16/16、Service全套1093项（1既有跳过）及CLI参数/OFF 41项通过；真实CLI正向与打包剩余绕过仍在TDD，磁盘状态/完整W3–W6未完成，详见 `CHANGELOG.md`。
+
+- [验证] Service Runner启动异常修复已独立批准，13/13通过；Collector冷WAL与双ACK重启13/13、打包真实布局21/21通过，后台错误恢复、真实CLI/包及完整W3–W6仍待验，详见 `CHANGELOG.md`。
+
+### 2026-09-06
+
+- [验证] publication31/31、CAS29/29、catalog关闭2/2及真实Service Runner链11/11已过；独立审查仍阻断启动异常清理，Collector冷WAL启动6/12失败，打包真实GRDB布局待修，详见 `CHANGELOG.md`。
+
+- [验证] 消费器23/23、FD采集15/15、Service运行时真实handler链10/10通过；Collector原28项过、新预算与父目录丢失复现/打包symlink门待修，Runner与完整W3–W6仍未完成，详见 `CHANGELOG.md`。
+
+- [修复] 中央消费器跨轮恢复已22/22 GREEN；独立审阅另发现 parser revision 字节比较围栏缺口，追加单项复现中，尚未最终批准，详见 `CHANGELOG.md`。
+
+- [验证] `92c7e3cf` 三项 CI 已过；中央消费器原19项通过、新3项跨轮恢复真实RED待修，Web脚本9/9、长文合成链退出0；迟到200浏览器竞态与完整W3–W6仍待验，详见 `CHANGELOG.md`。
+
+- [新增] 合成采集→真实归档 ACK→中央 replay/FTS→HTTP/IPC→Web 正文链已接通；中央 Service 1009过/1既有跳过、Collector279/279、Remote398/398。仍非完整 W3–W6 二进制验收，详见 `CHANGELOG.md`。
+- [排查] 首次全Service命令未隔离 Foundation home，已停止；真实源是否受影响未验证。修正后先验真实XCTest home再全量通过，未做生产补救或扩大扫描，详见 `CHANGELOG.md`。
+
+- [验证] A5d追加App/Core共2901项（1既有跳过、零失败）及MCP270/270通过，独立最终门进行中。T4a真实RED暴露12项围栏缺口，另11项测试观测/顺序已独立裁决修正，GREEN执行中，详见 `CHANGELOG.md`。
+
+- [验证] A5d中央Service935过/1既有跳过/零失败，脚本205过/2条件跳过及类型/安全门通过；最终集成门与新CI待验。T4a57项回归执行中，旧head CodeQL仍待验，详见 `CHANGELOG.md`。
+
+- [验证] `9b969a9c` Tests/依赖已过，CodeQL待验；A5d donor全Service过门、三文件按哈希整合后中央回归中。N4a修正额外连接复用断言后279/279，T4a新增12项草案过门待RED；均非完整运行验收，详见 `CHANGELOG.md`。
+
+- [提交] CI 修正已推送 `9b969a9c`，新依赖过、Tests/CodeQL待验；A5d定向23/23通过、全Service运行中。N4a 276/279，三项定位为替换main后的旧连接复用；T4a新增围栏回归草案中，均未整合，详见 `CHANGELOG.md`。
+
+- [验证] CI 单点修正五路径最终独立双门已过，逆向字节比较确认仅 `self.records`，准备正常修正提交推送；新head 16.4 CI仍待验，不夹带 donor 功能，详见 `CHANGELOG.md`。
+
+- [修复] `010a2c5d` Swift CI 在 Xcode16.4 编译测试辅助类时失败；独立门批准仅补 `self.records`，38项测试体与生产代码不变。中央 Service 912过/1既有跳过/零失败；修正最终门及新head CI待验。A5d 23项真实RED后仅扩展实现，详见 `CHANGELOG.md`。
+
+- [提交] A5c 已正常推送 `010a2c5d`，PR #446 仍 Draft/未合并，新三 CI 待验。T4a 45 项与 N4a 新24项真实 RED 已确认，仅各自源文件进入 GREEN；N4a 旧255全过。A5d 23项草案过门、RED运行中，详见 `CHANGELOG.md`。
+
+- [验证] A5c 七路径最终独立双门与暂存漂移已过，冻结哈希未变；旧 head 三 CI 再核全过，准备正常提交推送，新 head CI 待验。T4a 前轮混有夹具错误，仅修夹具重跑 RED，未开实现，详见 `CHANGELOG.md`。
+
+- [验证] A5c 独立双门后按原哈希整合：中央 Service 912 过/1 既有跳过/零失败，1 条 reader QoS 警告；脚本205过/2条件跳过及类型/安全门通过，最终暂存门与新CI待验。T4a进入45项RED，N4a/A5d仅测试草案，详见 `CHANGELOG.md`。
+
+- [验证] A5c 修正 NUL 夹具并补快照关闭顺序真实 RED 后，38/38 GREEN、原 SQLite 重复关闭日志消失；完整 Service/独立门待验。T4a 二稿继续校正，N4a 合同过门后仅开测试草案，详见 `CHANGELOG.md`。
+
+- [验证] `843d0038` 三项 CI 全过，PR #446 仍 Draft/未合并；A5c 首轮编译类型修正后运行 GREEN v2，37 项测试未变，T4a 初稿独立门未过并继续校正，详见 `CHANGELOG.md`。
+
+- [验证] `843d0038` Tests/依赖已过，CodeQL 待验；T4a 修订合同经独立双门后冻结，仅开两个文件的 TEST-DRAFT，A5c 仍仅源码 GREEN、37 项测试冻结，详见 `CHANGELOG.md`。
+
+- [验证] A5c 校正后的 37 项草稿经独立门并实际 RED：5 过/32 失败、零 skip/运行时警告；首次仅缺旧 donor CAS 基线导致编译失败，已按中央哈希同步并单列。现仅 producer 源码进入 GREEN，测试冻结，详见 `CHANGELOG.md`。
+- [提交] N3-B2 已正常推送 `843d0038`，PR #446 仍 Draft/未合并；新依赖 CI 通过、Tests/CodeQL 运行中。A5c 继续测试草稿，T4a 单项领取/重放/parsed 原子提交仍为待审方案，无 job 的 skip 就绪另留 T4b，详见 `CHANGELOG.md`。
+- [验证] N3-B2 十路径最终独立双门及暂存漂移已过，六个实现/路由哈希未变，准备正常提交推送；记录中的数字 producer 是命令会话编号而非 OS PID，已追加澄清，新 head CI 仍单独待验，详见 `CHANGELOG.md`。
+- [验证] `18c9bc06` 三项 CI 全过；N3-B2 补充独立门后按冻结哈希进入中央，完整 Collector 255/255、脚本 205/2 条件 skip 与类型/安全/invariants 通过，保留 1 条烟测 QoS 警告。十路径最终门与新 head CI 待验，A5c 继续测试草稿校正，详见 `CHANGELOG.md`。
+- [验证] `18c9bc06` Tests/依赖 CI 已过，CodeQL 待验；N3-B2 donor 254/254 和真实临时目录烟测 1/1、合并 255/255 通过，保留前两次夹具失败与 QoS 警告，补充独立门及中央整合待验。A5c 测试草稿九组修正中，详见 `CHANGELOG.md`。
+- [验证] `6a33a42a` 三项 CI 全过后已推送 A5b `18c9bc06`，新依赖 CI 通过、Tests/CodeQL 待验；N3-B2 旧 196 全过／新 58 真实 RED，现仅源文件进入 GREEN。A5c 验收冻结并准备测试草案，仍未完成 W3–W6，详见 `CHANGELOG.md`。
+- [验证] A5b 九路径最终整合/记录独立双门与暂存漂移通过；`6a33a42a` Tests/依赖 CI 已过、CodeQL 仍运行，下一次推送等待其通过。原生监听新增负计数补测尚待 RED，Service producer 仍仅方案，详见 `CHANGELOG.md`。
+- [验证] T3b 已推送 `6a33a42a`，依赖 CI 通过、Tests/CodeQL 待验；A5b HTTP 补丁经独立双门按四哈希整合，donor 定向 68/68、donor/中央完整 Remote 各 391/391。Service producer、浏览器与完整 W3–W6 仍未完成，详见 `CHANGELOG.md`。
+- [验证] T3b 十路径最终整合及记录/索引独立双门通过，原四哈希未变、暂存漂移 v2 通过，准备按授权提交推送；新 head CI 单独待验，详见 `CHANGELOG.md`。
+- [验证] `5073f3f8` 三项 CI 全过；T3b App 旧调用文本扫描单行校正后全量 2,901（含 Core、1 既有 skip）零失败，MCP 270/270，保留 11 条 QoS 警告。十路径最终整合门及新提交 CI 待验，Web/原生监听草稿均未混入，详见 `CHANGELOG.md`。
+- [验证] N3-B1 已推送 `5073f3f8`，Tests/依赖 CI 通过、CodeQL 待验；T3b 补充双门后按四文件哈希整合，中央 Core 1,726、Service 875（各 1 既有 skip）零失败，App/MCP 与最终整合门待验。Web 新 13 项真实 RED、旧 49 全过，两个预算补测仍待 RED，完整 W3–W6 未完成，详见 `CHANGELOG.md`。
+- [验证] `8a53174b` 三项 CI 全过；N3-B1 独立实现门通过，按哈希整合后中央 Collector 196/196，脚本 205/2 条件 skip 与类型/安全/invariants 通过，暂存漂移与整合终门待验。T3b sibling 权威缺口另有 4 项真实 RED，继续 donor 修复，不混入本批，详见 `CHANGELOG.md`。
+- [验证] `8a53174b` Tests/依赖已通过，CodeQL remote 仍待验；N3-B1 donor 全量 196/196，独立实现门待验。T3b 原 35 GREEN 后又用 3 项真实 RED 复现写中撤权与 history 缺失零延迟待办，最小修复复测中；A5b 草稿补验收，未整合、未部署，详见 `CHANGELOG.md`。
+- [提交] `5995ad66` 三项 CI 全绿后，A5a/N3-A 九文件独立终门通过并推送 `8a53174b`；新 head 依赖通过、Tests/CodeQL 待验。N3-B1 仅 donor 测试草稿过门并获 RED 授权，T3b 草稿审阅中，完整 W3–W6 仍未完成，详见 `CHANGELOG.md`。
+- [验证] `5995ad66` 的 Tests/Swift unit/UI smoke 已全过，CI Xcode 16.4 下 readiness 38/38、Core 1,681（1 既有 skip）零失败；Swift CodeQL 仍待验，功能提交继续等待其独立门，详见 `CHANGELOG.md`。
+- [验证] CI 单行修正独立终门后已推送 `5995ad66`，新 head 依赖通过、Tests/CodeQL 待验；A5a/N3-A 五文件仍未提交，六套本地完整门零失败，等待功能整合终门及修正 head 全绿后再推送，未合并或部署，详见 `CHANGELOG.md`。
+- [验证] 单行夹具注解修正后完整 Core 1,681 项／1 既有 skip／零失败，38 测试体与夹具字节未变；准备仅修正＋四记录的独立整合门及提交，Xcode 16.4 新 head CI 仍待验，A5/N3 五文件继续排除，详见 `CHANGELOG.md`。
+- [修复] `f683ff71` 的 Swift unit/UI smoke 同在 Xcode 16.4 编译夹具时失败；独立双门批准仅补 `messages` 显式数组类型，38 测试体与生产代码不动，修后完整 Core/新 head CI 待验。A5/N3 本地完整组合门已过，但五文件明确排除本次 CI 修正提交，详见 `CHANGELOG.md`。
+- [验证] T3a 已推送 `f683ff71`，依赖 CI 通过、Tests/CodeQL 待验；A5a 与 N3-A 独立双门后按五文件哈希整合，中央 Remote 372/372 零失败/跳过，Service 开跑，其他组合门仍待验。FSEvents/FTS consumer 仅方案准备，完整 W3–W6 未完成，详见 `CHANGELOG.md`。
+- [验证] T3a 八路径暂存哈希与工程漂移通过，旧 head `4216479b` 三项 CI 全过，准备授权提交；Web 完整 Remote 372/372 待独立实现门，N3 修夹具后旧 156 全过／新 13 真实 RED，现仅 Owner 允许 GREEN，详见 `CHANGELOG.md`。
+- [验证] T3a 八路径中央整合／记录独立双门通过，开始暂存固定版工程漂移门；旧 head CodeQL 与新 head CI 仍待验，未合并或部署，详见 `CHANGELOG.md`。
+- [验证] Web A5a 真实 RED 49 项／27 失败用例后，测试冻结下 DTO/client 首次 GREEN 49/49；完整 Remote 与独立实现门待验，仍 donor-only。N3 草案双门通过，仅授权可执行 RED，详见 `CHANGELOG.md`。
+- [验证] T3a 中央 Core 1,681、Service 875（各 1 既有 skip）、App 1,175、MCP 270 全部零失败，脚本 205/2 条件 skip 与 typecheck/安全/invariants 通过；最终整合门、旧 head CodeQL 和新 head CI 仍待验。Web 草案双门后首次 RED 开跑，N3 仅测试骨架，详见 `CHANGELOG.md`。
+- [提交] N2 已推送 `4216479b`，PR #446 仍 Draft，依赖 CI 通过、Tests/CodeQL 运行中；T3a 独立实现双门后按三文件哈希整合，中央完整 Core 开跑，其他组合门待验；Web/N3 仍仅测试骨架，详见 `CHANGELOG.md`。
+- [验证] N2 十文件最终整合／记录双门与暂存工程漂移通过，准备授权提交推送；T3a 仅在 donor 过 129 项实测，独立实现门进行中，新 head CI 与完整 W3–W6 仍待验，详见 `CHANGELOG.md`。
+- [验证] N2 独立门后按哈希整合，中央 Collector 156/156、脚本 205/2 条件 skip、typecheck/安全/invariants 通过；`e94c0500` 三项 CI 全过。T3a 修正两处单消息 skip 夹具后 donor 129/129，独立实现门待验且不混入 N2；完整 W3–W6 未完成，详见 `CHANGELOG.md`。
+- [验证] N2 donor 完整 156/156 零失败／跳过，前两次特殊临时路径夹具失败保留；只修夹具，独立门／整合待验。T3a 新增 34 项测试草稿、实现仍为桩；`e94c0500` Tests／依赖通过，Swift CodeQL 待验，详见 `CHANGELOG.md`。
+- [提交] T2 已推送 `e94c0500`，Draft PR #446 未合并，新三项 CI 已启动；N2 未跑 GREEN，T3/Web 额度中断草稿均隔离保留，完整 W3–W6 仍推进中，详见 `CHANGELOG.md`。
+- [验证] T2 九文件暂存候选通过最终整合／记录双门；旧 head `9fd6db26` 三项 CI 全通过（CodeQL Gate 10:33:35），准备授权提交推送，新 head CI 待验，N2/T3/Web 草稿不在候选中，详见 `CHANGELOG.md`。
+- [验证] T2 过独立双门并按四文件哈希整合；中央 Core 1,643（1 skip）、Service 875（1 skip）、App 1,175、MCP 270 零失败，脚本 205/2 条件 skip；旧 head CodeQL product 仍待验，T3/Web 线程额度中断草稿与 N2 均未混入，详见 `CHANGELOG.md`。
+- [验证] `9fd6db26` Tests/依赖检查通过，CodeQL 仍运行；T2 有界历史 GREEN 91/0 待独立门，N2 原 155 项与补充 firmlink 单项均取得真实 RED，现仅允许最小 GREEN；首版 Web 正文要求 metadata/parsed/ready 同代，未知观测不填健康，详见 `CHANGELOG.md`。
+- [验证] N1＋A4 已提交推送 `9fd6db26`，PR #446 仍 Draft，新三项 CI 运行中；提交后漂移测试 10/10（含原 2 条件 skip）；T2 有界历史 2 项新测试待 RED、N2 骨架准备均未混入，详见 `CHANGELOG.md`。
+- [验证] N1＋A4 十一文件候选通过组合双门和暂存哈希／固定版工程漂移门；中央 Collector 126、Remote 341 全过，脚本 205/2 条件 skip，准备提交推送，新 head CI 待验；T2/N2 未混入，详见 `CHANGELOG.md`。
+- [验证] A4 独立双门通过并按哈希整合，中央 Remote 341/0；T2 donor 89/0，版本计算的全历史内存展开正补 RED 后收敛，暂未整合；现候选 archive safety/typecheck/五项 invariant 通过，详见 `CHANGELOG.md`。
+- [验证] `1523487b` 三项 CI 全通过；N1 独立双门通过并按哈希整合，中央 Collector 126/0；A4 donor 完整 Remote 341/0，独立门/整合待验；T2 89 项 GREEN 正运行，N2 仅测试骨架，未部署，详见 `CHANGELOG.md`。
+- [验证] N1 donor 完整 Collector 126/0，独立门/中央整合待验；真实 HTTP 定向 49/0，完整 341 仅既有 firmlink 测试 home 选址报错，正换工作树内隔离 home 重跑。T2 修正 fixture 后 45 项真实 RED，旧 44 全过，GREEN 实现中，详见 `CHANGELOG.md`。
+- [验证] `1523487b` 已推送，Tests/依赖检查通过，09:19 CST CodeQL 仍在运行；N1 donor 完整 Collector 124 取得真实 RED，另独立复现旧 owner Unicode 字节栅栏绕过，GREEN/真实 HTTP/T2 仍在推进，未部署，详见 `CHANGELOG.md`。
+- [验证] POSIX/T1/Web auth 已整合，六套中央完整门 Core 1,596、Service 875（各 1 既有 skip）、App 1,175、MCP 270、Collector 108、Remote 292 全部零失败；最终脚本 205/2 条件 skip，跨片双门和暂存哈希复核通过，旧 head `09de6304` 三项 CI 全通过，准备提交/新 head CI 待验；N1/T2/真实 HTTP 下一片只在 donor 写 RED，未部署，详见 `CHANGELOG.md`。
+- [验证] 入口取消修复独立双门通过并整合，中央 Collector 108/0；T1 整合后的完整 Core 1,596、Service 875（各 1 既有 skip）零失败，App/其他组合门和 Web 独立门仍在推进，详见 `CHANGELOG.md`。
+- [验证] `09de6304` 已推送，Tests/依赖检查通过、Swift CodeQL 待验；POSIX 中央 107/0，入口取消真实 RED 后 donor 108/0；T1 抢占 44/0 加并发连续 20 次通过并过独立门，Web auth donor 45/0，后续整合/真实接线与 W3–W6 未完成，详见 `CHANGELOG.md`。
+- [验证] 本轮六套完整整合门零失败：Core 1,566、Service 875（各 1 既有 skip）、App 1,175、MCP 270、Remote 247、Collector 74；路径字节身份缺口真实 RED→GREEN 并过独立门，脚本 205/2 条件 skip，新 head CI 待验，W3–W6 未完成，详见 `CHANGELOG.md`。
+- [验证] Replay5 经独立双门通过并按五文件 SHA 整合，完整 Core 1,566（1 既有性能 skip）零失败；Web logout 窄例外 RED→GREEN、安全脚本 49/49、十套脚本 203/2 条件 skip，其他组合门/HTTP 实现/新 head CI 待验，详见 `CHANGELOG.md`。
+- [验证] `1660734` 的 Tests、CodeQL、依赖检查全部通过，PR #446 仍为 Draft；下一批已整合 inventory、Web IPC、bounded CAS 和 pure builder，中央定向门 68/31/127 零失败，完整组合门与新 head CI 尚待执行，详见 `CHANGELOG.md`。
+- [设计] 真实 Chrome 同源 GET 不携带 Origin，已据官方规则修订为固定 API header 加严格 Fetch Metadata 缺省分支；存在但无效的 Origin 不得降级。仅设计与合成浏览器验证，HTTP/完整 ingest/双副本/W6 仍未完成，未部署，详见 `CHANGELOG.md`。
+- [修复] `745de11d` 的 CI 仅 macOS 脚本门失败；旧 fixture 改为明确握手，另以 TERM/INT/HUP 三条真实 RED 证明并修复 Popen 返回前的锁释放窗口。HQ 12/12、信号组连续 12 轮、脚本 195/195、typecheck/Biome 及独立双门均通过；修正 head CI 待验，原 CI 调度窗口未归因，未修改已部署脚本，详见 `CHANGELOG.md`。
+- [验证] 本批完整整合门全部通过：Core 1,521、App 1,175、Service 858、MCP 270、Remote 247、Collector 35 零失败（Core/Service 各 1 既有 skip），190 项脚本、invariants、fixture 和独立交叉门通过；准备提交推送，新 SHA CI 待验，inventory/replay/实际 Web IPC 尚在独立树，未部署，详见 `CHANGELOG.md`。
+- [验证] C1 隐私/身份源及 typed Web client 已按冻结哈希整合，worker Collector 35、Core 定向 273、client 18 均零失败并过独立门；中央完整 Service 858（1 既有 skip）零失败。Remote 全套的既有 firmlink 测试环境问题仍在复验，完整 replay/HTTP/W3–W6 尚未完成，未部署，详见 `CHANGELOG.md`。
+
 ### 2026-09-05
 
+- [验证] W4 源/epoch/解析格式 registry 已整合（worker 72/0、Grok 独立双门通过）；全文续传 14 项通过；可选 AI 解耦补获退出锁滞留真实 RED，最小 cancel/join 后 11/0 并过独立门，完整整合回归和新 head CI 待验，仍非完整 replay/Web，详见 `CHANGELOG.md`。
+- [验证] 基础提交 `248e64ab` 在 Draft PR #446 的 Tests、CodeQL Gate 和依赖检查全部通过，CollectorCore 已实际进入必需 CI；后续 registry、隐私证明、全文续传及可选 AI 解耦仍在本地 TDD/整合中，不继承旧 SHA 的 CI 结论，未合并或部署，详见 `CHANGELOG.md`。
+- [验证] W2 `874a63f1` 已通过全部必需 CI；角色/采集核心、共享 IPC、首片身份与 intake ledger 已本地整合，Core 1,482、Service 833（各 1 既有 skip）、App 1,175、MCP 270、Collector 9、Remote 229 均零失败，独立交叉门通过且补入 Collector CI，本波 CI 待验；完整 collector、中央 replay/Web 链未完成，未部署，详见 `CHANGELOG.md`。
+- [验证] W2 默认关闭的 publication/ACK 接收端已通过独立完整 Remote 回归 229/229、零失败/跳过，包含真实子进程重启恢复与旧 archive/recovery/MCP；模型与存储最终只读门 PASS/APPROVED，本波 PR CI 待验。W3 角色/采集核心与 Web IPC 基础在独立工作树推进，未部署，详见 `CHANGELOG.md`。
+- [验证] Draft PR #446 的 W1 修正 head `638a8454` 已通过 Tests、CodeQL Gate 和依赖审查；Core/App/Service/MCP/Remote 与 14 项 UI smoke 均零失败，本地 Node 1,564/1,564；完整 UI 不属于此次 PR 门。W2 接收入库继续推进，W3 角色隔离在独立工作树开发，未合并或部署，详见 `CHANGELOG.md`。
+- [提交] W1 已提交推送 `52fcc86e` 并建 Draft PR #446；CI 抓到新增 invariant 的符号反引号违反文件锚点约定，已复现并仅修文档，本地完整脚本门 135/135；待新 head CI 通过后继续 W2，未合并或部署，详见 `CHANGELOG.md`。
+- [设计] 新工作树已写完整 collector→HQ 索引/Web→独立双副本的七波实施顺序；Grok 经 Herdr 审出的 7 组合同缺口已修订并通过复核（PASS/APPROVED），W2 接收协议与 W3/W4 接口冻结；详见 `CHANGELOG.md` 及其链接设计/计划。
+- [修复] 第一波本地完成 embedding 热查询与“App 不拥有已 adopted 的外部 Service”；查询真实 VM-step RED→GREEN，启动器含退出后迟到探测竞态，未更改生产实例。
+- [验证] 两切片独立 spec/quality 门通过；Core 1,452（1 既有性能 skip）/0 失败，launcher 56/0 失败；新 collector、服务器接收协议、HQ ingest、Web 和生产切换尚未完成，不能据此宣称本机已轻量化。
 - [提交] #444 已正常合并至 `81ee3a1d`；main 完整 CI 全绿，UI 61 项/2 既有 skip/0 失败，截图 31/31；PR 与 resulting-main CodeQL 均已通过。
 - [部署] 1569 签名包安装复验通过；HQ 新 Service 已完成初扫（约 2 分 17 秒），post-scan 状态与两条 pending 队列验收通过。M1/HQ RemoteServer 与新构建二进制相同，保留健康实例，不重复部署。
 - [部署] 本机旧 Service 等待近 30 分钟后，按继续收尾确认、复核 PID/路径/备份后仅强制结束旧 PID；launchd 已自动拉起 1569，哈希/socket/MCP/live DB quick_check 通过，Live 阶段推进后复验返回 87 会话/14 秒；初扫完成与 post-scan 同步状态未冒报。

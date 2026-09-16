@@ -196,6 +196,7 @@ final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter
     private let limits: ParserLimits
     private let messageCache = ParsedTranscriptCache()
     private let testHooks: GeminiCliAdapterTestHooks
+    private let capturedReplay: ArchiveReplayLayout?
 
     init(
         tmpRoot: String = FileManager.default.homeDirectoryForCurrentUser
@@ -205,12 +206,45 @@ final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter
             .appendingPathComponent(".gemini/projects.json")
             .path,
         limits: ParserLimits = .default,
-        testHooks: GeminiCliAdapterTestHooks = GeminiCliAdapterTestHooks()
+        testHooks: GeminiCliAdapterTestHooks = GeminiCliAdapterTestHooks(),
+        capturedReplay: ArchiveReplayLayout? = nil
     ) {
         self.tmpRoot = URL(fileURLWithPath: tmpRoot)
         self.projectsFile = URL(fileURLWithPath: projectsFile)
         self.limits = limits
         self.testHooks = testHooks
+        self.capturedReplay = capturedReplay
+    }
+
+    /// The native parser runs against the verified private replay tree. Registry
+    /// fallback uses only the captured projection and never consults host state.
+    static func scanCapturedSource(
+        physicalLocator: String, stagingRoot: String, logicalLocator: String,
+        replayLayout: ArchiveReplayLayout
+    ) async throws -> AdapterParseResult<CapturedSourceScan> {
+        let adapter = GeminiCliAdapter(tmpRoot: stagingRoot, capturedReplay: replayLayout)
+        let selected = try await adapter.listSessionLocators()
+        guard selected.count == 1, selected[0].utf8.elementsEqual(physicalLocator.utf8) else {
+            return .failure(.malformedJSON)
+        }
+        let (object, failure) = try readSession(locator: physicalLocator, limits: .default,
+            beforeIdentityValidation: {})
+        if let failure { return .failure(failure) }
+        guard let id = JSONLAdapterSupport.string(object["sessionId"]), !id.isEmpty,
+              !id.contains("/"), !id.utf8.contains(0) else { return .failure(.malformedJSON) }
+        let project = Self.projectName(from: physicalLocator)
+        let expectedSidecar = project + "/chats/" + id + ".engram.json"
+        let declared = replayLayout.relativePaths + (replayLayout.absentRelativePaths ?? [])
+        guard declared.contains(where: { $0.utf8.elementsEqual(expectedSidecar.utf8) }) else {
+            return .failure(.malformedJSON)
+        }
+        switch try await adapter.scanForIndexing(locator: physicalLocator) {
+        case .failure(let error): return .failure(error)
+        case .success(var scan):
+            if let failure = scan.parseFailure { return .failure(failure) }
+            scan.info.filePath = logicalLocator
+            return .success(CapturedSourceScan(scan: scan, rawSourceSessionID: scan.info.id))
+        }
     }
 
     func detect() async -> Bool {
@@ -421,6 +455,11 @@ final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter
     }
 
     private func resolveProject(projectName: String) -> String? {
+        if let capturedReplay {
+            guard let context = capturedReplay.geminiProjectContext,
+                  context.projectName.utf8.elementsEqual(projectName.utf8) else { return nil }
+            return context.cwd
+        }
         guard let data = try? Data(contentsOf: projectsFile),
               let object = try? JSONSerialization.jsonObject(with: data) as? Phase4AdapterSupport.JSONObject
         else {

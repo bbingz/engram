@@ -26,9 +26,16 @@ def main() -> int:
     # Keep the non-inheritable descriptor in this parent while the guarded
     # command runs. Detached descendants therefore cannot outlive the command
     # while still owning the watchdog lock.
-    child = subprocess.Popen(command)
+    child = None
+    pending_signal = None
 
     def forward_signal(signum: int, _frame: object) -> None:
+        nonlocal pending_signal
+        # Popen may have exec'd the child before returning its handle. Retain
+        # termination in that window without releasing the parent's lock.
+        if child is None:
+            pending_signal = signum
+            return
         try:
             child.send_signal(signum)
         except ProcessLookupError:
@@ -39,6 +46,9 @@ def main() -> int:
         signum: signal.signal(signum, forward_signal) for signum in forwarded_signals
     }
     try:
+        child = subprocess.Popen(command)
+        if pending_signal is not None:
+            forward_signal(pending_signal, None)
         returncode = child.wait()
     finally:
         for signum, handler in previous_handlers.items():

@@ -71,13 +71,31 @@ struct EngramApp: App {
     var body: some Scene {
         Settings {
             LocalizedRoot {
-                SettingsView(serviceSocketPath: appDelegate.environment.serviceSocketPath)
-                    .environment(appDelegate.db)
-                    .environment(appDelegate.serviceStatusStore)
-                    .environment(\.engramServiceClient, appDelegate.serviceClient)
+                if appDelegate.environment.runtimeRole.allowsLocalIndex {
+                    SettingsView(serviceSocketPath: appDelegate.environment.serviceSocketPath)
+                        .environment(appDelegate.db)
+                        .environment(appDelegate.serviceStatusStore)
+                        .environment(\.engramServiceClient, appDelegate.serviceClient)
+                } else {
+                    RuntimeRoleUnavailableView(role: appDelegate.environment.runtimeRole)
+                }
             }
             .defaultAppStorage(appDelegate.appStorage)
         }
+    }
+}
+
+private struct RuntimeRoleUnavailableView: View {
+    let role: EngramRuntimeRole
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Local index unavailable").font(.headline)
+            Text(role.unavailableMessage).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(24)
+        .frame(width: 420)
+        .accessibilityIdentifier("runtime-role-unavailable")
     }
 }
 
@@ -94,14 +112,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var menuBarController: MenuBarController?
     private var onboardingWindow: NSWindow?
     private var popoverWindow: NSWindow?
+    private var runtimeRoleWindow: NSWindow?
+    private var serviceConnectionTask: Task<Void, Never>?
+    private var isTerminating = false
 
-    override init() {
-        self.environment = AppEnvironment.fromCommandLine()
+    override convenience init() {
+        self.init(environment: AppEnvironment.fromCommandLine())
+    }
+
+    init(environment: AppEnvironment) {
+        self.environment = environment
         self.appStorage = Self.makeAppStorage(
             isTestMode: environment.isTestMode,
             environment: ProcessInfo.processInfo.environment
         )
-        self.db = DatabaseManager(path: environment.dbPath)
+        self.db = DatabaseManager(path: environment.dbPath, runtimeRole: environment.runtimeRole)
         self.serviceStatusStore = EngramServiceStatusStore()
         self.serviceClient = Self.makeServiceClient(for: environment)
         self.serviceLauncher = EngramServiceLauncher()
@@ -109,13 +134,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if !environment.isTestMode {
-            // Invariant 6: UI tests must not mutate production settings or Keychain state.
-            // One-time: migrate plaintext API keys from settings.json to Keychain
-            migrateKeysToKeychainIfNeeded()
-            // One-time: scrub settings + Keychain entries for removed features (e.g. Viking)
-            removeDeprecatedSettingsKeysIfNeeded()
+        guard environment.runtimeRole.allowsLocalIndex else {
+            showRuntimeRoleUnavailable()
+            return
         }
+        guard !isTerminating else { return }
+        performAutomaticSettingsMigrations()
 
         // Row 16: opt-in main-thread stall monitor (DEBUG only; no-ops without
         // ENGRAM_PERF_MONITOR). Release has no MainThreadStallMonitor type.
@@ -157,7 +181,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         if environment.autoStartService {
-            Task { @MainActor in
+            serviceConnectionTask?.cancel()
+            serviceConnectionTask = Task { @MainActor in
+                guard !Task.isCancelled else { return }
                 let serviceConfiguration = environment.serviceLaunchConfiguration()
                 await serviceLauncher.startOrAdopt(
                     configuration: serviceConfiguration,
@@ -242,6 +268,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    func performAutomaticSettingsMigrations(
+        migrateKeys: () -> Void = { migrateKeysToKeychainIfNeeded() },
+        removeDeprecated: () -> Void = { removeDeprecatedSettingsKeysIfNeeded() }
+    ) {
+        // Invariant 6: UI tests must not mutate production settings or Keychain state.
+        guard !environment.isTestMode, environment.runtimeRole.allowsLocalIndex else { return }
+        migrateKeys()
+        removeDeprecated()
+    }
+
     static func makeAppStorage(
         isTestMode: Bool,
         environment: [String: String],
@@ -294,6 +330,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard environment.runtimeRole.allowsLocalIndex else {
+            showRuntimeRoleUnavailable()
+            return true
+        }
         if !flag {
             menuBarController?.openWindow()
         }
@@ -301,6 +341,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        isTerminating = true
+        serviceConnectionTask?.cancel()
+        serviceConnectionTask = nil
         if let restartObserverToken {
             NotificationCenter.default.removeObserver(restartObserverToken)
         }
@@ -317,9 +360,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// launch; does NOT re-implement the start+monitor sequence.
     @MainActor
     func restartService() {
+        guard environment.runtimeRole.allowsLocalIndex else {
+            serviceStatusStore.apply(.error(message: environment.runtimeRole.unavailableMessage))
+            return
+        }
+        guard environment.autoStartService, !isTerminating else { return }
+        serviceConnectionTask?.cancel()
         serviceStatusStore.apply(.starting)
         let serviceConfiguration = environment.serviceLaunchConfiguration()
-        Task { @MainActor in
+        serviceConnectionTask = Task { @MainActor in
+            guard !Task.isCancelled else { return }
             await serviceLauncher.restart(
                 configuration: serviceConfiguration,
                 statusProbe: { [serviceClient] in
@@ -353,7 +403,27 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     // MARK: - Onboarding
 
+    private func showRuntimeRoleUnavailable() {
+        serviceStatusStore.apply(.error(message: environment.runtimeRole.unavailableMessage))
+        if runtimeRoleWindow == nil {
+            let window = NSWindow(contentViewController: NSHostingController(
+                rootView: RuntimeRoleUnavailableView(role: environment.runtimeRole)
+            ))
+            window.title = "Engram"
+            window.styleMask = [.titled, .closable]
+            window.isReleasedWhenClosed = false
+            window.center()
+            runtimeRoleWindow = window
+        }
+        NSApp.setActivationPolicy(.regular)
+        runtimeRoleWindow?.makeKeyAndOrderFront(nil)
+    }
+
     private func showOnboarding() {
+        guard environment.runtimeRole.allowsLocalIndex else {
+            showRuntimeRoleUnavailable()
+            return
+        }
         if let onboardingWindow {
             NSApp.setActivationPolicy(.regular)
             onboardingWindow.makeKeyAndOrderFront(nil)

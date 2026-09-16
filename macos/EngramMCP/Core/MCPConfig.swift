@@ -4,6 +4,7 @@ import Foundation
 struct MCPConfig {
     let dbPath: String
     let serviceSocketPath: String
+    var runtimeRole: EngramRuntimeRole = .local
 
     static func load(environment: [String: String] = ProcessInfo.processInfo.environment) throws -> MCPConfig {
         // HTTP daemon was removed from the product path; the MCP helper talks to
@@ -30,7 +31,8 @@ struct MCPConfig {
         )
         return MCPConfig(
             dbPath: dbPath,
-            serviceSocketPath: serviceSocketPath
+            serviceSocketPath: serviceSocketPath,
+            runtimeRole: RuntimeRoleSettings.load(environment: environment)
         )
     }
 

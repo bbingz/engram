@@ -14,6 +14,96 @@ public final class SessionSnapshotWriter {
         self.db = db
     }
 
+    /// Only the capture committer may ensure a newly committed generation here.
+    /// Check the stored owner/version/hash/tier, then preserve any exact job's
+    /// state and debounce. This is not a legacy requeue or readiness operation.
+    func ensureCurrentCaptureFTSJob(
+        sessionID: String, authoritativeNode: String, syncVersion: Int, snapshotHash: String
+    ) throws -> String? {
+        guard syncVersion > 0, let current = try Row.fetchOne(db, sql: """
+            SELECT authoritative_node, sync_version, snapshot_hash, tier FROM sessions WHERE id = ?
+            """, arguments: [sessionID]),
+              case .string(let storedOwner) = (current["authoritative_node"] as DatabaseValue).storage,
+              storedOwner.utf8.elementsEqual(authoritativeNode.utf8),
+              case .int64(let storedVersion) = (current["sync_version"] as DatabaseValue).storage,
+              storedVersion == Int64(syncVersion),
+              case .string(let storedHash) = (current["snapshot_hash"] as DatabaseValue).storage,
+              storedHash.utf8.elementsEqual(snapshotHash.utf8) else {
+            throw CaptureIngestCommitError.currentSnapshotMismatch
+        }
+        guard case .string(let rawTier) = (current["tier"] as DatabaseValue).storage,
+              let tier = SessionTier(rawValue: rawTier) else {
+            throw CaptureIngestCommitError.currentSnapshotMismatch
+        }
+        guard tier != .skip else { return nil }
+        let jobID = "\(sessionID):\(syncVersion):\(snapshotHash):fts"
+        if let job = try Row.fetchOne(db, sql: "SELECT session_id, job_kind, target_sync_version FROM session_index_jobs WHERE id = ?",
+                                     arguments: [jobID]) {
+            guard case .string(let storedSessionID) = (job["session_id"] as DatabaseValue).storage,
+                  storedSessionID.utf8.elementsEqual(sessionID.utf8),
+                  case .string(let kind) = (job["job_kind"] as DatabaseValue).storage,
+                  kind == IndexJobKind.fts.rawValue,
+                  case .int64(let target) = (job["target_sync_version"] as DatabaseValue).storage,
+                  target == storedVersion else { throw CaptureIngestCommitError.currentSnapshotMismatch }
+            return jobID
+        }
+        // Called only after admission of a new capture generation. In particular,
+        // do not invoke the upsert again for an exact completed/permanent job.
+        try insertIndexJobs(sessionId: sessionID, targetSyncVersion: syncVersion,
+                            targetSnapshotHash: snapshotHash, jobKinds: [.fts])
+        return jobID
+    }
+
+    /// Current parsed capture head only. Updates skip → visible tier and binds
+    /// `required_fts_job_id` under the exact session/generation tuple. Does not
+    /// rewrite snapshot hash, version, messages, titles, links, costs, tools, or beats.
+    func bindCurrentCaptureSkipReclassification(
+        sessionID: String,
+        generationID: String,
+        authoritativeNode: String,
+        syncVersion: Int,
+        snapshotHash: String,
+        nextTier: SessionTier
+    ) throws -> String {
+        guard nextTier != .skip, syncVersion > 0,
+              ArchiveV2Hash.isValidSHA256(generationID),
+              ArchiveV2Hash.isValidSHA256(snapshotHash) else {
+            throw CaptureIngestCommitError.currentSnapshotMismatch
+        }
+        var jobID: String?
+        try db.inSavepoint {
+            try db.execute(sql: """
+                UPDATE sessions SET tier = ?
+                WHERE id = ? AND tier = 'skip' AND agent_role IS NULL
+                  AND authoritative_node = ? AND sync_version = ? AND snapshot_hash = ?
+                """, arguments: [nextTier.rawValue, sessionID, authoritativeNode, syncVersion, snapshotHash])
+            guard db.changesCount == 1 else { throw CaptureIngestCommitError.currentSnapshotMismatch }
+            guard let ensured = try ensureCurrentCaptureFTSJob(
+                sessionID: sessionID, authoritativeNode: authoritativeNode,
+                syncVersion: syncVersion, snapshotHash: snapshotHash
+            ) else {
+                throw CaptureIngestCommitError.currentSnapshotMismatch
+            }
+            try db.execute(sql: """
+                UPDATE capture_ingest_generations SET required_fts_job_id = ?
+                WHERE generation_id = ? AND stored_session_id = ?
+                  AND sync_version = ? AND snapshot_hash = ?
+                  AND required_fts_job_id IS NULL
+                  AND EXISTS (
+                    SELECT 1 FROM capture_ingest_identity_bindings
+                    WHERE stored_session_id = capture_ingest_generations.stored_session_id
+                      AND last_parsed_generation_id = capture_ingest_generations.generation_id
+                      AND last_sync_version = capture_ingest_generations.sync_version
+                  )
+                """, arguments: [ensured, generationID, sessionID, syncVersion, snapshotHash])
+            guard db.changesCount == 1 else { throw CaptureIngestCommitError.currentSnapshotMismatch }
+            jobID = ensured
+            return .commit
+        }
+        guard let jobID else { throw CaptureIngestCommitError.currentSnapshotMismatch }
+        return jobID
+    }
+
     public func writeAuthoritativeSnapshot(_ snapshot: AuthoritativeSessionSnapshot) throws -> SessionWriteResult {
         // docs/invariants.md #1: sanitize inside the service-owned writer path;
         // app and MCP readers must not introduce a competing SQLite writer.

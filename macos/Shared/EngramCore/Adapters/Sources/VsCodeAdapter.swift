@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 final class VsCodeAdapter: SessionAdapter, Sendable {
@@ -7,6 +8,12 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
     private let workspaceStorageDir: URL
     private let limits: ParserLimits
     private let messageCache = ParsedTranscriptCache()
+    private struct CapturedReplay: Sendable {
+        let logicalLocator: String
+        let workspaceData: Data?
+        let configurationData: Data?
+    }
+    private let capturedReplay: CapturedReplay?
 
     init(
         workspaceStorageDir: String = FileManager.default.homeDirectoryForCurrentUser
@@ -16,6 +23,14 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
     ) {
         self.workspaceStorageDir = URL(fileURLWithPath: workspaceStorageDir)
         self.limits = limits
+        self.capturedReplay = nil
+    }
+
+    private init(physicalLocator: String, capturedReplay: CapturedReplay) {
+        self.workspaceStorageDir = URL(fileURLWithPath: physicalLocator)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        self.limits = .default
+        self.capturedReplay = capturedReplay
     }
 
     func detect() async -> Bool {
@@ -61,8 +76,15 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
             }
             let lastTimestamp = Phase4AdapterSupport.double(requestObjects.last?["timestamp"])
             let sessionId = JSONLAdapterSupport.string(session["sessionId"]) ??
-                URL(fileURLWithPath: locator).deletingPathExtension().lastPathComponent
-            let cwd = Self.readWorkspaceCwd(for: locator)
+                URL(fileURLWithPath: capturedReplay?.logicalLocator ?? locator).deletingPathExtension().lastPathComponent
+            let cwd: String
+            if let capturedReplay {
+                cwd = Self.workspaceCwd(workspaceData: capturedReplay.workspaceData) { _ in
+                    capturedReplay.configurationData
+                }
+            } else {
+                cwd = Self.readWorkspaceCwd(for: locator)
+            }
 
             return .success(
                 NormalizedSessionInfo(
@@ -196,6 +218,83 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
             }
         }
         return messages
+    }
+
+    static func scanCapturedSource(
+        physicalLocator: String, stagingRoot: String, logicalLocator: String, replayLayout: ArchiveReplayLayout
+    ) async throws -> AdapterParseResult<CapturedSourceScan> {
+        do {
+            guard replayLayout.strategy == .fileSet, let context = replayLayout.vscodeWorkspaceContext,
+                  let primary = replayLayout.entrypointRelativePath,
+                  physicalLocator.utf8.elementsEqual((stagingRoot + "/" + primary).utf8),
+                  logicalLocator.utf8.suffix(primary.utf8.count + 1).elementsEqual(("/" + primary).utf8),
+                  let workspace = primary.split(separator: "/").first.map({ String($0) + "/workspace.json" }) else {
+                return .failure(.malformedJSON)
+            }
+            let member = replayLayout.files?.first { $0.relativePath.utf8.elementsEqual(workspace.utf8) }
+            let workspaceData = try member.map { try readCapturedWorkspace(root: stagingRoot, member: $0) }
+            try context.validateWorkspaceData(workspaceData)
+            return try await scanCapturedSource(physicalLocator: physicalLocator, logicalLocator: logicalLocator,
+                workspaceData: workspaceData, configurationData: context.configurationData)
+        } catch is CancellationError { throw CancellationError() }
+        catch { return .failure(.malformedJSON) }
+    }
+
+    private static func readCapturedWorkspace(root: String, member: ArchiveFileSetEntry) throws -> Data {
+        guard member.rawByteCount <= ArchiveVSCodeWorkspaceContext.maximumContextBytes else {
+            throw ParserFailure.fileTooLarge
+        }
+        var directory = Darwin.open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard directory >= 0 else { throw ParserFailure.malformedJSON }
+        defer { Darwin.close(directory) }
+        let parts = member.relativePath.split(separator: "/").map(String.init)
+        for part in parts.dropLast() {
+            let child = Darwin.openat(directory, part, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard child >= 0 else { throw ParserFailure.malformedJSON }
+            Darwin.close(directory)
+            directory = child
+        }
+        guard let leaf = parts.last else { throw ParserFailure.malformedJSON }
+        let file = Darwin.openat(directory, leaf, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard file >= 0 else { throw ParserFailure.malformedJSON }
+        defer { Darwin.close(file) }
+        var info = stat()
+        guard fstat(file, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_size == member.rawByteCount else { throw ParserFailure.malformedJSON }
+        var bytes = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            try Task.checkCancellation()
+            let count = Darwin.read(file, &buffer, buffer.count)
+            if count < 0, errno == EINTR { continue }
+            guard count >= 0 else { throw ParserFailure.malformedJSON }
+            if count == 0 { break }
+            guard Int64(bytes.count + count) <= member.rawByteCount else { throw ParserFailure.malformedJSON }
+            bytes.append(contentsOf: buffer.prefix(count))
+        }
+        guard Int64(bytes.count) == member.rawByteCount,
+              ArchiveV2Hash.sha256(bytes) == member.wholeSourceSHA256 else { throw ParserFailure.malformedJSON }
+        return bytes
+    }
+
+    static func scanCapturedSource(
+        physicalLocator: String, logicalLocator: String,
+        workspaceData: Data?, configurationData: Data?
+    ) async throws -> AdapterParseResult<CapturedSourceScan> {
+        // Archive replay must not silently skip malformed records or consult
+        // workspace files on the replay host. Missing frozen bytes stay missing.
+        let (_, failure) = try JSONLAdapterSupport.readObjects(
+            locator: physicalLocator, limits: .default, reportFailures: true, strictRecords: true)
+        if let failure { return .failure(failure) }
+        let adapter = VsCodeAdapter(physicalLocator: physicalLocator, capturedReplay: CapturedReplay(
+            logicalLocator: logicalLocator, workspaceData: workspaceData, configurationData: configurationData))
+        switch try await adapter.scanForIndexing(locator: physicalLocator) {
+        case .failure(let failure): return .failure(failure)
+        case .success(var scan):
+            if let failure = scan.parseFailure { return .failure(failure) }
+            scan.info.filePath = logicalLocator
+            return .success(CapturedSourceScan(scan: scan, rawSourceSessionID: scan.info.id))
+        }
     }
 
     func isAccessible(locator: String) async -> Bool {
@@ -345,7 +444,13 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("workspace.json")
-        guard let data = try? Data(contentsOf: workspaceURL),
+        return workspaceCwd(workspaceData: try? Data(contentsOf: workspaceURL)) { path in
+            try? Data(contentsOf: URL(fileURLWithPath: path))
+        }
+    }
+
+    private static func workspaceCwd(workspaceData: Data?, configurationData: (String) -> Data?) -> String {
+        guard let data = workspaceData,
               let object = try? JSONSerialization.jsonObject(with: data) as? Phase4AdapterSupport.JSONObject
         else {
             return ""
@@ -356,13 +461,13 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
         if let configuration = JSONLAdapterSupport.string(object["configuration"]) {
             let workspacePath = decodeFileURI(configuration)
             guard !workspacePath.isEmpty else { return "" }
-            return readCodeWorkspaceFirstFolder(workspacePath)
+            return readCodeWorkspaceFirstFolder(workspacePath, data: configurationData(workspacePath))
         }
         return ""
     }
 
-    private static func readCodeWorkspaceFirstFolder(_ workspacePath: String) -> String {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: workspacePath)),
+    private static func readCodeWorkspaceFirstFolder(_ workspacePath: String, data: Data?) -> String {
+        guard let data,
               let object = try? JSONSerialization.jsonObject(with: data) as? Phase4AdapterSupport.JSONObject,
               let folders = JSONLAdapterSupport.array(object["folders"]),
               let first = folders.compactMap({ JSONLAdapterSupport.object($0) }).first

@@ -9,24 +9,41 @@ import Foundation
 public enum TranscriptRedactionPolicy {
     // Compile patterns once per process. compactMap preserves the previous
     // behavior of silently skipping any pattern that fails to compile.
-    private static let compiledPatterns: [NSRegularExpression] = {
-        let patterns = [
-            #"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----|$)"#,
-            #"(?i)\b(api[_-]?key|authorization|bearer|password|secret|credential|token)\b\s*[:=]\s*["']?[A-Za-z0-9_+=/.]{10,}["']?"#,
-            #"(?i)\bAuthorization:\s*Bearer\s+[A-Za-z0-9_\-+=/.]{10,}"#,
-            #"\b(sk-[A-Za-z0-9_\-]{10,}|ghp_[A-Za-z0-9_]{10,}|xox[baprs]-[A-Za-z0-9-]{10,})\b"#,
-            #"\b(github_pat_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9_]{20,}|ghu_[A-Za-z0-9_]{20,}|ghs_[A-Za-z0-9_]{20,}|ghr_[A-Za-z0-9_]{20,})\b"#,
-            #"\b(AKIA|ASIA)[0-9A-Z]{16}\b"#,
-            #"\bnpm_[A-Za-z0-9]{10,}\b"#,
-            #"\bxoxe-[A-Za-z0-9-]{10,}\b"#,
+    private static let compiledRules: [(prefixes: [Data], regex: NSRegularExpression)] = {
+        let patterns: [([String], String)] = [
+            (["-----begin "], #"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----|$)"#),
+            (["password"], #"(?i)\bpassword\b[ \t]*[:=][ \t]*(?:"[^"\r\n]{4,}"|'[^'\r\n]{4,}'|[^\s"'，。；、,;<>]{4,})"#),
+            (["密码", "口令"], #"(?i)(?:sudo[ \t]*)?(?:密码|口令)[ \t]*(?:是|为|[:：=])[ \t]*(?:"[^"\r\n]{4,}"|'[^'\r\n]{4,}'|[^\s"'，。；、,;<>]{4,})"#),
+            (["api", "authorization", "bearer", "password", "secret", "credential", "token"], #"(?i)\b(api[_-]?key|authorization|bearer|password|secret|credential|token)\b\s*[:=]\s*["']?[A-Za-z0-9_+=/.]{10,}["']?"#),
+            (["authorization"], #"(?i)\bAuthorization:\s*Bearer\s+[A-Za-z0-9_\-+=/.]{10,}"#),
+            (["sk-", "ghp_", "xox"], #"\b(sk-[A-Za-z0-9_\-]{10,}|ghp_[A-Za-z0-9_]{10,}|xox[baprs]-[A-Za-z0-9-]{10,})\b"#),
+            (["github_pat_", "gho_", "ghu_", "ghs_", "ghr_"], #"\b(github_pat_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9_]{20,}|ghu_[A-Za-z0-9_]{20,}|ghs_[A-Za-z0-9_]{20,}|ghr_[A-Za-z0-9_]{20,})\b"#),
+            (["akia", "asia"], #"\b(AKIA|ASIA)[0-9A-Z]{16}\b"#),
+            (["npm_"], #"\bnpm_[A-Za-z0-9]{10,}\b"#),
+            (["xoxe-"], #"\bxoxe-[A-Za-z0-9-]{10,}\b"#),
         ]
-        return patterns.compactMap { try? NSRegularExpression(pattern: $0) }
+        return patterns.compactMap { prefixes, pattern in
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+            return (prefixes.map { Data($0.utf8) }, regex)
+        }
     }()
+
+    /// Necessary literal prefixes only: a hit still runs the unchanged regex.
+    /// Unicode case folding conservatively includes case-insensitive matches.
+    /// Search bytes once folded, avoiding repeated full-text regex scans for
+    /// large image/tool payloads that contain none of a rule's prefixes.
+    private static func candidatePatterns(in content: String) -> [NSRegularExpression] {
+        let folded = Data(content.folding(options: .caseInsensitive,
+            locale: Locale(identifier: "en_US_POSIX")).utf8)
+        return compiledRules.compactMap { rule in
+            rule.prefixes.contains(where: { folded.range(of: $0) != nil }) ? rule.regex : nil
+        }
+    }
 
     public static let redactionToken = "[REDACTED]"
 
     public static func redact(_ content: String) -> String {
-        compiledPatterns.reduce(content) { current, regex in
+        candidatePatterns(in: content).reduce(content) { current, regex in
             let range = NSRange(current.startIndex..<current.endIndex, in: current)
             return regex.stringByReplacingMatches(
                 in: current,
@@ -43,7 +60,7 @@ public enum TranscriptRedactionPolicy {
     public static func sensitiveUTF8Ranges(in content: String) -> [Range<Int>] {
         var ranges: [Range<Int>] = []
         let fullRange = NSRange(content.startIndex..<content.endIndex, in: content)
-        for regex in compiledPatterns {
+        for regex in candidatePatterns(in: content) {
             for match in regex.matches(in: content, range: fullRange) {
                 guard let stringRange = Range(match.range, in: content) else { continue }
                 let lower = content.utf8.distance(

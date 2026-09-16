@@ -3,8 +3,22 @@ import Foundation
 import GRDB
 import EngramCoreRead
 
+/// Explicit capture authority supplied by a future service-owned caller.
+public struct CaptureFTSReadinessPolicy: Sendable {
+    public let parserRevision: String
+    public let enabledSources: Set<SourceName>
+    public let deadline: ContinuousClock.Instant?
+
+    public init(parserRevision: String, enabledSources: Set<SourceName>, deadline: ContinuousClock.Instant? = nil) {
+        self.parserRevision = parserRevision
+        self.enabledSources = enabledSources
+        self.deadline = deadline
+    }
+}
+
 public enum FTSRebuildPolicy {
     public static let expectedVersion = "3"
+    public static let contentIdentityIndexName = "idx_sessions_fts_content_identity"
     private static let rebuildVersionKey = "fts_rebuild_version"
     private static let activeTable = "sessions_fts"
     private static let rebuildTable = "sessions_fts_rebuild"
@@ -113,11 +127,12 @@ public enum FTSRebuildPolicy {
     @discardableResult
     static func finalizeRebuildIfReady(
         _ db: GRDB.Database,
-        enabledSources: Set<SourceName>? = nil
+        enabledSources: Set<SourceName>? = nil,
+        capturePolicy: CaptureFTSReadinessPolicy? = nil
     ) throws -> Bool {
         guard try rebuildIsPending(db) else { return false }
         guard try tableExists(db, rebuildTable) else { return false }
-        guard try recoverableFtsJobCount(db, enabledSources: enabledSources) == 0 else { return false }
+        guard try recoverableFtsJobCount(db, enabledSources: enabledSources, capturePolicy: capturePolicy) == 0 else { return false }
 
         // Wave 7A H01: before swap, copy live FTS rows for eligible sessions that
         // never made it into the shadow table (failed_permanent / not_applicable /
@@ -142,6 +157,7 @@ public enum FTSRebuildPolicy {
         }
         try db.execute(sql: "ALTER TABLE \(rebuildTable) RENAME TO \(activeTable)")
         try db.execute(sql: "DROP TABLE IF EXISTS sessions_fts_old")
+        try ensureOwnedContentIdentityIndex(db)
         try markCurrentVersion(db)
         try db.execute(sql: "DELETE FROM metadata WHERE key = ?", arguments: [rebuildVersionKey])
         try db.execute(sql: "DELETE FROM metadata WHERE key = ?", arguments: [StartupBackfills.ftsOptimizeSignatureKey])
@@ -257,13 +273,10 @@ public enum FTSRebuildPolicy {
         let existing = try fetchMapRows(db, sessionId: sessionId)
 
         if existing.isEmpty {
-            // No map rows: heal any pre-backfill FTS rows with a single session_id
-            // scan (this is the only path that scans, and it runs at most once per
-            // session — brand-new sessions have nothing to delete), then insert fresh.
-            try db.execute(
-                sql: "DELETE FROM \(activeTable) WHERE session_id = ?",
-                arguments: [sessionId]
-            )
+            // No map rows: heal any pre-backfill FTS rows, then insert fresh.
+            // Owned live layout covering-scans identity keys; unknown layouts
+            // keep the session_id delete.
+            try deleteActiveSessionFtsRows(db, sessionId: sessionId)
             try insertFresh(db, sessionId: sessionId, messages: msgs, summary: summaryLine)
             return
         }
@@ -296,7 +309,7 @@ public enum FTSRebuildPolicy {
 
         // Full replace. Prefer the rowid-seek delete (no full-table scan); the
         // `session_id` filter guards against stale/reused rowids after a table swap.
-        // If the map diverged from the FTS table, heal with one session_id scan.
+        // If the map diverged, delete every actual owner row, not only mapped rowids.
         if mapConsistent {
             try db.execute(
                 sql: """
@@ -307,13 +320,35 @@ public enum FTSRebuildPolicy {
                 arguments: [sessionId, sessionId]
             )
         } else {
+            try deleteActiveSessionFtsRows(db, sessionId: sessionId)
+        }
+        try db.execute(sql: "DELETE FROM fts_map WHERE session_id = ?", arguments: [sessionId])
+        try insertFresh(db, sessionId: sessionId, messages: msgs, summary: summaryLine)
+    }
+
+    /// Owned covering-identity delete of every live FTS row for `sessionId`.
+    /// Scans all identity keys; does not seek `c0`. Missing/wrong identity
+    /// index keeps the original session_id delete.
+    private static func deleteActiveSessionFtsRows(_ db: GRDB.Database, sessionId: String) throws {
+        if try hasOwnedContentIdentityIndex(db) {
+            try db.execute(
+                sql: """
+                DELETE FROM \(activeTable)
+                WHERE rowid IN (
+                  SELECT id FROM sessions_fts_content
+                  INDEXED BY \(contentIdentityIndexName)
+                  WHERE c0 = ?
+                )
+                AND session_id = ?
+                """,
+                arguments: [sessionId, sessionId]
+            )
+        } else {
             try db.execute(
                 sql: "DELETE FROM \(activeTable) WHERE session_id = ?",
                 arguments: [sessionId]
             )
         }
-        try db.execute(sql: "DELETE FROM fts_map WHERE session_id = ?", arguments: [sessionId])
-        try insertFresh(db, sessionId: sessionId, messages: msgs, summary: summaryLine)
     }
 
     /// True when the stored message rows are exactly the prefix of the new message
@@ -435,6 +470,78 @@ public enum FTSRebuildPolicy {
         )
     }
 
+    /// Owned internal-content FTS5 only. SQLite 3.51 ALTER RENAME rewrites
+    /// identifiers as double-quoted names; FTS5 CREATE uses a single-quoted
+    /// `_content` table. Those variants are accepted; module, columns, and
+    /// tokenizer must still match. Compatibility with this layout, not an
+    /// FTS5 public-API guarantee (sqlite.org/fts5.html §9).
+    public static func hasOwnedInternalFTSContent(_ db: GRDB.Database) throws -> Bool {
+        let ftsSQL = try String.fetchOne(
+            db, sql: "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions_fts'"
+        ) ?? ""
+        let shadowSQL = try String.fetchOne(
+            db, sql: "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions_fts_content'"
+        ) ?? ""
+        return isOwnedFTS(ftsSQL) && isOwnedContent(shadowSQL)
+    }
+
+    public static func hasOwnedContentIdentityIndex(_ db: GRDB.Database) throws -> Bool {
+        guard try hasOwnedInternalFTSContent(db) else { return false }
+        let sql = try String.fetchOne(
+            db,
+            sql: "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+            arguments: [contentIdentityIndexName]
+        ) ?? ""
+        return isOwnedContentIdentityIndex(sql)
+    }
+
+    /// Create the covering `(id,c0)` index only on the owned live layout.
+    /// If the product name already exists with any SQL, leave it.
+    public static func ensureOwnedContentIdentityIndex(_ db: GRDB.Database) throws {
+        guard try hasOwnedInternalFTSContent(db) else { return }
+        let existing = try String.fetchOne(
+            db,
+            sql: "SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?",
+            arguments: [contentIdentityIndexName]
+        )
+        guard existing == nil else { return }
+        try db.execute(sql: """
+            CREATE INDEX IF NOT EXISTS idx_sessions_fts_content_identity
+            ON sessions_fts_content(id, c0)
+            """)
+    }
+
+    private static func compactedSQL(_ sql: String) -> String {
+        String(sql.filter { !$0.isWhitespace }).lowercased()
+    }
+
+    private static func isOwnedFTS(_ sql: String) -> Bool {
+        let compact = compactedSQL(sql)
+        let body = "usingfts5(session_idunindexed,content,tokenize='trigramcase_sensitive0')"
+        return compact == "createvirtualtablesessions_fts" + body
+            || compact == "createvirtualtable\"sessions_fts\"" + body
+    }
+
+    private static func isOwnedContent(_ sql: String) -> Bool {
+        let compact = compactedSQL(sql)
+        let columns = "(idintegerprimarykey,c0,c1)"
+        return compact == "createtable'sessions_fts_content'" + columns
+            || compact == "createtable\"sessions_fts_content\"" + columns
+    }
+
+    private static func isOwnedContentIdentityIndex(_ sql: String) -> Bool {
+        let compact = compactedSQL(sql)
+        let names = ["idx_sessions_fts_content_identity", "\"idx_sessions_fts_content_identity\""]
+        let tables = ["sessions_fts_content", "\"sessions_fts_content\""]
+        for name in names {
+            for table in tables {
+                if compact == "createindex\(name)on\(table)(id,c0)" { return true }
+                if compact == "createindexifnotexists\(name)on\(table)(id,c0)" { return true }
+            }
+        }
+        return false
+    }
+
     private static func createFtsTable(_ db: GRDB.Database, named table: String) throws {
         try db.execute(sql: """
             CREATE VIRTUAL TABLE \(table) USING fts5(
@@ -471,24 +578,210 @@ public enum FTSRebuildPolicy {
         ) == expectedVersion
     }
 
+    /// All drain/count/finalize callers use the same ownership-first branch.
+    /// An unavailable capture is never reclassified as a legacy filesystem job.
+    static func recoverableJobEligibility(
+        _ db: Database, enabledSources: Set<SourceName>?, capturePolicy: CaptureFTSReadinessPolicy?
+    ) throws -> (sql: String, arguments: StatementArguments) {
+        let ownership = try captureOwnershipSQL(db)
+        let capture = try captureEligibility(db, policy: capturePolicy)
+        let known = SourceName.allCases.map(\.rawValue)
+        let enabled = enabledSources?.map(\.rawValue).sorted()
+        let legacyEnabled = enabled.map { $0.isEmpty ? "0" : "s.source IN (\(placeholders($0.count)))" } ?? "1"
+        var arguments = capture?.arguments ?? StatementArguments()
+        for value in known { arguments += [value] }
+        for value in enabled ?? [] { arguments += [value] }
+        let captureSQL = capture.map { "EXISTS (SELECT 1 FROM \(captureAuthorityTables) WHERE \($0.sql))" } ?? "0"
+        return ("""
+            CASE WHEN \(ownership) THEN \(captureSQL) ELSE (
+                j.job_kind != 'fts' OR s.id IS NULL OR s.tier = 'skip'
+                OR s.source NOT IN (\(placeholders(known.count))) OR \(legacyEnabled)
+            ) END
+            """, arguments)
+    }
+
+    static func isCaptureOwned(_ db: Database, sessionID: String) throws -> Bool {
+        let ownership = try captureOwnershipSQL(db)
+        return try Bool.fetchOne(db, sql: """
+            SELECT \(ownership) FROM (SELECT ? AS session_id) AS j
+            LEFT JOIN sessions AS s ON s.id = j.session_id
+            """, arguments: [sessionID]) ?? false
+    }
+
+    private static func captureOwnershipSQL(_ db: Database) throws -> String {
+        let binding = try tableExists(db, "capture_ingest_identity_bindings")
+            ? "EXISTS (SELECT 1 FROM capture_ingest_identity_bindings owned WHERE owned.stored_session_id = j.session_id)"
+            : "0"
+        return """
+            (j.session_id GLOB 'remote:capture-v1.*'
+             OR COALESCE(s.authoritative_node GLOB 'capture-v1.*', 0) OR \(binding))
+            """
+    }
+
+    // These joins seek the unique stored-session binding and its single current
+    // generation. No transcript or unbounded generation-history scan is involved.
+    private static let captureAuthorityTables = """
+        capture_ingest_identity_bindings AS b
+        JOIN capture_ingest_generations AS g ON g.generation_id = b.last_parsed_generation_id
+        JOIN capture_ingest_source_registry AS r
+          ON r.machine_id = g.machine_id AND r.source_instance_id = g.source_instance_id
+        JOIN capture_ingest_ledger AS l
+          ON l.publication_sha256 = g.publication_sha256 AND l.parser_revision = g.parser_revision
+        """
+
+    private static func captureEligibility(
+        _ db: Database, policy: CaptureFTSReadinessPolicy?
+    ) throws -> (sql: String, arguments: StatementArguments)? {
+        guard let policy, !policy.enabledSources.isEmpty else { return nil }
+        do { try CaptureIngestNormalizedStore.validateParserRevision(policy.parserRevision) }
+        catch { return nil }
+        if let deadline = policy.deadline, ContinuousClock.now >= deadline { return nil }
+        for table in ["capture_ingest_identity_bindings", "capture_ingest_generations",
+                      "capture_ingest_source_registry", "capture_ingest_epoch_history",
+                      "capture_ingest_ledger", "capture_ingest_publications"] {
+            guard try tableExists(db, table) else { return nil }
+        }
+        let sources = policy.enabledSources.map(\.rawValue).sorted()
+        let validSiblingRoot = captureRegistryRootValidity(alias: "sibling")
+        var arguments: StatementArguments = [policy.parserRevision]
+        for value in sources { arguments += [value] }
+        // Payload schema/count/length corruption is deliberately not filtered:
+        // still-current corrupt artifacts need a bounded safe-code retry, not a
+        // permanently due hot loop. The loader enforces budgets before BLOB delivery.
+        return ("""
+            b.stored_session_id = j.session_id AND g.stored_session_id = b.stored_session_id
+            AND j.job_kind = 'fts' AND g.required_fts_job_id = j.id
+            AND j.id = (s.id || ':' || g.sync_version || ':' || g.snapshot_hash || ':fts')
+            AND typeof(j.target_sync_version) = 'integer' AND j.target_sync_version = g.sync_version
+            AND b.last_sync_version = g.sync_version AND s.sync_version = g.sync_version
+            AND s.snapshot_hash COLLATE BINARY = g.snapshot_hash
+            AND typeof(s.authoritative_node) = 'text' AND typeof(s.source) = 'text'
+            AND typeof(s.sync_version) = 'integer' AND typeof(s.snapshot_hash) = 'text'
+            AND s.tier IN ('skip', 'lite', 'normal', 'premium')
+            AND s.authoritative_node COLLATE BINARY = ('capture-v1.' || g.machine_id || '.' || g.source_instance_id)
+            AND s.source = g.source AND COALESCE(s.offload_state, 'local') != 'offloaded'
+            AND b.machine_id = g.machine_id AND b.source_instance_id = g.source_instance_id
+            AND b.source = g.source AND b.native_id COLLATE BINARY = g.native_id
+            AND r.source = g.source AND r.parse_format = g.parse_format
+            AND r.configured_root COLLATE BINARY = g.configured_root
+            AND r.approved_epoch COLLATE BINARY = g.collector_epoch
+            AND r.authority_generation = g.authority_generation
+            AND EXISTS (
+                SELECT 1 FROM capture_ingest_epoch_history AS h
+                WHERE h.machine_id = r.machine_id AND h.source_instance_id = r.source_instance_id
+                  AND h.authority_generation = r.authority_generation
+                  AND h.approved_epoch COLLATE BINARY = r.approved_epoch
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM capture_ingest_source_registry AS sibling
+                WHERE sibling.machine_id = r.machine_id AND sibling.source = r.source
+                  AND (
+                    NOT COALESCE((\(validSiblingRoot)), 0)
+                    OR (sibling.source_instance_id != r.source_instance_id AND (
+                        sibling.configured_root COLLATE BINARY = r.configured_root
+                        OR substr(r.configured_root, 1, length(sibling.configured_root) + 1) COLLATE BINARY = sibling.configured_root || '/'
+                        OR substr(sibling.configured_root, 1, length(r.configured_root) + 1) COLLATE BINARY = r.configured_root || '/'
+                    ))
+                  )
+            )
+            AND g.parser_revision COLLATE BINARY = ? AND g.source IN (\(placeholders(sources.count)))
+            AND (l.status = 'parsed' OR (l.status = 'index_ready' AND b.last_ready_generation_id = g.generation_id))
+            AND l.failure_code IS NULL AND l.claim_token IS NULL AND l.claim_started_at IS NULL
+            AND l.claim_expires_at IS NULL AND l.retry_after IS NULL
+            """, arguments)
+    }
+
+    // Mirror the registry's scalar root/history validation without delivering
+    // manifest or normalized BLOBs. A broken sibling invalidates registry lookup
+    // too; checking only the selected source-instance leaves permanently due work.
+    private static func captureRegistryRootValidity(alias: String) -> String {
+        let uuids = ["machine_id", "source_instance_id", "approved_epoch"].map { column -> String in
+            let value = "\(alias).\(column)"
+            return """
+                typeof(\(value)) = 'text' AND length(\(value)) = 36
+                AND substr(\(value), 9, 1) = '-' AND substr(\(value), 14, 1) = '-'
+                AND substr(\(value), 19, 1) = '-' AND substr(\(value), 24, 1) = '-'
+                AND length(replace(\(value), '-', '')) = 32
+                AND replace(\(value), '-', '') NOT GLOB '*[^0-9A-F]*'
+                """
+        }.joined(separator: " AND ")
+        return """
+            \(uuids)
+            AND typeof(\(alias).authority_generation) = 'integer' AND \(alias).authority_generation > 0
+            AND typeof(\(alias).configured_root) = 'text' AND length(\(alias).configured_root) > 1
+            AND substr(\(alias).configured_root, 1, 1) = '/' AND substr(\(alias).configured_root, -1) != '/'
+            AND instr(\(alias).configured_root, char(0)) = 0 AND instr(\(alias).configured_root, '//') = 0
+            AND instr(\(alias).configured_root || '/', '/./') = 0 AND instr(\(alias).configured_root || '/', '/../') = 0
+            AND EXISTS (
+                SELECT 1 FROM capture_ingest_epoch_history AS history
+                WHERE history.machine_id = \(alias).machine_id AND history.source_instance_id = \(alias).source_instance_id
+                  AND history.authority_generation = \(alias).authority_generation
+                  AND history.approved_epoch COLLATE BINARY = \(alias).approved_epoch
+            )
+            """
+    }
+
+    struct CaptureJobAuthority: Sendable {
+        let generationID: String
+        let values: [DatabaseValue]
+
+        func matches(_ other: Self) -> Bool {
+            guard generationID == other.generationID, values.count == other.values.count else { return false }
+            return zip(values, other.values).allSatisfy { left, right in
+                switch (left.storage, right.storage) {
+                case (.null, .null): return true
+                case let (.string(a), .string(b)): return a.utf8.elementsEqual(b.utf8)
+                case let (.int64(a), .int64(b)): return a == b
+                case let (.double(a), .double(b)): return a.bitPattern == b.bitPattern
+                case let (.blob(a), .blob(b)): return a == b
+                default: return false
+                }
+            }
+        }
+    }
+
+    /// Freeze only small scalar authority fields, including the complete job
+    /// attempt tuple. Recheck before both readiness and corruption retry writes.
+    static func captureJobAuthority(
+        _ db: Database, jobID: String, policy: CaptureFTSReadinessPolicy?
+    ) throws -> CaptureJobAuthority? {
+        guard let eligibility = try captureEligibility(db, policy: policy) else { return nil }
+        var arguments = eligibility.arguments
+        arguments += [jobID]
+        guard let row = try Row.fetchOne(db, sql: """
+            SELECT g.generation_id, j.id, j.session_id, j.job_kind, j.target_sync_version,
+                j.status, j.retry_count, j.not_before, j.last_error,
+                b.machine_id, b.source_instance_id, b.source, b.native_id, b.stored_session_id,
+                b.last_parsed_generation_id, b.last_ready_generation_id, b.last_sync_version,
+                g.publication_sha256, g.parser_revision, g.parse_format, g.configured_root,
+                g.collector_epoch, g.authority_generation, g.sequence, g.required_fts_job_id,
+                g.sync_version, g.snapshot_hash, g.normalized_schema_version,
+                g.normalized_message_count, g.normalized_storage_version, g.normalized_total_message_count,
+                g.normalized_messages_sha256,
+                typeof(g.normalized_messages_json), length(g.normalized_messages_json),
+                r.source, r.parse_format, r.configured_root, r.approved_epoch, r.authority_generation,
+                s.authoritative_node, s.source, s.sync_version, s.snapshot_hash, s.tier, s.summary, s.offload_state,
+                l.status, l.failure_code, l.claim_token, l.claim_started_at, l.claim_expires_at, l.retry_after
+            FROM \(captureAuthorityTables)
+            JOIN sessions AS s ON s.id = b.stored_session_id
+            JOIN session_index_jobs AS j ON j.session_id = s.id
+            WHERE \(eligibility.sql) AND j.id = ?
+              AND j.status IN ('pending', 'failed_retryable')
+              AND (j.not_before IS NULL OR j.not_before <= datetime('now'))
+            """, arguments: arguments) else { return nil }
+        guard case .string(let generationID) = (row["generation_id"] as DatabaseValue).storage else { return nil }
+        return CaptureJobAuthority(generationID: generationID, values: Array(row.databaseValues))
+    }
+
+    private static func placeholders(_ count: Int) -> String { Array(repeating: "?", count: count).joined(separator: ", ") }
+
     static func recoverableFtsJobCount(
         _ db: GRDB.Database,
-        enabledSources: Set<SourceName>? = nil
+        enabledSources: Set<SourceName>? = nil,
+        capturePolicy: CaptureFTSReadinessPolicy? = nil
     ) throws -> Int {
         guard try tableExists(db, "session_index_jobs") else { return 0 }
-        let knownSources = SourceName.allCases.map(\.rawValue)
-        let enabledValues = enabledSources?.map(\.rawValue).sorted()
-        let enabledPredicate: String
-        if let enabledValues {
-            enabledPredicate = enabledValues.isEmpty
-                ? "0"
-                : "s.source IN (\(Array(repeating: "?", count: enabledValues.count).joined(separator: ", ")))"
-        } else {
-            enabledPredicate = "1"
-        }
-        var arguments: StatementArguments = []
-        for value in knownSources { arguments += [value] }
-        for value in enabledValues ?? [] { arguments += [value] }
+        let eligibility = try recoverableJobEligibility(db, enabledSources: enabledSources, capturePolicy: capturePolicy)
         return try Int.fetchOne(
             db,
             sql: """
@@ -498,14 +791,9 @@ public enum FTSRebuildPolicy {
             WHERE j.job_kind = 'fts'
               AND j.status IN ('pending', 'failed_retryable')
               AND (j.not_before IS NULL OR j.not_before <= datetime('now'))
-              AND (
-                s.id IS NULL
-                OR s.tier = 'skip'
-                OR s.source NOT IN (\(Array(repeating: "?", count: knownSources.count).joined(separator: ", ")))
-                OR \(enabledPredicate)
-              )
+              AND (\(eligibility.sql))
             """,
-            arguments: arguments
+            arguments: eligibility.arguments
         ) ?? 0
     }
 
@@ -514,22 +802,11 @@ public enum FTSRebuildPolicy {
     /// for rebuild finalization (docs/invariants.md #5).
     static func recoverableFtsBacklog(
         _ db: GRDB.Database,
-        enabledSources: Set<SourceName>? = nil
+        enabledSources: Set<SourceName>? = nil,
+        capturePolicy: CaptureFTSReadinessPolicy? = nil
     ) throws -> (count: Int, nextDelaySeconds: Int?, hasDeferredRetryable: Bool) {
         guard try tableExists(db, "session_index_jobs") else { return (0, nil, false) }
-        let knownSources = SourceName.allCases.map(\.rawValue)
-        let enabledValues = enabledSources?.map(\.rawValue).sorted()
-        let enabledPredicate: String
-        if let enabledValues {
-            enabledPredicate = enabledValues.isEmpty
-                ? "0"
-                : "s.source IN (\(Array(repeating: "?", count: enabledValues.count).joined(separator: ", ")))"
-        } else {
-            enabledPredicate = "1"
-        }
-        var arguments: StatementArguments = []
-        for value in knownSources { arguments += [value] }
-        for value in enabledValues ?? [] { arguments += [value] }
+        let eligibility = try recoverableJobEligibility(db, enabledSources: enabledSources, capturePolicy: capturePolicy)
         guard let row = try Row.fetchOne(
             db,
             sql: """
@@ -555,14 +832,9 @@ public enum FTSRebuildPolicy {
             LEFT JOIN sessions AS s ON s.id = j.session_id
             WHERE j.job_kind = 'fts'
               AND j.status IN ('pending', 'failed_retryable')
-              AND (
-                s.id IS NULL
-                OR s.tier = 'skip'
-                OR s.source NOT IN (\(Array(repeating: "?", count: knownSources.count).joined(separator: ", ")))
-                OR \(enabledPredicate)
-              )
+              AND (\(eligibility.sql))
             """,
-            arguments: arguments
+            arguments: eligibility.arguments
         ) else {
             return (0, nil, false)
         }

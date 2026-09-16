@@ -19,6 +19,63 @@ final class RemoteSyncCoordinatorTests: XCTestCase {
         return (runtime, root.appendingPathComponent("gate.sqlite"), root.appendingPathComponent("store"))
     }
 
+    func testSyncConfigurationsHonorExplicitSettingsPath() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("sync-settings-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let home = root.appendingPathComponent("home")
+        let defaultDirectory = home.appendingPathComponent(".engram")
+        try FileManager.default.createDirectory(at: defaultDirectory, withIntermediateDirectories: true)
+        try Data("{\"remoteOffloadEnabled\":false,\"livePublishEnabled\":false}".utf8)
+            .write(to: defaultDirectory.appendingPathComponent("settings.json"))
+        let selected = root.appendingPathComponent("selected-settings.json")
+        try JSONSerialization.data(withJSONObject: [
+            "remoteOffloadEnabled": true, "remoteOffloadBackend": "http",
+            "remoteOffloadServerURL": "https://sync.example.test", "remoteOffloadRequireTLS": false,
+            "livePublishEnabled": true, "liveIngestPeerId": "fixture-peer", "livePublishBatch": 17,
+        ]).write(to: selected)
+        let environment = ["ENGRAM_SETTINGS_PATH": selected.path]
+        let remote = RemoteSyncConfig.read(environment: environment, homeDirectory: home)
+        XCTAssertTrue(remote.enabled)
+        XCTAssertEqual(remote.backendKind, "http")
+        XCTAssertEqual(remote.serverURL?.absoluteString, "https://sync.example.test")
+        XCTAssertFalse(remote.requireTLS)
+        let live = LiveIngestConfig.read(environment: environment, homeDirectory: home)
+        XCTAssertTrue(live.publishEnabled)
+        XCTAssertEqual(live.resolvedPeer, "fixture-peer")
+        XCTAssertEqual(live.publishBatch, 17)
+        let overrides = environment.merging([
+            "ENGRAM_REMOTE_OFFLOAD_ENABLED": "false", "ENGRAM_LIVE_PUBLISH_ENABLED": "false",
+        ], uniquingKeysWith: { _, new in new })
+        XCTAssertFalse(RemoteSyncConfig.read(environment: overrides, homeDirectory: home).enabled)
+        XCTAssertFalse(LiveIngestConfig.read(environment: overrides, homeDirectory: home).publishEnabled)
+        XCTAssertFalse(RemoteSyncConfig.read(environment: ["ENGRAM_SETTINGS_PATH": ""], homeDirectory: home).enabled)
+        XCTAssertFalse(LiveIngestConfig.read(environment: ["ENGRAM_SETTINGS_PATH": ""], homeDirectory: home).publishEnabled)
+    }
+
+    func testSyncFactoriesAndStatusUseExplicitSettingsPath() async throws {
+        let paths = try makePaths()
+        let root = paths.runtime.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let settings = root.appendingPathComponent("selected-settings.json")
+        try JSONSerialization.data(withJSONObject: [
+            "remoteOffloadEnabled": true, "remoteOffloadStoreRoot": paths.store.path,
+            "livePublishEnabled": true, "liveIngestPeerId": "fixture-peer",
+        ]).write(to: settings)
+        let environment = [
+            "ENGRAM_SETTINGS_PATH": settings.path,
+            "CFFIXED_USER_HOME": root.appendingPathComponent("unused-home").path,
+            "ENGRAM_REMOTE_OFFLOAD_PEER": "fixture-peer",
+        ]
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        _ = try await gate.performWriteCommand(name: "fixtureMigrate") { try $0.migrate() }
+        XCTAssertNotNil(try RemoteSyncCoordinator.makeIfEnabled(gate: gate, environment: environment))
+        XCTAssertNotNil(try RemoteSyncCoordinator.makeLiveIfEnabled(gate: gate, environment: environment))
+        let status = try await EngramServiceCommandHandler.remoteSyncStatus(writerGate: gate, environment: environment)
+        XCTAssertTrue(status.enabled)
+        XCTAssertEqual(status.backendKind, "local")
+        XCTAssertEqual(status.localCount, 0)
+    }
+
     func testRemoteSyncConfigTLSOverrideFailsClosedAndFallsBackToSettings_repro() throws {
         let home = URL(fileURLWithPath: "/tmp", isDirectory: true)
             .appendingPathComponent("engram-remote-config-\(UUID().uuidString.prefix(8))", isDirectory: true)

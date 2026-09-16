@@ -12,6 +12,43 @@ import { describe, expect, it } from 'vitest';
 
 const repoRoot = resolve(import.meta.dirname, '../..');
 const script = resolve(repoRoot, 'scripts/check-archive-v2-safety.sh');
+const legacyCASPath =
+  'macos/EngramCoreWrite/ArchiveV2/ImmutableArchiveCAS.swift';
+const sharedCASPath = 'macos/EngramCaptureShared/ImmutableArchiveCAS.swift';
+const webAuthPath = 'macos/EngramRemoteServer/Core/WebAuthRoutes.swift';
+const webWritePath = 'macos/EngramRemoteServer/Core/WebWriteRoutes.swift';
+const webLogoutRoute = [
+  'router.delete("/web/api/auth") { request, _ in',
+  '  await logout(request, boundary: boundary, sessions: sessions)',
+  '}',
+].join('\n');
+const webAliasDeleteRoute = [
+  'router.delete("/web/api/settings/aliases") { request, _ in',
+  '  try await mutate(request, keys: removeKeys) { data in',
+  '    try await surface.removeAlias(try JSONDecoder().decode(EngramServiceWebRemoveAliasRequest.self, from: data))',
+  '  }',
+  '}',
+].join('\n');
+const webUnlinkDeleteRoute = [
+  'router.delete("/web/api/sessions/:id/link") { request, context in',
+  '  try await mutate(request, keys: unlinkKeys) { _ in',
+  '    try await surface.unlink(try EngramServiceWebUnlinkRequest(',
+  '      sessionId: try pathSessionID(context.parameters.get("id"))',
+  '    ))',
+  '  }',
+  '}',
+].join('\n');
+const webSuggestionDeleteRoute = [
+  'router.delete("/web/api/sessions/:id/suggestion") { request, context in',
+  '  try await mutate(request, keys: suggestionKeys) { data in',
+  '    let body = try JSONDecoder().decode(SuggestedParentBody.self, from: data)',
+  '    return try await surface.dismissSuggestion(try EngramServiceWebDismissSuggestionRequest(',
+  '      sessionId: try pathSessionID(context.parameters.get("id")),',
+  '      suggestedParentId: body.suggestedParentId',
+  '    ))',
+  '  }',
+  '}',
+].join('\n');
 
 function runGate(root = repoRoot): {
   status: number | null;
@@ -49,7 +86,7 @@ function write(root: string, relativePath: string, content: string): void {
   writeFileSync(target, content, 'utf8');
 }
 
-function makeSafeFixture(): string {
+function makeSafeFixture(casPath = legacyCASPath): string {
   const root = mkdtempSync(join(tmpdir(), 'engram-archive-v2-gate-'));
   write(
     root,
@@ -62,7 +99,7 @@ function makeSafeFixture(): string {
   );
   write(
     root,
-    'macos/EngramCoreWrite/ArchiveV2/ImmutableArchiveCAS.swift',
+    casPath,
     [
       'guard Darwin.unlink(objectURL.path) == 0 else {',
       '  throw TestError()',
@@ -129,6 +166,79 @@ describe('archive v2 release safety gate', () => {
   it('accepts only the explicit archive cleanup and reclamation sites', () => {
     const result = runGate(makeSafeFixture());
     expect(result.status).toBe(0);
+  });
+
+  it('accepts the moved shared CAS cleanup at its exact new path', () => {
+    expect(runGate(makeSafeFixture(sharedCASPath)).status).toBe(0);
+  });
+
+  it('rejects duplicate object unlink across old and shared CAS paths', () => {
+    const root = makeSafeFixture();
+    write(root, sharedCASPath, readFileSync(join(root, legacyCASPath), 'utf8'));
+
+    const result = runGate(root);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toContain(
+      'ImmutableArchiveCAS object unlink must occur exactly once',
+    );
+  });
+
+  it('rejects a duplicate object unlink in the moved shared CAS', () => {
+    const root = makeSafeFixture(sharedCASPath);
+    const content = readFileSync(join(root, sharedCASPath), 'utf8');
+    write(root, sharedCASPath, `${content}\nDarwin.unlink(objectURL.path)\n`);
+
+    const result = runGate(root);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toContain(
+      'ImmutableArchiveCAS object unlink must occur exactly once',
+    );
+  });
+
+  it.each([
+    ['ExactSourceCapturer.swift', 'Darwin.unlink(sourceURL.path)'],
+    ['ArchiveCatalog.swift', 'unlinkat(directoryFD, sourceName, 0)'],
+    [
+      'ArchiveCatalogMigrations.swift',
+      'try FileManager.default.removeItem(at: sourceURL)',
+    ],
+    [
+      'ArchiveLocatorClassifier.swift',
+      'try receiver.removeItem(at: sourceURL)',
+    ],
+    ['ImmutableArchiveCAS.swift', 'Darwin.unlink(sourceURL.path)'],
+    ['ArchiveSourceReclaimer.swift', 'Darwin.unlink(quarantineURL.path)'],
+  ])(
+    'rejects forbidden primitives in shared capture file %s',
+    (filename, content) => {
+      const root = makeSafeFixture();
+      write(root, `macos/EngramCaptureShared/${filename}`, `${content}\n`);
+
+      const result = runGate(root);
+
+      expect(result.status).not.toBe(0);
+      expect(`${result.stdout}${result.stderr}`).toContain(
+        'forbidden archive deletion primitive',
+      );
+    },
+  );
+
+  it('rejects legacy coupling in the shared capture directory', () => {
+    const root = makeSafeFixture();
+    write(
+      root,
+      'macos/EngramCaptureShared/ArchiveCatalog.swift',
+      'try OffloadRepo.commitOffloaded(db)\n',
+    );
+
+    const result = runGate(root);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toContain(
+      'legacy offload coupling',
+    );
   });
 
   it('rejects a duplicate quarantine unlink in ArchiveSourceReclaimer', () => {
@@ -322,6 +432,184 @@ describe('archive v2 release safety gate', () => {
     expect(`${result.stdout}${result.stderr}`).toContain(
       'legacy offload coupling',
     );
+  });
+
+  it('accepts the single exact Web logout route and no archive mutation', () => {
+    const root = makeSafeFixture();
+    write(root, webAuthPath, webLogoutRoute);
+    expect(runGate(root).status).toBe(0);
+  });
+
+  it.each([
+    'macos/EngramRemoteServer/Core/OtherRoutes.swift',
+    'macos/EngramRemoteServer/Nested/Core/WebAuthRoutes.swift',
+    'macos/EngramRemoteServer/Nested/macos/EngramRemoteServer/Core/WebAuthRoutes.swift',
+  ])('rejects the Web logout route at the wrong file %s', (path) => {
+    const root = makeSafeFixture();
+    write(root, path, webLogoutRoute);
+    expect(runGate(root).status).not.toBe(0);
+  });
+
+  it.each(['/web/api/sessions', '/v2/archive/**'])(
+    'rejects a Web logout wrapper at the wrong path %s',
+    (path) => {
+      const root = makeSafeFixture();
+      write(root, webAuthPath, webLogoutRoute.replace('/web/api/auth', path));
+      expect(runGate(root).status).not.toBe(0);
+    },
+  );
+
+  it.each([
+    'await deleteArchive()\n  await logout(request, boundary: boundary, sessions: sessions)',
+    'await logout(request, boundary: other, sessions: sessions)',
+    'return ok()',
+  ])('rejects changed Web logout bodies: %s', (body) => {
+    const root = makeSafeFixture();
+    write(
+      root,
+      webAuthPath,
+      webLogoutRoute.replace(
+        'await logout(request, boundary: boundary, sessions: sessions)',
+        body,
+      ),
+    );
+    expect(runGate(root).status).not.toBe(0);
+  });
+
+  it('rejects duplicate Web logout registration', () => {
+    const root = makeSafeFixture();
+    write(root, webAuthPath, `${webLogoutRoute}\n${webLogoutRoute}`);
+    expect(runGate(root).status).not.toBe(0);
+  });
+
+  it('rejects Web logout side effects hidden after a comment brace', () => {
+    const root = makeSafeFixture();
+    write(
+      root,
+      webAuthPath,
+      webLogoutRoute.replace(
+        'await logout(request, boundary: boundary, sessions: sessions)',
+        [
+          'await logout(request, boundary: boundary, sessions: sessions)',
+          '// }',
+          'await deleteArchive()',
+          'return await logout(request, boundary: boundary, sessions: sessions)',
+        ].join('\n'),
+      ),
+    );
+    expect(runGate(root).status).not.toBe(0);
+  });
+
+  it('rejects method-based Web logout registration even at the allowed path', () => {
+    const root = makeSafeFixture();
+    write(
+      root,
+      webAuthPath,
+      webLogoutRoute.replace(
+        'router.delete("/web/api/auth")',
+        'router.on("/web/api/auth", method: .delete)',
+      ),
+    );
+    expect(runGate(root).status).not.toBe(0);
+  });
+
+  it('accepts the single exact Web alias DELETE route', () => {
+    const root = makeSafeFixture();
+    write(root, webWritePath, webAliasDeleteRoute);
+    expect(runGate(root).status).toBe(0);
+  });
+
+  it('rejects a Web alias DELETE at the wrong file', () => {
+    const root = makeSafeFixture();
+    write(root, webAuthPath, webAliasDeleteRoute);
+    expect(runGate(root).status).not.toBe(0);
+  });
+
+  it('rejects a Web alias DELETE at the wrong path', () => {
+    const root = makeSafeFixture();
+    write(
+      root,
+      webWritePath,
+      webAliasDeleteRoute.replace(
+        '/web/api/settings/aliases',
+        '/v2/archive/**',
+      ),
+    );
+    expect(runGate(root).status).not.toBe(0);
+  });
+
+  it('rejects duplicate Web alias DELETE registration', () => {
+    const root = makeSafeFixture();
+    write(root, webWritePath, `${webAliasDeleteRoute}\n${webAliasDeleteRoute}`);
+    expect(runGate(root).status).not.toBe(0);
+  });
+
+  it('accepts the exact Web unlink and suggestion DELETE routes', () => {
+    const root = makeSafeFixture();
+    write(
+      root,
+      webWritePath,
+      `${webAliasDeleteRoute}\n${webUnlinkDeleteRoute}\n${webSuggestionDeleteRoute}`,
+    );
+    expect(runGate(root).status).toBe(0);
+  });
+
+  it('rejects a Web unlink DELETE at the wrong file', () => {
+    const root = makeSafeFixture();
+    write(root, webAuthPath, webUnlinkDeleteRoute);
+    expect(runGate(root).status).not.toBe(0);
+  });
+
+  it('rejects a Web unlink DELETE at the wrong path', () => {
+    const root = makeSafeFixture();
+    write(
+      root,
+      webWritePath,
+      webUnlinkDeleteRoute.replace(
+        '/web/api/sessions/:id/link',
+        '/v2/archive/**',
+      ),
+    );
+    expect(runGate(root).status).not.toBe(0);
+  });
+
+  it('rejects duplicate Web unlink DELETE registration', () => {
+    const root = makeSafeFixture();
+    write(
+      root,
+      webWritePath,
+      `${webUnlinkDeleteRoute}\n${webUnlinkDeleteRoute}`,
+    );
+    expect(runGate(root).status).not.toBe(0);
+  });
+
+  it('rejects a Web suggestion DELETE at the wrong file', () => {
+    const root = makeSafeFixture();
+    write(root, webAuthPath, webSuggestionDeleteRoute);
+    expect(runGate(root).status).not.toBe(0);
+  });
+
+  it('rejects a Web suggestion DELETE at the wrong path', () => {
+    const root = makeSafeFixture();
+    write(
+      root,
+      webWritePath,
+      webSuggestionDeleteRoute.replace(
+        '/web/api/sessions/:id/suggestion',
+        '/v2/archive/**',
+      ),
+    );
+    expect(runGate(root).status).not.toBe(0);
+  });
+
+  it('rejects duplicate Web suggestion DELETE registration', () => {
+    const root = makeSafeFixture();
+    write(
+      root,
+      webWritePath,
+      `${webSuggestionDeleteRoute}\n${webSuggestionDeleteRoute}`,
+    );
+    expect(runGate(root).status).not.toBe(0);
   });
 
   it('rejects any v2 DELETE handler in the full remote-server surface', () => {

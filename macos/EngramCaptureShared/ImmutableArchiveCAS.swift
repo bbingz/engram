@@ -1,0 +1,658 @@
+import Darwin
+#if !ENGRAM_COLLECTOR_CORE
+import EngramCoreRead
+#endif
+import Foundation
+
+public enum ArchivePublishResult: Equatable, Sendable {
+    case published
+    case alreadyPresent
+}
+
+public enum ArchiveRemovalResult: Equatable, Sendable {
+    case removed(byteCount: Int64)
+    case alreadyMissing
+}
+
+public enum ImmutableArchiveCASError: Error, Equatable, Sendable {
+    case invalidSHA256(String)
+    case digestMismatch(expected: String, actual: String)
+    case existingContentConflict(expected: String, actual: String)
+    case unsafeExistingPath(String)
+    case io(operation: String, code: Int32)
+}
+
+public enum ImmutableArchiveCASReadLimitError: Error, Equatable, Sendable {
+    case invalidMaximumByteCount
+    case exceeded(maximumByteCount: Int64)
+}
+
+struct ImmutableArchiveCASTestHooks: Sendable {
+    let afterExistingFileVerified: (@Sendable (URL) throws -> Void)?
+    let afterDirectoryFsync: (@Sendable (URL) -> Void)?
+    let afterFinalLinkPublished: (@Sendable (URL) throws -> Void)?
+    let beforeObjectUnlink: (@Sendable (URL) throws -> Void)?
+    let beforeBoundedReadAllocation: (@Sendable (URL) throws -> Void)?
+    let afterBoundedReadChunk: (@Sendable (URL, Int) throws -> Void)?
+    let afterVolumeStat: (@Sendable (_ descriptor: Int32, _ measuredBytes: Int64) throws -> Int64)?
+
+    init(
+        afterExistingFileVerified: (@Sendable (URL) throws -> Void)? = nil,
+        afterDirectoryFsync: (@Sendable (URL) -> Void)? = nil,
+        afterFinalLinkPublished: (@Sendable (URL) throws -> Void)? = nil,
+        beforeObjectUnlink: (@Sendable (URL) throws -> Void)? = nil,
+        beforeBoundedReadAllocation: (@Sendable (URL) throws -> Void)? = nil,
+        afterBoundedReadChunk: (@Sendable (URL, Int) throws -> Void)? = nil,
+        afterVolumeStat: (@Sendable (_ descriptor: Int32, _ measuredBytes: Int64) throws -> Int64)? = nil
+    ) {
+        self.afterExistingFileVerified = afterExistingFileVerified
+        self.afterDirectoryFsync = afterDirectoryFsync
+        self.afterFinalLinkPublished = afterFinalLinkPublished
+        self.beforeObjectUnlink = beforeObjectUnlink
+        self.beforeBoundedReadAllocation = beforeBoundedReadAllocation
+        self.afterBoundedReadChunk = afterBoundedReadChunk
+        self.afterVolumeStat = afterVolumeStat
+    }
+}
+
+/// Owner-only, file-backed content-addressed storage for exact archive bytes.
+/// Final names are published with `link(2)`, so no operation can replace an
+/// existing object. The only unlink performed by this type targets its unique
+/// temporary files.
+public struct ImmutableArchiveCAS: Sendable {
+    private enum Kind {
+        case object
+        case manifest
+
+        var directory: String {
+            switch self {
+            case .object: "objects/sha256"
+            case .manifest: "manifests/sha256"
+            }
+        }
+
+        var suffix: String {
+            switch self {
+            case .object: ""
+            case .manifest: ".json"
+            }
+        }
+    }
+
+    struct StagedContent: Equatable, Sendable {
+        fileprivate let temporaryURL: URL
+        fileprivate let finalURL: URL
+        fileprivate let expectedSHA256: String
+        fileprivate let device: UInt64
+        fileprivate let inode: UInt64
+        fileprivate let owner: uid_t
+        fileprivate let mode: mode_t
+    }
+
+    private let root: URL
+    private let testHooks: ImmutableArchiveCASTestHooks
+
+    // Preserve the caller's path for the snapshot helper's no-follow walk.
+    // Foundation standardization may replace /private/var with the /var symlink.
+    let snapshotStagingParent: URL
+
+    public init(root: URL) throws {
+        try self.init(root: root, testHooks: ImmutableArchiveCASTestHooks())
+    }
+
+    init(root: URL, testHooks: ImmutableArchiveCASTestHooks) throws {
+        self.root = root.standardizedFileURL
+        self.snapshotStagingParent = root.appendingPathComponent("tmp", isDirectory: true)
+        self.testHooks = testHooks
+        try Self.ensureDirectory(self.root, afterFsync: testHooks.afterDirectoryFsync)
+        try Self.ensureDirectory(
+            self.root.appendingPathComponent("objects", isDirectory: true),
+            afterFsync: testHooks.afterDirectoryFsync
+        )
+        try Self.ensureDirectory(
+            self.root.appendingPathComponent("objects/sha256", isDirectory: true),
+            afterFsync: testHooks.afterDirectoryFsync
+        )
+        try Self.ensureDirectory(
+            self.root.appendingPathComponent("manifests", isDirectory: true),
+            afterFsync: testHooks.afterDirectoryFsync
+        )
+        try Self.ensureDirectory(
+            self.root.appendingPathComponent("manifests/sha256", isDirectory: true),
+            afterFsync: testHooks.afterDirectoryFsync
+        )
+        try Self.ensureDirectory(
+            self.root.appendingPathComponent("tmp", isDirectory: true),
+            afterFsync: testHooks.afterDirectoryFsync
+        )
+    }
+
+    public func publishObject(raw: Data, expectedSHA256: String) throws -> ArchivePublishResult {
+        let staged = try stageObject(raw: raw, expectedSHA256: expectedSHA256)
+        defer { try? discardStaged(staged) }
+        return try publishStaged(staged)
+    }
+
+    /// Read-only capacity of this CAS root's safely opened volume descriptor.
+    /// A caller-supplied path must never substitute for the private root.
+    public func availableVolumeBytes() throws -> Int64 {
+        try Task.checkCancellation()
+        let path = root.path
+        var initial = stat()
+        guard Darwin.lstat(path, &initial) == 0 else { throw Self.io("lstat-volume-root", code: errno) }
+        guard Self.isSafeVolumeRoot(initial) else { throw ImmutableArchiveCASError.unsafeExistingPath(path) }
+        let descriptor = Darwin.open(path, O_RDONLY | O_DIRECTORY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            if errno == ELOOP || errno == ENOTDIR { throw ImmutableArchiveCASError.unsafeExistingPath(path) }
+            throw Self.io("open-volume-root", code: errno)
+        }
+        defer { _ = Darwin.close(descriptor) }
+        var opened = stat()
+        guard Darwin.fstat(descriptor, &opened) == 0 else { throw Self.io("fstat-volume-root", code: errno) }
+        guard Self.isSafeVolumeRoot(opened), opened.st_dev == initial.st_dev, opened.st_ino == initial.st_ino else {
+            throw ImmutableArchiveCASError.unsafeExistingPath(path)
+        }
+        var volume = statfs()
+        guard Darwin.fstatfs(descriptor, &volume) == 0 else { throw Self.io("fstatfs-volume-root", code: errno) }
+        guard let blocks = Int64(exactly: volume.f_bavail), let blockSize = Int64(exactly: volume.f_bsize), blockSize > 0 else {
+            throw Self.io("volume-capacity", code: EOVERFLOW)
+        }
+        let capacity = blocks.multipliedReportingOverflow(by: blockSize)
+        guard !capacity.overflow, capacity.partialValue >= 0 else { throw Self.io("volume-capacity", code: EOVERFLOW) }
+        // Tests may simulate pressure only after measuring the real safe root
+        // FD. They cannot bypass final identity, mode or cancellation checks.
+        let available = try testHooks.afterVolumeStat?(descriptor, capacity.partialValue) ?? capacity.partialValue
+        try Task.checkCancellation()
+        var finalDescriptor = stat()
+        var finalPath = stat()
+        guard Darwin.fstat(descriptor, &finalDescriptor) == 0 else { throw Self.io("fstat-volume-root-final", code: errno) }
+        guard Darwin.lstat(path, &finalPath) == 0 else { throw Self.io("lstat-volume-root-final", code: errno) }
+        guard Self.isSafeVolumeRoot(finalDescriptor), Self.isSafeVolumeRoot(finalPath),
+              finalDescriptor.st_dev == opened.st_dev, finalDescriptor.st_ino == opened.st_ino,
+              finalPath.st_dev == opened.st_dev, finalPath.st_ino == opened.st_ino else {
+            throw ImmutableArchiveCASError.unsafeExistingPath(path)
+        }
+        guard available >= 0 else { throw Self.io("volume-capacity", code: EINVAL) }
+        try Task.checkCancellation()
+        return available
+    }
+
+    private static func isSafeVolumeRoot(_ info: stat) -> Bool {
+        (info.st_mode & S_IFMT) == S_IFDIR && info.st_uid == geteuid() && (info.st_mode & 0o7777) == 0o700
+    }
+
+    func stageObject(raw: Data, expectedSHA256: String) throws -> StagedContent {
+        try stage(raw, expectedSHA256: expectedSHA256, kind: .object)
+    }
+
+    public func readObject(sha256: String) throws -> Data {
+        try read(sha256: sha256, kind: .object)
+    }
+
+    /// Reject oversized files before allocation and bound accumulated bytes if
+    /// the file grows while reading. The legacy overload remains unbounded.
+    public func readObject(sha256: String, maximumByteCount: Int64) throws -> Data {
+        try read(sha256: sha256, kind: .object, maximumByteCount: maximumByteCount)
+    }
+
+    public func removeObject(sha256: String) throws -> ArchiveRemovalResult {
+        try Self.validate(sha256)
+        let objectURL = try url(for: sha256, kind: .object, createShard: false)
+        var initial = stat()
+        guard Darwin.lstat(objectURL.path, &initial) == 0 else {
+            if errno == ENOENT { return .alreadyMissing }
+            throw Self.io("lstat-remove-object", code: errno)
+        }
+        guard Self.isSafeFinalFile(initial) else {
+            throw ImmutableArchiveCASError.unsafeExistingPath(objectURL.path)
+        }
+        let bytes = try Self.readVerified(objectURL, expectedSHA256: sha256)
+        try testHooks.beforeObjectUnlink?(objectURL)
+        var final = stat()
+        guard Darwin.lstat(objectURL.path, &final) == 0 else {
+            if errno == ENOENT { return .alreadyMissing }
+            throw Self.io("lstat-remove-object-final", code: errno)
+        }
+        guard Self.isSafeFinalFile(final), Self.sameFileIdentity(initial, final) else {
+            throw ImmutableArchiveCASError.unsafeExistingPath(objectURL.path)
+        }
+        guard Darwin.unlink(objectURL.path) == 0 else {
+            if errno == ENOENT { return .alreadyMissing }
+            throw Self.io("unlink-object", code: errno)
+        }
+        try Self.fsyncDirectory(
+            objectURL.deletingLastPathComponent(),
+            afterFsync: testHooks.afterDirectoryFsync
+        )
+        return .removed(byteCount: Int64(bytes.count))
+    }
+
+    public func publishManifest(_ bytes: Data, expectedSHA256: String) throws -> ArchivePublishResult {
+        let staged = try stageManifest(bytes, expectedSHA256: expectedSHA256)
+        defer { try? discardStaged(staged) }
+        return try publishStaged(staged)
+    }
+
+    func stageManifest(_ bytes: Data, expectedSHA256: String) throws -> StagedContent {
+        try stage(bytes, expectedSHA256: expectedSHA256, kind: .manifest)
+    }
+
+    public func readManifest(sha256: String) throws -> Data {
+        try read(sha256: sha256, kind: .manifest)
+    }
+
+    public func readManifest(sha256: String, maximumByteCount: Int64) throws -> Data {
+        try read(sha256: sha256, kind: .manifest, maximumByteCount: maximumByteCount)
+    }
+
+    private func stage(
+        _ bytes: Data,
+        expectedSHA256: String,
+        kind: Kind
+    ) throws -> StagedContent {
+        try Self.validate(expectedSHA256)
+        let actual = ArchiveV2Hash.sha256(bytes)
+        guard actual == expectedSHA256 else {
+            throw ImmutableArchiveCASError.digestMismatch(expected: expectedSHA256, actual: actual)
+        }
+
+        let finalURL = try url(for: expectedSHA256, kind: kind, createShard: true)
+        let temporaryParent = root.appendingPathComponent("tmp", isDirectory: true)
+        let temporaryURL = temporaryParent.appendingPathComponent(
+            ".engram-archive-\(UUID().uuidString).tmp",
+            isDirectory: false
+        )
+
+        let fd = Darwin.open(
+            temporaryURL.path,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            S_IRUSR | S_IWUSR
+        )
+        guard fd >= 0 else {
+            throw Self.io("open-temp", code: errno)
+        }
+        var descriptor = fd
+        var temporaryExists = true
+        defer {
+            if descriptor >= 0 {
+                _ = Darwin.close(descriptor)
+            }
+            if temporaryExists {
+                _ = Darwin.unlink(temporaryURL.path)
+            }
+        }
+
+        guard Darwin.fchmod(descriptor, S_IRUSR | S_IWUSR) == 0 else {
+            throw Self.io("chmod-temp", code: errno)
+        }
+        try Self.writeAll(bytes, to: descriptor)
+        guard Darwin.fsync(descriptor) == 0 else {
+            throw Self.io("fsync-temp", code: errno)
+        }
+        guard Darwin.close(descriptor) == 0 else {
+            descriptor = -1
+            throw Self.io("close-temp", code: errno)
+        }
+        descriptor = -1
+
+        var stagedInfo = stat()
+        guard Darwin.lstat(temporaryURL.path, &stagedInfo) == 0 else {
+            throw Self.io("lstat-staged", code: errno)
+        }
+        guard Self.isSafeFinalFile(stagedInfo) else {
+            throw ImmutableArchiveCASError.unsafeExistingPath(temporaryURL.path)
+        }
+        try Self.fsyncDirectory(
+            temporaryParent,
+            afterFsync: testHooks.afterDirectoryFsync
+        )
+        temporaryExists = false
+        return StagedContent(
+            temporaryURL: temporaryURL,
+            finalURL: finalURL,
+            expectedSHA256: expectedSHA256,
+            device: UInt64(stagedInfo.st_dev),
+            inode: UInt64(stagedInfo.st_ino),
+            owner: stagedInfo.st_uid,
+            mode: stagedInfo.st_mode
+        )
+    }
+
+    func publishStaged(_ staged: StagedContent) throws -> ArchivePublishResult {
+        try validateStaged(staged, expectedLinkCount: 1)
+        let parent = staged.finalURL.deletingLastPathComponent()
+
+        if Darwin.link(staged.temporaryURL.path, staged.finalURL.path) == 0 {
+            do {
+                try testHooks.afterFinalLinkPublished?(staged.finalURL)
+            } catch {
+                try discardStaged(staged, expectedLinkCount: 2)
+                throw error
+            }
+            try discardStaged(staged, expectedLinkCount: 2)
+            try Self.fsyncDirectory(
+                parent,
+                afterFsync: testHooks.afterDirectoryFsync
+            )
+            return .published
+        }
+
+        let linkError = errno
+        try discardStaged(staged)
+        guard linkError == EEXIST else {
+            throw Self.io("link-final", code: linkError)
+        }
+
+        do {
+            _ = try Self.readVerified(
+                staged.finalURL,
+                expectedSHA256: staged.expectedSHA256,
+                fsyncBeforeAccept: true,
+                afterVerified: testHooks.afterExistingFileVerified
+            )
+            try Self.fsyncDirectory(
+                parent,
+                afterFsync: testHooks.afterDirectoryFsync
+            )
+            return .alreadyPresent
+        } catch ImmutableArchiveCASError.digestMismatch(_, let existingActual) {
+            throw ImmutableArchiveCASError.existingContentConflict(
+                expected: staged.expectedSHA256,
+                actual: existingActual
+            )
+        }
+    }
+
+    func discardStaged(_ staged: StagedContent) throws {
+        try discardStaged(staged, expectedLinkCount: 1)
+    }
+
+    private func discardStaged(
+        _ staged: StagedContent,
+        expectedLinkCount: nlink_t
+    ) throws {
+        var info = stat()
+        guard Darwin.lstat(staged.temporaryURL.path, &info) == 0 else {
+            if errno == ENOENT { return }
+            throw Self.io("lstat-discard-staged", code: errno)
+        }
+        try validateStaged(staged, info: info, expectedLinkCount: expectedLinkCount)
+        if expectedLinkCount == 2 {
+            var finalInfo = stat()
+            guard Darwin.lstat(staged.finalURL.path, &finalInfo) == 0,
+                  UInt64(finalInfo.st_dev) == staged.device,
+                  UInt64(finalInfo.st_ino) == staged.inode,
+                  finalInfo.st_uid == staged.owner,
+                  finalInfo.st_mode == staged.mode,
+                  finalInfo.st_nlink == expectedLinkCount else {
+                throw ImmutableArchiveCASError.unsafeExistingPath(staged.finalURL.path)
+            }
+        }
+        guard Darwin.unlink(staged.temporaryURL.path) == 0 else {
+            if errno == ENOENT { return }
+            throw Self.io("unlink-staged", code: errno)
+        }
+        try Self.fsyncDirectory(
+            staged.temporaryURL.deletingLastPathComponent(),
+            afterFsync: testHooks.afterDirectoryFsync
+        )
+    }
+
+    private func validateStaged(_ staged: StagedContent, expectedLinkCount: nlink_t) throws {
+        var info = stat()
+        guard Darwin.lstat(staged.temporaryURL.path, &info) == 0 else {
+            throw Self.io("lstat-staged", code: errno)
+        }
+        try validateStaged(staged, info: info, expectedLinkCount: expectedLinkCount)
+    }
+
+    private func validateStaged(
+        _ staged: StagedContent,
+        info: stat,
+        expectedLinkCount: nlink_t
+    ) throws {
+        let temporaryParent = root.appendingPathComponent("tmp", isDirectory: true)
+        guard staged.temporaryURL.deletingLastPathComponent() == temporaryParent,
+              UInt64(info.st_dev) == staged.device,
+              UInt64(info.st_ino) == staged.inode,
+              info.st_uid == staged.owner,
+              info.st_mode == staged.mode,
+              info.st_nlink == expectedLinkCount else {
+            throw ImmutableArchiveCASError.unsafeExistingPath(staged.temporaryURL.path)
+        }
+    }
+
+    private func read(sha256: String, kind: Kind, maximumByteCount: Int64? = nil) throws -> Data {
+        if let maximumByteCount {
+            guard maximumByteCount >= 0 else {
+                throw ImmutableArchiveCASReadLimitError.invalidMaximumByteCount
+            }
+            try Task.checkCancellation()
+        }
+        try Self.validate(sha256)
+        return try Self.readVerified(
+            url(for: sha256, kind: kind, createShard: false),
+            expectedSHA256: sha256,
+            afterVerified: maximumByteCount == nil ? nil : testHooks.afterExistingFileVerified,
+            maximumByteCount: maximumByteCount,
+            beforeAllocation: maximumByteCount == nil ? nil : testHooks.beforeBoundedReadAllocation,
+            afterReadChunk: maximumByteCount == nil ? nil : testHooks.afterBoundedReadChunk
+        )
+    }
+
+    private func url(for digest: String, kind: Kind, createShard: Bool) throws -> URL {
+        try Self.validate(digest)
+        let base = root.appendingPathComponent(kind.directory, isDirectory: true)
+        let shard = base.appendingPathComponent(String(digest.prefix(2)), isDirectory: true)
+        if createShard {
+            try Self.ensureDirectory(
+                shard,
+                afterFsync: testHooks.afterDirectoryFsync
+            )
+        }
+        return shard.appendingPathComponent("\(digest)\(kind.suffix)", isDirectory: false)
+    }
+
+    private static func validate(_ digest: String) throws {
+        guard ArchiveV2Hash.isValidSHA256(digest) else {
+            throw ImmutableArchiveCASError.invalidSHA256(digest)
+        }
+    }
+
+    private static func ensureDirectory(
+        _ url: URL,
+        afterFsync: (@Sendable (URL) -> Void)?
+    ) throws {
+        let path = url.path
+        let created: Bool
+        if Darwin.mkdir(path, S_IRWXU) == 0 {
+            created = true
+        } else if errno == EEXIST {
+            created = false
+        } else {
+            throw io("mkdir", code: errno)
+        }
+        var info = stat()
+        guard Darwin.lstat(path, &info) == 0 else {
+            throw io("lstat-directory", code: errno)
+        }
+        guard (info.st_mode & S_IFMT) == S_IFDIR,
+              info.st_uid == geteuid() else {
+            throw ImmutableArchiveCASError.unsafeExistingPath(path)
+        }
+        guard Darwin.chmod(path, S_IRWXU) == 0 else {
+            throw io("chmod-directory", code: errno)
+        }
+        try fsyncDirectory(url, afterFsync: afterFsync)
+        if created {
+            try fsyncDirectory(
+                url.deletingLastPathComponent(),
+                afterFsync: afterFsync
+            )
+        }
+    }
+
+    private static func writeAll(_ data: Data, to fd: Int32) throws {
+        try data.withUnsafeBytes { rawBuffer in
+            guard let base = rawBuffer.baseAddress else { return }
+            var written = 0
+            while written < rawBuffer.count {
+                let result = Darwin.write(
+                    fd,
+                    base.advanced(by: written),
+                    rawBuffer.count - written
+                )
+                if result < 0, errno == EINTR {
+                    continue
+                }
+                guard result > 0 else {
+                    throw io("write-temp", code: result < 0 ? errno : EIO)
+                }
+                written += result
+            }
+        }
+    }
+
+    private static func readVerified(
+        _ url: URL,
+        expectedSHA256: String,
+        fsyncBeforeAccept: Bool = false,
+        afterVerified: (@Sendable (URL) throws -> Void)? = nil,
+        maximumByteCount: Int64? = nil,
+        beforeAllocation: (@Sendable (URL) throws -> Void)? = nil,
+        afterReadChunk: (@Sendable (URL, Int) throws -> Void)? = nil
+    ) throws -> Data {
+        var pathInfo = stat()
+        guard Darwin.lstat(url.path, &pathInfo) == 0 else {
+            throw io("lstat-final", code: errno)
+        }
+        guard Self.isSafeFinalFile(pathInfo) else {
+            throw ImmutableArchiveCASError.unsafeExistingPath(url.path)
+        }
+
+        let fd = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else {
+            if errno == ELOOP {
+                throw ImmutableArchiveCASError.unsafeExistingPath(url.path)
+            }
+            throw io("open-final", code: errno)
+        }
+        defer { _ = Darwin.close(fd) }
+
+        var descriptorInfo = stat()
+        guard Darwin.fstat(fd, &descriptorInfo) == 0 else {
+            throw io("fstat-final", code: errno)
+        }
+        guard Self.isSafeFinalFile(descriptorInfo),
+              descriptorInfo.st_ino == pathInfo.st_ino,
+              descriptorInfo.st_dev == pathInfo.st_dev else {
+            throw ImmutableArchiveCASError.unsafeExistingPath(url.path)
+        }
+        if let maximumByteCount {
+            try Task.checkCancellation()
+            guard descriptorInfo.st_size <= maximumByteCount else {
+                throw ImmutableArchiveCASReadLimitError.exceeded(maximumByteCount: maximumByteCount)
+            }
+        }
+
+        try beforeAllocation?(url)
+        var data = Data()
+        if descriptorInfo.st_size > 0 {
+            data.reserveCapacity(Int(descriptorInfo.st_size))
+        }
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
+            let readLimit: Int
+            if let maximumByteCount {
+                try Task.checkCancellation()
+                let remaining = maximumByteCount - Int64(data.count)
+                // One extra byte detects growth at the budget's EOF boundary;
+                // it is rejected before it can enter the accumulated Data.
+                readLimit = remaining < Int64(buffer.count) ? Int(remaining) + 1 : buffer.count
+            } else {
+                readLimit = buffer.count
+            }
+            let count = buffer.withUnsafeMutableBytes { rawBuffer in
+                Darwin.read(fd, rawBuffer.baseAddress, readLimit)
+            }
+            if count < 0, errno == EINTR {
+                continue
+            }
+            guard count >= 0 else {
+                throw io("read-final", code: errno)
+            }
+            if count == 0 { break }
+            if let maximumByteCount, Int64(count) > maximumByteCount - Int64(data.count) {
+                throw ImmutableArchiveCASReadLimitError.exceeded(maximumByteCount: maximumByteCount)
+            }
+            data.append(buffer, count: count)
+            try afterReadChunk?(url, data.count)
+        }
+
+        if maximumByteCount != nil { try Task.checkCancellation() }
+        let actual = ArchiveV2Hash.sha256(data)
+        guard actual == expectedSHA256 else {
+            throw ImmutableArchiveCASError.digestMismatch(
+                expected: expectedSHA256,
+                actual: actual
+            )
+        }
+        if fsyncBeforeAccept, Darwin.fsync(fd) != 0 {
+            throw io("fsync-final", code: errno)
+        }
+        try afterVerified?(url)
+
+        var finalDescriptorInfo = stat()
+        guard Darwin.fstat(fd, &finalDescriptorInfo) == 0 else {
+            throw io("fstat-final-after-read", code: errno)
+        }
+        var finalPathInfo = stat()
+        guard Darwin.lstat(url.path, &finalPathInfo) == 0 else {
+            throw io("lstat-final-after-read", code: errno)
+        }
+        guard Self.isSafeFinalFile(finalDescriptorInfo),
+              Self.isSafeFinalFile(finalPathInfo),
+              Self.sameFileIdentity(descriptorInfo, finalDescriptorInfo),
+              Self.sameFileIdentity(finalDescriptorInfo, finalPathInfo) else {
+            throw ImmutableArchiveCASError.unsafeExistingPath(url.path)
+        }
+        if let maximumByteCount {
+            guard finalDescriptorInfo.st_size <= maximumByteCount,
+                  finalPathInfo.st_size <= maximumByteCount else {
+                throw ImmutableArchiveCASReadLimitError.exceeded(maximumByteCount: maximumByteCount)
+            }
+            try Task.checkCancellation()
+        }
+        return data
+    }
+
+    private static func fsyncDirectory(
+        _ url: URL,
+        afterFsync: (@Sendable (URL) -> Void)?
+    ) throws {
+        let fd = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else {
+            throw io("open-directory-fsync", code: errno)
+        }
+        defer { _ = Darwin.close(fd) }
+        guard Darwin.fsync(fd) == 0 else {
+            throw io("fsync-directory", code: errno)
+        }
+        afterFsync?(url)
+    }
+
+    private static func io(_ operation: String, code: Int32) -> ImmutableArchiveCASError {
+        .io(operation: operation, code: code)
+    }
+
+    private static func isSafeFinalFile(_ info: stat) -> Bool {
+        (info.st_mode & S_IFMT) == S_IFREG
+            && info.st_uid == geteuid()
+            && info.st_nlink == 1
+            && Int(info.st_mode & 0o777) == 0o600
+    }
+
+    private static func sameFileIdentity(_ lhs: stat, _ rhs: stat) -> Bool {
+        lhs.st_dev == rhs.st_dev && lhs.st_ino == rhs.st_ino
+    }
+}

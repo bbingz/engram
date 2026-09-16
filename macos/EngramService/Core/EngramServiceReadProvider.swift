@@ -2,9 +2,30 @@ import Darwin
 import Foundation
 import GRDB
 import EngramCoreRead
+import EngramCoreWrite
+
+/// Extra authorized-session predicates for Web ranked search.
+/// Built only inside EngramService; never Codable / IPC / raw SQL from a client.
+struct EngramServiceSearchScope: @unchecked Sendable {
+    let sql: String
+    let arguments: [DatabaseValueConvertible]
+
+    static let unrestricted = EngramServiceSearchScope(sql: "1", arguments: [])
+    static let none = EngramServiceSearchScope(sql: "0", arguments: [])
+
+    static func predicates(_ sql: [String], arguments: [DatabaseValueConvertible]) -> EngramServiceSearchScope {
+        let parts = sql.filter { !$0.isEmpty }
+        guard !parts.isEmpty else { return .unrestricted }
+        return EngramServiceSearchScope(
+            sql: parts.map { "(\($0))" }.joined(separator: " AND "),
+            arguments: arguments
+        )
+    }
+}
 
 protocol EngramServiceReadProvider: Sendable {
     func search(_ request: EngramServiceSearchRequest) async throws -> EngramServiceSearchResponse
+    func search(_ request: EngramServiceSearchRequest, scope: EngramServiceSearchScope) async throws -> EngramServiceSearchResponse
     func health() async throws -> EngramServiceHealthResponse
     func liveSessions() async throws -> EngramServiceLiveSessionsResponse
     func sources() async throws -> [EngramServiceSourceInfo]
@@ -32,6 +53,10 @@ extension ServiceDatabaseReading {
 
 struct EmptyEngramServiceReadProvider: EngramServiceReadProvider {
     func search(_ request: EngramServiceSearchRequest) async throws -> EngramServiceSearchResponse {
+        try await search(request, scope: .unrestricted)
+    }
+
+    func search(_ request: EngramServiceSearchRequest, scope: EngramServiceSearchScope) async throws -> EngramServiceSearchResponse {
         EngramServiceSearchResponse(items: [], searchModes: ["keyword"], warning: nil)
     }
 
@@ -137,6 +162,10 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
     }
 
     func search(_ request: EngramServiceSearchRequest) async throws -> EngramServiceSearchResponse {
+        try await search(request, scope: .unrestricted)
+    }
+
+    func search(_ request: EngramServiceSearchRequest, scope: EngramServiceSearchScope) async throws -> EngramServiceSearchResponse {
         EngramServiceSearchResponse(items: [], searchModes: ["keyword"], warning: nil)
     }
 
@@ -1034,6 +1063,10 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
     }
 
     func search(_ request: EngramServiceSearchRequest) async throws -> EngramServiceSearchResponse {
+        try await search(request, scope: .unrestricted)
+    }
+
+    func search(_ request: EngramServiceSearchRequest, scope: EngramServiceSearchScope) async throws -> EngramServiceSearchResponse {
         let query = request.query.trimmingCharacters(in: .whitespacesAndNewlines)
         let requestedMode = request.mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let semanticRequested = ["semantic", "hybrid", "both"].contains(requestedMode)
@@ -1061,22 +1094,30 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 switch try await semanticSearch(
                     query: query,
                     request: request,
+                    scope: scope,
                     limit: limit,
                     requestedMode: requestedMode
                 ) {
-                case .results(let response):
-                    return response
+                case .results(let response, let queryVector):
+                    return try await withInsightResults(
+                        response, query: query, queryVector: queryVector, immediate: true)
                 case .degraded(let reason, let detail):
                     ServiceLogger.info(
                         "search mode '\(requestedMode)' degraded (\(reason.rawValue)); falling back to keyword",
                         category: .reader
                     )
-                    return try await keywordSearch(
+                    return try await withInsightResults(
+                        try await keywordSearch(
+                            query: query,
+                            request: request,
+                            scope: scope,
+                            limit: limit,
+                            warning: reason.serviceWarning(detail: detail),
+                            warningCode: reason.structuredCode
+                        ),
                         query: query,
-                        request: request,
-                        limit: limit,
-                        warning: reason.serviceWarning(detail: detail),
-                        warningCode: reason.structuredCode
+                        queryVector: nil,
+                        immediate: false
                     )
                 }
             } catch is CancellationError {
@@ -1093,7 +1134,8 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                         ? ["semantic"]
                         : ["keyword", "semantic"],
                     warning: "Search is temporarily unavailable while the Engram database is busy. Retry shortly.",
-                    warningCode: "searchFailed"
+                    warningCode: "searchFailed",
+                    insightResults: []
                 )
             } catch {
                 ServiceLogger.warn(
@@ -1104,18 +1146,25 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             }
         }
 
-        return try await keywordSearch(
+        return try await withInsightResults(
+            try await keywordSearch(
+                query: query,
+                request: request,
+                scope: scope,
+                limit: limit,
+                warning: nil,
+                warningCode: nil
+            ),
             query: query,
-            request: request,
-            limit: limit,
-            warning: nil,
-            warningCode: nil
+            queryVector: nil,
+            immediate: false
         )
     }
 
     private func keywordSearch(
         query: String,
         request: EngramServiceSearchRequest,
+        scope: EngramServiceSearchScope,
         limit: Int,
         warning: String?,
         warningCode: String?,
@@ -1132,109 +1181,162 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         }
         let search: @Sendable (GRDB.Database) throws -> EngramServiceSearchResponse = { db in
             let termMatches = CJKText.ftsMatchTerms(tokens)
+            // With the owned FTS layout and its covering `(id, c0)` shadow
+            // index, a MATCH hit resolves its UNINDEXED `session_id` from the
+            // index instead of seeking the content row. Fail closed to the
+            // virtual-table column when the layout or index is not ours.
+            let identityIndexed = try FTSRebuildPolicy.hasOwnedContentIdentityIndex(db)
             // Search at session granularity: every query token must exist
             // somewhere in the session, not necessarily in the same FTS row.
-            // Short Latin and CJK tokens use LIKE because FTS5 trigram MATCH
-            // cannot represent them; longer Latin tokens keep MATCH ranking.
+            //
+            // Three phases, each bounded by the one before it:
+            //  1. `mN_hits` / `mN`: per-token hit rows and candidate sessions.
+            //     Tokens of >= 3 scalars (Latin or CJK) use trigram MATCH,
+            //     which is index-only; shorter tokens have no trigram and use
+            //     a recency-ordered LIKE through fts_map with an early-stop
+            //     LIMIT (unbounded content LIKE 503s the 8s Search budget).
+            //  2. `top`: AND-join the candidates, probe `sessions` by primary
+            //     key (CROSS JOIN fixes the order), apply filters, rank, LIMIT.
+            //  3. `mN_best`: choose one matched row per LIMIT'd session and
+            //     read content / snippet() for those rows only.
+            // The earlier single-pass shape ran two correlated MATCH subqueries
+            // per candidate session and read content for every hit; against
+            // the HQ corpus (777k FTS rows) a routine query exceeded the Web's
+            // 8s search deadline.
             var ctes: [String] = []
-            var joins: [String] = []
             var args: [DatabaseValueConvertible] = []
+            var candidateJoins: [String] = []
             for (index, token) in tokens.enumerated() {
                 let alias = "m\(index)"
-                if CJKText.containsCJK(token) || token.count < 3 {
+                if CJKText.usesTrigramMatch(token) {
+                    if identityIndexed {
+                        ctes.append("""
+                            \(alias)_hits AS MATERIALIZED (
+                                SELECT sessions_fts.rowid AS fts_rowid, f.c0 AS session_id,
+                                       sessions_fts.rank AS rank
+                                FROM sessions_fts
+                                JOIN sessions_fts_content f INDEXED BY \(FTSRebuildPolicy.contentIdentityIndexName)
+                                  ON f.id = sessions_fts.rowid
+                                WHERE sessions_fts MATCH ?
+                            )
+                        """)
+                    } else {
+                        ctes.append("""
+                            \(alias)_hits AS MATERIALIZED (
+                                SELECT rowid AS fts_rowid, session_id, rank
+                                FROM sessions_fts
+                                WHERE sessions_fts MATCH ?
+                            )
+                        """)
+                    }
+                    args.append(termMatches[index])
+                } else {
+                    ctes.append(try shortTokenHitsCTE(alias: alias, db: db))
+                    args.append("%\(CJKText.escapeLikePattern(token))%")
+                    args.append(Self.shortQueryHitCap(limit: limit))
+                }
+                ctes.append("""
+                    \(alias) AS MATERIALIZED (
+                        SELECT session_id, MIN(rank) AS rank
+                        FROM \(alias)_hits
+                        GROUP BY session_id
+                    )
+                """)
+                if index > 0 {
+                    candidateJoins.append("JOIN \(alias) ON \(alias).session_id = m0.session_id")
+                }
+            }
+            var topParts = ["""
+                top AS MATERIALIZED (
+                    SELECT s.*, m0.rank AS search_rank
+                    FROM m0
+                    \(candidateJoins.joined(separator: " "))
+                    CROSS JOIN sessions s ON s.id = m0.session_id
+                    WHERE s.hidden_at IS NULL
+                      -- docs/invariants.md #3: keyword search excludes skip and lite tiers.
+                      AND \(SessionSemanticSearchPolicy.searchableTierSQL)
+            """]
+            appendSearchFilters(for: request, scope: scope, to: &topParts, args: &args)
+            topParts.append("""
+                    ORDER BY m0.rank, s.start_time DESC
+                    LIMIT ?
+                )
+            """)
+            args.append(limit)
+            ctes.append(topParts.joined(separator: " "))
+            var bestJoins: [String] = []
+            for (index, token) in tokens.enumerated() {
+                let alias = "m\(index)"
+                if CJKText.usesTrigramMatch(token) {
                     ctes.append("""
-                        \(alias)_hits AS (
-                            SELECT rowid, session_id, content,
-                                   ROW_NUMBER() OVER (
-                                       PARTITION BY session_id
-                                       ORDER BY instr(lower(content), lower(?)), rowid
-                                   ) AS match_position
-                            FROM sessions_fts
-                            WHERE content LIKE ? ESCAPE '\\'
+                        \(alias)_pick AS MATERIALIZED (
+                            SELECT session_id, fts_rowid AS matched_rowid
+                            FROM (
+                                SELECT session_id, fts_rowid,
+                                       ROW_NUMBER() OVER (
+                                           PARTITION BY session_id
+                                           ORDER BY rank, fts_rowid
+                                       ) AS match_position
+                                FROM \(alias)_hits
+                                WHERE session_id IN (SELECT id FROM top)
+                            )
+                            WHERE match_position = 1
                         ),
-                        \(alias) AS (
-                            SELECT session_id, rowid AS matched_rowid, 0.0 AS rank,
+                        \(alias)_best AS MATERIALIZED (
+                            SELECT p.session_id, p.matched_rowid,
+                                   snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 64) AS snippet
+                            FROM \(alias)_pick p
+                            CROSS JOIN sessions_fts ON sessions_fts.rowid = p.matched_rowid
+                            WHERE sessions_fts MATCH ?
+                        )
+                    """)
+                    args.append(termMatches[index])
+                } else {
+                    ctes.append("""
+                        \(alias)_best AS MATERIALIZED (
+                            SELECT session_id, matched_rowid,
                                    substr(content, MAX(1, instr(lower(content), lower(?)) - 200), ?) AS snippet
-                            FROM \(alias)_hits
+                            FROM (
+                                SELECT h.session_id, h.fts_rowid AS matched_rowid, f.content AS content,
+                                       ROW_NUMBER() OVER (
+                                           PARTITION BY h.session_id
+                                           ORDER BY instr(lower(f.content), lower(?)), h.fts_rowid
+                                       ) AS match_position
+                                FROM \(alias)_hits h
+                                CROSS JOIN sessions_fts f ON f.rowid = h.fts_rowid
+                                WHERE h.session_id IN (SELECT id FROM top)
+                            )
                             WHERE match_position = 1
                         )
                     """)
                     args.append(token)
-                    args.append("%\(CJKText.escapeLikePattern(token))%")
-                    args.append(token)
                     args.append(Self.maxSnippetLength)
-                } else {
-                    ctes.append("""
-                        \(alias)_hits AS (
-                            SELECT rowid, session_id, rank
-                            FROM sessions_fts
-                            WHERE sessions_fts MATCH ?
-                        ),
-                        \(alias) AS (
-                            SELECT hits.session_id, MIN(hits.rank) AS rank,
-                                   (
-                                       SELECT rowid
-                                       FROM sessions_fts
-                                       WHERE sessions_fts MATCH ?
-                                         AND sessions_fts.session_id = hits.session_id
-                                       ORDER BY rank, rowid
-                                       LIMIT 1
-                                   ) AS matched_rowid,
-                                   (
-                                       SELECT snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 64)
-                                       FROM sessions_fts
-                                       WHERE sessions_fts MATCH ?
-                                         AND sessions_fts.session_id = hits.session_id
-                                       ORDER BY rank, rowid
-                                       LIMIT 1
-                                   ) AS snippet
-                            FROM \(alias)_hits hits
-                            GROUP BY hits.session_id
-                        )
-                    """)
-                    args.append(termMatches[index])
-                    args.append(termMatches[index])
-                    args.append(termMatches[index])
+                    args.append(token)
                 }
-                if index > 0 {
-                    joins.append("JOIN \(alias) ON \(alias).session_id = m0.session_id")
-                }
+                bestJoins.append("LEFT JOIN \(alias)_best ON \(alias)_best.session_id = top.id")
             }
             let snippetExpression = tokens.indices.dropFirst().reduce(
-                "COALESCE(m0.snippet, '')"
+                "COALESCE(m0_best.snippet, '')"
             ) { expression, index in
                 let priorRowIDs = tokens.indices.prefix(index)
-                    .map { "m\($0).matched_rowid" }
+                    .map { "m\($0)_best.matched_rowid" }
                     .joined(separator: ", ")
                 return """
                     \(expression) || CASE
-                      WHEN NULLIF(m\(index).snippet, '') IS NULL THEN ''
-                      WHEN m\(index).matched_rowid IN (\(priorRowIDs)) THEN ''
-                      ELSE '\n…\n' || m\(index).snippet
+                      WHEN NULLIF(m\(index)_best.snippet, '') IS NULL THEN ''
+                      WHEN m\(index)_best.matched_rowid IN (\(priorRowIDs)) THEN ''
+                      ELSE '\n…\n' || m\(index)_best.snippet
                     END
                     """
             }
-            var parts = ["""
+            let sql = """
                 WITH \(ctes.joined(separator: ", "))
-                SELECT s.*, \(snippetExpression) AS snippet
-                FROM m0
-                \(joins.joined(separator: " "))
-                JOIN sessions s ON s.id = m0.session_id
-                WHERE s.hidden_at IS NULL
-                  -- docs/invariants.md #3: keyword search excludes skip and lite tiers.
-                  AND \(SessionSemanticSearchPolicy.searchableTierSQL)
-            """]
-            appendSearchFilters(for: request, to: &parts, args: &args)
-            parts.append("""
-                ORDER BY m0.rank, s.start_time DESC
-                LIMIT ?
-            """)
-            args.append(limit)
-            let rows = try Row.fetchAll(
-                db,
-                sql: parts.joined(separator: " "),
-                arguments: StatementArguments(args)
-            )
+                SELECT top.*, \(snippetExpression) AS snippet
+                FROM top
+                \(bestJoins.joined(separator: " "))
+                ORDER BY top.search_rank, top.start_time DESC
+                """
+            let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(args))
             return EngramServiceSearchResponse(
                 items: rows.map { Self.item(from: $0, query: query) },
                 searchModes: ["keyword"],
@@ -1245,6 +1347,214 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         return immediate
             ? try await readImmediate(search)
             : try await read(search)
+    }
+
+    private func withInsightResults(
+        _ response: EngramServiceSearchResponse,
+        query: String,
+        queryVector: [Float]?,
+        immediate: Bool
+    ) async throws -> EngramServiceSearchResponse {
+        let insights = try await loadInsightResults(query: query, queryVector: queryVector, immediate: immediate)
+        return EngramServiceSearchResponse(
+            items: response.items,
+            searchModes: response.searchModes,
+            warning: response.warning,
+            warningCode: response.warningCode,
+            insightResults: insights
+        )
+    }
+
+    private func loadInsightResults(
+        query: String,
+        queryVector: [Float]?,
+        immediate: Bool
+    ) async throws -> [EngramServiceSearchResponse.Insight] {
+        let readInsights: @Sendable (GRDB.Database) throws -> [EngramServiceSearchResponse.Insight] = { db in
+            guard try self.tableExists("insights", db: db) else { return [] }
+            if let queryVector,
+               let hits = try self.searchInsightVectors(db, queryVector: queryVector),
+               !hits.isEmpty {
+                return hits
+            }
+            guard query.count >= 3 else { return [] }
+            return try self.searchInsightFTS(db, query: query)
+        }
+        do {
+            return immediate
+                ? try await readImmediate(readInsights)
+                : try await read(readInsights)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            ServiceLogger.info("insight search unavailable; continuing without insightResults", category: .reader)
+            return []
+        }
+    }
+
+    private func semanticCorpusSnapshot(
+        _ db: GRDB.Database
+    ) throws -> SessionVectorSearchAvailability.Snapshot {
+        let probe = try SessionVectorSearchAvailability.probe(db: db)
+        if probe.isUsable { return probe }
+        guard let meta = try insightCompatibleMeta(db),
+              try hasInsightVectorCorpus(db, model: meta.model, dimension: meta.dimension) else {
+            return probe
+        }
+        return SessionVectorSearchAvailability.Snapshot(
+            isUsable: true, model: meta.model, dimension: meta.dimension)
+    }
+
+    private func insightCompatibleMeta(_ db: GRDB.Database) throws -> (model: String, dimension: Int)? {
+        guard try tableExists("embedding_meta", db: db),
+              let row = try Row.fetchOne(
+                db, sql: "SELECT model, dimension FROM embedding_meta WHERE id = 1 LIMIT 1"
+              ),
+              let model = (row["model"] as String?)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !model.isEmpty,
+              let dimension = row["dimension"] as Int?,
+              dimension > 0 else { return nil }
+        return (model, dimension)
+    }
+
+    private func hasInsightVectorCorpus(
+        _ db: GRDB.Database, model: String, dimension: Int
+    ) throws -> Bool {
+        guard try tableExists("insight_embeddings", db: db),
+              try tableExists("insights", db: db) else { return false }
+        return try Int.fetchOne(
+            db,
+            sql: """
+                SELECT 1
+                FROM insight_embeddings e
+                JOIN insights i ON i.id = e.insight_id
+                WHERE e.embedding IS NOT NULL
+                  AND e.model = ?
+                  AND e.dim = ?
+                  AND i.superseded_by IS NULL
+                LIMIT 1
+                """,
+            arguments: [model, dimension]
+        ) != nil
+    }
+
+    private func searchInsightVectors(
+        _ db: GRDB.Database,
+        queryVector: [Float]
+    ) throws -> [EngramServiceSearchResponse.Insight]? {
+        guard try tableExists("insight_embeddings", db: db),
+              try tableExists("embedding_meta", db: db),
+              let meta = try Row.fetchOne(
+                db,
+                sql: "SELECT model, dimension FROM embedding_meta WHERE id = 1 LIMIT 1"
+              ),
+              let model = (meta["model"] as String?)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !model.isEmpty,
+              let dimension = meta["dimension"] as Int?,
+              dimension > 0,
+              queryVector.count == dimension else { return nil }
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT e.insight_id, e.embedding, i.content, i.source_session_id
+                FROM insight_embeddings e
+                JOIN insights i ON i.id = e.insight_id
+                WHERE e.embedding IS NOT NULL
+                  AND e.model = ?
+                  AND e.dim = ?
+                  AND i.superseded_by IS NULL
+                """,
+            arguments: [model, dimension]
+        )
+        var candidates: [VectorSearch.Candidate] = []
+        var payload: [String: (content: String, sourceSessionId: String?)] = [:]
+        for row in rows {
+            guard let id = row["insight_id"] as String?,
+                  let content = row["content"] as String?,
+                  !content.isEmpty,
+                  let blob = row["embedding"] as Data?,
+                  let vector = VectorMath.decode(blob, expectedCount: dimension) else { continue }
+            candidates.append(VectorSearch.Candidate(id: id, vector: vector))
+            payload[id] = (content, row["source_session_id"] as String?)
+        }
+        guard !candidates.isEmpty else { return [] }
+        return VectorSearch.knn(query: queryVector, candidates: candidates, topK: 5).compactMap { hit in
+            guard let body = payload[hit.id] else { return nil }
+            return EngramServiceSearchResponse.Insight(
+                id: hit.id,
+                content: body.content,
+                sourceSessionId: body.sourceSessionId,
+                matchType: "semantic",
+                score: Double(hit.score)
+            )
+        }
+    }
+
+    private func searchInsightFTS(
+        _ db: GRDB.Database,
+        query: String
+    ) throws -> [EngramServiceSearchResponse.Insight] {
+        guard try tableExists("insights_fts", db: db) else { return [] }
+        let tokens = CJKText.searchableTerms(query)
+        guard !tokens.isEmpty else { return [] }
+        let termMatches = CJKText.ftsMatchTerms(tokens)
+        var ctes: [String] = []
+        var joins: [String] = []
+        var values: [DatabaseValueConvertible] = []
+        for (index, token) in tokens.enumerated() {
+            let alias = "m\(index)"
+            if !CJKText.usesTrigramMatch(token) {
+                ctes.append("""
+                    \(alias) AS (
+                        SELECT insight_id, 0.0 AS rank
+                        FROM insights_fts
+                        WHERE content LIKE ? ESCAPE '\\'
+                        GROUP BY insight_id
+                    )
+                """)
+                values.append("%\(CJKText.escapeLikePattern(token))%")
+            } else {
+                ctes.append("""
+                    \(alias) AS (
+                        SELECT insight_id, MIN(rank) AS rank
+                        FROM insights_fts
+                        WHERE insights_fts MATCH ?
+                        GROUP BY insight_id
+                    )
+                """)
+                values.append(termMatches[index])
+            }
+            if index > 0 {
+                joins.append("JOIN \(alias) ON \(alias).insight_id = m0.insight_id")
+            }
+        }
+        values.append(5)
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+                WITH \(ctes.joined(separator: ", "))
+                SELECT i.id, i.content, i.source_session_id
+                FROM m0
+                \(joins.joined(separator: " "))
+                JOIN insights i ON i.id = m0.insight_id
+                WHERE i.superseded_by IS NULL
+                ORDER BY m0.rank, i.created_at DESC
+                LIMIT ?
+                """,
+            arguments: StatementArguments(values)
+        )
+        return rows.compactMap { row in
+            guard let id = row["id"] as String?,
+                  let content = row["content"] as String?,
+                  !content.isEmpty else { return nil }
+            return EngramServiceSearchResponse.Insight(
+                id: id,
+                content: content,
+                sourceSessionId: row["source_session_id"] as String?,
+                matchType: "keyword",
+                score: nil
+            )
+        }
     }
 
     private struct SemanticChunkCandidate: Sendable {
@@ -1269,7 +1579,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
     }
 
     private enum SemanticSearchOutcome {
-        case results(EngramServiceSearchResponse)
+        case results(EngramServiceSearchResponse, queryVector: [Float]?)
         case degraded(
             SessionVectorSearchAvailability.SemanticDegradeReason,
             detail: String?
@@ -1279,40 +1589,16 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
     private func semanticSearch(
         query: String,
         request: EngramServiceSearchRequest,
+        scope: EngramServiceSearchScope,
         limit: Int,
         requestedMode: String
     ) async throws -> SemanticSearchOutcome {
-        // Corpus gate first — distinguish missing vectors from missing provider.
+        // Session filters must not hide a global insight corpus. Visible
+        // session chunks stay one usable source; admitted insight vectors
+        // (non-superseded, matching embedding_meta) are the other. Scope
+        // still applies to session KNN below, not to obtaining queryVector.
         let snapshot = try await readImmediate { db in
-            let snapshot = try SessionVectorSearchAvailability.probe(db: db)
-            guard snapshot.isUsable,
-                  let model = snapshot.model,
-                  let dimension = snapshot.dimension else {
-                return snapshot
-            }
-            // docs/invariants.md #3: hidden sessions cannot advertise a semantic corpus.
-            let hasVisibleChunk = try Int.fetchOne(
-                db,
-                sql: """
-                    SELECT 1
-                    FROM semantic_chunks sc
-                    JOIN sessions s ON s.id = sc.session_id
-                    WHERE sc.embedding IS NOT NULL
-                      AND sc.model = ?
-                      AND sc.dim = ?
-                      AND s.hidden_at IS NULL
-                      AND \(SessionSemanticSearchPolicy.searchableTierSQL)
-                    LIMIT 1
-                    """,
-                arguments: [model, dimension]
-            ) != nil
-            return hasVisibleChunk
-                ? snapshot
-                : SessionVectorSearchAvailability.Snapshot(
-                    isUsable: false,
-                    model: model,
-                    dimension: dimension
-                )
+            try self.semanticCorpusSnapshot(db)
         }
         guard snapshot.isUsable else {
             return .degraded(.corpusMissing, detail: nil)
@@ -1358,6 +1644,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             let topK = SessionSemanticSearchPolicy.knnTopK(limit: limit)
             let topKResult = try await semanticChunkTopK(
                 for: request,
+                scope: scope,
                 queryVector: queryVector,
                 model: model,
                 dim: dimension,
@@ -1368,6 +1655,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     let keyword = try await keywordSearch(
                         query: query,
                         request: request,
+                        scope: scope,
                         limit: limit,
                         warning: nil,
                         warningCode: nil,
@@ -1378,14 +1666,14 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                         searchModes: ["keyword", "semantic"],
                         warning: nil,
                         warningCode: nil
-                    ))
+                    ), queryVector: queryVector)
                 }
                 return .results(EngramServiceSearchResponse(
                     items: [],
                     searchModes: ["semantic"],
                     warning: nil,
                     warningCode: nil
-                ))
+                ), queryVector: queryVector)
             }
 
             var sessionIds: [String] = []
@@ -1408,7 +1696,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                         : ["keyword", "semantic"],
                     warning: nil,
                     warningCode: nil
-                ))
+                ), queryVector: queryVector)
             }
 
             let semanticItems = try await searchItems(
@@ -1426,6 +1714,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     keyword = try await keywordSearch(
                         query: query,
                         request: request,
+                        scope: scope,
                         limit: limit,
                         warning: nil,
                         warningCode: nil,
@@ -1441,7 +1730,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                         searchModes: ["semantic"],
                         warning: "Keyword fusion was skipped because the database is busy.",
                         warningCode: nil
-                    ))
+                    ), queryVector: queryVector)
                 }
                 let fusedIds = RankFusion.rrf(
                     [keyword.items.map(\.id), semanticItems.map(\.id)],
@@ -1459,7 +1748,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     searchModes: ["keyword", "semantic"],
                     warning: nil,
                     warningCode: nil
-                ))
+                ), queryVector: queryVector)
             }
 
             return .results(EngramServiceSearchResponse(
@@ -1467,7 +1756,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 searchModes: ["semantic"],
                 warning: nil,
                 warningCode: nil
-            ))
+            ), queryVector: queryVector)
 
         case .corpusUnavailable:
             return .degraded(.corpusMissing, detail: nil)
@@ -1488,6 +1777,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
     /// not terminate the scan (M09).
     private func semanticChunkTopK(
         for request: EngramServiceSearchRequest,
+        scope: EngramServiceSearchScope,
         queryVector: [Float],
         model: String,
         dim: Int,
@@ -1502,6 +1792,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             try Task.checkCancellation()
             let page = try await fetchSemanticChunkPage(
                 for: request,
+                scope: scope,
                 model: model,
                 dim: dim,
                 afterRowID: afterRowID,
@@ -1536,6 +1827,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
 
     private func fetchSemanticChunkPage(
         for request: EngramServiceSearchRequest,
+        scope: EngramServiceSearchScope,
         model: String,
         dim: Int,
         afterRowID: Int64,
@@ -1562,7 +1854,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                   AND \(SessionSemanticSearchPolicy.searchableTierSQL)
             """]
             var args: [DatabaseValueConvertible] = [model, dim, afterRowID]
-            appendSearchFilters(for: request, to: &parts, args: &args)
+            appendSearchFilters(for: request, scope: scope, to: &parts, args: &args)
             // Stable full-corpus order by rowid (not recency). Pagination via rowid cursor.
             parts.append("ORDER BY sc.rowid ASC LIMIT ?")
             args.append(batchSize)
@@ -2488,6 +2780,43 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         error.resultCode == .SQLITE_BUSY || error.resultCode == .SQLITE_LOCKED
     }
 
+    private static func shortQueryHitCap(limit: Int) -> Int {
+        max(256, min(limit * 32, 2_048))
+    }
+
+    private func shortTokenHitsCTE(alias: String, db: GRDB.Database) throws -> String {
+        let mapped = try tableExists("fts_map", db: db) && indexExists("idx_sessions_activity_time", db: db)
+        if mapped {
+            return """
+                \(alias)_hits AS MATERIALIZED (
+                    SELECT f.rowid AS fts_rowid, s.id AS session_id, 0.0 AS rank
+                    FROM sessions s INDEXED BY idx_sessions_activity_time
+                    JOIN fts_map m ON m.session_id = s.id COLLATE BINARY
+                    JOIN sessions_fts f ON f.rowid = m.fts_rowid
+                    WHERE s.hidden_at IS NULL
+                      AND (s.tier IS NULL OR s.tier != 'skip')
+                      AND f.content LIKE ? ESCAPE '\\'
+                    LIMIT ?)
+            """
+        }
+        return """
+            \(alias)_hits AS MATERIALIZED (
+                SELECT rowid AS fts_rowid, session_id, 0.0 AS rank
+                FROM sessions_fts
+                WHERE content LIKE ? ESCAPE '\\'
+                LIMIT ?)
+        """
+    }
+
+    private func indexExists(_ name: String, db: GRDB.Database) throws -> Bool {
+        let count = try Int.fetchOne(
+            db,
+            sql: "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?",
+            arguments: [name]
+        ) ?? 0
+        return count > 0
+    }
+
     private func tableExists(_ table: String, db: GRDB.Database) throws -> Bool {
         let count = try Int.fetchOne(
             db,
@@ -2717,6 +3046,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
 
     private func appendSearchFilters(
         for request: EngramServiceSearchRequest,
+        scope: EngramServiceSearchScope,
         to parts: inout [String],
         args: inout [DatabaseValueConvertible]
     ) {
@@ -2731,6 +3061,10 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             for binding in clause.bindings {
                 args.append(binding)
             }
+        }
+        parts.append("AND (\(scope.sql))")
+        for binding in scope.arguments {
+            args.append(binding)
         }
     }
 

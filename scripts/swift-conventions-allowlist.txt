@@ -12,3 +12,4 @@
 # Add entries only with a specific reason and remove them as soon as the source
 # can comply with the rule.
 R4 macos/Engram/Components/MotionAware.swift # Motion-aware helper owns the raw SwiftUI animation APIs.
+R3 macos/Shared/EngramCore/TranscriptRedactionPolicy.swift npm_ # Secret-redaction prefix for npm tokens, not a Node runtime.

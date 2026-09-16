@@ -59,6 +59,24 @@ enum ServiceCapabilityToken {
         "archiveReclamationRun",
         "archiveV2RecoveryDrill",
         "configureClaudeCodeProfiles",
+        "webAddProjectAlias",
+        "webRemoveProjectAlias",
+        "webSetSourceEnabled",
+        "webLinkSession",
+        "webUnlinkSession",
+        "webConfirmSuggestion",
+        "webDismissSuggestion",
+        "webSaveInsight",
+        "webGenerateSummary",
+        "webGenerateTitle",
+        "webRegenerateTitles",
+        "webPatchAiSettings",
+        "webProjectMigrations",
+        "webProjectMove",
+        "webProjectArchive",
+        "webProjectUndo",
+        "webProjectMoveBatch",
+        "webCancelProjectMoveBatch",
     ]
 
     static func requiresToken(_ command: String) -> Bool {
@@ -85,10 +103,21 @@ enum ServiceCapabilityToken {
     static func defaultPath(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> String {
+        URL(fileURLWithPath: defaultServiceSocketPath(homeDirectory: homeDirectory))
+            .deletingLastPathComponent()
+            .appendingPathComponent("cmd.token")
+            .path
+    }
+
+    /// Default service socket paired with `defaultPath`. Kept here so RemoteCore
+    /// can resolve the socket-adjacent token without importing the transport.
+    static func defaultServiceSocketPath(
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> String {
         homeDirectory
             .appendingPathComponent(".engram", isDirectory: true)
             .appendingPathComponent("run", isDirectory: true)
-            .appendingPathComponent("cmd.token")
+            .appendingPathComponent("engram-service.sock")
             .path
     }
 
@@ -98,7 +127,7 @@ enum ServiceCapabilityToken {
     static func path(forSocketPath socketPath: String) -> String {
         let standardized = URL(fileURLWithPath: socketPath).standardizedFileURL.path
         if standardized == URL(
-            fileURLWithPath: UnixSocketEngramServiceTransport.defaultSocketPath()
+            fileURLWithPath: defaultServiceSocketPath()
         ).standardizedFileURL.path {
             return URL(fileURLWithPath: standardized)
                 .deletingLastPathComponent()

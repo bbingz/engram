@@ -23,17 +23,38 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
     private let sessionRoot: URL
     private let limits: ParserLimits
     private let testHooks: CopilotAdapterTestHooks
+    private let strictRecords: Bool
 
     init(
         sessionRoot: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".copilot/session-state")
             .path,
         limits: ParserLimits = .default,
-        testHooks: CopilotAdapterTestHooks = CopilotAdapterTestHooks()
+        testHooks: CopilotAdapterTestHooks = CopilotAdapterTestHooks(),
+        strictRecords: Bool = false
     ) {
         self.sessionRoot = URL(fileURLWithPath: sessionRoot)
         self.limits = limits
         self.testHooks = testHooks
+        self.strictRecords = strictRecords
+    }
+
+    /// Reads only a verified private replay tree. Logical paths remain metadata.
+    static func scanCapturedSource(
+        physicalLocator: String, stagingRoot: String, logicalLocator: String
+    ) async throws -> AdapterParseResult<CapturedSourceScan> {
+        let adapter = CopilotAdapter(sessionRoot: stagingRoot, limits: .capturedJSONL, strictRecords: true)
+        let selected = try await adapter.listSessionLocators()
+        guard selected.count == 1, selected[0].utf8.elementsEqual(physicalLocator.utf8) else {
+            return .failure(.noVisibleMessages)
+        }
+        switch try await adapter.scanForIndexing(locator: physicalLocator) {
+        case .failure(let error): return .failure(error)
+        case .success(var scan):
+            guard scan.parseFailure == nil else { return .failure(scan.parseFailure!) }
+            scan.info.filePath = logicalLocator
+            return .success(CapturedSourceScan(scan: scan, rawSourceSessionID: scan.info.id))
+        }
     }
 
     func detect() async -> Bool {
@@ -90,6 +111,7 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
                 locator: locator,
                 limits: limits,
                 reportFailures: true,
+                strictRecords: strictRecords,
                 countsTowardMessageLimit: { Self.message(from: $0) != nil }
             )
             let messages = Self.messages(from: objects)
@@ -152,6 +174,7 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
                 locator: locator,
                 limits: limits,
                 reportFailures: true,
+                strictRecords: strictRecords,
                 countsTowardMessageLimit: { Self.message(from: $0) != nil }
             )
             let messages = Self.messages(from: objects)

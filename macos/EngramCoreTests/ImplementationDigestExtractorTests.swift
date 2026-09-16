@@ -2,6 +2,19 @@ import EngramCoreRead
 import XCTest
 
 final class ImplementationDigestExtractorTests: XCTestCase {
+    func testLongAssistantKeepsTailCompletionMarkersWithoutSlowCharacterScanning() {
+        let content = String(repeating: "x", count: 26 * 1024 * 1024) + "\nchecks run: success"
+        let start = Date()
+        let beats = ImplementationDigestExtractor.extract(messages: [
+            NormalizedMessage(role: .user, content: "Implement the complete history reader", timestamp: "2026-09-07T00:00:00Z"),
+            NormalizedMessage(role: .assistant, content: content, timestamp: "2026-09-07T00:00:01Z"),
+        ], sessionId: "large-digest")
+        XCTAssertEqual(beats.count, 1)
+        XCTAssertEqual(beats.first?.status, .completed)
+        XCTAssertEqual(beats.first?.kind, .implementation)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 10)
+    }
+
     func testExtractsCompletionReportAndFiltersMachineTurns() {
         let messages = [
             NormalizedMessage(role: .user, content: "# AGENTS.md instructions for /Users/bing/-Code-/engram\n<INSTRUCTIONS>noise</INSTRUCTIONS>", timestamp: "2026-06-23T09:00:00Z"),

@@ -10,6 +10,8 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
     private let kimiJsonPath: URL
     private let limits: ParserLimits
     private let testHooks: JSONLIdentityTestHooks
+    private let capturedProjectContext: ArchiveKimiProjectContext?
+    private let capturedPrimaryMtimeNs: Int64?
 
     init(
         sessionsRoot: String = FileManager.default.homeDirectoryForCurrentUser
@@ -19,12 +21,53 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
             .appendingPathComponent(".kimi/kimi.json")
             .path,
         limits: ParserLimits = .default,
-        testHooks: JSONLIdentityTestHooks = JSONLIdentityTestHooks()
+        testHooks: JSONLIdentityTestHooks = JSONLIdentityTestHooks(),
+        capturedProjectContext: ArchiveKimiProjectContext? = nil,
+        capturedPrimaryMtimeNs: Int64? = nil
     ) {
         self.sessionsRoot = URL(fileURLWithPath: sessionsRoot)
         self.kimiJsonPath = URL(fileURLWithPath: kimiJsonPath)
         self.limits = limits
         self.testHooks = testHooks
+        self.capturedProjectContext = capturedProjectContext
+        self.capturedPrimaryMtimeNs = capturedPrimaryMtimeNs
+    }
+
+    static func scanCapturedSource(
+        physicalLocator: String,
+        logicalLocator: String,
+        replayLayout: ArchiveReplayLayout,
+        capturedModificationNanoseconds: Int64?
+    ) async throws -> AdapterParseResult<CapturedSourceScan> {
+        try Task.checkCancellation()
+        guard let context = replayLayout.kimiProjectContext,
+              let entrypoint = replayLayout.entrypointRelativePath else {
+            return .failure(.malformedJSON)
+        }
+        let declared = context.workspaceName + "/" + context.nativeSessionID + "/context.jsonl"
+        guard declared.utf8.elementsEqual(entrypoint.utf8),
+              hasDeclaredSuffix(physicalLocator, entrypoint),
+              hasDeclaredSuffix(logicalLocator, entrypoint) else {
+            return .failure(.malformedJSON)
+        }
+        let adapter = KimiAdapter(
+            sessionsRoot: URL(fileURLWithPath: physicalLocator)
+                .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().path,
+            kimiJsonPath: physicalLocator + ".no-kimi-registry",
+            capturedProjectContext: context,
+            capturedPrimaryMtimeNs: capturedModificationNanoseconds
+        )
+        switch try await adapter.scanForIndexing(locator: physicalLocator) {
+        case .failure(let failure):
+            return .failure(failure)
+        case .success(var scan):
+            if let failure = scan.parseFailure { return .failure(failure) }
+            guard scan.info.id.utf8.elementsEqual(context.nativeSessionID.utf8) else {
+                return .failure(.malformedJSON)
+            }
+            scan.info.filePath = logicalLocator
+            return .success(CapturedSourceScan(scan: scan, rawSourceSessionID: context.nativeSessionID))
+        }
     }
 
     func detect() async -> Bool {
@@ -108,7 +151,13 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
                 guard !messages.isEmpty else { return .failure(failure) }
                 timestamps = ("", "")
             }
-            let fileDate = (try? FileManager.default.attributesOfItem(atPath: locator)[.modificationDate] as? Date) ?? Date(timeIntervalSince1970: 0)
+            let fileDate: Date
+            if let capturedPrimaryMtimeNs {
+                fileDate = Date(timeIntervalSince1970: TimeInterval(capturedPrimaryMtimeNs) / 1_000_000_000)
+            } else {
+                fileDate = (try? FileManager.default.attributesOfItem(atPath: locator)[.modificationDate] as? Date)
+                    ?? Date(timeIntervalSince1970: 0)
+            }
             let fallbackStart = ISO8601DateFormatter().string(from: fileDate.addingTimeInterval(-60))
             let firstUserText = Self.extractContent(userMessages.first?["content"])
             let sessionId = URL(fileURLWithPath: locator).deletingLastPathComponent().lastPathComponent
@@ -296,6 +345,9 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
     }
 
     private func resolveCwd(sessionId: String, locator: String) -> String {
+        if let capturedProjectContext {
+            return capturedProjectContext.cwd
+        }
         guard let data = try? Data(contentsOf: kimiJsonPath),
               let object = try? JSONSerialization.jsonObject(with: data) as? Phase4AdapterSupport.JSONObject,
               let workDirs = JSONLAdapterSupport.array(object["work_dirs"])
@@ -337,11 +389,8 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
         let directory = url.deletingLastPathComponent()
         var files = [locator]
         let subFiles = JSONLAdapterSupport.directChildren(of: directory)
-            .filter { contextShardIndex($0.lastPathComponent) != nil }
-            .sorted {
-                (contextShardIndex($0.lastPathComponent) ?? 0) <
-                    (contextShardIndex($1.lastPathComponent) ?? 0)
-            }
+            .filter { contextShardIdentity($0.lastPathComponent) != nil }
+            .sorted(by: Self.contextShardReplayOrder)
             .map(\.path)
         files.append(contentsOf: subFiles)
         return files
@@ -361,7 +410,17 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
             .deletingLastPathComponent()
             .appendingPathComponent("wire.jsonl")
             .path
-        return Self.contextFiles(for: locator) + [wirePath, kimiJsonPath.path]
+        var paths = Self.contextFiles(for: locator) + [wirePath]
+        if capturedProjectContext == nil {
+            paths.append(kimiJsonPath.path)
+        }
+        return paths
+    }
+
+    private static func hasDeclaredSuffix(_ absolute: String, _ relative: String) -> Bool {
+        let suffix = "/" + relative
+        return absolute.utf8.count > suffix.utf8.count
+            && absolute.utf8.suffix(suffix.utf8.count).elementsEqual(suffix.utf8)
     }
 
     private func compositeInputIdentity(locator: String) -> IndexingInputIdentity? {
@@ -394,14 +453,31 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
         )
     }
 
-    private static func contextShardIndex(_ filename: String) -> Int? {
+    private struct ShardIdentity {
+        let family: String
+        let index: Int
+    }
+
+    /// Primary is prepended by the caller. Shards stay numeric-index order,
+    /// then UTF8 filename for equal indexes. This is a stable replay
+    /// convention, not wall-clock chronology.
+    private static func contextShardReplayOrder(_ lhs: URL, _ rhs: URL) -> Bool {
+        let left = contextShardIdentity(lhs.lastPathComponent)?.index ?? 0
+        let right = contextShardIdentity(rhs.lastPathComponent)?.index ?? 0
+        if left != right { return left < right }
+        return lhs.lastPathComponent.utf8.lexicographicallyPrecedes(rhs.lastPathComponent.utf8)
+    }
+
+    private static func contextShardIdentity(_ filename: String) -> ShardIdentity? {
         guard filename.hasSuffix(".jsonl") else { return nil }
         let stem = String(filename.dropLast(".jsonl".count))
         if stem.hasPrefix("context_sub_") {
-            return Int(stem.dropFirst("context_sub_".count))
+            guard let index = Int(stem.dropFirst("context_sub_".count)) else { return nil }
+            return ShardIdentity(family: "context_sub", index: index)
         }
         if stem.hasPrefix("context_") {
-            return Int(stem.dropFirst("context_".count))
+            guard let index = Int(stem.dropFirst("context_".count)) else { return nil }
+            return ShardIdentity(family: "context", index: index)
         }
         return nil
     }

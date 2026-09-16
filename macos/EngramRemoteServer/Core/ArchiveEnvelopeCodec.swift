@@ -6,6 +6,7 @@ public enum ArchiveEnvelopeKind: UInt8, Equatable, Sendable {
     case object = 1
     case manifest = 2
     case receipt = 3
+    case publicationAcceptance = 4
 }
 
 enum ArchiveEnvelopeCompression: UInt8, Sendable {
@@ -53,7 +54,8 @@ public struct ArchiveEnvelopeCodec: Sendable {
         guard raw.count <= Self.maxRawBytes(for: kind) else {
             throw ArchiveEnvelopeError.inputTooLarge
         }
-        if kind != .receipt, ArchiveV2Hash.sha256(raw) != expectedDigest {
+        if kind != .receipt, kind != .publicationAcceptance,
+           ArchiveV2Hash.sha256(raw) != expectedDigest {
             throw ArchiveEnvelopeError.rawDigestMismatch
         }
 
@@ -141,7 +143,8 @@ public struct ArchiveEnvelopeCodec: Sendable {
         guard actualRawDigest == authenticatedRawDigest else {
             throw ArchiveEnvelopeError.rawDigestMismatch
         }
-        if expectedKind != .receipt, ArchiveV2Hash.sha256(raw) != expectedDigest {
+        if expectedKind != .receipt, expectedKind != .publicationAcceptance,
+           ArchiveV2Hash.sha256(raw) != expectedDigest {
             throw ArchiveEnvelopeError.rawDigestMismatch
         }
         return raw
@@ -196,6 +199,8 @@ public struct ArchiveEnvelopeCodec: Sendable {
             ArchiveV2ProtocolLimits.maxManifestBytes
         case .receipt:
             ArchiveV2ProtocolLimits.maxReceiptBytes
+        case .publicationAcceptance:
+            CollectorPublicationProtocolLimits.maxAcceptanceRecordBytes
         }
     }
 

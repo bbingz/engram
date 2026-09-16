@@ -3,6 +3,8 @@
 ## Index
 
 <!-- AUTO-INDEX (recounted 2026-08-29): 115 dated entries; regenerate after adding sections -->
+- [2026-09-14 - HQ Web parity r11–r17: planner and scale facts (Cursor)](#2026-09-14---hq-web-parity-r11r17-planner-and-scale-facts-cursor)
+- [2026-09-12 - Bounded collector directory discovery, worktree only (Cursor)](#2026-09-12---bounded-collector-directory-discovery-worktree-only-cursor)
 - [2026-08-29 - HQ live ingest boot recovery via daily-Mac SSH watchdog (Cursor)](#2026-08-29---hq-live-ingest-boot-recovery-via-daily-mac-ssh-watchdog-cursor)
 - [2026-08-25 - HQ live ingest enabled on HQ + daily Mac, first publish pending (Cursor)](#2026-08-25---hq-live-ingest-enabled-on-hq--daily-mac-first-publish-pending-cursor)
 - [2026-08-24 - HQ live session ingest implemented locally, unreleased (Cursor)](#2026-08-24---hq-live-session-ingest-implemented-locally-unreleased-cursor)
@@ -121,6 +123,66 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-09-14 - HQ Web parity r11–r17: planner and scale facts (Cursor)
+
+- HQ `index.sqlite` (9.75 GB; 44,470 sessions, 38,781 capture heads,
+  777,468 `sessions_fts` rows / 379 MB content) has no `sqlite_stat1`, so
+  the planner assumes ~10 rows per indexed equality. `ANALYZE` measured on a
+  `VACUUM INTO` copy under `/tmp`: 3.5s; fixes the children OR statement by
+  itself, leaves the pre-r11 repair candidate at 2.06s, and slows an
+  approximation of the sessions first page 1ms → 18ms. Decision: no DB-wide
+  `ANALYZE` / `PRAGMA optimize`; pin plans per statement (`CROSS JOIN`,
+  `INDEXED BY`, unary `+` on non-driver predicates). Plan-asserting tests run
+  on statistics-free fixtures and must stay that way.
+- `CaptureIngestFileActivity.repairCurrentGenerations` must drive from
+  `capture_ingest_generations` so `ORDER BY generation_id LIMIT n` uses the
+  primary key. Driving from the ledger status index joined all heads and
+  sorted them in a temp B-tree (14.7–15.6s on HQ); the 2s batch deadline
+  fired before the first head, so `session_files` stayed empty from r8 until
+  r11. A deadline mid-batch now keeps completed heads and the cursor; a head
+  that alone exhausts the budget is skipped for that process start (HQ has 44
+  v2 generations of 5–87 MB). Tests: `CaptureIngestCommitTests`
+  `testHistoricalFileActivityRepair*_repro` (3). r11 backfilled 38,779 heads
+  → 190,039 rows in 5 min without intervention.
+- Skip-tier capture heads stay ledger `parsed` forever by design:
+  `SessionSnapshotWriter.ensureCurrentCaptureFTSJob` returns nil for
+  `tier = skip`, so `CaptureIngestReadiness.commit` never runs for them. On HQ
+  32,138 of 38,781 heads (28,654 Claude Code `agent_role = subagent`). The
+  Health card's "Parsed" count is therefore not a backlog.
+- Query tokens under three scalars have no trigram; `keywordSearch`
+  materializes a `LIKE` scan of every `sessions_fts` row: 5–6s on HQ, inside
+  the 8s search deadline, over the 2s metadata deadline as a list `query=`
+  filter. `instr()` / `GLOB` are not faster. `fts_map` is 1:1 with
+  `sessions_fts` today, which would allow recency-ordered early termination.
+- `/web/api/overview` with the default `limit=50` is a deterministic 503 on
+  HQ (2.85s for 17 streams, `readyCount` 2.07s of it); the Web UI pages with
+  `limit=2`. Pre-existing, left to the owner.
+- `Data.hash(into:)` covers only the first 80 bytes; HQ session ids (~196
+  bytes, shared stream prefix) turn `[Data: …]` / `Set<Data>` into linear
+  probing. Use `ByteKey` (Fable, r9).
+- Probing HQ Web from this host: `POST http://127.0.0.1:18787/web/api/auth`
+  with `X-Engram-Web: 1`, `Host`/`Origin` `macmini-hq.tail1cb16.ts.net:8443`
+  and `{"credential": …}` read from
+  `~/.engram-shadow-core-20260911/hq/state/remote-server/persistent/editor-credential.txt`;
+  the cookie is `__Host-engram_web`. Metadata endpoints have a 2s deadline,
+  search 8s. Timings rise while a Release build runs: HQ is this machine.
+- Parallel-lane hygiene: the Fable yolo goal in Herdr pane `wG:pK` owns
+  `ServiceWebMetadataProducer.swift`, `WebReadRoutes.swift`, packaging and
+  activation; announce file scope with `herdr pane send-text` before editing
+  the same worktree, and timestamp messages — queued pastes can be read after
+  the item they describe has shipped.
+
+## 2026-09-12 - Bounded collector directory discovery, worktree only (Cursor)
+
+Ordinary directory-created/renamed FSEvents no longer latch `continuityLoss`.
+They enqueue a targeted `collector_frontier` scan at the existing revision in
+the same checkpoint transaction as file dirty paths. Watching steps that scan
+only when `activeScan` is already set. Overflow, MustScan, root/mount/epoch,
+directory removal, unknown type, unsafe dirs, OpenCode, and Cursor-legacy still
+full-reconcile. 265 focused CollectorCore tests passed in
+`output/collector-goal-20260908/bounded-directory-discovery-2.log`. Not
+packaged; no live writes. Directory remove/rename-out can still gap.
 
 ## 2026-08-29 - HQ live ingest boot recovery via daily-Mac SSH watchdog (Cursor)
 

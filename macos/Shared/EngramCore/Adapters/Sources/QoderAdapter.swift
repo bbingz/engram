@@ -55,113 +55,211 @@ final class QoderAdapter: SessionAdapter, Sendable {
                failure != .fileModifiedDuringParse || objects.compactMap(Self.message(from:)).isEmpty {
                 return .failure(failure)
             }
-
-            var sessionId = ""
-            var agentId = ""
-            var cwd = ""
-            var startTime = ""
-            var endTime = ""
-            var model: String?
-            var userCount = 0
-            var assistantCount = 0
-            var toolCount = 0
-            var systemCount = 0
-            var firstUserText = ""
-
-            for object in objects {
-                guard let type = JSONLAdapterSupport.string(object["type"]),
-                      type == "user" || type == "assistant"
-                else { continue }
-
-                if sessionId.isEmpty, let value = JSONLAdapterSupport.string(object["sessionId"]) {
-                    sessionId = value
-                }
-                if agentId.isEmpty, let value = JSONLAdapterSupport.string(object["agentId"]) {
-                    agentId = value
-                }
-                if cwd.isEmpty, let value = JSONLAdapterSupport.string(object["cwd"]) {
-                    cwd = value
-                }
-                if startTime.isEmpty, let value = JSONLAdapterSupport.string(object["timestamp"]) {
-                    startTime = value
-                }
-                if let value = JSONLAdapterSupport.string(object["timestamp"]) {
-                    endTime = value
-                }
-
-                let message = JSONLAdapterSupport.object(object["message"])
-                if model == nil, let value = JSONLAdapterSupport.string(message?["model"]) {
-                    model = value
-                }
-
-                if type == "assistant" {
-                    assistantCount += 1
-                } else if Self.isToolResult(message?["content"]) {
-                    toolCount += 1
-                } else {
-                    let text = Self.extractContent(message?["content"])
-                    if Self.isSystemInjection(text) {
-                        systemCount += 1
-                    } else {
-                        userCount += 1
-                        if firstUserText.isEmpty { firstUserText = text }
-                    }
-                }
-            }
-
-            guard !sessionId.isEmpty else { return .failure(.malformedJSON) }
-            // R184-3: injection-only / empty Qoder files must not become
-            // zero-count browsable sessions. Terminal, same as Qwen.
-            guard userCount + assistantCount + toolCount > 0 else {
-                return .failure(.noVisibleMessages)
-            }
-            let subagent = subagentLayout(locator: locator, parentSessionId: sessionId)
-            // R1.P1.identity-key-collision: match ClaudeCode — never reuse parent
-            // sessionId when agentId is missing on a subagent transcript.
-            let id: String
-            if let subagent {
-                if !agentId.isEmpty {
-                    id = agentId
-                } else {
-                    id = "sub:\(sessionId):\(subagent.relativePath)"
-                }
-            } else {
-                id = sessionId
-            }
-
-            return .success(
-                NormalizedSessionInfo(
-                    id: id,
-                    source: .qoder,
-                    startTime: startTime,
-                    endTime: endTime != startTime ? endTime : nil,
-                    cwd: cwd,
-                    project: nil,
-                    model: model,
-                    messageCount: userCount + assistantCount + toolCount,
-                    userMessageCount: userCount,
-                    assistantMessageCount: assistantCount,
-                    toolMessageCount: toolCount,
-                    systemMessageCount: systemCount,
-                    summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200)),
-                    filePath: locator,
-                    sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
-                    indexedAt: nil,
-                    agentRole: subagent == nil ? nil : "subagent",
-                    originator: nil,
-                    origin: nil,
-                    summaryMessageCount: nil,
-                    tier: nil,
-                    qualityScore: nil,
-                    parentSessionId: subagent?.parentSessionId,
-                    suggestedParentId: nil
-                )
-            )
+            return Self.sessionInfo(from: objects, locator: locator, projectsRoot: projectsRoot.path)
         } catch let failure as ParserFailure {
             return .failure(failure)
         } catch {
             return .failure(.malformedJSON)
         }
+    }
+
+    static func scanCapturedSource(
+        physicalLocator: String,
+        logicalLocator: String,
+        stagingRoot: String
+    ) throws -> AdapterParseResult<CapturedSourceScan> {
+        try scanFileForIndexing(
+            physicalLocator: physicalLocator,
+            logicalLocator: logicalLocator,
+            projectsRoot: stagingRoot,
+            limits: .default,
+            strictRecords: true
+        )
+    }
+
+    private static func scanFileForIndexing(
+        physicalLocator: String,
+        logicalLocator: String,
+        projectsRoot: String,
+        limits: ParserLimits,
+        strictRecords: Bool
+    ) throws -> AdapterParseResult<CapturedSourceScan> {
+        do {
+            let (objects, failure) = try JSONLAdapterSupport.readObjects(
+                locator: physicalLocator,
+                limits: limits,
+                reportFailures: true,
+                strictRecords: strictRecords,
+                countsTowardMessageLimit: {
+                    guard let message = Self.message(from: $0) else { return false }
+                    return message.role != .system
+                }
+            )
+            if let failure, failure != .fileModifiedDuringParse { return .failure(failure) }
+            let messages = objects.compactMap(Self.message(from:))
+            if failure == .fileModifiedDuringParse, messages.isEmpty {
+                return .failure(.fileModifiedDuringParse)
+            }
+            let info: NormalizedSessionInfo
+            switch Self.sessionInfo(
+                from: objects,
+                locator: logicalLocator,
+                projectsRoot: projectsRoot,
+                physicalLocator: physicalLocator
+            ) {
+            case .failure(let reason): return .failure(reason)
+            case .success(let value): info = value
+            }
+            let checkpoint = failure == nil
+                ? try JSONLAdapterSupport.checkpoint(locator: physicalLocator, limits: limits)
+                : nil
+            let checkpointBoundaryHash = checkpoint?.parsedOffset == info.sizeBytes
+                ? checkpoint?.boundaryHash
+                : nil
+            return .success(
+                CapturedSourceScan(
+                    scan: IndexingScan(
+                        info: info,
+                        messages: messages,
+                        parseFailure: failure,
+                        checkpointParsedOffset: checkpoint?.parsedOffset,
+                        checkpointBoundaryHash: checkpointBoundaryHash
+                    ),
+                    rawSourceSessionID: firstSessionId(from: objects)
+                )
+            )
+        } catch is CancellationError where strictRecords {
+            throw CancellationError()
+        } catch let failure as ParserFailure {
+            return .failure(failure)
+        } catch {
+            return .failure(.malformedJSON)
+        }
+    }
+
+    private static func firstSessionId(from objects: [JSONLAdapterSupport.JSONObject]) -> String {
+        for object in objects {
+            guard let type = JSONLAdapterSupport.string(object["type"]),
+                  type == "user" || type == "assistant" else { continue }
+            if let value = JSONLAdapterSupport.string(object["sessionId"]), !value.isEmpty {
+                return value
+            }
+        }
+        return ""
+    }
+
+    private static func sessionInfo(
+        from objects: [JSONLAdapterSupport.JSONObject],
+        locator: String,
+        projectsRoot: String,
+        physicalLocator: String? = nil
+    ) -> AdapterParseResult<NormalizedSessionInfo> {
+        var sessionId = ""
+        var agentId = ""
+        var cwd = ""
+        var startTime = ""
+        var endTime = ""
+        var model: String?
+        var userCount = 0
+        var assistantCount = 0
+        var toolCount = 0
+        var systemCount = 0
+        var firstUserText = ""
+
+        for object in objects {
+            guard let type = JSONLAdapterSupport.string(object["type"]),
+                  type == "user" || type == "assistant"
+            else { continue }
+
+            if sessionId.isEmpty, let value = JSONLAdapterSupport.string(object["sessionId"]) {
+                sessionId = value
+            }
+            if agentId.isEmpty, let value = JSONLAdapterSupport.string(object["agentId"]) {
+                agentId = value
+            }
+            if cwd.isEmpty, let value = JSONLAdapterSupport.string(object["cwd"]) {
+                cwd = value
+            }
+            if startTime.isEmpty, let value = JSONLAdapterSupport.string(object["timestamp"]) {
+                startTime = value
+            }
+            if let value = JSONLAdapterSupport.string(object["timestamp"]) {
+                endTime = value
+            }
+
+            let message = JSONLAdapterSupport.object(object["message"])
+            if model == nil, let value = JSONLAdapterSupport.string(message?["model"]) {
+                model = value
+            }
+
+            if type == "assistant" {
+                assistantCount += 1
+            } else if Self.isToolResult(message?["content"]) {
+                toolCount += 1
+            } else {
+                let text = Self.extractContent(message?["content"])
+                if Self.isSystemInjection(text) {
+                    systemCount += 1
+                } else {
+                    userCount += 1
+                    if firstUserText.isEmpty { firstUserText = text }
+                }
+            }
+        }
+
+        guard !sessionId.isEmpty else { return .failure(.malformedJSON) }
+        // R184-3: injection-only / empty Qoder files must not become
+        // zero-count browsable sessions. Terminal, same as Qwen.
+        guard userCount + assistantCount + toolCount > 0 else {
+            return .failure(.noVisibleMessages)
+        }
+        let layoutLocator = physicalLocator ?? locator
+        let subagent = SubagentTranscriptPath.layout(
+            locator: layoutLocator,
+            projectsRoot: projectsRoot,
+            projectLevelParentSessionId: sessionId
+        )
+        // R1.P1.identity-key-collision: match ClaudeCode — never reuse parent
+        // sessionId when agentId is missing on a subagent transcript.
+        let id: String
+        if let subagent {
+            if !agentId.isEmpty {
+                id = agentId
+            } else {
+                id = "sub:\(sessionId):\(subagent.relativePath)"
+            }
+        } else {
+            id = sessionId
+        }
+
+        return .success(
+            NormalizedSessionInfo(
+                id: id,
+                source: .qoder,
+                startTime: startTime,
+                endTime: endTime != startTime ? endTime : nil,
+                cwd: cwd,
+                project: nil,
+                model: model,
+                messageCount: userCount + assistantCount + toolCount,
+                userMessageCount: userCount,
+                assistantMessageCount: assistantCount,
+                toolMessageCount: toolCount,
+                systemMessageCount: systemCount,
+                summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200)),
+                filePath: locator,
+                sizeBytes: JSONLAdapterSupport.fileSize(locator: physicalLocator ?? locator),
+                indexedAt: nil,
+                agentRole: subagent == nil ? nil : "subagent",
+                originator: nil,
+                origin: nil,
+                summaryMessageCount: nil,
+                tier: nil,
+                qualityScore: nil,
+                parentSessionId: subagent?.parentSessionId,
+                suggestedParentId: nil
+            )
+        )
     }
 
     func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
@@ -253,17 +351,6 @@ final class QoderAdapter: SessionAdapter, Sendable {
 
     func isAccessible(locator: String) async -> Bool {
         JSONLAdapterSupport.fileExists(locator)
-    }
-
-    private func subagentLayout(
-        locator: String,
-        parentSessionId: String
-    ) -> SubagentTranscriptLayout? {
-        SubagentTranscriptPath.layout(
-            locator: locator,
-            projectsRoot: projectsRoot.path,
-            projectLevelParentSessionId: parentSessionId
-        )
     }
 
     private static func message(from object: JSONLAdapterSupport.JSONObject) -> NormalizedMessage? {

@@ -185,6 +185,25 @@ final class IflowAdapter: SessionAdapter, Sendable {
         return JSONLAdapterSupport.stream(result)
     }
 
+    static func scanCapturedSource(
+        physicalLocator: String, logicalLocator: String, stagingRoot: String
+    ) async throws -> AdapterParseResult<CapturedSourceScan> {
+        // Immutable archive replay rejects malformed records rather than
+        // accepting a silently shortened transcript. Keep native normalization.
+        let (_, failure) = try JSONLAdapterSupport.readObjects(
+            locator: physicalLocator, limits: .default, reportFailures: true,
+            strictRecords: true, countsTowardMessageLimit: Self.countsTowardMessageLimit)
+        if let failure { return .failure(failure) }
+        let adapter = IflowAdapter(projectsRoot: stagingRoot)
+        switch try await adapter.scanForIndexing(locator: physicalLocator) {
+        case .failure(let failure): return .failure(failure)
+        case .success(var scan):
+            let nativeID = scan.info.id
+            scan.info.filePath = logicalLocator
+            return .success(CapturedSourceScan(scan: scan, rawSourceSessionID: nativeID))
+        }
+    }
+
     func isAccessible(locator: String) async -> Bool {
         JSONLAdapterSupport.fileExists(locator)
     }

@@ -56,8 +56,9 @@ public struct RemoteSyncConfig: Sendable {
             .appendingPathComponent("offload-store", isDirectory: true)
 
         var settings: [String: Any] = [:]
-        let settingsURL = home.appendingPathComponent(".engram", isDirectory: true)
-            .appendingPathComponent("settings.json")
+        let settingsURL = environment["ENGRAM_SETTINGS_PATH"]
+            .flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+            ?? home.appendingPathComponent(".engram", isDirectory: true).appendingPathComponent("settings.json")
         if let data = try? Data(contentsOf: settingsURL),
            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             settings = object
@@ -183,8 +184,9 @@ public struct LiveIngestConfig: Sendable {
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> LiveIngestConfig {
         var settings: [String: Any] = [:]
-        let settingsURL = homeDirectory.appendingPathComponent(".engram", isDirectory: true)
-            .appendingPathComponent("settings.json")
+        let settingsURL = environment["ENGRAM_SETTINGS_PATH"]
+            .flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+            ?? homeDirectory.appendingPathComponent(".engram", isDirectory: true).appendingPathComponent("settings.json")
         if let data = try? Data(contentsOf: settingsURL),
            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             settings = object

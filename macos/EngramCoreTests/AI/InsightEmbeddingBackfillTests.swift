@@ -1,6 +1,7 @@
 import EngramCoreRead
 import EngramCoreWrite
 import GRDB
+import SQLite3
 import XCTest
 
 private struct FakeEmbeddingProvider: EmbeddingProvider {
@@ -431,6 +432,91 @@ final class InsightEmbeddingBackfillTests: XCTestCase {
         XCTAssertEqual(embedded[0].chunks.count, 20)
         let batchSizes = await provider.batchSizes()
         XCTAssertEqual(batchSizes, [4, 4, 4, 4, 4])
+    }
+
+    func testPendingSessionsUsesBoundedWorkForLargeFtsCorpus_repro() throws {
+        let writer = try EngramDatabaseWriter(path: tempDir.appendingPathComponent("bounded-pending.sqlite").path)
+        try writer.migrate()
+        try writer.write { db in
+            try db.execute(sql: """
+                WITH RECURSIVE corpus(n) AS (
+                    VALUES(1) UNION ALL SELECT n + 1 FROM corpus WHERE n < 8192
+                )
+                INSERT INTO sessions_fts(session_id, content)
+                SELECT 'unrelated-' || n, 'unselected transcript content' FROM corpus;
+                """)
+        }
+        try seedEmbeddingSessions(
+            writer: writer,
+            sessions: (0..<512).map { index in
+                let id = String(format: "session-%04d", index)
+                return (id, id + ":embedding", "selected transcript \(index)")
+            }
+        )
+
+        var vmSteps = 0
+        let pending = try withUnsafeMutablePointer(to: &vmSteps) { steps in
+            try writer.read { db in
+                sqlite3_trace_v2(db.sqliteConnection, UInt32(SQLITE_TRACE_PROFILE), { _, context, statement, _ in
+                    guard let context, let statement else { return 0 }
+                    context.assumingMemoryBound(to: Int.self).pointee += Int(
+                        sqlite3_stmt_status(OpaquePointer(statement), SQLITE_STMTSTATUS_VM_STEP, 1)
+                    )
+                    return 0
+                }, steps)
+            }
+            defer {
+                try? writer.read { db in sqlite3_trace_v2(db.sqliteConnection, 0, nil, nil) }
+            }
+            return try SessionEmbeddingBackfill.pendingSessions(writer: writer, limit: 8)
+        }
+
+        XCTAssertEqual(pending.map(\.sessionId), (0..<8).map { String(format: "session-%04d", $0) })
+        XCTAssertGreaterThan(vmSteps, 0, "the production read must be measured")
+        XCTAssertLessThan(vmSteps, 500_000, "FTS work must not multiply by the candidate job count")
+    }
+
+    func testPendingSessionsPreservesEligibilityOrderingLimitsAndCompleteText() throws {
+        let writer = try EngramDatabaseWriter(path: tempDir.appendingPathComponent("pending-semantics.sqlite").path)
+        try writer.migrate()
+        XCTAssertTrue(try SessionEmbeddingBackfill.pendingSessions(writer: writer).isEmpty)
+        try seedEmbeddingSessions(
+            writer: writer,
+            sessions: ["a", "b", "c", "d", "e", "hidden", "skip", "lite", "empty", "blank", "missing", "done", "failed", "inflight", "fts"].map {
+                ($0, "job-" + $0, "text-" + $0)
+            }
+        )
+        try writer.write { db in
+            try db.execute(sql: """
+                UPDATE session_index_jobs SET created_at = '2026-09-01';
+                UPDATE session_index_jobs SET created_at = '2026-08-01' WHERE session_id = 'a';
+                UPDATE session_index_jobs SET retry_count = 2, created_at = '2026-07-01' WHERE session_id = 'd';
+                UPDATE session_index_jobs SET status = 'failed_retryable', created_at = '2026-06-01' WHERE session_id = 'e';
+                UPDATE session_index_jobs SET status = 'completed' WHERE session_id = 'done';
+                UPDATE session_index_jobs SET status = 'failed_permanent' WHERE session_id = 'failed';
+                UPDATE session_index_jobs SET status = 'inflight' WHERE session_id = 'inflight';
+                UPDATE session_index_jobs SET job_kind = 'fts' WHERE session_id = 'fts';
+                UPDATE sessions SET tier = NULL WHERE id = 'a';
+                UPDATE sessions SET tier = 'premium' WHERE id = 'b';
+                UPDATE sessions SET hidden_at = '2026-09-01' WHERE id = 'hidden';
+                UPDATE sessions SET tier = id WHERE id IN ('skip', 'lite');
+                DELETE FROM sessions_fts WHERE session_id = 'missing';
+                UPDATE sessions_fts SET content = '' WHERE session_id = 'empty';
+                UPDATE sessions_fts SET content = '   ' WHERE session_id = 'blank';
+                INSERT INTO sessions_fts(session_id, content) VALUES
+                  ('a', 'tail'), ('b', 'interleaved'), ('a', ''), ('a', NULL),
+                  ('a', 'text-a'), (NULL, 'unlinked content');
+                """)
+        }
+
+        let pending = try SessionEmbeddingBackfill.pendingSessions(writer: writer, limit: 3)
+        XCTAssertEqual(pending.map(\.jobId), ["job-a", "job-b", "job-c"])
+        XCTAssertEqual(pending.map(\.content), ["text-a\ntail\n\ntext-a", "text-b\ninterleaved", "text-c"])
+        XCTAssertEqual(
+            try SessionEmbeddingBackfill.pendingSessions(writer: writer, limit: -1).map(\.jobId),
+            ["job-a", "job-b", "job-c", "job-d", "job-e"]
+        )
+        XCTAssertTrue(try SessionEmbeddingBackfill.pendingSessions(writer: writer, limit: 0).isEmpty)
     }
 
     func testSessionEmbeddingWaitsForFtsAndFtsCompletionRepairsSummaryOnlyVector_repro() async throws {

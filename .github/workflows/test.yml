@@ -115,6 +115,12 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y ripgrep
           fi
+      - name: Install TLS listener inspection tool
+        run: |
+          if ! command -v lsof >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y lsof
+          fi
       - name: Build
         run: npm run build
       - name: Typecheck tests and scripts
@@ -157,7 +163,7 @@ jobs:
         run: bash scripts/check-archive-v2-safety.sh
       # Pure-rg text gates (swift-conventions, product-boundary-scripts) already run on
       # ubuntu via `npm run test:coverage`; keep macos-vitest for macOS-only scripts.
-      - run: npm test -- tests/scripts/build-release-script.test.ts tests/scripts/remote-server-package.test.ts tests/scripts/swift-boundary-scripts.test.ts tests/scripts/archive-v2-safety-gate.test.ts tests/scripts/plist-gate.test.ts tests/scripts/invariants-ledger.test.ts tests/scripts/version-guard.test.ts tests/scripts/hq-live-hardening.test.ts
+      - run: npm test -- tests/scripts/build-release-script.test.ts tests/scripts/remote-server-package.test.ts tests/scripts/collector-package.test.ts tests/scripts/service-package.test.ts tests/scripts/headless-install-plan.test.ts tests/scripts/swift-boundary-scripts.test.ts tests/scripts/archive-v2-safety-gate.test.ts tests/scripts/plist-gate.test.ts tests/scripts/invariants-ledger.test.ts tests/scripts/version-guard.test.ts tests/scripts/hq-live-hardening.test.ts
       - name: Check test fixture schema and freshness
         run: npm run check:fixtures
       - name: Check MCP contract fixture freshness
@@ -235,8 +241,17 @@ jobs:
             exit 1
           fi
           bash scripts/release-verify.sh "$ENGRAM_APP" --hygiene-only
-          run_xcode_tests EngramServiceCore
+          (
+            SERVICE_TEST_HOME="$(mktemp -d "$GITHUB_WORKSPACE/.engram-demo-test-home.XXXXXX")"
+            chmod 700 "$SERVICE_TEST_HOME"
+            CFFIXED_USER_HOME="$SERVICE_TEST_HOME" \
+            TEST_RUNNER_CFFIXED_USER_HOME="$SERVICE_TEST_HOME" \
+            ENGRAM_DEMO_EXPECTED_HOME="$SERVICE_TEST_HOME" \
+            TEST_RUNNER_ENGRAM_DEMO_EXPECTED_HOME="$SERVICE_TEST_HOME" \
+              run_xcode_tests EngramServiceCore
+          )
           run_xcode_tests EngramMCPTests
+          run_xcode_tests EngramCollectorCore
 
   remote-server-swift:
     needs: changes

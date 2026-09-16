@@ -300,10 +300,11 @@ public struct GuardedEmbeddingProvider: EmbeddingProvider {
     public init(
         config: EmbeddingConfig,
         breaker: EmbeddingCircuitBreaker,
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        observeRequest: (@Sendable (EmbeddingRequestObservation) async -> Void)? = nil
     ) {
         self.init(
-            inner: OpenAICompatibleEmbeddingClient(config: config, session: session),
+            inner: OpenAICompatibleEmbeddingClient(config: config, session: session, observeRequest: observeRequest),
             breaker: breaker,
             providerKey: EmbeddingCircuitBreaker.providerKey(for: config)
         )

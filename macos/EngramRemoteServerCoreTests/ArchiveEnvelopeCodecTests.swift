@@ -137,6 +137,70 @@ final class ArchiveEnvelopeCodecTests: XCTestCase {
         }
     }
 
+    func testPublicationAcceptanceKindKeepsLegacyNumbersAndAuthenticatesPublicationKeyedPayload() throws {
+        XCTAssertEqual(ArchiveEnvelopeKind.object.rawValue, 1)
+        XCTAssertEqual(ArchiveEnvelopeKind.manifest.rawValue, 2)
+        XCTAssertEqual(ArchiveEnvelopeKind.receipt.rawValue, 3)
+        let kind = try XCTUnwrap(ArchiveEnvelopeKind(rawValue: 4))
+        let codec = ArchiveEnvelopeCodec(key: key)
+        let record = Data("publication and replica ACK are one encrypted record".utf8)
+        let publicationDigest = ArchiveV2Hash.sha256(Data("canonical publication".utf8))
+
+        let envelope = try codec.encode(raw: record, kind: kind, expectedDigest: publicationDigest)
+
+        XCTAssertEqual(
+            try codec.decode(envelope, expectedKind: kind, expectedDigest: publicationDigest),
+            record
+        )
+        XCTAssertNil(envelope.range(of: record))
+        XCTAssertThrowsError(
+            try codec.decode(envelope, expectedKind: .receipt, expectedDigest: publicationDigest)
+        )
+        XCTAssertThrowsError(
+            try codec.decode(
+                envelope,
+                expectedKind: kind,
+                expectedDigest: ArchiveV2Hash.sha256(Data("another publication".utf8))
+            )
+        )
+    }
+
+    func testPublicationAcceptanceEnvelopeEnforcesFourKiBLimit() throws {
+        let kind = try XCTUnwrap(ArchiveEnvelopeKind(rawValue: 4))
+        let codec = ArchiveEnvelopeCodec(key: key)
+        let digest = ArchiveV2Hash.sha256(Data("publication".utf8))
+        XCTAssertNoThrow(
+            try codec.encode(raw: Data(repeating: 1, count: 4 * 1024), kind: kind, expectedDigest: digest)
+        )
+        XCTAssertThrowsError(
+            try codec.encode(raw: Data(repeating: 1, count: 4 * 1024 + 1), kind: kind, expectedDigest: digest)
+        ) { error in
+            XCTAssertEqual(error as? ArchiveEnvelopeError, .inputTooLarge)
+        }
+        let oversized = try makeAuthenticatedRawEnvelope(
+            raw: Data(repeating: 1, count: 4 * 1024 + 1),
+            kind: kind,
+            expectedDigest: digest
+        )
+        XCTAssertThrowsError(try codec.decode(oversized, expectedKind: kind, expectedDigest: digest)) { error in
+            XCTAssertEqual(error as? ArchiveEnvelopeError, .inputTooLarge)
+        }
+    }
+
+    func testPublicationAcceptanceStillChecksAuthenticatedRawPayloadHash() throws {
+        let kind = try XCTUnwrap(ArchiveEnvelopeKind(rawValue: 4))
+        let digest = ArchiveV2Hash.sha256(Data("publication key".utf8))
+        let envelope = try makeAuthenticatedRawEnvelope(
+            raw: Data("acceptance record".utf8), kind: kind, expectedDigest: digest,
+            rawDigest: Data(repeating: 0, count: 32)
+        )
+        XCTAssertThrowsError(
+            try ArchiveEnvelopeCodec(key: key).decode(envelope, expectedKind: kind, expectedDigest: digest)
+        ) { error in
+            XCTAssertEqual(error as? ArchiveEnvelopeError, .rawDigestMismatch)
+        }
+    }
+
     private func deterministicNoise(byteCount: Int) -> Data {
         var result = Data()
         var counter: UInt64 = 0
@@ -153,12 +217,13 @@ final class ArchiveEnvelopeCodecTests: XCTestCase {
     private func makeAuthenticatedRawEnvelope(
         raw: Data,
         kind: ArchiveEnvelopeKind,
-        expectedDigest: String
+        expectedDigest: String,
+        rawDigest: Data? = nil
     ) throws -> Data {
         var header = Data([0x45, 0x41, 0x56, 0x32, 0x01, kind.rawValue, 0x00, 0x00])
         var rawLength = UInt64(raw.count).bigEndian
         withUnsafeBytes(of: &rawLength) { header.append(contentsOf: $0) }
-        header.append(Data(SHA256.hash(data: raw)))
+        header.append(rawDigest ?? Data(SHA256.hash(data: raw)))
 
         var aad = Data("engram-archive-envelope-aad".utf8)
         aad.append(0)
