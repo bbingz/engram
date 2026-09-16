@@ -1412,7 +1412,7 @@ final class CollectorInventoryStoreTests: XCTestCase {
         try database.write { db in
             try db.execute(sql: """
                 UPDATE collector_publication_replicas SET state = 'pending', attempts = 3,
-                    last_error = 'privacyWithheld', retry_not_before = 5_000
+                    last_error = 'privacyWithheld', retry_not_before = 5000
                 """)
         }
         let withheldBefore = try database.read { db in

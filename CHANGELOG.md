@@ -47,7 +47,8 @@ run 34801528201. No HQ package, no activate, no `~/.engram` writes.
    2026-09-13 inverted after that date). Costs totals now sum in key
    order so snapshot/live freshness does not stale on Dictionary
    iteration of IEEE money. MCP `list_sessions`/`search` source enum
-   test now follows `SourceName.allCases` (`pi`, `grok`).
+   test now follows `SourceName.allCases` (`pi`, `grok`). Collector
+   inventory SQL uses `5000` not Swift `5_000` (macos-15 SQLite).
 
 Focused: `npm test -- tests/scripts/archive-v2-safety-gate.test.ts
 tests/scripts/swift-conventions.test.ts tests/scripts/collector-package.test.ts
