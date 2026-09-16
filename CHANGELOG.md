@@ -44,7 +44,9 @@ run 34801528201. No HQ package, no activate, no `~/.engram` writes.
    `query_too_short` only when every term is short. ByteKey tool-analytics
    budget 3s → 8s for two 2s-capped calls under CI load. One-sided AI
    stats `to:` uses today's local day so last-24h from ≤ to (hardcoded
-   2026-09-13 inverted after that date).
+   2026-09-13 inverted after that date). Costs totals now sum in key
+   order so snapshot/live freshness does not stale on Dictionary
+   iteration of IEEE money.
 
 Focused: `npm test -- tests/scripts/archive-v2-safety-gate.test.ts
 tests/scripts/swift-conventions.test.ts tests/scripts/collector-package.test.ts

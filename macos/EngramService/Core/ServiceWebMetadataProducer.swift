@@ -3519,6 +3519,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
         case .day:
             records = try dayCosts(db, filter: filter, policy: policy)
         }
+        records.sort { $0.item.key.utf8.lexicographicallyPrecedes($1.item.key.utf8) }
         let totals = try Self.sumCosts(records.map(\.item))
         let unpriced = try costUnpriced(db, filter: filter, policy: policy)
         if let keys {
