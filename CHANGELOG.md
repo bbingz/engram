@@ -32,6 +32,12 @@ run 34801528201. No HQ package, no activate, no `~/.engram` writes.
    `EngramRemoteServerCore` Embed Frameworks entries were the stale
    delta.
 
+5. **CI `swift-unit` compile.** macos-15 infers GRDB
+   `StatementArguments` for untyped string-array concatenations. Annotate
+   `contents` / `expected` as `[String]` in
+   `CollectorBinaryShadowIntegrationTests` (Kimi/Cursor reads) and
+   `CollectorRuntimeTests` (Kimi relativePaths).
+
 Focused: `npm test -- tests/scripts/archive-v2-safety-gate.test.ts
 tests/scripts/swift-conventions.test.ts tests/scripts/collector-package.test.ts
 tests/scripts/collector-web-ui.test.ts` 312/312.

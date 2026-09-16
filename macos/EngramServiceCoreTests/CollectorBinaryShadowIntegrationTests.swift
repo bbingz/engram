@@ -3341,7 +3341,7 @@ private extension BinaryShadowScope {
     }
 
     func assertKimiRead(_ read: WebRead, generation: Int) throws {
-        let contents = [Self.firstText, Self.firstReplyText] + (generation >= 2 ? [Self.secondText] : [])
+        let contents: [String] = [Self.firstText, Self.firstReplyText] + (generation >= 2 ? [Self.secondText] : [])
         XCTAssertEqual(read.messages.map(\.content), contents)
         XCTAssertEqual(read.messages.map(\.role), [.user, .assistant] + (generation >= 2 ? [.user] : []))
         XCTAssertEqual(read.messages[1].usage?.inputTokens, 96)
@@ -3493,7 +3493,7 @@ private extension BinaryShadowScope {
     }
 
     func assertCursorRead(_ read: WebRead, generation: Int) throws {
-        let contents = [Self.firstText, Self.firstReplyText] + (generation >= 4 ? [Self.secondText] : [])
+        let contents: [String] = [Self.firstText, Self.firstReplyText] + (generation >= 4 ? [Self.secondText] : [])
         XCTAssertEqual(read.messages.map(\.content), contents)
         XCTAssertEqual(read.messages.map(\.role), [.user, .assistant] + (generation >= 4 ? [.assistant] : []))
         XCTAssertTrue(read.messages.allSatisfy { $0.timestamp == nil && $0.usage == nil })

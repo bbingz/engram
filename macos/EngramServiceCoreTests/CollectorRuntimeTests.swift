@@ -2733,7 +2733,7 @@ final class CollectorRuntimeTests: XCTestCase {
                     XCTAssertEqual(manifest.replayLayout.kimiProjectContext?.cwd,
                         stage == 3 ? f.base.appendingPathComponent("second-project").path : f.project.path)
                     XCTAssertNil(bytes.range(of: Data("UNRELATED-KIMI-SECRET".utf8)))
-                    let expected = ["legacy/session-one/context.jsonl"]
+                    let expected: [String] = ["legacy/session-one/context.jsonl"]
                         + (stage >= 1 ? ["legacy/session-one/context_sub_2.jsonl"] : [])
                         + (stage >= 2 ? ["legacy/session-one/wire.jsonl"] : [])
                     XCTAssertEqual(manifest.replayLayout.relativePaths, expected.sorted())
