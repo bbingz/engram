@@ -17,6 +17,7 @@ final class CollectorTargetDependencyTests: XCTestCase {
         "EngramCollectorCore/CollectorCursorLegacySource.swift",
         "EngramCollectorCore/CollectorCursorLegacyOwnership.swift",
         "EngramCollectorCore/CollectorGeminiSource.swift",
+        "EngramCollectorCore/CollectorGrokSource.swift",
         "EngramCollectorCore/CollectorKimiSource.swift",
         "EngramCollectorCore/CollectorClineSource.swift",
         "EngramCollectorCore/CollectorVSCodeSource.swift",

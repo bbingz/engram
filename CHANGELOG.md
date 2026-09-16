@@ -49,6 +49,7 @@ run 34801528201. No HQ package, no activate, no `~/.engram` writes.
    iteration of IEEE money. MCP `list_sessions`/`search` source enum
    test now follows `SourceName.allCases` (`pi`, `grok`). Collector
    inventory SQL uses `5000` not Swift `5_000` (macos-15 SQLite).
+   Collector target allowlist includes `CollectorGrokSource.swift`.
 
 Focused: `npm test -- tests/scripts/archive-v2-safety-gate.test.ts
 tests/scripts/swift-conventions.test.ts tests/scripts/collector-package.test.ts
