@@ -2,17 +2,25 @@
 
 ## Changelog Memo
 
+### 2026-09-20
+
+- [部署] 用户授权后激活 HQ `web-parity-20260913-r18`（#446 / `main` `3859f788`）。service-index PID 22930（EngramServiceCore `e2548abd…`，回滚 r17），remote-server PID 23443（`8c351ad1…`，回滚 r5）。现网库建了 `idx_sessions_activity_id`，未跑 ANALYZE。探针：overview 无 limit 0.072s/2 条；`测试` 列表 `query_too_short` 0.020s；Search `测试` 0.583s。详见 `CHANGELOG.md`。
+- [变更] 本机 `main` 快进 `625ecc97` → `3859f788`。补交 09-14 磁盘卫生记录与 `.gitignore`；`.grok` 会话产物忽略，`.grok/workflows/*.rhai` 入库。派遣计划标为已落地。
+
 ### 2026-09-16
 
 - [修复] Collector PR #446 的 CI 闸门：archive-v2 精确允许 Web unlink/suggestion DELETE；R3 allowlist `npm_` 脱敏前缀；Linux 无 `/usr/bin/otool` 时跳过 Mach-O 解析，Concurrency 闭包测试改为 darwin-only；用 CI 钉住的 xcodegen 重写 `project.pbxproj`；macos-15 上给 Kimi/Cursor 测试数组标 `[String]`；会话列表混合查询只 MATCH 长词（`Review P2 tests` 不再空页）；AI stats 单端日期改用当天；costs 合计按 key 排序后再加，避免 Dictionary 迭代让快照/live freshness 误报 stale；MCP source enum 测试跟 `SourceName.allCases`（含 pi/grok）；collector inventory SQL 不用 Swift `5_000`。证据见 `CHANGELOG.md` 顶部。未部署 HQ。
 
 ### 2026-09-15
 
-- [验证] 完整 scheme：RemoteServerCore 506、CoreTests 2013（1 skip）绿；ServiceCore 因 `testOverviewOrdersMachineThenInstance` 仍按默认 limit 取 3 条 stream 失败。测试改为显式 `limit: 3` 后 `WebMetadataProducerTests` 91/91。未提交、未部署。
-- [修复] HQ Web 六项残留（仅 collector worktree，未部署）：overview 省略 limit 50→2；会话列表 1–2 字不再对 `sessions_fts` 无界 LIKE（空页 + `query_too_short`，去 Search）；Search 短词 LIKE 按 recency/`fts_map` 封顶；Files `agents=all` 增加测试用覆盖部分索引 `idx_sessions_activity_id`（未 migrate HQ）；Health 改文案区分 skip 终态与空转写隔离。证据与未跑全套见 `CHANGELOG.md` 顶部。
+- [复核] collector 六项 HQ Web 残留第一轮 FAIL：Search `#query` placeholder 写成「3+ 字；1–2 去 Search」，与 Search 短词支持冲突。已改回 `Keywords`。独立 vitest 176/176。随后随 #446 / r18 合入并上线。
+- [验证] 完整 scheme：RemoteServerCore 506、CoreTests 2013（1 skip）绿；ServiceCore 因 `testOverviewOrdersMachineThenInstance` 仍按默认 limit 取 3 条 stream 失败。测试改为显式 `limit: 3` 后 `WebMetadataProducerTests` 91/91。
+- [修复] HQ Web 六项残留：overview 省略 limit 50→2；会话列表 1–2 字不再对 `sessions_fts` 无界 LIKE（空页 + `query_too_short`）；Search 短词 LIKE 按 recency/`fts_map` 封顶；Files `agents=all` 覆盖部分索引 `idx_sessions_activity_id`；Health 改文案区分 skip 终态与空转写隔离。证据见 `CHANGELOG.md`。
 
 ### 2026-09-14
 
+- [编排] 工作流 `engram-next-backlog` 规划六项 HQ Web 残留并派给 Cursor。简报 `docs/superpowers/plans/2026-09-14-hq-web-residuals.md`（2026-09-20 已落地）。
+- [空间] HQ 清 `output/` 测试残留 + APFS 快照、Codex 旧 standalone、CCTV 2 月日志、MingTang `target`、iCloud 2020–2025 iTerm2 日志。内盘约 54Gi→252Gi 可用。详见 `CHANGELOG.md`。
 - [修复] `agents=all`/`agents=only`（会话页「All」「Agents Only」、Stats 的 Agents 选项）在 HQ 规模下整体失效：默认 `hide` 带 `parent IS NULL AND suggested IS NULL` 两个等值，规划器自己会选覆盖部分索引 `idx_sessions_web_list_keys`；`all`/`only` 只剩 `hidden_at IS NULL` 一个索引约束，无统计的 HQ 库选 `idx_sessions_visible` 读全部 44k 可见会话行（其中 32k skip 层随即丢弃）。r14 实测：会话「All」1.85s，Tools all 503/2.08s，Files all 503/2.00s，「All」+ 搜索词 1.6–1.8s。`sessionsJoinSQL(agents:on:)` 对 `.all/.only` 把 `sessions s` 写成 `INDEXED BY idx_sessions_activity_time`（迁移自带的排除 skip 的部分索引），用于列表、总数（含搜索总数：线上 1.65s→0.02s）、工具、文件四类语句；页面新鲜度复查的 ID 批次（≤50 个）改为钉住主键（`primaryKeyJoinSQL`，仅当 `sqlite_master` 有 `sqlite_autoindex_sessions_1` 才加 hint），此前 `all`+搜索时它也走 visible 索引重读 44k 行（一次请求 1200 个采样中 950 个在这里）。r17 线上未缓存：会话 all 0.07s、all+xcodegen 0.13s、all+source+query 0.32s、Tools all 0.38–0.59s、Files all 1.14s（剩余最慢项，走非覆盖索引读 11.8k 行；覆盖索引需迁移，未做）。浏览器：「All」1–50 of 6,545、+xcodegen 1–50 of 122、Tools 按会话分组 agents=All 5,380 组、Files 有行、Child sessions 显示「No child sessions」而非「unavailable」。新增 `testAgentsAllPinsSessionsToSkipExcludingIndex_repro`，`WebMetadataProducerTests` 搜索用例增加 `.all` 断言。r15/r16/r17 依次激活（回滚 plist 均留），Grok lanes-10/11 106/106，lanes-12 105/106（唯一失败为已知负载敏感的 costs 用例，与改动语句无关，单跑通过）。
 - [修复] Child sessions 的 r10「0.215s 冷」数据来自一份跑过 `ANALYZE` 的数据库副本；HQ 线上 `index.sqlite` 从未 ANALYZE、没有 `sqlite_stat1`，r10/r11 的 children 语句在线上仍是 1.53s/次（无统计时规划器假定任何索引等值只返回约 10 行，于是选了匹配全部 44k 可见会话的部分索引 `idx_sessions_visible (hidden_at=?)`，浏览器没报 503 只是因为差 0.3 秒到期限；「首个 1.08s 之后 0.03s」是 producer 的短期租约缓存，不是查询本身）。`childRows` 改用 `childVisibilitySQL`：三条隐私谓词写成 `+s.hidden_at IS NULL` / `+s.source = …` / `+s.authoritative_node = …`，一元加号让它们不再作为索引约束（SQLite 文档手法），同时排除了启用来源很少时通过传递等值 `s.source = i.source AND i.source IN (…)` 选中 `idx_sessions_source` 的第三种走法；此后无论有无统计、来源多少，多索引 OR 都是唯一便宜的计划。线上只读验证 0.08s（2,315 个 skip 层子会话的父会话）；service-index 切 `r13` 后经 remote-server 实测 children 重启后首个 0.088s、闲置后 0.013–0.019s（r11 为 1.29–1.69s）。测试改为 `testChildrenStatementUsesBothParentIndexes_repro`：对 producer 实际发出的语句在无统计 fixture 上 `EXPLAIN`，要求两条 parent 索引且不出现 `idx_sessions_visible`/`idx_sessions_source`/`SCAN s`/`SCAN i`（lanes-7 如预期在 `idx_sessions_source` 上失败，lanes-8 4/4）。r12 只去了 `hidden_at` 一项、未激活。
 - [修复] Stats→Files 在 r11 回填 190,039 行 `session_files` 后每次 503（2.00s）：采样显示快照读取 1.26s 且新鲜度复查再做一遍，其中 `fileActivityLabel`→`TranscriptRedactionPolicy.redact` 约 0.5s、`publishedProjectKey` SHA-256 约 0.25s（约 1.6 万个不同路径各算两遍）、`Row.fetchAll` 0.36s（CLI 中 `ORDER BY s.id, file_path, action` 的临时 B 树占 0.50s 语句的 0.46s）。`fileActivityRows` 去掉 ORDER BY，组权威改为对排序后的每行摘要再摘要（行序无关）；`FileActivityRecord` 只存 path/key/计数，label 在 `.item` 上惰性派生（只有返回页付脱敏成本）；key 用有界的 `FileKeyCache` 跨快照读/复查/后续请求复用；游标匹配改用记录上的 key。新增 `testFileActivityStatementIsUnsortedAndAuthorityIgnoresRowOrder_repro`。打包为 `r14`，激活与 HQ 时延见 `CHANGELOG.md` 顶部条目末尾。

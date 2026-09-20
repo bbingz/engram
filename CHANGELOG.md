@@ -1,4 +1,54 @@
 # Changelog
+All notable changes to this project will be documented in this file.
+Format based on [Keep a Changelog](https://keepachangelog.com/).
+
+
+## HQ Web r18 activated from merged PR #446 (2026-09-20)
+
+User authorized HQ deploy after #446 merged to `main` as `3859f788`
+(same tree as collector `91f7fce2` / `d11894c3`). Built and verified
+packages `web-parity-20260913-r18` from the collector worktree, then
+activated both LaunchAgents. No Docker, no `ANALYZE`, no skip-tier
+promotion, no public release.
+
+- **service-index** `com.engram.service-index` PID 22930:
+  package `service-index-web-parity-20260913-r18`. Launcher SHA256
+  `40c33aa4…a754de` (unchanged r9–r18). Loaded
+  EngramServiceCore `e2548abd…28fcda` (was r17 `369f3ddd…5d83d`) and
+  EngramCoreWrite `61c6c421…572a73`. Rollback:
+  `state/service-index/persistent/web-parity-20260913-r18-job-before.plist`
+  (r17 job).
+- **remote-server** `com.engram.capture-core.receiver` PID 23443:
+  package `remote-server-web-parity-20260913-r18`, binary
+  `8c351ad1…430cb3` (was r5 `704a0c34…cea1da`). Rollback:
+  `state/remote-server/persistent/web-parity-20260913-r18-job-before.plist`
+  (r5 job). Unauthenticated overview 403; `/web/` 200.
+- Startup created `idx_sessions_activity_id` (`CREATE INDEX IF NOT
+  EXISTS`) on the live 9.8G service-index DB
+  (`hq/state/service-index/database/index.sqlite`). Confirmed present
+  after activate. No `ANALYZE`. Rolling back the binary does not drop
+  the index.
+
+Live probes on `https://macmini-hq.tail1cb16.ts.net:8443` (viewer
+cookie, no secrets logged):
+
+| Endpoint | Result |
+|---|---|
+| `GET /web/api/overview` omitted limit | 200, 0.072s, 2 streams (was 503 / 2.85s at limit 50) |
+| `GET /web/api/sessions?query=测试` | 200, 0.020s, 0 items, `query_too_short` |
+| `GET /web/api/sessions?query=Review` | 200, 0.970s, 50 items |
+| `GET /web/api/search?query=测试` | 200, 0.583s, 10 items (was 5–6s unbounded LIKE) |
+| `GET /web/api/file-activity?agents=all` | 200, 0.914s, 100 items |
+| `/web/app.js` | contains `Parsed (includes skip)` and `Indexed for search` |
+
+## Local main fast-forward and document sync (2026-09-20)
+
+Local `main` fast-forwarded `625ecc97` → `origin/main` `3859f788`
+(#446). Hygiene notes that never rode the collector PR (disk reclaim,
+`.gitignore` leftovers) land here. Grok session dumps stay untracked;
+reusable `.grok/workflows/*.rhai` are tracked. Dispatch plan
+`docs/superpowers/plans/2026-09-14-hq-web-residuals.md` marked landed.
+No product rebuild in this commit.
 
 ## CI gates for collector PR #446 (2026-09-16)
 
@@ -131,6 +181,75 @@ Full schemes 2026-09-15 (`/tmp/engram-review-residuals-dd`):
 default-limit change was `testOverviewOrdersMachineThenInstance` (three
 seeded streams vs omitted limit 2). That test now requests `limit: 3`.
 No live HQ timing claimed.
+
+## Cursor HQ-web residual review (2026-09-15)
+
+Reviewed the collector-worktree diff against
+`docs/superpowers/plans/2026-09-14-hq-web-residuals.md`. First pass
+CHANGES_REQUESTED: shared `#query` placeholder claimed "3+ characters;
+1–2 belong on Search", which contradicts bounded 1–2 character Search.
+Cursor reverted it to `Keywords` and restored `sessionFilter` indent.
+Independent re-run: vitest `collector-web-ui.test.ts` 176/176; focused
+Swift `_repro` tests succeeded. Later mixed-query and CI-gate work
+landed in #446; HQ activation is the 2026-09-20 r18 entry.
+
+## Next-backlog workflow and Cursor dispatch (2026-09-14)
+
+Ran project workflow `engram-next-backlog` (four read-only historians,
+then one planner). Ordered the six HQ Web residual tasks and dispatched
+Herdr Cursor pane `wH:p2`. Brief:
+`docs/superpowers/plans/2026-09-14-hq-web-residuals.md`. Closed by
+#446 and r18.
+
+## Fast-forward main and remaining disk hygiene (2026-09-14)
+
+Local `main` fast-forwarded `33b6f8c9` → `625ecc97` (`origin/main`, 17
+commits including PRs #441–#445 / build 1569). Hygiene-only local edits
+to `CHANGELOG.md`, `MEMO.md`, and `.gitignore` sat uncommitted until
+the 2026-09-20 document sync.
+
+Removed three regenerable MingTang Cargo debug trees
+(`mingtang/backend/target` 39G, `.worktrees/settings-ia-reorg/backend/target`
+5.3G, `mingtang-review-main/backend/target` 17G logical). Left registered
+`/private/tmp/claude-501/...` MingTang agent worktrees untouched. Deleted
+9,070 pre-2026 iTerm2 session logs in iCloud Drive
+(`Documents/iTerm2 log`, 12.24G); kept all 2026 logs. Orca
+`.pr-followup-worktrees` and `~/.grok/worktrees/code-orca` were already
+gone. Data volume available space moved from 179Gi (91%) to 252Gi (87%),
+about 72Gi. No product build, test, commit, push, deploy, Docker, or
+`~/.engram` change at that time.
+
+## Follow-on disk hygiene: Codex standalones and CCTV February logs (2026-09-14)
+
+Deleted 47 old Codex standalone installs under
+`~/.codex/packages/standalone/releases/` (13G down to 605M). Kept
+`0.155.0-alpha.3` (`current`) and `0.155.0-alpha.2` (still mapped by
+live PIDs). Deleted 31 rotated February 2026 CCTV logs in
+`/Users/bing/-Code-/CCTV_Admin/data/logs/*.2026-02-*` (~12G); live
+`access.log`/`error.log` remain. Data volume available space moved from
+120Gi (94%) to 145Gi (93%), about 25Gi.
+
+## Workspace disk hygiene (2026-09-14)
+
+Reclaimed about 80Gi of extra occupancy on HQ. The checkout had grown to
+82G, almost all untracked test residue in
+`.worktrees/collector-server-web-20260905/output` (78G of xcresult
+bundles, system log archives, a 9.1G isolated `test-home`, and a 1.3G
+`overview-benchmark.sqlite` copy) plus leftover
+`.engram-runtime-test-*`, `.engram-publication-test-*`, and
+`.engram-demo-test-home.*` directories. Tracked helper scripts
+`output/web-parity-20260913/activate-web-parity-role.py` and
+`build-web-parity-packages.py` were restored from git after the
+directory wipe.
+
+Also removed regenerable caches (`macos/build`, `coverage`, `dist`,
+`.playwright-cli`) and six merged/clean worktrees whose HEADs were
+already in `origin/main`. Deleting the files did not change `df` until
+the local Time Machine snapshot
+`com.apple.TimeMachine.2026-09-14-124730.local` was removed; after that,
+available space moved from 54Gi (98%) to 134Gi (93%). `.gitignore` now
+ignores `/output/`, isolated test homes, `.playwright-cli/`, and sqlite
+shm/wal sidecars.
 
 ## `agents=all` / `agents=only` at HQ scale: pin the visible-session driver (2026-09-14, r15–r17)
 

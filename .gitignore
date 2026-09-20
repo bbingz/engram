@@ -15,6 +15,23 @@ macos/Engram.xcodeproj/project.xcworkspace/xcuserdata/
 # Coverage
 coverage/
 
+# Local test/runtime leftovers (xcresult dumps, isolated test homes)
+/output/
+/.engram-runtime-test-*/
+/.engram-publication-test-*/
+/.engram-demo-test-home.*/
+/.playwright-cli/
+*.sqlite-shm
+*.sqlite-wal
+
+# Local Grok session dumps (keep tracked workflows and ledgers)
+.grok/codex-fix-from-*.md
+.grok/engram-dropped-*
+.grok/engram-multi-review-*.md
+.grok/engram-residual-*
+.grok/engram-review-round*
+.grok/round1-leftover-findings.json
+
 # Local investigation / generated fixture noise
 .tmp-parent-detection.mjs
 tests/fixtures/antigravity/cache/*.jsonl

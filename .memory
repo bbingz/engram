@@ -2,7 +2,8 @@
 
 ## Index
 
-<!-- AUTO-INDEX (recounted 2026-08-29): 115 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (recounted 2026-09-20): 116 dated entries; regenerate after adding sections -->
+- [2026-09-20 - PR #446 merged; HQ Web r18 live; local main ff (Grok)](#2026-09-20---pr-446-merged-hq-web-r18-live-local-main-ff-grok)
 - [2026-09-14 - HQ Web parity r11–r17: planner and scale facts (Cursor)](#2026-09-14---hq-web-parity-r11r17-planner-and-scale-facts-cursor)
 - [2026-09-12 - Bounded collector directory discovery, worktree only (Cursor)](#2026-09-12---bounded-collector-directory-discovery-worktree-only-cursor)
 - [2026-08-29 - HQ live ingest boot recovery via daily-Mac SSH watchdog (Cursor)](#2026-08-29---hq-live-ingest-boot-recovery-via-daily-mac-ssh-watchdog-cursor)
@@ -123,6 +124,21 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-09-20 - PR #446 merged; HQ Web r18 live; local main ff (Grok)
+
+- PR #446 merged to `main` as `3859f788` (tree `d11894c3` = collector
+  `91f7fce2`). HQ `web-parity-20260913-r18` is live: service-index PID
+  22930 (EngramServiceCore `e2548abd…28fcda`, rollback r17),
+  remote-server PID 23443 (binary `8c351ad1…430cb3`, rollback r5).
+- Live DB gained `idx_sessions_activity_id` at activate (`CREATE INDEX
+  IF NOT EXISTS` on the 9.8G service-index sqlite). No `ANALYZE`.
+- Probes: overview omitted-limit 0.072s/2 streams; sessions `测试`
+  `query_too_short` 0.020s; search `测试` 0.583s. Evidence in
+  `CHANGELOG.md`.
+- Local `main` fast-forwarded `625ecc97` → `3859f788`. Disk-hygiene
+  notes and leftover `.gitignore` rules committed. Grok session dumps
+  ignored; `.grok/workflows/*.rhai` tracked.
 
 ## 2026-09-14 - HQ Web parity r11–r17: planner and scale facts (Cursor)
 
