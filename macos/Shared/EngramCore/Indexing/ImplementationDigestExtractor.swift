@@ -340,6 +340,7 @@ public enum ImplementationDigestExtractor {
     private static func dateKey(from timestamp: String?) -> String? {
         guard let timestamp, !timestamp.isEmpty else { return nil }
         if let date = parseTimestamp(timestamp) {
+            localDayFormatter.timeZone = TimeZone.autoupdatingCurrent
             return localDayFormatter.string(from: date)
         }
         guard timestamp.count >= 10 else { return nil }

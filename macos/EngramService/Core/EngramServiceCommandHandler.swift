@@ -1331,10 +1331,17 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     }
 
     static func applyClearParentSession(_ db: GRDB.Database, sessionId: String) throws -> Int {
+        // Sticky manual unlink: drop confirmed parent and suggestion fields
+        // together so the child is not still grouped, and suggested-parent
+        // backfill (which skips link_source='manual') cannot reattach it.
+        // Tier is unchanged except subagent/dispatched stay skip.
         try db.executeAndCountChanges(
             sql: """
                 UPDATE sessions
                 SET parent_session_id = NULL,
+                    suggested_parent_id = NULL,
+                    suggestion_status = NULL,
+                    suggestion_candidates = NULL,
                     link_source = 'manual',
                     link_checked_at = datetime('now'),
                     tier = CASE

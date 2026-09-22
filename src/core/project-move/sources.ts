@@ -46,6 +46,15 @@ export function encodeGemini(abs: string): string {
   return createHash('sha256').update(abs).digest('hex');
 }
 
+/** Grok project dirs percent-encode the cwd so `/` becomes `%2F`. */
+export function encodeGrok(abs: string): string {
+  return Array.from(new TextEncoder().encode(abs), (byte) => {
+    const char = String.fromCharCode(byte);
+    if (/[A-Za-z0-9\-._~]/.test(char)) return char;
+    return `%${byte.toString(16).toUpperCase().padStart(2, '0')}`;
+  }).join('');
+}
+
 export type SourceId =
   | 'claude-code'
   | 'codex'
@@ -58,7 +67,9 @@ export type SourceId =
   | 'copilot'
   | 'iflow'
   | 'qoder'
-  | 'commandcode';
+  | 'commandcode'
+  | 'pi'
+  | 'grok';
 
 export interface SourceRoot {
   /** Stable identifier used in logs / audit output. */
@@ -141,6 +152,16 @@ export function getSourceRoots(home?: string): SourceRoot[] {
       id: 'copilot',
       path: join(h, '.copilot'),
       encodeProjectDir: null,
+    },
+    {
+      id: 'pi',
+      path: join(h, '.pi', 'agent', 'sessions'),
+      encodeProjectDir: null,
+    },
+    {
+      id: 'grok',
+      path: join(h, '.grok', 'sessions'),
+      encodeProjectDir: encodeGrok,
     },
   ];
 }

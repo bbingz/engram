@@ -458,7 +458,7 @@ function batchSizes(): Record<string, unknown> {
     watchWriteStabilityMs: 2000,
     watchWriteStabilityPollMs: 500,
     startupParentBackfillLimit: 500,
-    sourceFiles: ['src/core/watcher.ts', 'src/core/db/maintenance.ts'],
+    sourceFiles: ['src/core/db/maintenance.ts'],
     generatedAtCommit: gitCommit(),
   };
 }

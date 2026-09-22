@@ -6149,6 +6149,84 @@ final class EngramServiceIPCTests: XCTestCase {
         }
     }
 
+    /// Manual unlink must be sticky: NULL parent, manual link_source, and no
+    /// leftover suggestion fields that would keep the child grouped or let
+    /// suggested-parent backfill (which skips link_source='manual') reattach it.
+    /// Subagent tier stays skip. setParentSession must not rewrite tier.
+    func testClearParentDropsSuggestionFieldsAndKeepsSkipTier_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE sessions
+                    SET parent_session_id = 's1',
+                        suggested_parent_id = 's1',
+                        suggestion_status = 'pending',
+                        suggestion_candidates = '["s1"]',
+                        link_source = 'path',
+                        agent_role = 'subagent',
+                        tier = 'skip'
+                    WHERE id = 's2'
+                    """
+            )
+        }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(
+            transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+        )
+        let linked = try await client.setParentSession(sessionId: "s2", parentId: "s1")
+        XCTAssertEqual(linked, EngramServiceLinkResponse(ok: true, error: nil))
+        try await queue.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 's2'"),
+                "skip",
+                "setParentSession must not upgrade a subagent out of skip"
+            )
+        }
+        try await queue.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE sessions
+                    SET suggested_parent_id = 's1',
+                        suggestion_status = 'pending',
+                        suggestion_candidates = '["s1"]'
+                    WHERE id = 's2'
+                    """
+            )
+        }
+
+        let unlinked = try await client.clearParentSession(sessionId: "s2")
+        XCTAssertEqual(unlinked, EngramServiceLinkResponse(ok: true, error: nil))
+        let state = try fixtureLinkState(at: paths.database.path, id: "s2")
+        XCTAssertNil(state.parentSessionId)
+        XCTAssertNil(state.suggestedParentId)
+        XCTAssertNil(state.suggestionStatus)
+        XCTAssertNil(state.suggestionCandidates)
+        XCTAssertEqual(state.linkSource, "manual")
+        XCTAssertNotNil(state.linkCheckedAt)
+        try await queue.read { db in
+            let row = try XCTUnwrap(Row.fetchOne(
+                db,
+                sql: "SELECT agent_role, tier FROM sessions WHERE id = 's2'"
+            ))
+            XCTAssertEqual(row["agent_role"] as String?, "subagent")
+            XCTAssertEqual(row["tier"] as String?, "skip")
+        }
+    }
+
     func testDismissAmbiguousSuggestionRoundTripThroughClient() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)

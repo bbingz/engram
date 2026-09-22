@@ -312,6 +312,8 @@ private func scanSources() -> [SourceCheck] {
         ("iflow",        "iFlow",         ".iflow/projects"),
         ("commandcode",  "Command Code",  ".commandcode/projects"),
         ("antigravity",  "Antigravity",   ".gemini/antigravity-cli/brain"),
+        ("pi",           "Pi",            ".pi/agent/sessions"),
+        ("grok",         "Grok",          ".grok/sessions"),
     ]
 
     return specs.filter { !ArchivedDefaultOffSources.contains($0.id) }.map { spec in

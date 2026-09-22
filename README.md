@@ -15,7 +15,7 @@ It ships a Developer ID-signed and notarized universal macOS app with the
 bundled Swift service, CLI, and MCP helper. The active MCP surface has 27 tools;
 the App UI is intentionally keyword-only, while the service and MCP expose
 availability-gated semantic/hybrid search when compatible embeddings exist.
-Session ingestion defaults to 14 active sources plus 3 archived default-off
+Session ingestion defaults to 16 active sources plus 3 archived default-off
 sources.
 
 ```
@@ -73,6 +73,8 @@ sources.
 | [MiniMax](https://www.minimax.io/) | Claude Code-derived sessions under `~/.claude/projects/` | ✅ 完整支持 |
 | [Lobster AI](https://github.com/netease-youdao/LobsterAI) | Claude Code-derived sessions under `~/.claude/projects/` | 归档默认关闭，可在 Sources > Archived 启用 |
 | Command Code | `~/.commandcode/projects/` | ✅ 完整支持 |
+| Pi | `~/.pi/agent/sessions/` | ✅ 完整支持 |
+| Grok | `~/.grok/sessions/` | ✅ 完整支持 |
 | [Cline](https://github.com/cline/cline) | `~/.cline/data/tasks/` | 归档默认关闭，可在 Sources > Archived 启用 |
 
 ## 适配器与显示一致性

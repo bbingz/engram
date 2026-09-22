@@ -4,8 +4,11 @@ import XCTest
 final class SourceCatalogTests: XCTestCase {
     // MARK: - Catalog shape
 
-    func testCatalogHasSeventeenEntries() {
-        XCTAssertEqual(SourceCatalog.all.count, 17)
+    func testCatalogHasNineteenEntries() {
+        XCTAssertEqual(SourceCatalog.all.count, 19)
+        let ids = Set(SourceCatalog.all.map(\.id))
+        XCTAssertTrue(ids.contains("pi"))
+        XCTAssertTrue(ids.contains("grok"))
     }
 
     func testArchivedDefaultOffCatalogEntriesAreExplicit() {
@@ -87,6 +90,23 @@ final class SourceCatalogTests: XCTestCase {
 
         XCTAssertEqual(rows.count, SourceCatalog.all.count + 1)
         XCTAssertEqual(rows.last?.id, "ghost-source")
+    }
+
+    func testIndexedPiAndGrokStayInCatalogAndAreNotGhostAppended_repro() {
+        let live = [
+            liveSource("pi", sessions: 2, health: "healthy"),
+            liveSource("grok", sessions: 1, health: "healthy"),
+        ]
+        let rows = SourcePulseView.mergedSourceRows(catalog: SourceCatalog.all, live: live)
+
+        XCTAssertEqual(rows.map(\.id), SourceCatalog.all.map(\.id))
+        XCTAssertEqual(rows.count, SourceCatalog.all.count)
+        guard case .detected = rows.first(where: { $0.id == "pi" }) else {
+            return XCTFail("indexed pi must render as a catalog-detected row, not a ghost append")
+        }
+        guard case .detected = rows.first(where: { $0.id == "grok" }) else {
+            return XCTFail("indexed grok must render as a catalog-detected row, not a ghost append")
+        }
     }
 
     func testSourceRowsSplitActiveAndArchivedDefaultOffGroups() {

@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
   copyFileSync,
+  existsSync,
   globSync,
   mkdirSync,
   mkdtempSync,
@@ -173,27 +174,163 @@ describe('xcodeproj drift gate', () => {
     },
   );
 
-  it.skipIf(!pbxprojIsClean)(
-    'fails when regeneration changes the project',
-    () => {
-      const original = readFileSync(pbxproj, 'utf8');
-      try {
-        const result = runScript({
-          XCODEGEN_BIN: stub(
-            `printf '\\n// drift\\n' >> ${JSON.stringify(pbxproj)}`,
-          ),
-        });
+  it('fails closed when temporary generation adds an untracked project file_repro', () => {
+    const realProject = readFileSync(pbxproj);
+    const fixtureRoot = mkdtempSync(resolve(tmpdir(), 'engram-xg-temp-'));
+    const fixtureScript = resolve(
+      fixtureRoot,
+      'scripts/check-xcodeproj-drift.sh',
+    );
+    const projectRoot = resolve(fixtureRoot, 'macos/Engram.xcodeproj');
+    mkdirSync(resolve(fixtureRoot, 'scripts'), { recursive: true });
+    mkdirSync(resolve(fixtureRoot, '.github/workflows'), { recursive: true });
+    mkdirSync(projectRoot, { recursive: true });
+    copyFileSync(script, fixtureScript);
+    chmodSync(fixtureScript, 0o755);
+    writeFileSync(
+      resolve(fixtureRoot, '.github/workflows/test.yml'),
+      '  XCODEGEN_VERSION: "2.44.1"\n  XCODEGEN_SHA256: "fixture"\n',
+    );
+    const fixtureProject = resolve(projectRoot, 'project.pbxproj');
+    writeFileSync(fixtureProject, '// clean\n');
+    execFileSync('git', ['init', '-q'], { cwd: fixtureRoot });
+    execFileSync('git', ['config', 'user.email', 'test@engram.local'], {
+      cwd: fixtureRoot,
+    });
+    execFileSync('git', ['config', 'user.name', 'Engram Test'], {
+      cwd: fixtureRoot,
+    });
+    execFileSync('git', ['add', '.'], { cwd: fixtureRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: fixtureRoot });
+    const cwdLog = resolve(fixtureRoot, 'cwd.log');
 
-        expect(result.status).toBe(1);
-        expect(result.stderr).toContain(
-          'their tests never compile and never run',
-        );
-        expect(result.stderr).toContain('git add macos/Engram.xcodeproj');
-      } finally {
-        writeFileSync(pbxproj, original);
-      }
-    },
-  );
+    const result = runFixtureScript(fixtureScript, fixtureRoot, {
+      XCODEGEN_BIN: stub(
+        `printf '%s\\n' "$PWD" > ${JSON.stringify(cwdLog)}
+mkdir -p "$PWD/Engram.xcodeproj/xcshareddata/xcschemes"
+printf '<Scheme/>\\n' > "$PWD/Engram.xcodeproj/xcshareddata/xcschemes/rogue.xcscheme"`,
+        '2.44.1',
+      ),
+      XDG_CACHE_HOME: resolve(fixtureRoot, 'cache'),
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('macos/ was not modified');
+    expect(result.stderr).toContain('their tests never compile and never run');
+    expect(result.stderr).toContain('git add macos/Engram.xcodeproj');
+    expect(readFileSync(fixtureProject, 'utf8')).toBe('// clean\n');
+    expect(
+      existsSync(resolve(projectRoot, 'xcshareddata/xcschemes/rogue.xcscheme')),
+    ).toBe(false);
+    const generatedIn = readFileSync(cwdLog, 'utf8').trim();
+    expect(generatedIn).not.toBe(resolve(fixtureRoot, 'macos'));
+    expect(generatedIn.endsWith('/macos')).toBe(true);
+    expect(readFileSync(pbxproj)).toEqual(realProject);
+  });
+
+  it('links repo-root fixture directories into the temp parent_repro', () => {
+    const fixtureRoot = mkdtempSync(resolve(tmpdir(), 'engram-xg-siblings-'));
+    const fixtureScript = resolve(
+      fixtureRoot,
+      'scripts/check-xcodeproj-drift.sh',
+    );
+    mkdirSync(resolve(fixtureRoot, 'scripts'), { recursive: true });
+    mkdirSync(resolve(fixtureRoot, '.github/workflows'), { recursive: true });
+    mkdirSync(resolve(fixtureRoot, 'macos/Engram.xcodeproj'), {
+      recursive: true,
+    });
+    mkdirSync(resolve(fixtureRoot, 'tests/fixtures'), { recursive: true });
+    mkdirSync(resolve(fixtureRoot, 'test-fixtures/sessions'), {
+      recursive: true,
+    });
+    copyFileSync(script, fixtureScript);
+    chmodSync(fixtureScript, 0o755);
+    writeFileSync(
+      resolve(fixtureRoot, '.github/workflows/test.yml'),
+      '  XCODEGEN_VERSION: "2.44.1"\n  XCODEGEN_SHA256: "fixture"\n',
+    );
+    writeFileSync(
+      resolve(fixtureRoot, 'macos/Engram.xcodeproj/project.pbxproj'),
+      '// clean\n',
+    );
+    writeFileSync(resolve(fixtureRoot, 'tests/fixtures/.keep'), '');
+    writeFileSync(resolve(fixtureRoot, 'test-fixtures/sessions/.keep'), '');
+
+    const result = runFixtureScript(fixtureScript, fixtureRoot, {
+      XCODEGEN_BIN: stub(
+        `test -d "$PWD/../tests/fixtures"
+test -d "$PWD/../test-fixtures/sessions"`,
+        '2.44.1',
+      ),
+      XDG_CACHE_HOME: resolve(fixtureRoot, 'cache'),
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('xcodeproj drift ok');
+  });
+
+  it('rejects a cached xcodegen whose version is not the pin_repro', () => {
+    const realProject = readFileSync(pbxproj);
+    const fixtureRoot = mkdtempSync(resolve(tmpdir(), 'engram-xg-cache-'));
+    const fixtureScript = resolve(
+      fixtureRoot,
+      'scripts/check-xcodeproj-drift.sh',
+    );
+    const projectRoot = resolve(fixtureRoot, 'macos/Engram.xcodeproj');
+    mkdirSync(resolve(fixtureRoot, 'scripts'), { recursive: true });
+    mkdirSync(resolve(fixtureRoot, '.github/workflows'), { recursive: true });
+    mkdirSync(projectRoot, { recursive: true });
+    copyFileSync(script, fixtureScript);
+    chmodSync(fixtureScript, 0o755);
+    writeFileSync(
+      resolve(fixtureRoot, '.github/workflows/test.yml'),
+      '  XCODEGEN_VERSION: "2.44.1"\n  XCODEGEN_SHA256: "fixture"\n',
+    );
+    const fixtureProject = resolve(projectRoot, 'project.pbxproj');
+    writeFileSync(fixtureProject, '// clean\n');
+    execFileSync('git', ['init', '-q'], { cwd: fixtureRoot });
+    execFileSync('git', ['config', 'user.email', 'test@engram.local'], {
+      cwd: fixtureRoot,
+    });
+    execFileSync('git', ['config', 'user.name', 'Engram Test'], {
+      cwd: fixtureRoot,
+    });
+    execFileSync('git', ['add', '.'], { cwd: fixtureRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: fixtureRoot });
+
+    const cacheBin = resolve(
+      fixtureRoot,
+      'cache/engram/xcodegen/xcodegen-2.44.1.bad/xcodegen/bin/xcodegen',
+    );
+    mkdirSync(resolve(cacheBin, '..'), { recursive: true });
+    writeFileSync(
+      cacheBin,
+      `#!/usr/bin/env bash
+if [ "\${1:-}" = "--version" ]; then
+  echo "Version: 9.9.9"
+  exit 0
+fi
+printf '\\n// cache drift\\n' >> "$PWD/Engram.xcodeproj/project.pbxproj"
+`,
+    );
+    chmodSync(cacheBin, 0o755);
+    const pinned = stub('exit 0', '2.44.1');
+
+    const result = runFixtureScript(
+      fixtureScript,
+      fixtureRoot,
+      {
+        PATH: `/usr/bin:/bin:/usr/sbin:/sbin:${resolve(pinned, '..')}`,
+        XDG_CACHE_HOME: resolve(fixtureRoot, 'cache'),
+      },
+      ['XCODEGEN_BIN'],
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('xcodeproj drift ok');
+    expect(readFileSync(fixtureProject, 'utf8')).toBe('// clean\n');
+    expect(readFileSync(pbxproj)).toEqual(realProject);
+  });
 
   it('fails when an exclude rule hides an untracked generated project file_repro', () => {
     const fixtureRoot = mkdtempSync(resolve(tmpdir(), 'engram-xg-repo-'));
@@ -233,12 +370,71 @@ describe('xcodeproj drift gate', () => {
     mkdirSync(resolve(untrackedScheme, '..'), { recursive: true });
     writeFileSync(untrackedScheme, '<Scheme/>\n');
     const result = runFixtureScript(fixtureScript, fixtureRoot, {
-      XCODEGEN_BIN: stub('exit 0', '2.44.1'),
+      XCODEGEN_BIN: stub(
+        'rm -rf "$PWD/Engram.xcodeproj/xcshareddata"',
+        '2.44.1',
+      ),
       XDG_CACHE_HOME: resolve(fixtureRoot, 'cache'),
     });
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('macos/Engram.xcodeproj');
+    expect(existsSync(untrackedScheme)).toBe(true);
+  });
+
+  it('passes when generation matches a worktree that is dirty versus HEAD_repro', () => {
+    const realProject = readFileSync(pbxproj);
+    const fixtureRoot = mkdtempSync(resolve(tmpdir(), 'engram-xg-dirty-'));
+    const fixtureScript = resolve(
+      fixtureRoot,
+      'scripts/check-xcodeproj-drift.sh',
+    );
+    const projectRoot = resolve(fixtureRoot, 'macos/Engram.xcodeproj');
+    mkdirSync(resolve(fixtureRoot, 'scripts'), { recursive: true });
+    mkdirSync(resolve(fixtureRoot, '.github/workflows'), { recursive: true });
+    mkdirSync(projectRoot, { recursive: true });
+    copyFileSync(script, fixtureScript);
+    chmodSync(fixtureScript, 0o755);
+    writeFileSync(
+      resolve(fixtureRoot, '.github/workflows/test.yml'),
+      '  XCODEGEN_VERSION: "2.44.1"\n  XCODEGEN_SHA256: "fixture"\n',
+    );
+    const fixtureProject = resolve(projectRoot, 'project.pbxproj');
+    writeFileSync(fixtureProject, '// committed\n');
+    execFileSync('git', ['init', '-q'], { cwd: fixtureRoot });
+    execFileSync('git', ['config', 'user.email', 'test@engram.local'], {
+      cwd: fixtureRoot,
+    });
+    execFileSync('git', ['config', 'user.name', 'Engram Test'], {
+      cwd: fixtureRoot,
+    });
+    execFileSync('git', ['add', '.'], { cwd: fixtureRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: fixtureRoot });
+    writeFileSync(fixtureProject, '// generated\n');
+
+    const result = runFixtureScript(fixtureScript, fixtureRoot, {
+      XCODEGEN_BIN: stub('exit 0', '2.44.1'),
+      XDG_CACHE_HOME: resolve(fixtureRoot, 'cache'),
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('xcodeproj drift ok');
+    expect(result.stderr).not.toContain('do not match the working tree');
+    expect(readFileSync(fixtureProject, 'utf8')).toBe('// generated\n');
+    expect(
+      execFileSync(
+        'git',
+        [
+          'diff',
+          '--name-only',
+          'HEAD',
+          '--',
+          'macos/Engram.xcodeproj/project.pbxproj',
+        ],
+        { cwd: fixtureRoot, encoding: 'utf8' },
+      ).trim(),
+    ).toBe('macos/Engram.xcodeproj/project.pbxproj');
+    expect(readFileSync(pbxproj)).toEqual(realProject);
   });
 
   it('checks generated Info.plist drift alongside the xcodeproj_repro', () => {

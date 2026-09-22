@@ -146,7 +146,7 @@ final class ServiceTelemetryTests: XCTestCase {
         let disabledAll = [
             "codex", "claude-code", "copilot", "gemini-cli", "opencode", "iflow",
             "qwen", "qoder", "kimi", "minimax", "lobsterai", "commandcode",
-            "cline", "cursor", "vscode", "antigravity", "windsurf",
+            "cline", "cursor", "vscode", "antigravity", "windsurf", "pi", "grok",
         ].joined(separator: ",")
 
         await EngramServiceRunner.runInitialScan(
@@ -203,7 +203,7 @@ final class ServiceTelemetryTests: XCTestCase {
         let disabledAll = [
             "codex", "claude-code", "copilot", "gemini-cli", "opencode", "iflow",
             "qwen", "qoder", "kimi", "minimax", "lobsterai", "commandcode",
-            "cline", "cursor", "vscode", "antigravity", "windsurf",
+            "cline", "cursor", "vscode", "antigravity", "windsurf", "pi", "grok",
         ].joined(separator: ",")
 
         await EngramServiceRunner.runInitialScan(
@@ -258,7 +258,7 @@ final class ServiceTelemetryTests: XCTestCase {
         let disabledAll = [
             "codex", "claude-code", "copilot", "gemini-cli", "opencode", "iflow",
             "qwen", "qoder", "kimi", "minimax", "lobsterai", "commandcode",
-            "cline", "cursor", "vscode", "antigravity", "windsurf",
+            "cline", "cursor", "vscode", "antigravity", "windsurf", "pi", "grok",
         ].joined(separator: ",")
 
         await EngramServiceRunner.runStartupMaintenanceWithMemoryRelief(

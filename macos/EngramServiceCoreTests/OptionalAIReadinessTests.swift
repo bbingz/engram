@@ -264,7 +264,7 @@ final class OptionalAIReadinessTests: XCTestCase {
         environment["ENGRAM_DISABLED_SOURCES"] = [
             "codex", "claude-code", "copilot", "gemini-cli", "opencode", "iflow",
             "qwen", "qoder", "kimi", "minimax", "lobsterai", "commandcode",
-            "cline", "cursor", "vscode", "antigravity", "windsurf",
+            "cline", "cursor", "vscode", "antigravity", "windsurf", "pi", "grok",
         ].joined(separator: ",")
         return environment
     }

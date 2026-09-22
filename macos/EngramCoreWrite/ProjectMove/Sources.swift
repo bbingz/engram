@@ -95,6 +95,8 @@ public enum SourceId: String, CaseIterable, Sendable, Equatable {
     case antigravityLegacy = "antigravity-legacy"
     case commandcode
     case copilot
+    case pi
+    case grok
 }
 
 public struct OpenCodeSQLitePatchResult: Equatable, Sendable {
@@ -483,7 +485,7 @@ public enum SessionSources {
     /// The session roots a project move must consider. Ordering matches
     /// Node parity: known-active first (claude-code → Codex stores →
     /// gemini-cli → iflow → qwen → qoder), then flat-layout tail (opencode →
-    /// antigravity → antigravity-legacy → commandcode → copilot).
+    /// antigravity → antigravity-legacy → commandcode → copilot → pi → grok).
     public static func roots(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> [SourceRoot] {
@@ -573,6 +575,16 @@ public enum SessionSources {
                 path: path(.copilot),
                 encodeProjectDir: nil
             ),
+            SourceRoot(
+                id: .pi,
+                path: path(.pi),
+                encodeProjectDir: nil
+            ),
+            SourceRoot(
+                id: .grok,
+                path: path(.grok),
+                encodeProjectDir: { cwd in encodeGrok(cwd) }
+            ),
         ]
     }
 
@@ -604,6 +616,28 @@ public enum SessionSources {
             return isAlnum ? u : 45 // '-'
         }
         return String(utf16CodeUnits: units, count: units.count)
+    }
+
+    /// Grok names the project directory by percent-encoding each UTF-8 byte
+    /// outside ASCII unreserved `A-Za-z0-9-._~`. `GrokAdapter` decodes that
+    /// segment with `removingPercentEncoding`.
+    public static func encodeGrok(_ absolutePath: String) -> String {
+        var encoded = ""
+        for byte in absolutePath.utf8 {
+            let unreserved = (byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9"))
+                || (byte >= UInt8(ascii: "A") && byte <= UInt8(ascii: "Z"))
+                || (byte >= UInt8(ascii: "a") && byte <= UInt8(ascii: "z"))
+                || byte == UInt8(ascii: "-")
+                || byte == UInt8(ascii: ".")
+                || byte == UInt8(ascii: "_")
+                || byte == UInt8(ascii: "~")
+            if unreserved {
+                encoded.append(Character(UnicodeScalar(byte)))
+            } else {
+                encoded.append(String(format: "%%%02X", byte))
+            }
+        }
+        return encoded
     }
 
     /// CommandCode's live writer lowercases cwd, drops the leading separator,

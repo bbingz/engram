@@ -2,6 +2,24 @@
 
 ## Changelog Memo
 
+### 2026-09-22
+
+- [验证] 来源目录波次落入本地 `main`，未推送。Grok 会话路径改为「百分号编码 cwd / 会话 id」；`CLAUDE.md` 把 `Antigravity CLI brain` 保持在同一行。vitest 74 过 1 跳过；CoreTests 57 过；父会话解除 3 过。详见 `CHANGELOG.md`。
+
+- [修复] `xcodeproj-untracked`：工程漂移检查只在临时目录生成。和当前工作树一致就通过，即使 `pbxproj` 相对 HEAD 是脏的。已落入同一次本地提交。详见 `CHANGELOG.md`。
+
+- [修复] `workitem-localtime-1`：动作日期在每次格式化前重设 `autoupdatingCurrent`。同一 UTC 时间戳在 UTC 是 6 月 23 日，改成 `Asia/Shanghai` 后是 6 月 24 日。已落入同一次本地提交。详见 `CHANGELOG.md`。
+
+- [变更] 删掉未使用的 `TopBarView` / `TierBar`。`package.json` 描述改为原生 Swift 运行时，不再写成 MCP Server。设置页去掉 Stage 3 文案；登录项只走 `SMAppService`；parity 清单不再引用已删除的 `watcher.ts`。已落入同一次本地提交。详见 `CHANGELOG.md`。
+
+- [变更] Grok 项目目录改为 UTF-8 大写百分号编码（`名前` → `%E5%90%8D%E5%89%8D`）。Pi 仍是 flat，仓库里没有 `--cwd--` 布局，未做分组改名。`docs/full-review-report.md` 加了 HISTORICAL 横幅，但该文件被 gitignore，不会进提交。详见 `CHANGELOG.md`。
+
+- [变更] Cursor 落地 PARENT-UNLINK / TS-MOVE-19 / TS-BOOTSTRAP-15：手动解除父会话时清掉 suggestion 字段并保持 subagent/dispatched 的 skip；TS project-move 补 flat pi 与百分号编码 grok；参考入口不新增 pi.ts/grok.ts。已落入同一次本地提交。独立复跑见 `CHANGELOG.md`。
+
+### 2026-09-21
+
+- [变更] Cursor 落地 UNLOCK-19 / GROK-SUMMARY / MOVE-19 / FRESHNESS-ISO：App 目录/颜色/引导对齐 19 个 SourceName（补 pi/grok）；Grok 只把 jsonl 当转录；项目搬迁 roots 补 pi/grok；Sources 新鲜度解析 ISO8601。已落入同一次本地提交。独立复跑见 `CHANGELOG.md`。
+
 ### 2026-09-20
 
 - [部署] 用户授权后激活 HQ `web-parity-20260913-r18`（#446 / `main` `3859f788`）。service-index PID 22930（EngramServiceCore `e2548abd…`，回滚 r17），remote-server PID 23443（`8c351ad1…`，回滚 r5）。现网库建了 `idx_sessions_activity_id`，未跑 ANALYZE。探针：overview 无 limit 0.072s/2 条；`测试` 列表 `query_too_short` 0.020s；Search `测试` 0.583s。详见 `CHANGELOG.md`。

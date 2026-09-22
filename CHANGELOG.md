@@ -3,6 +3,177 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Source-catalog wave closeout (2026-09-22)
+
+Landed on local `main`. Not pushed. Review of the 19-source wave found two
+doc mismatches and no product-parser defect.
+
+- `docs/session-formats/grok.md` and `grok.zh.md` now describe
+  `~/.grok/sessions/<percent-encoded-cwd>/<session-id>/`. `/` encodes as `%2F`.
+- `CLAUDE.md` keeps the substring `Antigravity CLI brain` on one line.
+  Wrapping it broke `testCascadeAdapterDocsDoNotClaimDisabledLiveSyncMeansZeroIngest`.
+
+Verification on this checkout:
+
+- `vitest` `bootstrap-adapters`, `project-move/sources`, `xcodeproj-drift-gate`,
+  `ci-workflow`, `mcp-tools`: 74 passed, 1 skipped.
+- `EngramCoreTests` `GrokAdapterTests`, `ImplementationDigestExtractorTests`,
+  `SessionSourcesTests`: 57 tests, 0 failures, `TEST SUCCEEDED`.
+- `EngramTests` catalog/colors/freshness/cutover scan: 86 tests, 1 failure
+  (the wrapped CLAUDE.md phrase). After the one-line fix, the cascade doc
+  test passed (`xcodebuild` exit 0) and `EngramServiceCoreTests` parent-unlink
+  repros executed 3 tests, 0 failures, `TEST SUCCEEDED`.
+
+Not run: full Swift schemes, HQ/live SLA probes. Not pushed.
+
+## Xcode project drift check no longer rewrites macos/ (2026-09-22)
+
+Uncommitted. `scripts/check-xcodeproj-drift.sh` checks the pinned XcodeGen
+version, copies `macos/` to a temp directory, links repo-root `tests/`
+and `test-fixtures/` beside that copy, and runs `xcodegen generate` only
+there. A match with the working tree exits 0 even when
+`project.pbxproj` is unstaged versus HEAD. Content that differs, including
+a generated file present on only one side, still fails, and the temp tree
+is deleted rather than copied back. The shared project was regenerated with
+pinned XcodeGen 2.45.4 so `project.pbxproj` matches that run.
+
+Independent re-run: `vitest` `xcodeproj-drift-gate.test.ts` and
+`ci-workflow.test.ts`, 51 passed, 1 skipped (the live-repo pass stays
+skipped while this checkout's `project.pbxproj` is dirty).
+
+## Action-date formatter follows an in-process timezone change (2026-09-22)
+
+Uncommitted. `ImplementationDigestExtractor.dateKey` now sets
+`localDayFormatter.timeZone = TimeZone.autoupdatingCurrent` immediately
+before each `string(from:)`. The static formatter is unchanged, and
+`dateKey` stays private. `2026-06-23T16:30:00Z` is `2026-06-23` in UTC
+and `2026-06-24` in `Asia/Shanghai`.
+
+Regression: `ImplementationDigestExtractorTests.testActionDateFollowsInProcessTimeZoneChange_repro`
+goes through `extract` and restores `TZ` / `NSTimeZone.default`. Cursor
+reported the class at 10 tests passed. Independent re-run of that one
+test exited 0; the wrapper log did not retain the `TEST SUCCEEDED` line.
+
+## Dead window chrome removed and package description corrected (2026-09-22)
+
+Uncommitted. No commit, no push.
+
+- **TOPBAR-DEAD.** Deleted unused `TopBarView.swift` and `TierBar.swift`.
+  Nothing in the app called them. `AppSearchServiceCutoverScanTests` no
+  longer reads the deleted file. MainWindowView still must not own Resume;
+  `TranscriptToolbar` still owns the session resume action. `xcodegen
+  generate` dropped the two files from the generated project. Cursor
+  reported `AppSearchServiceCutoverScanTests` `TEST SUCCEEDED`.
+- **PKG-MCP-DESC.** `package.json` description no longer calls the product
+  an MCP server. It now says the shipped runtime is the native Swift app
+  (`EngramService` / `EngramMCP`) and `src/` TypeScript is reference
+  tooling. Version and scripts unchanged.
+- **SETTINGS-STAGE3 / LOGIN-13 / PARITY-WATCHER** (same dirty tree).
+  Settings caption no longer says "during Stage 3". `LaunchAgent.setLegacy`
+  and the macOS 13 branch are gone; login uses `SMAppService` only.
+  Adapter-parity `sourceFiles` no longer lists deleted `src/core/watcher.ts`.
+
+## Grok project-dir encoding and skipped Pi grouping (2026-09-22)
+
+Uncommitted follow-up after the parent-unlink wave. No commit, no push.
+PI-GROUPED was not implemented: this repo has no `--cwd--` Pi layout.
+`PiAdapter` enumerates `~/.pi/agent/sessions/**/*.jsonl`, and `.pi` stays
+`encodeProjectDir: nil`.
+
+**GROK-CWD-ENCODE.** `SessionSources.encodeGrok` and TS `encodeGrok` now
+percent-encode every UTF-8 byte outside ASCII `A-Za-z0-9-._~` with
+uppercase hex. `/Users/test/project` stays `%2FUsers%2Ftest%2Fproject`.
+`/Users/user/Documents/project-名前` becomes
+`%2FUsers%2Fuser%2FDocuments%2Fproject-%E5%90%8D%E5%89%8D`.
+`GrokAdapter.decodedProjectDirectory` is still
+`removingPercentEncoding` only. No BLAKE3, no 255-byte slug, no `.cwd`
+rewrite.
+
+**FULL-REVIEW-HISTORICAL.** `docs/full-review-report.md` has a HISTORICAL
+banner and no longer cites `index.ts:693`, `index.ts:781-820`, or
+`daemon.ts:161-172`. `.gitignore` line 68 ignores that file, so the
+banner is local-only and will not ride a commit.
+
+Watchdog re-run: `npm test -- tests/core/project-move/sources.test.ts`
+20 passed; EngramCoreTests
+`testRootsIncludePiFlatAndGrokPercentEncodedProjectDir_repro` 1 test,
+`TEST SUCCEEDED`. Cursor Goal paused. No fourth item started.
+
+## Sticky manual unlink and TS pi/grok reference roots (PARENT-UNLINK / TS-MOVE-19 / TS-BOOTSTRAP-15) (2026-09-22)
+
+Uncommitted follow-up on local `main`, on top of the 2026-09-21 UNLOCK-19 /
+GROK-SUMMARY / MOVE-19 / FRESHNESS-ISO diffs. No commit, no push, no PR.
+LOGIN-13, TOPBAR-DEAD, and inventory were not started.
+
+1. **PARENT-UNLINK.** `applyClearParentSession` nulls `parent_session_id`,
+   `suggested_parent_id`, `suggestion_status`, and `suggestion_candidates`,
+   sets `link_source='manual'`, and forces `tier='skip'` only for
+   `subagent` / `dispatched`. `applySetParentSession` still does not rewrite
+   tier. Suggested-parent backfill already skips `link_source='manual'` and
+   was not changed.
+2. **TS-MOVE-19.** `src/core/project-move/sources.ts` adds flat `pi`
+   (`~/.pi/agent/sessions`) and percent-encoded `grok`
+   (`~/.grok/sessions`, `/` → `%2F`). kimi / qwen / commandcode encoders
+   stay Swift-only.
+3. **TS-BOOTSTRAP-15.** No `src/adapters/pi.ts` or `grok.ts`.
+   `SOURCE_NAMES` includes both; `getAdapter` returns undefined;
+   `createAdapters()` stays 15.
+
+Independent re-run 2026-09-22:
+
+- vitest `tests/core/project-move/sources.test.ts`,
+  `tests/core/bootstrap-adapters.test.ts`, `tests/docs/mcp-tools.test.ts`:
+  23/23
+- `./node_modules/.bin/biome check` on
+  `src/core/project-move/sources.ts`, `src/adapters/types.ts`,
+  `tests/core/project-move/sources.test.ts`,
+  `tests/core/bootstrap-adapters.test.ts`: clean
+- `xcodebuild` EngramServiceCore
+  `testClearParentDropsSuggestionFieldsAndKeepsSkipTier_repro`: 1 test,
+  0 failures, `TEST SUCCEEDED`
+
+Cursor Goal paused. No fourth item named.
+
+## App source catalog unlocked to 19 (UNLOCK-19 / GROK-SUMMARY / MOVE-19 / FRESHNESS-ISO) (2026-09-21)
+
+Uncommitted product work on local `main` (ahead of `origin/main` by the
+existing docs hygiene commit). Cursor implemented four review findings
+after a lead interrupt stopped a 1-day inventory Goal. No commit, no
+push, no PR, no HQ deploy.
+
+1. **UNLOCK-19.** `SourceCatalog.all` is 19 entries including `pi`
+   (`~/.pi/agent/sessions`) and `grok` (`~/.grok/sessions`).
+   `SourceColors` names both (hex `#4A6D8C` / `#7A5C2E`). Onboarding
+   `scanSources()` lists both. `SOURCE_NAMES` in `src/adapters/types.ts`
+   appends both. Docs: README 16+3 table, CLAUDE/AGENTS 19 adapters,
+   mcp-tools enum, PRIVACY paths, `support-matrix.yml` plus
+   `docs/session-formats/{pi,grok}{,.zh}.md`. Indexed pi/grok stay
+   catalog-detected, not ghost-appended.
+2. **GROK-SUMMARY.** `GrokAdapter.primaryTranscriptURL` returns JSONL
+   only. Summary-only directories parse metadata from `summary.json`
+   without reading it as JSONL (`malformedJSON`). Compaction-missing
+   segments stay `malformedJSON`. Archive/collector jsonl contracts
+   untouched.
+3. **MOVE-19.** `SourceId` + `SessionSources.roots()` add flat `pi` and
+   percent-encoded `grok` project dirs (`/Users/a` → `%2FUsers%2Fa`).
+4. **FRESHNESS-ISO.** `SourceIndexFreshness` uses
+   `EngramTimestampParser` (ISO8601 + SQLite). SQLite-format tests kept.
+
+Independent re-run 2026-09-21:
+
+- `tests/docs/mcp-tools.test.ts` 2/2
+- `./node_modules/.bin/biome check src/adapters/types.ts` clean
+  (`npx biome` is not a runnable bin here)
+- `xcodebuild` EngramTests SourceCatalog/SourceColors/SourcePulseUsageFormatting:
+  31 tests, 0 failures, `TEST SUCCEEDED`
+- `xcodebuild` EngramCoreTests GrokAdapterTests/SessionSourcesTests:
+  47 tests, 0 failures, `TEST SUCCEEDED`
+
+Left out of this wave (intentional): LOGIN-13, TOPBAR-DEAD, TS
+`pi.ts`/`grok.ts`, adapter-parity 15, TS `createAdapters()` 15, TS
+`project-move/sources.ts` still 12 ids, DATE-PARSE-DUP. Cursor Goal
+paused; next item not started.
+
 ## HQ Web r18 activated from merged PR #446 (2026-09-20)
 
 User authorized HQ deploy after #446 merged to `main` as `3859f788`

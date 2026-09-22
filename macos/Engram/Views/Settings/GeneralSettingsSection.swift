@@ -68,7 +68,7 @@ struct GeneralSettingsSection: View {
                         serviceStatusLabel
                             .foregroundStyle(.secondary)
                     }
-                    Text("Primary runtime for the macOS app. Settings, search, indexing, and operational actions should use Swift service IPC during Stage 3.")
+                    Text("Primary runtime for the macOS app. Settings, search, indexing, and operational actions should use Swift service IPC.")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -79,15 +79,10 @@ struct GeneralSettingsSection: View {
             // Launch
             GroupBox("Launch") {
                 VStack(alignment: .leading, spacing: 10) {
-                    if #available(macOS 13.0, *) {
-                        Toggle("Launch at Login", isOn: Binding(
-                            get: { LaunchAgent.isEnabled },
-                            set: { LaunchAgent.setEnabled($0) }
-                        ))
-                    } else {
-                        Text("Login item requires macOS 13+")
-                            .foregroundStyle(.secondary)
-                    }
+                    Toggle("Launch at Login", isOn: Binding(
+                        get: { LaunchAgent.isEnabled },
+                        set: { LaunchAgent.setEnabled($0) }
+                    ))
                     Toggle("Show Dock Icon", isOn: $showDockIcon)
                     Text("Keep the app icon visible in the Dock at all times")
                         .font(.caption2)

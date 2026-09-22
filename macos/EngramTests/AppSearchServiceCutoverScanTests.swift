@@ -729,11 +729,6 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
             mainWindow.contains("resumeSelectedSession()"),
             "MainWindowView should not own the session resume action"
         )
-        let topBar = try source("macos/Engram/Views/TopBarView.swift")
-        XCTAssertFalse(
-            topBar.contains("Resume"),
-            "TopBarView should not render a global Resume control"
-        )
 
         let transcriptToolbar = try source("macos/Engram/Views/Transcript/TranscriptToolbar.swift")
         XCTAssertTrue(

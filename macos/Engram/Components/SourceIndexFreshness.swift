@@ -27,22 +27,7 @@ enum SourceIndexFreshness {
     }
 
     private static func ageSeconds(_ latestIndexed: String?, now: Date) -> TimeInterval? {
-        guard let indexedAt = parsedSQLiteUTCDate(latestIndexed) else { return nil }
+        guard let indexedAt = EngramTimestampParser.date(from: latestIndexed) else { return nil }
         return max(0, now.timeIntervalSince(indexedAt))
-    }
-
-    private static func parsedSQLiteUTCDate(_ value: String?) -> Date? {
-        guard let raw = value?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !raw.isEmpty
-        else {
-            return nil
-        }
-
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        formatter.isLenient = false
-        return formatter.date(from: raw)
     }
 }
