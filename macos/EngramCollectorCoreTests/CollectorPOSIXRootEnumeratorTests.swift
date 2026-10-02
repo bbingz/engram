@@ -1011,6 +1011,287 @@ final class CollectorPOSIXRootEnumeratorTests: XCTestCase {
         XCTAssertEqual(fixture.descriptors.streamCloseCount, 2)
     }
 
+    // Repro for a production collector loop diagnosed 2026-10-02 (CHANGELOG, same date): a directory queued in the
+    // bootstrap frontier and deleted before the walker reached it failed to open on every
+    // turn. The scan stayed blocked (enumerationUnavailable), completed_revision never
+    // advanced and the root cycled restart -> blocked -> loss about once per second.
+    // A vanished non-root directory finishes as empty so the scan completes.
+    func testVanishedFrontierDirectoryFinishesScan_repro() throws {
+        let fixture = try CollectorPOSIXFixture()
+        let inventory = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        defer { inventory.remove() }
+        try fixture.file("a/rollout-a.jsonl")
+        try fixture.file("b/rollout-b.jsonl")
+        let store = try inventory.open()
+        try store.registerRoot(fixture.configuration())
+        let scan = try store.beginBootstrap(configuration: fixture.configuration(), scanID: "scan")
+        let walker = CollectorBootstrapWalker(store: store, enumerator: try fixture.enumerator())
+        XCTAssertEqual(try walker.step(scan: scan, budget: budget(directories: 1)).outcome, .paused(.budget))
+        XCTAssertEqual(try store.pendingDirectories(scan: scan, limit: 10), ["a", "b"])
+        try FileManager.default.removeItem(at: fixture.url("a"))
+        XCTAssertEqual(try walker.step(scan: scan, budget: budget()).outcome, .finished)
+        let state = try XCTUnwrap(store.rootState(rootID: fixture.configuration().rootID))
+        XCTAssertNil(state.lastScanFailure)
+        XCTAssertNil(state.activeScan)
+        XCTAssertEqual(state.completedRevision, scan.requestedRevision)
+        XCTAssertEqual(state.completedRevision, state.requestedRevision)
+        XCTAssertEqual(try store.pendingLocators(configuration: fixture.configuration(), limit: 10).map(\.relativePath),
+                       ["b/rollout-b.jsonl"])
+        XCTAssertTrue(fixture.descriptors.live.isEmpty)
+    }
+
+    // Descendants of a vanished directory that were already queued vanish too and drain;
+    // a locator observed under it earlier is left as-is, like any deleted file.
+    func testVanishedDirectoryDrainsQueuedDescendantsAndKeepsObservedLocators() throws {
+        let fixture = try CollectorPOSIXFixture()
+        let inventory = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        defer { inventory.remove() }
+        try fixture.file("a/rollout-a.jsonl")
+        try fixture.file("a/sub/rollout-s.jsonl")
+        try fixture.file("b/rollout-b.jsonl")
+        let store = try inventory.open()
+        try store.registerRoot(fixture.configuration())
+        let scan = try store.beginBootstrap(configuration: fixture.configuration(), scanID: "scan")
+        let walker = CollectorBootstrapWalker(store: store, enumerator: try fixture.enumerator())
+        XCTAssertEqual(try walker.step(scan: scan, budget: budget(directories: 2)).outcome, .paused(.budget))
+        XCTAssertEqual(try store.pendingDirectories(scan: scan, limit: 10), ["a/sub", "b"])
+        let observed = try XCTUnwrap(store.locator(configuration: fixture.configuration(), relativePath: "a/rollout-a.jsonl"))
+        try FileManager.default.removeItem(at: fixture.url("a"))
+        XCTAssertEqual(try walker.step(scan: scan, budget: budget()).outcome, .finished)
+        let state = try XCTUnwrap(store.rootState(rootID: fixture.configuration().rootID))
+        XCTAssertNil(state.lastScanFailure)
+        XCTAssertEqual(state.completedRevision, scan.requestedRevision)
+        XCTAssertEqual(try store.locator(configuration: fixture.configuration(), relativePath: "a/rollout-a.jsonl"), observed)
+        XCTAssertNil(try store.locator(configuration: fixture.configuration(), relativePath: "a/sub/rollout-s.jsonl"))
+        XCTAssertNotNil(try store.locator(configuration: fixture.configuration(), relativePath: "b/rollout-b.jsonl"))
+        XCTAssertTrue(fixture.descriptors.live.isEmpty)
+    }
+
+    // A directory removed between pages (the walker holds its cursor across a budget
+    // pause) finishes instead of blocking. Entries read in the failing pass are dropped.
+    func testDirectoryVanishingMidEnumerationFinishesWithoutItsUnappliedEntries() throws {
+        let fixture = try CollectorPOSIXFixture()
+        let inventory = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        defer { inventory.remove() }
+        try fixture.file("a/rollout-a1.jsonl")
+        try fixture.file("a/rollout-a2.jsonl")
+        try fixture.file("b/rollout-b.jsonl")
+        let store = try inventory.open()
+        try store.registerRoot(fixture.configuration())
+        let scan = try store.beginBootstrap(configuration: fixture.configuration(), scanID: "scan")
+        var walker: CollectorBootstrapWalker? = CollectorBootstrapWalker(store: store, enumerator: try fixture.enumerator())
+        defer { walker = nil }
+        XCTAssertEqual(try walker!.step(scan: scan, budget: budget(directories: 1)).outcome, .paused(.budget))
+        XCTAssertEqual(try walker!.step(scan: scan, budget: budget(entries: 1)).outcome, .paused(.budget))
+        let paged = try store.pendingLocators(configuration: fixture.configuration(), limit: 10)
+        XCTAssertEqual(paged.count, 1)
+        try FileManager.default.removeItem(at: fixture.url("a"))
+        XCTAssertEqual(try walker!.step(scan: scan, budget: budget()).outcome, .finished)
+        XCTAssertEqual(Set(try store.pendingLocators(configuration: fixture.configuration(), limit: 10).map(\.relativePath)),
+                       Set(paged.map(\.relativePath) + ["b/rollout-b.jsonl"]))
+        XCTAssertNil(try XCTUnwrap(store.rootState(rootID: fixture.configuration().rootID)).lastScanFailure)
+        walker = nil
+        XCTAssertTrue(fixture.descriptors.live.isEmpty)
+
+        // Removal detected at EOF of the same pass: both entries already read are dropped.
+        let second = try CollectorPOSIXFixture()
+        let secondInventory = try CollectorInventoryTestFixture()
+        defer { second.remove() }
+        defer { secondInventory.remove() }
+        try second.file("a/rollout-a1.jsonl")
+        try second.file("a/rollout-a2.jsonl")
+        var armed = false
+        var removed = false
+        var hooks = second.hooks
+        hooks.afterReadEntry = { name in
+            guard name == nil, armed, !removed else { return }
+            removed = true
+            try FileManager.default.removeItem(at: second.url("a"))
+        }
+        let secondStore = try secondInventory.open()
+        try secondStore.registerRoot(second.configuration())
+        let secondScan = try secondStore.beginBootstrap(configuration: second.configuration(), scanID: "scan")
+        walker = CollectorBootstrapWalker(store: secondStore, enumerator: try second.enumerator(hooks: hooks))
+        XCTAssertEqual(try walker!.step(scan: secondScan, budget: budget(directories: 1)).outcome, .paused(.budget))
+        armed = true
+        XCTAssertEqual(try walker!.step(scan: secondScan, budget: budget()).outcome, .finished)
+        XCTAssertTrue(removed)
+        XCTAssertTrue(try secondStore.pendingLocators(configuration: second.configuration(), limit: 10).isEmpty)
+        XCTAssertNil(try XCTUnwrap(secondStore.rootState(rootID: second.configuration().rootID)).lastScanFailure)
+        walker = nil
+        XCTAssertTrue(second.descriptors.live.isEmpty)
+    }
+
+    // The rename case of the diagnosis: a targeted directory event can queue a path that
+    // does not exist. It finishes as empty instead of stranding the targeted scan.
+    func testTargetedDirectoryThatNeverExistedFinishesEmpty() throws {
+        let fixture = try CollectorPOSIXFixture()
+        let inventory = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        defer { inventory.remove() }
+        try fixture.file("rollout-one.jsonl")
+        let store = try inventory.open()
+        try store.registerRoot(fixture.configuration())
+        let walker = CollectorBootstrapWalker(store: store, enumerator: try fixture.enumerator())
+        let full = try store.beginBootstrap(configuration: fixture.configuration(), scanID: "full")
+        XCTAssertEqual(try walker.step(scan: full, budget: budget()).outcome, .finished)
+        let before = try XCTUnwrap(store.rootState(rootID: fixture.configuration().rootID))
+        try store.applyEventBatch(
+            configuration: fixture.configuration(), expectedCheckpoint: nil,
+            nextCheckpoint: .init(epoch: "epoch-1", cursor: "dir-1"),
+            dirtyRelativePaths: [], requiresReconciliation: false,
+            dirtyRelativeDirectories: ["gone"]
+        )
+        let targeted = try XCTUnwrap(store.rootState(rootID: fixture.configuration().rootID)?.activeScan)
+        XCTAssertEqual(try store.pendingDirectories(scan: targeted, limit: 10), ["gone"])
+        XCTAssertEqual(try walker.step(scan: targeted, budget: budget()).outcome, .finished)
+        let after = try XCTUnwrap(store.rootState(rootID: fixture.configuration().rootID))
+        XCTAssertNil(after.activeScan)
+        XCTAssertNil(after.lastScanFailure)
+        XCTAssertEqual(after.completedRevision, before.completedRevision)
+        XCTAssertEqual(after.requestedRevision, before.requestedRevision)
+        XCTAssertTrue(fixture.descriptors.live.isEmpty)
+    }
+
+    // A component replaced by a regular file (ENOTDIR) is no longer a directory to walk.
+    func testFrontierDirectoryReplacedByFileFinishesEmpty() throws {
+        let fixture = try CollectorPOSIXFixture()
+        let inventory = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        defer { inventory.remove() }
+        try fixture.file("a/sub/rollout-s.jsonl")
+        try fixture.file("b/rollout-b.jsonl")
+        let store = try inventory.open()
+        try store.registerRoot(fixture.configuration())
+        let scan = try store.beginBootstrap(configuration: fixture.configuration(), scanID: "scan")
+        let walker = CollectorBootstrapWalker(store: store, enumerator: try fixture.enumerator())
+        XCTAssertEqual(try walker.step(scan: scan, budget: budget(directories: 2)).outcome, .paused(.budget))
+        XCTAssertEqual(try store.pendingDirectories(scan: scan, limit: 10), ["a/sub", "b"])
+        try FileManager.default.removeItem(at: fixture.url("a"))
+        try Data("not a directory".utf8).write(to: fixture.url("a"))
+        for directory in ["a", "a/sub"] {
+            XCTAssertThrowsError(try fixture.enumerator().open(configuration: fixture.configuration(), relativeDirectory: directory)) {
+                XCTAssertEqual($0 as? CollectorPOSIXEnumerationError, .directoryVanished)
+            }
+        }
+        XCTAssertEqual(try walker.step(scan: scan, budget: budget()).outcome, .finished)
+        let state = try XCTUnwrap(store.rootState(rootID: fixture.configuration().rootID))
+        XCTAssertNil(state.lastScanFailure)
+        XCTAssertEqual(state.completedRevision, scan.requestedRevision)
+        XCTAssertTrue(fixture.descriptors.live.isEmpty)
+    }
+
+    // The root itself keeps its unavailable-source meaning: a missing root is
+    // io(openComponent, ENOENT) and a replaced root is rootIdentityChanged, never
+    // directoryVanished, and the walk still blocks with the frontier intact.
+    func testMissingOrReplacedRootIsNotAVanishedDirectory() throws {
+        for replace in [false, true] {
+            let fixture = try CollectorPOSIXFixture()
+            let inventory = try CollectorInventoryTestFixture()
+            defer { fixture.remove() }
+            defer { inventory.remove() }
+            try fixture.file("a/rollout-a.jsonl")
+            let store = try inventory.open()
+            try store.registerRoot(fixture.configuration())
+            let scan = try store.beginBootstrap(configuration: fixture.configuration(), scanID: "scan")
+            let binding = try fixture.binding()
+            let enumerator = try fixture.enumerator()
+            let walker = CollectorBootstrapWalker(store: store, enumerator: enumerator)
+            XCTAssertEqual(try walker.step(scan: scan, budget: budget(directories: 1)).outcome, .paused(.budget))
+            let held = fixture.base.appendingPathComponent("held-root")
+            try FileManager.default.moveItem(at: fixture.sourceRoot, to: held)
+            if replace { try FileManager.default.createDirectory(at: fixture.sourceRoot, withIntermediateDirectories: false) }
+            let expected: CollectorPOSIXEnumerationError = replace ? .rootIdentityChanged : .io(.openComponent, ENOENT)
+            for directory in ["", "a"] {
+                XCTAssertThrowsError(try enumerator.open(configuration: fixture.configuration(), relativeDirectory: directory)) {
+                    XCTAssertEqual($0 as? CollectorPOSIXEnumerationError, expected)
+                }
+            }
+            XCTAssertThrowsError(try CollectorPOSIXRootEnumerator.validateRoot(binding: binding)) {
+                XCTAssertEqual($0 as? CollectorPOSIXEnumerationError, expected)
+            }
+            XCTAssertEqual(try walker.step(scan: scan, budget: budget()).outcome, .blocked(.enumerationUnavailable))
+            XCTAssertEqual(try store.pendingDirectories(scan: scan, limit: 10), ["a"])
+            let state = try XCTUnwrap(store.rootState(rootID: fixture.configuration().rootID))
+            XCTAssertEqual(state.activeScan, scan)
+            XCTAssertEqual(state.lastScanFailure, .enumerationUnavailable)
+            XCTAssertEqual(state.completedRevision, 0)
+            if replace { try FileManager.default.removeItem(at: fixture.sourceRoot) }
+            try FileManager.default.moveItem(at: held, to: fixture.sourceRoot)
+            XCTAssertTrue(fixture.descriptors.live.isEmpty)
+        }
+    }
+
+    // Only a vanished directory finishes as empty. A directory that exists but cannot
+    // be opened (EACCES here) still blocks the walk with its frontier row pending.
+    func testPermissionDeniedFrontierDirectoryStillBlocks() throws {
+        try XCTSkipIf(geteuid() == 0, "root bypasses the fixture's DAC permission denial")
+        let fixture = try CollectorPOSIXFixture()
+        let inventory = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        defer { inventory.remove() }
+        try fixture.file("a/rollout-a.jsonl")
+        try fixture.file("b/rollout-b.jsonl")
+        let store = try inventory.open()
+        try store.registerRoot(fixture.configuration())
+        let scan = try store.beginBootstrap(configuration: fixture.configuration(), scanID: "scan")
+        let walker = CollectorBootstrapWalker(store: store, enumerator: try fixture.enumerator())
+        XCTAssertEqual(try walker.step(scan: scan, budget: budget(directories: 1)).outcome, .paused(.budget))
+        XCTAssertEqual(chmod(fixture.url("a").path, 0), 0)
+        defer { XCTAssertEqual(chmod(fixture.url("a").path, 0o700), 0) }
+        XCTAssertThrowsError(try fixture.enumerator().open(configuration: fixture.configuration(), relativeDirectory: "a")) {
+            XCTAssertEqual($0 as? CollectorPOSIXEnumerationError, .io(.openComponent, EACCES))
+        }
+        for _ in 0..<2 {
+            XCTAssertEqual(try walker.step(scan: scan, budget: budget()).outcome, .blocked(.enumerationUnavailable))
+        }
+        XCTAssertEqual(try store.pendingDirectories(scan: scan, limit: 10), ["a", "b"])
+        let state = try XCTUnwrap(store.rootState(rootID: fixture.configuration().rootID))
+        XCTAssertEqual(state.activeScan, scan)
+        XCTAssertEqual(state.lastScanFailure, .enumerationUnavailable)
+        XCTAssertTrue(fixture.descriptors.live.isEmpty)
+    }
+
+    // A symlink swapped in for a queued directory is refused as unsafe, not treated as
+    // vanished: macOS reports ENOTDIR for O_DIRECTORY|O_NOFOLLOW on a symlink, so the
+    // classification must look at the entry itself.
+    func testSymlinkSwappedForFrontierDirectoryIsStillRefused() throws {
+        for dangling in [false, true] {
+            let fixture = try CollectorPOSIXFixture()
+            let inventory = try CollectorInventoryTestFixture()
+            defer { fixture.remove() }
+            defer { inventory.remove() }
+            try fixture.file("a/sub/rollout-s.jsonl")
+            let outside = fixture.base.appendingPathComponent("outside")
+            try FileManager.default.createDirectory(at: outside.appendingPathComponent("sub"), withIntermediateDirectories: true)
+            try Data("outside".utf8).write(to: outside.appendingPathComponent("sub/rollout-outside.jsonl"))
+            let store = try inventory.open()
+            try store.registerRoot(fixture.configuration())
+            let scan = try store.beginBootstrap(configuration: fixture.configuration(), scanID: "scan")
+            let walker = CollectorBootstrapWalker(store: store, enumerator: try fixture.enumerator())
+            XCTAssertEqual(try walker.step(scan: scan, budget: budget(directories: 1)).outcome, .paused(.budget))
+            XCTAssertEqual(try store.pendingDirectories(scan: scan, limit: 10), ["a"])
+            try FileManager.default.removeItem(at: fixture.url("a"))
+            try FileManager.default.createSymbolicLink(
+                at: fixture.url("a"), withDestinationURL: dangling ? fixture.base.appendingPathComponent("missing") : outside
+            )
+            for directory in ["a", "a/sub"] {
+                XCTAssertThrowsError(try fixture.enumerator().open(configuration: fixture.configuration(), relativeDirectory: directory)) {
+                    self.assertUnsafePathError($0)
+                }
+            }
+            XCTAssertEqual(try walker.step(scan: scan, budget: budget()).outcome, .blocked(.enumerationUnavailable))
+            XCTAssertEqual(try store.pendingDirectories(scan: scan, limit: 10), ["a"])
+            XCTAssertNil(try store.locator(configuration: fixture.configuration(), relativePath: "a/sub/rollout-outside.jsonl"))
+            XCTAssertEqual(try XCTUnwrap(store.rootState(rootID: fixture.configuration().rootID)).lastScanFailure,
+                           .enumerationUnavailable)
+            XCTAssertTrue(fixture.descriptors.live.isEmpty)
+        }
+    }
+
     private func budget(entries: Int = 100, files: Int = 100, directories: Int = 20, bytes: Int = 100_000) -> CollectorBootstrapBudget {
         .init(maxEntriesVisited: entries, maxCandidateFiles: files, maxDirectoryOpens: directories, maxMetadataBytes: bytes)
     }

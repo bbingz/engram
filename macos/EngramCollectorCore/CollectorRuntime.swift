@@ -95,6 +95,12 @@ public actor CollectorRuntime {
     private let eventStreamFactory: EventStreamFactory
     private var identitySuspendedRoots = Set<Int>()
     private var reportedIdentitySuspendedRoots = Set<Int>()
+    /// A transient block (a directory changed mid-read) clears on the next reopen; only a
+    /// root blocked this many bootstrap steps in a row is reported, so stderr does not flap.
+    private static let blockedReportThreshold = 5
+    private var blockedStreaks: [Int: Int] = [:]
+    private var blockedRoots = Set<Int>()
+    private var reportedBlockedRoots = Set<Int>()
 
     /// Production uses the native FSEvents stream; tests inject a fake stream.
     typealias EventStreamFactory = @Sendable (CollectorEventStreamRequest, CollectorEventIngressBudget)
@@ -234,11 +240,22 @@ public actor CollectorRuntime {
                 let step = try coordinator.step(budget: configuration.budgets.bootstrap, observed: observed)
                 scannedEntries += step.bootstrap?.entriesVisited ?? 0
                 steps.append((index, step))
+                if let bootstrap = step.bootstrap {
+                    if case .blocked = bootstrap.outcome {
+                        let streak = min((blockedStreaks[index] ?? 0) + 1, Self.blockedReportThreshold)
+                        blockedStreaks[index] = streak
+                        if streak == Self.blockedReportThreshold { blockedRoots.insert(index) }
+                    } else {
+                        blockedStreaks[index] = nil
+                        blockedRoots.remove(index)
+                    }
+                }
             } catch where Self.isUnavailableSource(error) {
                 try suspendSource(at: index, owner: owner)
                 captureRootIDs.remove(Data(configuration.rootConfigurations[index].rootID.utf8))
             }
         }
+        reportBlockedRootsIfChanged()
         return (scannedEntries, captureRootIDs, steps)
     }
 
@@ -430,6 +447,8 @@ public actor CollectorRuntime {
         // Revalidate storage even when source validation failed: a missing
         // inventory must never be misclassified as an unavailable source.
         _ = try owner.activateStoredRootForPublication(configuration.rootConfigurations[index])
+        blockedStreaks[index] = nil
+        blockedRoots.remove(index)
         if let coordinator = coordinators[index] {
             do { try coordinator.stop() }
             catch where Self.isUnavailableSource(error) {
@@ -524,6 +543,19 @@ public actor CollectorRuntime {
         var line = "engram-collector: source roots suspended for identity change: \(ids.count)/\(roots.count)"
         if !ids.isEmpty { line += " (" + ids.joined(separator: ", ") + ")" }
         if !ids.isEmpty, ids.count == roots.count { line += "; capture stopped" }
+        diagnostics(line)
+    }
+
+    /// docs/invariants.md "Collector Bootstrap Scan Finishes Past Vanished Directories": a root whose bootstrap walk is blocked
+    /// (enumerationUnavailable or unsafeEntry) is retried every turn. Report one line,
+    /// root IDs only, each time the set of persistently blocked roots changes.
+    private func reportBlockedRootsIfChanged() {
+        guard blockedRoots != reportedBlockedRoots else { return }
+        reportedBlockedRoots = blockedRoots
+        let roots = configuration.rootConfigurations
+        let ids = blockedRoots.sorted().map { roots[$0].rootID }
+        var line = "engram-collector: source roots blocked in bootstrap: \(ids.count)/\(roots.count)"
+        if !ids.isEmpty { line += " (" + ids.joined(separator: ", ") + ")" }
         diagnostics(line)
     }
 
