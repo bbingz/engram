@@ -517,6 +517,123 @@ final class CollectorRuntimeTests: XCTestCase {
         }
     }
 
+    // Repro for the 2026-10-02 Daily restart loop (exit 70 about every 12 s): a stream
+    // loss admitted while the coordinator was still starting left it recoveryRequired, and
+    // the runtime turned that into reconciliationRequired. A loss must only force the
+    // root's full walk, while every other root and both upload loops keep running.
+    // docs/superpowers/specs/2026-10-02-collector-replay-loss-design.md
+    func testReplayLossDuringStartKeepsRuntimeAndOtherRootsRunning_repro() async throws {
+        let f = try RuntimeFixture(); defer { f.remove() }
+        let replicas = try await RuntimeReplicas.start(parent: f.base)
+        let other = f.base.appendingPathComponent("sources-other")
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let starts = RuntimeLocked<[RuntimeStreamStart]>([])
+        let factory: Runtime.EventStreamFactory = { request, _ in
+            starts.update { $0.append(.init(rootID: request.binding.configuration.rootID, epoch: request.epoch,
+                                            resumeCursor: request.resumeCheckpoint?.cursor)) }
+            return RuntimeReplayStream(request: request, poisonCursor: "100")
+        }
+        var document = f.document(replicas: replicas)
+        var block = try XCTUnwrap(document["collector"] as? [String: Any])
+        var roots = try XCTUnwrap(block["roots"] as? [[String: Any]])
+        roots.append(["rootID": "runtime-codex-other", "source": "codex", "rootPath": other.path, "revision": 1])
+        block["roots"] = roots
+        document["collector"] = block
+        var active: Runtime?
+        do {
+            try f.writeTranscript("captured before the checkpoint went stale")
+            try f.writeSettings(document)
+            active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: f.secret,
+                                                diagnostics: { _ in }, eventStreamFactory: factory))
+            _ = try await f.drive(active!, acknowledged: 2)
+            try await active!.stop(); active = nil
+            let epoch = try XCTUnwrap(starts.value.first { $0.rootID == "runtime-codex" }?.epoch)
+            try f.execute("UPDATE collector_roots SET event_epoch = ?, event_cursor = '100' WHERE root_id = 'runtime-codex'", [epoch])
+            try f.writeTranscript("captured after the stale replay", name: "rollout-two.jsonl", sessionID: "native-runtime-session-two")
+            try f.writeTranscript("captured by the healthy root", name: "rollout-staged.jsonl", sessionID: "native-runtime-session-other")
+            try FileManager.default.moveItem(at: f.sources.appendingPathComponent("rollout-staged.jsonl"),
+                                             to: other.appendingPathComponent("rollout-other.jsonl"))
+            let seeded = starts.value.count
+
+            active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: f.secret,
+                                                diagnostics: { _ in }, eventStreamFactory: factory))
+            do { try await active!.start() } catch {
+                XCTFail("a replay loss must not stop the runtime: \(error)")
+                throw error
+            }
+            try await f.awaitACKs(6, timeout: 20)
+            let deadline = Date().addingTimeInterval(10)
+            while try f.integer("SELECT requested_revision - completed_revision FROM collector_roots WHERE root_id = 'runtime-codex'") != 0 {
+                guard Date() < deadline else { throw RuntimeFixture.Failure.deadline }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            try await active!.stop(); active = nil
+            let replays = starts.value.dropFirst(seeded).filter { $0.rootID == "runtime-codex" && $0.resumeCursor != nil }
+            XCTAssertEqual(replays.map(\.resumeCursor), ["100"], "the lost history is replayed once, never again")
+            XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_roots WHERE root_id = 'runtime-codex' AND event_cursor = '100'"), 1,
+                           "a loss never rewrites the durable checkpoint")
+            XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_publications"), 3)
+            let hq = try await replicas.hq.count(), m1 = try await replicas.m1.count()
+            XCTAssertEqual(hq, 3); XCTAssertEqual(m1, 3)
+            await replicas.stop()
+        } catch {
+            try? await active?.stop()
+            await replicas.stop()
+            throw error
+        }
+    }
+
+    // A changed FSEvents database UUID is the one condition that still stops the runtime:
+    // the stored checkpoint belongs to another event history and is never rebased.
+    // docs/superpowers/plans/2026-09-05-collector-server-web.md (N3-B2: mismatched epochs
+    // fail closed without rebasing)
+    func testNativeEpochChangeStillStopsRuntimeWithoutRebasingCheckpoint() async throws {
+        let f = try RuntimeFixture(); defer { f.remove() }
+        let replicas = try await RuntimeReplicas.start(parent: f.base)
+        let factory: Runtime.EventStreamFactory = { request, _ in RuntimeReplayStream(request: request, poisonCursor: "100") }
+        let changed = "fsevents-device-v1:00000000-0000-0000-0000-000000000000"
+        var active: Runtime?
+        do {
+            try f.writeTranscript("enrolled before the epoch change")
+            try f.writeSettings(f.document(replicas: replicas))
+            active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: f.secret,
+                                                diagnostics: { _ in }, eventStreamFactory: factory))
+            _ = try await f.drive(active!, acknowledged: 2)
+            try await active!.stop(); active = nil
+            try f.execute("UPDATE collector_roots SET event_epoch = ?, event_cursor = '100' WHERE root_id = 'runtime-codex'", [changed])
+            active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: f.secret,
+                                                diagnostics: { _ in }, eventStreamFactory: factory))
+            do {
+                try await active!.start()
+                XCTFail("a changed native epoch must stop the runtime")
+            } catch {
+                XCTAssertEqual(error as? RuntimeError, .reconciliationRequired)
+                XCTAssertEqual(Runtime.failureReason(error), "CollectorRuntimeError.reconciliationRequired")
+            }
+            try await active!.stop(); active = nil
+            XCTAssertEqual(try f.integer("""
+                SELECT count(*) FROM collector_roots
+                WHERE root_id = 'runtime-codex' AND event_epoch = '\(changed)' AND event_cursor = '100'
+                """), 1)
+            await replicas.stop()
+        } catch {
+            try? await active?.stop()
+            await replicas.stop()
+            throw error
+        }
+    }
+
+    // The process-exit line names the reason with type and case only, never a payload.
+    func testFailureReasonNamesErrorTypeAndCaseWithoutPayload() {
+        XCTAssertEqual(Runtime.failureReason(RuntimeError.reconciliationRequired), "CollectorRuntimeError.reconciliationRequired")
+        XCTAssertEqual(Runtime.failureReason(CollectorPOSIXEnumerationError.rootIdentityChanged),
+                       "CollectorPOSIXEnumerationError.rootIdentityChanged")
+        XCTAssertEqual(Runtime.failureReason(RuntimeLeakyFailure.carrying("/Users/someone/private token")),
+                       "RuntimeLeakyFailure.carrying")
+        XCTAssertEqual(Runtime.failureReason(RuntimeDescribedFailure.described), "RuntimeDescribedFailure")
+        XCTAssertEqual(Runtime.failureReason(RuntimeStructFailure()), "RuntimeStructFailure")
+    }
+
     func testWindsurfHookRestartRecoversFrozenReservationAfterSourceDeletion() async throws {
         let f = try RuntimeFixture(); defer { f.remove() }
         _ = try writeWindsurfTranscript(f, text: "unpublished windsurf before source disappears")
@@ -3860,6 +3977,37 @@ final class CollectorRuntimeTests: XCTestCase {
         try bytes.write(to: file)
         XCTAssertEqual(chmod(file.path, 0o600), 0)
     }
+}
+
+private struct RuntimeStreamStart {
+    let rootID: String
+    let epoch: String
+    let resumeCursor: String?
+}
+
+/// Delivers synchronously from start, like a fast FSEvents replay: a resume from the
+/// poisoned cursor reports a continuity loss, every other start reports HistoryDone.
+private final class RuntimeReplayStream: CollectorEventStream {
+    private let request: CollectorEventStreamRequest
+    private let poisonCursor: String
+    init(request: CollectorEventStreamRequest, poisonCursor: String) {
+        self.request = request
+        self.poisonCursor = poisonCursor
+    }
+    func start(deliver: @escaping (CollectorEventStreamSignal) -> CollectorEventAdmission) throws {
+        let poisoned = request.resumeCheckpoint.map { Data($0.cursor.utf8) == Data(poisonCursor.utf8) } ?? false
+        _ = deliver(poisoned ? .loss(.continuityLoss) : .historyDone)
+    }
+    func stop() throws {}
+}
+
+private enum RuntimeLeakyFailure: Error { case carrying(String) }
+private enum RuntimeDescribedFailure: Error, CustomStringConvertible {
+    case described
+    var description: String { "Bearer /Users/someone/secret" }
+}
+private struct RuntimeStructFailure: Error, CustomStringConvertible {
+    var description: String { "/Users/someone/project" }
 }
 
 private final class RuntimeLocked<Value>: @unchecked Sendable {

@@ -114,6 +114,12 @@ final class CollectorEventCoordinator {
     // Borrowed for the coordinator's lifetime; never closed by this object.
     private var owner: CollectorInventoryOwner?
     private var rootEnrolled = false
+    // Protected by control. Cleared once a loss gap is durable: replaying the same
+    // stored history would report the same loss on every restart and recovery would
+    // never converge. The forced full walk covers that history instead, and the
+    // stored checkpoint itself is never rewritten by a loss.
+    // docs/superpowers/specs/2026-10-02-collector-replay-loss-design.md
+    private var resumeStoredCheckpoint = true
     // All fields below are protected by mailbox, including lifecycle publication.
     private var phase: CollectorEventCoordinatorPhase = .stopped
     private var generation: UInt64?
@@ -216,7 +222,8 @@ final class CollectorEventCoordinator {
                 return
             }
             let created = CollectorCoordinatorStreamLifetime(try streamFactory(.init(
-                binding: binding, generation: token, epoch: epoch, resumeCheckpoint: current.eventCheckpoint
+                binding: binding, generation: token, epoch: epoch,
+                resumeCheckpoint: resumeStoredCheckpoint ? current.eventCheckpoint : nil
             )))
             mailbox.withLock { stream = created }
             try Task.checkCancellation()
@@ -331,6 +338,8 @@ final class CollectorEventCoordinator {
                 case .reconciliationRequested(_, let revision):
                     // This transaction already supplied the durable gap. Do not add
                     // a second request or acknowledge the rejected ordinary batch.
+                    // A replay would deliver the same rejected batch again.
+                    resumeStoredCheckpoint = false
                     mailbox.withLock {
                         accepting = false
                         if !stopRequested { phase = .recoveryRequired }
@@ -486,6 +495,8 @@ final class CollectorEventCoordinator {
         guard case .reconciliationRequested(_, let revision) = result else {
             throw CollectorEventCoordinatorError.invalidState
         }
+        // A plain stop (.restart) still resumes from the durable checkpoint.
+        if reason != .restart { resumeStoredCheckpoint = false }
         // Record committed durability before a post-call cancellation can throw.
         mailbox.withLock {
             pendingGap = nil

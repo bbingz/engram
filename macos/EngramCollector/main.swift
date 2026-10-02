@@ -122,7 +122,7 @@ private func runCollector(_ options: Options) async -> Int32 {
     }
     let credentials = ExplicitCredentialFile(url: options.credentials)
     var runtime: CollectorRuntime?
-    var failed = false
+    var failure: Error?
     var output: String?
     do {
         runtime = try CollectorRuntime.open(settingsURL: options.settings, secretLoader: { reference in
@@ -151,13 +151,16 @@ private func runCollector(_ options: Options) async -> Int32 {
         } else { output = "engram-collector: disabled" }
     } catch is CancellationError {
         // Signals cancel the same task whose runtime is joined below.
-    } catch { failed = true }
+    } catch { failure = error }
     do { try await runtime?.stop() }
-    catch { failed = true }
+    catch { if failure == nil { failure = error } }
     // stop may rethrow a producer failure after successful cleanup. Keep the
-    // classification bounded without incorrectly claiming a close failure.
-    if failed {
-        FileHandle.standardError.write(Data("engram-collector: runtime failed\n".utf8))
+    // classification bounded without incorrectly claiming a close failure. The
+    // line names the first failure by type and case only (no payload), so an
+    // operator can tell exit causes apart.
+    if let failure {
+        let reason = CollectorRuntime.failureReason(failure)
+        FileHandle.standardError.write(Data("engram-collector: runtime failed: \(reason)\n".utf8))
         return 70
     }
     if let output { print(output) }
