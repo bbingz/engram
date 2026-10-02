@@ -37,6 +37,29 @@ final class CollectorKimiPersistenceTests: XCTestCase {
         XCTAssertEqual(try revisions(), baseline.map { $0 + 1 }, "a completed registry page must not redirty forever")
     }
 
+    // A volume st_dev renumbering is not a registry change (design note
+    // docs/superpowers/specs/2026-10-02-collector-volume-identity-design.md, c.4).
+    func testRegistryDeviceRenumberingDoesNotRedirtyLocators() throws {
+        let f = try KimiPersistenceFixture(); defer { f.close() }
+        let store = try f.open()
+        let observed = try XCTUnwrap(f.snapshot().kimiProjectContext).registryGeneration
+        for path in ["workspace/a/context.jsonl", "workspace/b/context.jsonl"] {
+            try store.markDirty(configuration: f.configuration, relativePath: path)
+        }
+        try store.reconcileGeminiRegistry(configuration: f.configuration, locator: f.registry.path,
+            generation: observed, limit: 8)
+        let baseline = try f.database.read {
+            try Int64.fetchAll($0, sql: "SELECT dirty_revision FROM collector_locators ORDER BY relative_path")
+        }
+        let renumbered = try ArchiveSourceGeneration(device: observed.device + 7, inode: observed.inode,
+            size: observed.size, mtimeNs: observed.mtimeNs, ctimeNs: observed.ctimeNs, mode: observed.mode)
+        try store.reconcileGeminiRegistry(configuration: f.configuration, locator: f.registry.path,
+            generation: renumbered, limit: 8)
+        XCTAssertEqual(try f.database.read {
+            try Int64.fetchAll($0, sql: "SELECT dirty_revision FROM collector_locators ORDER BY relative_path")
+        }, baseline)
+    }
+
     func testKimiPrivacyProofUsesCapturedContextAfterOriginalRegistryAndSourceRemoval() throws {
         let f = try KimiPersistenceFixture(); defer { f.close() }
         let captured = try f.capture(f.snapshot())

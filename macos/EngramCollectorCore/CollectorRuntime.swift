@@ -91,21 +91,38 @@ public actor CollectorRuntime {
     private var cleanup: Task<Void, Error>?
     private var stopping = false
     private var closed = false
+    private let diagnostics: @Sendable (String) -> Void
+    private var identitySuspendedRoots = Set<Int>()
+    private var reportedIdentitySuspendedRoots = Set<Int>()
 
     private init(settingsURL: URL, configuration: CollectorRuntimeConfiguration,
                  owner: CollectorInventoryOwner, catalog: ArchiveCatalog,
-                 worker: CollectorPublicationWorker, uploader: CollectorPublicationWorker) {
+                 worker: CollectorPublicationWorker, uploader: CollectorPublicationWorker,
+                 diagnostics: @escaping @Sendable (String) -> Void) {
         self.settingsURL = settingsURL
         self.configuration = configuration
         self.owner = owner
         self.catalog = catalog
         self.worker = worker
         self.uploader = uploader
+        self.diagnostics = diagnostics
     }
 
     public static func open(
         settingsURL: URL,
         secretLoader: @escaping @Sendable (String) throws -> String
+    ) throws -> CollectorRuntime? {
+        try open(settingsURL: settingsURL, secretLoader: secretLoader, diagnostics: { line in
+            FileHandle.standardError.write(Data((line + "\n").utf8))
+        })
+    }
+
+    /// `diagnostics` receives operator-visible status lines; production writes them
+    /// to stderr, which launchd persists.
+    static func open(
+        settingsURL: URL,
+        secretLoader: @escaping @Sendable (String) throws -> String,
+        diagnostics: @escaping @Sendable (String) -> Void
     ) throws -> CollectorRuntime? {
         try Task.checkCancellation()
         guard let configuration = try CollectorRuntimeConfiguration.load(at: settingsURL) else { return nil }
@@ -132,7 +149,7 @@ public actor CollectorRuntime {
                 let uploader = try makePublicationWorker(owner: owner, catalog: catalog, cas: cas,
                     configuration: configuration, replicas: replicas, settingsURL: settingsURL)
                 return CollectorRuntime(settingsURL: settingsURL, configuration: configuration,
-                    owner: owner, catalog: catalog, worker: worker, uploader: uploader)
+                    owner: owner, catalog: catalog, worker: worker, uploader: uploader, diagnostics: diagnostics)
             } catch {
                 try catalog.close()
                 throw error
@@ -443,11 +460,33 @@ public actor CollectorRuntime {
                     throw CollectorRuntimeError.reconciliationRequired
                 }
                 available.insert(Data(root.rootID.utf8))
+                identitySuspendedRoots.remove(index)
             } catch where Self.isUnavailableSource(error) {
                 try suspendSource(at: index, owner: owner)
+                if case CollectorPOSIXEnumerationError.rootIdentityChanged = error {
+                    identitySuspendedRoots.insert(index)
+                } else {
+                    identitySuspendedRoots.remove(index)
+                }
             }
         }
+        reportIdentitySuspensionsIfChanged()
         return (available, observations)
+    }
+
+    /// A root that is still suspended after the renumbering rebind was refused has
+    /// really changed identity. Publication delivery continues, so the runtime does
+    /// not exit. Instead it reports one line each time the suspended set changes.
+    /// docs/superpowers/specs/2026-10-02-collector-volume-identity-design.md (e)
+    private func reportIdentitySuspensionsIfChanged() {
+        guard identitySuspendedRoots != reportedIdentitySuspendedRoots else { return }
+        reportedIdentitySuspendedRoots = identitySuspendedRoots
+        let roots = configuration.rootConfigurations
+        let ids = identitySuspendedRoots.sorted().map { roots[$0].rootID }
+        var line = "engram-collector: source roots suspended for identity change: \(ids.count)/\(roots.count)"
+        if !ids.isEmpty { line += " (" + ids.joined(separator: ", ") + ")" }
+        if !ids.isEmpty, ids.count == roots.count { line += "; capture stopped" }
+        diagnostics(line)
     }
 
     private func finishStop() throws {
