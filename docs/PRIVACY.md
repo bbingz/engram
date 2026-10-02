@@ -37,6 +37,8 @@ Engram reads session files created by AI coding tools on your local machine:
 | iflow | `~/.iflow/projects/` | Read-only |
 | Antigravity | `~/.gemini/antigravity-cli/brain/` and legacy `~/.gemini/antigravity/` cache data | Read-only |
 | Command Code | `~/.commandcode/projects/` | Read-only |
+| Pi | `~/.pi/agent/sessions/` | Read-only |
+| Grok | `~/.grok/sessions/` | Read-only |
 
 Indexing and normal browsing are read-only. Explicit project migration commands
 (`project_move`, `project_archive`, `project_undo`, and `project_move_batch`)

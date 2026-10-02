@@ -425,6 +425,98 @@ final class CollectorRuntimeTests: XCTestCase {
         }
     }
 
+    // Repro for the 2026-09-22 collector outage, end to end: the stored binding and every
+    // stored file generation still carry the pre-reboot st_dev. The runtime must rebind,
+    // capture new work and never republish unchanged history (design note
+    // docs/superpowers/specs/2026-10-02-collector-volume-identity-design.md, c.1, c.3, c.4).
+    func testDeviceRenumberingRebindsAndCapturesWithoutRepublishing_repro() async throws {
+        let f = try RuntimeFixture(); defer { f.remove() }
+        let replicas = try await RuntimeReplicas.start(parent: f.base)
+        let lines = RuntimeLocked<[String]>([])
+        let report: @Sendable (String) -> Void = { line in lines.update { $0.append(line) } }
+        var active: Runtime?
+        do {
+            try f.writeTranscript("captured before the reboot")
+            try f.writeSettings(f.document(replicas: replicas))
+            active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: f.secret, diagnostics: report))
+            let original = try await f.drive(active!, acknowledged: 2)
+            XCTAssertEqual(original.count, 1)
+            try await active!.stop(); active = nil
+            var info = stat()
+            XCTAssertEqual(lstat(f.sources.path, &info), 0)
+            let live = Int64(info.st_dev)
+            let unchangedSQL = "SELECT dirty_revision FROM collector_locators WHERE relative_path = 'rollout-one.jsonl'"
+            let unchangedRevision = try f.integer(unchangedSQL)
+            try f.execute("UPDATE collector_root_bindings SET device = ?", [live + 7])
+            try f.execute("UPDATE collector_locators SET observed_generation = replace(observed_generation, ?, ?)",
+                          ["\"device\":\(live),", "\"device\":\(live + 7),"])
+            try f.writeTranscript("captured after the reboot", name: "rollout-two.jsonl", sessionID: "native-runtime-session-two")
+            active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: f.secret, diagnostics: report))
+            for _ in 0..<100 {
+                _ = try await active!.runOnce(now: Int64(Date().timeIntervalSince1970))
+                if try f.integer("SELECT count(*) FROM collector_publication_replicas WHERE state = 'acknowledged'") >= 4 { break }
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            let delivered = try f.publications()
+            XCTAssertEqual(delivered.count, 2)
+            XCTAssertEqual(delivered.first, original.first)
+            XCTAssertEqual(try f.integer("SELECT device FROM collector_root_bindings WHERE root_id = 'runtime-codex'"), Int(live))
+            XCTAssertEqual(try f.integer(unchangedSQL), unchangedRevision)
+            XCTAssertEqual(lines.value, [])
+            let hq = try await replicas.hq.count(), m1 = try await replicas.m1.count()
+            XCTAssertEqual(hq, 2); XCTAssertEqual(m1, 2)
+            try await active!.stop(); active = nil
+            await replicas.stop()
+        } catch {
+            try? await active?.stop()
+            await replicas.stop()
+            throw error
+        }
+    }
+
+    // A root suspended because its identity really changed must not be silent, and it
+    // must not stop the runtime: pending delivery continues (see the replaced-source test
+    // above). One stderr line per change of the suspended set (design note
+    // docs/superpowers/specs/2026-10-02-collector-volume-identity-design.md, e).
+    func testRootIdentitySuspensionIsReportedOnceAndRuntimeKeepsRunning() async throws {
+        let f = try RuntimeFixture(); defer { f.remove() }
+        let replicas = try await RuntimeReplicas.start(parent: f.base)
+        let lines = RuntimeLocked<[String]>([])
+        let report: @Sendable (String) -> Void = { line in lines.update { $0.append(line) } }
+        var active: Runtime?
+        do {
+            try f.writeTranscript("enrolled before replacement")
+            try f.writeSettings(f.document(replicas: replicas))
+            active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: f.secret, diagnostics: report))
+            _ = try await active!.runOnce(now: 100)
+            try await active!.stop(); active = nil
+            let held = f.base.appendingPathComponent("held-original-source")
+            try FileManager.default.moveItem(at: f.sources, to: held)
+            try FileManager.default.createDirectory(at: f.sources, withIntermediateDirectories: false)
+            active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: f.secret, diagnostics: report))
+            for now: Int64 in 200..<203 {
+                let cycle = try await active!.runOnce(now: now)
+                XCTAssertEqual(cycle.captured, 0)
+            }
+            XCTAssertEqual(lines.value, [
+                "engram-collector: source roots suspended for identity change: 1/1 (runtime-codex); capture stopped",
+            ])
+            try FileManager.default.removeItem(at: f.sources)
+            try FileManager.default.moveItem(at: held, to: f.sources)
+            _ = try await active!.runOnce(now: 300)
+            XCTAssertEqual(lines.value, [
+                "engram-collector: source roots suspended for identity change: 1/1 (runtime-codex); capture stopped",
+                "engram-collector: source roots suspended for identity change: 0/1",
+            ])
+            try await active!.stop(); active = nil
+            await replicas.stop()
+        } catch {
+            try? await active?.stop()
+            await replicas.stop()
+            throw error
+        }
+    }
+
     func testWindsurfHookRestartRecoversFrozenReservationAfterSourceDeletion() async throws {
         let f = try RuntimeFixture(); defer { f.remove() }
         _ = try writeWindsurfTranscript(f, text: "unpublished windsurf before source disappears")
@@ -3879,6 +3971,14 @@ final class RuntimeFixture: @unchecked Sendable {
         let database = try DatabaseQueue(path: inventory.path, configuration: configuration)
         defer { try? database.close() }
         return try database.read { try XCTUnwrap(Int.fetchOne($0, sql: sql)) }
+    }
+
+    /// Fixture-only rewrite of a closed inventory (no runtime may hold it open).
+    func execute(_ sql: String, _ arguments: StatementArguments = []) throws {
+        let database = try DatabaseQueue(path: inventory.path)
+        defer { try? database.close() }
+        try database.write { try $0.execute(sql: sql, arguments: arguments) }
+        try database.close()
     }
 
     func integerRow(_ sql: String) throws -> [Int64] {

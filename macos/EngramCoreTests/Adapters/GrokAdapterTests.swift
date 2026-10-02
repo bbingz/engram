@@ -364,6 +364,43 @@ final class GrokAdapterTests: XCTestCase {
         }
     }
 
+    func testSummaryOnlySessionParsesFromMetadataWithoutMalformedJSON_repro() async throws {
+        let session = "%2FUsers%2Ftest%2Fproject/019dd6e3-91d1-7326-8299-314858773a0e"
+        let summaryRelative = session + "/summary.json"
+        let payloads = [
+            summaryRelative: try jsonObject([
+                "created_at": "2026-04-29T01:00:00.000Z",
+                "updated_at": "2026-04-29T01:00:04.000Z",
+                "current_model_id": "grok-4",
+                "session_summary": "Summary-only session",
+                "info": [
+                    "id": "019dd6e3-91d1-7326-8299-314858773a0e",
+                    "cwd": "/Users/test/project",
+                ],
+            ]),
+        ]
+        let liveRoot = directory.appendingPathComponent("summary-only", isDirectory: true)
+        try writeTree(root: liveRoot, payloads: payloads)
+        let adapter = GrokAdapter(sessionsRoot: liveRoot.path)
+        let locators = try await adapter.listSessionLocators()
+        XCTAssertEqual(locators.count, 1)
+        XCTAssertEqual(URL(fileURLWithPath: locators[0]).lastPathComponent, "summary.json")
+
+        switch try await adapter.scanForIndexing(locator: locators[0]) {
+        case .success(let scan):
+            XCTAssertEqual(scan.info.id, "019dd6e3-91d1-7326-8299-314858773a0e")
+            XCTAssertEqual(scan.info.source, .grok)
+            XCTAssertEqual(scan.info.cwd, "/Users/test/project")
+            XCTAssertEqual(scan.info.model, "grok-4")
+            XCTAssertEqual(scan.info.startTime, "2026-04-29T01:00:00.000Z")
+            XCTAssertEqual(scan.info.summary, "Summary-only session")
+            XCTAssertEqual(scan.messages, [])
+            XCTAssertNil(scan.parseFailure)
+        case .failure(let failure):
+            XCTFail("summary-only Grok session must parse metadata, not \(failure)")
+        }
+    }
+
     func testCapturedDeclaredSegmentInvalidUTF8FailsParse_repro() throws {
         let session = "%2FUsers%2Ftest%2Fproject/019dd6e3-91d1-7326-8299-314858773a0e"
         let chat = session + "/chat_history.jsonl"

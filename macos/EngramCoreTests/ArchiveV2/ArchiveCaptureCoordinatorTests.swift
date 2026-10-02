@@ -523,6 +523,56 @@ final class ArchiveCaptureCoordinatorTests: XCTestCase {
         )
     }
 
+    // HQ stall diagnosis 2026-10-02 (defect D1, no PR yet): with exact archive
+    // on, a periodic cycle indexes only what it captured, and the periodic Codex
+    // candidates came from today/yesterday date directories. A rollout appended
+    // after its start-date directory aged out was never re-captured.
+    func testPeriodicCaptureSeesCodexRolloutAppendedOutsideDateWindow_repro() async throws {
+        let home = root.appendingPathComponent("periodic-codex-home", isDirectory: true)
+        let now = Date()
+        let startedAt = now.addingTimeInterval(-5 * 86_400)
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar.current
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy/MM/dd"
+        let sessions = home.appendingPathComponent(".codex/sessions", isDirectory: true)
+        let file = sessions
+            .appendingPathComponent(formatter.string(from: startedAt), isDirectory: true)
+            .appendingPathComponent("rollout-old-dir-append.jsonl")
+        try FileManager.default.createDirectory(
+            at: file.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try codexFixtureData().write(to: file)
+        try FileManager.default.setAttributes([.modificationDate: startedAt], ofItemAtPath: file.path)
+        let (cas, catalog) = try makeStore(name: "periodic-codex-old-dir")
+        let coordinator = ArchiveCaptureCoordinator(cas: cas, catalog: catalog)
+        let initial = try await coordinator.capture(adapters: [CodexAdapter(sessionsRoot: sessions.path)])
+        XCTAssertEqual(initial.captures.count, 1)
+
+        let handle = try FileHandle(forWritingTo: file)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(
+            #"{"timestamp":"2026-07-16T02:00:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"resumed"}]}}"#
+                .utf8 + [0x0A]
+        ))
+        try handle.close()
+
+        let periodicExact = SessionAdapterFactory.recentActiveAdapters(now: now, homeDirectory: home)
+            .filter { $0.source == .codex && $0 is any ExactArchiveSourceAdapter }
+        let cycle = try await coordinator.capture(
+            adapters: periodicExact,
+            locatorBudget: 20,
+            cursorScope: .recent
+        )
+
+        XCTAssertEqual(
+            cycle.items.filter { $0.captureID != nil }.map { URL(fileURLWithPath: $0.locator).lastPathComponent },
+            [file.lastPathComponent],
+            "the periodic exact capture set must include the appended old-directory rollout"
+        )
+    }
+
     func testCapturePropagatesAdapterCancellationWithoutRecordingFailure() async throws {
         let sourceURL = root.appendingPathComponent("cancel/session.jsonl")
         try FileManager.default.createDirectory(

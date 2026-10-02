@@ -6,7 +6,9 @@
 
 ## OVERVIEW
 Engram is a cross-tool AI session aggregator. The shipped product runtime is
-the native Swift macOS app, `EngramService`, and `EngramMCP`; TypeScript under
+the native Swift macOS app, `EngramService`, `EngramMCP`, and the opt-in
+headless `EngramCollector` and `EngramRemoteServer` (archive replica + Web)
+roles; TypeScript under
 `src/` is retained for dev/reference tooling, fixture generation, historical
 entrypoints, and regression tests.
 
@@ -47,7 +49,7 @@ historical surfaces.
 | `MCPToolRegistry.handle` | Swift MCP | `macos/EngramMCP/Core/MCPToolRegistry.swift` | entry | Native MCP tool schema and command router. |
 | `ServiceWriterGate` | Swift class | `macos/EngramService/Core/ServiceWriterGate.swift` | 12 callers | Serializes service-owned write traffic. |
 | `EngramDatabaseWriter` | Swift class | `macos/EngramCoreWrite/Database/EngramDatabaseWriter.swift` | 4 callers | Product write pool, migrations, indexing write path. |
-| `SessionAdapterFactory.defaultAdapters` | Swift function | `macos/Shared/EngramCore/Adapters/SessionAdapterFactory.swift` | 5 callers | Registers the 17 shipped source adapters. |
+| `SessionAdapterFactory.defaultAdapters` | Swift function | `macos/Shared/EngramCore/Adapters/SessionAdapterFactory.swift` | 5 callers | Registers the 19 shipped source adapters. |
 | `EngramServiceReadProvider.search` | Swift method | `macos/EngramService/Core/EngramServiceReadProvider.swift` | service/API | Service keyword search plus availability-gated semantic/hybrid search with explicit fallback warnings. |
 | `ProjectMoveOrchestrator` | Swift/TS domain | `macos/EngramCoreWrite/ProjectMove/`, `src/core/project-move/` | central | Transactional project move/archive/undo/batch logic. |
 | `Session` | Swift model | `macos/Engram/Models/Session.swift` | 40 callers | App-facing session model used across UI and tests. |

@@ -77,7 +77,7 @@ List historical AI coding assistant sessions. Supports filtering by tool source,
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
-| source | string | no | Filter by tool source. Enum: `codex`, `claude-code`, `copilot`, `gemini-cli`, `opencode`, `iflow`, `qwen`, `qoder`, `kimi`, `minimax`, `lobsterai`, `commandcode`, `cline`, `cursor`, `vscode`, `antigravity`, `windsurf` |
+| source | string | no | Filter by tool source. Enum: `codex`, `claude-code`, `copilot`, `gemini-cli`, `opencode`, `iflow`, `qwen`, `qoder`, `kimi`, `minimax`, `lobsterai`, `commandcode`, `cline`, `cursor`, `vscode`, `antigravity`, `windsurf`, `pi`, `grok` |
 | project | string | no | Filter by exact project name or configured alias |
 | since | string | no | Start time (ISO 8601) |
 | until | string | no | End time (ISO 8601) |

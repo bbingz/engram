@@ -1,5 +1,36 @@
 # Collector source-retirement checklist
 
+## Current status (2026-10-02)
+
+- The newest dated entry in this file is 2026-09-13. Nothing in the repo records
+  the terminal result of resource observer 7119 or append wrapper 58055, or a
+  resumed acceptance pass, so their outcome is unknown here.
+- PR #446 merged as `3859f788`; HQ has run the r18 index-role Service and
+  RemoteServer/Web packages since 2026-09-20. W7 executed for the Daily Mac on
+  2026-09-12 (entry below); no HQ-local or M1-local cutover is recorded.
+- The source enum has 19 cases (pi and grok included). The collector root
+  allowlist accepts 17 root formats; minimax and lobsterai are derived from a
+  default-format Claude Code root. The "Registered sources" table and the
+  2026-09-07 evidence bullets below are corrected in place for these counts.
+  Every real-host column remains `UNVERIFIED`: no real capture, HQ index or
+  retirement receipt for any source is committed to the repo (`output/` is
+  gitignored).
+- The real-binary chain tests that cover every source skip unless
+  `ENGRAM_COLLECTOR_BINARY`, `ENGRAM_SERVICE_BINARY` and
+  `ENGRAM_REMOTE_SERVER_BINARY` are set; no CI workflow sets them.
+- Daily resource acceptance is still open. The last recorded full Daily window
+  (observer 49875, Daily build 92844) measured 13.178% CPU against the 2% target;
+  observer 7119 for the later capture-schedule build has no recorded result.
+  The 2026-09-13 handoff deferred resource work; it did not pass.
+- **Open item, not resolved:** the "Registered sources" rule says the old
+  ingestion path must remain enabled wherever a source is enabled, and the
+  verifier says not to change jobs. The 2026-09-12 Daily cutover disabled the old
+  `com.engram.service` job while Antigravity cache/PB coverage was deferred and
+  Windsurf PB/cache input was not captured. The repo records no owner decision
+  that accepts this as an exception or that changes the rule.
+
+## Historical entries
+
 Owner acceptance handoff (2026-09-13): the owner requested delivery now and
 iteration after feedback. Current deployed candidate is available for owner
 acceptance; remaining performance work is explicitly deferred from this handoff,
@@ -245,25 +276,36 @@ Date: 2026-09-07. Scope: the local, synthetic W6 candidate in
 and the subsequent Claude test-only addition.
 Runtime measurement results are reported separately below.
 This is a coverage gate, not a host inventory, cutover approval, or a claim that
-any host is fully lightweight. W7 remains separately authorized.
+any host is fully lightweight. W7 remains separately authorized. (2026-10-02:
+W7 was later executed for the Daily Mac on 2026-09-12; see above.)
 
 ## Evidence and interpretation
 
-- The 17 registered Swift sources are enumerated by
+- The registered Swift sources are enumerated by
   `macos/Shared/EngramCore/Adapters/SourceName.swift:3` and
-  `SessionAdapterFactory.swift:59`. The factory paths below are code defaults,
+  `SessionAdapterFactory.defaultAdapters`: 17 on 2026-09-07, 19 as of
+  2026-10-02 (pi and grok added). The factory paths below are code defaults,
   not observed paths or enabled settings on any host. `<home>` means the
   adapter's explicitly resolved home, not a discovered user directory.
-- `macos/EngramCollectorCore/CollectorRuntime.swift:511` and
-  `CollectorPublicationWorker.swift:120` accept only `codex` and `claude-code`
-  roots. Their collector representation is a stable, exact single-file
-  generation, discovered through the bounded inventory/native-event path.
+- On 2026-09-07 the collector runtime accepted only `codex` and `claude-code`
+  roots. As of 2026-10-02 `macos/EngramCollectorCore/CollectorRuntime.swift`
+  (`rootFormat` and the settings allowlist) accepts 17 root formats: codex,
+  claude-code (default and `claudeCustomProfile`), qwen, qoder, iflow, vscode,
+  cline, commandcode, copilot, gemini-cli, opencode, kimi, cursor, antigravity
+  (CLI brain transcript only), windsurf (hook transcript only), pi and grok.
+  minimax and lobsterai are admitted only as derived sources of a default-format
+  Claude Code root. The Codex/Claude representation described here is a stable,
+  exact single-file generation, discovered through the bounded
+  inventory/native-event path.
 - `CollectorPrivacyProof.swift:155` requires unambiguous source/native identity,
   cwd, exclusion-policy eligibility and captured-generation binding.
   Primitive support for derived Claude sources at line 168 is not runtime
   enablement: Runtime policy comes only from its two accepted root sources.
   Worker line 476 uses `forceClaudeCodeSource: false`; a nondefault Claude
-  profile must not be assumed equivalent to the default profile.
+  profile must not be assumed equivalent to the default profile. (2026-10-02:
+  runtime policy now comes from all accepted root sources plus minimax/lobsterai
+  when a default-format Claude root is present; a `claudeCustomProfile` root
+  maps to `forceClaudeCodeSource: true`.)
 - `CollectorPrivacyProofTests.swift:20` covers both initial formats;
   `CollectorInventoryOwnerTests.swift:397` checks both root identities.
   Those are component contracts, not host capture/HQ evidence.
@@ -319,26 +361,38 @@ For **every row**, host enablement, approved real roots, latest successful real
 capture, latest real HQ index, and retirement approval are `UNVERIFIED`.
 The old ingestion path must remain enabled wherever the source is enabled.
 No absence-of-support row may be interpreted as an absence-of-use finding.
+(2026-10-02: the Daily cutover below conflicts with the preceding rule; see the
+open item in Current status.)
+
+Rows other than codex and claude-code were corrected on 2026-10-02 against
+`macos/EngramCollectorCore/CollectorRuntime.swift` and
+`macos/EngramCoreWrite/CaptureIngest/CaptureIngestReplay.swift`; pi and grok
+rows were added. Each source also has a real-binary chain test in
+`macos/EngramServiceCoreTests/CollectorBinaryShadowIntegrationTests.swift`, which
+is synthetic, opt-in and skipped in CI. Collector support is not real-host
+acceptance: every real-host fact stays `UNVERIFIED`.
 
 | Source | Factory default root or dependency | Collector discovery / representation | Privacy and parser/replay evidence | Replacement gate / unsupported reason |
 |---|---|---|---|---|
 | codex | `<home>/.codex/sessions` | Bounded inventory + native events; exact single-file generations | Generation-bound privacy component tests; synthetic two-generation native/HQ/Web receipt above | Local synthetic subset only; three runtime roots below and real capture/HQ evidence unverified |
 | claude-code | Claude profile resolver from `<home>/.engram/settings.json` | Bounded inventory + native events; exact single-file generations | Generation-bound privacy/root tests; synthetic `.claudeDefault` two-generation real-binary/HQ/Web replay above | Actual default and nondefault profiles need separate approved roots and real replay evidence |
-| minimax | Derived from resolved Claude adapter | No accepted Collector runtime root | Primitive derived-source opt-in test only; runtime policy does not enable it | Unsupported runtime source; do not relabel as claude-code |
-| lobsterai | Derived from resolved Claude adapter | No accepted Collector runtime root | Primitive allow-list entry; no Lobster-specific eligibility/replay proof | Unsupported runtime source; do not relabel as claude-code |
-| gemini-cli | `<home>/.gemini/tmp` plus `projects.json` | Not implemented in Collector runtime | No Collector replacement privacy/replay proof | Unsupported runtime source |
-| opencode | `<home>/.local/share/opencode/opencode.db` | No scoped consistent database export | No Collector replacement privacy/replay proof | Unsupported runtime source; copying a live main DB without WAL is not coverage |
-| iflow | `<home>/.iflow/projects` | Not implemented in Collector runtime | No Collector replacement privacy/replay proof | Unsupported runtime source |
-| qwen | `<home>/.qwen/projects` | Not implemented in Collector runtime | No Collector replacement privacy/replay proof | Unsupported runtime source |
-| qoder | `<home>/.qoder/projects` | Not implemented in Collector runtime | No Collector replacement privacy/replay proof | Unsupported runtime source |
-| kimi | `<home>/.kimi/sessions` plus `kimi.json` | No verified composite dependency manifest | No Collector replacement privacy/replay proof | Unsupported runtime source |
-| commandcode | `<home>/.commandcode/projects` | Not implemented in Collector runtime | No Collector replacement privacy/replay proof | Unsupported runtime source |
-| cline | `<home>/.cline/data/tasks` | No verified composite dependency manifest | No Collector replacement privacy/replay proof | Unsupported runtime source |
-| cursor | `<home>/Library/Application Support/Cursor/User/globalStorage/state.vscdb` plus `.cursor` | No scoped consistent DB/composite export | No Collector replacement privacy/replay proof | Unsupported runtime source; main-file-only copies do not cover WAL/dependencies |
-| vscode | `<home>/Library/Application Support/Code/User/workspaceStorage` | No scoped consistent DB/composite export | No Collector replacement privacy/replay proof | Unsupported runtime source |
-| windsurf | `<home>/.engram/cache/windsurf` | Not implemented in Collector runtime | No Collector replacement privacy/replay proof | Unsupported runtime source; no live provider API access authorized |
-| antigravity | `.engram/cache/antigravity`, `.gemini/antigravity/conversations`, `.gemini/antigravity-cli/brain`, all under `<home>` | No verified composite dependency manifest | No Collector replacement privacy/replay proof | Unsupported runtime source; no live provider API access authorized |
-| copilot | `<home>/.copilot/session-state` | Not implemented in Collector runtime | No Collector replacement privacy/replay proof | Unsupported runtime source |
+| minimax | Derived from resolved Claude adapter | Derived source of a default-format claude-code root; exact single-file generations | Derived-source privacy tests; synthetic real-binary chain test | Collector-supported; real roots, capture and HQ index `UNVERIFIED`; do not relabel as claude-code |
+| lobsterai | Derived from resolved Claude adapter | Derived source of a default-format claude-code root; exact single-file generations | Derived-source privacy tests; synthetic real-binary chain test | Collector-supported; archived default-off; real roots, capture and HQ index `UNVERIFIED`; do not relabel as claude-code |
+| gemini-cli | `<home>/.gemini/tmp` plus `projects.json` | Collector root format `gemini-cli`; composite file set | Gemini privacy/projection tests; synthetic real-binary chain tests | Collector-supported; real roots, capture and HQ index `UNVERIFIED` |
+| opencode | `<home>/.local/share/opencode/opencode.db` | Collector root format `opencode`; scoped database snapshot replayed as a single-session image | Snapshot replay tests; synthetic real-binary WAL chain test | Collector-supported; real roots, capture and HQ index `UNVERIFIED`; copying a live main DB without WAL is still not coverage |
+| iflow | `<home>/.iflow/projects` | Collector root format `iflow`; exact single-file generations | Projection parity and privacy tests; synthetic real-binary chain test | Collector-supported; archived default-off; real roots, capture and HQ index `UNVERIFIED` |
+| qwen | `<home>/.qwen/projects` | Collector root format `qwen`; exact single-file generations | Projection parity and privacy tests; synthetic real-binary chain test | Collector-supported; real roots, capture and HQ index `UNVERIFIED` |
+| qoder | `<home>/.qoder/projects` | Collector root format `qoder`; exact single-file generations | Projection parity and privacy tests; synthetic real-binary chain test | Collector-supported; real roots, capture and HQ index `UNVERIFIED` |
+| kimi | `<home>/.kimi/sessions` plus `kimi.json` | Collector root format `kimi`; composite file set with scoped registry | Snapshot replay tests; synthetic real-binary chain test | Collector-supported; real roots, capture and HQ index `UNVERIFIED` |
+| commandcode | `<home>/.commandcode/projects` | Collector root format `commandcode`; exact single-file generations | Projection parity and privacy tests; synthetic real-binary chain test | Collector-supported; real roots, capture and HQ index `UNVERIFIED` |
+| cline | `<home>/.cline/data/tasks` | Collector root format `cline`; composite file set per task | Projection parity tests; synthetic real-binary chain test | Collector-supported; archived default-off; real roots, capture and HQ index `UNVERIFIED` |
+| cursor | `<home>/Library/Application Support/Cursor/User/globalStorage/state.vscdb` plus `.cursor` | Collector root format `cursor`; modern composite store with WAL, legacy per-session export | Projection and privacy tests; synthetic real-binary modern and legacy chain tests | Collector-supported; real roots, capture and HQ index `UNVERIFIED` |
+| vscode | `<home>/Library/Application Support/Code/User/workspaceStorage` | Collector root format `vscode`; composite file set | Projection parity tests; synthetic real-binary chain test | Collector-supported; real roots, capture and HQ index `UNVERIFIED` |
+| windsurf | `<home>/.engram/cache/windsurf` | Collector root format `windsurfHookTranscript`: hook transcript JSONL only. The factory cache root and PB files are not captured | Hook privacy tests; synthetic real-binary chain test | Subset only: cannot replace the local adapter for cache/PB input; real roots, capture and HQ index `UNVERIFIED`; no live provider API access authorized |
+| antigravity | `.engram/cache/antigravity`, `.gemini/antigravity/conversations`, `.gemini/antigravity-cli/brain`, all under `<home>` | Collector root format `antigravityCLITranscript`: CLI brain transcripts only. Cache and conversation inputs are not captured | CLI transcript privacy/projection tests; synthetic real-binary chain test | Subset only; cache/PB coverage deferred by the user on 2026-09-11; real roots, capture and HQ index `UNVERIFIED`; no live provider API access authorized |
+| copilot | `<home>/.copilot/session-state` | Collector root format `copilot`; composite file set | Synthetic real-binary chain tests | Collector-supported; real roots, capture and HQ index `UNVERIFIED` |
+| pi | `<home>/.pi/agent/sessions` | Collector root format `pi`; exact single-file generations | Pi privacy test; synthetic real-binary chain tests | Collector-supported; real roots, capture and HQ index `UNVERIFIED` |
+| grok | `<home>/.grok/sessions` | Collector root format `grok`; composite file set | Synthetic real-binary chain test | Collector-supported; real roots, capture and HQ index `UNVERIFIED` |
 
 ## Codex runtime roots and diagnostics stay separate
 
@@ -358,6 +412,9 @@ Grok and Pi are not members of the current registered 17-source enum. Their
 approved roots, enabled use and replacement status are `UNVERIFIED`; they are
 missing adapter coverage, not regressions in registered adapters. Do not scan
 their real stores or infer they are unused without the bounded host transaction.
+(2026-10-02: superseded. Pi and Grok are now `SourceName` cases with registered
+adapters and collector root formats; see their rows above. Their real roots,
+enabled use and replacement status remain `UNVERIFIED`.)
 
 ## Per-host retirement verifier, not executed
 
@@ -376,6 +433,8 @@ their real stores or infer they are unused without the bounded host transaction.
 4. Keep old ingestion for every unproved or unsupported enabled source. Stop
    retirement on any gap; do not change jobs/configs, mark a host lightweight,
    or use this local checklist as production transaction authority.
+   (2026-10-02: the executed Daily cutover is not reconciled with this step;
+   see the open item in Current status.)
 
 CHECKS_RUN: current enum/factory/runtime/worker/privacy source inspection; synthetic
 Codex/Claude real-binary and full Service regression; complete package verification;

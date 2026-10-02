@@ -52,6 +52,28 @@ correctly because `PopoverUsageSection` remains gated on real usage data.
 
 ## Current roadmap
 
+### Collector / central index / Web cutover — open decisions (added 2026-10-02)
+
+PR #446 merged as `3859f788`; HQ has run the r18 index-role Service and
+RemoteServer/Web packages since 2026-09-20, and the Daily Mac was cut over to the
+collector role on 2026-09-12. The cutover is not finished. The items below are
+open owner decisions as first written on 2026-10-02. The owner delegated them
+the same day; the recorded decisions and sequencing are in
+`docs/superpowers/specs/2026-10-02-hq-local-collector-cutover-design.md` §8
+(Daily and HQ in scope, CPU target tracked separately, cache/PB inputs as
+per-host exceptions, an HQ collector behind the role gate with exact-content
+duplicate quarantine). Engineering gaps are in `docs/TODO.md`, operational
+observations in `docs/followups.md`.
+
+| Item | Decision needed |
+|------|-----------------|
+| Definition of "cutover finished" | Whether it means Daily only or Daily plus HQ-local and M1-local collectors (the design orders Daily, then HQ-local and M1-local); whether the collector CPU <= 2% target is binding; whether Antigravity cache/PB and Windsurf cache/PB inputs, which the collector does not capture, are accepted as permanent exceptions or block a "fully lightweight" claim. |
+| Daily cutover versus the "keep old ingestion" rule | The retirement checklist requires the old ingestion path wherever a source is enabled, but the 2026-09-12 Daily cutover disabled it while Antigravity/Windsurf coverage was incomplete. Record an accepted exception, or change the rule or the deployment. |
+| HQ-local sources | Either run a collector on HQ, which first needs a guard against storing the same HQ session twice (the index-role Service still runs its own legacy scan and nothing de-duplicates local and capture IDs), or declare the HQ legacy scan the HQ-local path and accept that those sessions never appear on Web, which shows only capture-ingested sessions. |
+| Real-host acceptance and remaining W7 | Per-source real capture plus HQ search/transcript proof, then HQ-local/M1-local W7 transactions and retirement of the old HQ service jobs. Each needs separate owner authorization. |
+
+### Earlier status (2026-08-16)
+
 No implementation-ready delivery is selected as of 2026-08-16. The public
 macOS release baseline and exact-source dual-replica archive v2 are complete.
 The twelve owner decisions in the table below remain parked product choices,

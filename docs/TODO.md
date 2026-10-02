@@ -5,7 +5,36 @@ verification and low-priority follow-ups belong in `docs/followups.md`.
 
 ## Open
 
-No implementation-ready engineering task is selected as of 2026-08-16.
+### Collector / central index cutover gaps (added 2026-10-02)
+
+Source-verified gaps against the accepted design
+(`docs/superpowers/specs/2026-09-05-collector-server-web-design.md`) and plan
+(`docs/superpowers/plans/2026-09-05-collector-server-web.md`). Owner decisions
+that change their priority are listed in `docs/roadmap.md`; none of these
+authorizes host changes.
+
+- **Collector CPU on the Daily Mac (plan W6 item 3).** The last recorded full
+  Daily window measured 13.178% of one core against the 2% target; resource work
+  was deferred on 2026-09-13, not passed. The checklist names a repeated Cursor
+  peer scan as the measured lead. Done when a 30-minute Daily window meets
+  CPU <= 2% and RSS <= 150 MiB and the receipt is summarized in the checklist.
+- **Alias reconciliation (plan W4 item 1, design section 4).** Not started. The
+  committer refuses any occupied proposed ID, so pre-cutover local rows, their
+  insights and parent links stay in the local-ID namespace and are not visible
+  on Web. Done when exact-provenance aliasing and mismatch quarantine are tested.
+- **Old-receipt bootstrap (plan W4 item 5).** Not started; no implementing code.
+- **Operator epoch reconcile command (plan W4 item 7).** `dryRunEpoch` and
+  `approveEpoch` exist in `CaptureIngestSourceRegistry.swift` without a non-test
+  caller. Done when a local authenticated IPC/CLI action and its test exist.
+- **Real-binary chain in a recorded gate (plan W6 item 2).** Every test in
+  `CollectorBinaryShadowIntegrationTests.swift` skips unless three binary-path
+  environment variables are set, and no CI workflow sets them. Done when CI sets
+  them or a documented manual gate with a receipt exists.
+- **App "open Web reader" entry (design section 1).** In `collector`/`replica`
+  roles the App shows only the unavailable message; it has no action that opens
+  the Web reader as the design states.
+
+Earlier status: no implementation-ready engineering task is selected as of 2026-08-16.
 
 The former public macOS release-baseline task is complete. GitHub Release
 [`v1.0.5`](https://github.com/bbingz/engram/releases/tag/v1.0.5) was published

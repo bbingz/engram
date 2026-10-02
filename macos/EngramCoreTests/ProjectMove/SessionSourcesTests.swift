@@ -31,6 +31,7 @@ final class SessionSourcesTests: XCTestCase {
         XCTAssertEqual(ids, [
             "claude-code", "codex", "codex-archived", "codex-rollout-summaries", "gemini-cli", "kimi", "iflow",
             "qwen", "qoder", "opencode", "antigravity", "antigravity-legacy", "commandcode", "copilot",
+            "pi", "grok",
         ])
         XCTAssertEqual(
             roots.first(where: { $0.id.rawValue == "codex-archived" })?.path,
@@ -68,6 +69,29 @@ final class SessionSourcesTests: XCTestCase {
             roots.first(where: { $0.id == .antigravityLegacy })?.path,
             "/home/test/.gemini/antigravity"
         )
+        XCTAssertEqual(
+            roots.first(where: { $0.id == .pi })?.path,
+            "/home/test/.pi/agent/sessions"
+        )
+        XCTAssertEqual(
+            roots.first(where: { $0.id == .grok })?.path,
+            "/home/test/.grok/sessions"
+        )
+    }
+
+    func testRootsIncludePiFlatAndGrokPercentEncodedProjectDir_repro() {
+        let roots = SessionSources.roots(homeDirectory: URL(fileURLWithPath: "/home/test"))
+        let pi = roots.first { $0.id == .pi }
+        let grok = roots.first { $0.id == .grok }
+        XCTAssertNil(pi?.encodeProjectDir)
+        XCTAssertEqual(
+            grok?.encodeProjectDir?("/Users/test/project"),
+            "%2FUsers%2Ftest%2Fproject"
+        )
+        XCTAssertEqual(
+            grok?.encodeProjectDir?("/Users/user/Documents/project-名前"),
+            "%2FUsers%2Fuser%2FDocuments%2Fproject-%E5%90%8D%E5%89%8D"
+        )
     }
 
     func testRootsIncludeKimiWorkspaceCatalogAndMd5Encoder_repro() throws {
@@ -84,7 +108,7 @@ final class SessionSourcesTests: XCTestCase {
     func testCommandCodeProjectDirectoryUsesLiveSlugEncoding_repro() {
         let roots = SessionSources.roots(homeDirectory: URL(fileURLWithPath: "/h"))
         let withEncoder = roots.filter { $0.encodeProjectDir != nil }.map(\.id)
-        XCTAssertEqual(withEncoder, [.claudeCode, .geminiCli, .kimi, .iflow, .qwen, .qoder, .commandcode])
+        XCTAssertEqual(withEncoder, [.claudeCode, .geminiCli, .kimi, .iflow, .qwen, .qoder, .commandcode, .grok])
 
         let cc = roots.first { $0.id == .claudeCode }?.encodeProjectDir
         XCTAssertEqual(cc?("/Users/a/b/proj"), "-Users-a-b-proj")

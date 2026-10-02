@@ -2,8 +2,8 @@
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:$PATH"
 set -euo pipefail
 
-# swift-unit regenerates Engram.xcodeproj with a pinned xcodegen and fails on any
-# diff. Reproduce that gate locally so drift costs a commit, not a CI round trip.
+# Compare a pinned xcodegen run against the working tree. Unstaged edits that
+# already match that run are not drift. A mismatch is reported, never copied back.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKFLOW="$ROOT_DIR/.github/workflows/test.yml"
 CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/engram/xcodegen"
@@ -15,22 +15,27 @@ if [ -z "$version" ] || [ -z "$sha256" ]; then
   exit 1
 fi
 
+version_matches() {
+  local candidate="$1"
+  [ -x "$candidate" ] || return 1
+  [ "$("$candidate" --version 2>/dev/null)" = "Version: $version" ]
+}
+
 find_pinned() {
   if [ -n "${XCODEGEN_BIN:-}" ]; then
-    [ -x "${XCODEGEN_BIN}" ] || return 1
-    [ "$("${XCODEGEN_BIN}" --version 2>/dev/null)" = "Version: $version" ] || return 1
+    version_matches "${XCODEGEN_BIN}" || return 1
     echo "${XCODEGEN_BIN}"
     return 0
   fi
   local cached
   for cached in "$CACHE_ROOT/xcodegen-$version".*/xcodegen/bin/xcodegen; do
-    if [ -x "$cached" ]; then
+    if version_matches "$cached"; then
       echo "$cached"
       return 0
     fi
   done
   if command -v xcodegen >/dev/null 2>&1 &&
-    [ "$(xcodegen --version)" = "Version: $version" ]; then
+    version_matches "$(command -v xcodegen)"; then
     command -v xcodegen
     return 0
   fi
@@ -52,13 +57,40 @@ if ! bin="$(find_pinned)"; then
   exit 1
 fi
 
-cd "$ROOT_DIR/macos"
-"$bin" generate >/dev/null
+version_matches "$bin"
+
 generated_paths=(macos/Engram.xcodeproj macos/Engram/Info.plist)
-unstaged="$(git -C "$ROOT_DIR" diff --name-only -- "${generated_paths[@]}")"
-untracked="$(git -C "$ROOT_DIR" ls-files --others -- "${generated_paths[@]}")"
-if [ -n "$unstaged" ] || [ -n "$untracked" ]; then
-  echo "check-xcodeproj-drift: generated project files were stale and have been regenerated." >&2
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/engram-xcodegen-drift.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/macos"
+cp -R "$ROOT_DIR/macos/." "$tmp/macos/"
+# project.yml reaches ../tests and ../test-fixtures. macos/test-fixtures is a
+# relative symlink to ../test-fixtures, so a macos-only copy cannot generate.
+for sibling in tests test-fixtures; do
+  if [ -e "$ROOT_DIR/$sibling" ]; then
+    ln -s "$ROOT_DIR/$sibling" "$tmp/$sibling"
+  fi
+done
+(
+  cd "$tmp/macos"
+  "$bin" generate >/dev/null
+)
+
+content_drift=0
+for rel in "${generated_paths[@]}"; do
+  generated="$tmp/$rel"
+  current="$ROOT_DIR/$rel"
+  if [ ! -e "$generated" ] && [ ! -e "$current" ]; then
+    continue
+  fi
+  if ! diff -rq "$generated" "$current" >/dev/null 2>&1; then
+    content_drift=1
+  fi
+done
+
+if [ "$content_drift" -ne 0 ]; then
+  echo "check-xcodeproj-drift: generated project files do not match the working tree." >&2
+  echo "  Compared a temporary xcodegen run; macos/ was not modified." >&2
   echo "  New or renamed Swift files are not in the build until this is committed," >&2
   echo "  so their tests never compile and never run. Stage it:" >&2
   echo "    git add macos/Engram.xcodeproj macos/Engram/Info.plist" >&2

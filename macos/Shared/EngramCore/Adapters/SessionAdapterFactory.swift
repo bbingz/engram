@@ -207,34 +207,6 @@ public enum SessionAdapterFactory {
             .path
     }
 
-    public static func recentCodexAdapters(
-        now: Date = Date(),
-        days: Int = 2,
-        homeDirectory: URL? = nil
-    ) -> [any SessionAdapter] {
-        let homeDirectory = homeDirectory ?? resolvedHomeDirectory()
-        let calendar = Calendar.current
-        let formatter = DateFormatter()
-        formatter.calendar = calendar
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy/MM/dd"
-
-        var roots: [String] = []
-        var seen = Set<String>()
-        let boundedDays = min(max(days, 1), maximumRecentDays)
-        for offset in 0..<boundedDays {
-            guard let date = calendar.date(byAdding: .day, value: -offset, to: now) else { continue }
-            let relativePath = formatter.string(from: date)
-            guard seen.insert(relativePath).inserted else { continue }
-            let root = homeDirectory
-                .appendingPathComponent(".codex/sessions")
-                .appendingPathComponent(relativePath)
-                .path
-            roots.append(root)
-        }
-        return roots.map { CodexAdapter(sessionsRoot: $0) }
-    }
-
     public static func recentActiveAdapters(
         now: Date = Date(),
         days: Int = 2,
@@ -267,11 +239,15 @@ public enum SessionAdapterFactory {
             return RecentlyModifiedSessionAdapter(base: adapter, modifiedSince: cutoff)
         }
 
-        var adapters = recentCodexAdapters(
-            now: now,
-            days: boundedDays,
-            homeDirectory: homeDirectory
-        ) + recentFileBacked
+        // Codex uses the same mtime cutoff as the other sources, not the rollout's
+        // start-date directory: a resumed rollout keeps appending to its original
+        // YYYY/MM/DD file (HQ stall diagnosis 2026-10-02, defect D1).
+        var adapters: [any SessionAdapter] = [
+            CodexAdapter(
+                sessionsRoot: homeDirectory.appendingPathComponent(".codex/sessions").path,
+                modifiedSince: cutoff
+            )
+        ] + recentFileBacked
         let codexRetries = RecentAdapterPolicy.boundedRetryLocators(
             priorTransientRetryLocators[.codex] ?? [],
             requestedLimit: maximumRetryLocatorsPerSource

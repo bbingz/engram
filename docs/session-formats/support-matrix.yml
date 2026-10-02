@@ -203,3 +203,31 @@ formats:
     docs:
       - docs/session-formats/iflow.md
       - docs/session-formats/iflow.zh.md
+  pi:
+    sources: [pi]
+    roots:
+      - "~/.pi/agent/sessions"
+    glob: "**/*.jsonl"
+    excludeGlobs: []
+    requiredTypes: [message]
+    versionField: not_logged
+    max_verified_version: null
+    last_checked_utc: "2026-09-21T00:00:00Z"
+    monitored: false
+    docs:
+      - docs/session-formats/pi.md
+      - docs/session-formats/pi.zh.md
+  grok:
+    sources: [grok]
+    roots:
+      - "~/.grok/sessions"
+    glob: "**/*"
+    excludeGlobs: []
+    requiredTypes: []
+    versionField: not_logged
+    max_verified_version: null
+    last_checked_utc: "2026-09-21T00:00:00Z"
+    monitored: false
+    docs:
+      - docs/session-formats/grok.md
+      - docs/session-formats/grok.zh.md

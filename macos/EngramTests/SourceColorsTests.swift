@@ -10,7 +10,7 @@ final class SourceColorsTests: XCTestCase {
         "claude-code", "cursor", "codex", "gemini-cli", "windsurf",
         "cline", "vscode", "antigravity", "copilot", "opencode",
             "iflow", "qwen", "qoder", "kimi", "minimax", "lobsterai", "antigravity-legacy",
-            "commandcode"
+            "commandcode", "pi", "grok"
     ]
 
     func testAllKnownSourcesReturnNonNilColor() {
@@ -40,7 +40,7 @@ final class SourceColorsTests: XCTestCase {
     }
 
     func testAllSourceNamesCovered() {
-        XCTAssertEqual(allSources.count, 18)
+        XCTAssertEqual(allSources.count, 20)
 
         // Each should have a corresponding label (not the default pass-through)
         for source in allSources {
@@ -53,5 +53,19 @@ final class SourceColorsTests: XCTestCase {
     func testUnknownSourceLabelReturnsRawString() {
         let label = SourceColors.label(for: "mystery-tool")
         XCTAssertEqual(label, "mystery-tool", "Unknown source label should return the source string as-is")
+    }
+
+    func testPiAndGrokUseNamedColorsNotGrayFallback_repro() {
+        let fallback = Color(hex: 0x8E8E93)
+        XCTAssertNotEqual(
+            SourceColors.color(for: "pi").description, fallback.description,
+            "pi must not fall through to the unnamed gray"
+        )
+        XCTAssertNotEqual(
+            SourceColors.color(for: "grok").description, fallback.description,
+            "grok must not fall through to the unnamed gray"
+        )
+        XCTAssertEqual(SourceColors.label(for: "pi"), "Pi")
+        XCTAssertEqual(SourceColors.label(for: "grok"), "Grok")
     }
 }

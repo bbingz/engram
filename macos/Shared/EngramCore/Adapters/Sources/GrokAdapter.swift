@@ -37,7 +37,7 @@ final class GrokAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
         switch try Self.scanSession(
             transcriptLocator: Self.primaryTranscriptURL(
                 in: Self.sessionDirectory(for: locator), locator: locator
-            ).path,
+            )?.path,
             sessionDir: Self.sessionDirectory(for: locator),
             infoFilePath: locator,
             allowedMetadata: nil,
@@ -53,7 +53,7 @@ final class GrokAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
         switch try Self.scanSession(
             transcriptLocator: Self.primaryTranscriptURL(
                 in: Self.sessionDirectory(for: locator), locator: locator
-            ).path,
+            )?.path,
             sessionDir: Self.sessionDirectory(for: locator),
             infoFilePath: locator,
             allowedMetadata: nil,
@@ -109,7 +109,12 @@ final class GrokAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
-        let transcript = Self.primaryTranscriptURL(in: Self.sessionDirectory(for: locator), locator: locator)
+        guard let transcript = Self.primaryTranscriptURL(
+            in: Self.sessionDirectory(for: locator),
+            locator: locator
+        ) else {
+            return JSONLAdapterSupport.stream([])
+        }
         let messages = try JSONLAdapterSupport.windowedMessages(
             locator: transcript.path,
             options: options,
@@ -133,7 +138,7 @@ final class GrokAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
     }
 
     private static func scanSession(
-        transcriptLocator: String,
+        transcriptLocator: String?,
         sessionDir: URL,
         infoFilePath: String,
         allowedMetadata: Set<String>?,
@@ -151,12 +156,17 @@ final class GrokAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
                 sessionDir.appendingPathComponent("prompt_context.json"),
                 allowedMetadata: allowedMetadata
             )
-            let (objects, failure) = try JSONLAdapterSupport.readObjects(
-                locator: transcriptLocator,
-                limits: limits,
-                reportFailures: true,
-                strictRecords: strictRecords
-            )
+            let (objects, failure): ([JSONLAdapterSupport.JSONObject], ParserFailure?)
+            if let transcriptLocator, Self.isJSONLTranscript(transcriptLocator) {
+                (objects, failure) = try JSONLAdapterSupport.readObjects(
+                    locator: transcriptLocator,
+                    limits: limits,
+                    reportFailures: true,
+                    strictRecords: strictRecords
+                )
+            } else {
+                (objects, failure) = ([], nil)
+            }
             if let failure, failure != .fileModifiedDuringParse { return .failure(failure) }
             let chatMessages = Self.messages(from: objects)
             let archives = try Self.capturedCompactionArchives(
@@ -210,7 +220,9 @@ final class GrokAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
                 systemMessageCount: systemCount,
                 summary: summaryText.map { String($0.prefix(200)) },
                 filePath: infoFilePath,
-                sizeBytes: JSONLAdapterSupport.fileSize(locator: transcriptLocator)
+                sizeBytes: JSONLAdapterSupport.fileSize(
+                    locator: transcriptLocator ?? infoFilePath
+                )
             )
             return .success(
                 CapturedSourceScan(
@@ -246,9 +258,13 @@ final class GrokAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
         return url.deletingLastPathComponent()
     }
 
-    private static func primaryTranscriptURL(in sessionDir: URL, locator: String) -> URL {
+    private static func isJSONLTranscript(_ locator: String) -> Bool {
+        ["chat_history.jsonl", "updates.jsonl"].contains(URL(fileURLWithPath: locator).lastPathComponent)
+    }
+
+    private static func primaryTranscriptURL(in sessionDir: URL, locator: String) -> URL? {
         let locatorURL = URL(fileURLWithPath: locator)
-        if ["chat_history.jsonl", "updates.jsonl"].contains(locatorURL.lastPathComponent) {
+        if isJSONLTranscript(locator) {
             return locatorURL
         }
         for name in ["chat_history.jsonl", "updates.jsonl"] {
@@ -257,7 +273,7 @@ final class GrokAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
                 return candidate
             }
         }
-        return locatorURL
+        return nil
     }
 
     private static func readDeclaredJSONObject(
@@ -550,7 +566,7 @@ final class GrokAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
 
     private static func fallbackStartTime(
         capturedModificationNanoseconds: Int64?,
-        transcriptLocator: String,
+        transcriptLocator: String?,
         sessionDir: URL,
         isCaptured: Bool
     ) -> String? {
@@ -558,7 +574,10 @@ final class GrokAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
             return isoFromModificationNanoseconds(capturedModificationNanoseconds)
         }
         guard !isCaptured else { return nil }
-        return fileModifiedAt(URL(fileURLWithPath: transcriptLocator)) ?? fileModifiedAt(sessionDir)
+        if let transcriptLocator {
+            return fileModifiedAt(URL(fileURLWithPath: transcriptLocator)) ?? fileModifiedAt(sessionDir)
+        }
+        return fileModifiedAt(sessionDir)
     }
 
     private static func isoFromModificationNanoseconds(_ nanoseconds: Int64) -> String {

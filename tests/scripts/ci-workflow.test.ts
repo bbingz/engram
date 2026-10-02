@@ -266,16 +266,14 @@ describe('CI workflow hardening', () => {
     expect(xcodeprojDriftGate).toContain(
       'generated_paths=(macos/Engram.xcodeproj macos/Engram/Info.plist)',
     );
-    expect(xcodeprojDriftGate).toContain(
-      'git -C "$ROOT_DIR" diff --name-only -- "$' + '{generated_paths[@]}"',
-    );
+    expect(xcodeprojDriftGate).toContain('diff -rq');
+    expect(xcodeprojDriftGate).not.toContain('git diff --name-only');
   });
 
   it('fails CI when xcodegen creates untracked project files (repro)', () => {
     expect(testWorkflow).toContain('scripts/check-xcodeproj-drift.sh');
-    expect(xcodeprojDriftGate).toContain(
-      'git -C "$ROOT_DIR" ls-files --others -- "$' + '{generated_paths[@]}"',
-    );
+    expect(xcodeprojDriftGate).toContain('diff -rq');
+    expect(xcodeprojDriftGate).not.toContain('ls-files --others');
     expect(xcodeprojDriftGate).not.toContain('--exclude-standard');
   });
 

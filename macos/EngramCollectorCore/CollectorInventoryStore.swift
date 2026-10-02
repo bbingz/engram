@@ -142,6 +142,23 @@ final class CollectorInventoryStore {
         }
     }
 
+    /// Replaces only the stored st_dev of an existing binding. The write happens only
+    /// when the row still holds `stored` exactly and the change is a device-only
+    /// renumbering.
+    /// docs/superpowers/specs/2026-10-02-collector-volume-identity-design.md (c.1, c.3)
+    func rebindRenumberedRoot(_ binding: CollectorPOSIXRootBinding, replacing stored: CollectorPOSIXDirectoryIdentity) throws {
+        guard binding.expectedIdentity.isDeviceRenumbering(of: stored) else { throw CollectorInventoryError.invalidRoot }
+        try write { db in
+            try Self.requireRoot(db, binding.configuration)
+            guard try Self.rootBinding(db, binding.configuration)?.binding.expectedIdentity == stored else {
+                throw CollectorInventoryError.invalidRoot
+            }
+            try db.execute(sql: """
+                UPDATE collector_root_bindings SET device = ? WHERE root_id = ? AND root_revision = ?
+                """, arguments: [binding.expectedIdentity.device, binding.configuration.rootID, binding.configuration.revision])
+        }
+    }
+
     func enrolledRoot(configuration: CollectorRootConfiguration) throws -> CollectorPOSIXRootBinding? {
         try database.read { db in
             try Self.requireRoot(db, configuration)
@@ -1046,7 +1063,9 @@ final class CollectorInventoryStore {
                 )
                 return
             }
-            let changed = locatorChanged || storedGeneration != generation
+            // A st_dev renumbering is not a registry change.
+            // docs/superpowers/specs/2026-10-02-collector-volume-identity-design.md (c.4)
+            let changed = locatorChanged || !ArchiveSourceGeneration.sameIgnoringDevice(storedGeneration, generation)
             var after = storedPage
             if changed {
                 after = ""
@@ -1297,6 +1316,17 @@ final class CollectorInventoryStore {
                         }
                         continue
                     }
+                }
+                if let generation, Self.sameObservationIgnoringDevice(generation, observed) {
+                    // A st_dev renumbering is not new content. Converge the stored
+                    // observation without a dirty revision.
+                    // docs/superpowers/specs/2026-10-02-collector-volume-identity-design.md (c.4)
+                    try db.execute(sql: """
+                        UPDATE collector_locators SET observed_generation = ?, last_seen_scan_id = ?
+                        WHERE root_id = ? AND root_revision = ? AND relative_path = ?
+                        """, arguments: [observed, batch.scan.scanID, state.configuration.rootID,
+                                         state.configuration.revision, file.relativePath])
+                    continue
                 }
                 try Self.upsertDirty(
                     db, state.configuration, file.relativePath, observedGeneration: observed,
@@ -2093,6 +2123,31 @@ final class CollectorInventoryStore {
             Pair(databaseGeneration: databaseGeneration, walGeneration: walGeneration)
         )
         return "opencode-pair-v1:" + String(decoding: encoded, as: UTF8.self)
+    }
+
+    /// True when two stored `stat-v1:` / `opencode-pair-v1:` observations differ at
+    /// most in their st_dev. Any other format or decode failure is a real difference.
+    /// docs/superpowers/specs/2026-10-02-collector-volume-identity-design.md (c.4)
+    static func sameObservationIgnoringDevice(_ stored: String, _ observed: String) -> Bool {
+        struct Pair: Codable {
+            let databaseGeneration: ArchiveSourceGeneration
+            let walGeneration: ArchiveSourceGeneration?
+        }
+        func body(_ value: String, _ prefix: String) -> Data? {
+            value.hasPrefix(prefix) ? Data(value.utf8.dropFirst(prefix.utf8.count)) : nil
+        }
+        if let lhs = body(stored, "stat-v1:"), let rhs = body(observed, "stat-v1:"),
+           let a = try? ArchiveCanonicalJSON.decode(ArchiveSourceGeneration.self, from: lhs),
+           let b = try? ArchiveCanonicalJSON.decode(ArchiveSourceGeneration.self, from: rhs) {
+            return ArchiveSourceGeneration.sameIgnoringDevice(a, b)
+        }
+        if let lhs = body(stored, "opencode-pair-v1:"), let rhs = body(observed, "opencode-pair-v1:"),
+           let a = try? ArchiveCanonicalJSON.decode(Pair.self, from: lhs),
+           let b = try? ArchiveCanonicalJSON.decode(Pair.self, from: rhs) {
+            return ArchiveSourceGeneration.sameIgnoringDevice(a.databaseGeneration, b.databaseGeneration)
+                && ArchiveSourceGeneration.sameIgnoringDevice(a.walGeneration, b.walGeneration)
+        }
+        return false
     }
 
     private static func touchLocatorSeenScan(

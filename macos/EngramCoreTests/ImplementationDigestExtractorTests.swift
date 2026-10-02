@@ -63,6 +63,58 @@ final class ImplementationDigestExtractorTests: XCTestCase {
         }
     }
 
+    /// workitem-localtime-1: a static DateFormatter must follow a mid-process default
+    /// timezone change. 2026-06-23T16:30:00Z is 2026-06-23 in UTC and 2026-06-24 in Asia/Shanghai.
+    func testActionDateFollowsInProcessTimeZoneChange_repro() {
+        let originalTZ = ProcessInfo.processInfo.environment["TZ"]
+        let originalDefault = NSTimeZone.default
+        defer {
+            if let originalTZ {
+                setenv("TZ", originalTZ, 1)
+            } else {
+                unsetenv("TZ")
+            }
+            tzset()
+            NSTimeZone.default = originalDefault
+            NSTimeZone.resetSystemTimeZone()
+        }
+
+        let timestamp = "2026-06-23T16:30:00Z"
+        applyDefaultTimeZone("UTC")
+        XCTAssertEqual(actionDate(forISO: timestamp), "2026-06-23")
+
+        applyDefaultTimeZone("Asia/Shanghai")
+        XCTAssertEqual(actionDate(forISO: timestamp), "2026-06-24")
+    }
+
+    private func applyDefaultTimeZone(_ identifier: String) {
+        setenv("TZ", identifier, 1)
+        tzset()
+        NSTimeZone.default = TimeZone(identifier: identifier)!
+        NSTimeZone.resetSystemTimeZone()
+    }
+
+    private func actionDate(forISO timestamp: String) -> String? {
+        let messages = [
+            NormalizedMessage(role: .user, content: "Ship timezone bucketing", timestamp: timestamp),
+            NormalizedMessage(
+                role: .assistant,
+                content: """
+                **结果**
+                Fixed action_date timezone.
+                **验证结果**
+                checks run: digest tests
+                """,
+                timestamp: timestamp
+            ),
+        ]
+        return ImplementationDigestExtractor.extract(
+            messages: messages,
+            sessionId: "s-tz-switch",
+            sessionTitle: nil
+        ).first?.actionDate
+    }
+
     func testActionDateFormatterAlwaysUsesGregorianCalendar_repro() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

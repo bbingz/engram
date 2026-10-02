@@ -39,6 +39,15 @@ final class SourcePulseUsageFormattingTests: XCTestCase {
         XCTAssertEqual(SourceIndexFreshness.classify("2026-07-07 12:05:00", now: now), .fresh)
     }
 
+    func testSourceFreshnessClassifiesISO8601IndexerTimestamps_repro() {
+        let now = utcDate(2026, 7, 7, 12)
+
+        XCTAssertEqual(SourceIndexFreshness.classify("2026-07-06T12:00:00Z", now: now), .fresh)
+        XCTAssertEqual(SourceIndexFreshness.classify("2026-07-06T11:59:59Z", now: now), .aging)
+        XCTAssertEqual(SourceIndexFreshness.classify("2026-06-30T11:59:59Z", now: now), .stale)
+        XCTAssertEqual(SourceIndexFreshness.relativeAgeText("2026-07-07T11:58:00Z", now: now), "2m ago")
+    }
+
     func testSourceFreshnessRelativeAgeText() {
         let now = utcDate(2026, 7, 7, 12)
 

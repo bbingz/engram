@@ -18,6 +18,8 @@ export const SOURCE_NAMES = [
   'vscode',
   'antigravity',
   'windsurf',
+  'pi',
+  'grok',
 ] as const;
 
 export type SourceName = (typeof SOURCE_NAMES)[number];

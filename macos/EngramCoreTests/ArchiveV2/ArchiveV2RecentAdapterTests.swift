@@ -37,13 +37,25 @@ final class ArchiveV2RecentAdapterTests: XCTestCase {
         }
     }
 
-    func testPeriodicRecentDayRootsHaveAHardUpperBound() {
-        let adapters = SessionAdapterFactory.recentCodexAdapters(
-            now: Date(timeIntervalSince1970: 1_800_000_000),
-            days: 10_000
+    func testPeriodicCodexRecencyCutoffHasAHardUpperBound() async throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let day = root.appendingPathComponent(".codex/sessions/2026/01/01", isDirectory: true)
+        try FileManager.default.createDirectory(at: day, withIntermediateDirectories: true)
+        for (name, age) in [("rollout-inside.jsonl", 6.0), ("rollout-outside.jsonl", 8.0)] {
+            let url = day.appendingPathComponent(name)
+            try Data("{}\n".utf8).write(to: url)
+            try FileManager.default.setAttributes(
+                [.modificationDate: now.addingTimeInterval(-age * 86_400)],
+                ofItemAtPath: url.path
+            )
+        }
+        let codex = try XCTUnwrap(
+            SessionAdapterFactory.recentActiveAdapters(now: now, days: 10_000, homeDirectory: root)
+                .first { $0.source == .codex }
         )
 
-        XCTAssertEqual(adapters.count, 7)
+        let listed = try await codex.listSessionLocators()
+        XCTAssertEqual(listed.map { URL(fileURLWithPath: $0).lastPathComponent }, ["rollout-inside.jsonl"])
     }
 
     func testExactRecentWrapperKeepsDescriptorAndAddsBoundedDeduplicatedRetryLocators() async throws {

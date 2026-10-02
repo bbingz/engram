@@ -998,7 +998,8 @@ final class EngramServiceIPCTests: XCTestCase {
 
         XCTAssertTrue(composition.contains("adapterProvider: {"))
         XCTAssertTrue(
-            composition.contains("Self.exactArchiveAdaptersForBacklogPass(environment: environment)"),
+            // scanEnvironment: role-gated legacy-scan environment (cutover design §2).
+            composition.contains("Self.exactArchiveAdaptersForBacklogPass(environment: scanEnvironment)"),
             "backlog adapterProvider must reread disabled sources each pass (SRC-001)"
         )
         XCTAssertFalse(
@@ -6149,6 +6150,84 @@ final class EngramServiceIPCTests: XCTestCase {
         }
     }
 
+    /// Manual unlink must be sticky: NULL parent, manual link_source, and no
+    /// leftover suggestion fields that would keep the child grouped or let
+    /// suggested-parent backfill (which skips link_source='manual') reattach it.
+    /// Subagent tier stays skip. setParentSession must not rewrite tier.
+    func testClearParentDropsSuggestionFieldsAndKeepsSkipTier_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE sessions
+                    SET parent_session_id = 's1',
+                        suggested_parent_id = 's1',
+                        suggestion_status = 'pending',
+                        suggestion_candidates = '["s1"]',
+                        link_source = 'path',
+                        agent_role = 'subagent',
+                        tier = 'skip'
+                    WHERE id = 's2'
+                    """
+            )
+        }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(
+            transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+        )
+        let linked = try await client.setParentSession(sessionId: "s2", parentId: "s1")
+        XCTAssertEqual(linked, EngramServiceLinkResponse(ok: true, error: nil))
+        try await queue.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 's2'"),
+                "skip",
+                "setParentSession must not upgrade a subagent out of skip"
+            )
+        }
+        try await queue.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE sessions
+                    SET suggested_parent_id = 's1',
+                        suggestion_status = 'pending',
+                        suggestion_candidates = '["s1"]'
+                    WHERE id = 's2'
+                    """
+            )
+        }
+
+        let unlinked = try await client.clearParentSession(sessionId: "s2")
+        XCTAssertEqual(unlinked, EngramServiceLinkResponse(ok: true, error: nil))
+        let state = try fixtureLinkState(at: paths.database.path, id: "s2")
+        XCTAssertNil(state.parentSessionId)
+        XCTAssertNil(state.suggestedParentId)
+        XCTAssertNil(state.suggestionStatus)
+        XCTAssertNil(state.suggestionCandidates)
+        XCTAssertEqual(state.linkSource, "manual")
+        XCTAssertNotNil(state.linkCheckedAt)
+        try await queue.read { db in
+            let row = try XCTUnwrap(Row.fetchOne(
+                db,
+                sql: "SELECT agent_role, tier FROM sessions WHERE id = 's2'"
+            ))
+            XCTAssertEqual(row["agent_role"] as String?, "subagent")
+            XCTAssertEqual(row["tier"] as String?, "skip")
+        }
+    }
+
     func testDismissAmbiguousSuggestionRoundTripThroughClient() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
@@ -7990,6 +8069,157 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertFalse(enabledIDs.contains("windsurf"))
         XCTAssertTrue(enabledIDs.contains("claude-code"), "non-disabled sources must survive the filter")
         XCTAssertTrue(enabledIDs.contains("gemini-cli"))
+    }
+
+    // docs/superpowers/specs/2026-10-02-hq-local-collector-cutover-design.md §2:
+    // only the local role keeps the legacy-scan environment (including the
+    // tests/dev ENGRAM_DISABLED_SOURCES lever); every other role disables all
+    // sources and logs one startup line (error level only for invalid settings).
+    // Independent review B2: the service repairs an owner-owned regular file's
+    // mode to 0600 (the repair its settings readers always did) BEFORE judging
+    // the role, so a 0644 local file still scans; links, oversize and bad
+    // content still fail closed. App/MCP keep the non-repairing loader.
+    func testLegacyScanEnvironmentRunsOnlyForLocalRole() throws {
+        let fixture = try makePrivateSettingsFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let base = ["HOME": "/synthetic-home", "ENGRAM_DISABLED_SOURCES": "codex"]
+        let allSources = Set(SourceName.allCases.map(\.rawValue))
+        func role() -> EngramRuntimeRole { EngramServiceRunner.loadRuntimeRole(settingsURL: fixture.settingsURL) }
+        func notice() -> (isError: Bool, message: String)? {
+            EngramServiceRunner.legacyScanDisabledNotice(role: role(), settingsURL: fixture.settingsURL)
+        }
+        func mode(_ url: URL) -> mode_t {
+            var info = stat()
+            XCTAssertEqual(lstat(url.path, &info), 0)
+            return info.st_mode & 0o777
+        }
+
+        // Missing settings file means the implicit local role: unchanged, silent.
+        XCTAssertEqual(role(), .local)
+        XCTAssertEqual(EngramServiceRunner.legacyScanEnvironment(base, role: role()), base)
+        XCTAssertNil(notice())
+
+        let disabledPrefix = "legacy host-file scan disabled for runtimeRole="
+        let invalidPrefix = disabledPrefix + "invalidSettings; reason="
+        // (name, settings bytes, mode, expected notice: nil = scans, else isError + message fragment)
+        let cases: [(String, Data, mode_t, (Bool, String)?)] = [
+            ("implicit-local", try JSONSerialization.data(withJSONObject: ["disabledSources": ["codex"]]), 0o600, nil),
+            ("local", try JSONSerialization.data(withJSONObject: ["runtimeRole": "local"]), 0o600, nil),
+            ("index", try JSONSerialization.data(withJSONObject: ["runtimeRole": "index"]), 0o600,
+             (false, disabledPrefix + "index; sessions are stored only through capture ingest")),
+            ("collector", try JSONSerialization.data(withJSONObject: ["runtimeRole": "collector"]), 0o600,
+             (false, disabledPrefix + "collector; this role keeps no local index")),
+            ("replica", try JSONSerialization.data(withJSONObject: ["runtimeRole": "replica"]), 0o600,
+             (false, disabledPrefix + "replica; this role keeps no local index")),
+            ("unknown-role", try JSONSerialization.data(withJSONObject: ["runtimeRole": "hub"]), 0o600,
+             (true, invalidPrefix + "runtimeRole value hub is not local, index, collector or replica;")),
+            // B3: a raw role value is reduced to a bounded [A-Za-z0-9_-] token, so
+            // a newline cannot forge a second log line.
+            ("role-with-newline", try JSONSerialization.data(withJSONObject: [
+                "runtimeRole": "hub\nlegacy host-file scan disabled for runtimeRole=index; forged-tail-0123456789",
+            ]), 0o600, (true, invalidPrefix + "runtimeRole value hub_legacy_host-file_sca is not local,")),
+            ("non-string-role", try JSONSerialization.data(withJSONObject: ["runtimeRole": 1]), 0o600,
+             (true, invalidPrefix + "runtimeRole is not a string;")),
+            ("malformed", Data("{not json".utf8), 0o600, (true, invalidPrefix + "settings.json is not a JSON object;")),
+            // B2: an owner-owned regular 0644 file is repaired to 0600, then judged.
+            ("local-0644", try JSONSerialization.data(withJSONObject: ["runtimeRole": "local"]), 0o644, nil),
+            ("implicit-local-0644", try JSONSerialization.data(withJSONObject: ["disabledSources": ["codex"]]), 0o644, nil),
+            ("index-0644", try JSONSerialization.data(withJSONObject: ["runtimeRole": "index"]), 0o644,
+             (false, disabledPrefix + "index;")),
+            ("unknown-role-0644", try JSONSerialization.data(withJSONObject: ["runtimeRole": "hub"]), 0o644,
+             (true, invalidPrefix + "runtimeRole value hub is not local, index, collector or replica;")),
+            ("malformed-0644", Data("{not json".utf8), 0o644, (true, invalidPrefix + "settings.json is not a JSON object;")),
+        ]
+        for (name, data, fileMode, expected) in cases {
+            try? FileManager.default.removeItem(at: fixture.settingsURL)
+            try data.write(to: fixture.settingsURL)
+            XCTAssertEqual(chmod(fixture.settingsURL.path, fileMode), 0)
+            if fileMode != 0o600 {
+                XCTAssertEqual(RuntimeRoleSettings.load(at: fixture.settingsURL), .invalidSettings,
+                    "\(name): the App/MCP loader stays non-repairing")
+            }
+            let actual = notice()
+            XCTAssertEqual(mode(fixture.settingsURL), 0o600, "\(name): the service repairs the mode before the role")
+            XCTAssertEqual(actual?.isError, expected?.0, name)
+            if let expected {
+                let message = try XCTUnwrap(actual?.message, name)
+                XCTAssertTrue(message.contains(expected.1), "\(name): \(message)")
+                XCTAssertEqual(message.hasPrefix(disabledPrefix + "invalidSettings;"), expected.0, name)
+                XCTAssertFalse(message.contains("\n"), name)
+                XCTAssertEqual(ServiceLogSanitizer.redact(message), message, "\(name) must stay readable in the log ring")
+            }
+            let scans = expected == nil
+            for environment in [base, [:]] {
+                let scanEnvironment = EngramServiceRunner.legacyScanEnvironment(environment, role: role())
+                if scans {
+                    XCTAssertEqual(scanEnvironment, environment, "\(name) must keep the local scan environment")
+                } else {
+                    XCTAssertEqual(
+                        scanEnvironment.filter { $0.key != "ENGRAM_DISABLED_SOURCES" },
+                        environment.filter { $0.key != "ENGRAM_DISABLED_SOURCES" },
+                        "\(name) changes only the scan opt-out"
+                    )
+                    let disabled = EngramServiceRunner.readDisabledSources(
+                        environment: scanEnvironment, settingsURL: fixture.settingsURL
+                    )
+                    XCTAssertEqual(disabled, allSources, "\(name) must disable every legacy source")
+                    XCTAssertTrue(
+                        SessionAdapterFactory.defaultAdapters().allSatisfy { disabled.contains($0.source.rawValue) },
+                        "\(name) must leave no legacy scan adapter"
+                    )
+                }
+            }
+        }
+
+        // Not repairable, so still refused with an accurate reason and no mode change:
+        // a symlink (target left untouched), a hard link, and an oversized file.
+        let localDocument = try JSONSerialization.data(withJSONObject: ["runtimeRole": "local"])
+        let target = fixture.directory.appendingPathComponent("real-settings.json")
+        try localDocument.write(to: target)
+        XCTAssertEqual(chmod(target.path, 0o644), 0)
+        try FileManager.default.removeItem(at: fixture.settingsURL)
+        try FileManager.default.createSymbolicLink(at: fixture.settingsURL, withDestinationURL: target)
+        XCTAssertEqual(role(), .invalidSettings)
+        XCTAssertTrue(notice()?.message.contains("reason=settings.json is a symlink;") == true, notice()?.message ?? "nil")
+        XCTAssertEqual(mode(target), 0o644, "a symlink target is never repaired")
+
+        try FileManager.default.removeItem(at: fixture.settingsURL)
+        try FileManager.default.moveItem(at: target, to: fixture.settingsURL)
+        let hardLink = fixture.directory.appendingPathComponent("settings-hard-link.json")
+        try FileManager.default.linkItem(at: fixture.settingsURL, to: hardLink)
+        XCTAssertEqual(role(), .invalidSettings)
+        XCTAssertTrue(notice()?.message.contains("reason=settings.json has 2 hard links;") == true, notice()?.message ?? "nil")
+        XCTAssertEqual(mode(fixture.settingsURL), 0o644, "a hard-linked file is never repaired")
+        try FileManager.default.removeItem(at: hardLink)
+
+        try Data(repeating: 0x20, count: RuntimeRoleSettings.maximumBytes + 1).write(to: fixture.settingsURL)
+        XCTAssertEqual(chmod(fixture.settingsURL.path, 0o644), 0)
+        XCTAssertEqual(role(), .invalidSettings)
+        XCTAssertTrue(notice()?.message.contains("reason=settings.json is larger than 1 MiB;") == true, notice()?.message ?? "nil")
+        XCTAssertEqual(mode(fixture.settingsURL), 0o644, "an oversized file is never repaired")
+
+        // B3: a second look that finds nothing wrong says the file changed after
+        // the role was read instead of a self-contradictory reason.
+        try FileManager.default.removeItem(at: fixture.settingsURL)
+        try localDocument.write(to: fixture.settingsURL)
+        XCTAssertEqual(chmod(fixture.settingsURL.path, 0o600), 0)
+        let changed = try XCTUnwrap(
+            EngramServiceRunner.legacyScanDisabledNotice(role: .invalidSettings, settingsURL: fixture.settingsURL)
+        )
+        XCTAssertTrue(changed.message.contains("reason=settings.json changed after the role was read;"), changed.message)
+        XCTAssertEqual(ServiceLogSanitizer.redact(changed.message), changed.message)
+
+        // B3: a missing file under an owner-owned but unreadable directory names the directory.
+        try FileManager.default.removeItem(at: fixture.settingsURL)
+        XCTAssertEqual(chmod(fixture.directory.path, 0o300), 0)
+        defer { _ = chmod(fixture.directory.path, 0o700) }
+        XCTAssertEqual(role(), .invalidSettings)
+        let unreadable = try XCTUnwrap(notice())
+        XCTAssertTrue(
+            unreadable.message.contains("reason=settings.json is missing and the settings directory is not readable;"),
+            unreadable.message
+        )
+        XCTAssertEqual(ServiceLogSanitizer.redact(unreadable.message), unreadable.message)
     }
 
     func testReadDisabledSourcesDefaultsArchivedSourcesOffWhenUnset() throws {

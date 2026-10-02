@@ -24,7 +24,10 @@ import type {
 import { VsCodeAdapter } from '../src/adapters/vscode.js';
 import { WindsurfAdapter } from '../src/adapters/windsurf.js';
 
-type SupportedFixtureSource = Exclude<SourceName, 'lobsterai' | 'minimax'>;
+type SupportedFixtureSource = Exclude<
+  SourceName,
+  'lobsterai' | 'minimax' | 'pi' | 'grok'
+>;
 
 interface AdapterFixture {
   schemaVersion: 1;
@@ -458,7 +461,7 @@ function batchSizes(): Record<string, unknown> {
     watchWriteStabilityMs: 2000,
     watchWriteStabilityPollMs: 500,
     startupParentBackfillLimit: 500,
-    sourceFiles: ['src/core/watcher.ts', 'src/core/db/maintenance.ts'],
+    sourceFiles: ['src/core/db/maintenance.ts'],
     generatedAtCommit: gitCommit(),
   };
 }

@@ -24,6 +24,8 @@ enum SourceColors {
         case "minimax":       return Color(hex: 0xFF6A00)
         case "lobsterai":     return Color(hex: 0xE11D48)
         case "commandcode":   return Color(hex: 0x22C55E)
+        case "pi":            return Color(hex: 0x4A6D8C)
+        case "grok":          return Color(hex: 0x7A5C2E)
         default:              return Color(hex: 0x8E8E93)
         }
     }
@@ -49,6 +51,8 @@ enum SourceColors {
         case "opencode":      return "OpenCode"
         case "iflow":         return "iFlow"
         case "vscode":        return "VS Code"
+        case "pi":            return "Pi"
+        case "grok":          return "Grok"
         default:              return source
         }
     }

@@ -8,6 +8,27 @@ struct CollectorPOSIXDirectoryIdentity: Equatable {
     let generation: UInt32
     let birthSeconds: Int64
     let birthNanoseconds: Int64
+
+    /// st_dev is assigned at mount time and can change across a reboot. A change in
+    /// the device alone, with the same inode, st_gen and a known birth time, is a
+    /// renumbering of the same directory. Any other difference is a replacement.
+    /// docs/superpowers/specs/2026-10-02-collector-volume-identity-design.md (c.1)
+    func isDeviceRenumbering(of stored: CollectorPOSIXDirectoryIdentity) -> Bool {
+        device != stored.device && inode == stored.inode && generation == stored.generation
+            && birthSeconds == stored.birthSeconds && birthNanoseconds == stored.birthNanoseconds
+            && (birthSeconds != 0 || birthNanoseconds != 0)
+    }
+}
+
+extension ArchiveSourceGeneration {
+    /// Change detection only: a device-only difference is a mount renumbering, not new
+    /// content. Capture IDs and manifests keep the device unchanged.
+    /// docs/superpowers/specs/2026-10-02-collector-volume-identity-design.md (c.4)
+    static func sameIgnoringDevice(_ lhs: ArchiveSourceGeneration?, _ rhs: ArchiveSourceGeneration?) -> Bool {
+        guard let lhs, let rhs else { return lhs == nil && rhs == nil }
+        return lhs.inode == rhs.inode && lhs.size == rhs.size && lhs.mtimeNs == rhs.mtimeNs
+            && lhs.ctimeNs == rhs.ctimeNs && lhs.mode == rhs.mode
+    }
 }
 
 struct CollectorPOSIXRootBinding {

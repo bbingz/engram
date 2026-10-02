@@ -111,9 +111,13 @@ enum CollectorVSCodeSource {
             defer { CollectorPOSIXDirectoryAccess.close(workspace) }
             let chats = try openFencedDirectory(chatsName, parent: workspace, testHooks: .init())
             defer { CollectorPOSIXDirectoryAccess.close(chats) }
-            guard try statRegularFile(parent: chats, name: parts[2]) == manifest.generation else { return true }
+            // A st_dev renumbering alone is not a change.
+            // docs/superpowers/specs/2026-10-02-collector-volume-identity-design.md (c.4)
+            guard ArchiveSourceGeneration.sameIgnoringDevice(
+                try statRegularFile(parent: chats, name: parts[2]), manifest.generation) else { return true }
             let workspaceGeneration = files.first { $0.relativePath.utf8.elementsEqual((parts[0] + "/" + workspaceName).utf8) }?.generation
-            guard try statRegularFile(parent: workspace, name: workspaceName) == workspaceGeneration else { return true }
+            guard ArchiveSourceGeneration.sameIgnoringDevice(
+                try statRegularFile(parent: workspace, name: workspaceName), workspaceGeneration) else { return true }
             try recheckExternal(context, testHooks: .init())
             let namedRoot = try CollectorPOSIXDirectoryAccess.openAbsolute(components: components)
             defer { CollectorPOSIXDirectoryAccess.close(namedRoot.descriptor) }

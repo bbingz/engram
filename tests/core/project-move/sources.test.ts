@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   encodeGemini,
+  encodeGrok,
   encodeIflow,
   findReferencingFiles,
   getSourceRoots,
@@ -35,6 +36,8 @@ describe('getSourceRoots', () => {
       'antigravity-legacy',
       'commandcode',
       'copilot',
+      'pi',
+      'grok',
     ]);
     // copilot root must match mvp.py COPILOT_DATA
     expect(roots.find((r) => r.id === 'copilot')?.path).toBe(
@@ -61,6 +64,24 @@ describe('getSourceRoots', () => {
     expect(roots.find((r) => r.id === 'antigravity-legacy')?.path).toBe(
       '/home/test/.gemini/antigravity',
     );
+    expect(roots.find((r) => r.id === 'pi')?.path).toBe(
+      '/home/test/.pi/agent/sessions',
+    );
+    expect(roots.find((r) => r.id === 'pi')?.encodeProjectDir).toBeNull();
+    expect(roots.find((r) => r.id === 'grok')?.path).toBe(
+      '/home/test/.grok/sessions',
+    );
+  });
+
+  it('encodes grok project directories with percent-encoded slashes (repro)', () => {
+    expect(encodeGrok('/Users/test/project')).toBe('%2FUsers%2Ftest%2Fproject');
+    expect(encodeGrok('/Users/user/Documents/project-名前')).toBe(
+      '%2FUsers%2Fuser%2FDocuments%2Fproject-%E5%90%8D%E5%89%8D',
+    );
+    const grok = getSourceRoots('/home/test').find((r) => r.id === 'grok');
+    expect(grok?.encodeProjectDir?.('/Users/test/project')).toBe(
+      '%2FUsers%2Ftest%2Fproject',
+    );
   });
 
   it('encodeProjectDir is set exactly for sources with project-grouped dirs', () => {
@@ -73,6 +94,7 @@ describe('getSourceRoots', () => {
       'gemini-cli',
       'iflow',
       'qoder',
+      'grok',
     ]);
     // Spot check each encoding rule.
     const ccRoot = roots.find((r) => r.id === 'claude-code');

@@ -3022,6 +3022,29 @@ extension CollectorInventoryStoreTests {
         )
     }
 
+    // A device-only st_dev renumbering is not a Cursor dependency change (design note
+    // docs/superpowers/specs/2026-10-02-collector-volume-identity-design.md, c.4).
+    func testCursorModernDependencyProbeIgnoresDeviceRenumbering() throws {
+        let f = try CursorModernReservationFixture(); defer { f.close() }
+        try f.write(f.storeRelative, Data("STORE".utf8))
+        try f.write(f.metaRelative, Data("meta".utf8))
+        try f.write(f.transcriptRelative, Data("TRANSCRIPT\n".utf8))
+        let session = try XCTUnwrap(CollectorCursorSource.discoverModern(rootPath: f.root.path).first)
+        let files = try session.present.map {
+            CollectorCursorSource.CapturedMember(relativePath: $0.relativePath, generation: $0.generation,
+                bytes: try Data(contentsOf: f.root.appendingPathComponent($0.relativePath)))
+        }
+        let capture = try CollectorCursorSource.persistModern(
+            .init(rootPath: f.root.path, session: session, files: files),
+            machineID: f.machineID, cas: f.cas, catalog: f.catalog)
+        XCTAssertFalse(try CollectorCursorSource.capturedDependenciesChanged(rootPath: f.root.path, manifest: capture.manifest))
+        let renumbered = try manifestShiftingDevices(capture.manifest, by: 7)
+        XCTAssertNotEqual(renumbered.generation, capture.manifest.generation)
+        XCTAssertFalse(try CollectorCursorSource.capturedDependenciesChanged(rootPath: f.root.path, manifest: renumbered))
+        try f.write(f.transcriptRelative, Data("TRANSCRIPT CHANGED\n".utf8))
+        XCTAssertTrue(try CollectorCursorSource.capturedDependenciesChanged(rootPath: f.root.path, manifest: renumbered))
+    }
+
     func testCursorModernReservationSurvivesDatabaseCatalogReopenAndSourceRemoval() throws {
         let f = try CursorModernReservationFixture(); defer { f.close() }
         var store: CollectorInventoryStore? = try f.open()

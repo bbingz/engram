@@ -2599,6 +2599,82 @@ final class IndexerParityTests: XCTestCase {
         XCTAssertNotEqual(snapshots.first?.tier, .skip)
     }
 
+    // HQ stall diagnosis 2026-10-02 (defect D1, no PR yet): the periodic recent
+    // path selected Codex rollouts by their start-date directory (today and
+    // yesterday only), so a resumed rollout appended after its directory left
+    // that window was never re-indexed until a service restart.
+    func testPeriodicCycleIndexesCodexRolloutAppendedOutsideDateWindow_repro() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-old-dir-append-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let now = Date()
+        let startedAt = now.addingTimeInterval(-5 * 86_400)
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar.current
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy/MM/dd"
+        let sessions = home.appendingPathComponent(".codex/sessions", isDirectory: true)
+        let dayDirectory = sessions.appendingPathComponent(formatter.string(from: startedAt), isDirectory: true)
+        try FileManager.default.createDirectory(at: dayDirectory, withIntermediateDirectories: true)
+        let file = dayDirectory.appendingPathComponent("rollout-old-dir-append.jsonl")
+
+        func line(_ object: [String: Any]) throws -> String {
+            let data = try JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes])
+            return String(decoding: data, as: UTF8.self) + "\n"
+        }
+        func message(_ role: String, _ text: String, at timestamp: String) throws -> String {
+            try line([
+                "type": "response_item",
+                "timestamp": timestamp,
+                "payload": [
+                    "type": "message",
+                    "role": role,
+                    "content": [["type": role == "user" ? "input_text" : "output_text", "text": text]]
+                ]
+            ])
+        }
+        let initial = try line([
+            "type": "session_meta",
+            "payload": [
+                "id": "codex-old-dir-append",
+                "timestamp": "2026-05-20T00:00:00Z",
+                "cwd": "/repo",
+                "model_provider": "openai"
+            ]
+        ])
+            + message("user", "Start the original task.", at: "2026-05-20T00:00:01Z")
+            + message("assistant", "Original task done.", at: "2026-05-20T00:00:02Z")
+        try initial.write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: startedAt], ofItemAtPath: file.path)
+
+        let first = try await writer.indexAllSessions(adapters: [CodexAdapter(sessionsRoot: sessions.path)])
+        XCTAssertEqual(first.indexed, 1)
+
+        // Resume days later: Codex appends to the same rollout in its old directory.
+        let appended = try message("user", "Resumed follow-up question.", at: "2026-05-25T00:00:01Z")
+            + message("assistant", "Resumed follow-up answer.", at: "2026-05-25T00:00:02Z")
+        let handle = try FileHandle(forWritingTo: file)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(appended.utf8))
+        try handle.close()
+        let appendedSize = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber
+        ).int64Value
+
+        let periodic = SessionAdapterFactory.recentActiveAdapters(now: now, homeDirectory: home)
+            .filter { $0.source == .codex }
+        _ = try await writer.indexRecentSessions(adapters: periodic)
+
+        let row = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT message_count, size_bytes FROM sessions WHERE id = 'codex-old-dir-append'"
+            )
+        }
+        XCTAssertEqual(row?["message_count"] as Int?, 4, "appended Codex turns must reach the session row")
+        XCTAssertEqual(row?["size_bytes"] as Int64?, appendedSize)
+    }
+
     func testSnapshotHashChangeWithSameSyncVersionEnqueuesDistinctIndexJobs() throws {
         try writer.write { db in
             let snapshotWriter = SessionSnapshotWriter(db: db)

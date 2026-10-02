@@ -17,7 +17,7 @@ struct SourceCatalogEntry {
 
 /// Single canonical catalog of the source adapters Engram ships with.
 ///
-/// Mirrors `SessionAdapterFactory.defaultAdapters()` (17 registered adapters:
+/// Mirrors `SessionAdapterFactory.defaultAdapters()` (19 registered adapters:
 /// active by default plus archived default-off sources). Used by
 /// `SourcePulseView` to surface configured-but-empty/undetected
 /// sources that the live service query (`GROUP BY source`) cannot return
@@ -41,6 +41,8 @@ enum SourceCatalog {
         .init(source: "windsurf",    defaultPath: "~/.engram/cache/windsurf"),
         .init(source: "antigravity", defaultPath: "~/.gemini/antigravity-cli/brain"),
         .init(source: "copilot",     defaultPath: "~/.copilot/session-state"),
+        .init(source: "pi",          defaultPath: "~/.pi/agent/sessions"),
+        .init(source: "grok",        defaultPath: "~/.grok/sessions"),
     ]
 }
 

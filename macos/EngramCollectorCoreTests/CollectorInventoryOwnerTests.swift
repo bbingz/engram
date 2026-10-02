@@ -382,6 +382,102 @@ final class CollectorInventoryOwnerTests: XCTestCase {
         XCTAssertEqual(try fixture.inventoryInteger("SELECT inode FROM collector_root_bindings"), binding.expectedIdentity.inode)
     }
 
+    // Repro for the 2026-09-22 collector outage: a reboot renumbered the Data volume
+    // st_dev while every root kept its inode and birth time, and every root stayed
+    // suspended. See docs/superpowers/specs/2026-10-02-collector-volume-identity-design.md (c.1, c.3).
+    func testDeviceRenumberingKeepsRootBoundAndEnumerating_repro() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        try fixture.file(fixture.sourceRoot.appendingPathComponent("rollout-before.jsonl"), bytes: Data("before".utf8))
+        let first = try XCTUnwrap(fixture.open(ownerRunID: "owner-one"))
+        defer { try? first.close() }
+        let bound = try first.enrollAndActivateRoot(fixture.configuration)
+        XCTAssertTrue(try fixture.finishBootstrap(first))
+        try first.close()
+        let live = bound.expectedIdentity.device
+        // Stored state as the pre-reboot run left it: old device in the binding and in
+        // every observed file generation. The live root itself is untouched.
+        try fixture.inventoryExecute("UPDATE collector_root_bindings SET device = ?", [live + 7])
+        try fixture.inventoryExecute("UPDATE collector_locators SET observed_generation = replace(observed_generation, ?, ?)",
+                                     ["\"device\":\(live),", "\"device\":\(live + 7),"])
+        try fixture.file(fixture.sourceRoot.appendingPathComponent("rollout-after.jsonl"), bytes: Data("after".utf8))
+        let second = try XCTUnwrap(fixture.open(ownerRunID: "owner-two"))
+        defer { try? second.close() }
+        XCTAssertEqual(try second.enrollAndActivateRoot(fixture.configuration).expectedIdentity, bound.expectedIdentity)
+        XCTAssertTrue(try fixture.finishBootstrap(second))
+        try second.close()
+        XCTAssertEqual(try fixture.bindingRow(), "\(live)|\(bound.expectedIdentity.inode)|\(bound.expectedIdentity.generation)|"
+                       + "\(bound.expectedIdentity.birthSeconds)|\(bound.expectedIdentity.birthNanoseconds)|1")
+        XCTAssertEqual(try fixture.inventoryText("SELECT last_activated_owner_run_id FROM collector_root_bindings"), "owner-two")
+        XCTAssertEqual(try fixture.inventoryInteger(
+            "SELECT dirty_revision FROM collector_locators WHERE relative_path = 'rollout-before.jsonl'"), 1)
+        XCTAssertEqual(try fixture.inventoryInteger(
+            "SELECT dirty_revision FROM collector_locators WHERE relative_path = 'rollout-after.jsonl'"), 1)
+    }
+
+    // Companion to the renumbering repro: only a device-only change may rebind. A
+    // replaced root (new inode, or same inode with another birth time) stays rejected
+    // and its stored binding is unchanged (design note c.0, c.1).
+    func testDeviceRenumberingRuleStillRejectsDifferentInodeOrBirthTime() throws {
+        for variant in ["inode", "birth"] {
+            let fixture = try CollectorOwnerFixture()
+            defer { fixture.remove() }
+            let first = try XCTUnwrap(fixture.open(ownerRunID: "owner-one"))
+            defer { try? first.close() }
+            let bound = try first.enrollAndActivateRoot(fixture.configuration)
+            try first.close()
+            let stale = bound.expectedIdentity.device + 7
+            if variant == "inode" {
+                try fixture.replaceSourceRoot()
+                try fixture.inventoryExecute("UPDATE collector_root_bindings SET device = ?", [stale])
+            } else {
+                try fixture.inventoryExecute("UPDATE collector_root_bindings SET device = ?, birth_nanoseconds = ?",
+                                             [stale, (bound.expectedIdentity.birthNanoseconds + 1) % 1_000_000_000])
+            }
+            let stored = try fixture.bindingRow()
+            let second = try XCTUnwrap(fixture.open(ownerRunID: "owner-two"))
+            defer { try? second.close() }
+            XCTAssertThrowsError(try second.enrollAndActivateRoot(fixture.configuration), variant) {
+                XCTAssertEqual($0 as? CollectorPOSIXEnumerationError, .rootIdentityChanged, variant)
+            }
+            try second.close()
+            XCTAssertEqual(try fixture.bindingRow(), stored, variant)
+            XCTAssertEqual(try fixture.inventoryText("SELECT last_activated_owner_run_id FROM collector_root_bindings"), "owner-one", variant)
+        }
+    }
+
+    // Repro: file generations embed st_dev, so after a renumbering every unchanged
+    // file looked like a new generation and would be re-captured and re-published.
+    // Only the stored file device differs here; one file really changes (design note c.4).
+    func testDeviceRenumberingDoesNotDirtyUnchangedFiles_repro() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let names = ["rollout-a.jsonl", "rollout-b.jsonl", "rollout-c.jsonl"]
+        for name in names { try fixture.file(fixture.sourceRoot.appendingPathComponent(name), bytes: Data(name.utf8)) }
+        let first = try XCTUnwrap(fixture.open(ownerRunID: "owner-one"))
+        defer { try? first.close() }
+        let live = try first.enrollAndActivateRoot(fixture.configuration).expectedIdentity.device
+        XCTAssertTrue(try fixture.finishBootstrap(first))
+        try first.close()
+        try fixture.inventoryExecute("UPDATE collector_locators SET observed_generation = replace(observed_generation, ?, ?)",
+                                     ["\"device\":\(live),", "\"device\":\(live + 7),"])
+        XCTAssertEqual(try fixture.inventoryInteger(
+            "SELECT count(*) FROM collector_locators WHERE observed_generation LIKE '%\"device\":\(live + 7),%'"), 3)
+        try fixture.file(fixture.sourceRoot.appendingPathComponent("rollout-c.jsonl"), bytes: Data("changed after reboot".utf8))
+        let second = try XCTUnwrap(fixture.open(ownerRunID: "owner-two"))
+        defer { try? second.close() }
+        _ = try second.enrollAndActivateRoot(fixture.configuration)
+        XCTAssertTrue(try fixture.finishBootstrap(second))
+        try second.close()
+        for (name, expected) in zip(names, [Int64(1), 1, 2]) {
+            XCTAssertEqual(try fixture.inventoryInteger(
+                "SELECT dirty_revision FROM collector_locators WHERE relative_path = '\(name)'"), expected, name)
+        }
+        XCTAssertEqual(try fixture.inventoryInteger(
+            "SELECT count(*) FROM collector_locators WHERE observed_generation LIKE '%\"device\":\(live),%'"), 3,
+            "equivalent stored generations converge to the live device")
+    }
+
     func testSourceAncestorSymlinkIsRejectedBeforeFirstEnrollment() throws {
         let fixture = try CollectorOwnerFixture()
         defer { fixture.remove() }
@@ -2720,6 +2816,29 @@ private final class CollectorOwnerFixture {
         let queue = try DatabaseQueue(path: inventoryURL.path, configuration: configuration)
         defer { try? queue.close() }
         return try queue.read { try Int64.fetchOne($0, sql: sql) }
+    }
+
+    /// Fixture-only rewrite of a closed inventory, e.g. to restore stored state that
+    /// an earlier boot left behind. Never used while an owner holds the database.
+    func inventoryExecute(_ sql: String, _ arguments: StatementArguments = []) throws {
+        let queue = try DatabaseQueue(path: inventoryURL.path)
+        defer { try? queue.close() }
+        try queue.write { try $0.execute(sql: sql, arguments: arguments) }
+        try queue.close()
+    }
+
+    func bindingRow() throws -> String? {
+        try inventoryText("""
+            SELECT device || '|' || inode || '|' || generation || '|' || birth_seconds || '|' || birth_nanoseconds
+                || '|' || root_revision FROM collector_root_bindings
+            """)
+    }
+
+    func finishBootstrap(_ owner: CollectorInventoryOwner) throws -> Bool {
+        for _ in 0..<64 {
+            if try owner.stepRoot(configuration, budget: budget).outcome == .finished { return true }
+        }
+        return false
     }
 
     func mode(_ url: URL) throws -> mode_t {

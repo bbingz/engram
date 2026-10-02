@@ -268,8 +268,12 @@ enum CollectorCursorSource {
         }
         // Only stat the already captured, bounded dependency list. This hint
         // neither walks directories nor reads source payload/SQLite contents.
+        // A st_dev renumbering alone is not a change.
+        // docs/superpowers/specs/2026-10-02-collector-volume-identity-design.md (c.4)
         do {
-            for file in files where try observed(file.relativePath) != file.generation { return true }
+            for file in files where !ArchiveSourceGeneration.sameIgnoringDevice(try observed(file.relativePath), file.generation) {
+                return true
+            }
             for path in absent where try observed(path) != nil { return true }
         } catch is CancellationError { throw CancellationError() }
         catch { return true } // Changed/unavailable paths must retain capture retry work.

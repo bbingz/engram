@@ -1,4 +1,362 @@
 # Changelog
+All notable changes to this project will be documented in this file.
+Format based on [Keep a Changelog](https://keepachangelog.com/).
+
+
+## Cutover status audit, collector outage root cause, and four fixes (2026-10-02)
+
+Committed on branch `fix/collector-identity-role-gate-20261002`, cut from local
+`main` `00bb5809` (2 commits ahead of `origin/main` `3859f788`), and proposed
+as one PR that also carries those 2 commits. Nothing in this entry was
+deployed and no host was changed; deployments get their own entry.
+Hosts are named by role: Daily Mac (collector), HQ (index + receiver/Web), M1
+(replica).
+
+**What was found (read-only audits of HQ and, with owner authorization, the
+Daily Mac over SSH).**
+
+- The collector/central-index cutover is partial. HQ runs two stacks side by
+  side: the r18 index-role Service plus receiver/Web, and the older local-role
+  Service plus the older plain-HTTP hub. HQ has no collector. Only one machine
+  (Daily) has ever fed the central index.
+- The central index received nothing after 2026-09-22 02:21 UTC. Cause,
+  verified on Daily: a macOS update reboot renumbered the data volume's
+  `st_dev`; the collector's stored root identity includes `st_dev`
+  (`CollectorPOSIXRootEnumerator.swift`), all 16 roots failed
+  `rootIdentityChanged`, and the runtime re-suspended them every turn without
+  rebinding, exiting or logging. The process stayed alive and both replicas
+  stayed reachable. About 490 source files changed on Daily since then and
+  are uncaptured; they are still on disk.
+- Pre-deploy check on Daily: the volume's FSEvents database UUID equals the
+  stored event epoch, so a fixed build is expected to resume and not take the
+  separate `reconciliationRequired` exit path for an epoch mismatch. Not
+  checked: whether fseventsd still retains history back to the stored cursors.
+  An older exit-70 restart churn (about 20k identical `runtime failed` stderr
+  lines, all before the current process started) is expected to return after
+  deployment; its cause is inferred, not verified.
+- HQ's own Claude Code and Codex sessions are not in the central index: no HQ
+  collector, and those sources are disabled for the index-role scan by a
+  hand-set `ENGRAM_DISABLED_SOURCES`. The older local Service on HQ is not
+  stalled; a gap after 2026-09-29 was a period with no new HQ transcripts.
+- P0 measurements on HQ: 4,904 Claude Code and 962 Codex sessions exist
+  byte-identically both in Daily's capture and on HQ's disk, 21 Codex pairs
+  are divergent, none is a prefix of the other, and 3,138 pairs have no HQ
+  bytes left to compare. The 6,140 `origin=local` grok/pi rows in the central
+  DB have no user-state dependents; 210 of the 232 pi rows already duplicate
+  Daily captures.
+- Real-binary end-to-end suite at `00bb5809` (first recorded run; CI always
+  skips it): 33 executed, 32 passed, 1 skipped by design (browser demo), 0
+  failed. Every one of the 19 source formats has at least one executed test.
+  This is a temp-home loopback proof on synthetic fixtures, not real-host
+  acceptance.
+
+**Fixes (each test-first; RED output kept under the session scratchpad).**
+
+1. **Collector survives `st_dev` renumbering.** A stored root binding is
+   rebound in place only when the device is the sole difference (same inode,
+   `st_gen`, known birth time); root revision, stream, epoch and sequence are
+   unchanged. Bootstrap, Gemini/Kimi registry and Cursor-modern/VSCode
+   dependency checks ignore a device-only difference, so unchanged files are
+   not re-captured; capture IDs and manifests keep the device. Roots suspended
+   for an identity change are reported on stderr when the set changes. A real
+   root replacement is still rejected. Residual one-time work after a
+   renumbering: one legacy Cursor state-DB re-capture, a re-dirty per
+   Cursor-modern session on its first event, in-flight reservations. Design:
+   `docs/superpowers/specs/2026-10-02-collector-volume-identity-design.md`.
+2. **Legacy host scan runs only in the `local` role.** In `index`,
+   `collector`, `replica` and invalid-settings roles the initial scan,
+   periodic `indexRecentSessions` and the Archive V2 backlog drainer get no
+   adapters regardless of `ENGRAM_DISABLED_SOURCES`, so an index host cannot
+   store a local-origin copy of a session it also ingests through capture.
+   The disabled scan is logged once (error level with the failed check for
+   invalid settings). Behavior notes: a gated startup leaves the usage-parser
+   backfill version pending; the Service repairs an owner-owned regular
+   settings file to 0600 before reading the role, so a local host with a 0644
+   file keeps scanning, while symlinked, hard-linked, oversized or unparsable
+   settings fail closed (previously a launchd-started Service scanned in those
+   cases). Existing `origin=local` rows are left untouched. Deploying this to
+   the HQ index Service stops its grok/pi scan, so the HQ collector must be
+   capturing those sources first. Design:
+   `docs/superpowers/specs/2026-10-02-hq-local-collector-cutover-design.md` §2.
+3. **Codex periodic rescan is mtime-based.** The periodic index/capture cycle
+   selected Codex rollouts only from today's and yesterday's `YYYY/MM/DD`
+   start-date directories, so a rollout resumed later was not re-indexed or
+   re-captured until a Service restart (17 rollouts, about 530 MB, were behind
+   on HQ). It now uses `CodexAdapter(modifiedSince:)` over the sessions root
+   with the same 2-day cutoff as other sources; `recentCodexAdapters` is
+   removed. Transitional effect on hosts with exact archive enabled: rollouts
+   last captured by the old periodic path and still inside the window report
+   a capture conflict each cycle until they change or age out, because the
+   recorded replay path now matches the startup sweep's. Rollouts already
+   behind and older than the window still need one restart or full sweep.
+4. **TypeScript reference red left by the 19-source wave.** The
+   `list_sessions`/`search` schema tests now expect `pi` and `grok`, and
+   `scripts/gen-adapter-parity-fixtures.ts` excludes the Swift-only pi/grok
+   sources from `SupportedFixtureSource`. Both failed on `00bb5809` before
+   this change and would have failed CI after a push.
+
+**Docs.** Design spec, plan and retirement checklist carry dated
+current-status headers (PR #446 merged, Web is reader plus editor-gated
+writes, 19 sources / 17 collector root formats, real-host columns still
+UNVERIFIED). README says 16 active sources and gains a runtime-role section.
+`docs/TODO.md`, `docs/roadmap.md` and `docs/followups.md` list the open
+cutover work and owner decisions. `docs/invariants.md` gains "Web Reader and
+Editor Authority", "Legacy Host Scan Runs Only in the Local Role" and
+"Collector Root Binding Survives Device Renumbering Only". New draft design:
+HQ-local collector cutover (runbook R1-R10; its 12 decisions were delegated by
+the owner and are recorded in its §8). `CLAUDE.md`, `AGENTS.md` and
+`macos/AGENTS.md` now describe the runtime roles, the headless collector and
+remote-server targets, and that the Web reader/editor lives in
+`EngramRemoteServer`.
+
+**Verification.**
+
+- Integrated tree (three Swift fixes together, before the review follow-ups):
+  EngramCollectorCore 686/686; EngramServiceCore 1585 total, 0 failed, 57
+  skipped; EngramMCPTests 270/270; EngramRemoteServerCore 506/506; Engram app
+  unit tests 3196 total, 1 failed, 1 skipped; real-binary suite 33 executed,
+  0 failed, 1 skipped; lint, invariants ledger, xcodeproj drift, knip pass.
+  The one app failure is
+  `EngramServiceLauncherTests.testHealthMonitorDoesNotRestartDuringStartupGrace`,
+  a timing flake that also occurs on unmodified HEAD (2 of 60 over five class
+  runs).
+- After the review follow-ups to the role gate: EngramServiceCore 1586 total,
+  0 failed, 57 skipped; `AppSearchServiceCutoverScanTests` and
+  `SettingsHonestyTests` 70/70.
+- Final tree, re-run by the lead: `npm run lint` exit 0; `npm test` 2015
+  passed, 49 skipped, 0 failed; `npm run typecheck:test` exit 0;
+  `scripts/check-invariants-ledger.sh` ok.
+- Independent read-only review of the three Swift fixes: no blocker; its two
+  should-fix items (usage-parser marker, settings repair order) and the log
+  wording/sanitizing notes are fixed; the remaining notes are recorded above.
+
+Not run: EngramUITests; Release/packaged binaries; a real mount renumbering;
+EngramCollectorCore, EngramCoreTests and the real-binary suite after the
+role-gate follow-ups (those touched only `EngramServiceRunner.swift` and
+Service tests); any check on M1; CI (nothing pushed).
+
+Next, authorized by the owner on 2026-10-02: merge after required CI, then
+package and deploy the fixed collector to Daily. Deferred: the HQ-local
+cutover (needs P2 duplicate quarantine, P3 install tooling, credentials and
+root steps); the older HQ Service is not restarted for the Codex backlog.
+
+## Source-catalog wave closeout (2026-09-22)
+
+Landed on local `main`. Not pushed. Review of the 19-source wave found two
+doc mismatches and no product-parser defect.
+
+- `docs/session-formats/grok.md` and `grok.zh.md` now describe
+  `~/.grok/sessions/<percent-encoded-cwd>/<session-id>/`. `/` encodes as `%2F`.
+- `CLAUDE.md` keeps the substring `Antigravity CLI brain` on one line.
+  Wrapping it broke `testCascadeAdapterDocsDoNotClaimDisabledLiveSyncMeansZeroIngest`.
+
+Verification on this checkout:
+
+- `vitest` `bootstrap-adapters`, `project-move/sources`, `xcodeproj-drift-gate`,
+  `ci-workflow`, `mcp-tools`: 74 passed, 1 skipped.
+- `EngramCoreTests` `GrokAdapterTests`, `ImplementationDigestExtractorTests`,
+  `SessionSourcesTests`: 57 tests, 0 failures, `TEST SUCCEEDED`.
+- `EngramTests` catalog/colors/freshness/cutover scan: 86 tests, 1 failure
+  (the wrapped CLAUDE.md phrase). After the one-line fix, the cascade doc
+  test passed (`xcodebuild` exit 0) and `EngramServiceCoreTests` parent-unlink
+  repros executed 3 tests, 0 failures, `TEST SUCCEEDED`.
+
+Not run: full Swift schemes, HQ/live SLA probes. Not pushed.
+
+## Xcode project drift check no longer rewrites macos/ (2026-09-22)
+
+Uncommitted. `scripts/check-xcodeproj-drift.sh` checks the pinned XcodeGen
+version, copies `macos/` to a temp directory, links repo-root `tests/`
+and `test-fixtures/` beside that copy, and runs `xcodegen generate` only
+there. A match with the working tree exits 0 even when
+`project.pbxproj` is unstaged versus HEAD. Content that differs, including
+a generated file present on only one side, still fails, and the temp tree
+is deleted rather than copied back. The shared project was regenerated with
+pinned XcodeGen 2.45.4 so `project.pbxproj` matches that run.
+
+Independent re-run: `vitest` `xcodeproj-drift-gate.test.ts` and
+`ci-workflow.test.ts`, 51 passed, 1 skipped (the live-repo pass stays
+skipped while this checkout's `project.pbxproj` is dirty).
+
+## Action-date formatter follows an in-process timezone change (2026-09-22)
+
+Uncommitted. `ImplementationDigestExtractor.dateKey` now sets
+`localDayFormatter.timeZone = TimeZone.autoupdatingCurrent` immediately
+before each `string(from:)`. The static formatter is unchanged, and
+`dateKey` stays private. `2026-06-23T16:30:00Z` is `2026-06-23` in UTC
+and `2026-06-24` in `Asia/Shanghai`.
+
+Regression: `ImplementationDigestExtractorTests.testActionDateFollowsInProcessTimeZoneChange_repro`
+goes through `extract` and restores `TZ` / `NSTimeZone.default`. Cursor
+reported the class at 10 tests passed. Independent re-run of that one
+test exited 0; the wrapper log did not retain the `TEST SUCCEEDED` line.
+
+## Dead window chrome removed and package description corrected (2026-09-22)
+
+Uncommitted. No commit, no push.
+
+- **TOPBAR-DEAD.** Deleted unused `TopBarView.swift` and `TierBar.swift`.
+  Nothing in the app called them. `AppSearchServiceCutoverScanTests` no
+  longer reads the deleted file. MainWindowView still must not own Resume;
+  `TranscriptToolbar` still owns the session resume action. `xcodegen
+  generate` dropped the two files from the generated project. Cursor
+  reported `AppSearchServiceCutoverScanTests` `TEST SUCCEEDED`.
+- **PKG-MCP-DESC.** `package.json` description no longer calls the product
+  an MCP server. It now says the shipped runtime is the native Swift app
+  (`EngramService` / `EngramMCP`) and `src/` TypeScript is reference
+  tooling. Version and scripts unchanged.
+- **SETTINGS-STAGE3 / LOGIN-13 / PARITY-WATCHER** (same dirty tree).
+  Settings caption no longer says "during Stage 3". `LaunchAgent.setLegacy`
+  and the macOS 13 branch are gone; login uses `SMAppService` only.
+  Adapter-parity `sourceFiles` no longer lists deleted `src/core/watcher.ts`.
+
+## Grok project-dir encoding and skipped Pi grouping (2026-09-22)
+
+Uncommitted follow-up after the parent-unlink wave. No commit, no push.
+PI-GROUPED was not implemented: this repo has no `--cwd--` Pi layout.
+`PiAdapter` enumerates `~/.pi/agent/sessions/**/*.jsonl`, and `.pi` stays
+`encodeProjectDir: nil`.
+
+**GROK-CWD-ENCODE.** `SessionSources.encodeGrok` and TS `encodeGrok` now
+percent-encode every UTF-8 byte outside ASCII `A-Za-z0-9-._~` with
+uppercase hex. `/Users/test/project` stays `%2FUsers%2Ftest%2Fproject`.
+`/Users/user/Documents/project-名前` becomes
+`%2FUsers%2Fuser%2FDocuments%2Fproject-%E5%90%8D%E5%89%8D`.
+`GrokAdapter.decodedProjectDirectory` is still
+`removingPercentEncoding` only. No BLAKE3, no 255-byte slug, no `.cwd`
+rewrite.
+
+**FULL-REVIEW-HISTORICAL.** `docs/full-review-report.md` has a HISTORICAL
+banner and no longer cites `index.ts:693`, `index.ts:781-820`, or
+`daemon.ts:161-172`. `.gitignore` line 68 ignores that file, so the
+banner is local-only and will not ride a commit.
+
+Watchdog re-run: `npm test -- tests/core/project-move/sources.test.ts`
+20 passed; EngramCoreTests
+`testRootsIncludePiFlatAndGrokPercentEncodedProjectDir_repro` 1 test,
+`TEST SUCCEEDED`. Cursor Goal paused. No fourth item started.
+
+## Sticky manual unlink and TS pi/grok reference roots (PARENT-UNLINK / TS-MOVE-19 / TS-BOOTSTRAP-15) (2026-09-22)
+
+Uncommitted follow-up on local `main`, on top of the 2026-09-21 UNLOCK-19 /
+GROK-SUMMARY / MOVE-19 / FRESHNESS-ISO diffs. No commit, no push, no PR.
+LOGIN-13, TOPBAR-DEAD, and inventory were not started.
+
+1. **PARENT-UNLINK.** `applyClearParentSession` nulls `parent_session_id`,
+   `suggested_parent_id`, `suggestion_status`, and `suggestion_candidates`,
+   sets `link_source='manual'`, and forces `tier='skip'` only for
+   `subagent` / `dispatched`. `applySetParentSession` still does not rewrite
+   tier. Suggested-parent backfill already skips `link_source='manual'` and
+   was not changed.
+2. **TS-MOVE-19.** `src/core/project-move/sources.ts` adds flat `pi`
+   (`~/.pi/agent/sessions`) and percent-encoded `grok`
+   (`~/.grok/sessions`, `/` → `%2F`). kimi / qwen / commandcode encoders
+   stay Swift-only.
+3. **TS-BOOTSTRAP-15.** No `src/adapters/pi.ts` or `grok.ts`.
+   `SOURCE_NAMES` includes both; `getAdapter` returns undefined;
+   `createAdapters()` stays 15.
+
+Independent re-run 2026-09-22:
+
+- vitest `tests/core/project-move/sources.test.ts`,
+  `tests/core/bootstrap-adapters.test.ts`, `tests/docs/mcp-tools.test.ts`:
+  23/23
+- `./node_modules/.bin/biome check` on
+  `src/core/project-move/sources.ts`, `src/adapters/types.ts`,
+  `tests/core/project-move/sources.test.ts`,
+  `tests/core/bootstrap-adapters.test.ts`: clean
+- `xcodebuild` EngramServiceCore
+  `testClearParentDropsSuggestionFieldsAndKeepsSkipTier_repro`: 1 test,
+  0 failures, `TEST SUCCEEDED`
+
+Cursor Goal paused. No fourth item named.
+
+## App source catalog unlocked to 19 (UNLOCK-19 / GROK-SUMMARY / MOVE-19 / FRESHNESS-ISO) (2026-09-21)
+
+Uncommitted product work on local `main` (ahead of `origin/main` by the
+existing docs hygiene commit). Cursor implemented four review findings
+after a lead interrupt stopped a 1-day inventory Goal. No commit, no
+push, no PR, no HQ deploy.
+
+1. **UNLOCK-19.** `SourceCatalog.all` is 19 entries including `pi`
+   (`~/.pi/agent/sessions`) and `grok` (`~/.grok/sessions`).
+   `SourceColors` names both (hex `#4A6D8C` / `#7A5C2E`). Onboarding
+   `scanSources()` lists both. `SOURCE_NAMES` in `src/adapters/types.ts`
+   appends both. Docs: README 16+3 table, CLAUDE/AGENTS 19 adapters,
+   mcp-tools enum, PRIVACY paths, `support-matrix.yml` plus
+   `docs/session-formats/{pi,grok}{,.zh}.md`. Indexed pi/grok stay
+   catalog-detected, not ghost-appended.
+2. **GROK-SUMMARY.** `GrokAdapter.primaryTranscriptURL` returns JSONL
+   only. Summary-only directories parse metadata from `summary.json`
+   without reading it as JSONL (`malformedJSON`). Compaction-missing
+   segments stay `malformedJSON`. Archive/collector jsonl contracts
+   untouched.
+3. **MOVE-19.** `SourceId` + `SessionSources.roots()` add flat `pi` and
+   percent-encoded `grok` project dirs (`/Users/a` → `%2FUsers%2Fa`).
+4. **FRESHNESS-ISO.** `SourceIndexFreshness` uses
+   `EngramTimestampParser` (ISO8601 + SQLite). SQLite-format tests kept.
+
+Independent re-run 2026-09-21:
+
+- `tests/docs/mcp-tools.test.ts` 2/2
+- `./node_modules/.bin/biome check src/adapters/types.ts` clean
+  (`npx biome` is not a runnable bin here)
+- `xcodebuild` EngramTests SourceCatalog/SourceColors/SourcePulseUsageFormatting:
+  31 tests, 0 failures, `TEST SUCCEEDED`
+- `xcodebuild` EngramCoreTests GrokAdapterTests/SessionSourcesTests:
+  47 tests, 0 failures, `TEST SUCCEEDED`
+
+Left out of this wave (intentional): LOGIN-13, TOPBAR-DEAD, TS
+`pi.ts`/`grok.ts`, adapter-parity 15, TS `createAdapters()` 15, TS
+`project-move/sources.ts` still 12 ids, DATE-PARSE-DUP. Cursor Goal
+paused; next item not started.
+
+## HQ Web r18 activated from merged PR #446 (2026-09-20)
+
+User authorized HQ deploy after #446 merged to `main` as `3859f788`
+(same tree as collector `91f7fce2` / `d11894c3`). Built and verified
+packages `web-parity-20260913-r18` from the collector worktree, then
+activated both LaunchAgents. No Docker, no `ANALYZE`, no skip-tier
+promotion, no public release.
+
+- **service-index** `com.engram.service-index` PID 22930:
+  package `service-index-web-parity-20260913-r18`. Launcher SHA256
+  `40c33aa4…a754de` (unchanged r9–r18). Loaded
+  EngramServiceCore `e2548abd…28fcda` (was r17 `369f3ddd…5d83d`) and
+  EngramCoreWrite `61c6c421…572a73`. Rollback:
+  `state/service-index/persistent/web-parity-20260913-r18-job-before.plist`
+  (r17 job).
+- **remote-server** `com.engram.capture-core.receiver` PID 23443:
+  package `remote-server-web-parity-20260913-r18`, binary
+  `8c351ad1…430cb3` (was r5 `704a0c34…cea1da`). Rollback:
+  `state/remote-server/persistent/web-parity-20260913-r18-job-before.plist`
+  (r5 job). Unauthenticated overview 403; `/web/` 200.
+- Startup created `idx_sessions_activity_id` (`CREATE INDEX IF NOT
+  EXISTS`) on the live 9.8G service-index DB
+  (`hq/state/service-index/database/index.sqlite`). Confirmed present
+  after activate. No `ANALYZE`. Rolling back the binary does not drop
+  the index.
+
+Live probes on `https://macmini-hq.tail1cb16.ts.net:8443` (viewer
+cookie, no secrets logged):
+
+| Endpoint | Result |
+|---|---|
+| `GET /web/api/overview` omitted limit | 200, 0.072s, 2 streams (was 503 / 2.85s at limit 50) |
+| `GET /web/api/sessions?query=测试` | 200, 0.020s, 0 items, `query_too_short` |
+| `GET /web/api/sessions?query=Review` | 200, 0.970s, 50 items |
+| `GET /web/api/search?query=测试` | 200, 0.583s, 10 items (was 5–6s unbounded LIKE) |
+| `GET /web/api/file-activity?agents=all` | 200, 0.914s, 100 items |
+| `/web/app.js` | contains `Parsed (includes skip)` and `Indexed for search` |
+
+## Local main fast-forward and document sync (2026-09-20)
+
+Local `main` fast-forwarded `625ecc97` → `origin/main` `3859f788`
+(#446). Hygiene notes that never rode the collector PR (disk reclaim,
+`.gitignore` leftovers) land here. Grok session dumps stay untracked;
+reusable `.grok/workflows/*.rhai` are tracked. Dispatch plan
+`docs/superpowers/plans/2026-09-14-hq-web-residuals.md` marked landed.
+No product rebuild in this commit.
 
 ## CI gates for collector PR #446 (2026-09-16)
 
@@ -131,6 +489,75 @@ Full schemes 2026-09-15 (`/tmp/engram-review-residuals-dd`):
 default-limit change was `testOverviewOrdersMachineThenInstance` (three
 seeded streams vs omitted limit 2). That test now requests `limit: 3`.
 No live HQ timing claimed.
+
+## Cursor HQ-web residual review (2026-09-15)
+
+Reviewed the collector-worktree diff against
+`docs/superpowers/plans/2026-09-14-hq-web-residuals.md`. First pass
+CHANGES_REQUESTED: shared `#query` placeholder claimed "3+ characters;
+1–2 belong on Search", which contradicts bounded 1–2 character Search.
+Cursor reverted it to `Keywords` and restored `sessionFilter` indent.
+Independent re-run: vitest `collector-web-ui.test.ts` 176/176; focused
+Swift `_repro` tests succeeded. Later mixed-query and CI-gate work
+landed in #446; HQ activation is the 2026-09-20 r18 entry.
+
+## Next-backlog workflow and Cursor dispatch (2026-09-14)
+
+Ran project workflow `engram-next-backlog` (four read-only historians,
+then one planner). Ordered the six HQ Web residual tasks and dispatched
+Herdr Cursor pane `wH:p2`. Brief:
+`docs/superpowers/plans/2026-09-14-hq-web-residuals.md`. Closed by
+#446 and r18.
+
+## Fast-forward main and remaining disk hygiene (2026-09-14)
+
+Local `main` fast-forwarded `33b6f8c9` → `625ecc97` (`origin/main`, 17
+commits including PRs #441–#445 / build 1569). Hygiene-only local edits
+to `CHANGELOG.md`, `MEMO.md`, and `.gitignore` sat uncommitted until
+the 2026-09-20 document sync.
+
+Removed three regenerable MingTang Cargo debug trees
+(`mingtang/backend/target` 39G, `.worktrees/settings-ia-reorg/backend/target`
+5.3G, `mingtang-review-main/backend/target` 17G logical). Left registered
+`/private/tmp/claude-501/...` MingTang agent worktrees untouched. Deleted
+9,070 pre-2026 iTerm2 session logs in iCloud Drive
+(`Documents/iTerm2 log`, 12.24G); kept all 2026 logs. Orca
+`.pr-followup-worktrees` and `~/.grok/worktrees/code-orca` were already
+gone. Data volume available space moved from 179Gi (91%) to 252Gi (87%),
+about 72Gi. No product build, test, commit, push, deploy, Docker, or
+`~/.engram` change at that time.
+
+## Follow-on disk hygiene: Codex standalones and CCTV February logs (2026-09-14)
+
+Deleted 47 old Codex standalone installs under
+`~/.codex/packages/standalone/releases/` (13G down to 605M). Kept
+`0.155.0-alpha.3` (`current`) and `0.155.0-alpha.2` (still mapped by
+live PIDs). Deleted 31 rotated February 2026 CCTV logs in
+`/Users/bing/-Code-/CCTV_Admin/data/logs/*.2026-02-*` (~12G); live
+`access.log`/`error.log` remain. Data volume available space moved from
+120Gi (94%) to 145Gi (93%), about 25Gi.
+
+## Workspace disk hygiene (2026-09-14)
+
+Reclaimed about 80Gi of extra occupancy on HQ. The checkout had grown to
+82G, almost all untracked test residue in
+`.worktrees/collector-server-web-20260905/output` (78G of xcresult
+bundles, system log archives, a 9.1G isolated `test-home`, and a 1.3G
+`overview-benchmark.sqlite` copy) plus leftover
+`.engram-runtime-test-*`, `.engram-publication-test-*`, and
+`.engram-demo-test-home.*` directories. Tracked helper scripts
+`output/web-parity-20260913/activate-web-parity-role.py` and
+`build-web-parity-packages.py` were restored from git after the
+directory wipe.
+
+Also removed regenerable caches (`macos/build`, `coverage`, `dist`,
+`.playwright-cli`) and six merged/clean worktrees whose HEADs were
+already in `origin/main`. Deleting the files did not change `df` until
+the local Time Machine snapshot
+`com.apple.TimeMachine.2026-09-14-124730.local` was removed; after that,
+available space moved from 54Gi (98%) to 134Gi (93%). `.gitignore` now
+ignores `/output/`, isolated test homes, `.playwright-cli/`, and sqlite
+shm/wal sidecars.
 
 ## `agents=all` / `agents=only` at HQ scale: pin the visible-session driver (2026-09-14, r15–r17)
 

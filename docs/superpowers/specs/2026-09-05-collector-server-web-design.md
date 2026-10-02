@@ -1,4 +1,33 @@
-# Design Doc: lightweight collectors, central indexing, and a read-only Web client
+# Design Doc: lightweight collectors, central indexing, and an authenticated Web client
+
+## Current status (2026-10-02)
+
+This block is the current status. The dated checkpoint bullets and paragraphs
+below it, including those at the start of the Problem section, are retained as
+history; their "draft/open/unmerged PR #446", "pending CI" and "W7 remains
+separately authorized" wording no longer describes the repository.
+
+- PR #446 is merged into `main` as merge commit `3859f788` (2026-09-17 01:24
+  +0800, 2026-09-16 UTC). Its tree equals commit `91f7fce2`.
+- HQ has run the r18 index-role Service and RemoteServer receiver/Web packages
+  since 2026-09-20 (`CHANGELOG.md`, "HQ Web r18 activated from merged PR #446").
+  The packages record source revision `91f7fce2` built from a dirty worktree, so
+  byte equality with the merged tree is unverified.
+- The Daily Mac W7 cutover executed on 2026-09-12 (see the retirement checklist).
+  No HQ-local or M1-local collector is recorded; a 2026-10-02 read-only HQ audit
+  found no collector process, job or binary on HQ.
+- Scope change: Web is no longer read-only. The owner included legacy Web writes
+  on 2026-09-13 (`docs/superpowers/plans/2026-09-13-web-native-parity.md:30`).
+  Goal 4, the non-goals and section 5 below are amended accordingly.
+- Source counts: `SourceName` has 19 cases. The collector root allowlist accepts
+  17 root formats; minimax and lobsterai are admitted only as derived sources of
+  a default-format Claude Code root. The "Coverage" row under Current state is
+  the 2026-09-05 baseline.
+- Open work (alias reconciliation, old-receipt bootstrap, operator epoch command,
+  collector CPU target, HQ-local/M1-local coverage, retirement decisions) is
+  tracked in `docs/TODO.md`, `docs/roadmap.md` and `docs/followups.md`.
+
+## Historical status checkpoints (from 2026-09-05)
 
 - **Status**: Accepted for staged implementation. Pushed `f683ff71` remains in draft/open/unmerged PR #446, but Tests `34011185057` failed Swift unit/UI smoke compilation on Xcode 16.4 in the same readiness test-helper optional-array inference; Node/scripts/Remote/package passed. Dependency review passed and CodeQL remains separate. A one-line explicit array type correction passed independent SPEC PASS / QUALITY APPROVED; all 38 test bodies/default values and production/workflow settings stay unchanged. Complete corrected local Core passed 1,681/one existing performance skip/zero failures, producer 97659 exit 0 at 12:39:10 CST. Final five-path correction review/commit/push and new correction-head CI remain pending; local Xcode-beta cannot prove Xcode 16.4 compatibility. The correction commit excludes all five locally integrated A5a/N3-A files. Those feature files passed donor implementation gates and central Remote 372, Service 875 (one existing skip), App 1,175, MCP 270 and Collector 169, zero failures and producer exits 0; App also reran Core 1,681 (one existing skip). Scripts 207/207 and typecheck/safety/invariants pass, but their final integration/commit/CI remain separate. T3b FTS consumer and N3-B native events pause at read-only proposals while CI is repaired. Runtime wiring, upload queues, real read/FTS consumers, Web UI and W6 remain incomplete; no production or full-transcript/browser acceptance is claimed. W7 remains separately authorized.
 - **Owner**: Engram maintainers; Codex coordinates bounded implementation workers
@@ -169,6 +198,8 @@ Goals:
    work, through the existing service writer boundary.
 4. Provide authenticated, read-only Web overview, search, details, and complete
    pageable transcripts through the existing native RemoteServer listener.
+   (Amended 2026-10-02: since the 2026-09-13 owner scope change the same Web
+   surface also carries editor-gated writes; see section 5.)
 5. Package and operate headless binaries with explicit ownership and rollback.
 6. Prove per-source coverage before retiring the old local indexer.
 
@@ -181,7 +212,10 @@ Non-goals:
   remote MCP tools by implication. New capture ACKs never authorize reclamation.
 - No browser write APIs, terminal/resume execution, arbitrary IPC proxy, or
   local App redesign. The existing App remains an optional local reader while
-  Web becomes the central-corpus reader.
+  Web becomes the central-corpus reader. (Amended 2026-10-02: "no browser write
+  APIs" was withdrawn when the owner included legacy Web writes on 2026-09-13,
+  `docs/superpowers/plans/2026-09-13-web-native-parity.md:30`. Terminal/resume
+  execution and an arbitrary IPC proxy remain non-goals.)
 - No production installation, credentials, network changes, merge, or release
   under this source-implementation tranche. Those need a separately confirmed
   target/transaction after the local gates below.
@@ -199,7 +233,7 @@ Anchors below refer to the named baseline; follow symbol names if lines move.
 | Archive completion | `macos/EngramRemoteServer/Core/ArchiveStore.swift:577`, `:703`, `:850` | Unbound manifest storage is accepted, but receipts require a session binding and listing is receipt-based, sorted by digest. |
 | Wire compatibility | `macos/Shared/EngramCore/ArchiveV2/ArchiveCanonicalJSON.swift:14` | Decode/re-encode equality rejects unknown fields; do not silently extend schema-1 canonical manifests. |
 | Privacy | `macos/EngramService/Core/ArchiveV2ServiceCoordinator.swift:1633` | Current eligibility requires trusted generation/index state and a normalized project root. Removing local indexing must replace, not bypass, this proof. |
-| Coverage | `macos/Shared/EngramCore/Adapters/SessionAdapterFactory.swift`; `docs/remote-archive-v2.md`, Supported source boundary | Seventeen registered adapters do not mean seventeen exact replay exporters. Current exact capture is Claude Code/Codex only. |
+| Coverage | `macos/Shared/EngramCore/Adapters/SessionAdapterFactory.swift`; `docs/remote-archive-v2.md`, Supported source boundary | Seventeen registered adapters do not mean seventeen exact replay exporters. Current exact capture is Claude Code/Codex only. (2026-09-05 baseline. As of 2026-10-02: 19 `SourceName` cases; the collector accepts 17 root formats, `macos/EngramCollectorCore/CollectorRuntime.swift` `rootFormat`, with minimax/lobsterai derived from a default Claude Code root. Windsurf capture is hook transcripts only and Antigravity capture is CLI brain transcripts only, a subset of what the local adapters read.) |
 | Live snapshots | `macos/EngramService/Core/RemoteSyncCoordinator.swift`, live publication; `macos/EngramCoreWrite/RemoteSync/RemoteSyncModels.swift` | Legacy live snapshots depend on local FTS and cannot supply the proposed raw-first path. |
 | Network boundary | `macos/project.yml:252`; `macos/EngramRemoteServer/Core/EngramRemoteServerApp.swift`; `macos/Shared/Service/UnixSocketEngramServiceTransport.swift:29` | RemoteServer currently has no DB-core dependency; general IPC transport can attach write capability tokens. |
 
@@ -522,6 +556,26 @@ generation/version change or separately authorized retry policy reopens them.
 
 ### 5. Read-only Web boundary
 
+Amended 2026-10-02 (owner scope change of 2026-09-13,
+`docs/superpowers/plans/2026-09-13-web-native-parity.md:30`): the Web surface is
+an authenticated reader plus editor-gated writes, not read-only. When Web is
+configured, `EngramRemoteServerApp.swift` mounts the auth, read, write and UI
+routes together; there is no separate write toggle. A session can write only
+when it logged in with the optional `ENGRAM_REMOTE_WEB_EDITOR_CREDENTIAL`, which
+must differ from the viewer and server credentials. Write routes additionally
+require exact Host, `X-Engram-Web: 1` and an exact Origin
+(`WebRequestBoundary.swift`). The writes cover project aliases, source
+enablement, parent link/unlink/suggestions, insights, AI summary/title
+generation, AI settings, and project move/archive/undo/batch on the index host
+(`WebWriteRoutes.swift`). The read client still loads no capability token; the
+separate write client (`macos/Shared/Service/EngramServiceWebWriteClient.swift`)
+loads the local service capability token and attaches it only to the Unix-socket
+request. Statements below about a read-only facade, no token loader and safe
+rejection of write routes describe the 2026-09-05 design. The read route table
+is likewise incomplete: `WebReadRoutes.swift` also serves children, timeline,
+facets, stats, settings, search, search status, costs, usage, tool analytics,
+file activity, repos, AI audit/stats, insights and project cwds.
+
 Use the existing native RemoteServer/Hummingbird process. Add an optional Web
 module with a narrow, typed read facade over local Service IPC. RemoteServer
 must not link CoreWrite, open `index.sqlite`, or accept an arbitrary command/body
@@ -552,7 +606,9 @@ links without a safe scheme policy. Unknown/write routes return a safe rejection
 before IPC. Service unavailable returns 503, not an empty successful corpus.
 
 The initial reader is keyword-only. Semantic/hybrid is not advertised unless a
-later explicit capability contract is implemented and tested. Archive-only M1
+later explicit capability contract is implemented and tested. (2026-10-02: the
+current UI offers semantic/hybrid modes only when the service reports them
+available, `WebUIRoutes.swift`; they stay disabled otherwise.) Archive-only M1
 does not pretend to offer a complete secondary searchable Web corpus.
 
 W4 must add a typed read-only IPC continuation contract before W5 starts real
@@ -672,7 +728,8 @@ Parser/parent changes require existing parity gates where applicable.
 Add ledger entries only alongside implemented code/tests for: external service
 ownership, no-index collector, ACK versus index readiness, upload privacy proof,
 generation ordering, and Web read-only authority. A planned assertion is not an
-already enforced invariant.
+already enforced invariant. (2026-10-02: Web authority is recorded as "Web
+Reader and Editor Authority" in `docs/invariants.md`, reflecting editor writes.)
 
 ## Alternatives considered
 

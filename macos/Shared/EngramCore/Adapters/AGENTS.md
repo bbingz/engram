@@ -17,7 +17,7 @@ reads.
 ## WHERE TO LOOK
 | Task | Location | Notes |
 |------|----------|-------|
-| Registered product sources | `SessionAdapterFactory.swift` | `defaultAdapters()` currently registers 17 sources. |
+| Registered product sources | `SessionAdapterFactory.swift` | `defaultAdapters()` currently registers 19 sources. |
 | Source parser | `Sources/*Adapter.swift` | One file per source family where possible. |
 | Parity harness | `AdapterRegistry.swift` | Loads goldens and compares Swift parser results. |
 | Golden fixtures | `../../../../tests/fixtures/adapter-parity/` | `success.expected.json` per provider plus batch-size gate. |

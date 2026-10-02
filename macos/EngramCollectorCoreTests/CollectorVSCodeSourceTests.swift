@@ -47,6 +47,21 @@ final class CollectorVSCodeSourceTests: XCTestCase {
         XCTAssertEqual(try fixtureDescriptors(under: f.base), [])
     }
 
+    // A device-only st_dev renumbering is not a dependency change (design note
+    // docs/superpowers/specs/2026-10-02-collector-volume-identity-design.md, c.4).
+    func testCapturedDependencyProbeIgnoresDeviceRenumbering() throws {
+        let f = try VSCodeFixture(); defer { f.remove() }
+        try f.writePrimary()
+        try f.writeWorkspace(["folder": "file:///project"])
+        let observed = try CollectorVSCodeSource.observe(rootPath: f.root.path,
+            primaryRelative: f.primary, maximumByteCount: 1_048_576)
+        let renumbered = try manifestShiftingDevices(manifestForObserved(observed, root: f.root.path), by: 7)
+        XCTAssertNotEqual(renumbered.generation, observed.generation)
+        XCTAssertFalse(try CollectorVSCodeSource.capturedDependenciesChanged(rootPath: f.root.path, manifest: renumbered))
+        try f.writeWorkspace(["folder": "file:///different"])
+        XCTAssertTrue(try CollectorVSCodeSource.capturedDependenciesChanged(rootPath: f.root.path, manifest: renumbered))
+    }
+
     func testSelectedPrimaryRequiresWorkspaceChatSessionsJsonl() {
         XCTAssertTrue(CollectorVSCodeSource.isSelectedPrimary(
             rootPath: "", components: ["ws", "chatSessions", "native.jsonl"]))
@@ -330,6 +345,22 @@ private func matchesObserved(
     _ observed: (generation: ArchiveSourceGeneration, snapshot: CollectorDependencySnapshot), root: String
 ) throws -> Bool {
     CollectorVSCodeSource.matchesReservedSnapshot(observed.snapshot, manifest: try manifestForObserved(observed, root: root))
+}
+
+/// Returns the manifest as an earlier boot with another st_dev would have recorded it:
+/// every generation `device` is shifted, nothing else changes.
+func manifestShiftingDevices(_ manifest: ArchiveSourceManifest, by delta: Int64) throws -> ArchiveSourceManifest {
+    func shift(_ value: Any) -> Any {
+        if let object = value as? [String: Any] {
+            return Dictionary(uniqueKeysWithValues: object.map { key, nested in
+                (key, key == "device" ? NSNumber(value: (nested as! NSNumber).int64Value + delta) as Any : shift(nested))
+            })
+        }
+        if let array = value as? [Any] { return array.map(shift) }
+        return value
+    }
+    let object = try JSONSerialization.jsonObject(with: ArchiveCanonicalJSON.encode(manifest))
+    return try JSONDecoder().decode(ArchiveSourceManifest.self, from: JSONSerialization.data(withJSONObject: shift(object)))
 }
 
 private func manifestForObserved(

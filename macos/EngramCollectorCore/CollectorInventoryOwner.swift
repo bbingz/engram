@@ -174,8 +174,7 @@ final class CollectorInventoryOwner {
             let binding: CollectorPOSIXRootBinding
             if previous?.configuration == configuration,
                let enrolled = try store.enrolledRoot(configuration: configuration) {
-                binding = enrolled
-                try CollectorPOSIXRootEnumerator.validateRoot(binding: binding)
+                binding = try Self.validateOrRebindRenumberedRoot(store, enrolled)
             } else {
                 // Observe before even registering an unbound path. The stored
                 // identity is never silently replaced for an existing revision.
@@ -189,13 +188,35 @@ final class CollectorInventoryOwner {
                 throw CollectorInventoryError.invalidState
             }
             let key = Data(configuration.rootID.utf8)
-            if activeRoots[key]?.binding.configuration != configuration {
+            if activeRoots[key]?.binding.configuration != configuration
+                || activeRoots[key]?.binding.expectedIdentity != activated.expectedIdentity {
                 activeRoots[key] = (
                     activated,
                     CollectorBootstrapWalker(store: store, enumerator: try CollectorPOSIXRootEnumerator(binding: activated))
                 )
             }
             return activated
+        }
+    }
+
+    /// Validates the stored binding. The only identity change it accepts is a st_dev
+    /// renumbering of the same directory, which it rebinds in place. The root
+    /// revision, stream, epoch and sequence stay unchanged. Every other mismatch still
+    /// throws rootIdentityChanged.
+    /// docs/superpowers/specs/2026-10-02-collector-volume-identity-design.md (c.1, c.3)
+    private static func validateOrRebindRenumberedRoot(
+        _ store: CollectorInventoryStore, _ enrolled: CollectorPOSIXRootBinding
+    ) throws -> CollectorPOSIXRootBinding {
+        do {
+            try CollectorPOSIXRootEnumerator.validateRoot(binding: enrolled)
+            return enrolled
+        } catch CollectorPOSIXEnumerationError.rootIdentityChanged {
+            let observed = try CollectorPOSIXRootEnumerator.observeRoot(configuration: enrolled.configuration)
+            guard observed.expectedIdentity.isDeviceRenumbering(of: enrolled.expectedIdentity) else {
+                throw CollectorPOSIXEnumerationError.rootIdentityChanged
+            }
+            try store.rebindRenumberedRoot(observed, replacing: enrolled.expectedIdentity)
+            return observed
         }
     }
 

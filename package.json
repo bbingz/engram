@@ -1,7 +1,7 @@
 {
   "name": "engram",
   "version": "1.0.5",
-  "description": "MCP Server: 读取多个 AI 编程助手的会话日志，实现跨工具历史上下文共享",
+  "description": "原生 macOS Swift 应用：产品运行时是 EngramService 与 EngramMCP；src/ 下的 TypeScript 只作参考工具。",
   "type": "module",
   "engines": {
     "node": ">=24 <27"
