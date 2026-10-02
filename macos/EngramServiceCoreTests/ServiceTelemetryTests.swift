@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 import Darwin
 import Foundation
+import EngramCoreRead
 import EngramCoreWrite
 @testable import EngramServiceCore
 
@@ -233,6 +234,62 @@ final class ServiceTelemetryTests: XCTestCase {
             return XCTFail(
                 "M2: core index succeeded with later phase failure must clear degraded via recordScanSuccess, got \(status)"
             )
+        }
+    }
+
+    // Independent review B1 of the role gate (no PR number yet); docs/invariants.md
+    // "Legacy Host Scan Runs Only in the Local Role": a gated role's initial scan
+    // has no adapters and parses nothing, so it must leave the usage-parser
+    // version pending for a later return to local. Covers both the default-off
+    // and the exact-archive initial index paths.
+    func testGatedRoleInitialScanLeavesUsageParserBackfillPending_repro() async throws {
+        for exactArchive in [false, true] {
+            for role in [EngramRuntimeRole.local, .index, .collector, .replica, .invalidSettings] {
+                let name = "\(role) exactArchive=\(exactArchive)"
+                let paths = try makeServicePaths()
+                defer { try? FileManager.default.removeItem(at: paths.runtime.deletingLastPathComponent()) }
+                let home = paths.runtime.deletingLastPathComponent().appendingPathComponent("home", isDirectory: true)
+                try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+                let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+                _ = try await gate.performWriteCommand(name: "migrate") { writer in
+                    try writer.migrate()
+                }
+                let pendingBefore = try await gate.performReadCommand(name: "usageParserPending") { writer in
+                    try writer.read { db in try UsageParserBackfillPolicy.needsBackfill(db) }
+                }.value
+                XCTAssertTrue(pendingBefore, name)
+                let coordinator = exactArchive ? ArchiveV2ServiceCoordinator(
+                    settings: ArchiveV2Settings(exactArchiveEnabled: true, remoteConfiguration: nil, configurationError: nil),
+                    writerGate: gate,
+                    remoteReady: false,
+                    configurationError: nil,
+                    operations: ArchiveV2ServiceCoordinatorOperations(
+                        capture: { _, _, _ in ArchiveV2ServiceCaptureSummary(unsupported: 0, unsafe: 0) },
+                        bindingTargets: { _ in [] },
+                        historicalUnknown: { _ in ArchiveV2ServiceUnknownPage(targets: []) },
+                        advancePolicyCursor: { _ in },
+                        snapshot: { _, _ in ArchiveV2ServiceIndexSnapshot(rows: []) },
+                        bindOne: { _, _ in nil },
+                        applyRemotePolicy: { _, _, _ in },
+                        replicate: { _ in ArchiveReplicationCycleResult(cycleError: nil) },
+                        status: {
+                            let zero = ArchiveReplicaStatusCounts(pending: 0, inflight: 0, retry: 0, quarantine: 0, verified: 0)
+                            return ArchiveStatusAggregate(
+                                captured: 0, bound: 0, unbound: 0, unknown: 0, eligible: 0, excluded: 0,
+                                hq: zero, m1: zero, singleVerified: 0, dualVerified: 0, latestReceipts: []
+                            )
+                        },
+                        retry: { _ in ArchiveV2ServiceRetryOutcome(resetRows: 0) }
+                    )
+                ) : nil
+
+                await runBoundedInitialScan(gate: gate, home: home, role: role, archiveV2Coordinator: coordinator)
+
+                let pendingAfter = try await gate.performReadCommand(name: "usageParserPending") { writer in
+                    try writer.read { db in try UsageParserBackfillPolicy.needsBackfill(db) }
+                }.value
+                XCTAssertEqual(pendingAfter, role != .local, name)
+            }
         }
     }
 
@@ -845,7 +902,9 @@ final class ServiceTelemetryTests: XCTestCase {
     private func runBoundedInitialScan(
         gate: ServiceWriterGate,
         home: URL,
-        settingsURL: URL? = nil
+        settingsURL: URL? = nil,
+        role: EngramRuntimeRole = .local,
+        archiveV2Coordinator: ArchiveV2ServiceCoordinator? = nil
     ) async {
         let priorHome = getenv("HOME").map { String(cString: $0) }
         let priorFixedHome = getenv("CFFIXED_USER_HOME").map { String(cString: $0) }
@@ -873,7 +932,10 @@ final class ServiceTelemetryTests: XCTestCase {
         await EngramServiceRunner.runInitialScan(
             gate: gate,
             statusMonitor: ServiceStatusMonitor(),
-            environment: environment,
+            environment: EngramServiceRunner.legacyScanEnvironment(environment, role: role),
+            legacyScanEnabled: role == .local,
+            archiveV2Coordinator: archiveV2Coordinator,
+            archiveV2CaptureEnabled: archiveV2Coordinator != nil,
             tokenLimitsProvider: { [:] },
             testHooks: .init(maxFtsDrainIterations: 0)
         )

@@ -371,6 +371,11 @@ public enum EngramServiceRunner {
                 .appendingPathComponent("index.sqlite")
                 .path
         let settingsURL = engramSettingsURL(environment: environment)
+        // Only the legacy filesystem scan paths (initial scan, periodic loop,
+        // Archive V2 backlog drainer) receive this environment; capture ingest,
+        // source authority, and setSourceEnabled keep reading settings.
+        let runtimeRole = loadRuntimeRole(settingsURL: settingsURL)
+        let scanEnvironment = legacyScanEnvironment(environment, role: runtimeRole)
         let sourceAuthorityEntries = try engramServiceStrictPath(
             after: "--capture-source-authority-file", in: arguments
         ).map { try ServiceCaptureSourceAuthority.load(url: URL(fileURLWithPath: $0)) }
@@ -478,11 +483,11 @@ public enum EngramServiceRunner {
                 }
                 return try await archiveV2Coordinator.runBacklogPass(
                     adapterProvider: {
-                        Self.exactArchiveAdaptersForBacklogPass(environment: environment)
+                        Self.exactArchiveAdaptersForBacklogPass(environment: scanEnvironment)
                     },
                     excludedSnapshotSourcesProvider: {
                         Set(
-                            Self.readDisabledSources(environment: environment)
+                            Self.readDisabledSources(environment: scanEnvironment)
                                 .compactMap(SourceName.init(rawValue:))
                         )
                     }
@@ -533,6 +538,15 @@ public enum EngramServiceRunner {
         // are captured.
         let logRing = ServiceLogRing()
         ServiceLogger.installRing(logRing)
+        // After installRing so the sanitized copy reaches the Observability Logs
+        // tab; the os_log copy is privacy-redacted.
+        if let notice = legacyScanDisabledNotice(role: runtimeRole, settingsURL: settingsURL) {
+            if notice.isError {
+                ServiceLogger.error(notice.message, category: .runner)
+            } else {
+                ServiceLogger.notice(notice.message, category: .runner)
+            }
+        }
         // Finish throwing backend construction before starting owned work.
         // Opt-in remote session offload (default OFF). When enabled, the indexing
         // loop drains the offload/rehydrate queues and reclaims disk via VACUUM.
@@ -541,7 +555,7 @@ public enum EngramServiceRunner {
             ServiceLogger.info("remote offload enabled; wiring into indexing loop", category: .runner)
         }
         // Live ingest builds the same backend even when offload is off. Never
-        // pass this coordinator to runOnce / drainOffload (invariant 16).
+        // pass this coordinator to runOnce / drainOffload.
         let liveSync = try RemoteSyncCoordinator.makeLiveIfEnabled(gate: gate, environment: environment)
         if liveSync != nil {
             ServiceLogger.info("live ingest armed; publish/pull loop only (no offload runOnce)", category: .runner)
@@ -608,7 +622,8 @@ public enum EngramServiceRunner {
                     gate: gate,
                     statusMonitor: statusMonitor,
                     telemetry: telemetry,
-                    environment: environment,
+                    environment: scanEnvironment,
+                    legacyScanEnabled: runtimeRole == .local,
                     archiveV2Coordinator: archiveV2Coordinator,
                     archiveV2CaptureEnabled: await archiveV2Coordinator.captureEnabled,
                     tokenLimitsProvider: { Self.readUsageTokenLimits(environment: environment) },
@@ -629,7 +644,7 @@ public enum EngramServiceRunner {
                     gate: gate,
                     statusMonitor: statusMonitor,
                     telemetry: telemetry,
-                    environment: environment,
+                    environment: scanEnvironment,
                     archiveV2Coordinator: archiveV2Coordinator,
                     tokenLimitsProvider: { Self.readUsageTokenLimits(environment: environment) },
                     remoteSync: remoteSync,
@@ -1912,6 +1927,7 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         statusMonitor: ServiceStatusMonitor,
         telemetry: ServiceTelemetryCollector? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
+        legacyScanEnabled: Bool = true,
         archiveV2Coordinator: ArchiveV2ServiceCoordinator? = nil,
         archiveV2CaptureEnabled: Bool = false,
         tokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits] = { [:] },
@@ -2228,7 +2244,10 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         // Phase 3 — usage collection is cheap, but still gets its own gated
         // command so startup maintenance does not hold the writer gate longer.
         await collectUsageBestEffort(gate: gate, tokenLimitsProvider: tokenLimitsProvider)
-        if usageParserBackfillNeeded && coreIndexSucceeded {
+        // A role-gated scan had no adapters and reparsed nothing, so the version
+        // stays pending for a later return to local. docs/invariants.md
+        // "Legacy Host Scan Runs Only in the Local Role".
+        if usageParserBackfillNeeded && coreIndexSucceeded && legacyScanEnabled {
             let markPhase = await runInitialScanPhase(
                 name: "usageParserBackfillMark",
                 statusMonitor: statusMonitor,
@@ -2718,14 +2737,112 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         writeStdoutLine(text)
     }
 
+    /// The environment the legacy filesystem scan paths read. Only the `local`
+    /// runtime role (including a missing settings file) scans host source
+    /// files, so it gets `environment` unchanged. Every other role (`index`,
+    /// `collector`, `replica`, `invalidSettings`) gets `ENGRAM_DISABLED_SOURCES`
+    /// forced to every source, which leaves those paths with no adapters.
+    /// docs/invariants.md "Legacy Host Scan Runs Only in the Local Role";
+    /// design: docs/superpowers/specs/2026-10-02-hq-local-collector-cutover-design.md §2.
+    static func legacyScanEnvironment(
+        _ environment: [String: String],
+        role: EngramRuntimeRole
+    ) -> [String: String] {
+        guard role != .local else { return environment }
+        var scanEnvironment = environment
+        scanEnvironment["ENGRAM_DISABLED_SOURCES"] = SourceName.allCases.map(\.rawValue).joined(separator: ",")
+        return scanEnvironment
+    }
+
+    /// The service's runtime role. It first does the repairing read the
+    /// service's settings readers always did (`readDisabledSourceConfiguration`,
+    /// `readUsageTokenLimits`), so an owner-owned, single-link regular file
+    /// whose only fault is its mode is set to 0600 and then judged. The App and
+    /// MCP keep calling the non-repairing `RuntimeRoleSettings.load`.
+    static func loadRuntimeRole(settingsURL: URL) -> EngramRuntimeRole {
+        _ = SecureRegularFile.read(
+            atPath: settingsURL.path,
+            maximumBytes: RuntimeRoleSettings.maximumBytes,
+            repairPermissions: true
+        )
+        return RuntimeRoleSettings.load(at: settingsURL)
+    }
+
+    /// The one startup line that says the legacy scan is off, so a gated host
+    /// never stops scanning silently; nil for `local`. Worded without `": "`
+    /// or quotes so `ServiceLogSanitizer` keeps it readable in the log ring.
+    static func legacyScanDisabledNotice(
+        role: EngramRuntimeRole,
+        settingsURL: URL
+    ) -> (isError: Bool, message: String)? {
+        let prefix = "legacy host-file scan disabled for runtimeRole="
+        switch role {
+        case .local:
+            return nil
+        case .index:
+            return (false, prefix + "index; sessions are stored only through capture ingest")
+        case .collector, .replica:
+            let name = role == .collector ? "collector" : "replica"
+            return (false, prefix + name + "; this role keeps no local index")
+        case .invalidSettings:
+            return (true, prefix + "invalidSettings; reason=\(invalidSettingsReason(at: settingsURL))"
+                + "; fix=make settings.json a regular 0600 file owned by this user (no symlink or hard link)"
+                + " in an owner-owned directory, with runtimeRole local, index, collector or replica, then restart EngramService")
+        }
+    }
+
+    /// Names the first check `RuntimeRoleSettings.load` / `SecureRegularFile.read`
+    /// (repairPermissions: false) fails, for the invalidSettings log line.
+    static func invalidSettingsReason(at url: URL) -> String {
+        var info = stat()
+        let parent = url.deletingLastPathComponent().path
+        guard lstat(parent, &info) == 0 else { return "settings directory is not accessible (errno \(errno))" }
+        if (info.st_mode & S_IFMT) == S_IFLNK { return "settings directory is a symlink" }
+        guard (info.st_mode & S_IFMT) == S_IFDIR, info.st_uid == geteuid() else {
+            return "settings directory is not a directory owned by this user"
+        }
+        guard lstat(url.path, &info) == 0 else {
+            return errno == ENOENT ? "settings.json is missing and the settings directory is not readable"
+                : "settings.json is not accessible (errno \(errno))"
+        }
+        if (info.st_mode & S_IFMT) == S_IFLNK { return "settings.json is a symlink" }
+        guard (info.st_mode & S_IFMT) == S_IFREG else { return "settings.json is not a regular file" }
+        guard info.st_uid == geteuid() else { return "settings.json is owned by uid \(info.st_uid), not this user" }
+        guard info.st_nlink == 1 else { return "settings.json has \(info.st_nlink) hard links" }
+        guard info.st_size <= RuntimeRoleSettings.maximumBytes else { return "settings.json is larger than 1 MiB" }
+        let mode = info.st_mode & 0o777
+        guard mode == 0o600 else { return "settings.json mode is 0\(String(mode, radix: 8)), expected 0600" }
+        guard let data = SecureRegularFile.read(
+            atPath: url.path, maximumBytes: RuntimeRoleSettings.maximumBytes, repairPermissions: false
+        ) else { return "settings.json could not be read" }
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return "settings.json is not a JSON object"
+        }
+        let changed = "settings.json changed after the role was read"
+        guard let rawValue = object["runtimeRole"] else { return changed }
+        guard let value = rawValue as? String else { return "runtimeRole is not a string" }
+        guard !["local", "index", "collector", "replica"].contains(value) else { return changed }
+        // Only a bounded [A-Za-z0-9_-] token reaches the log line, so the value
+        // cannot forge a line or trip ServiceLogSanitizer.
+        let token = String(value.unicodeScalars.prefix(24).map { scalar in
+            scalar.isASCII && (CharacterSet.alphanumerics.contains(scalar) || scalar == "_" || scalar == "-")
+                ? Character(scalar) : "_"
+        })
+        return "runtimeRole value \(token) is not local, index, collector or replica"
+    }
+
     /// Reads the per-source ingest opt-out set (feature #2 slice B). A disabled
     /// source is dropped from the indexing adapter list at scan time, so the
     /// service stops ingesting it; its existing sessions are hidden separately by
     /// `setSourceEnabled`. An env override (`ENGRAM_DISABLED_SOURCES`,
-    /// comma-separated source ids) is honored for tests/dev; otherwise the value
-    /// comes from the `disabledSources` JSON string array in
+    /// comma-separated source ids) replaces the settings list; it is a
+    /// tests/dev lever and is not what keeps non-local roles from scanning.
+    /// Otherwise the value comes from the `disabledSources` JSON string array in
     /// `~/.engram/settings.json`. Dormant archived sources default off until
-    /// the settings file has been rewritten with the migration marker.
+    /// the settings file has been rewritten with the migration marker. The
+    /// runner's scan paths read it through `legacyScanEnvironment`, so in any
+    /// role other than `local` they see every source disabled whatever the
+    /// variable or settings say; capture policy never reads this function.
     static func readDisabledSources(
         environment: [String: String],
         settingsURL: URL? = nil

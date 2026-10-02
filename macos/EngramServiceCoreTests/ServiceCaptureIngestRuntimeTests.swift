@@ -414,6 +414,116 @@ final class ServiceCaptureIngestRuntimeTests: XCTestCase {
         if let failure { throw failure }
     }
 
+    // docs/superpowers/specs/2026-10-02-hq-local-collector-cutover-design.md §2
+    // (P1 role gate; no PR number yet): an index-role service started WITHOUT
+    // the ENGRAM_DISABLED_SOURCES lever must not legacy-scan a host session
+    // file, so the capture of the same bytes is its only `sessions` row.
+    func testIndexRoleLegacyScanNeverStoresHostSessionTwice_repro() async throws {
+        let processEnvironment = ProcessInfo.processInfo.environment
+        let expectedHome = try XCTUnwrap(processEnvironment["ENGRAM_DEMO_EXPECTED_HOME"],
+            "launch this integration with an explicitly isolated process home")
+        let checkout = root.deletingLastPathComponent().path
+        guard processEnvironment["CFFIXED_USER_HOME"] == expectedHome,
+              FileManager.default.homeDirectoryForCurrentUser.path == expectedHome,
+              expectedHome.hasPrefix(checkout + "/.engram-demo-test-home.") else {
+            return XCTFail("Runner integration requires the authorized checkout-local isolated home")
+        }
+        try await startUnavailableReplica()
+        var document = settings()
+        document["remoteOffloadEnabled"] = false
+        document["livePublishEnabled"] = false
+        document["liveIngestEnabled"] = false
+        document["titleProvider"] = "native"
+        try writeSettings(document)
+        let nativeID = "host-double-store"
+        // The host's own native file, under the runner's temporary home.
+        let hostProject = root.appendingPathComponent(".claude/projects/-synthetic-runtime-project", isDirectory: true)
+        try FileManager.default.createDirectory(at: hostProject, withIntermediateDirectories: true)
+        try transcript(nativeID: nativeID).write(to: hostProject.appendingPathComponent("\(nativeID).jsonl"))
+        // A collector capture of the same bytes, replayed by the real runtime.
+        _ = try seedPending(sequence: 1, nativeID: nativeID)
+        gate = nil
+        writer = nil
+
+        let socketRoot = URL(fileURLWithPath: "/tmp/eg-cir-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: socketRoot, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: socketRoot) }
+        let socket = socketRoot.appendingPathComponent("service.sock").path
+        let path = databasePath!
+        let environment = [
+            "HOME": root.path,
+            "CFFIXED_USER_HOME": root.path,
+            "XCTestConfigurationFilePath": "/tmp/synthetic-capture-runner.xctestconfiguration",
+            "ENGRAM_SETTINGS_PATH": settingsURL.path,
+            "ENGRAM_RUNTIME_AI_SECRETS_PATH": root.appendingPathComponent("absent-ai-secrets.json").path,
+            "ENGRAM_REMOTE_OFFLOAD_ENABLED": "false",
+            "ENGRAM_LIVE_PUBLISH_ENABLED": "false",
+            "ENGRAM_LIVE_INGEST_ENABLED": "false",
+            // Deliberately no ENGRAM_DISABLED_SOURCES: the role alone must gate the scan.
+            "ENGRAM_USAGE_TOKEN_LIMITS": "{}",
+        ]
+        let runner = Task {
+            try await EngramServiceRunner.run(arguments: ["--service-socket", socket, "--database-path", path],
+                environment: environment, testHooks: .init(optionalAIMaintenance: { _ in },
+                    captureIngestCredentialLoader: { _ in "synthetic-runtime-bearer" }))
+        }
+        func exchange(_ command: String, payload: Data?) async throws -> Data? {
+            let request = EngramServiceRequestEnvelope(command: command, payload: payload)
+            let bytes = try await EngramServiceSocketIO.exchange(JSONEncoder().encode(request),
+                socketPath: socket, totalTimeout: 0.5)
+            let response = try JSONDecoder().decode(EngramServiceResponseEnvelope.self, from: bytes)
+            if case .success(_, let result, _) = response { return result }
+            return nil
+        }
+        var failure: Error?
+        do {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(30))
+            var scanned = false
+            var captured = false
+            let sessionRequest = try JSONEncoder().encode(EngramServiceWebSessionsRequest(query: "constellation \(nativeID)"))
+            while ContinuousClock.now < deadline, !(scanned && captured) {
+                if !scanned, let bytes = try? await exchange("status", payload: nil),
+                   case .running(_, _, _, let lastScanAt)? = try? JSONDecoder().decode(EngramServiceStatus.self, from: bytes),
+                   lastScanAt != nil {
+                    scanned = true
+                }
+                if !captured, let bytes = try? await exchange("webSessions", payload: sessionRequest),
+                   let page = try? JSONDecoder().decode(EngramServiceWebSessionsResponse.self, from: bytes),
+                   !page.items.isEmpty {
+                    captured = true
+                }
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            XCTAssertTrue(scanned, "the initial scan must complete")
+            XCTAssertTrue(captured, "the capture of the same bytes must reach the Web reader")
+            // The gate is never silent: the existing serviceLogs ring names the role.
+            let logBytes = try await exchange("serviceLogs", payload: nil)
+            let logs = try JSONDecoder().decode(ServiceLogSnapshot.self, from: XCTUnwrap(logBytes))
+            XCTAssertEqual(logs.lines.filter {
+                $0.category == "runner" && $0.level == "info"
+                    && $0.message.hasPrefix("legacy host-file scan disabled for runtimeRole=index;")
+            }.count, 1, "\(logs.lines.map(\.message))")
+        } catch { failure = error }
+        runner.cancel()
+        do { try await runner.value }
+        catch is CancellationError { /* A cooperative cancellation is acceptable. */ }
+        catch { if failure == nil { failure = error } }
+        if let failure { throw failure }
+
+        var configuration = Configuration()
+        configuration.readonly = true
+        let reader = try DatabaseQueue(path: path, configuration: configuration)
+        let rows = try await reader.read { db in
+            try Row.fetchAll(db, sql: "SELECT id, origin, authoritative_node FROM sessions ORDER BY id")
+        }
+        let summary = rows.map { "\($0["id"] as String? ?? "nil") origin=\($0["origin"] as String? ?? "nil") node=\($0["authoritative_node"] as String? ?? "nil")" }
+        XCTAssertEqual(rows.count, 1, "exactly one sessions row (the capture) for the native session: \(summary)")
+        XCTAssertTrue((rows.first?["id"] as String?)?.hasPrefix("remote:capture-v1.") == true, "\(summary)")
+        XCTAssertEqual(rows.filter { ($0["authoritative_node"] as String?) == "local" || ($0["origin"] as String?) == "local" }.count, 0,
+            "the index role must not create local-origin rows: \(summary)")
+    }
+
     func testThrowingBackendFactoriesPrecedeCaptureRuntimeAndAnyStartedServiceWork() throws {
         // Structural RED is intentional: executing the broken startup failure
         // path would strand unstructured runtime tasks with no cancellation owner.
