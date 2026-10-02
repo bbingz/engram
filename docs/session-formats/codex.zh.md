@@ -1129,7 +1129,7 @@ PK `(thread_id, position)`(FK → `threads` CASCADE)、`name`、`description`、
 | token 用量归属 | 附加到待定的非用户消息;多个合并 | L184-265 | L419-449 |
 | 发现根 | `sessions/` + 同级 `archived_sessions/` | L51-54 | L376-382 |
 | 枚举 | TS glob `**/rollout-*.jsonl`;Swift 递归 `rollout-` 前缀 + `.jsonl`,不跟随符号链接 | L38-49 | L250-258 |
-| 增量快速路径 | 最近 N(本地)天的每日根 `~/.codex/sessions/YYYY/MM/DD`(仅 sessions/;排除归档) | — | `SessionAdapterFactory.swift` `recentCodexAdapters` L31-51 |
+| 增量快速路径 | `~/.codex/sessions` 与 `~/.codex/archived_sessions` 下 mtime 在最近 N 天内的 rollout(起始日期目录 `YYYY/MM/DD` 已过期但被续写的 rollout 仍会被选中) | — | `SessionAdapterFactory.swift` `recentActiveAdapters`;`CodexAdapter(modifiedSince:)` |
 | 注册 | `defaultAdapters()` / `recentActiveAdapters()` 中的 `CodexAdapter()` | — | `SessionAdapterFactory.swift` L8-11, L53-74 |
 | `reasoning`、`custom_tool_call*`、`web_search_call`、`tool_search_*`、`turn_context`、`compacted`、所有非 `token_count` 的 `event_msg` | **丢弃**(默认分支) | (缺口) | `message(from:)` `default` L513-514 |
 | `session_meta.source`（`thread_spawn` / subagent）、`parent_thread_id` | **由启动回填读取**（非 adapter）— `StartupBackfills.backfillCodexNativeParents` | — | `StartupBackfills.swift` |

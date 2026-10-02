@@ -720,19 +720,25 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
     private let archiveReplayUsesNamedRoots: Bool
     private let limits: ParserLimits
     private let testHooks: CodexAdapterTestHooks
+    private let modifiedSince: Date?
 
+    /// `modifiedSince` limits listing to rollouts whose mtime is at or after the
+    /// cutoff. The periodic recent scan uses it instead of start-date directories
+    /// so a resumed rollout appended days later is still re-indexed.
     init(
         sessionsRoot: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex/sessions")
             .path,
         limits: ParserLimits = .default,
-        testHooks: CodexAdapterTestHooks = CodexAdapterTestHooks()
+        testHooks: CodexAdapterTestHooks = CodexAdapterTestHooks(),
+        modifiedSince: Date? = nil
     ) {
         let requestedRoot = URL(fileURLWithPath: sessionsRoot)
         self.sessionRoots = Self.expandSessionRoots(requestedRoot)
         self.archiveReplayUsesNamedRoots = requestedRoot.lastPathComponent == "sessions"
         self.limits = limits
         self.testHooks = testHooks
+        self.modifiedSince = modifiedSince
     }
 
     func detect() async -> Bool {
@@ -746,6 +752,7 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
             try Task.checkCancellation()
             locators.append(contentsOf: try JSONLAdapterSupport.recursiveFiles(under: root) { url in
                 url.lastPathComponent.hasPrefix("rollout-") && url.pathExtension == "jsonl"
+                    && Self.isModified(url, since: modifiedSince)
             })
             try Task.checkCancellation()
         }
@@ -1141,6 +1148,15 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
             build.consume(object)
         }
         return build.finish()
+    }
+
+    private static func isModified(_ url: URL, since cutoff: Date?) -> Bool {
+        guard let cutoff else { return true }
+        guard let modifiedAt = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate]
+            as? Date else {
+            return false
+        }
+        return modifiedAt >= cutoff
     }
 
     private static func expandSessionRoots(_ root: URL) -> [URL] {

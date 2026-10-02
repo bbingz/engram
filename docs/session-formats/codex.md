@@ -1176,7 +1176,7 @@ Concrete table: source record/field → Engram `Session`/`Message` field → ada
 | token usage attribution | attached to pending non-user message; multiple merged | L184-265 | L419-449 |
 | discovery roots | `sessions/` + sibling `archived_sessions/` | L51-54 | L376-382 |
 | enumeration | TS glob `**/rollout-*.jsonl`; Swift recursive `rollout-` prefix + `.jsonl`, no symlinks | L38-49 | L250-258 |
-| incremental fast path | per-day roots `~/.codex/sessions/YYYY/MM/DD` for last N (local) days (sessions/ only; excludes archived) | — | `SessionAdapterFactory.swift` `recentCodexAdapters` L31-51 |
+| incremental fast path | rollouts under `~/.codex/sessions` and `~/.codex/archived_sessions` whose mtime is within the last N days (a resumed rollout appended after its `YYYY/MM/DD` start-date directory ages out is still picked up) | — | `SessionAdapterFactory.swift` `recentActiveAdapters`; `CodexAdapter(modifiedSince:)` |
 | registration | `CodexAdapter()` in `defaultAdapters()` / `recentActiveAdapters()` | — | `SessionAdapterFactory.swift` L8-11, L53-74 |
 | `reasoning`, `custom_tool_call*`, `web_search_call`, `tool_search_*`, `turn_context`, `compacted`, all non-`token_count` `event_msg` | **dropped** (default branch) | (gap) | `message(from:)` `default` L513-514 |
 | `session_meta.source` (`thread_spawn` / subagent), `parent_thread_id` | **read by startup backfill** (not adapter) — `StartupBackfills.backfillCodexNativeParents` | — | `StartupBackfills.swift` |
