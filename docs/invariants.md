@@ -191,6 +191,13 @@ Invariants are properties that must survive every change; each entry names where
 - **Verified by** - `macos/EngramCollectorCoreTests/CollectorInventoryOwnerTests.swift` (testDeviceRenumberingKeepsRootBoundAndEnumerating_repro, testDeviceRenumberingRuleStillRejectsDifferentInodeOrBirthTime, testDeviceRenumberingDoesNotDirtyUnchangedFiles_repro), `macos/EngramServiceCoreTests/CollectorRuntimeTests.swift` (testDeviceRenumberingRebindsAndCapturesWithoutRepublishing_repro, testRootIdentitySuspensionIsReportedOnceAndRuntimeKeepsRunning).
 - **Gate** - `none`.
 
+## Collector Event Loss Is A Root-Local Gap
+
+- **Statement** - An event-stream loss (overflow, kernel or user drop, structural flag, budget) records a durable gap that forces a full walk of that root only. It never ends the collector process and never rewrites the stored checkpoint. After a loss gap is durable, that coordinator does not replay the same stored history again; a new process still tries a stale checkpoint once. Only a stored checkpoint whose FSEvents epoch differs from the live epoch stops the runtime, and it never rebases the checkpoint. A process-ending failure is reported as one stderr line naming the error type and case, without payload. A real history truncation is not exercised by tests, which inject the loss through a fake stream.
+- **Enforced by** - `macos/EngramCollectorCore/CollectorRuntime.swift`, `macos/EngramCollectorCore/CollectorEventCoordinator.swift`, `macos/EngramCollector/main.swift`.
+- **Verified by** - `macos/EngramCollectorCoreTests/CollectorEventCoordinatorTests.swift` (testReplayLossFromStoredCheckpointConvergesWithoutReplayingItAgain_repro, testRestartResumesOnlyDurableCheckpointAndEpochMismatchCannotRebase), `macos/EngramServiceCoreTests/CollectorRuntimeTests.swift` (testReplayLossDuringStartKeepsRuntimeAndOtherRootsRunning_repro, testNativeEpochChangeStillStopsRuntimeWithoutRebasingCheckpoint, testFailureReasonNamesErrorTypeAndCaseWithoutPayload).
+- **Gate** - `none`.
+
 ## Unverified Anchors
 
 None.

@@ -3,6 +3,74 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Daily collector redeployed; replay-loss restart loop fixed in source (2026-10-02)
+
+Hosts by role. PR #447 merged as `65390b43` (2026-10-02 10:21 UTC, normal
+merge, required checks green). The entry below this one describes its content.
+
+**Deployment to the Daily Mac (owner-authorized).**
+
+- Package `collector-volume-identity-20261002`, Release arm64, built from a
+  clean detached worktree at `41bed4fc` (tree identical to `65390b43`);
+  `package-collector.sh --verify-only` PASS; `bin/EngramCollector` sha256
+  `2ea0e1a87569df602bae89f40440a90284801e28a3838aa58baaa416b803e77a`.
+  The deployed predecessor's 42 compiled collector sources hash-match
+  `88681da8`; against the new build only the six files of `a2126d6f` differ.
+- Procedure, following the precedent of earlier updates: copy to a new
+  sibling package directory; back up the LaunchAgent plist to
+  `state/collector/persistent/volume-identity-job-before.plist`; change only
+  `ProgramArguments[0]` with PlistBuddy (`plutil -replace ProgramArguments.0`
+  inserts an element instead of replacing it); `launchctl bootout` then
+  `bootstrap` at 10:21:59 UTC. Files written on the host: the new package
+  directory, the plist, the plist backup. Settings, credentials and spool
+  were not edited.
+- Result: all 16 root bindings rebound to the live device within 30 seconds.
+  First capture since 2026-09-22 at 10:22:11 UTC; both replicas acknowledged
+  it and the HQ index ingested it (arrivals 40,361 to 40,362, one new
+  `index_ready` ledger row at 10:25:05). At T+25 min: 72 new captures, 13
+  acknowledged by both replicas and ingested at HQ, stored observations
+  refreshed for 9,882 of about 39,600 locators, no identity-suspension line,
+  no re-capture storm (publications 40,451 to 40,523).
+- Problem: the process exits 70 about every 13 seconds (launchd `runs` 82
+  at T+25 min), the same loop that wrote 20,142 `runtime failed` lines
+  between 2026-09-13 and 2026-09-22, now faster. It still makes progress
+  between restarts, so it was left running.
+- Rollback note: after the rebind and until every stored observation carries
+  the new device, reinstalling the old package would re-capture every
+  unrefreshed locator, because the old build compares observations exactly.
+  In that window the safe abort is to stop the job, not to roll back. The
+  volume-identity design's revert sentence holds for root bindings only.
+
+**Fix for the restart loop (branch `fix/collector-replay-loss-20261002`).**
+
+- Cause: every start replays FSEvents history from the stored checkpoint.
+  A replay from a stale cursor reports a loss; the loss is recorded as a gap
+  that forces a full walk but, by design, never advances the checkpoint, so
+  the next start replays the same history and loses again (cursor and grok
+  roots: about 985,000 requested revisions against 3,089 and 151 completed).
+  If the loss lands between stream start and the runtime's phase check,
+  `CollectorRuntime` threw `reconciliationRequired`, which was meant for a
+  changed FSEvents epoch, and `main.swift` exited 70 without a reason.
+- Change: the runtime stops only when the stored checkpoint epoch differs
+  from the live epoch. After a durable loss gap the coordinator stops
+  resuming the stored checkpoint and subscribes from the present, with the
+  forced full walk covering the gap; the stored checkpoint is not rewritten
+  by a loss. The exit line is now
+  `engram-collector: runtime failed: <Type>.<case>`. No schema, settings,
+  receiver or central-ingest change. Design:
+  `docs/superpowers/specs/2026-10-02-collector-replay-loss-design.md`;
+  ledger entry "Collector Event Loss Is A Root-Local Gap".
+- Known residual: a new process still tries each stale checkpoint once, so
+  a quiet root pays one extra gap and walk per process start until its next
+  applied batch. Every start still forces a full walk of every root.
+- Verification in the fix worktree at `65390b43`: two `_repro` tests fail
+  before and pass after; EngramCollectorCore 687/687; EngramServiceCore
+  1589 total, 0 failed, 57 skipped; real-binary suite 33 executed, 0 failed,
+  1 skipped; `CollectorCLIIntegrationTests` against the real binary 17/17.
+
+Not verified: a real FSEvents history truncation; the fixed build on the
+Daily host (not yet deployed at the time of this entry); M1.
+
 ## Cutover status audit, collector outage root cause, and four fixes (2026-10-02)
 
 Committed on branch `fix/collector-identity-role-gate-20261002`, cut from local
