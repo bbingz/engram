@@ -3,6 +3,75 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Replay-loss build deployed to Daily; stranded bootstrap scan fixed in source (2026-10-02)
+
+Hosts by role. PR #448 merged as `4479be3b` (2026-10-02 11:30 UTC, normal
+merge, required checks green).
+
+**First deployed build (`41bed4fc`) stopped.** By T+45 min it was spinning:
+no capture after 10:33:55 UTC, no further observation refresh, launchd
+`runs` 179. The job was stopped with `launchctl bootout` at 11:06 UTC and
+not rolled back, because root bindings were already rebound and most stored
+observations were not yet refreshed.
+
+**Second deployment (owner-authorized).** Package
+`collector-replay-loss-20261002`, Release arm64, built from a clean detached
+worktree at `17e84ed8` (tree identical to `4479be3b`); `--verify-only` PASS;
+`bin/EngramCollector` sha256
+`dcda6b978689c9afbe1e0e4b58af468319baab1d8897e12d94b7cec17b9290b1`. Same
+procedure: new sibling package directory, plist backed up to
+`state/collector/persistent/replay-loss-job-before.plist`, only
+`ProgramArguments[0]` changed, `launchctl bootstrap` at 11:31:15 UTC.
+
+Result at T+45 min (12:11 UTC), from read-only snapshots:
+
+- One launchd run, never exited, about 80 MB resident, no new stderr line.
+- 15 of 16 roots converged (requested revision equals completed), including
+  the roots that had looped for weeks. `daily-claude` got an event
+  checkpoint for the first time.
+- 385 captures since the outage began, all acknowledged by both replicas
+  (40,746 each; 90 publications remain withheld by privacy policy). HQ
+  arrivals 40,746; ledger `index_ready` 7,799, `parsed` 32,368.
+- Stored observations refreshed to the new device for 39,756 locators; 181
+  remain. No re-capture storm (publications 40,451 to 40,836).
+- Not checked: that the new sessions can be searched and opened in the HQ
+  Web reader; only database counts were read.
+
+**Remaining defect found on the host and fixed in source (branch
+`fix/collector-vanished-directory-20261002`).**
+
+- `daily-grok` did not converge: requested revision rising by about 280 per
+  minute, completed fixed at 151, `last_scan_failure = enumerationUnavailable`,
+  the process at about 17% of a core. Cause, verified in source and against
+  the live inventory: the walker always opens the first pending frontier
+  directory; four of the eleven pending directories no longer exist on disk;
+  a failed open records the failure and blocks, the row stays pending, and
+  the scan can never finish. Each turn then restarts the root and counts the
+  blocked walk as a loss. Any root can be stranded this way when a queued
+  directory is deleted or renamed before it is walked.
+- Change: a non-root component that is missing, or no longer a directory and
+  not a symlink, raises a distinct error; the walker finishes that directory
+  as empty and continues, and its queued descendants drain the same way.
+  macOS reports ENOTDIR for an `O_NOFOLLOW` open of a symlink, so the entry
+  itself is examined before a component is treated as vanished. Root loss,
+  permission errors and symlink refusal are unchanged. A root blocked for
+  five consecutive bootstrap steps is reported once on stderr and once more
+  on recovery. No schema, settings or scheduling change. Ledger entry
+  "Collector Bootstrap Scan Finishes Past Vanished Directories".
+- Verification in the fix worktree at `4479be3b`: the `_repro` test and four
+  further cases fail before and pass after; three guard cases (root loss,
+  EACCES, symlink) pass before and after; EngramCollectorCore 695/695;
+  EngramServiceCore 1590 total, 0 failed, 57 skipped; real-binary suite 33
+  executed, 0 failed, 1 skipped (run before the stderr debounce was added,
+  which touched only runtime reporting).
+
+**Still open, recorded in `docs/followups.md`.** 414 locators on that host
+are retried about every 60 seconds and never finish (deleted Codex recovery
+temp files; Copilot and Kimi group members); a blocked root is retried every
+turn without back-off; every process start forces a full walk of every root;
+a new process tries each stale event checkpoint once; an FSEvents epoch
+change stops the whole runtime, not only its root.
+
 ## Daily collector redeployed; replay-loss restart loop fixed in source (2026-10-02)
 
 Hosts by role. PR #447 merged as `65390b43` (2026-10-02 10:21 UTC, normal

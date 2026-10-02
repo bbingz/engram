@@ -198,6 +198,13 @@ Invariants are properties that must survive every change; each entry names where
 - **Verified by** - `macos/EngramCollectorCoreTests/CollectorEventCoordinatorTests.swift` (testReplayLossFromStoredCheckpointConvergesWithoutReplayingItAgain_repro, testRestartResumesOnlyDurableCheckpointAndEpochMismatchCannotRebase), `macos/EngramServiceCoreTests/CollectorRuntimeTests.swift` (testReplayLossDuringStartKeepsRuntimeAndOtherRootsRunning_repro, testNativeEpochChangeStillStopsRuntimeWithoutRebasingCheckpoint, testFailureReasonNamesErrorTypeAndCaseWithoutPayload).
 - **Gate** - `none`.
 
+## Collector Bootstrap Scan Finishes Past Vanished Directories
+
+- **Statement** - A queued non-root directory that no longer exists, or is no longer a directory and is not a symlink, finishes as empty, and so do its queued descendants; locators observed under it earlier are left unchanged. Any other failure to open a directory still blocks the scan and records `last_scan_failure`, and a symlink swapped in for a component is still refused. A missing or replaced root keeps its unavailable-source handling. A root whose bootstrap stays blocked for five consecutive steps is reported once on stderr, by root ID, and once more when it recovers; a shorter block writes nothing. A blocked root is still retried every turn without back-off.
+- **Enforced by** - `macos/EngramCollectorCore/CollectorPOSIXRootEnumerator.swift`, `macos/EngramCollectorCore/CollectorBootstrapWalker.swift`, `macos/EngramCollectorCore/CollectorRuntime.swift`.
+- **Verified by** - `macos/EngramCollectorCoreTests/CollectorPOSIXRootEnumeratorTests.swift` (testVanishedFrontierDirectoryFinishesScan_repro, testVanishedDirectoryDrainsQueuedDescendantsAndKeepsObservedLocators, testDirectoryVanishingMidEnumerationFinishesWithoutItsUnappliedEntries, testTargetedDirectoryThatNeverExistedFinishesEmpty, testFrontierDirectoryReplacedByFileFinishesEmpty, testMissingOrReplacedRootIsNotAVanishedDirectory, testPermissionDeniedFrontierDirectoryStillBlocks, testSymlinkSwappedForFrontierDirectoryIsStillRefused), `macos/EngramServiceCoreTests/CollectorRuntimeTests.swift` (testBlockedBootstrapRootIsReportedOncePerChange).
+- **Gate** - `none`.
+
 ## Unverified Anchors
 
 None.
