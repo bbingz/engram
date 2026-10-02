@@ -3,6 +3,52 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Daily collector recovery closeout (2026-10-02)
+
+Hosts by role. PR #449 merged as `9d465ee0` (2026-10-02 12:54 UTC, normal
+merge, required checks green). Local `main` equals `origin/main`.
+
+**Third deployment (owner-authorized).** Package
+`collector-vanished-directory-20261002`, Release arm64, built from a clean
+detached worktree at `81beb879` (tree identical to `9d465ee0`);
+`--verify-only` PASS; `bin/EngramCollector` sha256
+`0cc8a063c789d3fd296e0c66cd35c93cec343bf4f4260e9f2c2c91bca28ddb23`. Same
+procedure as the two earlier deployments that day: new sibling package
+directory, plist backed up to
+`state/collector/persistent/vanished-directory-job-before.plist`, only
+`ProgramArguments[0]` changed, `launchctl bootout` then `bootstrap` at
+12:55:09 UTC.
+
+Result at T+15 min (13:10 UTC), from read-only snapshots:
+
+- One launchd run, never exited, about 58 MB resident, 0.0% CPU at the
+  sample, no new stderr line since deployment.
+- All 16 roots converged (requested revision equals completed, no scan
+  failure), including `daily-grok`, which had been stranded at 151 completed
+  against about one million requested.
+- 441 captures since the outage began on 2026-09-22; every publication that
+  is not privacy-withheld is acknowledged by both replicas (40,802 each of
+  40,892). HQ arrivals 40,802; ledger `index_ready` 7,849, `parsed` 32,374.
+- HQ central index, sessions ingested from capture on 2026-10-02: claude-code
+  212, grok 127, codex 77, cursor 10; 203 of them visible. The newest
+  claude-code session had activity at 12:55 UTC and was indexed at 13:06 UTC.
+
+Not verified: searching and opening these sessions in the HQ Web reader
+(only database counts were read); CPU over a sustained window (one sample);
+behavior across a reboot of the collector host; M1 beyond its
+acknowledgement counts as seen from the collector.
+
+Packages kept on the collector host for rollback: `collector-capture-schedule-20260913`
+(pre-outage), `collector-volume-identity-20261002`,
+`collector-replay-loss-20261002`, each with its `*-job-before.plist`.
+Reverting to the pre-outage package is safe for root bindings; 75 stored
+observations still carry the old device and would be re-captured by it.
+
+Open items are in `docs/followups.md` (stuck dirty locators, no back-off for
+blocked roots, per-start walk cost, epoch-change scope) and `docs/TODO.md`.
+The HQ-local cutover remains deferred to a dedicated session
+(`docs/superpowers/specs/2026-10-02-hq-local-collector-cutover-design.md` §8).
+
 ## Replay-loss build deployed to Daily; stranded bootstrap scan fixed in source (2026-10-02)
 
 Hosts by role. PR #448 merged as `4479be3b` (2026-10-02 11:30 UTC, normal
