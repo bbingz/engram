@@ -1,5 +1,44 @@
 # Collector / central Service / Web implementation plan
 
+## Superseded status (2026-10-02)
+
+The status prose below this header stops in early September 2026 and is kept as
+history. Statements such as "Draft PR #446 open/unmerged" and "runtime wiring
+pending" are stale: PR #446 merged as `3859f788` (2026-09-16 UTC) and HQ has run
+the r18 index-role Service and RemoteServer/Web packages since 2026-09-20. The
+Web scope was widened to include editor-gated writes on 2026-09-13
+(`docs/superpowers/plans/2026-09-13-web-native-parity.md:30`). Status per stage,
+checked against source on 2026-10-02:
+
+- **Done in source:** W1-A/W1-B/W1-C; W2 publication intake, ACK and arrival
+  journal; W3 enumeration, inventory leases/owner, native events, two replica
+  queues and host-role gating, with 17 collector root formats; W4 items 1
+  (identity binding and collision quarantine), 2-4 and 6, including the FTS
+  readiness loop in `macos/EngramService/Core/ServiceCaptureIngestRuntime.swift`;
+  W5 auth, DTOs, reads, metadata producer, IPC adapter and UI; W6 role packages
+  with verify-only and dry-run modes.
+- **Not started:** W4 item 1 alias reconciliation that keeps existing local
+  rows, insights and user state. The committer refuses any occupied proposed ID
+  (`macos/EngramCoreWrite/CaptureIngest/CaptureIngestCommitter.swift`). W4 item 5
+  old-receipt bootstrap has no implementing code.
+- **Partial:** W4 item 7. `dryRunEpoch`/`approveEpoch` exist in
+  `macos/EngramCoreWrite/CaptureIngest/CaptureIngestSourceRegistry.swift` with no
+  non-test caller, so there is no operator command. W6 item 2: the real-binary
+  chain tests in
+  `macos/EngramServiceCoreTests/CollectorBinaryShadowIntegrationTests.swift`
+  skip unless three binary-path environment variables are set, and no CI
+  workflow or script sets them. W6 item 3: the synthetic resource window passed,
+  but the last recorded real Daily window measured 13.178% CPU against the 2%
+  target, the later build's observer has no recorded result, and resource work
+  was explicitly deferred (retirement checklist, 2026-09-13).
+- **W7:** executed for the Daily Mac only (2026-09-12). The repo records no
+  HQ-local or M1-local cutover.
+
+Open items are tracked in `docs/TODO.md`, `docs/roadmap.md` and
+`docs/followups.md`.
+
+## Historical checkpoints
+
 Checkpoint supersession clarification (2026-09-06): this file retains older
 append-only entries whose labels say "Latest push/verification checkpoint".
 The completed9b Tests/dependency results and integrated A5d central regressions

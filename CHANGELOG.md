@@ -3,6 +3,143 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Cutover status audit, collector outage root cause, and four fixes (2026-10-02)
+
+Committed on branch `fix/collector-identity-role-gate-20261002`, cut from local
+`main` `00bb5809` (2 commits ahead of `origin/main` `3859f788`), and proposed
+as one PR that also carries those 2 commits. Nothing in this entry was
+deployed and no host was changed; deployments get their own entry.
+Hosts are named by role: Daily Mac (collector), HQ (index + receiver/Web), M1
+(replica).
+
+**What was found (read-only audits of HQ and, with owner authorization, the
+Daily Mac over SSH).**
+
+- The collector/central-index cutover is partial. HQ runs two stacks side by
+  side: the r18 index-role Service plus receiver/Web, and the older local-role
+  Service plus the older plain-HTTP hub. HQ has no collector. Only one machine
+  (Daily) has ever fed the central index.
+- The central index received nothing after 2026-09-22 02:21 UTC. Cause,
+  verified on Daily: a macOS update reboot renumbered the data volume's
+  `st_dev`; the collector's stored root identity includes `st_dev`
+  (`CollectorPOSIXRootEnumerator.swift`), all 16 roots failed
+  `rootIdentityChanged`, and the runtime re-suspended them every turn without
+  rebinding, exiting or logging. The process stayed alive and both replicas
+  stayed reachable. About 490 source files changed on Daily since then and
+  are uncaptured; they are still on disk.
+- Pre-deploy check on Daily: the volume's FSEvents database UUID equals the
+  stored event epoch, so a fixed build is expected to resume and not take the
+  separate `reconciliationRequired` exit path for an epoch mismatch. Not
+  checked: whether fseventsd still retains history back to the stored cursors.
+  An older exit-70 restart churn (about 20k identical `runtime failed` stderr
+  lines, all before the current process started) is expected to return after
+  deployment; its cause is inferred, not verified.
+- HQ's own Claude Code and Codex sessions are not in the central index: no HQ
+  collector, and those sources are disabled for the index-role scan by a
+  hand-set `ENGRAM_DISABLED_SOURCES`. The older local Service on HQ is not
+  stalled; a gap after 2026-09-29 was a period with no new HQ transcripts.
+- P0 measurements on HQ: 4,904 Claude Code and 962 Codex sessions exist
+  byte-identically both in Daily's capture and on HQ's disk, 21 Codex pairs
+  are divergent, none is a prefix of the other, and 3,138 pairs have no HQ
+  bytes left to compare. The 6,140 `origin=local` grok/pi rows in the central
+  DB have no user-state dependents; 210 of the 232 pi rows already duplicate
+  Daily captures.
+- Real-binary end-to-end suite at `00bb5809` (first recorded run; CI always
+  skips it): 33 executed, 32 passed, 1 skipped by design (browser demo), 0
+  failed. Every one of the 19 source formats has at least one executed test.
+  This is a temp-home loopback proof on synthetic fixtures, not real-host
+  acceptance.
+
+**Fixes (each test-first; RED output kept under the session scratchpad).**
+
+1. **Collector survives `st_dev` renumbering.** A stored root binding is
+   rebound in place only when the device is the sole difference (same inode,
+   `st_gen`, known birth time); root revision, stream, epoch and sequence are
+   unchanged. Bootstrap, Gemini/Kimi registry and Cursor-modern/VSCode
+   dependency checks ignore a device-only difference, so unchanged files are
+   not re-captured; capture IDs and manifests keep the device. Roots suspended
+   for an identity change are reported on stderr when the set changes. A real
+   root replacement is still rejected. Residual one-time work after a
+   renumbering: one legacy Cursor state-DB re-capture, a re-dirty per
+   Cursor-modern session on its first event, in-flight reservations. Design:
+   `docs/superpowers/specs/2026-10-02-collector-volume-identity-design.md`.
+2. **Legacy host scan runs only in the `local` role.** In `index`,
+   `collector`, `replica` and invalid-settings roles the initial scan,
+   periodic `indexRecentSessions` and the Archive V2 backlog drainer get no
+   adapters regardless of `ENGRAM_DISABLED_SOURCES`, so an index host cannot
+   store a local-origin copy of a session it also ingests through capture.
+   The disabled scan is logged once (error level with the failed check for
+   invalid settings). Behavior notes: a gated startup leaves the usage-parser
+   backfill version pending; the Service repairs an owner-owned regular
+   settings file to 0600 before reading the role, so a local host with a 0644
+   file keeps scanning, while symlinked, hard-linked, oversized or unparsable
+   settings fail closed (previously a launchd-started Service scanned in those
+   cases). Existing `origin=local` rows are left untouched. Deploying this to
+   the HQ index Service stops its grok/pi scan, so the HQ collector must be
+   capturing those sources first. Design:
+   `docs/superpowers/specs/2026-10-02-hq-local-collector-cutover-design.md` §2.
+3. **Codex periodic rescan is mtime-based.** The periodic index/capture cycle
+   selected Codex rollouts only from today's and yesterday's `YYYY/MM/DD`
+   start-date directories, so a rollout resumed later was not re-indexed or
+   re-captured until a Service restart (17 rollouts, about 530 MB, were behind
+   on HQ). It now uses `CodexAdapter(modifiedSince:)` over the sessions root
+   with the same 2-day cutoff as other sources; `recentCodexAdapters` is
+   removed. Transitional effect on hosts with exact archive enabled: rollouts
+   last captured by the old periodic path and still inside the window report
+   a capture conflict each cycle until they change or age out, because the
+   recorded replay path now matches the startup sweep's. Rollouts already
+   behind and older than the window still need one restart or full sweep.
+4. **TypeScript reference red left by the 19-source wave.** The
+   `list_sessions`/`search` schema tests now expect `pi` and `grok`, and
+   `scripts/gen-adapter-parity-fixtures.ts` excludes the Swift-only pi/grok
+   sources from `SupportedFixtureSource`. Both failed on `00bb5809` before
+   this change and would have failed CI after a push.
+
+**Docs.** Design spec, plan and retirement checklist carry dated
+current-status headers (PR #446 merged, Web is reader plus editor-gated
+writes, 19 sources / 17 collector root formats, real-host columns still
+UNVERIFIED). README says 16 active sources and gains a runtime-role section.
+`docs/TODO.md`, `docs/roadmap.md` and `docs/followups.md` list the open
+cutover work and owner decisions. `docs/invariants.md` gains "Web Reader and
+Editor Authority", "Legacy Host Scan Runs Only in the Local Role" and
+"Collector Root Binding Survives Device Renumbering Only". New draft design:
+HQ-local collector cutover (runbook R1-R10; its 12 decisions were delegated by
+the owner and are recorded in its §8). `CLAUDE.md`, `AGENTS.md` and
+`macos/AGENTS.md` now describe the runtime roles, the headless collector and
+remote-server targets, and that the Web reader/editor lives in
+`EngramRemoteServer`.
+
+**Verification.**
+
+- Integrated tree (three Swift fixes together, before the review follow-ups):
+  EngramCollectorCore 686/686; EngramServiceCore 1585 total, 0 failed, 57
+  skipped; EngramMCPTests 270/270; EngramRemoteServerCore 506/506; Engram app
+  unit tests 3196 total, 1 failed, 1 skipped; real-binary suite 33 executed,
+  0 failed, 1 skipped; lint, invariants ledger, xcodeproj drift, knip pass.
+  The one app failure is
+  `EngramServiceLauncherTests.testHealthMonitorDoesNotRestartDuringStartupGrace`,
+  a timing flake that also occurs on unmodified HEAD (2 of 60 over five class
+  runs).
+- After the review follow-ups to the role gate: EngramServiceCore 1586 total,
+  0 failed, 57 skipped; `AppSearchServiceCutoverScanTests` and
+  `SettingsHonestyTests` 70/70.
+- Final tree, re-run by the lead: `npm run lint` exit 0; `npm test` 2015
+  passed, 49 skipped, 0 failed; `npm run typecheck:test` exit 0;
+  `scripts/check-invariants-ledger.sh` ok.
+- Independent read-only review of the three Swift fixes: no blocker; its two
+  should-fix items (usage-parser marker, settings repair order) and the log
+  wording/sanitizing notes are fixed; the remaining notes are recorded above.
+
+Not run: EngramUITests; Release/packaged binaries; a real mount renumbering;
+EngramCollectorCore, EngramCoreTests and the real-binary suite after the
+role-gate follow-ups (those touched only `EngramServiceRunner.swift` and
+Service tests); any check on M1; CI (nothing pushed).
+
+Next, authorized by the owner on 2026-10-02: merge after required CI, then
+package and deploy the fixed collector to Daily. Deferred: the HQ-local
+cutover (needs P2 duplicate quarantine, P3 install tooling, credentials and
+root steps); the older HQ Service is not restarted for the Codex backlog.
+
 ## Source-catalog wave closeout (2026-09-22)
 
 Landed on local `main`. Not pushed. Review of the 19-source wave found two

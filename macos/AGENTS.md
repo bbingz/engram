@@ -2,14 +2,18 @@
 
 ## OVERVIEW
 `macos/` contains the shipped Swift product runtime: menu bar app, service
-helper, native MCP helper, GRDB read/write cores, shared adapters, and Swift
-test targets.
+helper, native MCP helper, headless collector, remote server/Web, GRDB
+read/write cores, shared adapters, and Swift test targets.
 
 ## STRUCTURE
 ```
 - Engram/                # SwiftUI app, app models, app read facades, UI
 - EngramService/         # helper executable plus service core and IPC
 - EngramMCP/             # native stdio MCP helper and tool registry
+- EngramCollector*/      # headless collector executable + core
+- EngramRemoteServer/    # archive replica, publication intake, opt-in Web
+- EngramCaptureShared/   # capture core shared by collector and CoreWrite
+- EngramCLI/             # native CLI
 - EngramCoreRead/        # read repositories/facades
 - EngramCoreWrite/       # migrations, writer, indexing, project moves
 - Shared/                # shared adapters, service DTOs, MCP models

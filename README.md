@@ -2,7 +2,7 @@
 
 [![Latest Release](https://img.shields.io/github/v/release/bbingz/engram?display_name=tag&sort=semver)](https://github.com/bbingz/engram/releases/latest)
 
-> Native Swift MCP helper + macOS App：聚合 14 个默认启用来源 + 3 个归档默认关闭来源的 AI 编程助手历史会话，实现跨工具上下文共享、关键词搜索和项目迁移。
+> Native Swift MCP helper + macOS App：聚合 16 个默认启用来源 + 3 个归档默认关闭来源的 AI 编程助手历史会话，实现跨工具上下文共享、关键词搜索和项目迁移。
 
 [Download the latest release](https://github.com/bbingz/engram/releases/latest) ·
 [v1.0.5 release notes](docs/release-notes/1.0.5.md) · macOS 14+ · Universal
@@ -204,7 +204,7 @@ args = []
 
 ## macOS App
 
-Engram 的产品 UI 是原生 macOS App。`Engram.app` 启动后会管理 `EngramService`，并通过 Swift/GRDB 读取索引库。
+Engram 的产品 UI 是原生 macOS App。默认的 `local` 角色下，`Engram.app` 启动后会管理 `EngramService`，并通过 Swift/GRDB 读取索引库；其他角色见[运行角色与 headless 拓扑](#运行角色与-headless-拓扑可选默认-local)。
 
 侧边栏按四个分区组织页面，并支持 `⌘K` 命令面板在页面/操作间快速跳转：
 
@@ -228,7 +228,7 @@ Engram 的产品 UI 是原生 macOS App。`Engram.app` 启动后会管理 `Engra
 - **用量与成本**：按来源/项目/天/周分组的用量统计、模型成本、工具调用、文件活动，以及费用洞察建议
 - **今日父会话 badge**：菜单栏徽标显示今天的顶层父会话数量，而不是全部子任务总数
 
-历史 TypeScript Web/API 入口已删除；当前 macOS 产品路径通过 Swift App、Swift Service 和 Swift MCP 提供功能。TypeScript 搜索代码仅作为 retained tooling/reference；Swift service/MCP 的 semantic/hybrid 能力以运行时 embedding 可用性门控为准，App UI 保持 keyword-only。
+历史 TypeScript Web/API 入口已删除；当前 macOS 产品路径通过 Swift App、Swift Service 和 Swift MCP 提供功能。可选的 headless 部署另有由 `EngramRemoteServer` 提供的原生 Web reader，见[运行角色与 headless 拓扑](#运行角色与-headless-拓扑可选默认-local)。TypeScript 搜索代码仅作为 retained tooling/reference；Swift service/MCP 的 semantic/hybrid 能力以运行时 embedding 可用性门控为准，App UI 保持 keyword-only。
 
 ## MCP Tools 参考
 
@@ -358,6 +358,21 @@ operator-enabled，且已完成首轮 eligible backlog 与两站 recovery closeo
 [`docs/followups.md`](docs/followups.md)，远端删除与 GC 仍不存在。
 完整边界、配置、恢复和回滚前提见
 [`docs/remote-archive-v2.md`](docs/remote-archive-v2.md)。
+
+## 运行角色与 headless 拓扑（可选，默认 local）
+
+`~/.engram/settings.json` 的 `runtimeRole` 决定本机角色。缺省即 `local`，普通安装不需要任何改动；值无效或文件无法安全读取时按 fail closed 处理，不打开本地索引。
+
+| 角色 | 本机行为 |
+|---|---|
+| `local`（默认） | `Engram.app` 启动并管理自己的 `EngramService`，App 与 MCP 读本地索引库 |
+| `collector` | 运行 headless `EngramCollector`：只采集已配置来源根目录的原始字节，并分别上传到两个归档副本（`hq` 和 `m1`），不建 sessions/FTS/embedding 索引。App 只显示 “Local index unavailable”，MCP 工具调用返回 unavailable |
+| `index` | `EngramService` 由 launchd 等外部方式管理，App 与 MCP 只连接它、不启动或替换它；该 Service 从一个副本拉取采集结果，统一解析、分级并建立 FTS 索引；它不扫描本机来源文件，本机会话同样要经采集器进入 |
+| `replica` | 本机不提供本地索引，App 与 MCP 行为同 `collector`；归档副本由 `EngramRemoteServer` 承担 |
+
+可选的 headless 拓扑：采集机上的 `EngramCollector` → 两个相互独立的 `EngramRemoteServer` 副本（HQ 与 M1）→ HQ 上 `index` 角色的 `EngramService` 中心索引 → 同一 HQ `EngramRemoteServer` 进程内的原生 Web reader。Web 默认关闭，开启时要求显式 HTTPS origin 和独立的 viewer 凭据；可选的 editor 凭据另外开放别名、来源、父子关系、insight、AI 设置和项目迁移等写操作，仍经 Service 的单写者门控。Web 只展示经采集管线写入的会话。
+
+这是 opt-in 部署，不是默认安装路径。当前 HQ 上运行着 `index` 角色 Service 与 Web reader；采集来源覆盖、实机验收和剩余切换工作记录在 [`docs/reviews/2026-09-07-collector-source-retirement-checklist.md`](docs/reviews/2026-09-07-collector-source-retirement-checklist.md) 与 [`docs/TODO.md`](docs/TODO.md)。仓库提供 `macos/scripts/package-collector.sh`、`package-service.sh`、`package-remote-server.sh` 打包脚本，但还没有端到端的安装/升级工具；`scripts/plan-headless-install.mjs` 只输出 dry-run 计划。
 
 ## 配置
 

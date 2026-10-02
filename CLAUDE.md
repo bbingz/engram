@@ -49,6 +49,10 @@ macos/
   EngramCoreWrite/    # schema, migrations, indexer, writer-owned maintenance
   EngramService/      # Unix-socket service helper process
   EngramMCP/          # Native Swift MCP stdio helper
+  EngramCollector/ + EngramCollectorCore/  # headless no-index collector (runtimeRole=collector)
+  EngramCaptureShared/  # capture/identity code shared by CollectorCore and CoreWrite
+  EngramRemoteServer/   # archive replica, publication intake, opt-in Web reader/editor
+  EngramCLI/            # native CLI
   project.yml  # xcodegen config → generates Engram.xcodeproj
 ```
 
@@ -65,8 +69,12 @@ TypeScript when a retained fixture generator or regression test still depends
 on the old reference surface.
 
 ### Service Runtime
-`Engram.app` launches and talks to the native `EngramService` helper over a
-secure Unix socket. `EngramMCP` is the native stdio helper used by MCP clients.
+In the default `local` role `Engram.app` launches and talks to the native
+`EngramService` helper over a secure Unix socket; in the `index` role the
+Service is externally managed and the App/MCP only attach. `EngramMCP` is the
+native stdio helper used by MCP clients. Roles come from `runtimeRole` in
+`settings.json` (`RuntimeRoleSettings.swift`); only a `local` Service scans
+host session files, an `index` Service stores sessions through capture ingest.
 
 - `EngramServiceRunner` owns service startup, schema/indexing, maintenance, and
   command dispatch.
@@ -96,8 +104,10 @@ secure Unix socket. `EngramMCP` is the native stdio helper used by MCP clients.
   TypeScript reference tooling.
 
 ### Process Lifecycle
-- Product runtime: `Engram.app` launches `EngramService`; MCP clients spawn
-  `EngramMCP`.
+- Product runtime: in the `local` role `Engram.app` launches `EngramService`;
+  in `index` it attaches to an externally managed Service; `collector`/`replica`
+  hosts run no local index (headless `EngramCollector` / `EngramRemoteServer`).
+  MCP clients spawn `EngramMCP`.
 - `EngramService` logs directly through `os_log` subsystem
   `com.engram.service`.
 - Do not add product startup paths that shell out to `node`, run `npm`, or copy
@@ -192,8 +202,10 @@ Parent-child session linking: agent sessions (dispatched by Claude Code to Gemin
   exposes a Unix socket in a private runtime directory (`0700` parent, `0600`
   socket where the platform applies mode bits). Clients must pass the service
   capability token and peer-UID checks must match the current user.
-- The Swift product does not serve an HTTP transcript Web UI. Product startup,
-  app traffic, and MCP traffic should go through the Swift service stack.
+- `Engram.app` and `EngramService` serve no HTTP transcript Web UI. The opt-in
+  native Web reader/editor lives in `EngramRemoteServer` (off unless
+  configured) and reaches the Service only through typed IPC clients. Product
+  startup, app traffic, and MCP traffic should go through the Swift service stack.
 
 ## Conventions
 

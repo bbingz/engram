@@ -6,7 +6,9 @@
 
 ## OVERVIEW
 Engram is a cross-tool AI session aggregator. The shipped product runtime is
-the native Swift macOS app, `EngramService`, and `EngramMCP`; TypeScript under
+the native Swift macOS app, `EngramService`, `EngramMCP`, and the opt-in
+headless `EngramCollector` and `EngramRemoteServer` (archive replica + Web)
+roles; TypeScript under
 `src/` is retained for dev/reference tooling, fixture generation, historical
 entrypoints, and regression tests.
 
