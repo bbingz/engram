@@ -24,7 +24,10 @@ import type {
 import { VsCodeAdapter } from '../src/adapters/vscode.js';
 import { WindsurfAdapter } from '../src/adapters/windsurf.js';
 
-type SupportedFixtureSource = Exclude<SourceName, 'lobsterai' | 'minimax'>;
+type SupportedFixtureSource = Exclude<
+  SourceName,
+  'lobsterai' | 'minimax' | 'pi' | 'grok'
+>;
 
 interface AdapterFixture {
   schemaVersion: 1;

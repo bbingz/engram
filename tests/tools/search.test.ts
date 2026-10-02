@@ -28,6 +28,8 @@ describe('search tool schema', () => {
       'vscode',
       'antigravity',
       'windsurf',
+      'pi',
+      'grok',
     ]);
   });
 });
