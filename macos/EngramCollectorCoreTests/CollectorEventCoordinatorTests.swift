@@ -571,6 +571,76 @@ final class CollectorEventCoordinatorTests: XCTestCase {
         try coordinator.stop()
     }
 
+    // Repro for the 2026-10-02 Daily collector restart loop: a replay from a stale stored
+    // checkpoint lost continuity on every attempt (cursor and grok roots), and every
+    // restart replayed the same history again, so recovery never converged.
+    // docs/superpowers/specs/2026-10-02-collector-replay-loss-design.md
+    func testReplayLossFromStoredCheckpointConvergesWithoutReplayingItAgain_repro() throws {
+        let fixture = try CoordinatorFixture()
+        defer { fixture.remove() }
+        let owner = try fixture.open()
+        defer { try? owner.close() }
+        let seed = CoordinatorFakeStream()
+        let seeding = make(owner, fixture, stream: seed)
+        try ready(seeding, seed, owner, fixture)
+        XCTAssertEqual(seed.emit(batch("poisoned")), .queued)
+        XCTAssertEqual(try seeding.step(budget: scanBudget).appliedBatches, 1)
+        try seeding.stop()
+        let poisoned = CollectorEventCheckpoint(epoch: "epoch", cursor: "poisoned")
+        assertCheckpoint(try state(owner, fixture).eventCheckpoint, poisoned)
+
+        // Replaying from the poisoned cursor always reports a loss, as a truncated or
+        // structurally changed FSEvents history does. Every other start is clean.
+        var requests: [CollectorEventStreamRequest] = []
+        var streams: [CoordinatorFakeStream] = []
+        func replaying() -> CollectorEventCoordinator {
+            make(owner, fixture, factory: { request in
+                requests.append(request)
+                let stream = CoordinatorFakeStream()
+                streams.append(stream)
+                stream.onStart = { [unowned stream] in
+                    let replaysPoison = request.resumeCheckpoint.map { Data($0.cursor.utf8) == Data("poisoned".utf8) } ?? false
+                    _ = stream.emit(replaysPoison ? .loss(.continuityLoss) : .historyDone)
+                }
+                return stream
+            })
+        }
+        let coordinator = replaying()
+        try coordinator.start(epoch: "epoch")
+        XCTAssertEqual(try coordinator.snapshot().phase, .recoveryRequired)
+        let beforeGap = try state(owner, fixture).requestedRevision
+        _ = try coordinator.step(budget: scanBudget)
+        XCTAssertEqual(try state(owner, fixture).requestedRevision, beforeGap + 1, "the loss is a durable gap")
+        assertCheckpoint(try state(owner, fixture).eventCheckpoint, poisoned)
+
+        // The next start must not replay the history that just lost continuity. The
+        // forced full walk covers it instead, and recovery converges.
+        try coordinator.start(epoch: "epoch")
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertNil(requests[1].resumeCheckpoint)
+        XCTAssertEqual(try coordinator.snapshot().phase, .recovering)
+        try finishRecovery(coordinator, owner, fixture)
+        let converged = try state(owner, fixture)
+        XCTAssertEqual(converged.completedRevision, converged.requestedRevision)
+        assertCheckpoint(converged.eventCheckpoint, poisoned)
+        XCTAssertEqual(streams[1].emit(batch("fresh")), .queued)
+        XCTAssertEqual(try coordinator.step(budget: scanBudget).appliedBatches, 1)
+        let fresh = CollectorEventCheckpoint(epoch: "epoch", cursor: "fresh")
+        assertCheckpoint(try state(owner, fixture).eventCheckpoint, fresh)
+        try coordinator.stop()
+
+        // A later process resumes from the advanced checkpoint and never meets the loss again.
+        let restarted = replaying()
+        try restarted.start(epoch: "epoch")
+        assertCheckpoint(requests[2].resumeCheckpoint, fresh)
+        XCTAssertEqual(try restarted.snapshot().phase, .recovering)
+        try finishRecovery(restarted, owner, fixture)
+        let settled = try state(owner, fixture)
+        XCTAssertEqual(settled.completedRevision, settled.requestedRevision)
+        XCTAssertNil(try restarted.snapshot().persistedGapRevision)
+        try restarted.stop()
+    }
+
     func testOwnerCommitErrorClosesGenerationWithoutAckOrDirtyPrefix() throws {
         let fixture = try CoordinatorFixture()
         defer { fixture.remove() }

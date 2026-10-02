@@ -266,8 +266,13 @@ The fixed build changes no schema and no settings.
    `collector_publications` grew by about the number of changed files (not by
    about 40k).
 
-Revert: reinstall the previous package. The rebound rows hold the live device,
-which the old build also accepts until the next renumbering.
+Revert: reinstall the previous package. The rebound root bindings hold the
+live device, which the old build also accepts until the next renumbering.
+Correction (2026-10-02, from the first deployment): this holds for root
+bindings only. The old build compares stored locator observations exactly, so
+reverting before every observation has been refreshed to the new device makes
+it re-capture each unrefreshed locator. In that window stop the job instead
+of reverting.
 
 ## Risks and open questions
 

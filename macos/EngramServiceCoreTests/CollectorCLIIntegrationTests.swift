@@ -361,7 +361,10 @@ final class CollectorCLIIntegrationTests: XCTestCase {
             XCTAssertEqual(result.reason, .exit)
             XCTAssertEqual(result.status, 70)
             XCTAssertEqual(result.stdout, "")
-            XCTAssertEqual(result.stderr, "engram-collector: runtime failed\n")
+            // One line naming the error type and case only; never a path or token.
+            let reason = kind == .empty || kind == .sameTokens
+                ? "CollectorRuntimeError.invalidCredential" : "ExplicitCredentialFileError.invalid"
+            XCTAssertEqual(result.stderr, "engram-collector: runtime failed: \(reason)\n")
             scope.assertNoPrivateOutput(result)
 
             // Cancellation drains pending accepts before closing the listener;

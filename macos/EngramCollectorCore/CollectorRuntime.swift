@@ -92,13 +92,19 @@ public actor CollectorRuntime {
     private var stopping = false
     private var closed = false
     private let diagnostics: @Sendable (String) -> Void
+    private let eventStreamFactory: EventStreamFactory
     private var identitySuspendedRoots = Set<Int>()
     private var reportedIdentitySuspendedRoots = Set<Int>()
+
+    /// Production uses the native FSEvents stream; tests inject a fake stream.
+    typealias EventStreamFactory = @Sendable (CollectorEventStreamRequest, CollectorEventIngressBudget)
+        throws -> any CollectorEventStream
 
     private init(settingsURL: URL, configuration: CollectorRuntimeConfiguration,
                  owner: CollectorInventoryOwner, catalog: ArchiveCatalog,
                  worker: CollectorPublicationWorker, uploader: CollectorPublicationWorker,
-                 diagnostics: @escaping @Sendable (String) -> Void) {
+                 diagnostics: @escaping @Sendable (String) -> Void,
+                 eventStreamFactory: @escaping EventStreamFactory) {
         self.settingsURL = settingsURL
         self.configuration = configuration
         self.owner = owner
@@ -106,6 +112,7 @@ public actor CollectorRuntime {
         self.worker = worker
         self.uploader = uploader
         self.diagnostics = diagnostics
+        self.eventStreamFactory = eventStreamFactory
     }
 
     public static func open(
@@ -122,7 +129,10 @@ public actor CollectorRuntime {
     static func open(
         settingsURL: URL,
         secretLoader: @escaping @Sendable (String) throws -> String,
-        diagnostics: @escaping @Sendable (String) -> Void
+        diagnostics: @escaping @Sendable (String) -> Void,
+        eventStreamFactory: @escaping EventStreamFactory = { request, budget in
+            CollectorNativeEventStream(request: request, budget: budget)
+        }
     ) throws -> CollectorRuntime? {
         try Task.checkCancellation()
         guard let configuration = try CollectorRuntimeConfiguration.load(at: settingsURL) else { return nil }
@@ -149,7 +159,8 @@ public actor CollectorRuntime {
                 let uploader = try makePublicationWorker(owner: owner, catalog: catalog, cas: cas,
                     configuration: configuration, replicas: replicas, settingsURL: settingsURL)
                 return CollectorRuntime(settingsURL: settingsURL, configuration: configuration,
-                    owner: owner, catalog: catalog, worker: worker, uploader: uploader, diagnostics: diagnostics)
+                    owner: owner, catalog: catalog, worker: worker, uploader: uploader, diagnostics: diagnostics,
+                    eventStreamFactory: eventStreamFactory)
             } catch {
                 try catalog.close()
                 throw error
@@ -386,6 +397,25 @@ public actor CollectorRuntime {
         catch { cleanup = nil; throw error }
     }
 
+    /// A stable token for the single stderr line written when the process stops on an
+    /// error: the error's type and enum case, never a payload or description, so the
+    /// line cannot carry paths, IDs or credentials.
+    public static func failureReason(_ error: Error) -> String {
+        func identifier(_ value: String) -> String? {
+            guard (1...64).contains(value.utf8.count), value.utf8.allSatisfy({
+                $0 == 95 || (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0)
+            }) else { return nil }
+            return value
+        }
+        let typeName = identifier(String(describing: type(of: error))) ?? "Error"
+        let mirror = Mirror(reflecting: error)
+        guard mirror.displayStyle == .enum else { return typeName }
+        // A payload-free case has no children; its description is the case name
+        // unless the type overrides it, which the identifier check rejects.
+        let caseName = mirror.children.first?.label ?? String(describing: error)
+        return identifier(caseName).map { typeName + "." + $0 } ?? typeName
+    }
+
     private static func isUnavailableSource(_ error: Error) -> Bool {
         switch error {
         case CollectorPOSIXEnumerationError.io(.openComponent, ENOENT),
@@ -443,20 +473,28 @@ public actor CollectorRuntime {
             do {
                 // Missing or recovery-required coordinators still enroll and start.
                 let binding = try owner.enrollAndActivateRoot(root)
+                let epoch = try CollectorNativeEventStream.currentEpoch(binding: binding)
                 if let coordinator = coordinators[index] {
-                    try coordinator.start(epoch: CollectorNativeEventStream.currentEpoch(binding: binding))
+                    try coordinator.start(epoch: epoch)
                 } else {
-                    let epoch = try CollectorNativeEventStream.currentEpoch(binding: binding)
                     let budget = configuration.budgets.events
+                    let factory = eventStreamFactory
                     let coordinator = CollectorEventCoordinator(enabled: true, configuration: root, budget: budget,
                         ownerFactory: { owner }, streamFactory: { request in
-                            CollectorNativeEventStream(request: request, budget: budget.ingress)
+                            try factory(request, budget.ingress)
                         })
                     coordinators[index] = coordinator
                     try coordinator.start(epoch: epoch)
                 }
-                guard try coordinators[index]?.snapshot().phase != .recoveryRequired else {
-                    // A changed native epoch is not permission to erase history.
+                // A changed native epoch is not permission to erase history: the stored
+                // checkpoint belongs to another event history and is never rebased, so
+                // that alone stops the runtime. A stream loss admitted while the stream
+                // was starting is not fatal. Its durable gap forces this root's full walk
+                // and the next turn restarts the stream; other roots and uploads go on.
+                // docs/superpowers/specs/2026-10-02-collector-replay-loss-design.md
+                if try coordinators[index]?.snapshot().phase == .recoveryRequired,
+                   let stored = try owner.rootState(rootID: root.rootID)?.eventCheckpoint,
+                   !stored.epoch.utf8.elementsEqual(epoch.utf8) {
                     throw CollectorRuntimeError.reconciliationRequired
                 }
                 available.insert(Data(root.rootID.utf8))
