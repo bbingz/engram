@@ -82,6 +82,16 @@ final class CollectorBootstrapWalker {
                         relativeDirectory = directory
                     } catch is CancellationError {
                         throw CancellationError()
+                    } catch CollectorPOSIXEnumerationError.directoryVanished where !directory.isEmpty {
+                        // docs/invariants.md "Collector Bootstrap Scan Finishes Past Vanished Directories": a queued directory that
+                        // no longer exists finishes as empty instead of blocking the scan
+                        // forever. Its queued descendants vanish the same way. Locators
+                        // observed under it earlier are left as-is, like any deleted file.
+                        try store.applyBootstrapBatch(CollectorBootstrapBatch(
+                            scan: scan, relativeDirectory: directory, files: [],
+                            childDirectories: [], directoryFinished: true
+                        ))
+                        continue
                     } catch {
                         try store.recordScanFailure(scan, failure: .enumerationUnavailable)
                         resetCursor()
@@ -112,6 +122,13 @@ final class CollectorBootstrapWalker {
                             entry = next
                         } catch is CancellationError {
                             throw CancellationError()
+                        } catch CollectorPOSIXEnumerationError.directoryVanished where !directory.isEmpty {
+                            // Vanished after open: entries read in this pass are gone
+                            // too and are dropped; the directory finishes as empty.
+                            files = []
+                            childDirectories = []
+                            directoryFinished = true
+                            break
                         } catch {
                             try store.recordScanFailure(scan, failure: .enumerationUnavailable)
                             resetCursor()

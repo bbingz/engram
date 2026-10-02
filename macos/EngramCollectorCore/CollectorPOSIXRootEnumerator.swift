@@ -53,6 +53,9 @@ enum CollectorPOSIXEnumerationError: Error, Equatable {
     case directoryIdentityChanged
     case directoryContentsChanged
     case invalidEntryName
+    /// A component below the root no longer exists or is no longer a directory (and
+    /// is not a symlink). Never raised for the root itself.
+    case directoryVanished
     case io(CollectorPOSIXOperation, Int32)
     case notImplemented
 }
@@ -261,7 +264,22 @@ final class CollectorPOSIXRootEnumerator: CollectorRootEnumerator {
             throw CollectorPOSIXEnumerationError.rootIdentityChanged
         }
         for component in relativeComponents {
-            let next = try openComponent(component, parent: descriptor)
+            let next: Int32
+            do {
+                next = try openComponent(component, parent: descriptor)
+            } catch CollectorPOSIXEnumerationError.io(.openComponent, let code) where code == ENOENT || code == ENOTDIR {
+                // docs/invariants.md "Collector Bootstrap Scan Finishes Past Vanished Directories": a queued directory that was
+                // deleted, renamed away or replaced by a file must not block the scan.
+                // macOS also reports ENOTDIR for O_NOFOLLOW on a symlink, so the entry
+                // itself decides: a symlink (or a directory again) keeps the error.
+                var info = stat()
+                let result = component.withCString { fstatat(descriptor, $0, &info, AT_SYMLINK_NOFOLLOW) }
+                let kind = info.st_mode & S_IFMT
+                if result == 0 ? (kind != S_IFDIR && kind != S_IFLNK) : errno == ENOENT {
+                    throw CollectorPOSIXEnumerationError.directoryVanished
+                }
+                throw CollectorPOSIXEnumerationError.io(.openComponent, code)
+            }
             closeDescriptor(descriptor)
             descriptor = next
         }

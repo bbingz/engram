@@ -517,6 +517,73 @@ final class CollectorRuntimeTests: XCTestCase {
         }
     }
 
+    // Production collector loop diagnosed 2026-10-02 (CHANGELOG, same date): a root whose bootstrap walk was blocked
+    // was retried about once per second with nothing on stderr. A walk that cannot pass
+    // a directory (EACCES here) is reported once each time the set of persistently
+    // blocked roots changes, with root IDs only. A root joins that set only after
+    // `threshold` consecutive blocked bootstrap steps, so transient blocks write nothing.
+    func testBlockedBootstrapRootIsReportedOncePerChange() async throws {
+        try XCTSkipIf(geteuid() == 0, "root bypasses the fixture's DAC permission denial")
+        let threshold = 5 // CollectorRuntime.blockedReportThreshold
+        let f = try RuntimeFixture(); defer { f.remove() }
+        let replicas = try await RuntimeReplicas.start(parent: f.base)
+        let locked = f.sources.appendingPathComponent("locked")
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { _ = chmod(locked.path, 0o700) }
+        let lines = RuntimeLocked<[String]>([])
+        let report: @Sendable (String) -> Void = { line in lines.update { $0.append(line) } }
+        let blocked = "engram-collector: source roots blocked in bootstrap: 1/1 (runtime-codex)"
+        let cleared = "engram-collector: source roots blocked in bootstrap: 0/1"
+        let failureSQL = """
+            SELECT count(*) FROM collector_roots
+            WHERE root_id = 'runtime-codex' AND last_scan_failure = 'enumerationUnavailable'
+            """
+        var active: Runtime?
+        var now: Int64 = 100
+        do {
+            try f.writeSettings(f.document(replicas: replicas))
+            active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: f.secret, diagnostics: report))
+            // (a) and flapping: each turn takes at most one bootstrap step per root, so
+            // threshold - 1 turns hold fewer than threshold blocked steps. Block, recover
+            // (the scan finishes and clears last_scan_failure), block again: no line.
+            for _ in 0..<3 {
+                XCTAssertEqual(chmod(locked.path, 0), 0)
+                for _ in 0..<(threshold - 1) { _ = try await active!.runOnce(now: now); now += 1 }
+                XCTAssertEqual(try f.integer(failureSQL), 1, "the walk must actually block in this cycle")
+                XCTAssertEqual(chmod(locked.path, 0o700), 0)
+                var recoveryTurns = 0
+                while try f.integer(failureSQL) == 1, recoveryTurns < 20 {
+                    _ = try await active!.runOnce(now: now); now += 1; recoveryTurns += 1
+                }
+                XCTAssertEqual(try f.integer(failureSQL), 0, "the walk must recover in this cycle")
+            }
+            XCTAssertEqual(lines.value, [])
+            // (b) threshold consecutive blocked steps: exactly one line naming the root.
+            XCTAssertEqual(chmod(locked.path, 0), 0)
+            var turns = 0
+            while lines.value.isEmpty, turns < 30 {
+                _ = try await active!.runOnce(now: now); now += 1; turns += 1
+            }
+            XCTAssertGreaterThanOrEqual(turns, threshold)
+            for _ in 0..<3 { _ = try await active!.runOnce(now: now); now += 1 }
+            XCTAssertEqual(lines.value, [blocked])
+            // (c) the first non-blocked step clears it: exactly one 0/1 line.
+            XCTAssertEqual(chmod(locked.path, 0o700), 0)
+            var clearTurns = 0
+            while lines.value.count == 1, clearTurns < 20 {
+                _ = try await active!.runOnce(now: now); now += 1; clearTurns += 1
+            }
+            for _ in 0..<3 { _ = try await active!.runOnce(now: now); now += 1 }
+            XCTAssertEqual(lines.value, [blocked, cleared])
+            try await active!.stop(); active = nil
+            await replicas.stop()
+        } catch {
+            try? await active?.stop()
+            await replicas.stop()
+            throw error
+        }
+    }
+
     // Repro for the 2026-10-02 Daily restart loop (exit 70 about every 12 s): a stream
     // loss admitted while the coordinator was still starting left it recoveryRequired, and
     // the runtime turned that into reconciliationRequired. A loss must only force the
