@@ -3,6 +3,79 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## P2 and P3 merged, dependency PRs landed, HQ T+7h check (2026-10-07)
+
+Closes the 2026-10-07 session. All eight PRs opened or revived today are
+merged on `main` (`e3df52ab`): #451 codeql-action v4.38.2 (`a38b7a29`), #438
+@types/node 26.6.4 (`006ed09c`), #453 docs (`e7ec7268`), #452 vitest and
+coverage-v8 4.1.11 (`465bb40b`), #455 P2 (`5d7d684d`), #454 P3 (`63e0a17e`),
+#440 biome 2.5.15 (`0cf26d58`), #439 openai 7.28.0 (`e3df52ab`). All were
+normal merges after the required checks passed; the dependabot rebases
+retargeted #438/#439/#440 to newer versions than their titles.
+
+**P2 (PR #455, cutover design §3-B, decision D6).** `CaptureIngestCommitter`
+quarantines a first generation whose normalized digest equals the head
+another machine already binds for the same (source, native_id), with the new
+ledger code `cross_machine_duplicate`; `ServiceCaptureIngestWorker` maps it
+like `obsoleteGeneration`; an idempotent index
+`capture_ingest_identity_bindings_native_id_source` on (native_id, source),
+column order reversed from the design text so the Web children page cannot
+pick it over the session parent indexes (`WebChildrenProducerTests` repro);
+ledger entry "Cross-Machine Exact Duplicates Are Quarantined At Commit".
+Tests: `testIdenticalCrossMachineCaptureIsQuarantinedNotDuplicated_repro`,
+`testIdenticalBytesFromAnotherMachineAreQuarantinedByTheWorker_repro`,
+divergent-content and index-idempotence tests; full `EngramCoreTests` 2020
+(1 skipped, 0 failed) and `EngramServiceCore` 1592 (57 skipped, 0 failed)
+with the CI isolated home. A follow-up commit (`fc08a10d`) removed the
+backticks around the index name in the ledger's Enforced-by line because
+`tests/scripts/invariants-ledger.test.ts` treats every backticked token there
+as a repo path. Not deployed: it ships with the next service-index build at
+runbook step R7.
+
+**P3 (PR #454, cutover design §4.1-4.6, decision D12).** New
+`scripts/render-collector-settings.mjs` and
+`scripts/apply-headless-install.mjs`, rewritten
+`scripts/plan-headless-install.mjs` (identity branch, credential checks that
+never print values, real activation keys from the templates, source-revision
+binding, label-collision check, `--kind upgrade|rollback`, plan hash), a
+service-index wrapper/plist slot for `--capture-source-authority-file`, and a
+remote wrapper `secrets/web.env` source. An independent review found six
+defects that were fixed before merge: installed releases are verified by their
+own SHA256SUMS and BUILD-METADATA (`verifyInstalledRelease`) instead of the
+checkout's templates; the executor binds the copied package to the plan's
+sourceRevision and SHA256SUMS digest; host preconditions fail the plan and any
+step failure rolls the transaction back; relative `current` symlinks are
+accepted; `bootout` is followed by a bounded `launchctl print` wait before
+`bootstrap`; the executor refuses tool paths that differ from the plan; plus
+gitignore prefixes, early Swift cleanup, safe integers and shared helpers.
+Tests: `tests/scripts` 35 files / 789 passed,
+`CollectorRenderedSettingsFixtureTests` 1/1. Nothing ran against a real host.
+
+**CI observations.** GitHub-hosted `macos-15` jobs queued 30-90 minutes all
+afternoon ("Due to capacity constraints, jobs targeting macOS arm64 runners
+may experience longer queue times") and twice failed with "The job was not
+started because it repeatedly failed to be acquired"; `ui-test-smoke` failed
+three times at checkout with "failed to fetch some objects from .../info/lfs"
+(Git LFS, transient, passed on rerun);
+`CollectorRuntimeTests.testStartLoopPublishesAndStopJoinsBeforeReopen` failed
+once with "closed" on the P3 PR and passed on rerun (the known launcher timing
+flake). With strict up-to-date branch protection every merge put the other
+PRs behind, so merges were serialized by a loop that updated one branch at a
+time.
+
+**HQ at T+7h (20:28 UTC).** service-index PID 88127 up 7 h 27 min, RSS 84 MB,
+stderr 0 bytes; receiver PID 89758, health 200 on both origins; arrivals
+41,508 -> 41,517, index_ready 8,539 -> 8,548, parsed 32,390, quarantined 579;
+local grok 6,815 and pi 805 unchanged since the deploy, so the role gate
+holds; Daily collector PID 30548, etime 5 d 07 h. The service-index lifetime
+CPU average reported by `ps` is 18%, above the single 10% sample at T+10; the
+instantaneous rate is recorded in the session report, not here.
+
+**Cleanup.** Scratch worktrees and DerivedData removed; agent worktrees and
+merged local branches deleted; local `main` fast-forwarded to `e3df52ab`.
+Still open: the untracked `.grok/workflows/engram-session-status.rhai` is
+unexplained.
+
 ## HQ redeployed from current main, host cleanup, dependency PRs, P2/P3 started (2026-10-07)
 
 Owner authorization was given in-session on 2026-10-07 after the inventory

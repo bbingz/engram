@@ -4,6 +4,10 @@
 
 ### 2026-10-07
 
+- [合并] 今日 8 个 PR 全部合并到 main（`e3df52ab`）：#451 codeql-action、#438 @types/node 26.6.4、#453 文档、#452 vitest 4.1.11、#455 P2 跨机精确重复隔离、#454 P3 安装工具链（审查出的 6 项缺陷已先修复）、#440 biome 2.5.15、#439 openai 7.28.0。P2 尚未部署，随 R7 的 service-index 构建上线。详见 `CHANGELOG.md`。
+- [验证] HQ T+7h：service-index 与 receiver 持续运行、健康 200、无 stderr、摄取继续、local grok/pi 行 7 小时未增长；Daily 采集器同一进程已运行 5 天 7 小时。
+- [排查] CI：托管 macOS arm64 runner 容量不足，排队 30–90 分钟并两次「failed to be acquired」；ui-test-smoke 三次因 Git LFS 拉取失败（重跑通过）；已知偶发测试 `testStartLoopPublishesAndStopJoinsBeforeReopen` 失败一次重跑通过；严格分支保护使合并只能串行。
+- [未验证] 重部署后 service-index 的瞬时 CPU（ps 生命周期均值 18%）；P2/P3 在真实主机上的行为。
 - [部署] HQ 的 service-index 与 receiver/Web 已从 main `8a6cdf6c` 重建并切换（包 `*-main-8a6cdf6c-20261007`，verify-only 通过，plist 已备份，r18 保留可回滚）。T+10：两进程正常、健康 200、无 stderr、摄取继续、local grok/pi 行停止增长（角色门生效）。详见 `CHANGELOG.md`。
 - [排查] 嵌入任务积压 12,147 条属预期无害（index 角色无嵌入提供方，消费者静默返回，FTS/摄取/Web 不受影响）；HQ Web 以 viewer 身份可搜索并打开 10-02 与 10-03 入库的会话。
 - [变更] M1 停用 dashscope-proxy 并删除 169.9 MB 日志；HQ 删除 3 份 6.7 GB 诊断副本与 66 个旧包目录（`hq/` 98 GB → 76 GB，保留运行包与 r18 回滚包）。
