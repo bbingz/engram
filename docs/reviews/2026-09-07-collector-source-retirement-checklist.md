@@ -22,12 +22,15 @@
   (observer 49875, Daily build 92844) measured 13.178% CPU against the 2% target;
   observer 7119 for the later capture-schedule build has no recorded result.
   The 2026-09-13 handoff deferred resource work; it did not pass.
-- **Open item, not resolved:** the "Registered sources" rule says the old
-  ingestion path must remain enabled wherever a source is enabled, and the
-  verifier says not to change jobs. The 2026-09-12 Daily cutover disabled the old
-  `com.engram.service` job while Antigravity cache/PB coverage was deferred and
-  Windsurf PB/cache input was not captured. The repo records no owner decision
-  that accepts this as an exception or that changes the rule.
+- **Resolved by owner decision D3 (2026-10-02, recorded here 2026-10-07):**
+  the "Registered sources" rule says the old ingestion path must remain enabled
+  wherever a source is enabled, and the verifier says not to change jobs. The
+  2026-09-12 Daily cutover disabled the old `com.engram.service` job while
+  Antigravity cache/PB coverage was deferred and Windsurf PB/cache input was
+  not captured. D3 in
+  `docs/superpowers/specs/2026-10-02-hq-local-collector-cutover-design.md` §8
+  accepts Antigravity cache/PB and Windsurf cache/PB as per-host exceptions on
+  Daily; the rule stands for every other source.
 
 ## Historical entries
 
