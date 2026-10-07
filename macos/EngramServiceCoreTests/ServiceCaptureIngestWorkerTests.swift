@@ -12,6 +12,7 @@ final class ServiceCaptureIngestWorkerTests: XCTestCase {
     private let otherInstance = "DDDDDDDD-DDDD-4DDD-8DDD-DDDDDDDDDDDD"
     private let epoch = "CCCCCCCC-CCCC-4CCC-8CCC-CCCCCCCCCCCC"
     private let otherEpoch = "EEEEEEEE-EEEE-4EEE-8EEE-EEEEEEEEEEEE"
+    private let otherMachine = "FFFFFFFF-FFFF-4FFF-8FFF-FFFFFFFFFFFF"
     private let journal = "11111111-1111-4111-8111-111111111111"
     private let revision = "swift-parser-t4a"
     private let logicalRoot = "/offline-client/.claude/projects"
@@ -167,6 +168,72 @@ final class ServiceCaptureIngestWorkerTests: XCTestCase {
 
     func testOlderArrivalPreservesReadyTranscriptAndFTS() async throws {
         try await assertObsoleteGenerationRetained(retryFirst: false, readyLatest: true)
+    }
+
+    // docs/superpowers/specs/2026-10-02-hq-local-collector-cutover-design.md §3
+    // option B (P2, decision D6; no PR number yet) and ledger entry "Cross-Machine
+    // Exact Duplicates Are Quarantined At Commit": the same bytes replayed by the
+    // real parser from a second machine under another root give the same
+    // normalized digest, so the worker records a terminal quarantine instead of
+    // committing a second session or retrying.
+    func testIdenticalBytesFromAnotherMachineAreQuarantinedByTheWorker_repro() async throws {
+        let raw = try claudeBytes(nativeID: "native-session")
+        let worker = makeWorker()
+        let daily = try await seedEligible(sequence: 1, bytes: raw)
+        guard case .parsed(let receipt) = try await worker.step() else { return XCTFail("first machine must parse") }
+        func productRows() throws -> [[Row]] {
+            try writer.read { db in
+                try ["sessions", "capture_ingest_identity_bindings", "capture_ingest_generations",
+                     "sessions_fts", "session_index_jobs"].map { try Row.fetchAll(db, sql: "SELECT * FROM \($0)") }
+            }
+        }
+        let productBefore = try productRows()
+        let hq = try await seedEligible(configuredRoot: "/hq-host/.claude/projects", relative: "hq-project/session.jsonl",
+            instanceID: otherInstance, sequence: 1, provision: true, bytes: raw, machineID: otherMachine)
+        let result = try await worker.step()
+        XCTAssertEqual(result, .recordedFailure)
+        let row = try work(hq)
+        XCTAssertEqual(row.status, .quarantined)
+        XCTAssertEqual(row.failureCode, "quarantine.cross_machine_duplicate")
+        XCTAssertNil(row.token)
+        XCTAssertNil(row.retryAfter)
+        XCTAssertEqual(row.attempt, 1)
+        XCTAssertEqual(try productRows(), productBefore, "no second session, binding, generation, FTS row, or job")
+        XCTAssertEqual(try count("capture_ingest_publications"), 2, "the publication stays in the ledger")
+        XCTAssertEqual(try work(daily).status, .parsed)
+        // D6 precondition: the retained bytes replay through the same parser, under
+        // another machine and locator, to exactly the committed normalized digest.
+        let retained = try await CaptureIngestReplay.replay(publication: hq.publication,
+            bindingSnapshot: hq.binding, cas: cas, stagingParent: stagingParent)
+        XCTAssertNotEqual(retained.verifiedManifest.locator, daily.manifest.locator)
+        XCTAssertEqual(retained.nativeIdentity.machineID, otherMachine)
+        let committedDigest = try writer.read { db in
+            try String.fetchOne(db, sql: "SELECT normalized_messages_sha256 FROM capture_ingest_generations WHERE generation_id = ?",
+                arguments: [receipt.generationID])
+        }
+        XCTAssertEqual(ArchiveV2Hash.sha256(try ArchiveCanonicalJSON.encode(retained.scan.messages)), committedDigest)
+        let again = try await worker.step()
+        XCTAssertEqual(again, .idle, "a quarantined publication is terminal, not retried")
+    }
+
+    func testDivergentBytesFromAnotherMachineCommitAsTheirOwnSession() async throws {
+        let worker = makeWorker()
+        let daily = try await seedEligible(sequence: 1)
+        guard case .parsed(let first) = try await worker.step() else { return XCTFail("first machine must parse") }
+        var continued = try claudeBytes(nativeID: "native-session")
+        continued.append(try jsonl([[
+            "sessionId": "native-session", "cwd": "/repo/project", "timestamp": "2026-09-06T00:01:00Z",
+            "type": "user", "message": ["content": "Continue on the other machine"],
+        ]]))
+        let hq = try await seedEligible(configuredRoot: "/hq-host/.claude/projects", relative: "hq-project/session.jsonl",
+            instanceID: otherInstance, sequence: 1, provision: true, bytes: continued, machineID: otherMachine)
+        guard case .parsed(let second) = try await worker.step() else { return XCTFail("divergent content must commit") }
+        XCTAssertNotEqual(second.sessionID, first.sessionID)
+        XCTAssertEqual(try work(hq).status, .parsed)
+        XCTAssertEqual(try work(daily).status, .parsed)
+        XCTAssertEqual(try count("sessions"), 2)
+        XCTAssertEqual(try count("capture_ingest_identity_bindings"), 2)
+        XCTAssertEqual(try count("capture_ingest_generations"), 2)
     }
 
     private func assertObsoleteGenerationRetained(retryFirst: Bool, readyLatest: Bool = false) async throws {
@@ -1345,15 +1412,16 @@ final class ServiceCaptureIngestWorkerTests: XCTestCase {
         configuredRoot: String? = nil, relative: String = "project/session.jsonl",
         nativeID: String = "native-session", instanceID: String? = nil, publicationEpoch: String? = nil,
         parser: String? = nil, sequence: Int64? = nil, provision: Bool = false, publishObjects: Bool = true,
-        bytes: Data? = nil, manifestMachine: String? = nil
+        bytes: Data? = nil, manifestMachine: String? = nil, machineID: String? = nil
     ) async throws -> Seeded {
+        let machineID = machineID ?? machine
         let instanceID = instanceID ?? instance
         let root = configuredRoot ?? logicalRoot
         if provision {
             try writer.write { db in
-                if try CaptureIngestSourceRegistry.binding(db, machineID: machine, sourceInstanceID: instanceID) == nil {
+                if try CaptureIngestSourceRegistry.binding(db, machineID: machineID, sourceInstanceID: instanceID) == nil {
                     _ = try CaptureIngestSourceRegistry.provision(
-                        db, machineID: machine, sourceInstanceID: instanceID, source: source,
+                        db, machineID: machineID, sourceInstanceID: instanceID, source: source,
                         parseFormat: format, configuredRoot: root, initialEpoch: epoch
                     )
                 }
@@ -1363,13 +1431,14 @@ final class ServiceCaptureIngestWorkerTests: XCTestCase {
         let fixture = try publishCAS(
             raw: raw, source: source, root: root, relative: relative,
             instanceID: instanceID, epoch: publicationEpoch ?? epoch,
-            publishObjects: publishObjects, manifestMachine: manifestMachine, sequence: sequence ?? nextOrdinal
+            publishObjects: publishObjects, manifestMachine: manifestMachine, sequence: sequence ?? nextOrdinal,
+            machineID: machineID
         )
         try accept(fixture.publication, parser: parser ?? revision)
         let binding = try writer.read {
-            try CaptureIngestSourceRegistry.binding($0, machineID: machine, sourceInstanceID: instanceID)
+            try CaptureIngestSourceRegistry.binding($0, machineID: machineID, sourceInstanceID: instanceID)
         } ?? CaptureIngestSourceBinding(
-            machineID: machine, sourceInstanceID: instanceID, source: source, parseFormat: format,
+            machineID: machineID, sourceInstanceID: instanceID, source: source, parseFormat: format,
             configuredRoot: root, approvedEpoch: publicationEpoch ?? epoch, authorityGeneration: 1
         )
         return Seeded(digest: try fixture.publication.sha256(), publication: fixture.publication,
@@ -1379,8 +1448,9 @@ final class ServiceCaptureIngestWorkerTests: XCTestCase {
     private func publishCAS(
         raw: Data, source: SourceName, root: String, relative: String, instanceID: String,
         epoch: String, publishObjects: Bool, manifestMachine: String?, sequence: Int64,
-        captureID: String? = nil
+        captureID: String? = nil, machineID: String? = nil
     ) throws -> (publication: CollectorPublicationEnvelope, manifest: ArchiveSourceManifest) {
+        let machineID = machineID ?? machine
         let hash = ArchiveV2Hash.sha256(raw)
         var chunks: [ArchiveChunkReference] = []
         var offset = 0
@@ -1394,7 +1464,7 @@ final class ServiceCaptureIngestWorkerTests: XCTestCase {
         }
         let manifest = try ArchiveSourceManifest(
             captureID: captureID ?? ArchiveV2Hash.sha256(Data(UUID().uuidString.utf8)),
-            machineID: manifestMachine ?? machine, source: source.rawValue,
+            machineID: manifestMachine ?? machineID, source: source.rawValue,
             locator: root + "/" + relative, sessionID: nil, capturedAt: "2026-09-06T00:00:00Z",
             generation: ArchiveSourceGeneration(device: 1, inode: 2, size: Int64(raw.count), mtimeNs: 3, ctimeNs: 4, mode: 0o100600),
             wholeSourceSHA256: hash, rawByteCount: Int64(raw.count), chunks: chunks,
@@ -1404,7 +1474,7 @@ final class ServiceCaptureIngestWorkerTests: XCTestCase {
         let manifestSHA = ArchiveV2Hash.sha256(manifestBytes)
         _ = try cas.publishManifest(manifestBytes, expectedSHA256: manifestSHA)
         let publication = try CollectorPublicationEnvelope(
-            machineID: machine, sourceInstanceID: instanceID, collectorEpoch: epoch,
+            machineID: machineID, sourceInstanceID: instanceID, collectorEpoch: epoch,
             sequence: sequence, manifestSHA256: manifestSHA
         )
         return (publication, manifest)
