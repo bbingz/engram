@@ -19,6 +19,8 @@
     <string>__ENGRAM_DATABASE_PATH__</string>
     <string>--service-socket</string>
     <string>__ENGRAM_SERVICE_SOCKET__</string>
+    <string>--capture-source-authority-file</string>
+    <string>__ENGRAM_CAPTURE_SOURCE_AUTHORITY__</string>
   </array>
   <key>Disabled</key>
   <true/>

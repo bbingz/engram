@@ -1,0 +1,59 @@
+{
+  "collector": {
+    "budgets": {
+      "maxCandidateFiles": 2,
+      "maxCaptureBytes": 1048576,
+      "maxCaptureFiles": 2,
+      "maxCheckpointUTF8Bytes": 512,
+      "maxDirectoryOpens": 1,
+      "maxEntriesVisited": 2,
+      "maxIncomingPaths": 64,
+      "maxMetadataBytes": 8192,
+      "maxPathUTF8Bytes": 4096,
+      "maxQueuedBatches": 16,
+      "maxQueuedUTF8Bytes": 65536,
+      "maxRecoveryCandidates": 8,
+      "maxResponseBytes": 4096,
+      "maxTotalPathUTF8Bytes": 32768,
+      "maxUploadClaimsPerReplica": 2,
+      "minimumFreeDiskBytes": 0,
+      "pollIntervalMilliseconds": 50
+    },
+    "enabled": true,
+    "identityCatalog": "/Users/example/.engram-collector/identity/archive.sqlite",
+    "privacy": {
+      "excludedProjectRoots": [
+        "/Users/example/Private"
+      ],
+      "revision": 1
+    },
+    "replicas": [
+      {
+        "baseURL": "https://hq.example.invalid:8787",
+        "credentialID": "hq-token",
+        "serverID": "hq"
+      },
+      {
+        "baseURL": "https://m1.example.invalid:8787",
+        "credentialID": "m1-token",
+        "serverID": "m1"
+      }
+    ],
+    "roots": [
+      {
+        "revision": 1,
+        "rootID": "codex-sessions",
+        "rootPath": "/Users/example/.codex/sessions",
+        "source": "codex"
+      },
+      {
+        "revision": 1,
+        "rootID": "claude-projects",
+        "rootPath": "/Users/example/.claude/projects",
+        "source": "claude-code"
+      }
+    ],
+    "shadowRoot": "/Users/example/.engram-collector/spool"
+  },
+  "runtimeRole": "collector"
+}

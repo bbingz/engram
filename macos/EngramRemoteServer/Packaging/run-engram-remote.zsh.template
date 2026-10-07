@@ -7,6 +7,10 @@ remote_root='__ENGRAM_REMOTE_ROOT__'
 set -a
 source "$remote_root/secrets/legacy-v1.env"
 source "$remote_root/secrets/archive-v2.env"
+# Optional Web reader/editor environment for the receiver; absent means Web off.
+if [[ -f "$remote_root/secrets/web.env" && ! -L "$remote_root/secrets/web.env" ]]; then
+  source "$remote_root/secrets/web.env"
+fi
 set +a
 
 # A launchd retry can overlap a healthy instance after a wrapper replacement.

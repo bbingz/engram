@@ -472,6 +472,10 @@ describe('owner-only deployment templates', () => {
     expect(wrapperTemplate).toContain('umask 077');
     expect(wrapperTemplate).toContain('legacy-v1.env');
     expect(wrapperTemplate).toContain('archive-v2.env');
+    // The receiver's Web environment is optional and only ever a regular file.
+    expect(wrapperTemplate).toMatch(
+      /if \[\[ -f "\$remote_root\/secrets\/web\.env" && ! -L "\$remote_root\/secrets\/web\.env" \]\]; then\n\s+source "\$remote_root\/secrets\/web\.env"\nfi/,
+    );
     expect(wrapperTemplate).toContain(
       "export ENGRAM_REMOTE_SOURCE_REVISION='__ENGRAM_REMOTE_SOURCE_REVISION__'",
     );
