@@ -1,9 +1,11 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -237,10 +239,54 @@ function stubTools(root: string, launchctlScript?: string) {
   ];
 }
 
+const sha256 = (file: string) =>
+  createHash('sha256').update(readFileSync(file)).digest('hex');
+
+// SHA256SUMS as macos/scripts/package-*.sh generate_manifest writes it:
+// `<sha256>  <relative path>` for every regular file except itself, sorted.
+function writeManifest(directory: string) {
+  const files: string[] = [];
+  const walk = (relative: string) => {
+    for (const entry of readdirSync(join(directory, relative), {
+      withFileTypes: true,
+    })) {
+      const child = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(child);
+      else if (entry.isFile() && child !== 'SHA256SUMS') files.push(child);
+    }
+  };
+  walk('');
+  writeFileSync(
+    join(directory, 'SHA256SUMS'),
+    files
+      .sort()
+      .map((file) => `${sha256(join(directory, file))}  ${file}\n`)
+      .join(''),
+    { mode: 0o600 },
+  );
+}
+
+// Writes the metadata last and then the manifest over the whole bundle.
 function writeMetadata(directory: string, role: string, rev = revision) {
   writeFileSync(
     join(directory, 'BUILD-METADATA.json'),
     `${JSON.stringify({ product: products[role], sourceRevision: rev })}\n`,
+  );
+  writeManifest(directory);
+}
+
+function runVerifyInstalled(root: string, bundle: string, role = 'collector') {
+  const code = `import {roles, verifyInstalledRelease} from ${JSON.stringify(`file://${script}`)};
+    console.log(JSON.stringify(verifyInstalledRelease(process.argv[1], roles[process.argv[2]])));`;
+  return spawnSync(
+    process.execPath,
+    ['--input-type=module', '-e', code, bundle, role],
+    {
+      cwd: root,
+      encoding: 'utf8',
+      timeout: 10_000,
+      env: { PATH: '/usr/bin:/bin', CFFIXED_USER_HOME: join(root, 'unused') },
+    },
   );
 }
 
@@ -308,8 +354,9 @@ describe('headless installation dry-run boundaries', () => {
       expect(result.kind).toBe('installation-dry-run');
       expect(result.transaction).toBe('install');
       expect(result.packageVerified).toBe(false);
-      expect(result.deploymentAuthorized).toBe(false);
+      expect(result).not.toHaveProperty('deploymentAuthorized');
       expect(result.role).toBe(role);
+      expect(result.product).toBe(products[role]);
       expect(result.sourceRevision).toBe(revision);
       expect(result.previousRelease).toBeNull();
       expect(result.targets).toEqual({
@@ -1026,6 +1073,10 @@ describe('headless installation dry-run boundaries', () => {
       const printed = JSON.parse(result.stdout);
       expect(printed.packageVerified).toBe(true);
       expect(printed.verifierDirectory).toBe(join(root, 'verifier'));
+      expect(printed.launchctl).toBe(join(root, 'tools/launchctl'));
+      expect(printed.packageDigest).toBe(
+        sha256(join(root, 'package/SHA256SUMS')),
+      );
       expect(printed.activation.launchd).toEqual({ loaded: false, path: null });
       expect(readFileSync(join(root, 'launchctl-log'), 'utf8')).toBe(
         `print gui/${process.getuid?.()}/com.engram.collector\n`,
@@ -1057,6 +1108,80 @@ describe('headless installation dry-run boundaries', () => {
         /already loaded by a different job/,
       );
       expect(existsSync(join(root, 'installation'))).toBe(false);
+    });
+
+    // A release packaged before a template change fails the checkout
+    // verifier's byte-equality template check, so an installed release is
+    // verified by its own SHA256SUMS and BUILD-METADATA instead.
+    it('plans a rollback onto a release whose templates differ from the checkout without the checkout verifier', () => {
+      const root = fixture();
+      const previous = 'b'.repeat(40);
+      const old = installed(root, 'collector', previous);
+      const template = join(old, 'templates/run-engram-collector.zsh.template');
+      writeFileSync(
+        template,
+        `${readFileSync(template, 'utf8')}\n# packaged before the template change\n`,
+        { mode: 0o700 },
+      );
+      writeManifest(old);
+      const newer = join(root, 'installation/releases', revision);
+      writeTemplates(join(newer, 'templates'), 'collector');
+      writeMetadata(newer, 'collector');
+      rmSync(join(root, 'installation/current'));
+      symlinkSync(newer, join(root, 'installation/current'));
+      symlinkSync(old, join(root, 'installation/rollback'));
+      const tools = stubTools(root);
+      const argv = args(root).filter(
+        (value, index, all) =>
+          value !== '--package' && all[index - 1] !== '--package',
+      );
+      const result = runCLI(root, [...argv, '--kind', 'rollback', ...tools]);
+      expect(result.status, result.stderr).toBe(0);
+      const printed = JSON.parse(result.stdout);
+      expect(printed.kind).toBe('rollback-dry-run');
+      expect(printed.sourceRevision).toBe(previous);
+      expect(printed.packageVerified).toBe(true);
+      expect(printed.packageDigest).toBe(sha256(join(old, 'SHA256SUMS')));
+      expect(existsSync(join(root, 'verifier-log'))).toBe(false);
+      // Bytes that drift from the manifest are refused.
+      writeFileSync(template, '#!/bin/zsh\n', { mode: 0o700 });
+      expectRejected(
+        runCLI(root, [...argv, '--kind', 'rollback', ...tools]),
+        /does not match SHA256SUMS: templates\/run-engram-collector\.zsh\.template/,
+      );
+    });
+
+    it('verifies an installed release by manifest coverage, digests, template modes and metadata', () => {
+      const root = fixture();
+      const release = installed(root, 'collector', revision);
+      const ok = runVerifyInstalled(root, release);
+      expect(ok.status, ok.stderr).toBe(0);
+      expect(JSON.parse(ok.stdout)).toEqual({
+        manifestDigest: sha256(join(release, 'SHA256SUMS')),
+        files: 3,
+        sourceRevision: revision,
+      });
+      writeFileSync(join(release, 'extra.txt'), 'unlisted\n');
+      expectRejected(
+        runVerifyInstalled(root, release),
+        /does not exactly cover/,
+      );
+      rmSync(join(release, 'extra.txt'));
+      chmodSync(
+        join(release, 'templates/com.engram.collector.plist.template'),
+        0o644,
+      );
+      expectRejected(runVerifyInstalled(root, release), /wrong mode/);
+      chmodSync(
+        join(release, 'templates/com.engram.collector.plist.template'),
+        0o600,
+      );
+      expectRejected(
+        runVerifyInstalled(root, release, 'service-index'),
+        /template|metadata/,
+      );
+      writeFileSync(join(release, 'SHA256SUMS'), 'not a manifest\n');
+      expectRejected(runVerifyInstalled(root, release), /invalid line/);
     });
   });
 

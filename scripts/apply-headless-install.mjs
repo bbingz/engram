@@ -23,8 +23,12 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   canonicalPlanHash,
+  digestFile,
   optionalSlots,
   path,
+  readMetadata,
+  roles,
+  verifyInstalledRelease,
 } from './plan-headless-install.mjs';
 
 const kinds = ['installation-dry-run', 'upgrade-dry-run', 'rollback-dry-run'];
@@ -90,6 +94,13 @@ export function loadPlan(file, expectedHash) {
     fail('plan hash mismatch; refusing to apply');
   if (plan.packageVerified !== true)
     fail('plan was not produced by a verified planner run');
+  if (
+    !/^[0-9a-f]{64}$/.test(plan.packageDigest ?? '') ||
+    !Object.hasOwn(roles, plan.role) ||
+    roles[plan.role].product !== plan.product ||
+    !/^[0-9a-f]{40}$/.test(plan.sourceRevision ?? '')
+  )
+    fail('plan lacks a package digest, product or revision');
   if (!kinds.includes(plan.kind)) fail('unsupported plan kind');
   if (
     !Array.isArray(plan.steps) ||
@@ -214,9 +225,24 @@ function run(executable, args, timeout) {
   return !(result.error || result.signal || result.status !== 0);
 }
 
-function applyStep(step, tools, created) {
+// The plan hash pins the package bytes only through this check: the source
+// must still carry the planned BUILD-METADATA and SHA256SUMS digest.
+function bindPackage(source, plan) {
+  const metadata = readMetadata(source);
+  if (
+    metadata.product !== plan.product ||
+    metadata.sourceRevision !== plan.sourceRevision ||
+    digestFile(resolve(source, 'SHA256SUMS')) !== plan.packageDigest
+  )
+    fail(
+      'package changed since planning: BUILD-METADATA or SHA256SUMS differ from the plan; print a new plan',
+    );
+}
+
+function applyStep(step, tools, created, plan) {
   switch (step.operation) {
     case 'copy-new-release': {
+      bindPackage(step.source, plan);
       mkdirSync(dirname(step.destination), { recursive: true, mode: 0o700 });
       cpSync(step.source, step.destination, {
         recursive: true,
@@ -229,7 +255,6 @@ function applyStep(step, tools, created) {
       return;
     }
     case 'verify-copied-release':
-    case 'verify-existing-release':
       if (
         !run(
           '/bin/bash',
@@ -246,6 +271,15 @@ function applyStep(step, tools, created) {
           rmSync(step.bundle, { recursive: true, force: true });
         fail('release verification failed');
       }
+      return;
+    case 'verify-existing-release':
+      // Never the checkout verifier: its template check is byte equality with
+      // the checkout, which an older installed release legitimately fails.
+      if (
+        verifyInstalledRelease(step.bundle, roles[plan.role]).manifestDigest !==
+        plan.packageDigest
+      )
+        fail('installed release changed since planning');
       return;
     case 'initialize-collector-identity':
     case 'initialize-collector-spool':
@@ -293,7 +327,7 @@ export function applyPlan(plan, tools) {
   const created = [];
   try {
     for (const step of plan.steps) {
-      applyStep(step, tools, created);
+      applyStep(step, tools, created, plan);
       report.applied.push(step.operation);
     }
     if (!tools.activate) return report;

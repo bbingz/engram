@@ -7,11 +7,11 @@
 // accepts only a plan whose canonical hash matches (design §4.6, D12).
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, readlinkSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync, readlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const roles = {
+export const roles = {
   collector: {
     product: 'EngramCollector',
     label: 'com.engram.collector',
@@ -53,19 +53,22 @@ export const optionalSlots = {
   __ENGRAM_CAPTURE_SOURCE_AUTHORITY__: '--capture-source-authority-file',
 };
 
-function fail(message) {
+export function fail(message) {
   throw new Error(message);
 }
-function overlaps(a, b) {
+export function overlaps(a, b) {
   return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
 }
-function statIfPresent(path) {
+export function statIfPresent(path) {
   try {
     return lstatSync(path);
   } catch (error) {
     if (error.code === 'ENOENT') return null;
     throw error;
   }
+}
+export function digestFile(file) {
+  return createHash('sha256').update(readFileSync(file)).digest('hex');
 }
 // linkLeaf allows the named path itself to be a symlink (current, rollback).
 export function path(value, linkLeaf = false) {
@@ -93,7 +96,7 @@ export function path(value, linkLeaf = false) {
   }
   return value;
 }
-function identifier(value) {
+export function identifier(value) {
   return /^[A-Za-z0-9._-]{1,128}$/.test(value);
 }
 function canonical(value) {
@@ -480,10 +483,10 @@ export function makeInstallationPlan(options, metadata, host = {}) {
     kind: `${kind === 'install' ? 'installation' : kind}-dry-run`,
     transaction: kind,
     role: options.role,
+    product: metadata.product,
     sourceRevision: metadata.sourceRevision,
     previousRelease,
     packageVerified: false,
-    deploymentAuthorized: false,
     inputs,
     targets,
     identity,
@@ -646,12 +649,86 @@ export function runVerifier(directory, script, bundle) {
   return !(result.error || result.signal || result.status !== 0);
 }
 
-function readMetadata(bundle) {
+export function readMetadata(bundle) {
   const metadataPath = join(bundle, 'BUILD-METADATA.json');
-  const metadataStat = lstatSync(metadataPath);
-  if (!metadataStat.isFile() || metadataStat.size > 64 * 1024)
+  const metadataStat = statIfPresent(metadataPath);
+  if (!metadataStat?.isFile() || metadataStat.size > 64 * 1024)
     fail('invalid package metadata');
   return JSON.parse(readFileSync(metadataPath, 'utf8'));
+}
+
+// Same shape rules as assert_safe_relative_path in macos/scripts/package-*.sh.
+function safeManifestPath(value) {
+  return (
+    value !== '' &&
+    value !== 'SHA256SUMS' &&
+    !value.startsWith('/') &&
+    !value.endsWith('/') &&
+    !value.includes('..') &&
+    !value.includes('\\') &&
+    value.split('/').every((component) => component && component !== '.')
+  );
+}
+// Regular files only, like `find . -type f`; symlinks are neither listed nor followed.
+function listRegularFiles(directory, relative = '', depth = 0, into = []) {
+  if (depth > 16) fail('installed release is nested too deeply');
+  for (const entry of readdirSync(join(directory, relative), {
+    withFileTypes: true,
+  })) {
+    const child = relative ? `${relative}/${entry.name}` : entry.name;
+    if (entry.isDirectory())
+      listRegularFiles(directory, child, depth + 1, into);
+    else if (entry.isFile() && child !== 'SHA256SUMS') into.push(child);
+  }
+  return into;
+}
+// An already installed release is verified against its own SHA256SUMS and
+// BUILD-METADATA, never against the checkout's current templates: the
+// package-*.sh --verify-only template check compares bytes with the checkout,
+// which rejects every release packaged before a template change.
+export function verifyInstalledRelease(bundle, role) {
+  const manifestPath = join(bundle, 'SHA256SUMS');
+  const manifestInfo = statIfPresent(manifestPath);
+  if (!manifestInfo?.isFile() || manifestInfo.size > 1024 * 1024)
+    fail('installed release lacks a regular SHA256SUMS');
+  const listed = new Map();
+  const lines = readFileSync(manifestPath, 'utf8').split('\n');
+  if (lines.pop() !== '')
+    fail('installed release SHA256SUMS has an invalid line');
+  for (const line of lines) {
+    const match = /^([0-9a-f]{64}) {2}(\S+)$/.exec(line);
+    if (!match || !safeManifestPath(match[2]) || listed.has(match[2]))
+      fail('installed release SHA256SUMS has an invalid line');
+    listed.set(match[2], match[1]);
+  }
+  const files = listRegularFiles(bundle);
+  if (files.length !== listed.size || files.some((file) => !listed.has(file)))
+    fail('installed release SHA256SUMS does not exactly cover its files');
+  for (const [relative, digest] of listed) {
+    if (digestFile(join(bundle, relative)) !== digest)
+      fail(`installed release file does not match SHA256SUMS: ${relative}`);
+  }
+  for (const [name, mode] of [
+    [`${role.wrapper}.template`, 0o700],
+    [`${role.label}.plist.template`, 0o600],
+  ]) {
+    const info = statIfPresent(join(bundle, 'templates', name));
+    if (!info?.isFile() || (info.mode & 0o777) !== mode)
+      fail(
+        'installed release template is missing, aliased or has the wrong mode',
+      );
+  }
+  const metadata = readMetadata(bundle);
+  if (
+    metadata.product !== role.product ||
+    !/^[0-9a-f]{40}$/.test(metadata.sourceRevision ?? '')
+  )
+    fail('installed release metadata does not match the role');
+  return {
+    manifestDigest: digestFile(manifestPath),
+    files: listed.size,
+    sourceRevision: metadata.sourceRevision,
+  };
 }
 
 function main() {
@@ -660,24 +737,31 @@ function main() {
   const verifierDirectory =
     options['verifier-directory'] ??
     resolve(dirname(fileURLToPath(import.meta.url)), '../macos/scripts');
+  const launchctl = options.launchctl ?? '/bin/launchctl';
   let bundle = options.package;
   if (options.kind === 'rollback') {
     const pointer = join(options['install-root'], 'rollback');
     path(pointer, true);
     bundle = symlinkTarget(pointer, join(options['install-root'], 'releases'));
     if (!bundle) fail('rollback requires a rollback pointer');
-  } else validatePackageTemplates(options);
-  if (!runVerifier(verifierDirectory, role.verifier, bundle))
-    fail('package verification failed; no installation plan produced');
+    verifyInstalledRelease(bundle, role);
+  } else {
+    validatePackageTemplates(options);
+    if (!runVerifier(verifierDirectory, role.verifier, bundle))
+      fail('package verification failed; no installation plan produced');
+  }
   const metadata = readMetadata(bundle);
   const launchd = probeLaunchdLabel(
-    options.launchctl ?? '/bin/launchctl',
+    launchctl,
     `gui/${process.getuid()}`,
     role.label,
   );
   const plan = makeInstallationPlan(options, metadata, { launchd });
   plan.packageVerified = true;
+  // The executor re-checks these before copying or activating anything.
+  plan.packageDigest = digestFile(join(bundle, 'SHA256SUMS'));
   plan.verifierDirectory = verifierDirectory;
+  plan.launchctl = launchctl;
   plan.planHash = canonicalPlanHash(plan);
   process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`);
 }

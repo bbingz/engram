@@ -1,10 +1,12 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   readlinkSync,
   rmSync,
@@ -57,17 +59,57 @@ function fixture() {
   return root;
 }
 
-function makePackage(root: string, name: string, revision: string) {
+// SHA256SUMS as macos/scripts/package-*.sh generate_manifest writes it:
+// `<sha256>  <relative path>` for every regular file except itself, sorted.
+function writeManifest(directory: string) {
+  const files: string[] = [];
+  const walk = (relative: string) => {
+    for (const entry of readdirSync(join(directory, relative), {
+      withFileTypes: true,
+    })) {
+      const child = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(child);
+      else if (entry.isFile() && child !== 'SHA256SUMS') files.push(child);
+    }
+  };
+  walk('');
+  writeFileSync(
+    join(directory, 'SHA256SUMS'),
+    files
+      .sort()
+      .map(
+        (file) =>
+          `${createHash('sha256')
+            .update(readFileSync(join(directory, file)))
+            .digest('hex')}  ${file}\n`,
+      )
+      .join(''),
+    { mode: 0o600 },
+  );
+}
+
+// divergent: templates that differ from the checkout's, as a release packaged
+// before a template change would carry.
+function makePackage(
+  root: string,
+  name: string,
+  revision: string,
+  divergent = false,
+) {
   const directory = join(root, name);
   mkdirSync(join(directory, 'templates'), { recursive: true, mode: 0o700 });
-  mkdirSync(join(directory, 'bin'), { mode: 0o700 });
-  for (const [file, mode] of [
-    ['run-engram-collector.zsh.template', 0o700],
-    ['com.engram.collector.plist.template', 0o600],
+  mkdirSync(join(directory, 'bin'), { recursive: true, mode: 0o700 });
+  for (const [file, mode, suffix] of [
+    ['run-engram-collector.zsh.template', 0o700, '\n# packaged earlier\n'],
+    [
+      'com.engram.collector.plist.template',
+      0o600,
+      '<!-- packaged earlier -->\n',
+    ],
   ] as const) {
     writeFileSync(
       join(directory, 'templates', file),
-      readFileSync(join(templates, file)),
+      readFileSync(join(templates, file), 'utf8') + (divergent ? suffix : ''),
       { mode },
     );
   }
@@ -82,6 +124,7 @@ function makePackage(root: string, name: string, revision: string) {
     join(directory, 'BUILD-METADATA.json'),
     `${JSON.stringify({ product: 'EngramCollector', sourceRevision: revision })}\n`,
   );
+  writeManifest(directory);
   return directory;
 }
 
@@ -181,10 +224,7 @@ describe('headless install executor', () => {
     );
     expect(wrong.status).not.toBe(0);
     expect(wrong.stderr).toMatch(/plan hash mismatch; refusing to apply/);
-    writeFileSync(
-      file,
-      JSON.stringify({ ...plan, deploymentAuthorized: true }),
-    );
+    writeFileSync(file, JSON.stringify({ ...plan, transaction: 'upgrade' }));
     const tampered = apply(root, file, hash);
     expect(tampered.status).not.toBe(0);
     expect(tampered.stderr).toMatch(/plan hash mismatch; refusing to apply/);
@@ -194,6 +234,34 @@ describe('headless install executor', () => {
     expect(readFileSync(join(root, 'verifier-log'), 'utf8')).toBe(
       `--verify-only ${pkg}\n`,
     );
+  });
+
+  it('refuses a package rebuilt at another revision between plan and apply', () => {
+    const root = fixture();
+    const pkg = makePackage(root, 'package', revisionA);
+    const { file, plan, hash } = printPlan(root, 'plan', [
+      '--package',
+      pkg,
+      '--assert-no-identity-catalog',
+    ]);
+    expect(plan.packageDigest).toBe(
+      createHash('sha256')
+        .update(readFileSync(join(pkg, 'SHA256SUMS')))
+        .digest('hex'),
+    );
+    // Same path, new build: BUILD-METADATA and SHA256SUMS no longer match.
+    makePackage(root, 'package', revisionB);
+    const rebuilt = apply(root, file, hash);
+    expect(rebuilt.status).not.toBe(0);
+    expect(rebuilt.stderr).toMatch(/package changed since planning/);
+    expect(existsSync(join(root, 'installation'))).toBe(false);
+    // Same revision but different bytes: the manifest digest still differs.
+    makePackage(root, 'package', revisionA, true);
+    const repacked = apply(root, file, hash);
+    expect(repacked.status).not.toBe(0);
+    expect(repacked.stderr).toMatch(/package changed since planning/);
+    expect(existsSync(join(root, 'installation'))).toBe(false);
+    expect(mutations(root)).toEqual([]);
   });
 
   it('applies an install plan but runs no launchctl command without --activate', () => {
@@ -285,10 +353,23 @@ describe('headless install executor', () => {
     ]);
   });
 
-  it('round-trips the rollback pointer across upgrade and rollback', () => {
+  it('round-trips the rollback pointer across upgrade and rollback, verifying the older release by its own manifest', () => {
     const root = fixture();
-    const packageA = makePackage(root, 'package-a', revisionA);
+    // Release A was packaged before the checkout's templates changed; the
+    // checkout verifier would reject it, so rollback must not call it.
+    const packageA = makePackage(root, 'package-a', revisionA, true);
     const packageB = makePackage(root, 'package-b', revisionB);
+    expect(
+      readFileSync(
+        join(packageA, 'templates/com.engram.collector.plist.template'),
+        'utf8',
+      ),
+    ).not.toBe(
+      readFileSync(
+        join(templates, 'com.engram.collector.plist.template'),
+        'utf8',
+      ),
+    );
     const releaseA = join(root, 'installation/releases', revisionA);
     const releaseB = join(root, 'installation/releases', revisionB);
     const install = printPlan(root, 'install', [
@@ -312,14 +393,45 @@ describe('headless install executor', () => {
     expect(rollback(root)).toBe(releaseA);
     expect(plist(root)).toContain(`<string>${releaseB}</string>`);
 
+    const verifiedBefore = readFileSync(join(root, 'verifier-log'), 'utf8');
     const back = printPlan(root, 'rollback', ['--kind', 'rollback']);
     expect(back.plan.sourceRevision).toBe(revisionA);
     expect(back.plan.previousRelease).toBe(releaseB);
+    expect(back.plan.packageDigest).toBe(
+      createHash('sha256')
+        .update(readFileSync(join(releaseA, 'SHA256SUMS')))
+        .digest('hex'),
+    );
     expect(apply(root, back.file, back.hash).status).toBe(0);
+    // Neither planning nor applying the rollback ran the checkout verifier.
+    expect(readFileSync(join(root, 'verifier-log'), 'utf8')).toBe(
+      verifiedBefore,
+    );
     expect(current(root)).toBe(releaseA);
     expect(rollback(root)).toBe(releaseB);
     expect(plist(root)).toContain(`<string>${releaseA}</string>`);
+    expect(plist(root)).toContain('<!-- packaged earlier -->');
     expect(plist(root)).not.toContain(revisionB);
+    // A release whose bytes drifted from its manifest is refused at rollback.
+    writeFileSync(
+      join(releaseB, 'bin/EngramCollector'),
+      '#!/bin/sh\nexit 0\n',
+      { mode: 0o700 },
+    );
+    const drifted = spawn(
+      planner,
+      planArgs(root, ['--kind', 'rollback']),
+      root,
+    );
+    expect(drifted.status).not.toBe(0);
+    expect(drifted.stderr).toMatch(
+      /does not match SHA256SUMS: bin\/EngramCollector/,
+    );
+    writeFileSync(
+      join(releaseB, 'bin/EngramCollector'),
+      readFileSync(join(packageB, 'bin/EngramCollector')),
+      { mode: 0o700 },
+    );
 
     // The applied rollback plan no longer matches the host state.
     const stale = apply(root, back.file, back.hash);
