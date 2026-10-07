@@ -18,6 +18,7 @@ valid_absolute_path() {
 
 typeset -A launch_paths
 typeset -a required_flags=(--package-root --expected-home --settings --credentials-file --database-path --service-socket)
+# --capture-source-authority-file is an optional slot for the index role.
 dry_run=0
 while (( $# > 0 )); do
   argument="$1"
@@ -27,7 +28,7 @@ while (( $# > 0 )); do
       dry_run=1
       shift
       ;;
-    --package-root | --expected-home | --settings | --credentials-file | --database-path | --service-socket)
+    --package-root | --expected-home | --settings | --credentials-file | --database-path | --service-socket | --capture-source-authority-file)
       (( $# >= 2 )) || fail
       [[ -z "${launch_paths[$argument]-}" ]] || fail
       valid_absolute_path "$2" || fail
@@ -46,6 +47,9 @@ typeset -a product_arguments=(--expected-home "${launch_paths[--expected-home]}"
   --database-path "${launch_paths[--database-path]}"
   --service-socket "${launch_paths[--service-socket]}"
   --capture-credentials-file "${launch_paths[--credentials-file]}")
+if [[ -n "${launch_paths[--capture-source-authority-file]-}" ]]; then
+  product_arguments+=(--capture-source-authority-file "${launch_paths[--capture-source-authority-file]}")
+fi
 
 # JSON uses only shell builtins. Argument strings are never evaluated.
 json_string() {

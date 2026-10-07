@@ -890,6 +890,8 @@ describe.skipIf(process.platform !== 'darwin')(
         '__ENGRAM_DATABASE_PATH__',
         '--service-socket',
         '__ENGRAM_SERVICE_SOCKET__',
+        '--capture-source-authority-file',
+        '__ENGRAM_CAPTURE_SOURCE_AUTHORITY__',
       ]);
       expect(plist).not.toMatch(
         /TOKEN|PASSWORD|AT_REST_KEY|legacy-v1\.env|archive-v2\.env/,
@@ -912,7 +914,7 @@ describe.skipIf(process.platform !== 'darwin')(
           .replaceAll('"', '&quot;')
           .replaceAll("'", '&apos;');
       const tokens = [...new Set(raw.match(/__ENGRAM_[A-Z_]+__/g) ?? [])];
-      expect(tokens).toHaveLength(7);
+      expect(tokens).toHaveLength(8);
       let rendered = raw;
       for (const token of tokens)
         rendered = rendered.replaceAll(token, escapeXML(unusual));
@@ -928,7 +930,7 @@ describe.skipIf(process.platform !== 'darwin')(
       expect(parsed.error).toBeUndefined();
       expect(parsed.status).toBe(0);
       const args = JSON.parse(parsed.stdout).ProgramArguments as string[];
-      expect(args.filter((value) => value === unusual)).toHaveLength(7);
+      expect(args.filter((value) => value === unusual)).toHaveLength(8);
       // Encoding oracle only, not a shipped installation renderer.
     });
 
@@ -953,6 +955,55 @@ describe.skipIf(process.platform !== 'darwin')(
       expect(serviceLaunchSnapshot(fixture.root)).toEqual(before);
       expect(existsSync(fixture.record)).toBe(false);
       expect(existsSync(fixture.settingsRecord)).toBe(false);
+    });
+
+    it('passes an optional --capture-source-authority-file through to the product', () => {
+      const fixture = serviceLaunchFixture();
+      const authority = join(fixture.root, 'authority/sources.json');
+      const before = serviceLaunchSnapshot(fixture.root);
+      const dry = runServiceWrapper(fixture, [
+        '--dry-run',
+        ...serviceLaunchArgs(fixture.values),
+        '--capture-source-authority-file',
+        authority,
+      ]);
+      expect(dry.status).toBe(0);
+      expect(JSON.parse(dry.stdout).arguments).toEqual([
+        ...serviceExpectedProductArgs(fixture.values),
+        '--capture-source-authority-file',
+        authority,
+      ]);
+      expect(serviceLaunchSnapshot(fixture.root)).toEqual(before);
+      for (const extra of [
+        ['--capture-source-authority-file'],
+        ['--capture-source-authority-file', 'relative'],
+        [
+          '--capture-source-authority-file',
+          authority,
+          '--capture-source-authority-file',
+          authority,
+        ],
+      ]) {
+        const rejected = runServiceWrapper(fixture, [
+          '--dry-run',
+          ...serviceLaunchArgs(fixture.values),
+          ...extra,
+        ]);
+        expect(rejected.status, JSON.stringify(extra)).not.toBe(0);
+      }
+      const launched = runServiceWrapper(fixture, [
+        ...serviceLaunchArgs(fixture.values),
+        '--capture-source-authority-file',
+        authority,
+      ]);
+      expect(launched.status).toBe(0);
+      expect(
+        readFileSync(fixture.record, 'utf8').split('\0').slice(0, -1),
+      ).toEqual([
+        ...serviceExpectedProductArgs(fixture.values),
+        '--capture-source-authority-file',
+        authority,
+      ]);
     });
 
     it('preserves shell, JSON, XML, Unicode and control characters in dry-run paths', () => {

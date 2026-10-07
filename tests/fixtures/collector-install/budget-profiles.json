@@ -1,0 +1,23 @@
+{
+  "profiles": {
+    "fixture": {
+      "maxEntriesVisited": 2,
+      "maxCandidateFiles": 2,
+      "maxDirectoryOpens": 1,
+      "maxMetadataBytes": 8192,
+      "maxCaptureFiles": 2,
+      "maxCaptureBytes": 1048576,
+      "maxUploadClaimsPerReplica": 2,
+      "maxRecoveryCandidates": 8,
+      "maxResponseBytes": 4096,
+      "minimumFreeDiskBytes": 0,
+      "maxIncomingPaths": 64,
+      "maxPathUTF8Bytes": 4096,
+      "maxTotalPathUTF8Bytes": 32768,
+      "maxCheckpointUTF8Bytes": 512,
+      "maxQueuedBatches": 16,
+      "maxQueuedUTF8Bytes": 65536,
+      "pollIntervalMilliseconds": 50
+    }
+  }
+}
