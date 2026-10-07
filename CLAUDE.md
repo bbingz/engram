@@ -51,7 +51,7 @@ macos/
   EngramMCP/          # Native Swift MCP stdio helper
   EngramCollector/ + EngramCollectorCore/  # headless no-index collector (runtimeRole=collector)
   EngramCaptureShared/  # capture/identity code shared by CollectorCore and CoreWrite
-  EngramRemoteServer/   # archive replica, publication intake, opt-in Web reader/editor
+  EngramRemoteServer/   # archive replica, publication intake, opt-in Web reader/editor, opt-in read-only remote MCP
   EngramCLI/            # native CLI
   project.yml  # xcodegen config → generates Engram.xcodeproj
 ```
@@ -74,7 +74,9 @@ In the default `local` role `Engram.app` launches and talks to the native
 Service is externally managed and the App/MCP only attach. `EngramMCP` is the
 native stdio helper used by MCP clients. Roles come from `runtimeRole` in
 `settings.json` (`RuntimeRoleSettings.swift`); only a `local` Service scans
-host session files, an `index` Service stores sessions through capture ingest.
+host session files. Capture ingest runs in the `index` role and, when a replica
+credential (`hq`/`m1`) is configured, also in `local`
+(`ServiceCaptureIngestRuntime.settings`); other roles never ingest.
 
 - `EngramServiceRunner` owns service startup, schema/indexing, maintenance, and
   command dispatch.

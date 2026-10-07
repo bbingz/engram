@@ -33,6 +33,22 @@ authorizes host changes.
 - **App "open Web reader" entry (design section 1).** In `collector`/`replica`
   roles the App shows only the unavailable message; it has no action that opens
   the Web reader as the design states.
+- **P2 exact-content cross-machine duplicate quarantine (cutover design §3-B,
+  decision D6; added 2026-10-07).** Implementation branch
+  `feat/p2-cross-machine-duplicate-quarantine-20261007`. Done when
+  `testIdenticalCrossMachineCaptureIsQuarantinedNotDuplicated_repro` passes,
+  the ledger entry exists, and a service-index build carrying it is deployed at
+  runbook step R7.
+- **P3 install tooling (cutover design §4.1-4.6, decision D12; added
+  2026-10-07).** Branch `feat/p3-install-tooling-20261007`. Done when the
+  settings renderer, identity branch, credential checks, planner fixes,
+  upgrade/rollback plan kinds and the hash-checked executor have `(repro)`
+  tests and a rendered fixture loads through the collector settings parser.
+- **D7 purge of legacy `origin=local` grok/pi rows, dry-run first (added
+  2026-10-07).** Not started. The HQ central index held 6,188 such rows on
+  2026-10-07 (P0 counted 6,140) and they grow until the role gate runs on HQ.
+  Done when a dry-run report exists, the owner approves it, and the purge
+  clears the rows plus their derived rows.
 
 Earlier status: no implementation-ready engineering task is selected as of 2026-08-16.
 
