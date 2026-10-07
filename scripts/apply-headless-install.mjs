@@ -45,6 +45,9 @@ const operations = new Set([
   'record-rollback-pointer',
 ]);
 const environment = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', LC_ALL: 'C' };
+// After bootout, launchd unloads asynchronously; bootstrap must wait for it.
+const unloadAttempts = 30;
+const unloadIntervalMilliseconds = 1000;
 
 function fail(message) {
   throw new Error(message);
@@ -114,11 +117,13 @@ export function loadPlan(file, expectedHash) {
   return plan;
 }
 
+// A symlink's target resolved against its own directory, so a hand-made
+// relative `current -> releases/<rev>` compares equal to the planned path.
 function link(target) {
   const info = statIfPresent(target);
   if (!info) return null;
   if (!info.isSymbolicLink()) fail(`${target} is not a symlink`);
-  return readlinkSync(target);
+  return resolve(dirname(target), readlinkSync(target));
 }
 
 // The plan recorded the host state it assumed; refuse to apply onto anything else.
@@ -192,36 +197,73 @@ export function renderTemplate(text, bindings, kind) {
   return output;
 }
 
-function writeOwnerOnly(destination, text, mode, overwrite) {
-  const existing = statIfPresent(destination);
-  if (existing && (!overwrite || !existing.isFile()))
-    fail(`${destination} exists`);
+function writeFile(destination, bytes, mode) {
   const temporary = `${destination}.${process.pid}.tmp`;
   const descriptor = openSync(temporary, 'wx', mode);
   try {
     fchmodSync(descriptor, mode);
-    writeSync(descriptor, text);
+    writeSync(descriptor, bytes);
   } finally {
     closeSync(descriptor);
   }
   renameSync(temporary, destination);
 }
 
-function atomicSymlink(target, destination, previous) {
-  if (link(destination) !== previous)
-    fail(`${destination} changed since planning`);
+// Every file effect is recorded so a failed step can be undone: paths this
+// run created are removed, overwritten files get their previous bytes back
+// and swapped symlinks are re-pointed.
+function writeOwnerOnly(destination, text, mode, overwrite, transaction) {
+  const existing = statIfPresent(destination);
+  if (existing && (!overwrite || !existing.isFile()))
+    fail(`${destination} exists`);
+  if (existing)
+    transaction.restores.push({
+      file: destination,
+      bytes: readFileSync(destination),
+      mode: existing.mode & 0o7777,
+    });
+  else transaction.created.push(destination);
+  writeFile(destination, text, mode);
+}
+
+function pointSymlink(target, destination) {
   const temporary = `${destination}.${process.pid}.tmp`;
   symlinkSync(target, temporary);
   renameSync(temporary, destination);
 }
 
-function run(executable, args, timeout) {
-  const result = spawnSync(executable, args, {
+function atomicSymlink(target, destination, previous, transaction) {
+  if (link(destination) !== previous)
+    fail(`${destination} changed since planning`);
+  if (previous === null) transaction.created.push(destination);
+  else transaction.restores.push({ symlink: destination, target: previous });
+  pointSymlink(target, destination);
+}
+
+function undo(transaction) {
+  const undone = [];
+  for (const restore of transaction.restores.reverse()) {
+    if (restore.symlink) pointSymlink(restore.target, restore.symlink);
+    else writeFile(restore.file, restore.bytes, restore.mode);
+    undone.push(restore.symlink ?? restore.file);
+  }
+  for (const created of transaction.created.reverse()) {
+    rmSync(created, { recursive: true, force: true });
+    undone.push(created);
+  }
+  return undone;
+}
+
+function spawn(executable, args, timeout) {
+  return spawnSync(executable, args, {
     env: environment,
     encoding: 'utf8',
     timeout,
     maxBuffer: 1024 * 1024,
   });
+}
+function run(executable, args, timeout) {
+  const result = spawn(executable, args, timeout);
   return !(result.error || result.signal || result.status !== 0);
 }
 
@@ -239,7 +281,7 @@ function bindPackage(source, plan) {
     );
 }
 
-function applyStep(step, tools, created, plan) {
+function applyStep(step, tools, transaction, plan) {
   switch (step.operation) {
     case 'copy-new-release': {
       bindPackage(step.source, plan);
@@ -251,7 +293,7 @@ function applyStep(step, tools, created, plan) {
         preserveTimestamps: true,
         verbatimSymlinks: true,
       });
-      created.push(step.destination);
+      transaction.created.push(step.destination);
       return;
     }
     case 'verify-copied-release':
@@ -265,12 +307,8 @@ function applyStep(step, tools, created, plan) {
           ],
           30_000,
         )
-      ) {
-        // Remove only a release this run copied; never an existing one.
-        if (created.includes(step.bundle))
-          rmSync(step.bundle, { recursive: true, force: true });
+      )
         fail('release verification failed');
-      }
       return;
     case 'verify-existing-release':
       // Never the checkout verifier: its template check is byte equality with
@@ -299,19 +337,73 @@ function applyStep(step, tools, created, plan) {
         rendered,
         kind === 'zsh' ? 0o700 : 0o600,
         step.overwrite === true,
+        transaction,
       );
       return;
     }
     case 'create-current-symlink':
       if (statIfPresent(step.path)) fail(`${step.path} exists`);
       symlinkSync(step.target, step.path);
+      transaction.created.push(step.path);
       return;
     case 'swap-current-symlink':
     case 'record-rollback-pointer':
-      atomicSymlink(step.target, step.path, step.previous);
+      atomicSymlink(step.target, step.path, step.previous, transaction);
       return;
     default:
       fail('unsupported step');
+  }
+}
+
+function unloaded(result) {
+  return (
+    result.status === 113 ||
+    /Could not find service/i.test(`${result.stdout}${result.stderr}`)
+  );
+}
+
+// Bounded wait for launchd to finish unloading the label after bootout.
+function waitUntilUnloaded(launchctl, service) {
+  for (let attempt = 1; attempt <= unloadAttempts; attempt++) {
+    if (unloaded(spawn(launchctl, ['print', service], 10_000))) return attempt;
+    Atomics.wait(
+      new Int32Array(new SharedArrayBuffer(4)),
+      0,
+      0,
+      unloadIntervalMilliseconds,
+    );
+  }
+  fail(`launchd still reports ${service} loaded after bootout`);
+}
+
+function activate(plan, tools, activation) {
+  if (plan.credentials) {
+    // Metadata only: the executor never opens the credentials file.
+    const info = statIfPresent(plan.credentials.file);
+    if (
+      !info?.isFile() ||
+      info.uid !== process.getuid() ||
+      (info.mode & 0o7777) !== 0o600 ||
+      info.nlink !== 1
+    )
+      fail(
+        'refusing activation: credentials file is not an owner-only 0600 regular file',
+      );
+  }
+  const commands = [...plan.activation.commands];
+  while (commands.length) {
+    const command = commands.shift();
+    const ok = run(tools.launchctl, command, 30_000);
+    activation.results.push({ command, ok });
+    activation.remaining = commands;
+    if (!ok) fail(`launchctl ${command[0]} failed`);
+    if (command[0] === 'bootout') {
+      activation.results.push({
+        command: ['print', command[1]],
+        ok: true,
+        attempts: waitUntilUnloaded(tools.launchctl, command[1]),
+      });
+    }
   }
 }
 
@@ -324,35 +416,35 @@ export function applyPlan(plan, tools) {
     applied: [],
     activation: { launchctl: 'NOT_RUN', commands: plan.activation.commands },
   };
-  const created = [];
+  const transaction = { created: [], restores: [] };
   try {
     for (const step of plan.steps) {
-      applyStep(step, tools, created, plan);
+      applyStep(step, tools, transaction, plan);
       report.applied.push(step.operation);
     }
-    if (!tools.activate) return report;
-    if (plan.credentials) {
-      // Metadata only: the executor never opens the credentials file.
-      const info = statIfPresent(plan.credentials.file);
-      if (
-        !info?.isFile() ||
-        info.uid !== process.getuid() ||
-        (info.mode & 0o7777) !== 0o600 ||
-        info.nlink !== 1
-      )
-        fail(
-          'refusing activation: credentials file is not an owner-only 0600 regular file',
-        );
-    }
-    report.activation = { launchctl: tools.launchctl, results: [] };
-    for (const command of plan.activation.commands) {
-      const ok = run(tools.launchctl, command, 30_000);
-      report.activation.results.push({ command, ok });
-      if (!ok) fail(`launchctl ${command[0]} failed`);
-    }
+  } catch (error) {
+    // A failed step leaves no half-applied release behind, so the owner can
+    // print a new plan against the state the old plan assumed.
+    report.rolledBack = undo(transaction);
+    throw Object.assign(error, { report: { ...report, error: error.message } });
+  }
+  if (!tools.activate) return report;
+  report.activation = {
+    launchctl: tools.launchctl,
+    results: [],
+    remaining: plan.activation.commands,
+  };
+  try {
+    activate(plan, tools, report.activation);
+    report.activation.remaining = [];
     return report;
   } catch (error) {
-    // Applied steps are reported so the owner can see the partial state.
+    // File steps stay applied; the report names what launchctl still needs.
+    const failed = report.activation.results.filter((entry) => !entry.ok);
+    report.activation.manual = [
+      ...failed,
+      ...report.activation.remaining.map((command) => ({ command })),
+    ].map((entry) => ['launchctl', ...entry.command].join(' '));
     throw Object.assign(error, { report: { ...report, error: error.message } });
   }
 }
@@ -360,13 +452,22 @@ export function applyPlan(plan, tools) {
 function main() {
   const options = parseArguments(process.argv.slice(2));
   const plan = loadPlan(options.plan, options['plan-hash']);
-  const report = applyPlan(plan, {
+  const tools = {
     activate: options.activate === true,
     launchctl: options.launchctl ?? '/bin/launchctl',
     verifierDirectory:
       options['verifier-directory'] ??
       resolve(dirname(fileURLToPath(import.meta.url)), '../macos/scripts'),
-  });
+  };
+  // The plan was printed against specific host tools; apply with the same ones.
+  if (
+    plan.launchctl !== tools.launchctl ||
+    plan.verifierDirectory !== tools.verifierDirectory
+  )
+    fail(
+      'executor tools differ from the plan (launchctl or verifier directory); pass the planned ones',
+    );
+  const report = applyPlan(plan, tools);
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 }
 

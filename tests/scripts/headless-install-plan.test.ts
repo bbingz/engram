@@ -67,6 +67,9 @@ function fixture(role = 'collector', templates = true) {
   const root = mkdtempSync(join(workspace, '.engram-install-plan-test-'));
   roots.push(root);
   mkdirSync(join(root, 'package'), { mode: 0o700 });
+  // Host precondition: the launch agent directory (~/Library/LaunchAgents)
+  // exists; the planner never creates it.
+  mkdirSync(join(root, 'jobs'), { mode: 0o700 });
   if (templates) writeTemplates(join(root, 'package/templates'), role);
   if (role === 'collector') {
     mkdirSync(join(root, 'identity'), { mode: 0o700 });
@@ -301,7 +304,6 @@ function installed(root: string, role: string, rev: string) {
   writeFileSync(join(root, 'installation', wrapper), '#!/bin/zsh\n', {
     mode: 0o700,
   });
-  mkdirSync(join(root, 'jobs'), { mode: 0o700 });
   writeFileSync(join(root, 'jobs', `${label}.plist`), '<plist/>\n', {
     mode: 0o600,
   });
@@ -444,7 +446,7 @@ describe('headless installation dry-run boundaries', () => {
         });
       }
       expect(existsSync(join(root, 'installation'))).toBe(false);
-      expect(existsSync(join(root, 'jobs'))).toBe(false);
+      expect(readdirSync(join(root, 'jobs'))).toEqual([]);
       expect(existsSync(join(root, 'runtime-home'))).toBe(false);
     });
   }
@@ -601,7 +603,8 @@ describe('headless installation dry-run boundaries', () => {
 
     it('fails closed without a catalog unless the owner asserts none exists', () => {
       const root = fixture();
-      rmSync(join(root, 'identity/archive.sqlite'));
+      // No catalog and no catalog directory: the initializer creates the latter.
+      rmSync(join(root, 'identity'), { recursive: true });
       expectRejected(
         runPure(root, args(root)),
         /no identity catalog found; pass --assert-no-identity-catalog/,
@@ -640,6 +643,30 @@ describe('headless installation dry-run boundaries', () => {
         startsCollection: false,
       });
       expect(existsSync(join(root, 'identity/archive.sqlite'))).toBe(false);
+    });
+
+    it('refuses a new identity when the catalog directory exists or its parent is missing', () => {
+      const root = fixture();
+      rmSync(join(root, 'identity/archive.sqlite'));
+      // CollectorIdentityInitializer creates `identity/` itself.
+      expectRejected(
+        runPure(root, [...args(root), '--assert-no-identity-catalog']),
+        /identity catalog directory already exists/,
+      );
+      rmSync(join(root, 'identity'), { recursive: true });
+      const argv = args(root);
+      argv[argv.indexOf('--identity-catalog') + 1] = join(
+        root,
+        'missing/identity/archive.sqlite',
+      );
+      expectRejected(
+        runPure(root, [...argv, '--assert-no-identity-catalog']),
+        /grandparent directory is missing/,
+      );
+      const result = plan(
+        runPure(root, [...args(root), '--assert-no-identity-catalog']),
+      );
+      expect(result.identity.status).toBe('new');
     });
 
     it('treats sidecars without a catalog, a non-regular catalog and a misnamed new catalog as ambiguous', () => {
@@ -838,6 +865,21 @@ describe('headless installation dry-run boundaries', () => {
     }
   });
 
+  it('fails when the launch agent directory does not exist', () => {
+    const root = fixture();
+    rmSync(join(root, 'jobs'), { recursive: true });
+    expectRejected(
+      runPure(root, args(root)),
+      /launch agent directory does not exist/,
+    );
+    expect(existsSync(join(root, 'jobs'))).toBe(false);
+    writeFileSync(join(root, 'jobs'), 'not a directory\n');
+    expectRejected(
+      runPure(root, args(root)),
+      /launch agent directory does not exist/,
+    );
+  });
+
   it('refuses overlapping role/package/state paths', () => {
     const root = fixture();
     for (const [flag, value] of [
@@ -966,6 +1008,18 @@ describe('headless installation dry-run boundaries', () => {
       ).toEqual(['bootout', 'enable', 'bootstrap', 'kickstart']);
     });
 
+    it('upgrade resolves a relative current link against the installation root', () => {
+      const root = fixture();
+      const old = installed(root, 'collector', previous);
+      rmSync(join(root, 'installation/current'));
+      symlinkSync(`releases/${previous}`, join(root, 'installation/current'));
+      const result = plan(runPure(root, [...args(root), '--kind', 'upgrade']));
+      expect(result.previousRelease).toBe(old);
+      expect(step(result, 'swap-current-symlink')).toMatchObject({
+        previous: old,
+      });
+    });
+
     it('upgrade refuses a missing current, the same revision and an existing release', () => {
       const root = fixture();
       expectRejected(
@@ -1061,7 +1115,7 @@ describe('headless installation dry-run boundaries', () => {
         /package verification failed; no installation plan produced/,
       );
       expect(existsSync(join(root, 'installation'))).toBe(false);
-      expect(existsSync(join(root, 'jobs'))).toBe(false);
+      expect(readdirSync(join(root, 'jobs'))).toEqual([]);
     });
 
     it('probes launchd read-only, marks the package verified and prints a canonical plan hash', () => {
@@ -1230,7 +1284,7 @@ describe('headless installation dry-run boundaries', () => {
           expect(result.status, result.stderr).toBe(0);
         else expectRejected(result, /template|alias|regular|missing/);
         expect(existsSync(join(root, 'installation'))).toBe(false);
-        expect(existsSync(join(root, 'jobs'))).toBe(false);
+        expect(readdirSync(join(root, 'jobs'))).toEqual([]);
       }
     });
   }

@@ -256,6 +256,14 @@ function inspectIdentityCatalog(catalog, asserted, kind) {
     );
   if (!catalog.endsWith('/archive.sqlite'))
     fail('a new identity catalog must be named archive.sqlite');
+  // CollectorIdentityInitializer creates the catalog directory itself and
+  // requires its parent to exist already.
+  if (statIfPresent(dirname(catalog)))
+    fail(
+      'identity catalog directory already exists; --initialize-identity creates it',
+    );
+  if (!statIfPresent(dirname(dirname(catalog)))?.isDirectory())
+    fail('identity catalog grandparent directory is missing');
   return { catalog, status: 'new' };
 }
 
@@ -287,7 +295,9 @@ function symlinkTarget(link, releases) {
   const info = statIfPresent(link);
   if (!info) return null;
   if (!info.isSymbolicLink()) fail(`${link} is not a symlink`);
-  const target = readlinkSync(link);
+  // A hand-made relative link (current -> releases/<rev>) is resolved
+  // against the link's own directory before it is compared.
+  const target = resolve(dirname(link), readlinkSync(link));
   if (
     !target.startsWith(`${releases}/`) ||
     !statIfPresent(target)?.isDirectory()
@@ -322,6 +332,9 @@ export function makeInstallationPlan(options, metadata, host = {}) {
       overlaps(options.package, options['launch-agent-directory']))
   )
     fail('job directory overlaps package or installation root');
+  // The executor writes the launch agent into an existing directory only.
+  if (!statIfPresent(options['launch-agent-directory'])?.isDirectory())
+    fail('launch agent directory does not exist');
   for (const [name, target] of Object.entries(targets))
     path(target, name === 'current' || name === 'rollbackPointer');
   let previousRelease = null;

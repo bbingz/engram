@@ -10,6 +10,7 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -36,7 +37,6 @@ function fixture() {
   const root = mkdtempSync(join(workspace, '.engram-install-apply-test-'));
   roots.push(root);
   mkdirSync(join(root, 'tools/verifier'), { recursive: true, mode: 0o700 });
-  mkdirSync(join(root, 'jobs'), { mode: 0o700 });
   writeFileSync(
     join(root, 'tools/verifier/package-collector.sh'),
     `#!/bin/bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(join(root, 'verifier-log'))}\nexit 0\n`,
@@ -57,6 +57,39 @@ function fixture() {
     mode: 0o600,
   });
   return root;
+}
+
+// A host that satisfies the planner's preconditions: the launch agent
+// directory (~/Library/LaunchAgents on a real Mac) already exists.
+function host() {
+  const root = fixture();
+  mkdirSync(join(root, 'jobs'), { mode: 0o700 });
+  return root;
+}
+
+// launchctl that remembers whether the label is loaded: `print` reports the
+// job at our own plist path while <root>/loaded exists, `bootout` clears it
+// after one more `print` (launchd unloads asynchronously), and <root>/refuse
+// names a subcommand that fails.
+function statefulLaunchctl(root: string) {
+  const plist = join(root, 'jobs/com.engram.collector.plist');
+  writeFileSync(
+    join(root, 'tools/launchctl'),
+    [
+      '#!/bin/sh',
+      `printf '%s\\n' "$*" >> ${JSON.stringify(join(root, 'launchctl-log'))}`,
+      `if [ -e ${JSON.stringify(join(root, 'refuse'))} ] && [ "$1" = "$(cat ${JSON.stringify(join(root, 'refuse'))})" ]; then exit 1; fi`,
+      'case "$1" in',
+      `  print) if [ -e ${JSON.stringify(join(root, 'pending'))} ]; then rm -f ${JSON.stringify(join(root, 'pending'))}; echo 'com.engram.collector = {'; echo '\tpath = ${plist}'; echo '}'; exit 0; fi`,
+      `         if [ -e ${JSON.stringify(join(root, 'loaded'))} ]; then echo 'com.engram.collector = {'; echo '\tpath = ${plist}'; echo '}'; exit 0; fi`,
+      "         echo 'Could not find service' >&2; exit 113 ;;",
+      `  bootout) rm -f ${JSON.stringify(join(root, 'loaded'))}; : > ${JSON.stringify(join(root, 'pending'))}; exit 0 ;;`,
+      '  *) exit 0 ;;',
+      'esac',
+      '',
+    ].join('\n'),
+    { mode: 0o700 },
+  );
 }
 
 // SHA256SUMS as macos/scripts/package-*.sh generate_manifest writes it:
@@ -117,7 +150,7 @@ function makePackage(
   // placeholder catalog file so later upgrade plans see an existing catalog.
   writeFileSync(
     join(directory, 'bin/EngramCollector'),
-    `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(join(root, 'collector-log'))}\nif [ "$1" = --initialize-identity ]; then mkdir -p "$(dirname "$2")"; : > "$2"; fi\nexit 0\n`,
+    `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(join(root, 'collector-log'))}\nif [ "$1" = --initialize-identity ]; then mkdir "$(dirname "$2")" && : > "$2"; exit $?; fi\nif [ "$1" = --settings ] && [ -e ${JSON.stringify(join(root, 'fail-initialize'))} ]; then exit 1; fi\nexit 0\n`,
     { mode: 0o700 },
   );
   writeFileSync(
@@ -210,7 +243,7 @@ const mutations = (root: string) =>
 
 describe('headless install executor', () => {
   it('refuses a plan whose hash does not match and changes nothing', () => {
-    const root = fixture();
+    const root = host();
     const pkg = makePackage(root, 'package', revisionA);
     const { file, plan, hash } = printPlan(root, 'plan', [
       '--package',
@@ -237,7 +270,7 @@ describe('headless install executor', () => {
   });
 
   it('refuses a package rebuilt at another revision between plan and apply', () => {
-    const root = fixture();
+    const root = host();
     const pkg = makePackage(root, 'package', revisionA);
     const { file, plan, hash } = printPlan(root, 'plan', [
       '--package',
@@ -265,7 +298,7 @@ describe('headless install executor', () => {
   });
 
   it('applies an install plan but runs no launchctl command without --activate', () => {
-    const root = fixture();
+    const root = host();
     const pkg = makePackage(root, 'package', revisionA);
     const { file, plan, hash } = printPlan(root, 'plan', [
       '--package',
@@ -313,7 +346,7 @@ describe('headless install executor', () => {
   });
 
   it('activates only with --activate and only after an owner-only credentials metadata check', () => {
-    const root = fixture();
+    const root = host();
     const pkg = makePackage(root, 'package', revisionA);
     const { file, hash } = printPlan(root, 'plan', [
       '--package',
@@ -330,7 +363,7 @@ describe('headless install executor', () => {
     expect(mutations(root)).toEqual([]);
     expect(`${refused.stdout}${refused.stderr}`).not.toContain('CANARY');
 
-    const second = fixture();
+    const second = host();
     const secondPackage = makePackage(second, 'package', revisionA);
     const secondPlan = printPlan(second, 'plan', [
       '--package',
@@ -354,7 +387,7 @@ describe('headless install executor', () => {
   });
 
   it('round-trips the rollback pointer across upgrade and rollback, verifying the older release by its own manifest', () => {
-    const root = fixture();
+    const root = host();
     // Release A was packaged before the checkout's templates changed; the
     // checkout verifier would reject it, so rollback must not call it.
     const packageA = makePackage(root, 'package-a', revisionA, true);
@@ -380,6 +413,9 @@ describe('headless install executor', () => {
     expect(apply(root, install.file, install.hash).status).toBe(0);
     expect(current(root)).toBe(releaseA);
     expect(existsSync(join(root, 'installation/rollback'))).toBe(false);
+    // A hand-made relative current link is accepted by planner and executor.
+    rmSync(join(root, 'installation/current'));
+    symlinkSync(`releases/${revisionA}`, join(root, 'installation/current'));
 
     const upgrade = printPlan(root, 'upgrade', [
       '--package',
@@ -449,5 +485,289 @@ describe('headless install executor', () => {
       lstatSync(join(root, 'installation/run-engram-collector.zsh')).mode &
         0o7777,
     ).toBe(0o700);
+  });
+
+  it('refuses to plan without the launch agent directory or with an identity directory the initializer would create', () => {
+    const root = fixture();
+    const pkg = makePackage(root, 'package', revisionA);
+    const missing = spawn(
+      planner,
+      planArgs(root, ['--package', pkg, '--assert-no-identity-catalog']),
+      root,
+    );
+    expect(missing.status).not.toBe(0);
+    expect(missing.stderr).toMatch(/launch agent directory does not exist/);
+    mkdirSync(join(root, 'jobs'), { mode: 0o700 });
+    mkdirSync(join(root, 'identity'), { mode: 0o700 });
+    const parent = spawn(
+      planner,
+      planArgs(root, ['--package', pkg, '--assert-no-identity-catalog']),
+      root,
+    );
+    expect(parent.status).not.toBe(0);
+    expect(parent.stderr).toMatch(/identity catalog directory already exists/);
+    rmSync(join(root, 'identity'), { recursive: true });
+    const deep = spawn(
+      planner,
+      [
+        ...planArgs(root, ['--package', pkg, '--assert-no-identity-catalog']),
+      ].map((value) =>
+        value === join(root, 'identity/archive.sqlite')
+          ? join(root, 'missing/identity/archive.sqlite')
+          : value,
+      ),
+      root,
+    );
+    expect(deep.status).not.toBe(0);
+    expect(deep.stderr).toMatch(/grandparent directory is missing/);
+    expect(existsSync(join(root, 'installation'))).toBe(false);
+  });
+
+  it('removes the copied release and undoes its file effects when a later step fails, so re-planning works', () => {
+    const root = host();
+    const pkg = makePackage(root, 'package', revisionA);
+    const { file, hash } = printPlan(root, 'plan', [
+      '--package',
+      pkg,
+      '--assert-no-identity-catalog',
+    ]);
+    writeFileSync(join(root, 'fail-initialize'), '');
+    const failed = apply(root, file, hash);
+    expect(failed.status).not.toBe(0);
+    expect(failed.stderr).toMatch(/initialize-collector-spool failed/);
+    const report = JSON.parse(failed.stdout);
+    expect(report.applied).toEqual([
+      'copy-new-release',
+      'verify-copied-release',
+      'initialize-collector-identity',
+    ]);
+    expect(report.rolledBack).toEqual([
+      join(root, 'installation/releases', revisionA),
+    ]);
+    expect(existsSync(join(root, 'installation/releases'))).toBe(true);
+    expect(existsSync(join(root, 'installation/releases', revisionA))).toBe(
+      false,
+    );
+    expect(existsSync(join(root, 'installation/current'))).toBe(false);
+    expect(existsSync(join(root, 'jobs/com.engram.collector.plist'))).toBe(
+      false,
+    );
+    // The identity the real initializer created stays; the next plan sees it.
+    expect(existsSync(join(root, 'identity/archive.sqlite'))).toBe(true);
+    rmSync(join(root, 'fail-initialize'));
+    const again = printPlan(root, 'plan-again', ['--package', pkg]);
+    expect(again.plan.identity.status).toBe('existing');
+    expect(apply(root, again.file, again.hash).status).toBe(0);
+    expect(current(root)).toBe(join(root, 'installation/releases', revisionA));
+    expect(mutations(root)).toEqual([]);
+  });
+
+  it('restores overwritten targets when an upgrade step fails after the copy', () => {
+    const root = host();
+    const packageA = makePackage(root, 'package-a', revisionA);
+    const install = printPlan(root, 'install', [
+      '--package',
+      packageA,
+      '--assert-no-identity-catalog',
+    ]);
+    expect(apply(root, install.file, install.hash).status).toBe(0);
+    const wrapperBefore = readFileSync(
+      join(root, 'installation/run-engram-collector.zsh'),
+      'utf8',
+    );
+    const plistBefore = plist(root);
+    // Package B's plist template cannot be rendered: its wrapper placeholder
+    // was removed, so render-launch-agent fails after the copy and the
+    // wrapper render.
+    const packageB = makePackage(root, 'package-b', revisionB);
+    const template = join(
+      packageB,
+      'templates/com.engram.collector.plist.template',
+    );
+    writeFileSync(
+      template,
+      readFileSync(template, 'utf8').replace('__ENGRAM_WRAPPER__', 'fixed'),
+      { mode: 0o600 },
+    );
+    writeManifest(packageB);
+    const upgrade = printPlan(root, 'upgrade', [
+      '--package',
+      packageB,
+      '--kind',
+      'upgrade',
+    ]);
+    const failed = apply(root, upgrade.file, upgrade.hash);
+    expect(failed.status).not.toBe(0);
+    expect(failed.stderr).toMatch(
+      /does not reflect binding __ENGRAM_WRAPPER__/,
+    );
+    const report = JSON.parse(failed.stdout);
+    expect(report.applied).toEqual([
+      'copy-new-release',
+      'verify-copied-release',
+      'render-wrapper',
+    ]);
+    expect(report.rolledBack).toEqual([
+      join(root, 'installation/run-engram-collector.zsh'),
+      join(root, 'installation/releases', revisionB),
+    ]);
+    expect(
+      readFileSync(join(root, 'installation/run-engram-collector.zsh'), 'utf8'),
+    ).toBe(wrapperBefore);
+    expect(plist(root)).toBe(plistBefore);
+    expect(current(root)).toBe(join(root, 'installation/releases', revisionA));
+    expect(existsSync(join(root, 'installation/releases', revisionB))).toBe(
+      false,
+    );
+    // The upgrade can be planned again against the restored state.
+    makePackage(root, 'package-b', revisionB);
+    expect(
+      spawn(
+        planner,
+        planArgs(root, ['--package', packageB, '--kind', 'upgrade']),
+        root,
+      ).status,
+    ).toBe(0);
+  });
+
+  it('waits for launchd to unload the label after bootout before bootstrapping', () => {
+    const root = host();
+    statefulLaunchctl(root);
+    const packageA = makePackage(root, 'package-a', revisionA);
+    const packageB = makePackage(root, 'package-b', revisionB);
+    const install = printPlan(root, 'install', [
+      '--package',
+      packageA,
+      '--assert-no-identity-catalog',
+    ]);
+    expect(apply(root, install.file, install.hash).status).toBe(0);
+    // The owner activated the job by hand; launchd now reports it loaded.
+    writeFileSync(join(root, 'loaded'), '');
+    const upgrade = printPlan(root, 'upgrade', [
+      '--package',
+      packageB,
+      '--kind',
+      'upgrade',
+    ]);
+    expect(upgrade.plan.activation.launchd).toEqual({
+      loaded: true,
+      path: join(root, 'jobs/com.engram.collector.plist'),
+    });
+    expect(
+      upgrade.plan.activation.commands.map((command: string[]) => command[0]),
+    ).toEqual(['bootout', 'enable', 'bootstrap', 'kickstart']);
+    const activated = apply(root, upgrade.file, upgrade.hash, ['--activate']);
+    expect(activated.status, activated.stderr).toBe(0);
+    const report = JSON.parse(activated.stdout);
+    expect(report.activation.results).toEqual([
+      { command: ['bootout', `gui/${uid}/com.engram.collector`], ok: true },
+      {
+        command: ['print', `gui/${uid}/com.engram.collector`],
+        ok: true,
+        attempts: 2,
+      },
+      { command: ['enable', `gui/${uid}/com.engram.collector`], ok: true },
+      {
+        command: [
+          'bootstrap',
+          `gui/${uid}`,
+          join(root, 'jobs/com.engram.collector.plist'),
+        ],
+        ok: true,
+      },
+      {
+        command: ['kickstart', '-k', `gui/${uid}/com.engram.collector`],
+        ok: true,
+      },
+    ]);
+    expect(report.activation.remaining).toEqual([]);
+    expect(
+      readFileSync(join(root, 'launchctl-log'), 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .slice(-6),
+    ).toEqual([
+      `bootout gui/${uid}/com.engram.collector`,
+      `print gui/${uid}/com.engram.collector`,
+      `print gui/${uid}/com.engram.collector`,
+      `enable gui/${uid}/com.engram.collector`,
+      `bootstrap gui/${uid} ${join(root, 'jobs/com.engram.collector.plist')}`,
+      `kickstart -k gui/${uid}/com.engram.collector`,
+    ]);
+  });
+
+  it('reports completed steps and the launchctl commands still owed when activation fails', () => {
+    const root = host();
+    statefulLaunchctl(root);
+    writeFileSync(join(root, 'refuse'), 'bootstrap');
+    const pkg = makePackage(root, 'package', revisionA);
+    const { file, hash } = printPlan(root, 'plan', [
+      '--package',
+      pkg,
+      '--assert-no-identity-catalog',
+    ]);
+    const failed = apply(root, file, hash, ['--activate']);
+    expect(failed.status).not.toBe(0);
+    expect(failed.stderr).toMatch(/launchctl bootstrap failed/);
+    const report = JSON.parse(failed.stdout);
+    expect(report.applied).toHaveLength(7);
+    expect(report.rolledBack).toBeUndefined();
+    expect(current(root)).toBe(join(root, 'installation/releases', revisionA));
+    expect(report.activation.results).toEqual([
+      { command: ['enable', `gui/${uid}/com.engram.collector`], ok: true },
+      {
+        command: [
+          'bootstrap',
+          `gui/${uid}`,
+          join(root, 'jobs/com.engram.collector.plist'),
+        ],
+        ok: false,
+      },
+    ]);
+    expect(report.activation.remaining).toEqual([
+      ['kickstart', '-k', `gui/${uid}/com.engram.collector`],
+    ]);
+    expect(report.activation.manual).toEqual([
+      `launchctl bootstrap gui/${uid} ${join(root, 'jobs/com.engram.collector.plist')}`,
+      `launchctl kickstart -k gui/${uid}/com.engram.collector`,
+    ]);
+  });
+
+  it('refuses tools that differ from the ones the plan was printed with', () => {
+    const root = host();
+    const pkg = makePackage(root, 'package', revisionA);
+    const { file, hash } = printPlan(root, 'plan', [
+      '--package',
+      pkg,
+      '--assert-no-identity-catalog',
+    ]);
+    mkdirSync(join(root, 'other'), { mode: 0o700 });
+    writeFileSync(join(root, 'other/launchctl'), '#!/bin/sh\nexit 0\n', {
+      mode: 0o700,
+    });
+    for (const extra of [
+      ['--launchctl', join(root, 'other/launchctl')],
+      ['--verifier-directory', join(root, 'other')],
+    ]) {
+      const result = spawn(
+        executor,
+        [
+          '--plan',
+          file,
+          '--plan-hash',
+          hash,
+          '--launchctl',
+          join(root, 'tools/launchctl'),
+          '--verifier-directory',
+          join(root, 'tools/verifier'),
+        ].map((value, index, all) =>
+          all[index - 1] === extra[0] ? extra[1] : value,
+        ),
+        root,
+      );
+      expect(result.status, extra.join(' ')).not.toBe(0);
+      expect(result.stderr).toMatch(/executor tools differ from the plan/);
+    }
+    expect(existsSync(join(root, 'installation'))).toBe(false);
   });
 });
