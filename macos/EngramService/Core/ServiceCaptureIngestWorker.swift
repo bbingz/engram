@@ -228,6 +228,12 @@ private struct CaptureIngestWork: Sendable {
                 // that must never replace the newer parsed or ready head.
                 return try await recordFailure(claim: picked.0, binding: picked.1,
                     failure: .quarantined(.obsoleteGeneration))
+            case .crossMachineDuplicate:
+                // Invariant "Cross-Machine Exact Duplicates Are Quarantined At
+                // Commit" (docs/invariants.md): the other machine's copy is the
+                // session; retrying this publication could never change that.
+                return try await recordFailure(claim: picked.0, binding: picked.1,
+                    failure: .quarantined(.crossMachineDuplicate))
             default:
                 throw error
             }

@@ -11,6 +11,10 @@ public enum CaptureIngestCommitError: Error, Equatable {
     case staleGeneration
     /// A valid same-authority publication predates the current identity head.
     case obsoleteGeneration
+    /// A first generation whose normalized content equals the head another
+    /// machine already binds for the same (source, native_id). The bytes stay
+    /// in CAS and the ledger; no session row or binding is created.
+    case crossMachineDuplicate
     case sequenceConflict
     case syncVersionOverflow
     case invalidStoredRecord
@@ -73,6 +77,7 @@ public enum CaptureIngestCommitter {
             try requireBinding(db, claim: claim, replay: replay)
             try validateReplay(claim: claim, replay: replay)
             let stored = try normalizedStorage(replay.scan.messages)
+            let normalizedDigest = ArchiveV2Hash.sha256(stored.parentBlob)
             let native = replay.nativeIdentity
             let storedID = try native.proposedSessionID()
             let priorBinding = try identityRow(db, native: native)
@@ -93,6 +98,15 @@ public enum CaptureIngestCommitter {
                 // An occupied proposed ID is not proof of an alias, even when
                 // its owner string matches. Unrelated local/native IDs coexist.
                 guard currentSession == nil else { throw CaptureIngestCommitError.identityConflict }
+                // Invariant "Cross-Machine Exact Duplicates Are Quarantined At
+                // Commit" (docs/invariants.md): a copy of a session another
+                // machine already holds, with the same normalized content, is
+                // not a second session. The first committed copy wins whichever
+                // machine it came from; divergent content still commits as its
+                // own row, and a same-machine second instance is not affected.
+                guard try !hasCrossMachineExactDuplicate(db, native: native, normalizedDigest: normalizedDigest) else {
+                    throw CaptureIngestCommitError.crossMachineDuplicate
+                }
             }
             guard try Bool.fetchOne(db, sql: """
                 SELECT EXISTS(SELECT 1 FROM capture_ingest_generations WHERE publication_sha256 = ? AND parser_revision = ?)
@@ -133,7 +147,7 @@ public enum CaptureIngestCommitter {
                     native.source.rawValue, binding.parseFormat.rawValue, binding.configuredRoot, claim.publication.collectorEpoch,
                     binding.authorityGeneration, claim.publication.sequence, native.nativeID, replay.rawSourceSessionID, storedID,
                     replay.parentIdentity?.nativeID, replay.suggestedParentIdentity?.nativeID, manifestBytes, normalizedSchemaVersion,
-                    stored.parentBlob, ArchiveV2Hash.sha256(stored.parentBlob), stored.legacyMessageCount,
+                    stored.parentBlob, normalizedDigest, stored.legacyMessageCount,
                     stored.storageVersion, stored.totalMessageCount, version, snapshot.snapshotHash, jobID, indexedAt,
                 ])
             for row in stored.rows {
@@ -224,6 +238,15 @@ public enum CaptureIngestCommitter {
             );
             """)
         try addNormalizedStorageColumnsIfNeeded(db)
+        // The cross-machine duplicate check looks a binding up by native_id and
+        // source without the machine/instance prefix of the primary key.
+        // native_id leads so that statements constraining only `i.source`
+        // (the Web children page, pinned by WebChildrenProducerTests) cannot
+        // take this index instead of their session-side parent indexes.
+        try db.execute(sql: """
+            CREATE INDEX IF NOT EXISTS capture_ingest_identity_bindings_native_id_source
+            ON capture_ingest_identity_bindings (native_id, source)
+            """)
         // Ready-count metadata follows large transcript BLOBs in the table row.
         // Cover every authority scalar so overview reads never visit overflow pages.
         try db.execute(sql: """
@@ -465,6 +488,22 @@ public enum CaptureIngestCommitter {
         }
         return PreparedNormalizedStorage(parentBlob: parentBlob, legacyMessageCount: 0,
             storageVersion: normalizedStorageVersionV2, totalMessageCount: messages.count, rows: rows)
+    }
+
+    /// True when a binding of another machine for the same (source, native_id)
+    /// has a last parsed generation whose normalized digest equals this one.
+    /// Compares digests only; never loads another generation's transcript BLOB.
+    private static func hasCrossMachineExactDuplicate(
+        _ db: Database, native: CaptureIngestIdentity, normalizedDigest: String
+    ) throws -> Bool {
+        try Bool.fetchOne(db, sql: """
+            SELECT EXISTS(
+                SELECT 1 FROM capture_ingest_identity_bindings AS binding
+                JOIN capture_ingest_generations AS head ON head.generation_id = binding.last_parsed_generation_id
+                WHERE binding.source = ? AND binding.native_id = ? AND binding.machine_id != ?
+                    AND head.normalized_messages_sha256 = ?
+            )
+            """, arguments: [native.source.rawValue, native.nativeID, native.machineID, normalizedDigest]) ?? false
     }
 
     private static func identityRow(_ db: Database, native: CaptureIngestIdentity) throws -> Row? {

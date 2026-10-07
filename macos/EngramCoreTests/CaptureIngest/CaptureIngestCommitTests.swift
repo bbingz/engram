@@ -1339,6 +1339,25 @@ final class CaptureIngestCommitTests: XCTestCase {
         XCTAssertEqual(exists, 1)
     }
 
+    func testRepeatedMigrationCreatesOneBindingSourceNativeIndex() throws {
+        let fixture = try makeFixture()
+        guard requireCommit(fixture) != nil else { return }
+        let before = try identity(fixture)
+        let name = "capture_ingest_identity_bindings_native_id_source"
+        func indexCount() throws -> Int {
+            try writer.read { try XCTUnwrap(Int.fetchOne($0,
+                sql: "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?", arguments: [name])) }
+        }
+        XCTAssertEqual(try indexCount(), 1)
+        try writer.write { try $0.execute(sql: "DROP INDEX \(name)") }
+        try writer.migrate()
+        try writer.migrate()
+        XCTAssertEqual(try indexCount(), 1, "CREATE INDEX IF NOT EXISTS must be idempotent across repeated migration")
+        XCTAssertEqual(try writer.read { try Row.fetchAll($0, sql: "PRAGMA index_info(\(name))").map { $0["name"] as String } },
+                       ["native_id", "source"], "native_id leads so a source-only predicate cannot take this index")
+        XCTAssertEqual(try identity(fixture), before)
+    }
+
     func testMigrationPreservesLegacyRowsWithoutInventingIdentityAliases() throws {
         try seedSession(id: "native-session", owner: "local")
         let fixture = try makeFixture()
@@ -2088,10 +2107,13 @@ final class CaptureIngestCommitTests: XCTestCase {
     }
 
     func testMachineInstanceSourceAndExactNativeBytesKeepDistinctIdentities() throws {
+        // The other-machine copy carries divergent content: an identical copy is
+        // quarantined instead (testIdenticalCrossMachineCaptureIsQuarantinedNotDuplicated_repro).
         let fixtures = [
             try makeFixture(nativeID: "native-é", sequence: 1),
             try makeFixture(nativeID: "native-e\u{301}", sequence: 2),
-            try makeFixture(nativeID: "native-é", sequence: 1, machineID: otherMachine),
+            try makeFixture(nativeID: "native-é", sequence: 1, machineID: otherMachine,
+                            messages: defaultMessages(suffix: " Continued on the other machine.")),
             try makeFixture(nativeID: "native-é", sequence: 1, instanceID: otherInstance,
                             root: "/offline-client/second-profile/projects"),
             try makeFixture(nativeID: "native-é", sequence: 1, source: .codex,
@@ -2106,6 +2128,51 @@ final class CaptureIngestCommitTests: XCTestCase {
         XCTAssertEqual(Set(storedIDs).count, fixtures.count)
         XCTAssertEqual(try count("sessions"), fixtures.count)
         XCTAssertEqual(try count("capture_ingest_identity_bindings"), fixtures.count)
+    }
+
+    // docs/superpowers/specs/2026-10-02-hq-local-collector-cutover-design.md §3
+    // option B (P2, decision D6; no PR number yet). Ledger entry "Cross-Machine
+    // Exact Duplicates Are Quarantined At Commit": a first generation from another
+    // machine whose normalized digest equals the head already bound for the same
+    // (source, native_id) creates no session row and no binding. The committer
+    // reports it so the worker records quarantine.cross_machine_duplicate while
+    // the publication stays in the ledger. The first committed copy wins.
+    func testIdenticalCrossMachineCaptureIsQuarantinedNotDuplicated_repro() throws {
+        let daily = try makeFixture(nativeID: "shared-native", sequence: 1)
+        guard let receipt = requireCommit(daily) else { return }
+        let hq = try makeFixture(nativeID: "shared-native", sequence: 1, machineID: otherMachine,
+                                 root: "/hq-host/.claude/projects")
+        // D6 precondition at this layer: equal messages give an equal digest
+        // whatever the machine or locator, because only messages are digested.
+        XCTAssertNotEqual(hq.replay.verifiedManifest.locator, daily.replay.verifiedManifest.locator)
+        XCTAssertEqual(ArchiveV2Hash.sha256(try ArchiveCanonicalJSON.encode(hq.replay.scan.messages)),
+                       try generation(receipt)["normalized_messages_sha256"] as String)
+        let before = try state()
+        assertCommitError(.crossMachineDuplicate) { try self.commit(hq) }
+        XCTAssertEqual(try state(), before, "the committer leaves every product, intake, and ledger row unchanged")
+        XCTAssertEqual(try count("sessions"), 1)
+        XCTAssertEqual(try count("capture_ingest_identity_bindings"), 1)
+        XCTAssertEqual(try count("capture_ingest_generations"), 1)
+        XCTAssertEqual(try writer.read { try Int.fetchOne($0,
+            sql: "SELECT COUNT(*) FROM capture_ingest_identity_bindings WHERE machine_id = ?", arguments: [otherMachine]) }, 0)
+        // The worker maps the error to a terminal quarantine (ServiceCaptureIngestWorker).
+        try writer.write { try CaptureIngestLedger.recordFailure($0, claim: hq.claim,
+            failure: .quarantined(.crossMachineDuplicate), now: 101) }
+        let row = try ledger(hq)
+        XCTAssertEqual(row["status"] as String, "quarantined")
+        XCTAssertEqual(row["failure_code"] as String?, "quarantine.cross_machine_duplicate")
+        XCTAssertNil(row["retry_after"] as Int64?)
+        XCTAssertNil(try claim(hq), "a quarantined publication is terminal, not retried")
+        XCTAssertEqual(try count("capture_ingest_publications"), 2, "the publication bytes are retained")
+        XCTAssertEqual(try ledger(daily)["status"] as String, "parsed")
+        // Symmetric: whichever machine commits first owns the session.
+        let hqFirst = try makeFixture(nativeID: "reverse-native", sequence: 2, machineID: otherMachine,
+                                      root: "/hq-host/.claude/projects")
+        guard requireCommit(hqFirst) != nil else { return }
+        let dailySecond = try makeFixture(nativeID: "reverse-native", sequence: 2)
+        assertCommitError(.crossMachineDuplicate) { try self.commit(dailySecond) }
+        XCTAssertEqual(try count("sessions"), 2)
+        XCTAssertEqual(try count("capture_ingest_identity_bindings"), 2)
     }
 
     func testExistingProposedIDWithoutProvenBindingIsRejectedEvenForMatchingOwner() throws {

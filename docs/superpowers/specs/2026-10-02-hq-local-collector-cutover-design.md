@@ -1,6 +1,6 @@
 # Design Doc: HQ-local collector and cutover completion
 
-- **Status**: Draft (for owner authorization or redirection). Phase P1 (the §2 role gate, DECISION D8) is implemented in source with its `_repro` test and ledger entry "Legacy Host Scan Runs Only in the Local Role"; it is not deployed. Phase P0 measurements are done (results summarized in `CHANGELOG.md`, 2026-10-02): the cross-machine overlap is byte-identical or divergent, never a prefix, so §3 option B+ is not needed; the legacy `origin=local` rows have no user-state dependents; `pi` already overlaps Daily's capture, so use `grok` as the R6 canary.
+- **Status**: Accepted 2026-10-02 (decisions D1-D12 in section 8). P0 done (results in `CHANGELOG.md`, 2026-10-02); P1 (§2 role gate, D8) implemented in source, not yet deployed on HQ; P2 (§3 option B, D6) implemented in source with `testIdenticalCrossMachineCaptureIsQuarantinedNotDuplicated_repro` and ledger entry "Cross-Machine Exact Duplicates Are Quarantined At Commit", not deployed; P3 (§4 install tooling) in progress on branch `feat/p3-install-tooling-20261007`.
 - **Owner**: Engram maintainers (drafted 2026-10-02 for the cutover lead)
 - **Date**: 2026-10-02
 - **Related**: [Collector/Server/Web design](2026-09-05-collector-server-web-design.md)
