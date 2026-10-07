@@ -205,6 +205,13 @@ Invariants are properties that must survive every change; each entry names where
 - **Verified by** - `macos/EngramCollectorCoreTests/CollectorPOSIXRootEnumeratorTests.swift` (testVanishedFrontierDirectoryFinishesScan_repro, testVanishedDirectoryDrainsQueuedDescendantsAndKeepsObservedLocators, testDirectoryVanishingMidEnumerationFinishesWithoutItsUnappliedEntries, testTargetedDirectoryThatNeverExistedFinishesEmpty, testFrontierDirectoryReplacedByFileFinishesEmpty, testMissingOrReplacedRootIsNotAVanishedDirectory, testPermissionDeniedFrontierDirectoryStillBlocks, testSymlinkSwappedForFrontierDirectoryIsStillRefused), `macos/EngramServiceCoreTests/CollectorRuntimeTests.swift` (testBlockedBootstrapRootIsReportedOncePerChange).
 - **Gate** - `none`.
 
+## Cross-Machine Exact Duplicates Are Quarantined At Commit
+
+- **Statement** - A first generation of a (machine, source instance, source, native ID) identity with no prior binding does not commit when another machine already binds the same (source, native ID) and that binding's last parsed generation has the same `normalized_messages_sha256`. The committer reports `crossMachineDuplicate`; the worker records the terminal ledger code `quarantine.cross_machine_duplicate`, so no session row, binding, generation, or index job is created while the publication and its CAS bytes are retained. The first committed copy wins whichever machine published it. Divergent content from another machine, a copy that is only a strict prefix, and a second source instance on the same machine still commit as their own rows; same-machine identity collisions keep their existing `identityConflict` handling. The check runs only at commit, never at read time, and no command reverses a quarantine today.
+- **Enforced by** - `macos/EngramCoreWrite/CaptureIngest/CaptureIngestCommitter.swift` (commitParsed, hasCrossMachineExactDuplicate, createSchema index capture_ingest_identity_bindings_native_id_source), `macos/EngramCoreWrite/CaptureIngest/CaptureIngestLedger.swift` (QuarantineCode.crossMachineDuplicate), `macos/EngramService/Core/ServiceCaptureIngestWorker.swift`.
+- **Verified by** - `macos/EngramCoreTests/CaptureIngest/CaptureIngestCommitTests.swift` (testIdenticalCrossMachineCaptureIsQuarantinedNotDuplicated_repro, testMachineInstanceSourceAndExactNativeBytesKeepDistinctIdentities, testRepeatedMigrationCreatesOneBindingSourceNativeIndex), `macos/EngramServiceCoreTests/ServiceCaptureIngestWorkerTests.swift` (testIdenticalBytesFromAnotherMachineAreQuarantinedByTheWorker_repro, testDivergentBytesFromAnotherMachineCommitAsTheirOwnSession).
+- **Gate** - `none`.
+
 ## Unverified Anchors
 
 None.
