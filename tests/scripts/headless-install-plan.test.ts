@@ -402,7 +402,7 @@ describe('headless installation dry-run boundaries', () => {
     });
   }
 
-  // Design §4.5 (docs/superpowers/specs/2026-10-02-hq-local-collector-cutover-design.md),
+  // PR #454, design §4.5 (docs/superpowers/specs/2026-10-02-hq-local-collector-cutover-design.md),
   // followup cutover-install-tooling-1: the plan used to hard-code
   // disabled/runAtLoad:false/keepAlive:false for every role although the
   // remote-server plist template sets RunAtLoad and KeepAlive and has no
@@ -449,8 +449,9 @@ describe('headless installation dry-run boundaries', () => {
     }
   });
 
-  // Design §4.5, followup cutover-install-tooling-1: only __ENGRAM_REMOTE_ROOT__
-  // was bound, leaving __ENGRAM_REMOTE_SOURCE_REVISION__ unbound in the plan.
+  // PR #454, design §4.5, followup cutover-install-tooling-1: only
+  // __ENGRAM_REMOTE_ROOT__ was bound, leaving __ENGRAM_REMOTE_SOURCE_REVISION__
+  // unbound in the plan.
   it('binds the remote wrapper source revision from BUILD-METADATA (repro)', () => {
     const root = fixture('remote-server');
     const result = plan(
