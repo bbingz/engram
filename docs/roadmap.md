@@ -65,12 +65,12 @@ per-host exceptions, an HQ collector behind the role gate with exact-content
 duplicate quarantine). Engineering gaps are in `docs/TODO.md`, operational
 observations in `docs/followups.md`.
 
-| Item | Decision needed |
+| Item | Decision recorded (design §8, 2026-10-02) and status on 2026-10-07 |
 |------|-----------------|
-| Definition of "cutover finished" | Whether it means Daily only or Daily plus HQ-local and M1-local collectors (the design orders Daily, then HQ-local and M1-local); whether the collector CPU <= 2% target is binding; whether Antigravity cache/PB and Windsurf cache/PB inputs, which the collector does not capture, are accepted as permanent exceptions or block a "fully lightweight" claim. |
-| Daily cutover versus the "keep old ingestion" rule | The retirement checklist requires the old ingestion path wherever a source is enabled, but the 2026-09-12 Daily cutover disabled it while Antigravity/Windsurf coverage was incomplete. Record an accepted exception, or change the rule or the deployment. |
-| HQ-local sources | Either run a collector on HQ, which first needs a guard against storing the same HQ session twice (the index-role Service still runs its own legacy scan and nothing de-duplicates local and capture IDs), or declare the HQ legacy scan the HQ-local path and accept that those sessions never appear on Web, which shows only capture-ingested sessions. |
-| Real-host acceptance and remaining W7 | Per-source real capture plus HQ search/transcript proof, then HQ-local/M1-local W7 transactions and retirement of the old HQ service jobs. Each needs separate owner authorization. |
+| Definition of "cutover finished" | D1: Daily and HQ are in scope; M1 joins only if a read-only check finds active local sources there. That check ran read-only from HQ on 2026-10-07: M1 had 2 Claude Code session files modified since 2026-10-06, so the D1 condition is met and an M1 collector now needs its own owner decision. D2: the collector CPU <= 2% target is tracked separately; it does not block "finished" but blocks any "lightweight" claim. D3: Antigravity cache/PB and Windsurf cache/PB are per-host exceptions. |
+| Daily cutover versus the "keep old ingestion" rule | Closed by D3; the exception is recorded in `docs/reviews/2026-09-07-collector-source-retirement-checklist.md` since 2026-10-07. |
+| HQ-local sources | D6/D8: run a collector on HQ behind the role gate (P1, in source since 2026-10-02; HQ deployment from current main recorded in `CHANGELOG.md` 2026-10-07) with exact-content duplicate quarantine (P2, design §3-B, branch `feat/p2-cross-machine-duplicate-quarantine-20261007`). The HQ legacy scan is not the HQ-local path. |
+| Real-host acceptance and remaining W7 | Sequencing from §8: (1) fixed collector on Daily, done 2026-10-02; (2) P2 and P3 (`feat/p3-install-tooling-20261007`), in progress; (3) HQ runbook R2-R10 in a dedicated session, needs owner credential provisioning and root steps; (4) the old HQ local Service is not restarted for its Codex backlog. Per-source real capture plus HQ Web proof stay separately authorized. |
 
 ### Earlier status (2026-08-16)
 
