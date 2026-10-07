@@ -3,6 +3,216 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## HQ redeployed from current main, host cleanup, dependency PRs, P2/P3 started (2026-10-07)
+
+Owner authorization was given in-session on 2026-10-07 after the inventory
+entry below: (1) rebuild and deploy HQ from current main, (2) doc drift and
+dependabot PRs, (3) read-only investigations, (4) M1/HQ cleanup, (5) start
+P2 and P3. Hosts by role as in the inventory entry.
+
+**HQ deployment (owner-authorized).** Built Release/arm64 from a clean
+detached worktree at `8a6cdf6c` (`xcodebuild -scheme EngramService` and
+`-scheme EngramRemoteServer`, both BUILD SUCCEEDED), packaged with
+`macos/scripts/package-service.sh` and `package-remote-server.sh`
+(`--verify-only` PASS for both; BUILD-METADATA sourceRevision
+`8a6cdf6c9c6d9fb40d426ea7db191b75c546f29e`, clean tree). Before building,
+the r18 `SOURCE-PROVENANCE.json` (798 files, dirty worktree on `91f7fce2`)
+was compared against main: 715 files identical to main, 47 where main moved
+on with the 12 commits since, and as the only r18 content not on main 34
+UI-test baseline PNGs plus two files deleted on main (`TierBar.swift`,
+`TopBarView.swift`); no product source was lost. Packages:
+`hq/service-index-main-8a6cdf6c-20261007` (`bin/EngramService` sha256
+`847516848f6ba2c90e5373d1a11a21061181c41ad2a3ee9625aa20e218213b2a`) and
+`hq/remote-server-main-8a6cdf6c-20261007` (`bin/EngramRemoteServer` sha256
+`acb455ec10bf3997524c4382973f8ad4fdde5d17d3b91a5b071c7798e13e7e82`). Plists
+backed up to `state/service-index/persistent/main-8a6cdf6c-20261007-job-before.plist`
+and `state/remote-server/persistent/main-8a6cdf6c-20261007-job-before.plist`;
+only `ProgramArguments[0]` changed. service-index: bootout 13:00:28 UTC,
+bootstrap 13:00:29. A first attempt used `plutil -replace ProgramArguments.0`,
+which inserts in front of the old element instead of replacing it, so the job
+ran for about 40 s with the old binary path as a stray first argument (no
+stderr); the plist was corrected with plistlib (diff against the backup shows
+exactly one changed line) and the job restarted at 13:01:09 UTC. Receiver:
+bootout 13:02:18, bootstrap 13:02:19 UTC. Rollback path: restore the backed-up
+plist and bootstrap it; the r18 packages are kept.
+
+Result at T+10 (13:12:50 UTC): service-index PID 88127 up 11 min, RSS 48 MB,
+10% CPU at the sample, stderr 0 bytes, socket listening, stdout `indexed
+total 45412`; receiver PID 89758, `/v1/health` 200 on 127.0.0.1:18787 and on
+the Tailscale :8443 origin, stderr shows only the two index-warm notices
+(13:02:20 and 13:05:08 UTC); central DB arrivals 41,507 -> 41,508, ledger
+index_ready 8,534 -> 8,539, parsed 32,390, quarantined 579; local grok 6,815
+and pi 805 unchanged across the window, so the role gate stops the index-role
+legacy scan (the old binary had added three grok rows between 08:45 and
+13:00 UTC). Daily collector unchanged: PID 30548, etime 5 d 00:18, stderr
+last written 2026-10-02 11:05 UTC.
+
+**Read-only investigations (subagent, credential-free report).** The 12,147
+pending `session_index_jobs` rows are all `job_kind=embedding`, one per
+visible normal/premium session, created 2026-09-11 to 2026-10-07. The only
+drainer, `EngramServiceRunner.backfillSessionEmbeddingsOnce` (every 900 s),
+returns 0 silently because the index-role settings configure no embedding
+provider (`aiProtocol: disabled`, empty runtime secrets file). FTS, capture
+readiness, Web and keyword search never consult embedding jobs, and
+`GET /web/api/search/status` reports keyword available, semantic unavailable
+(`embeddingProviderUnavailable`). Expected and harmless; the count grows by
+one per new session. The HQ Web reader, logged in as viewer
+(POST `/web/api/auth` 204), found by keyword and opened (detail 200,
+`transcriptAvailability=available`, 50 fragments each) the newest non-skip
+capture claude-code session (started 2026-10-03, latest generation ingested
+2026-10-07 12:08 UTC) and one ingested 2026-10-02. Hygiene note: that
+subagent's own transcript (under the session's `subagents/` directory, local
+only) printed four non-Web token values from the receiver plist while dumping
+it; they are not in its report and were not sent anywhere.
+
+**Cleanup (owner-authorized).** M1: `com.engram.dashscope-proxy` (pointing at
+a missing `~/.openviking/dashscope-proxy.py`) booted out, its plist renamed to
+`com.engram.dashscope-proxy.plist.disabled-20261007`, and the 169.9 MB
+`~/.openviking/proxy.log` removed. HQ: the three 6.7 GB 2026-09-12 diagnostic
+copies under `state/service-index/persistent/` (`overview-index-diagnostic`,
+`review-probe-repair-preview`, `web-list-only-index-diagnostic`) removed; 66
+superseded package directories (1.7 GB) removed, keeping the two running
+packages and the two r18 rollback packages; `hq/` went from 98 GB to 76 GB.
+
+**Repo work.** PR #451 `ci/codeql-action-v4.38.2` supersedes dependabot #437:
+the six `codeql.yml` refs and the two pins in `tests/scripts/ci-workflow.test.ts`
+move to `2892aa5e` (tag v4.38.2, verified via the GitHub API);
+`ci-workflow.test.ts` 40 passed. Dependabot #435/#436 were rebased on
+request, retargeted themselves to vitest 5.0.3 and failed `npm ci` with
+ERESOLVE (coverage-v8 pins the matching vitest), so they were closed and PR
+#452 `deps/vitest-4.1.11` bumps both packages to 4.1.11 together (`npm ci`,
+vitest 137 files / 2015 passed / 49 skipped, lint clean). #438/#439/#440 were
+rebased; CI pending at the time of writing. P2
+(`feat/p2-cross-machine-duplicate-quarantine-20261007`) and P3
+(`feat/p3-install-tooling-20261007`) are being implemented by subagents in
+isolated worktrees; their PRs get their own entry. Doc drift fixed in this
+PR: the retirement checklist records D3; the roadmap decision table shows the
+recorded decisions and the 2026-10-07 M1 check; the stale tail of followups
+`cutover-feed-stalled-1`; TODO entries for P2, P3 and the D7 purge; CLAUDE.md
+capture-ingest role wording and the remote `/mcp` mention; the 2026-10-02 MEMO
+lines annotated with their merge/deploy outcome.
+
+Not verified: sustained CPU of the redeployed service beyond one sample;
+behaviour across an HQ reboot (the system boot daemons still target the
+legacy stack); whether Daily's `hq-live-ensure` interacts with the new jobs
+(it targets the legacy layout); P2/P3 test results, pending their PRs.
+
+## Read-only status inventory of project and deployment (2026-10-07)
+
+Read-only at the time it was taken; the owner-authorized follow-up actions
+are in the entry above. Run as a Workflow of eight Opus agents (four read-only inventory readers,
+three adversarial verification passes, one synthesis) followed by orchestrator
+spot-checks. Hosts by role: Daily Mac (collector, `100.75.72.13`), HQ (this
+machine, index-role Service + receiver/Web, `100.125.101.60`), M1 (replica,
+`100.108.19.20`). The full report lives only in the session scratchpad; the
+facts below were observed twice (inventory plus verification pass or
+orchestrator spot-check) unless marked single pass.
+
+**Repository.** `main` == `origin/main` == `8a6cdf6c`; one untracked file,
+`.grok/workflows/engram-session-status.rhai`. Local TypeScript gates on
+2026-10-07: `npm run lint` exit 0 (270 files, 0 errors, 1 warning: biome.json
+schema 2.5.4 vs CLI 2.5.8); `npm run typecheck:test` exit 0; `npx vitest run`
+137 files / 2015 passed / 49 skipped / 0 failed (single pass). Swift builds and
+suites were not run locally. CI evidence: Tests on the merge commits of PR #447
+(`65390b43`, run 36994995736) and #448 (`4479be3b`, run 37001397754) fully
+green; on #449 (`9d465ee0`, run 37009576245) `swift-unit` was cancelled by
+concurrency so CI Gate reads failure, while the PR head `81beb879` (run
+37006483611) passed swift-unit and remote-server-swift and differs from
+`8a6cdf6c` only in CHANGELOG/MEMO/followups; #450 changed docs only and
+skipped code jobs. Perf nightly green 2026-10-01..06; CodeQL green 2026-10-05.
+Version 1.0.5 everywhere (package.json, project.yml, tag, Release 2026-08-02);
+208 commits since v1.0.5 and no newer release authorized (`docs/TODO.md`).
+Six dependabot PRs open 35-42 days: #435/#436/#438/#439/#440 MERGEABLE but 79
+commits behind with stale checks; #437 (codeql-action group) BLOCKED because
+`tests/scripts/ci-workflow.test.ts:90-91` pins SHA `ff2f1c62` (run
+37551851226). Two unmerged local branches:
+`archive/2026-08-15-stewardship-closeout-local` (+1) and
+`feat/retro-p1-2026-08-12` (+24, upstream gone). Toolchain: Node v26.10.0,
+Xcode 26.4 (17E192), local xcodegen 2.46.0 vs CI-pinned 2.45.4.
+
+**Cutover status against source** (plan
+`docs/superpowers/plans/2026-09-05-collector-server-web.md:13-35`, design
+`docs/superpowers/specs/2026-10-02-hq-local-collector-cutover-design.md` §8).
+Confirmed in source: P1 role gate (`EngramServiceRunner.swift`, invariant
+entry `docs/invariants.md:180`), the three 2026-10-02 collector fixes,
+`CodexAdapter(modifiedSince:)`. Not started: W4.1 alias reconciliation
+(`CaptureIngestCommitter.swift:93-95` refuses an occupied ID; an identity
+conflict is rethrown by `ServiceCaptureIngestWorker.swift:222-233`, not
+quarantined, so the plan's "collision quarantine" wording overstates), W4.5
+old-receipt bootstrap, P2 exact-content quarantine (D6), P3 install executor
+(`scripts/plan-headless-install.mjs` has no apply/activate mode). Partial:
+W4.7 (`dryRunEpoch`/`approveEpoch` have only test callers); W6.2 (33
+real-binary tests XCTSkip without three env vars, no CI workflow sets them,
+four manual receipts in this file). W6.3 CPU target: one 0.0% sample since
+2026-10-02 against the recorded 13.178% window. W7: Daily only; HQ runbook
+R2-R10 not executed. §8 sequencing step 1 (fixed collector on Daily) is done;
+steps 2-4 are pending or being observed.
+
+**Deployment, observed 2026-10-07 16:28-16:45 CST.**
+
+- Daily Mac: `com.engram.collector` PID 30548, one run since 2026-10-02 20:55
+  CST (etime 4d19h), RSS about 42 MB, 0.0% CPU at the sample, binary
+  `collector-vanished-directory-20261002/bin/EngramCollector` sha256
+  `0cc8a063…db23` (matches the closeout), 16/16 roots converged, 41,593
+  publications with 41,503 ACKed by each replica, 90 privacy-withheld.
+  `com.engram.hq-live-ensure` still runs every 120 s and keeps the legacy HQ
+  hub and old local Service alive. Data volume 84% used, capture spool 48 GB
+  (single pass).
+- HQ: `com.engram.service-index` PID 22930 runs package
+  `service-index-web-parity-20260913-r18`, `BUILD-METADATA.json`
+  sourceRevision `91f7fce2` (2026-09-16, dirty worktree);
+  `git merge-base --is-ancestor 88681da8 91f7fce2` exits 1, so the role gate
+  and the Codex resume-window fix are NOT deployed on HQ.
+  `com.engram.capture-core.receiver` PID 23443 (127.0.0.1:18787, Tailscale
+  serve :8443, `/v1/health` 200). Legacy hub `com.engram.remote-server`
+  (EngramRemoteServer PID 39610 on 100.125.101.60:8787, health 200; the
+  wrapper exits 1 when the port is already bound, hence launchctl status 1).
+  Old local-role Service runs as system daemon `com.engram.service.boot` PID
+  30392 (about 32 days, build1569); its `~/.engram/index.sqlite` newest
+  `indexed_at` 2026-10-05T10:39:47Z, 0 rows in the last 24 h. Central DB
+  (`sqlite3 -readonly`): 45,409 sessions (capture 39,221; local 6,188 = grok
+  5,956 + pi 232, and local rows grew by 14 in 24 h because
+  `ENGRAM_DISABLED_SOURCES` lists 17 sources without grok/pi); ledger
+  index_ready 8,534 / parsed 32,390 / quarantined 579; pending ingest 0;
+  `session_index_jobs` pending 12,147 (since 2026-09-11); FTS rows 792,586;
+  newest capture claude-code 2026-10-07T08:07:30Z. Exactly one capture
+  machine_id is registered. Two HQ Claude sessions created today are in
+  neither DB (single pass).
+- M1: `com.engram.capture-core.receiver` PID 26997 (about 25 days, package
+  `remote-server-kimi-legacy-20260912`, base `91ccb9a5`), 41,503 publications
+  archived, last archive change 2026-10-07T08:07:28Z; legacy hub PID 3387
+  health 200; `com.engram.dashscope-proxy` restarts forever against a missing
+  script with a 169.5 MB log; two GitHub Actions runners idle.
+  `~/.claude/projects` has 2 JSONL files modified since 2026-10-06, which
+  satisfies the D1 trigger for an M1 collector; none is installed.
+- Receiver plists on HQ and M1 carry Web credentials and at-rest keys as
+  plaintext environment variables (mode 0600; only key names were read).
+
+**Doc drift found.** D3 says the Antigravity/Windsurf exceptions are recorded
+in the retirement checklist, but the checklist still says no owner decision;
+`docs/roadmap.md:70-72` still reads "Decision needed" after §8 recorded the
+decisions; the `docs/followups.md:14` row is resolved and open in one cell;
+older MEMO entries still say "待合并和部署"; the cutover design status line
+still reads Draft; P2 and the D7 purge have no TODO/followups entry;
+`scripts/invariant-gates.json` maps invariants 1-14 only;
+`scripts/hq-live/ensure-hq-live:18-22` targets the legacy layout; CLAUDE.md
+does not mention the remote read-only `/mcp` and implies capture ingest is
+index-role only while `ServiceCaptureIngestRuntime.swift:221-227` also enables
+it for the local role.
+
+**Not verified.** HQ Web reader search/open; sustained collector CPU;
+collector behaviour across a reboot; whether #435-#440 still pass on current
+main; whether `feat/retro-p1-2026-08-12` reached main another way; why no
+grok capture since 2026-10-02 and no codex capture since 2026-10-03; the
+purpose of the untracked `.rhai` file.
+
+**Suggested next steps (not executed; each needs its own authorization).**
+Rebuild and deploy HQ service-index/receiver from current main before the HQ
+runbook; build P2 and P3, then R2-R10 in a dedicated session; record the D1
+check for M1 and decide on an M1 collector; add TODO entries for P2 and the D7
+purge; fix the doc drift above; unblock #437 by updating the pinned SHA;
+investigate the 12,147 pending embedding jobs.
+
 ## Daily collector recovery closeout (2026-10-02)
 
 Hosts by role. PR #449 merged as `9d465ee0` (2026-10-02 12:54 UTC, normal
