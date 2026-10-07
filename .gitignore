@@ -20,6 +20,10 @@ coverage/
 /.engram-runtime-test-*/
 /.engram-publication-test-*/
 /.engram-demo-test-home.*/
+/.engram-install-plan-test-*/
+/.engram-install-apply-test-*/
+/.engram-settings-render-test-*/
+/.engram-rendered-settings-test-*/
 /.playwright-cli/
 *.sqlite-shm
 *.sqlite-wal

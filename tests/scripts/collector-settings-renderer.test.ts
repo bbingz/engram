@@ -259,6 +259,17 @@ describe('collector settings renderer', () => {
         baseArgs(output, narrow),
         /outside the collector range/,
       ],
+      // 2^53 + 1 would round silently; it must be refused, not stored rounded.
+      [
+        'unsafe root revision',
+        [...base, '--root-revision', '9007199254740993'],
+        /positive safe integer/,
+      ],
+      [
+        'zero privacy revision',
+        [...base, '--privacy-revision', '0'],
+        /positive safe integer/,
+      ],
       [
         'trailing slash root',
         [...base, '--root', 'x:codex:~/x/'],

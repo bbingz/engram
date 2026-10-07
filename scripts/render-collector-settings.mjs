@@ -5,16 +5,15 @@
 // CollectorRuntimeConfiguration.load). It takes credential IDs only and never
 // reads or writes credential values. Budget values come from an owner-reviewed
 // profile file; there are deliberately no built-in budget defaults.
-import {
-  closeSync,
-  fchmodSync,
-  lstatSync,
-  openSync,
-  readFileSync,
-  writeSync,
-} from 'node:fs';
+import { lstatSync, readFileSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  fail,
+  identifier,
+  overlaps,
+  writeOwnerOnly,
+} from './plan-headless-install.mjs';
 
 // Source name -> accepted explicit parseFormat values (CollectorRuntime.swift
 // rootFormat). An omitted parseFormat always maps to the source default.
@@ -92,16 +91,6 @@ const required = [
   'output',
 ];
 
-function fail(message) {
-  throw new Error(message);
-}
-function overlaps(a, b) {
-  return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
-}
-// CollectorRuntime.swift identifier(): 1...128 bytes of [A-Za-z0-9._-].
-function identifier(value) {
-  return typeof value === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(value);
-}
 // CollectorRuntime.swift validPath(): absolute, at most MAXPATHLEN-1 bytes,
 // no NUL, no empty/./.. components, at most 32 components.
 export function validPath(value) {
@@ -144,8 +133,9 @@ export function endpoint(value) {
 }
 function positiveInteger(value, name) {
   if (value === undefined) return 1;
-  if (!/^[1-9][0-9]{0,15}$/.test(value))
-    fail(`${name} must be a positive integer`);
+  // Decimal digits only, and representable exactly (no rounding above 2^53).
+  if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value)))
+    fail(`${name} must be a positive safe integer`);
   return Number(value);
 }
 function sorted(value) {
@@ -328,26 +318,6 @@ export function renderCollectorSettings(options, profileText) {
   });
 }
 
-function writeOwnerOnly(path, text) {
-  if (!validPath(path)) fail('output must be a normalized absolute path');
-  for (let current = path; current !== '/'; current = dirname(current)) {
-    try {
-      if (lstatSync(current).isSymbolicLink())
-        fail('output path has a symlink alias');
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-    }
-  }
-  // wx: an existing settings file is never overwritten by this tool.
-  const descriptor = openSync(path, 'wx', 0o600);
-  try {
-    fchmodSync(descriptor, 0o600);
-    writeSync(descriptor, text);
-  } finally {
-    closeSync(descriptor);
-  }
-}
-
 function main() {
   const options = parseArguments(process.argv.slice(2));
   const profiles = expand(options['budget-profiles'], options.home);
@@ -359,7 +329,9 @@ function main() {
     readFileSync(profiles, 'utf8'),
   );
   const output = expand(options.output, options.home);
-  writeOwnerOnly(output, `${JSON.stringify(document, null, 2)}\n`);
+  if (!validPath(output)) fail('output must be a normalized absolute path');
+  // An existing settings file is never overwritten by this tool.
+  writeOwnerOnly(output, `${JSON.stringify(document, null, 2)}\n`, 0o600);
   process.stdout.write(
     `${JSON.stringify({
       kind: 'collector-settings-rendered',

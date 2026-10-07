@@ -12,12 +12,12 @@ final class CollectorRenderedSettingsFixtureTests: XCTestCase {
         let checkout = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let fixture = checkout.appendingPathComponent("tests/fixtures/collector-install/rendered-settings.json")
         let base = checkout.appendingPathComponent(".engram-rendered-settings-test-\(UUID().uuidString)")
-        let state = base.appendingPathComponent(".engram-collector")
-        for directory in [base, state] {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
-                attributes: [.posixPermissions: 0o700])
-        }
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: base) }
+        let state = base.appendingPathComponent(".engram-collector")
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
 
         let rendered = try String(contentsOf: fixture, encoding: .utf8)
         XCTAssertTrue(rendered.contains("\"/Users/example/"), "fixture must be rendered against the placeholder home")

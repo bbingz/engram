@@ -7,7 +7,17 @@
 // accepts only a plan whose canonical hash matches (design §4.6, D12).
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstatSync, readdirSync, readFileSync, readlinkSync } from 'node:fs';
+import {
+  closeSync,
+  fchmodSync,
+  lstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  renameSync,
+  writeSync,
+} from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -69,6 +79,24 @@ export function statIfPresent(path) {
 }
 export function digestFile(file) {
   return createHash('sha256').update(readFileSync(file)).digest('hex');
+}
+// Owner-only file write shared by the renderer and the executor. Without
+// overwrite the destination itself is created O_EXCL; with overwrite the bytes
+// land in a temporary file that is renamed over the existing regular file.
+export function writeOwnerOnly(destination, bytes, mode, overwrite = false) {
+  path(destination);
+  const existing = statIfPresent(destination);
+  if (existing && (!overwrite || !existing.isFile()))
+    fail(`${destination} exists`);
+  const target = overwrite ? `${destination}.${process.pid}.tmp` : destination;
+  const descriptor = openSync(target, 'wx', mode);
+  try {
+    fchmodSync(descriptor, mode);
+    writeSync(descriptor, bytes);
+  } finally {
+    closeSync(descriptor);
+  }
+  if (overwrite) renameSync(target, destination);
 }
 // linkLeaf allows the named path itself to be a symlink (current, rollback).
 export function path(value, linkLeaf = false) {

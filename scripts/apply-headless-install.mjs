@@ -6,29 +6,28 @@
 // files, and it runs no launchctl command unless --activate is passed.
 import { spawnSync } from 'node:child_process';
 import {
-  closeSync,
   cpSync,
-  fchmodSync,
   lstatSync,
   mkdirSync,
-  openSync,
   readFileSync,
   readlinkSync,
   renameSync,
   rmSync,
   symlinkSync,
-  writeSync,
 } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   canonicalPlanHash,
   digestFile,
+  fail,
   optionalSlots,
   path,
   readMetadata,
   roles,
+  statIfPresent,
   verifyInstalledRelease,
+  writeOwnerOnly,
 } from './plan-headless-install.mjs';
 
 const kinds = ['installation-dry-run', 'upgrade-dry-run', 'rollback-dry-run'];
@@ -48,18 +47,6 @@ const environment = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', LC_ALL: 'C' };
 // After bootout, launchd unloads asynchronously; bootstrap must wait for it.
 const unloadAttempts = 30;
 const unloadIntervalMilliseconds = 1000;
-
-function fail(message) {
-  throw new Error(message);
-}
-function statIfPresent(target) {
-  try {
-    return lstatSync(target);
-  } catch (error) {
-    if (error.code === 'ENOENT') return null;
-    throw error;
-  }
-}
 
 export function parseArguments(argv) {
   const values = {};
@@ -197,22 +184,10 @@ export function renderTemplate(text, bindings, kind) {
   return output;
 }
 
-function writeFile(destination, bytes, mode) {
-  const temporary = `${destination}.${process.pid}.tmp`;
-  const descriptor = openSync(temporary, 'wx', mode);
-  try {
-    fchmodSync(descriptor, mode);
-    writeSync(descriptor, bytes);
-  } finally {
-    closeSync(descriptor);
-  }
-  renameSync(temporary, destination);
-}
-
 // Every file effect is recorded so a failed step can be undone: paths this
 // run created are removed, overwritten files get their previous bytes back
 // and swapped symlinks are re-pointed.
-function writeOwnerOnly(destination, text, mode, overwrite, transaction) {
+function writeTarget(destination, text, mode, overwrite, transaction) {
   const existing = statIfPresent(destination);
   if (existing && (!overwrite || !existing.isFile()))
     fail(`${destination} exists`);
@@ -223,7 +198,7 @@ function writeOwnerOnly(destination, text, mode, overwrite, transaction) {
       mode: existing.mode & 0o7777,
     });
   else transaction.created.push(destination);
-  writeFile(destination, text, mode);
+  writeOwnerOnly(destination, text, mode, overwrite);
 }
 
 function pointSymlink(target, destination) {
@@ -244,7 +219,7 @@ function undo(transaction) {
   const undone = [];
   for (const restore of transaction.restores.reverse()) {
     if (restore.symlink) pointSymlink(restore.target, restore.symlink);
-    else writeFile(restore.file, restore.bytes, restore.mode);
+    else writeOwnerOnly(restore.file, restore.bytes, restore.mode, true);
     undone.push(restore.symlink ?? restore.file);
   }
   for (const created of transaction.created.reverse()) {
@@ -332,7 +307,7 @@ function applyStep(step, tools, transaction, plan) {
         step.bindings,
         kind,
       );
-      writeOwnerOnly(
+      writeTarget(
         step.destination,
         rendered,
         kind === 'zsh' ? 0o700 : 0o600,
