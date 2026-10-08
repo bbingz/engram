@@ -4,6 +4,9 @@
 
 ### 2026-10-08
 
+- [合并] PR #457（Web 以 Tailscale 身份登录，第一阶段）以普通合并进 main（`1e3b5c34`）；`swift-unit` 因采集器启动时序偶发失败一次，重跑通过。
+- [部署] HQ receiver 切到包 `remote-server-main-1e3b5c34-20261008`（verify-only 通过，本地回环身份模式冒烟通过）；plist 已备份，环境变量加 AUTH/VIEWERS/EDITORS、删两项口令；04:07:31 UTC 重启，1.5 秒内健康 200，新 PID 98581。回滚：恢复备份 plist 并 bootstrap，旧包保留。详见 `CHANGELOG.md`。
+- [验证] 从 MacBook 与 HQ 经 8443 验证：`POST {}` 204 并发 cookie、状态返回 `zzbhlx@gmail.com` 且可写、会话读取 200、伪造头被 serve 替换、口令体 400。现在打开 Web 只需在 tailnet 设备访问该地址，无需口令。摄取未受影响（arrivals 41,700）。
 - [验证] HQ T+10.5h 只读检查：service-index 与 receiver 健康、stderr 为零、摄取继续（arrivals 41,529、index_ready 8,567）、`origin=local` 行自重部署后无新增；Daily 采集器运行 5 天 10 小时、瞬时 CPU 0%；M1 副本健康 200。详见 `CHANGELOG.md`。
 - [排查] HQ 旧 local Service（build1569，系统 boot 守护进程拉起，已跑 32 天）单线程 82–94% CPU，热点在 FTS5 游标扫描，自身 WAL checkpoint 已超时 4,525 次；旧 hub :8787 仍由 Daily 看门狗维持。建议把 runbook R8 提前到下一个授权窗口，而不是修旧构建。
 - [排查] 未跟踪的 `.grok/workflows/engram-session-status.rhai` 是 9 月 27 日的 Grok Build 工作流脚本，同目录 15 个同类文件已跟踪；提交或删除即可。

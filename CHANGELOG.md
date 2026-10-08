@@ -3,6 +3,67 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Web identity sign-in merged (#457) and deployed to the HQ receiver (2026-10-08)
+
+Owner authorization "GO" was given in-session for the chain commit, PR,
+merge, build, deploy. Everything below ran under it.
+
+**Merge.** PR #457 (`febdf9a6`) merged as `1e3b5c34` with a normal merge
+after the required checks passed. `swift-unit` failed once on
+`CollectorRuntimeTests.testReplayLossDuringStartKeepsRuntimeAndOtherRootsRunning_repro`
+("caught error: closed"), the same launcher-timing family as the
+2026-10-07 flake; the failed job was rerun and passed (20 min 56 s). CodeQL
+Gate, Dependency Review, remote-server-swift, ui-test-smoke, Node and script
+gates all passed. The feature branch was deleted on merge.
+
+**Package.** Built Release/arm64 from a detached worktree at `1e3b5c34`
+(`xcodebuild -scheme EngramRemoteServer`, `BUILD SUCCEEDED`; the build had
+been warmed at `febdf9a6`, whose tree is identical), packaged with
+`macos/scripts/package-remote-server.sh` into
+`hq/remote-server-main-1e3b5c34-20261008` (`bin/EngramRemoteServer` sha256
+`0796505113f996baa43c3b7405fdb58a0f0072679b00fc4fcf0933f5c7d90382`,
+BUILD-METADATA sourceRevision `1e3b5c34…`), `--verify-only` PASS. Before
+touching HQ, the packaged binary was run locally on a throwaway loopback
+config in identity mode: page marker and hidden form served, `POST {}` with a
+listed login 204 with the `__Host-` cookie, status `{"canWrite":true,
+"login":…}`, unlisted login 403, no header 401, credential body 400, and a
+non-loopback `ENGRAM_REMOTE_HOST` refused at startup. (A first attempt failed
+only because the scratch socket path exceeded the Unix socket length limit.)
+
+**Deploy (HQ receiver, `com.engram.capture-core.receiver`).** Plist backed
+up to `state/remote-server/persistent/main-1e3b5c34-20261008-job-before.plist`
+(0600; it still holds the two old credentials). Changes, applied with
+plistlib and confirmed by a key-set diff: `ProgramArguments[0]` to the new
+binary; environment `+ENGRAM_REMOTE_WEB_AUTH=tailscale-serve`,
+`+ENGRAM_REMOTE_WEB_VIEWERS`, `+ENGRAM_REMOTE_WEB_EDITORS` (both the single
+tailnet login), `-ENGRAM_REMOTE_WEB_VIEWER_CREDENTIAL`,
+`-ENGRAM_REMOTE_WEB_EDITOR_CREDENTIAL`; `ENGRAM_REMOTE_HOST` stays
+`127.0.0.1`, origin unchanged. `bootout` 04:07:30 UTC, `bootstrap` 04:07:31,
+`/v1/health` 200 within 1.5 s; new PID 98581 running the new program path;
+stderr gained only the listening line and the archive index-warm notice.
+Rollback: restore the backed-up plist and bootstrap it; the
+`remote-server-main-8a6cdf6c-20261007` package is kept. The old
+`service-index` job (PID 88127) was not touched.
+
+**Verification through the Serve origin** (`https://macmini-hq.tail1cb16.ts.net:8443`),
+run from the Daily Mac over SSH and from HQ itself, identical results: health
+200; `/web/` carries `data-auth-mode="tailscale-serve"` and the hidden form;
+`POST /web/api/auth` with `{}` and exact Origin 204 with the `__Host-` cookie;
+`GET /web/api/auth` `{"canWrite":true,"login":"zzbhlx@gmail.com"}`;
+`GET /web/api/sessions` 200; a client-supplied `Tailscale-User-Login:
+attacker@example` still yields 204 for the real login because Serve replaces
+it; a credential body is 400. Opening the Web now means visiting the origin
+from a tailnet device; there is no credential to enter. Ingest after the
+restart: arrivals 41,700 and index_ready 8,731 (41,529 / 8,567 at 23:28 UTC
+the previous evening), parsed 32,390, quarantined 579 unchanged.
+
+**Receiver at T+10 (04:18 UTC).** PID 98581 up 10 min 51 s, RSS 100 MB, 0%
+CPU at the sample; health 200 on both origins; stderr holds only the
+listening line, the archive index-warm notice (04:07:31 UTC) and the
+collector publication index-warm notice (04:09:01 UTC); arrivals 41,701 and
+index_ready 8,732 with the newest ledger row at 04:09:11 UTC, so publication
+intake resumed after the restart; service-index PID 88127 untouched.
+
 ## HQ T+10.5h check, old local Service CPU spin, Web identity-auth design (2026-10-08)
 
 Read-only status pass on HQ at 23:28 UTC (07:28 CST) plus one new design doc.
