@@ -4,12 +4,36 @@ import Foundation
 
 /// An explicitly enabled Web viewer, separate from every server bearer credential.
 public struct EngramRemoteWebConfig: Sendable {
+    /// Where a Web session's viewer/editor authority comes from
+    /// (docs/superpowers/specs/2026-10-08-web-tailscale-identity-auth-design.md).
+    public enum AuthMode: Sendable, Equatable {
+        /// Shared viewer/editor credentials, kept only as SHA-256 digests.
+        case credential(viewerDigest: Data, editorDigest: Data?)
+        /// The exact `Tailscale-User-Login` the local Tailscale Serve proxy asserts,
+        /// matched against explicit allowlists. Editors read implicitly.
+        case tailscaleServe(viewers: Set<String>, editors: Set<String>)
+    }
+
     public let origin: String
     public let authority: String
-    let credentialDigest: Data
-    let editorCredentialDigest: Data?
+    let mode: AuthMode
     let cookieName: String
     let isSecure: Bool
+
+    var credentialDigest: Data? {
+        if case let .credential(viewerDigest, _) = mode { return viewerDigest }
+        return nil
+    }
+
+    var editorCredentialDigest: Data? {
+        if case let .credential(_, editorDigest) = mode { return editorDigest }
+        return nil
+    }
+
+    var usesTailscaleServeIdentity: Bool {
+        if case .tailscaleServe = mode { return true }
+        return false
+    }
 
     public enum ConfigError: Error, Equatable, CustomStringConvertible {
         case invalidEnabled
@@ -18,6 +42,11 @@ public struct EngramRemoteWebConfig: Sendable {
         case missingCredential
         case credentialMustBeDistinct
         case invalidEditorCredential
+        case invalidAuthMode
+        case credentialNotAllowedWithIdentity
+        case missingIdentityViewers
+        case invalidIdentityLogin
+        case identityRequiresLoopbackBind
 
         public var description: String {
             switch self {
@@ -27,6 +56,13 @@ public struct EngramRemoteWebConfig: Sendable {
             case .missingCredential: "Web requires a dedicated viewer credential."
             case .credentialMustBeDistinct: "Web viewer and server bearer credentials must be distinct."
             case .invalidEditorCredential: "Web editor requires a nonempty credential distinct from viewer and server credentials."
+            case .invalidAuthMode: "ENGRAM_REMOTE_WEB_AUTH must be credential or tailscale-serve."
+            case .credentialNotAllowedWithIdentity:
+                "ENGRAM_REMOTE_WEB_AUTH=tailscale-serve forbids ENGRAM_REMOTE_WEB_VIEWER_CREDENTIAL and ENGRAM_REMOTE_WEB_EDITOR_CREDENTIAL."
+            case .missingIdentityViewers: "ENGRAM_REMOTE_WEB_AUTH=tailscale-serve requires a nonempty ENGRAM_REMOTE_WEB_VIEWERS list."
+            case .invalidIdentityLogin:
+                "Web identity allowlists are comma-separated exact Tailscale logins: nonempty printable ASCII without whitespace, quotes or backslashes, at most 254 bytes, no duplicates."
+            case .identityRequiresLoopbackBind: "ENGRAM_REMOTE_WEB_AUTH=tailscale-serve requires ENGRAM_REMOTE_HOST to be a loopback address."
             }
         }
     }
@@ -57,12 +93,27 @@ public struct EngramRemoteWebConfig: Sendable {
                   editorCredential != viewerCredential,
                   !serverBearerCredentials.contains(editorCredential) else { throw ConfigError.invalidEditorCredential }
         }
-        self.editorCredentialDigest = editorCredential.map { Data(SHA256.hash(data: Data($0.utf8))) }
+        self.mode = .credential(
+            viewerDigest: Data(SHA256.hash(data: Data(viewerCredential.utf8))),
+            editorDigest: editorCredential.map { Data(SHA256.hash(data: Data($0.utf8))) }
+        )
         self.authority = try Self.canonicalAuthority(origin, loopbackHTTPForTesting: loopbackHTTPForTesting)
         self.origin = origin
-        self.credentialDigest = Data(SHA256.hash(data: Data(viewerCredential.utf8)))
         self.cookieName = loopbackHTTPForTesting ? "engram_web_test" : "__Host-engram_web"
         self.isSecure = !loopbackHTTPForTesting
+    }
+
+    /// Identity mode: no shared credential exists; the local Tailscale Serve proxy
+    /// asserts the login and these exact allowlists decide the authority.
+    public init(origin: String, tailscaleServeViewers: String, editors: String?) throws {
+        let viewers = try Self.parseLoginList(tailscaleServeViewers)
+        guard !viewers.isEmpty else { throw ConfigError.missingIdentityViewers }
+        let editorLogins = try editors.map(Self.parseLoginList) ?? []
+        self.mode = .tailscaleServe(viewers: viewers, editors: editorLogins)
+        self.authority = try Self.canonicalAuthority(origin, loopbackHTTPForTesting: false)
+        self.origin = origin
+        self.cookieName = "__Host-engram_web"
+        self.isSecure = true
     }
 
     public static func fromEnvironment(
@@ -77,11 +128,43 @@ public struct EngramRemoteWebConfig: Sendable {
         guard let origin = environment["ENGRAM_REMOTE_WEB_ORIGIN"], !origin.isEmpty else {
             throw ConfigError.missingOrigin
         }
-        guard let credential = environment["ENGRAM_REMOTE_WEB_VIEWER_CREDENTIAL"] else {
-            throw ConfigError.missingCredential
+        switch environment["ENGRAM_REMOTE_WEB_AUTH"] {
+        case nil, "credential":
+            guard let credential = environment["ENGRAM_REMOTE_WEB_VIEWER_CREDENTIAL"] else {
+                throw ConfigError.missingCredential
+            }
+            return try Self(origin: origin, viewerCredential: credential, serverBearerCredentials: serverBearerCredentials,
+                            editorCredential: environment["ENGRAM_REMOTE_WEB_EDITOR_CREDENTIAL"])
+        case "tailscale-serve":
+            guard environment["ENGRAM_REMOTE_WEB_VIEWER_CREDENTIAL"] == nil,
+                  environment["ENGRAM_REMOTE_WEB_EDITOR_CREDENTIAL"] == nil else {
+                throw ConfigError.credentialNotAllowedWithIdentity
+            }
+            guard let viewers = environment["ENGRAM_REMOTE_WEB_VIEWERS"], !viewers.isEmpty else {
+                throw ConfigError.missingIdentityViewers
+            }
+            return try Self(origin: origin, tailscaleServeViewers: viewers, editors: environment["ENGRAM_REMOTE_WEB_EDITORS"])
+        default:
+            throw ConfigError.invalidAuthMode
         }
-        return try Self(origin: origin, viewerCredential: credential, serverBearerCredentials: serverBearerCredentials,
-                        editorCredential: environment["ENGRAM_REMOTE_WEB_EDITOR_CREDENTIAL"])
+    }
+
+    /// Shared by the allowlists and the request header: exact, printable ASCII,
+    /// no whitespace, quotes or backslashes, so a login can be echoed in JSON verbatim.
+    static func isWellFormedLogin(_ login: String) -> Bool {
+        !login.isEmpty && login.utf8.count <= 254
+            && login.utf8.allSatisfy { (33...126).contains($0) && $0 != 34 && $0 != 92 }
+    }
+
+    private static func parseLoginList(_ text: String) throws -> Set<String> {
+        var logins = Set<String>()
+        for entry in text.split(separator: ",", omittingEmptySubsequences: false) {
+            let login = String(entry)
+            guard Self.isWellFormedLogin(login), logins.insert(login).inserted else {
+                throw ConfigError.invalidIdentityLogin
+            }
+        }
+        return logins
     }
 
     /// Internal test-only escape hatch; no environment flag can enable HTTP.

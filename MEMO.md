@@ -2,6 +2,15 @@
 
 ## Changelog Memo
 
+### 2026-10-08
+
+- [验证] HQ T+10.5h 只读检查：service-index 与 receiver 健康、stderr 为零、摄取继续（arrivals 41,529、index_ready 8,567）、`origin=local` 行自重部署后无新增；Daily 采集器运行 5 天 10 小时、瞬时 CPU 0%；M1 副本健康 200。详见 `CHANGELOG.md`。
+- [排查] HQ 旧 local Service（build1569，系统 boot 守护进程拉起，已跑 32 天）单线程 82–94% CPU，热点在 FTS5 游标扫描，自身 WAL checkpoint 已超时 4,525 次；旧 hub :8787 仍由 Daily 看门狗维持。建议把 runbook R8 提前到下一个授权窗口，而不是修旧构建。
+- [排查] 未跟踪的 `.grok/workflows/engram-session-status.rhai` 是 9 月 27 日的 Grok Build 工作流脚本，同目录 15 个同类文件已跟踪；提交或删除即可。
+- [设计] Web 登录改用 Tailscale 身份：新设计稿 `docs/superpowers/specs/2026-10-08-web-tailscale-identity-auth-design.md`（`ENGRAM_REMOTE_WEB_AUTH=tailscale-serve`，按精确登录名的 viewer/editor 允许表，口令模式保持默认且不变，第二阶段把登录名作为审计 actor）。
+- [变更] 第一阶段已在分支 `feat/web-tailscale-identity-auth-20261008` 实现（未提交、未合并、未部署）：配置模式开关与允许表、身份模式只接受 `{}` 登录体、回环绑定强制、会话记录登录名、页面静默换会话并隐藏口令表单；账本条目改写。Swift `EngramRemoteServerCore` 519 过 0 失败，TS Web UI 回归 180 过，lint 通过。详见 `CHANGELOG.md`。
+- [验证] 授权后在 HQ 做了 serve 身份头回显检查：从 HQ 与 MacBook 经 8444 临时映射请求，均收到唯一的 `Tailscale-User-Login: zzbhlx@gmail.com`，伪造头被剥掉替换；绕过 serve 直连回环则伪造头原样到达（设计风险 R1）。映射已撤，serve 配置恢复原状，8443 全程 200。
+
 ### 2026-10-07
 
 - [合并] 今日 8 个 PR 全部合并到 main（`e3df52ab`）：#451 codeql-action、#438 @types/node 26.6.4、#453 文档、#452 vitest 4.1.11、#455 P2 跨机精确重复隔离、#454 P3 安装工具链（审查出的 6 项缺陷已先修复）、#440 biome 2.5.15、#439 openai 7.28.0。P2 尚未部署，随 R7 的 service-index 构建上线。详见 `CHANGELOG.md`。

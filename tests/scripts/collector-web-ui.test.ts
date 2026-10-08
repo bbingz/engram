@@ -105,7 +105,10 @@ function shipped(kind: 'html' | 'css' | 'javascript'): string {
   return block;
 }
 
-function harness(initialAuthCookie?: string) {
+function harness(
+  initialAuthCookie?: string,
+  options: { authMode?: string } = {},
+) {
   const nodes = new Map<string, Element>();
   const node = (id: string) => {
     let value = nodes.get(id);
@@ -146,6 +149,10 @@ function harness(initialAuthCookie?: string) {
     },
     document: {
       getElementById: node,
+      // Identity mode marks <body data-auth-mode>; credential mode has no body here.
+      body: options.authMode
+        ? { dataset: { authMode: options.authMode } }
+        : undefined,
       createElement: (tag?: string) => {
         const element = new Element();
         element.tagName = String(tag || 'div').toUpperCase();
@@ -4948,5 +4955,106 @@ describe('native AI settings editing', () => {
       settings: { ...settings, aiAudit: patch.aiAudit },
     });
     await pending;
+  });
+});
+
+describe('tailnet identity sign-in (design 2026-10-08)', () => {
+  const ticks = async (count = 24) => {
+    for (let step = 0; step < count; step += 1) await Promise.resolve();
+  };
+
+  it('signs in silently from the Serve identity when the restore probe returns 401', async () => {
+    const ui = harness(undefined, { authMode: 'tailscale-serve' });
+    expect(ui.node('login').hidden).toBe(true);
+    expect(ui.node('logout').hidden).toBe(true);
+    const pending = ui.call('restoreSession()');
+    expect(ui.requests[0].path.startsWith('/web/api/sessions')).toBe(true);
+    ui.requests[0].resolve(undefined, 401);
+    await ticks();
+    expect(ui.requests[1].method).toBe('POST');
+    expect(ui.requests[1].path).toBe('/web/api/auth');
+    expect(ui.requests[1].body).toBe('{}');
+    ui.requests[1].resolve(undefined, 204);
+    await ticks();
+    expect(ui.requests[2].path.startsWith('/web/api/sessions')).toBe(true);
+    ui.requests[2].resolve({
+      snapshotId: 'snapshot',
+      items: [{ sessionId: 's1', title: 'Resolved', source: 'codex' }],
+    });
+    await ticks();
+    expect(ui.requests[3].path).toBe('/web/api/overview?limit=2');
+    ui.requests[3].resolve({}, 503);
+    await ticks();
+    expect(ui.requests[4].method).toBe('GET');
+    expect(ui.requests[4].path).toBe('/web/api/auth');
+    ui.requests[4].resolve({ canWrite: false, login: 'reader@example.com' });
+    await pending;
+    expect(ui.requests).toHaveLength(5);
+    expect(ui.node('status').textContent).toBe(
+      'Signed in as reader@example.com',
+    );
+    expect(ui.node('workspace').hidden).toBe(false);
+    expect(ui.node('login').hidden).toBe(true);
+    expect(ui.node('logout').hidden).toBe(true);
+    expect(ui.node('sessions').textContent).toContain('Resolved');
+  });
+
+  it('shows the not-permitted message on 403 without ever showing the credential form', async () => {
+    const ui = harness(undefined, { authMode: 'tailscale-serve' });
+    const pending = ui.call('restoreSession()');
+    ui.requests[0].resolve(undefined, 401);
+    await ticks();
+    ui.requests[1].resolve(undefined, 403);
+    await pending;
+    await ticks();
+    expect(ui.requests).toHaveLength(2);
+    expect(ui.node('status').textContent).toBe(
+      'Your tailnet login is not permitted for this Web origin.',
+    );
+    expect(ui.node('workspace').hidden).not.toBe(false);
+    expect(ui.node('login').hidden).toBe(true);
+  });
+
+  it('re-mints once after an authenticated read expires and holds a five-second floor', async () => {
+    const ui = harness(undefined, { authMode: 'tailscale-serve' });
+    const first = ui.call('api("GET", "/web/api/overview")').catch(() => {});
+    ui.requests[0].resolve(undefined, 401);
+    await first;
+    await ticks();
+    expect(ui.node('status').textContent).toBe('Session expired');
+    expect(ui.requests[1].method).toBe('POST');
+    expect(ui.requests[1].path).toBe('/web/api/auth');
+    ui.requests[1].resolve(undefined, 204);
+    await ticks();
+    expect(ui.requests[2].path.startsWith('/web/api/sessions')).toBe(true);
+    ui.requests[2].resolve({ snapshotId: 'snapshot', items: [] });
+    await ticks();
+    expect(ui.requests[3].path).toBe('/web/api/overview?limit=2');
+    ui.requests[3].resolve({}, 503);
+    await ticks();
+    expect(ui.requests[4].path).toBe('/web/api/auth');
+    ui.requests[4].resolve({ canWrite: true, login: 'editor@example.com' });
+    await ticks();
+    expect(ui.node('status').textContent).toBe(
+      'Signed in as editor@example.com',
+    );
+    const before = ui.requests.length;
+    const second = ui.call('api("GET", "/web/api/overview")').catch(() => {});
+    ui.requests[before].resolve(undefined, 401);
+    await second;
+    await ticks();
+    expect(ui.requests).toHaveLength(before + 1);
+    expect(ui.node('status').textContent).toBe('Session expired');
+  });
+
+  it('keeps the credential form in credential mode and never posts an identity login', async () => {
+    const ui = harness();
+    const pending = ui.call('restoreSession()');
+    ui.requests[0].resolve(undefined, 401);
+    await pending;
+    await ticks();
+    expect(ui.requests).toHaveLength(1);
+    expect(ui.node('login').hidden).not.toBe(true);
+    expect(ui.node('status').textContent).toBe('');
   });
 });

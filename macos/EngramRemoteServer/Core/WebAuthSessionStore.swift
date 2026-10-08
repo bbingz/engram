@@ -2,6 +2,11 @@ import CryptoKit
 import Dispatch
 import Foundation
 
+/// A login the local Tailscale Serve proxy asserted for the current request.
+struct WebIdentity: Sendable, Equatable {
+    let login: String
+}
+
 /// Process-local session authority; never persists bearer session material.
 actor WebAuthSessionStore {
     static let lifetimeSeconds = 900
@@ -12,6 +17,8 @@ actor WebAuthSessionStore {
     enum LoginResult: Equatable, Sendable {
         case authenticated(sessionToken: String)
         case unauthorized
+        /// Identity mode: a well-formed login that no allowlist names.
+        case forbidden
         case throttled(retryAfterSeconds: Int)
         case unavailable
     }
@@ -22,6 +29,8 @@ actor WebAuthSessionStore {
     private struct Session: Sendable {
         let expiresAt: UInt64
         let canWrite: Bool
+        /// The tailnet login for identity-mode sessions; nil for credential sessions.
+        let login: String?
     }
     private var sessions: [Data: Session] = [:]
     private var attemptTimes: [UInt64] = []
@@ -41,6 +50,8 @@ actor WebAuthSessionStore {
     }
 
     func login(credential: String) -> LoginResult {
+        // Credential mode only; an identity-mode store never compares a secret.
+        guard case let .credential(viewerDigest, editorDigest) = configuration.mode else { return .unavailable }
         let instant = monotonicNow()
         purgeExpired(at: instant)
         let (expiresAt, overflow) = instant.addingReportingOverflow(Self.lifetimeNanoseconds)
@@ -56,9 +67,27 @@ actor WebAuthSessionStore {
         attemptTimes.append(instant)
 
         let submittedDigest = Data(SHA256.hash(data: Data(credential.utf8)))
-        let isViewer = constantTimeEqual(submittedDigest, configuration.credentialDigest)
-        let isEditor = configuration.editorCredentialDigest.map { constantTimeEqual(submittedDigest, $0) } ?? false
+        let isViewer = constantTimeEqual(submittedDigest, viewerDigest)
+        let isEditor = editorDigest.map { constantTimeEqual(submittedDigest, $0) } ?? false
         guard isViewer || isEditor else { return .unauthorized }
+        return mint(canWrite: isEditor, login: nil, expiresAt: expiresAt)
+    }
+
+    /// Identity mode only. The login was asserted by the local Tailscale Serve proxy
+    /// and is matched exactly against the allowlists. There is no secret to guess,
+    /// so the attempt window does not apply; capacity and collision guards still do.
+    func login(identity: WebIdentity) -> LoginResult {
+        guard case let .tailscaleServe(viewers, editors) = configuration.mode else { return .unavailable }
+        let instant = monotonicNow()
+        purgeExpired(at: instant)
+        let (expiresAt, overflow) = instant.addingReportingOverflow(Self.lifetimeNanoseconds)
+        guard !overflow else { return .unavailable }
+        let isEditor = editors.contains(identity.login)
+        guard isEditor || viewers.contains(identity.login) else { return .forbidden }
+        return mint(canWrite: isEditor, login: identity.login, expiresAt: expiresAt)
+    }
+
+    private func mint(canWrite: Bool, login: String?, expiresAt: UInt64) -> LoginResult {
         guard sessions.count < Self.capacity else { return .unavailable }
         let bytes: Data
         do { bytes = try randomBytes() } catch { return .unavailable }
@@ -69,7 +98,7 @@ actor WebAuthSessionStore {
             .replacingOccurrences(of: "=", with: "")
         let digest = Self.sessionDigest(token)
         guard sessions[digest] == nil else { return .unavailable }
-        sessions[digest] = Session(expiresAt: expiresAt, canWrite: isEditor)
+        sessions[digest] = Session(expiresAt: expiresAt, canWrite: canWrite, login: login)
         return .authenticated(sessionToken: token)
     }
 
@@ -79,6 +108,11 @@ actor WebAuthSessionStore {
 
     func canWrite(sessionToken: String) -> Bool {
         validSession(sessionToken: sessionToken)?.canWrite ?? false
+    }
+
+    /// The tailnet login bound to a live identity-mode session; nil otherwise.
+    func actor(sessionToken: String) -> String? {
+        validSession(sessionToken: sessionToken)?.login
     }
 
     private func validSession(sessionToken: String) -> Session? {

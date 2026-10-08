@@ -98,8 +98,10 @@ public final class EngramRemoteServerApp: Sendable {
         if let web = config.web {
             // Config is mutable and its caller may have omitted credentials from WebConfig's constructor.
             let credentials = [config.bearerToken, config.archiveV2?.bearerToken, config.mcp?.bearerToken].compactMap { $0 }
-            guard credentials.allSatisfy({ Data(SHA256.hash(data: Data($0.utf8))) != web.credentialDigest }) else {
-                throw EngramRemoteWebConfig.ConfigError.credentialMustBeDistinct
+            if let viewerDigest = web.credentialDigest {
+                guard credentials.allSatisfy({ Data(SHA256.hash(data: Data($0.utf8))) != viewerDigest }) else {
+                    throw EngramRemoteWebConfig.ConfigError.credentialMustBeDistinct
+                }
             }
             let socketPath = try EngramRemoteServerConfig.validatedWebServiceSocketPath(config.webServiceSocketPath)
             self.webReadSurface = try webReadClientFactory(socketPath)
@@ -306,7 +308,7 @@ public final class EngramRemoteServerApp: Sendable {
             WebAuthRoutes.mount(on: router, boundary: boundary, sessions: sessions)
             WebReadRoutes.mount(on: router, surface: surface)
             WebWriteRoutes.mount(on: router, surface: writeSurface)
-            WebUIRoutes.mount(on: router)
+            WebUIRoutes.mount(on: router, tailscaleServeIdentity: configuration.usesTailscaleServeIdentity)
             middleware = WebRequestBoundary.Middleware(boundary: boundary, sessions: sessions)
         } else {
             middleware = nil

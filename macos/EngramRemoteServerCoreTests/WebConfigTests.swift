@@ -120,8 +120,92 @@ final class WebConfigTests: XCTestCase {
         XCTAssertThrowsError(try EngramRemoteWebConfig.fromEnvironment(environment, serverBearerCredentials: bearers))
     }
 
+    private var identityEnabled: [String: String] {
+        [
+            "ENGRAM_REMOTE_WEB_ENABLED": "1",
+            "ENGRAM_REMOTE_WEB_ORIGIN": "https://viewer.example",
+            "ENGRAM_REMOTE_WEB_AUTH": "tailscale-serve",
+            "ENGRAM_REMOTE_WEB_VIEWERS": "reader@example.com,second@example.com",
+            "ENGRAM_REMOTE_WEB_EDITORS": "editor@example.com",
+        ]
+    }
+
+    func testAuthModeDefaultsToCredentialAndRejectsUnknownValues() throws {
+        let implicit = try XCTUnwrap(EngramRemoteWebConfig.fromEnvironment(enabled, serverBearerCredentials: bearers))
+        var explicit = enabled
+        explicit["ENGRAM_REMOTE_WEB_AUTH"] = "credential"
+        let named = try XCTUnwrap(EngramRemoteWebConfig.fromEnvironment(explicit, serverBearerCredentials: bearers))
+        XCTAssertEqual(implicit.mode, named.mode)
+        XCTAssertFalse(implicit.usesTailscaleServeIdentity)
+        for value in ["", "Tailscale-Serve", "tailscale", "credential ", "both"] {
+            var environment = enabled
+            environment["ENGRAM_REMOTE_WEB_AUTH"] = value
+            XCTAssertThrowsError(try EngramRemoteWebConfig.fromEnvironment(environment, serverBearerCredentials: bearers), value) {
+                XCTAssertEqual($0 as? EngramRemoteWebConfig.ConfigError, .invalidAuthMode)
+            }
+        }
+    }
+
+    func testTailscaleServeModeParsesExactAllowlistsAndKeepsNoCredentialDigest() throws {
+        let config = try XCTUnwrap(EngramRemoteWebConfig.fromEnvironment(identityEnabled, serverBearerCredentials: bearers))
+        XCTAssertTrue(config.usesTailscaleServeIdentity)
+        XCTAssertEqual(config.mode, .tailscaleServe(viewers: ["reader@example.com", "second@example.com"], editors: ["editor@example.com"]))
+        XCTAssertNil(config.credentialDigest)
+        XCTAssertNil(config.editorCredentialDigest)
+        XCTAssertEqual(config.cookieName, "__Host-engram_web")
+        XCTAssertTrue(config.isSecure)
+        var viewersOnly = identityEnabled
+        viewersOnly["ENGRAM_REMOTE_WEB_EDITORS"] = nil
+        let noEditors = try XCTUnwrap(EngramRemoteWebConfig.fromEnvironment(viewersOnly, serverBearerCredentials: bearers))
+        XCTAssertEqual(noEditors.mode, .tailscaleServe(viewers: ["reader@example.com", "second@example.com"], editors: []))
+    }
+
+    func testTailscaleServeModeForbidsSharedCredentialsAndRequiresViewers() throws {
+        for key in ["ENGRAM_REMOTE_WEB_VIEWER_CREDENTIAL", "ENGRAM_REMOTE_WEB_EDITOR_CREDENTIAL"] {
+            for value in ["", "fixture-secret"] {
+                var environment = identityEnabled
+                environment[key] = value
+                XCTAssertThrowsError(try EngramRemoteWebConfig.fromEnvironment(environment, serverBearerCredentials: bearers)) {
+                    XCTAssertEqual($0 as? EngramRemoteWebConfig.ConfigError, .credentialNotAllowedWithIdentity)
+                }
+            }
+        }
+        for missing in [true, false] {
+            var environment = identityEnabled
+            environment["ENGRAM_REMOTE_WEB_VIEWERS"] = missing ? nil : ""
+            XCTAssertThrowsError(try EngramRemoteWebConfig.fromEnvironment(environment, serverBearerCredentials: bearers)) {
+                XCTAssertEqual($0 as? EngramRemoteWebConfig.ConfigError, .missingIdentityViewers)
+            }
+        }
+        var plainHTTP = identityEnabled
+        plainHTTP["ENGRAM_REMOTE_WEB_ORIGIN"] = "http://127.0.0.1:8787"
+        XCTAssertThrowsError(try EngramRemoteWebConfig.fromEnvironment(plainHTTP, serverBearerCredentials: bearers)) {
+            XCTAssertEqual($0 as? EngramRemoteWebConfig.ConfigError, .invalidOrigin)
+        }
+    }
+
+    func testIdentityAllowlistEntriesMustBeExactPrintableLoginsWithoutDuplicates() throws {
+        for list in [",", "a@example.com,", ",a@example.com", "a@example.com,,b@example.com", " a@example.com", "a@example.com ",
+                     "a b@example.com", "a@example.com\n", "a@example.com,a@example.com", "\"a\"@example.com", "a\\b@example.com",
+                     "é@example.com", String(repeating: "a", count: 255)] {
+            for key in ["ENGRAM_REMOTE_WEB_VIEWERS", "ENGRAM_REMOTE_WEB_EDITORS"] {
+                var environment = identityEnabled
+                environment[key] = list
+                XCTAssertThrowsError(try EngramRemoteWebConfig.fromEnvironment(environment, serverBearerCredentials: bearers), "\(key)=\(list)") {
+                    XCTAssertEqual($0 as? EngramRemoteWebConfig.ConfigError, .invalidIdentityLogin)
+                }
+            }
+        }
+        var environment = identityEnabled
+        environment["ENGRAM_REMOTE_WEB_VIEWERS"] = String(repeating: "a", count: 254)
+        XCTAssertNotNil(try EngramRemoteWebConfig.fromEnvironment(environment, serverBearerCredentials: bearers))
+        XCTAssertTrue(EngramRemoteWebConfig.isWellFormedLogin("zzbhlx@gmail.com"))
+        XCTAssertFalse(EngramRemoteWebConfig.isWellFormedLogin(""))
+    }
+
     func testConfigurationErrorsNeverIncludeSubmittedCredentialsOrOrigin() {
-        for error in [EngramRemoteWebConfig.ConfigError.invalidEnabled, .missingOrigin, .invalidOrigin, .missingCredential, .credentialMustBeDistinct] {
+        for error in [EngramRemoteWebConfig.ConfigError.invalidEnabled, .missingOrigin, .invalidOrigin, .missingCredential, .credentialMustBeDistinct,
+                      .invalidAuthMode, .credentialNotAllowedWithIdentity, .missingIdentityViewers, .invalidIdentityLogin, .identityRequiresLoopbackBind] {
             XCTAssertFalse(error.description.contains(viewer))
             for bearer in bearers { XCTAssertFalse(error.description.contains(bearer)) }
             XCTAssertFalse(error.description.contains("viewer.example"))

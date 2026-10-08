@@ -267,6 +267,11 @@ public struct EngramRemoteServerConfig: Sendable {
             env,
             serverBearerCredentials: [token, env["ENGRAM_REMOTE_ARCHIVE_TOKEN"], env["ENGRAM_REMOTE_MCP_TOKEN"]].compactMap { $0 }
         )
+        // The only legitimate source of a Tailscale identity header is the Serve
+        // proxy on this host; a non-loopback listener would trust any peer's header.
+        if let web, web.usesTailscaleServeIdentity, !Self.isLoopbackBindAddress(host) {
+            throw EngramRemoteWebConfig.ConfigError.identityRequiresLoopbackBind
+        }
         let webServiceSocketPath: String?
         if web != nil {
             webServiceSocketPath = try Self.validatedWebServiceSocketPath(env["ENGRAM_REMOTE_WEB_SERVICE_SOCKET"])
@@ -322,6 +327,23 @@ public struct EngramRemoteServerConfig: Sendable {
             return "unknown"
         }
         return value
+    }
+
+    private static func isLoopbackBindAddress(_ host: String) -> Bool {
+        guard !host.contains("%") else { return false }
+
+        var ipv4 = in_addr()
+        if host.withCString({ inet_pton(AF_INET, $0, &ipv4) }) == 1 {
+            return withUnsafeBytes(of: &ipv4) { $0[0] == 127 }
+        }
+
+        var ipv6 = in6_addr()
+        if host.withCString({ inet_pton(AF_INET6, $0, &ipv6) }) == 1 {
+            let bytes = withUnsafeBytes(of: &ipv6) { Array($0) }
+            return bytes.dropLast().allSatisfy { $0 == 0 } && bytes.last == 1
+        }
+
+        return false
     }
 
     private static func isAllowedArchiveBindAddress(_ host: String) -> Bool {

@@ -256,6 +256,74 @@ final class WebAuthSessionTests: XCTestCase {
         XCTAssertEqual(digests.count, 1)
     }
 
+    private func makeIdentityStore(
+        clock: WebTestClock = WebTestClock(),
+        random: WebTestRandom = WebTestRandom()
+    ) throws -> WebAuthSessionStore {
+        WebAuthSessionStore(
+            configuration: try EngramRemoteWebConfig(
+                origin: "https://viewer.example", tailscaleServeViewers: "reader@example.com", editors: "editor@example.com"
+            ),
+            now: { clock.now }, randomBytes: { try random.next() }
+        )
+    }
+
+    func testIdentityLoginMintsViewerOrEditorByExactLoginAndRecordsActor() async throws {
+        let store = try makeIdentityStore()
+        guard let reader = token(await store.login(identity: WebIdentity(login: "reader@example.com"))),
+              let editor = token(await store.login(identity: WebIdentity(login: "editor@example.com"))) else { return }
+        let readerCanWrite = await store.canWrite(sessionToken: reader)
+        let editorCanWrite = await store.canWrite(sessionToken: editor)
+        let editorCanRead = await store.isAuthenticated(sessionToken: editor)
+        XCTAssertFalse(readerCanWrite)
+        XCTAssertTrue(editorCanWrite)
+        XCTAssertTrue(editorCanRead)
+        let readerActor = await store.actor(sessionToken: reader)
+        let editorActor = await store.actor(sessionToken: editor)
+        XCTAssertEqual(readerActor, "reader@example.com")
+        XCTAssertEqual(editorActor, "editor@example.com")
+        for login in ["Reader@example.com", "reader@example.com ", "reader@example.co", "nobody@example.com", ""] {
+            let outcome = await store.login(identity: WebIdentity(login: login))
+            XCTAssertEqual(outcome, .forbidden, login)
+        }
+        let digests = await store.sessionDigests
+        XCTAssertEqual(digests.count, 2)
+        await store.logout(sessionToken: editor)
+        let revokedActor = await store.actor(sessionToken: editor)
+        XCTAssertNil(revokedActor)
+    }
+
+    func testIdentityLoginsIgnoreTheAttemptWindowButRespectCapacityAndExpiry() async throws {
+        let clock = WebTestClock()
+        let store = try makeIdentityStore(clock: clock)
+        var issued: [String] = []
+        for _ in 0..<64 {
+            guard let token = token(await store.login(identity: WebIdentity(login: "reader@example.com"))) else { return }
+            issued.append(token)
+        }
+        let full = await store.login(identity: WebIdentity(login: "reader@example.com"))
+        XCTAssertEqual(full, .unavailable)
+        clock.advance(seconds: 900)
+        let afterExpiry = await store.login(identity: WebIdentity(login: "reader@example.com"))
+        XCTAssertNotNil(token(afterExpiry))
+        let firstExpired = await store.isAuthenticated(sessionToken: issued[0])
+        XCTAssertFalse(firstExpired)
+    }
+
+    func testEachStoreAnswersOnlyItsOwnModeAndCredentialSessionsHaveNoActor() async throws {
+        let identityStore = try makeIdentityStore()
+        let credentialOutcome = await identityStore.login(credential: "reader@example.com")
+        XCTAssertEqual(credentialOutcome, .unavailable)
+        let identityDigests = await identityStore.sessionDigests
+        XCTAssertTrue(identityDigests.isEmpty)
+        let credentialStore = try makeStore()
+        let identityOutcome = await credentialStore.login(identity: WebIdentity(login: viewer))
+        XCTAssertEqual(identityOutcome, .unavailable)
+        guard let session = token(await credentialStore.login(credential: viewer)) else { return }
+        let actor = await credentialStore.actor(sessionToken: session)
+        XCTAssertNil(actor)
+    }
+
     func testUnrepresentableClockDeadlinesFailClosedWithoutMintingOrTrapping() async throws {
         for instant in [UInt64.max, UInt64.max - 899_000_000_000] {
             let clock = WebTestClock()

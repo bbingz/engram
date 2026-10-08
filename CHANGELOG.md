@@ -3,6 +3,107 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## HQ T+10.5h check, old local Service CPU spin, Web identity-auth design (2026-10-08)
+
+Read-only status pass on HQ at 23:28 UTC (07:28 CST) plus one new design doc.
+No host was changed and nothing was deployed.
+
+**HQ new stack.** service-index PID 88127 up 10 h 24 min, 12-14% CPU at a
+10-second `top` sample, 32 MB, stderr 0 bytes, checkpoints ok; receiver PID
+89758 up 10 h 23 min, `/v1/health` 200 on 127.0.0.1:18787 and on
+`https://macmini-hq.tail1cb16.ts.net:8443` (`tailscale serve` proxy, tailnet
+only), stderr still only the two index-warm notices. Central DB: arrivals
+41,529 (41,517 at T+7h), ledger index_ready 8,567 / parsed 32,390 /
+quarantined 579, sessions 45,412, newest ingest 23:30:24 UTC; `origin=local`
+rows 6,191 (grok 5,959, pi 232) with the newest `indexed_at` still
+2026-10-07 11:20 UTC, so the role gate holds. `session_index_jobs`: embedding
+pending 12,151 (expected, no provider), fts 12,558 all completed. Disk 687 GB
+free. Daily collector (SSH read-only): PID 30548 up 5 d 10 h, 0% CPU at the
+sample, 25 MB, no log line since 2026-10-02. M1 replica `/v1/health` 200,
+`tailscale ping` 4 ms although `tailscale status` labels it offline.
+
+**Old HQ local stack (retires at runbook R8).** The old local-role
+`EngramService` PID 30392 (`~/.engram-service/current` =
+`releases/cabeeb24-build1569`, started by the system boot daemon, up 32 days,
+lifetime CPU average 80%) ran at 82-94% CPU on one thread across a 10-second
+sample. A 3-second `sample` shows the hot thread inside an FTS5 cursor scan
+(`fts5SeekCursor`, `sqlite3BtreeNext`) on the GRDB reader connection; the
+caller is unresolved because the binary is stripped. Its own WAL checkpoint
+has logged "Timed out waiting for the EngramService write lock" 4,525 times
+(19 in the last 300 lines of `~/.engram/logs/engram-service.boot.out.log`).
+It still indexes HQ claude-code/codex into the old 1.3 GB DB (81 sessions in
+24 h, 59,876 total). The old hub `100.125.101.60:8787` answers 200 on plain
+HTTP, kept alive by the Daily watchdog every 2 minutes
+(`~/.engram/logs/hq-boot-ensure.log`). Recommendation recorded for the owner:
+bring R8 (watchdog off, old service and hub booted out) into the next
+authorized window rather than fixing the old build.
+
+**Untracked `.grok/workflows/engram-session-status.rhai` explained.** A Grok
+Build workflow script dated 2026-09-27 (read-only session replay plus cutover
+inventory); its 15 siblings in the same directory are tracked. Commit or
+delete; not a product file.
+
+**Web login design.** The owner judged the shared-credential Web login too
+crude and chose Tailscale identity. New design doc
+`docs/superpowers/specs/2026-10-08-web-tailscale-identity-auth-design.md`:
+`ENGRAM_REMOTE_WEB_AUTH=tailscale-serve` makes the receiver mint the existing
+hardened session from the `Tailscale-User-Login` header that `tailscale
+serve` asserts (Tailscale KB 1312, fetched 2026-10-08: added on proxied
+requests, client copies stripped, absent on Funnel and tagged devices),
+matched against `ENGRAM_REMOTE_WEB_VIEWERS` / `ENGRAM_REMOTE_WEB_EDITORS`
+exact-login allowlists; credential keys are forbidden in that mode and the
+bind host must be loopback; cookie, exact-Host, marker-header and Origin
+rules are unchanged; the UI re-mints silently so the 900-second lifetime is
+invisible. Credential mode stays the default and is byte-for-byte unchanged.
+Phase 2 (separate PR) carries the login through the Web write envelope as
+the audit actor instead of `mcp`. Not implemented yet.
+
+**Serve identity-header pre-check (owner-authorized, PASS).** A loopback
+header-echo server on `127.0.0.1:18799` was published with `tailscale serve
+--bg --https=8444`, requested from HQ and from the Daily Mac with spoofed
+`Tailscale-User-Login: attacker@example` and `Tailscale-User-Name: Mallory`.
+Both echoes carried exactly one `Tailscale-User-Login: zzbhlx@gmail.com`,
+the Serve-asserted name and profile picture, `Tailscale-Headers-Info`, and
+`X-Forwarded-For` with the requesting node's tailnet address (so Serve does
+add forwarded headers despite the KB summary); the spoofed values were
+removed. A direct loopback request bypassing Serve delivered the spoofed
+header unchanged (design risk R1). Mapping removed with `tailscale serve
+--https=8444 off`; `tailscale serve status` back to the two pre-existing
+entries, 8443 Web origin 200 throughout. Recorded in the design doc's test
+plan.
+
+**Phase 1 implemented (branch `feat/web-tailscale-identity-auth-20261008`,
+uncommitted at the time of writing; not merged, not deployed).**
+`EngramRemoteWebConfig` gains `AuthMode` (`credential` with the two digests,
+`tailscaleServe` with exact-login viewer/editor sets), `ENGRAM_REMOTE_WEB_AUTH`
+parsing, five new `ConfigError` cases and `isWellFormedLogin`;
+`EngramRemoteServerConfig` rejects identity mode on a non-loopback
+`ENGRAM_REMOTE_HOST`; `WebAuthSessionStore` adds `WebIdentity`,
+`login(identity:)` (no attempt window, same capacity and collision guards),
+`LoginResult.forbidden`, a per-session login and `actor(sessionToken:)`, and
+each store answers `.unavailable` to the other mode's entry point;
+`WebRequestBoundary.tailscaleIdentity(in:)` reads exactly one well-formed
+`Tailscale-User-Login` and only in identity mode; `POST /web/api/auth` in
+identity mode accepts only `{}` plus exact Origin and answers 401/403/204;
+the identity-mode `GET /web/api/auth` body adds `login`; credential-mode
+responses are unchanged. `WebUIRoutes.mount(tailscaleServeIdentity:)` serves
+the same HTML with `<body data-auth-mode="tailscale-serve">` and the
+credential form shipped `hidden`; the script signs in silently on a 401
+probe, shows "Signed in as <login>", hides the form and logout, re-mints
+once after an expired read with a five-second floor, and shows the
+not-permitted copy on 403. Ledger entry "Web Reader and Editor Authority"
+rewritten for both modes; `cutover-web-editor-hardening-1` annotated.
+Tests: 13 new Swift tests across `WebConfigTests`, `WebAuthSessionTests`,
+`WebAuthRouteTests`, `WebUIRoutesTests`, `WebServerIntegrationTests`
+(including the forged-header-in-credential-mode guard and the
+viewer-session-cannot-write check); full `EngramRemoteServerCore` 519
+passed, 0 failed after the final edit; `tests/scripts/collector-web-ui.test.ts`
+gained a harness `authMode` option and 4 behavioral tests, 180 passed; the
+fake DOM has no `document.body`, which caught an unguarded read in the
+first draft and was the reason the identity check is defensive.
+`invariants-ledger.test.ts` 12 passed; `npm run lint` exit 0. Phase 2 (audit
+actor through the Web write envelope) is not started.
+
 ## P2 and P3 merged, dependency PRs landed, HQ T+7h check (2026-10-07)
 
 Closes the 2026-10-07 session. All eight PRs opened or revived today are

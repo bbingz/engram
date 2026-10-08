@@ -132,6 +132,31 @@ final class WebServerIntegrationTests: XCTestCase {
         }
     }
 
+    func testEnvironmentIdentityModeRequiresLoopbackBindAndNoCredential() throws {
+        var identity = webEnvironment
+        identity["ENGRAM_REMOTE_WEB_VIEWER_CREDENTIAL"] = nil
+        identity["ENGRAM_REMOTE_WEB_AUTH"] = "tailscale-serve"
+        identity["ENGRAM_REMOTE_WEB_VIEWERS"] = "reader@example.com"
+        let loopback = try EngramRemoteServerConfig.fromEnvironment(identity)
+        XCTAssertEqual(loopback.web?.usesTailscaleServeIdentity, true)
+        XCTAssertEqual(loopback.webServiceSocketPath, socketPath)
+        for host in ["127.0.0.1", "127.8.8.8", "::1"] {
+            identity["ENGRAM_REMOTE_HOST"] = host
+            XCTAssertNoThrow(try EngramRemoteServerConfig.fromEnvironment(identity), host)
+        }
+        for host in ["0.0.0.0", "100.100.100.100", "fd7a:115c:a1e0::1", "localhost", "::", "127.0.0.1%lo0"] {
+            identity["ENGRAM_REMOTE_HOST"] = host
+            XCTAssertThrowsError(try EngramRemoteServerConfig.fromEnvironment(identity), host) {
+                XCTAssertEqual($0 as? EngramRemoteWebConfig.ConfigError, .identityRequiresLoopbackBind)
+            }
+        }
+        identity["ENGRAM_REMOTE_HOST"] = nil
+        identity["ENGRAM_REMOTE_WEB_VIEWER_CREDENTIAL"] = Self.viewer
+        XCTAssertThrowsError(try EngramRemoteServerConfig.fromEnvironment(identity)) {
+            XCTAssertEqual($0 as? EngramRemoteWebConfig.ConfigError, .credentialNotAllowedWithIdentity)
+        }
+    }
+
     func testEnvironmentChecksEveryProvidedBearerIncludingDisabledArchiveAndMCP() throws {
         for key in ["ENGRAM_REMOTE_TOKEN", "ENGRAM_REMOTE_ARCHIVE_TOKEN", "ENGRAM_REMOTE_MCP_TOKEN"] {
             var environment = webEnvironment
