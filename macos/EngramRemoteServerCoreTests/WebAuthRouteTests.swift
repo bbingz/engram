@@ -265,6 +265,95 @@ final class WebAuthRouteTests: XCTestCase {
         }
     }
 
+    private func identityConfiguration() throws -> EngramRemoteWebConfig {
+        try EngramRemoteWebConfig(origin: origin, tailscaleServeViewers: "reader@example.com", editors: "editor@example.com")
+    }
+
+    func testIdentityLoginMintsFromTheServeHeaderWithEmptyBodyAndExactOrigin() async throws {
+        let harness = try WebRouteHarness(configuration: identityConfiguration())
+        let headers = loginHeaders + [("Tailscale-User-Login", "editor@example.com"), ("Tailscale-User-Name", "Editor")]
+        let login = try await harness.respond(request(.post, path: "/web/api/auth", headers: headers, body: " { } "))
+        XCTAssertEqual(login.status, .noContent)
+        assertSecurityHeaders(login)
+        let cookie = login.headers[.setCookie] ?? ""
+        for attribute in ["__Host-engram_web=", "Secure", "HttpOnly", "SameSite=Strict", "Path=/", "Max-Age=900"] { XCTAssertTrue(cookie.contains(attribute), attribute) }
+        XCTAssertFalse(cookie.contains("editor@example.com"))
+        let pair = try XCTUnwrap(cookie.split(separator: ";").first.map(String.init))
+        let status = try await harness.respond(request(path: "/web/api/auth", headers: metadataHeaders + [("Cookie", pair)]))
+        XCTAssertEqual(status.status, .ok)
+        let body = try await webResponseText(status)
+        XCTAssertEqual(body, "{\"canWrite\":true,\"login\":\"editor@example.com\"}")
+        let read = try await harness.respond(request(headers: metadataHeaders + [("Cookie", pair)]))
+        XCTAssertEqual(read.status, .ok)
+        // Fetch metadata is not an Origin: the identity mint stays CSRF-safe.
+        let metadataOnly = try await harness.respond(request(.post, path: "/web/api/auth",
+            headers: metadataHeaders + [("Content-Type", "application/json"), ("Tailscale-User-Login", "editor@example.com")], body: "{}"))
+        XCTAssertEqual(metadataOnly.status, .forbidden)
+        XCTAssertNil(metadataOnly.headers[.setCookie])
+    }
+
+    func testIdentityLoginRejectsCredentialBodiesMissingDuplicateAndUnlistedLogins() async throws {
+        let harness = try WebRouteHarness(configuration: identityConfiguration())
+        let identity = [("Tailscale-User-Login", "reader@example.com")]
+        for body in [loginBody, "{\"credential\":\"\"}", "{\"login\":\"reader@example.com\"}", "[]", "", "{} {}"] {
+            let response = try await harness.respond(request(.post, path: "/web/api/auth", headers: loginHeaders + identity, body: body))
+            XCTAssertEqual(response.status, .badRequest, body)
+            XCTAssertNil(response.headers[.setCookie], body)
+        }
+        for headers in [
+            [], [("Tailscale-User-Login", "")], [("Tailscale-User-Login", "reader@example.com"), ("Tailscale-User-Login", "reader@example.com")],
+            [("Tailscale-User-Login", "reader @example.com")], [("Tailscale-User-Login", "\"reader\"@example.com")],
+            [("Tailscale-User-Name", "reader@example.com")], [("X-Forwarded-For", "100.64.0.2")],
+        ] as [[(String, String)]] {
+            let response = try await harness.respond(request(.post, path: "/web/api/auth", headers: loginHeaders + headers, body: "{}"))
+            XCTAssertEqual(response.status, .unauthorized, "\(headers)")
+            XCTAssertNil(response.headers[.setCookie])
+            let text = try await webResponseText(response)
+            XCTAssertEqual(text, "")
+        }
+        for login in ["nobody@example.com", "Reader@example.com", "reader@example.com.", "reader@example.com,editor@example.com"] {
+            let response = try await harness.respond(request(.post, path: "/web/api/auth", headers: loginHeaders + [("Tailscale-User-Login", login)], body: "{}"))
+            XCTAssertEqual(response.status, .forbidden, login)
+            XCTAssertNil(response.headers[.setCookie])
+            let text = try await webResponseText(response)
+            XCTAssertFalse(text.contains("reader@example.com"))
+            XCTAssertFalse(text.contains("editor@example.com"))
+            assertSecurityHeaders(response)
+        }
+        let digests = await harness.sessions.sessionDigests
+        XCTAssertTrue(digests.isEmpty)
+    }
+
+    func testCredentialModeIgnoresForgedServeHeadersAndKeepsItsStatusBody() async throws {
+        let harness = try WebRouteHarness(configuration: configuration())
+        let forged = [("Tailscale-User-Login", "attacker@example.com")]
+        let emptyBody = try await harness.respond(request(.post, path: "/web/api/auth", headers: loginHeaders + forged, body: "{}"))
+        XCTAssertEqual(emptyBody.status, .badRequest)
+        XCTAssertNil(emptyBody.headers[.setCookie])
+        let wrong = try await harness.respond(request(.post, path: "/web/api/auth", headers: loginHeaders + forged, body: "{\"credential\":\"wrong\"}"))
+        XCTAssertEqual(wrong.status, .unauthorized)
+        let login = try await harness.respond(request(.post, path: "/web/api/auth", headers: loginHeaders + forged, body: loginBody))
+        XCTAssertEqual(login.status, .noContent)
+        let pair = try XCTUnwrap(login.headers[.setCookie]?.split(separator: ";").first.map(String.init))
+        let status = try await harness.respond(request(path: "/web/api/auth", headers: metadataHeaders + forged + [("Cookie", pair)]))
+        let body = try await webResponseText(status)
+        XCTAssertEqual(body, "{\"canWrite\":false}")
+        XCTAssertNil(WebRequestBoundary(configuration: try configuration()).tailscaleIdentity(in: request(headers: forged)))
+    }
+
+    func testIdentityViewerSessionCannotReachWriteRoutesEvenWithAnEditorHeader() async throws {
+        let harness = try WebRouteHarness(configuration: identityConfiguration())
+        let login = try await harness.respond(request(.post, path: "/web/api/auth", headers: loginHeaders + [("Tailscale-User-Login", "reader@example.com")], body: "{}"))
+        XCTAssertEqual(login.status, .noContent)
+        let pair = try XCTUnwrap(login.headers[.setCookie]?.split(separator: ";").first.map(String.init))
+        let routedAfterLogin = await harness.routingCalls.count
+        let write = try await harness.respond(request(.post, path: "/web/api/settings/aliases",
+            headers: loginHeaders + [("Cookie", pair), ("Tailscale-User-Login", "editor@example.com")], body: "{}"))
+        XCTAssertEqual(write.status, .forbidden)
+        let routedAfterWrite = await harness.routingCalls.count
+        XCTAssertEqual(routedAfterWrite, routedAfterLogin)
+    }
+
     func testGlobalRouteThrottleReturns429AndRetryAfterWithoutIPTrust() async throws {
         let harness = try WebRouteHarness(configuration: configuration())
         for index in 0..<5 {

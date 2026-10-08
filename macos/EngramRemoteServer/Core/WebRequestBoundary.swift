@@ -44,6 +44,15 @@ struct WebRequestBoundary: Sendable {
         return session
     }
 
+    /// Identity mode only: the single `Tailscale-User-Login` the local Serve proxy
+    /// asserts. Credential mode never reads it, so a forged header there is inert.
+    func tailscaleIdentity(in request: Request) -> WebIdentity? {
+        guard configuration.usesTailscaleServeIdentity else { return nil }
+        let logins = request.headers[values: HTTPField.Name("Tailscale-User-Login")!]
+        guard logins.count == 1, let login = logins.first, EngramRemoteWebConfig.isWellFormedLogin(login) else { return nil }
+        return WebIdentity(login: login)
+    }
+
     func decorate(_ response: Response) -> Response {
         var response = response
         response.headers[.cacheControl] = "no-store"

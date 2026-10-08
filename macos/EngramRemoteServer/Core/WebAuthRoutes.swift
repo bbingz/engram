@@ -17,7 +17,13 @@ enum WebAuthRoutes {
             guard let token = boundary.sessionToken(in: request), await sessions.isAuthenticated(sessionToken: token) else {
                 return boundary.decorate(Response(status: .unauthorized))
             }
-            let body = await sessions.canWrite(sessionToken: token) ? "{\"canWrite\":true}" : "{\"canWrite\":false}"
+            let canWrite = await sessions.canWrite(sessionToken: token)
+            let body: String
+            if boundary.configuration.usesTailscaleServeIdentity, let login = await sessions.actor(sessionToken: token) {
+                body = statusBody(canWrite: canWrite, login: login)
+            } else {
+                body = canWrite ? "{\"canWrite\":true}" : "{\"canWrite\":false}"
+            }
             return boundary.decorate(Response(status: .ok, headers: [.contentType: "application/json"],
                 body: ResponseBody(byteBuffer: ByteBuffer(string: body))))
         }
@@ -39,12 +45,25 @@ enum WebAuthRoutes {
         do { data = try await readJSONBody(request) } catch {
             return boundary.decorate(Response(status: (error as? AuthBodyError)?.status ?? .badRequest))
         }
-        guard let credential = loginCredential(in: data) else { return boundary.decorate(Response(status: .badRequest)) }
-        switch await sessions.login(credential: credential) {
+        let result: WebAuthSessionStore.LoginResult
+        if boundary.configuration.usesTailscaleServeIdentity {
+            // Identity mode accepts only `{}`: a credential body can never log in here.
+            guard isEmptyJSONObject(data) else { return boundary.decorate(Response(status: .badRequest)) }
+            guard let identity = boundary.tailscaleIdentity(in: request) else {
+                return boundary.decorate(Response(status: .unauthorized))
+            }
+            result = await sessions.login(identity: identity)
+        } else {
+            guard let credential = loginCredential(in: data) else { return boundary.decorate(Response(status: .badRequest)) }
+            result = await sessions.login(credential: credential)
+        }
+        switch result {
         case let .authenticated(token):
             return boundary.decorate(Response(status: .noContent, headers: [.setCookie: cookie(token, boundary: boundary, maxAge: WebAuthSessionStore.lifetimeSeconds)]))
         case .unauthorized:
             return boundary.decorate(Response(status: .unauthorized))
+        case .forbidden:
+            return boundary.decorate(Response(status: .forbidden))
         case let .throttled(retryAfterSeconds):
             return boundary.decorate(Response(status: .tooManyRequests, headers: [.retryAfter: String(retryAfterSeconds)]))
         case .unavailable:
@@ -62,7 +81,7 @@ enum WebAuthRoutes {
         do { data = try await readJSONBody(request) } catch {
             return boundary.decorate(Response(status: (error as? AuthBodyError)?.status ?? .badRequest))
         }
-        guard data.filter({ !isJSONWhitespace($0) }) == Data([123, 125]) else {
+        guard isEmptyJSONObject(data) else {
             return boundary.decorate(Response(status: .badRequest))
         }
         guard let token = boundary.sessionToken(in: request), await sessions.isAuthenticated(sessionToken: token) else {
@@ -128,6 +147,18 @@ enum WebAuthRoutes {
 
     private static func isJSONWhitespace(_ byte: UInt8) -> Bool {
         byte == 32 || byte == 9 || byte == 10 || byte == 13
+    }
+
+    private static func isEmptyJSONObject(_ data: Data) -> Bool {
+        data.filter { !isJSONWhitespace($0) } == Data([123, 125])
+    }
+
+    /// Identity-mode status. The login passed `isWellFormedLogin`, so it carries no
+    /// quote or backslash; JSONSerialization still owns the encoding.
+    private static func statusBody(canWrite: Bool, login: String) -> String {
+        let object: [String: Any] = ["canWrite": canWrite, "login": login]
+        let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])) ?? Data()
+        return String(decoding: data, as: UTF8.self)
     }
 
     private static func cookie(_ token: String, boundary: WebRequestBoundary, maxAge: Int) -> String {

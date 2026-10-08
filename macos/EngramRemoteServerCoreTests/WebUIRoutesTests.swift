@@ -178,6 +178,34 @@ final class WebUIRoutesTests: XCTestCase {
         XCTAssertFalse(js.contains("const generation = detail.lastParsed"))
     }
 
+    func testIdentityModeMarksTheDocumentAndTheScriptSignsInSilently() async throws {
+        let identity = try EngramRemoteWebConfig(origin: origin, tailscaleServeViewers: "reader@example.com", editors: nil)
+        let marked = try await bodyText(try await UIHarness(configuration: identity, tailscaleServeIdentity: true)
+            .respond(request(path: "/web", headers: [("Host", "viewer.example")])))
+        XCTAssertEqual(marked.components(separatedBy: "data-auth-mode=\"tailscale-serve\"").count, 2)
+        XCTAssertTrue(marked.contains("<body data-auth-mode=\"tailscale-serve\">"))
+        XCTAssertFalse(marked.contains("reader@example.com"))
+        XCTAssertFalse(containsInlineScript(marked))
+        let plain = try await bodyText(try await UIHarness(configuration: configuration())
+            .respond(request(path: "/web", headers: [("Host", "viewer.example")])))
+        XCTAssertFalse(plain.contains("data-auth-mode"))
+        XCTAssertTrue(plain.contains("<form id=\"login\">"))
+        XCTAssertTrue(marked.contains("<form id=\"login\" hidden>"))
+        XCTAssertEqual(plain.replacingOccurrences(of: "<body>", with: "<body data-auth-mode=\"tailscale-serve\">")
+            .replacingOccurrences(of: "<form id=\"login\">", with: "<form id=\"login\" hidden>"), marked)
+        let js = try await bodyText(try await UIHarness(configuration: configuration())
+            .respond(request(path: "/web/app.js", headers: [("Host", "viewer.example")])))
+        XCTAssertTrue(js.contains("document.body.dataset.authMode === \"tailscale-serve\""))
+        XCTAssertTrue(js.contains("async function identitySignIn(restorePage)"))
+        XCTAssertTrue(js.contains("await authWrite(\"POST\", \"{}\")"))
+        XCTAssertTrue(js.contains("if (response.status === 401) { await identitySignIn(false); return; }"))
+        XCTAssertTrue(js.contains("identityMode && Date.now() - identitySignInAt > 5000"))
+        XCTAssertTrue(js.contains("Your tailnet login is not permitted for this Web origin."))
+        XCTAssertTrue(js.contains("\"Signed in as \" + access.login"))
+        XCTAssertTrue(js.contains("hidden = signedIn || identityMode"))
+        XCTAssertTrue(js.contains("hidden = !signedIn || identityMode"))
+    }
+
     func testWrongHostIsForbiddenAndNonGetWebUIIsRejectedWithoutWeakeningCSP() async throws {
         let harness = try UIHarness(configuration: configuration())
         let forbidden = try await harness.respond(request(path: "/web", authority: "evil.example", headers: [("Host", "evil.example")]))
@@ -238,16 +266,18 @@ final class WebUIRoutesTests: XCTestCase {
 private struct UIHarness: Sendable {
     let boundary: WebRequestBoundary
     let sessions: WebAuthSessionStore
+    let tailscaleServeIdentity: Bool
 
-    init(configuration: EngramRemoteWebConfig) throws {
+    init(configuration: EngramRemoteWebConfig, tailscaleServeIdentity: Bool = false) throws {
         boundary = WebRequestBoundary(configuration: configuration)
         sessions = WebAuthSessionStore(configuration: configuration)
+        self.tailscaleServeIdentity = tailscaleServeIdentity
     }
 
     func respond(_ request: Request) async throws -> Response {
         let router = Router(context: UITestContext.self)
         WebAuthRoutes.mount(on: router, boundary: boundary, sessions: sessions)
-        WebUIRoutes.mount(on: router)
+        WebUIRoutes.mount(on: router, tailscaleServeIdentity: tailscaleServeIdentity)
         let responder = router.buildResponder()
         return try await WebRequestBoundary.Middleware<UITestContext>(
             boundary: boundary, sessions: sessions

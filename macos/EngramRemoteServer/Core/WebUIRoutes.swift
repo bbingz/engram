@@ -5,8 +5,9 @@ import NIOCore
 
 /// Same-origin static viewer. HTML/JS/CSS are constant strings; no inline script or style.
 enum WebUIRoutes {
-    static func mount<Context: RequestContext>(on router: Router<Context>) {
-        router.get("/web") { _, _ in asset("text/html; charset=utf-8", html) }
+    static func mount<Context: RequestContext>(on router: Router<Context>, tailscaleServeIdentity: Bool = false) {
+        let page = tailscaleServeIdentity ? identityHTML : html
+        router.get("/web") { _, _ in asset("text/html; charset=utf-8", page) }
         router.get("/web/app.js") { _, _ in asset("text/javascript; charset=utf-8", javascript) }
         router.get("/web/app.css") { _, _ in asset("text/css; charset=utf-8", css) }
     }
@@ -17,6 +18,13 @@ enum WebUIRoutes {
         headers[.contentLength] = "\(body.utf8.count)"
         return Response(status: .ok, headers: headers, body: ResponseBody(byteBuffer: ByteBuffer(string: body)))
     }
+
+    /// Identity mode marks the document so the script signs in from the tailnet
+    /// identity, and ships the credential form hidden so it never flashes before
+    /// the script runs. The markup is otherwise identical.
+    static let identityHTML = html
+        .replacingOccurrences(of: "<body>", with: "<body data-auth-mode=\"tailscale-serve\">")
+        .replacingOccurrences(of: "<form id=\"login\">", with: "<form id=\"login\" hidden>")
 
     static let html = """
         <!DOCTYPE html>
@@ -585,6 +593,15 @@ enum WebUIRoutes {
         const backNode = document.getElementById("back");
         const signedOutNode = document.getElementById("signed-out");
         const workspaceNode = document.getElementById("workspace");
+        // Identity mode: the server marked the document; sign-in is a `{}` POST that
+        // the Tailscale Serve proxy authenticates, so the credential form stays hidden.
+        const identityMode = !!(document.body && document.body.dataset && document.body.dataset.authMode === "tailscale-serve");
+        let identitySignInPending = false;
+        let identitySignInAt = 0;
+        if (identityMode) {
+          document.getElementById("login").hidden = true;
+          document.getElementById("logout").hidden = true;
+        }
         const healthContent = document.getElementById("health-content");
         const healthStatus = document.getElementById("health-status");
         const statsFields = [["sessionCount", "Sessions"], ["messageCount", "Messages"], ["userMessageCount", "User"], ["assistantMessageCount", "Assistant"], ["toolMessageCount", "Tool"]];
@@ -707,8 +724,8 @@ enum WebUIRoutes {
           }
           signedOutNode.hidden = signedIn;
           workspaceNode.hidden = !signedIn;
-          document.getElementById("login").hidden = signedIn;
-          document.getElementById("logout").hidden = !signedIn;
+          document.getElementById("login").hidden = signedIn || identityMode;
+          document.getElementById("logout").hidden = !signedIn || identityMode;
           document.getElementById("lede").hidden = signedIn;
         }
         function expireSession() {
@@ -721,6 +738,35 @@ enum WebUIRoutes {
           clearMessages();
           setText(statusNode, "Session expired");
           bumpEpoch();
+          // One silent re-mint per expiry; the 5 s floor stops a mint/401 loop.
+          if (identityMode && Date.now() - identitySignInAt > 5000) identitySignIn(true).catch(function () {});
+        }
+        async function identitySignIn(restorePage) {
+          if (!identityMode || identitySignInPending) return false;
+          identitySignInPending = true;
+          identitySignInAt = Date.now();
+          const token = bumpEpoch();
+          try {
+            await authWrite("POST", "{}");
+          } catch (error) {
+            identitySignInPending = false;
+            if (token !== requestEpoch) return false;
+            setText(statusNode, error.status === 403 ? "Your tailnet login is not permitted for this Web origin." : "Tailnet sign-in unavailable");
+            return false;
+          }
+          if (token !== requestEpoch) { identitySignInPending = false; return false; }
+          try {
+            await restoreSession();
+          } finally {
+            identitySignInPending = false;
+          }
+          if (token !== requestEpoch) return false;
+          try {
+            const access = await api("GET", "/web/api/auth");
+            if (token === requestEpoch && access && access.login) setText(statusNode, "Signed in as " + access.login);
+          } catch (error) {}
+          if (restorePage && token === requestEpoch) await restoreRequestedPage();
+          return true;
         }
         function showSessionList() {
           activatePage(detailReturnPage || (activePage === "search" ? "search" : "sessions"));
@@ -2863,7 +2909,7 @@ enum WebUIRoutes {
             return;
           }
           if (token !== requestEpoch) return;
-          if (response.status === 401) return;
+          if (response.status === 401) { await identitySignIn(false); return; }
           if (response.status === 503) {
             try {
               response = await probe();
@@ -2872,7 +2918,7 @@ enum WebUIRoutes {
               return;
             }
             if (token !== requestEpoch) return;
-            if (response.status === 401) return;
+            if (response.status === 401) { await identitySignIn(false); return; }
           }
           if (!response.ok) {
             if (token === requestEpoch) setText(statusNode, "Temporarily unavailable");
