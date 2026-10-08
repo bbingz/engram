@@ -1,8 +1,8 @@
 # Design Doc: Web login from Tailscale Serve identity headers
 
-- **Status**: In review (owner chose this option on 2026-10-08; phase 1
-  implemented the same day on branch
-  `feat/web-tailscale-identity-auth-20261008`, not yet merged or deployed)
+- **Status**: Accepted. Phase 1 merged in PR #457 (`1e3b5c34`) and deployed
+  to the HQ receiver on 2026-10-08 (package
+  `remote-server-main-1e3b5c34-20261008`); phase 2 (§6) not started.
 - **Owner**: RemoteServer / Web maintainers
 - **Date**: 2026-10-08
 - **Related**: `docs/superpowers/specs/2026-09-05-collector-server-web-design.md`
