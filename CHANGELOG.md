@@ -3,6 +3,52 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Collector stop no longer fails on its own shutdown signal (2026-10-10)
+
+**Failure.** Three `swift-unit` jobs on 2026-10-08 failed with
+`caught error: "closed"` and passed on rerun:
+
+- job `113128319766` (PR #457 attempt 1):
+  `CollectorRuntimeTests.testReplayLossDuringStartKeepsRuntimeAndOtherRootsRunning_repro`
+  at `CollectorRuntimeTests.swift:649`
+- job `113147173237` (PR #458 attempt 1):
+  `CollectorRuntimeTests.testStartLoopPublishesAndStopJoinsBeforeReopen`
+  at `CollectorRuntimeTests.swift:2098`
+- job `113152487959` (PR #458 attempt 2): the replay-loss test again, same line
+
+`CollectorRuntime.stop` sets `stopping` and then joins the live capture and
+upload loops. A turn that observes `stopping` used to throw
+`CollectorRuntimeError.closed`. When that error won the race against
+`CancellationError`, `stop` treated it as a producer failure and the test
+failed. `runOnce` after a finished `stop` is still supposed to throw
+`.closed`. `stop` still rethrows `invalidConfiguration` and
+`reconciliationRequired`.
+
+**Fix.** `macos/EngramCollectorCore/CollectorRuntime.swift`: background
+capture and upload turns throw `CancellationError` once `stopping` is set.
+`stop` also treats `.closed` from the joined loop or cycle as the same
+shutdown signal, so an in-flight turn that already threw `.closed` cannot
+fail the join. `macos/EngramServiceCoreTests/CollectorRuntimeTests.swift`
+adds `testStopDuringCaptureTurnStartDoesNotSurfaceClosed_repro`. The repro
+holds the capture turn, sets `stopping` before cancel, then calls `stop`.
+The first version of that test passed in 0.112s because cancel completed
+the loop before the guard ran. The revised repro failed with
+`caught error: "closed"` at `CollectorRuntimeTests.swift:2144` before this
+fix.
+
+**Verification.** From `macos/`:
+
+```bash
+xcodebuild test -project Engram.xcodeproj -scheme EngramServiceCore \
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO \
+  -only-testing:EngramServiceCoreTests/CollectorRuntimeTests
+```
+
+`CollectorRuntimeTests`: 82 tests, 0 failures, 31.6s (`/tmp/engram-flake-class.log`).
+That includes the new repro, the two CI cases, the post-stop `runOnce`
+`.closed` check, and the invalid-settings stop failure. Full `swift-unit`
+was not rerun.
+
 ## Web identity sign-in merged (#457) and deployed to the HQ receiver (2026-10-08)
 
 Owner authorization "GO" was given in-session for the chain commit, PR,

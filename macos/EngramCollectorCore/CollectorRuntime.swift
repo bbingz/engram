@@ -101,6 +101,20 @@ public actor CollectorRuntime {
     private var blockedStreaks: [Int: Int] = [:]
     private var blockedRoots = Set<Int>()
     private var reportedBlockedRoots = Set<Int>()
+    /// Awaited immediately before a background capture turn checks `stopping`.
+    /// Tests hold this until `stop` has entered; production leaves it nil.
+    private var testCaptureTurnBarrier: (@Sendable () async -> Void)?
+
+    func setTestCaptureTurnBarrier(_ barrier: (@Sendable () async -> Void)?) {
+        testCaptureTurnBarrier = barrier
+    }
+
+    /// Marks shutdown without cancelling the loop, so a turn already inside the
+    /// runtime can observe `stopping` and fail the loop with `.closed` before
+    /// `stop` joins it.
+    func testBeginStopping() {
+        stopping = true
+    }
 
     /// Production uses the native FSEvents stream; tests inject a fake stream.
     typealias EventStreamFactory = @Sendable (CollectorEventStreamRequest, CollectorEventIngressBudget)
@@ -272,9 +286,14 @@ public actor CollectorRuntime {
     private func runCaptureTurn(
         now: Int64, historyWaiting: [Int: Bool]
     ) async throws -> (hints: CollectorCaptureWorkHints, historyWaiting: [Int: Bool]) {
-        guard !stopping, !closed, let owner, let worker else { throw CollectorRuntimeError.closed }
-        guard now >= 0 else { throw CollectorRuntimeError.invalidConfiguration }
+        if let barrier = testCaptureTurnBarrier { await barrier() }
         try Task.checkCancellation()
+        // `stopping` means this turn lost the race with stop. Cancellation keeps
+        // shutdown out of the producer-failure path; `.closed` stays the answer
+        // for a caller that uses the runtime after stop.
+        if stopping { throw CancellationError() }
+        guard !closed, let owner, let worker else { throw CollectorRuntimeError.closed }
+        guard now >= 0 else { throw CollectorRuntimeError.invalidConfiguration }
         let inventory = try advanceInventory(owner: owner)
         let publication = try await worker.captureOnce(now: now, captureRootIDs: inventory.availableRoots)
         var waiting = historyWaiting
@@ -297,8 +316,9 @@ public actor CollectorRuntime {
     }
 
     private func runUploadOnce(replicaID: String, now: Int64) async throws {
-        guard !stopping, !closed, let uploader else { throw CollectorRuntimeError.closed }
         try Task.checkCancellation()
+        if stopping { throw CancellationError() }
+        guard !closed, let uploader else { throw CollectorRuntimeError.closed }
         _ = try await uploader.uploadOnce(replicaID: replicaID, now: now)
     }
 
@@ -388,6 +408,15 @@ public actor CollectorRuntime {
         } onCancel: { joining.cancel() }
     }
 
+    /// Cancellation and `.closed` from a turn that observed `stopping` are this
+    /// stop's shutdown signal. Configuration and reconciliation failures still
+    /// fail the join. A later `runOnce` on this instance still throws `.closed`.
+    private static func isShutdownSignal(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if case CollectorRuntimeError.closed = error { return true }
+        return false
+    }
+
     public func stop() async throws {
         if closed { return }
         if let cleanup { try await cleanup.value; return }
@@ -401,11 +430,9 @@ public actor CollectorRuntime {
         let joining = Task { [self] in
             var producerFailure: Error?
             do { _ = try await joiningLoop?.value }
-            catch is CancellationError {}
-            catch { producerFailure = error }
+            catch { if !Self.isShutdownSignal(error) { producerFailure = error } }
             do { _ = try await joiningCycle?.value }
-            catch is CancellationError {}
-            catch { if producerFailure == nil { producerFailure = error } }
+            catch { if producerFailure == nil, !Self.isShutdownSignal(error) { producerFailure = error } }
             try finishStop()
             if let producerFailure { throw producerFailure }
         }
