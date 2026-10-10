@@ -2098,6 +2098,53 @@ final class CollectorRuntimeTests: XCTestCase {
         } catch { await replicas.stop(); throw error }
     }
 
+    // Repro for swift-unit on 2026-10-08 (jobs 113128319766, 113147173237,
+    // 113152487959): stop sets `stopping` while a capture turn is already
+    // inside the runtime, the turn guard throws `.closed`, and stop reports
+    // that shutdown signal as its own failure. `testReplayLossDuringStartKeepsRuntimeAndOtherRootsRunning_repro`
+    // and `testStartLoopPublishesAndStopJoinsBeforeReopen` failed this way.
+    func testStopDuringCaptureTurnStartDoesNotSurfaceClosed_repro() async throws {
+        let fixture = try RuntimeFixture()
+        defer { fixture.remove() }
+        let replicas = try await RuntimeReplicas.start(parent: fixture.base)
+        let gate = RuntimeGate()
+        let entered = RuntimeLocked(false)
+        var runtime: Runtime?
+        do {
+            try fixture.writeTranscript("turn in flight at stop")
+            try fixture.writeSettings(fixture.document(replicas: replicas))
+            let active = try XCTUnwrap(Runtime.open(settingsURL: fixture.settings, secretLoader: fixture.secret))
+            runtime = active
+            await active.setTestCaptureTurnBarrier {
+                entered.update { $0 = true }
+                await gate.wait()
+            }
+            try await active.start()
+            let enteredDeadline = Date().addingTimeInterval(5)
+            while !entered.value {
+                guard Date() < enteredDeadline else { throw RuntimeFixture.Failure.deadline }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            // Set the flag before cancelling. The turn then fails the loop with
+            // `.closed`, and stop must not report that as its own failure.
+            await active.testBeginStopping()
+            gate.open()
+            try await active.stop()
+            do {
+                _ = try await active.runOnce(now: 1)
+                XCTFail("closed runtime accepted work")
+            } catch { XCTAssertEqual(error as? RuntimeError, .closed) }
+            let reopened = try XCTUnwrap(Runtime.open(settingsURL: fixture.settings, secretLoader: fixture.secret))
+            try await reopened.stop()
+            await replicas.stop()
+        } catch {
+            gate.open()
+            try? await runtime?.stop()
+            await replicas.stop()
+            throw error
+        }
+    }
+
     func testBootstrapIsBoundedAndPrivacyExclusionPreventsPublication() async throws {
         let fixture = try RuntimeFixture()
         defer { fixture.remove() }
@@ -4083,6 +4130,36 @@ private final class RuntimeLocked<Value>: @unchecked Sendable {
     init(_ value: Value) { stored = value }
     var value: Value { lock.withLock { stored } }
     func update(_ operation: (inout Value) -> Void) { lock.withLock { operation(&stored) } }
+}
+
+/// Continuation gate that ignores task cancellation, so a runtime turn can stay
+/// inside `stop`'s join until the test releases it.
+private final class RuntimeGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var opened = false
+
+    func wait() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            self.lock.lock()
+            if self.opened {
+                self.lock.unlock()
+                continuation.resume()
+                return
+            }
+            self.continuation = continuation
+            self.lock.unlock()
+        }
+    }
+
+    func open() {
+        self.lock.lock()
+        self.opened = true
+        let continuation = self.continuation
+        self.continuation = nil
+        self.lock.unlock()
+        continuation?.resume()
+    }
 }
 
 final class RuntimeFixture: @unchecked Sendable {
