@@ -4,6 +4,11 @@
 
 ### 2026-10-17
 
+- [排查] 做 TODO 只读核对时发现 Daily Mac 的 collector 自 17:28 重启后崩溃循环：卷的 FSEvents 数据库 UUID 变了，7 个根目录的旧 checkpoint 触发设计性硬停 `reconciliationRequired`，launchd 每 10 秒重拉（882 次），HQ 自 09:19Z 起没有新到达；24 个改动文件仍在磁盘上。详见 `CHANGELOG.md`。
+- [变更] 业主授权后人工对账恢复：bootout、`.backup` 备份 inventory、记录 7 行前态、单事务清空 7 行的 `event_epoch`/`event_cursor`、写对账记录、bootstrap；60 秒内进程稳定、全量遍历开始，HQ 15 分钟收到 48 条新发布，账本无积压。
+- [新增] collector 操作员命令 `EngramCollector --settings ABS --reconcile-native-epoch [--dry-run]`：持有 inventory 锁（collector 运行中则拒绝）、只读比对每个根的存储 epoch 与实时 FSEvents UUID，不一致时在同一事务里先写 `collector_root_epoch_transitions` 再清 checkpoint 并推进 requested_revision；运行时的硬停行为不变。附 repro 测试、设计文档与账本条目「Native Epoch Reconciliation Is An Explicit Operator Action」。
+- [排查] TODO 状态核对：P3 已完成（#454）但从未在真实主机跑过；P2 已合并（#455）但 HQ 的 service-index 仍是 10-02 的 `8a6cdf6c`、落后 main 67 个提交，未部署；W4.7 HQ 侧、W6.2、App 打开 Web reader、别名对账、旧回执引导、D7、HQ 本地缺口均仍开着；HQ 两套栈健康，旧 local Service 仍以约 46% CPU 往旧库写。已同步到 `docs/TODO.md`。
+- [未验证] 新命令尚未在真实主机运行（Daily 当时已手工恢复）；collector 新包部署到 Daily 与 service-index 重新部署到 HQ 待下一步。
 - [变更] 可选依赖 `@huggingface/transformers` 从 ^4.2.0 升到 ^4.3.1，无源码改动：锁文件里嵌套的 sharp 0.34.5 消失、onnxruntime-node 升 1.30.0 并带 adm-zip 0.6.1、sprintf-js/roarr 整体移出依赖树，预计 12 条 Dependabot 安全告警全部关闭（含两条无修复的，因为包已不在树中）。详见 `CHANGELOG.md`。
 - [验证] build/lint/knip/`npm test`（2055 过、49 跳过）通过；本机 opt-in Transformers.js 嵌入冒烟通过：all-MiniLM-L6-v2、384 维、范数 1、相关句余弦 0.32 对无关句 -0.03，首次含 97 MB 模型下载共 75.6 秒。
 - [排查] GitHub 配额耗尽的是 Actions **制品存储**（账户级、只计私有仓库，Pro 月额度 2 GB），不是分钟数：10-12 起 GXSM-3D、CCTV_Admin、opensense 的 CI 日志直接报 `Artifact storage quota has been hit`；私有仓库活跃制品 1567 MB（GXSM-3D 1013.6、mingtang 481.5、CCTV_Admin 70.3）。详见 `CHANGELOG.md`。

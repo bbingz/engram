@@ -26,6 +26,13 @@ authorizes host changes.
 - **Operator epoch reconcile command (plan W4 item 7).** `dryRunEpoch` and
   `approveEpoch` exist in `CaptureIngestSourceRegistry.swift` without a non-test
   caller. Done when a local authenticated IPC/CLI action and its test exist.
+  2026-10-17: the collector-local half shipped as
+  `EngramCollector --reconcile-native-epoch [--dry-run]` after the Daily
+  reboot left seven roots on a stale FSEvents epoch
+  (`docs/superpowers/specs/2026-10-17-collector-native-epoch-reconcile-design.md`,
+  invariant "Native Epoch Reconciliation Is An Explicit Operator Action").
+  Still open: the HQ-side `collectorApproveEpoch` action for a new collector
+  epoch (spool reset) and its registry callers.
 - **Real-binary chain in a recorded gate (plan W6 item 2).** Every test in
   `CollectorBinaryShadowIntegrationTests.swift` skips unless three binary-path
   environment variables are set, and no CI workflow sets them. Done when CI sets
@@ -34,16 +41,17 @@ authorizes host changes.
   roles the App shows only the unavailable message; it has no action that opens
   the Web reader as the design states.
 - **P2 exact-content cross-machine duplicate quarantine (cutover design §3-B,
-  decision D6; added 2026-10-07).** Implementation branch
-  `feat/p2-cross-machine-duplicate-quarantine-20261007`. Done when
-  `testIdenticalCrossMachineCaptureIsQuarantinedNotDuplicated_repro` passes,
-  the ledger entry exists, and a service-index build carrying it is deployed at
-  runbook step R7.
+  decision D6; added 2026-10-07).** Merged as PR #455 (`5d7d684d`, 2026-10-07):
+  `testIdenticalCrossMachineCaptureIsQuarantinedNotDuplicated_repro` passes and
+  the ledger entry exists. Not yet deployed: on 2026-10-17 HQ still ran
+  service-index `8a6cdf6c` (2026-10-02, 67 commits behind `main`), which does
+  not contain it. Done when a service-index build carrying it is deployed.
 - **P3 install tooling (cutover design §4.1-4.6, decision D12; added
-  2026-10-07).** Branch `feat/p3-install-tooling-20261007`. Done when the
-  settings renderer, identity branch, credential checks, planner fixes,
-  upgrade/rollback plan kinds and the hash-checked executor have `(repro)`
-  tests and a rendered fixture loads through the collector settings parser.
+  2026-10-07).** Done: merged as PR #454 (`63e0a17e`, 2026-10-07) with the
+  `tests/scripts` suites and `CollectorRenderedSettingsFixtureTests`; the
+  2026-10-17 status check confirmed the scripts and tests on `main`. The
+  tooling has still never run against a real host; that remains under
+  `docs/followups.md` `cutover-install-tooling-1`.
 - **D7 purge of legacy `origin=local` grok/pi rows, dry-run first (added
   2026-10-07).** Not started. The HQ central index held 6,188 such rows on
   2026-10-07 (P0 counted 6,140) and they grow until the role gate runs on HQ.

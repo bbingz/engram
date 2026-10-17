@@ -8,12 +8,16 @@ private struct Options {
     let credentials: URL?
     let once: Bool
     let initialize: Bool
+    let reconcileNativeEpoch: Bool
+    let dryRun: Bool
 
     init(arguments: [String]) throws {
         var settings: String?
         var credentials: String?
         var once = false
         var initialize = false
+        var reconcileNativeEpoch = false
+        var dryRun = false
         var index = 0
         while index < arguments.count {
             let argument = arguments[index]
@@ -38,15 +42,31 @@ private struct Options {
                 guard !initialize else { throw ArgumentsError.invalid }
                 initialize = true
                 index += 1
+            case "--reconcile-native-epoch":
+                guard !reconcileNativeEpoch else { throw ArgumentsError.invalid }
+                reconcileNativeEpoch = true
+                index += 1
+            case "--dry-run":
+                guard !dryRun else { throw ArgumentsError.invalid }
+                dryRun = true
+                index += 1
             default:
                 throw ArgumentsError.invalid
             }
         }
-        guard let settings, !initialize || (!once && credentials == nil) else { throw ArgumentsError.invalid }
+        // --initialize and --reconcile-native-epoch are exclusive operator modes:
+        // neither runs a cycle, neither needs credentials, and --dry-run belongs
+        // only to the reconcile mode.
+        guard let settings,
+              !initialize || (!once && credentials == nil && !reconcileNativeEpoch),
+              !reconcileNativeEpoch || (!once && credentials == nil),
+              !dryRun || reconcileNativeEpoch else { throw ArgumentsError.invalid }
         self.settings = URL(fileURLWithPath: settings)
         self.credentials = credentials.map { URL(fileURLWithPath: $0) }
         self.once = once
         self.initialize = initialize
+        self.reconcileNativeEpoch = reconcileNativeEpoch
+        self.dryRun = dryRun
     }
 
     static func validAbsolutePath(_ path: String) -> Bool {
@@ -62,10 +82,14 @@ private enum ArgumentsError: Error { case invalid }
 private let usage = """
 usage: EngramCollector --settings ABS [--credentials-file ABS] [--once]
        EngramCollector --settings ABS --initialize
+       EngramCollector --settings ABS --reconcile-native-epoch [--dry-run]
        EngramCollector --initialize-identity ABS
        EngramCollector --help
 --once runs one bounded cycle; it does not wait for bootstrap or replica acknowledgements.
 --initialize creates a new private spool using the configured existing machine identity; it never starts collection.
+--reconcile-native-epoch is the operator action for a changed FSEvents epoch (exit line
+  "runtime failed: CollectorRuntimeError.reconciliationRequired"): with the collector stopped it records each
+  affected root's transition, clears its stored event checkpoint and forces a full walk; --dry-run only reports.
 --initialize-identity creates a new identity catalog only; use only after confirming this host has no existing identity.
 """
 
@@ -117,6 +141,25 @@ private func runCollector(_ options: Options) async -> Int32 {
             return 0
         } catch {
             FileHandle.standardError.write(Data("engram-collector: initialization failed\n".utf8))
+            return 70
+        }
+    }
+    if options.reconcileNativeEpoch {
+        do {
+            let report = try CollectorRuntime.reconcileNativeEpoch(settingsURL: options.settings, dryRun: options.dryRun)
+            let roots: [[String: Any]] = report.roots.map { root in
+                var values: [String: Any] = ["rootID": root.rootID, "source": root.source, "rootPath": root.rootPath,
+                    "outcome": root.outcome.rawValue, "storedEpoch": root.storedEpoch ?? NSNull(),
+                    "liveEpoch": root.liveEpoch ?? NSNull(), "requestedRevision": root.requestedRevision.map { $0 as Any } ?? NSNull()]
+                if let failure = root.failure { values["failure"] = failure }
+                return values
+            }
+            let values: [String: Any] = ["dryRun": report.dryRun, "affectedRoots": report.affectedRoots, "roots": roots]
+            print(String(decoding: try JSONSerialization.data(withJSONObject: values, options: [.sortedKeys]), as: UTF8.self))
+            return 0
+        } catch {
+            let reason = CollectorRuntime.failureReason(error)
+            FileHandle.standardError.write(Data("engram-collector: native epoch reconcile failed: \(reason)\n".utf8))
             return 70
         }
     }

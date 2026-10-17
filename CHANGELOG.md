@@ -3,6 +3,128 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Daily collector stopped on a changed FSEvents epoch; operator reconcile command added (2026-10-17)
+
+**Incident (found during a read-only status check of `docs/TODO.md`).** The
+Daily Mac (collector host, `macbook-pro`) rebooted at 17:28 CST (09:28 UTC);
+it had also rebooted on 10-09 and 10-16. After this reboot the volume's
+FSEvents database UUID changed: seven roots (claude-code projects, codex
+sessions and archived_sessions, cursor `~/.cursor` and globalStorage, grok
+sessions, opencode) still stored
+`fsevents-device-v1:04BF0C1C-767E-436B-8A19-B10EB93591BD` while
+`FSEventsCopyUUIDForDevice` for `st_dev` 16777230 returned
+`E99B19DE-5150-4406-A376-9B1C4E945FE5`. `CollectorRuntime.startEventsIfNeeded`
+therefore threw `reconciliationRequired` on every start, by design
+(`docs/superpowers/specs/2026-10-02-collector-replay-loss-design.md`: an epoch
+mismatch fails closed and never rebases the checkpoint), `main.swift` exited
+70 with `engram-collector: runtime failed:
+CollectorRuntimeError.reconciliationRequired`, and launchd (`KeepAlive`,
+`ThrottleInterval` 10) relaunched it: 882 runs by the time it was booted out.
+The last successful start line was 17:19 CST and the last publication HQ
+received was 09:19:07 UTC. During the outage 24 files changed under the seven
+roots (6 claude-code, 2 codex, 1 cursor, 14 grok, 1 opencode); all stayed on
+disk. The 2026-10-02 design had listed "an epoch change still ends the
+process, so uploads stop and launchd restarts every 10 s" as an open owner
+question, and the operator reconciliation it assumed (W4.7 in
+`docs/TODO.md`) had only test callers.
+
+**Recovery on the Daily Mac (owner-authorized, by hand, before the command
+below existed).** `launchctl bootout gui/<uid>/com.engram.collector`; verified
+no `EngramCollector` process and no open handle on the inventory; `sqlite3
+.backup` of `spool/inventory/inventory.sqlite` to
+`state/collector/persistent/inventory-before-native-epoch-reconcile-20261017.sqlite`
+(1,735,999,488 bytes, `quick_check` ok, 7 rows with a stored epoch); the
+seven rows saved as `native-epoch-reconcile-20261017-before.json` (root,
+revision, requested/completed revision, cursor); then in one `BEGIN IMMEDIATE`
+transaction `UPDATE collector_roots SET event_epoch = NULL, event_cursor =
+NULL WHERE event_epoch = '<stored epoch>'` (7 rows changed; 0 remaining;
+`quick_check` ok); the reason, both epochs, the action and the backup name
+written to `native-epoch-reconcile-20261017.json` next to the backup; then
+`launchctl bootstrap`. Nothing else on the host changed (settings,
+credentials, plist, capture catalog untouched). After 60 s: one launchd run
+(PID 24315), no new stderr line, `requested_revision` advanced on all 16
+roots (the forced full walk), the Cursor globalStorage root already carried
+the new epoch with cursor 2163644, 85 percent CPU during the walk. HQ
+resumed: publications 46,134 -> 46,182 by 12:22 UTC (48 in 15 minutes),
+ledger pending 0, receiver checkpoint advancing. Rollback, if ever needed:
+boot out, restore the backup over the inventory, bootstrap.
+
+**Fix in this PR: the operator command.** `EngramCollector --settings ABS
+--reconcile-native-epoch [--dry-run]` (exclusive with `--once`,
+`--initialize` and `--credentials-file`). `CollectorRuntime.reconcileNativeEpoch(settingsURL:dryRun:)`
+takes the inventory owner lock (a running collector yields
+`CollectorRuntimeError.busy`), observes every configured root read-only
+(`CollectorPOSIXRootEnumerator.observeRoot`, no enrollment) and compares the
+stored checkpoint epoch with `CollectorNativeEventStream.currentEpoch`. Per
+root it reports `noCheckpoint`, `current`, `mismatch` (dry run),
+`unavailable` (with the error type and case) or `cleared`. A clear runs in
+one store transaction (`CollectorInventoryStore.reconcileNativeEpoch`): the
+stored checkpoint must still equal the observed one, a row goes into the new
+`collector_root_epoch_transitions` table (root, revision, previous epoch and
+cursor, live epoch, requested revision before and after, owner run id,
+timestamp; `CREATE TABLE IF NOT EXISTS`, so existing inventories gain it on
+the next open), then `event_epoch`/`event_cursor` are nulled and
+`requested_revision` advances so the next start walks the whole root. The
+CLI prints one sorted JSON object (`dryRun`, `affectedRoots`, `roots[]`) and
+exits 0; failures print `engram-collector: native epoch reconcile failed:
+<Type>.<case>` and exit 70. Runtime behaviour is unchanged: a mismatch still
+stops the process and the checkpoint is never rebased. Design:
+`docs/superpowers/specs/2026-10-17-collector-native-epoch-reconcile-design.md`;
+ledger entry "Native Epoch Reconciliation Is An Explicit Operator Action" in
+`docs/invariants.md`. Not in scope: whether an epoch change should suspend
+one root instead of ending the process (`docs/followups.md`
+`collector-epoch-change-scope-1`) and the HQ-side `collectorApproveEpoch`
+action for a new collector epoch (still open in `docs/TODO.md`).
+
+**Status check results folded into `docs/TODO.md`.** P3 install tooling is
+done (PR #454 `63e0a17e`; scripts and tests present on `main`; never run on a
+real host). P2 is merged (PR #455 `5d7d684d`) but not deployed: HQ's
+service-index is `8a6cdf6c` of 2026-10-02, 67 commits behind `main`, and
+contains neither P2, P3 nor #457. Still open and verified open: W4.7 HQ half,
+W6.2 (none of the `CollectorBinaryShadowIntegrationTests` environment
+variables appear under `.github/workflows`), the App "open Web reader"
+entry, alias reconciliation, old-receipt bootstrap, D7 (no dry-run tooling;
+`origin=local` rows 6,191 = grok 5,959 newest 2026-10-07 11:20 UTC and pi 232
+newest 2026-09-11, unchanged, so the role gate holds), the Daily CPU target
+(collector was down at the time) and `cutover-hq-local-gap-1` (HQ has no
+collector; the old local Service PID 30392, release `cabeeb24-build1569`, up
+42 days, sampled at 46 percent CPU, still indexes HQ sessions into the old
+1.39 GB DB: 59,909 sessions, newest 09:17 UTC). HQ otherwise healthy at the
+check: service-index PID 88127 up 9 d 20 h, 16 percent CPU sample, 105 MB,
+stderr 0 bytes; receiver `1e3b5c34` 200 on loopback and on the tailnet
+origin; M1 `/v1/health` 200; old hub 8787 still 200; disk 691 GB free;
+central DB arrivals 46,134 (+4,605 since 10-08), ledger index_ready 11,293 /
+parsed 34,149 / quarantined 692 (+113, all `parse.noVisibleMessages` but two
+`obsolete_generation`), sessions 45,666, embedding jobs pending 12,184
+(expected), fts 12,591 completed, 17 registered source instances all at
+authority generation 1, no epoch approval since 2026-09-12.
+
+CHECKS_RUN: `xcodebuild test -scheme EngramServiceCore
+-only-testing:EngramServiceCoreTests/CollectorRuntimeTests` (84 tests, 0
+failures, including
+`testReconcileNativeEpochClearsMismatchedCheckpointAndRecordsTransition_repro`,
+`testReconcileNativeEpochRefusesWhileRuntimeOwnsInventory` and the unchanged
+`testNativeEpochChangeStillStopsRuntimeWithoutRebasingCheckpoint`);
+`xcodebuild build -scheme EngramCollector` succeeded; `npx vitest run
+tests/scripts/` (35 files, 793 passed, 49 skipped);
+`scripts/check-invariants-ledger.sh`, `scripts/check-swift-conventions.sh`,
+`scripts/check-swift-module-boundaries.sh`; `git diff --check`; on the
+hosts, only the read-only probes and the recovery steps listed above.
+CHECKS_NOT_RUN: the native CLI suite (`ENGRAM_COLLECTOR_BINARY` gated); the
+new command on a real host (Daily was recovered by hand first; the command
+ships with the next collector package); the repro test fails before this
+change at compile time (the API did not exist), not by assertion. Full
+Swift suites on this Mac: `EngramCollectorCore` 695 tests, 0 failures after
+updating two schema-shape expectations in `CollectorInventoryStoreTests`
+(the frozen v1 fixture now drops the new table and asserts it reappears on
+the first open); `EngramServiceCore` 1,596 tests, 57 skipped, 7 failures,
+all pre-existing and environmental: three `ServiceCaptureIngestRuntimeTests`
+that require an explicitly isolated process home (CI provides
+`SERVICE_TEST_HOME`) and two `OptionalAIReadinessTests` real-shutdown
+timeouts; a control run of the same two classes on unmodified `main`
+`c496fd07` fails identically (26 tests, 7 failures).
+
+
 ## Transformers.js bumped to 4.3.1 to clear the Dependabot alert subtree (2026-10-17)
 
 `@huggingface/transformers` (root `optionalDependencies`, the opt-in
@@ -128,7 +250,9 @@ owner's instruction).**
   go2rtc image: Go stdlib 1.27.1 -> 1.27.2, golang.org/x/net 0.57.0 ->
   0.60.0), which is unrelated to this PR; the owner authorized that
   session (answer "A" in pane `wG:p1T`) to open a separate go2rtc
-  toolchain PR first, so #426 stays open until that lands and CI reruns.
+  toolchain PR first. It landed #427 (Go 1.27.2, x/net v0.61.0), #428
+  (RustSec advisories) and #429 (asr-sidecar httpx pin); #426 then reran
+  green and merged at 09:38 UTC as `10462872`.
 - The owner edited the account's Actions budget on
   github.com/settings/billing/budgets from the previous value to $3 with
   "stop usage when limit is reached" and 75/90/100 percent alerts. The
