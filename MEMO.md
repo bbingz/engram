@@ -6,7 +6,9 @@
 
 - [变更] Vitest 与 coverage-v8 从 4.1.11 同升 5.0.5，替代 #463 的 peer 冲突；已核对官方迁移指南，无需改测试或 Vitest 配置；Node 声明收紧为 24/26（上游不支持 25）。详见 `CHANGELOG.md`。
 - [验证] 139 个文件、2055 过、49 跳过；build/lint/knip/测试类型检查通过；coverage 覆盖预期 113 个文件，行 80.18%、分支 69.82%、函数 79.68%，门槛通过；合并仍需 required CI 全绿。
-- [排查] 首轮 CI 的既有 Swift 取消时序测试失败（`EngramServiceIPCTests.swift:403`），Node 24 与其他检查通过；已保留 main 的 knip 6.41.0 并解决锁文件冲突，等待新轮次 CI。详见 `CHANGELOG.md`。
+- [排查] 首轮 CI 的既有 Swift 取消时序测试失败（`EngramServiceIPCTests.swift:403`），第二轮全部通过且未改 Swift；已保留 main 的 knip/sharp/grpc-js 升级及 #469 Actions pins，最终同步后仍需新一轮 CI。详见 `CHANGELOG.md`。
+- [变更] 四组 Actions pin 与测试契约同步升级，替代 Dependabot #461/#465/#467/#468；SHA 均经上游 tag API 核验，CodeQL 已解引用 annotated tag。详见 `CHANGELOG.md`。
+- [验证] 先复现旧 pin 断言失败；修复后脚本测试 793 过、49 跳过，lint/actionlint 通过；#469 在 required CI 全绿且 CLEAN 后普通合并（`9af79878`），四个旧 PR 已关闭。
 
 ### 2026-10-08
 

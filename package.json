@@ -32,7 +32,7 @@
     "prepare": "husky"
   },
   "dependencies": {
-    "@grpc/grpc-js": "^1.14.3",
+    "@grpc/grpc-js": "^1.14.6",
     "@grpc/proto-loader": "^0.8.1",
     "better-sqlite3": "^13.0.1",
     "openai": "^7.28.0",
@@ -51,7 +51,7 @@
     "knip": "^6.41.0",
     "lint-staged": "^17.2.0",
     "pixelmatch": "^7.2.0",
-    "sharp": "^0.35.3",
+    "sharp": "^0.35.5",
     "ssim.js": "^3.5.0",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2",
