@@ -2,6 +2,11 @@
 
 ## Changelog Memo
 
+### 2026-10-17
+
+- [变更] Vitest 与 coverage-v8 从 4.1.11 同升 5.0.5，替代 #463 的 peer 冲突；已核对官方迁移指南，无需改测试或配置。详见 `CHANGELOG.md`。
+- [验证] 139 个文件、2055 过、49 跳过；build/lint/knip/测试类型检查通过；coverage 覆盖预期 113 个文件，行 80.18%、分支 69.82%、函数 79.68%，门槛通过；合并仍需 required CI 全绿。
+
 ### 2026-10-08
 
 - [修复] 采集器 `stop` 不再把自身停机信号 `CollectorRuntimeError.closed` 当成失败。2026-10-08 有 3 个 `swift-unit` 因此失败后重跑才过。详见 `CHANGELOG.md`。
