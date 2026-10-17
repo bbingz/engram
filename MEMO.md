@@ -4,6 +4,9 @@
 
 ### 2026-10-17
 
+- [变更] #473 合并为 `b95d99ad` 后，用同一提交的 Release/arm64 构建打包并部署：HQ 的 service-index 从 10-02 的 `8a6cdf6c` 换到 main（启动迁移建出 P2 索引，PID 20105，stderr 0 字节，账本无积压，`origin=local` 6,191 不变）；Daily 的 collector 换到带 `--reconcile-native-epoch` 的新包（PID 96925，一次启动无错误）。两处都只改 plist 的 `ProgramArguments[0]`，旧包与 plist 备份保留可回滚。详见 `CHANGELOG.md`。
+- [验证] 新命令在真实主机上通过：旧 collector 运行时 dry-run 被 `busy` 拒绝（退出 70）；停掉后 dry-run 报 0 个受影响根（4 个 `current`、12 个 `noCheckpoint`）。T+10 两台主机进程、日志、socket、receiver/Web 健康均正常。
+- [未验证] main 上 `b95d99ad` 的合并后 Tests/CodeQL 写入时仍在跑（PR CI 在相同树上全绿）；P2 的 `cross_machine_duplicate` 尚无真实触发。
 - [排查] 做 TODO 只读核对时发现 Daily Mac 的 collector 自 17:28 重启后崩溃循环：卷的 FSEvents 数据库 UUID 变了，7 个根目录的旧 checkpoint 触发设计性硬停 `reconciliationRequired`，launchd 每 10 秒重拉（882 次），HQ 自 09:19Z 起没有新到达；24 个改动文件仍在磁盘上。详见 `CHANGELOG.md`。
 - [变更] 业主授权后人工对账恢复：bootout、`.backup` 备份 inventory、记录 7 行前态、单事务清空 7 行的 `event_epoch`/`event_cursor`、写对账记录、bootstrap；60 秒内进程稳定、全量遍历开始，HQ 15 分钟收到 48 条新发布，账本无积压。
 - [新增] collector 操作员命令 `EngramCollector --settings ABS --reconcile-native-epoch [--dry-run]`：持有 inventory 锁（collector 运行中则拒绝）、只读比对每个根的存储 epoch 与实时 FSEvents UUID，不一致时在同一事务里先写 `collector_root_epoch_transitions` 再清 checkpoint 并推进 requested_revision；运行时的硬停行为不变。附 repro 测试、设计文档与账本条目「Native Epoch Reconciliation Is An Explicit Operator Action」。
