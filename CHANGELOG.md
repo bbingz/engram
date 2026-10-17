@@ -3,6 +3,48 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Vitest and V8 coverage upgraded together to 5.0.5 (2026-10-17)
+
+Supersedes Dependabot #463: upgrading only Vitest leaves coverage-v8's exact
+Vitest peer on 4.1.11 and fails with ERESOLVE. Reproduced this with an
+install dry-run, then upgraded both dev dependencies from ^4.1.11 to ^5.0.5
+using npm install. The registry listed 5.0.5 for both packages on 2026-10-17;
+the regenerated lockfile resolves Vitest/coverage-v8 5.0.5 and Vite 8.3.4.
+No test or Vitest configuration changes were needed. The package Node engine
+range is narrowed from >=24 <27 to ^24.0.0 || ^26.0.0 because Vitest 5
+excludes Node 25; hosted CI continues to use Node 24.
+
+Reviewed https://vitest.dev/guide/migration/ and the npm package engines;
+npm resolves the Vite peer. Hoisted mock calls are already
+at module scope, and the suite passes with the new clearMocks default and
+async-assertion enforcement. There are no workspace/projects, browser,
+benchmark, sequential, or removed-entrypoint usages requiring migration.
+The existing coverage globs and global thresholds remain valid; LCOV covers
+all 113 expected src files, with no extra or missing paths.
+
+CHECKS_RUN: `npm ci`; `npm run build`; `npm run lint` (pass with existing
+schema warning/infos); `npm test` (139 files, 2055 passed, 49 skipped);
+`npm run knip`; `npm run typecheck:test`; `npm run test:coverage` (same test
+counts; lines 80.18%, branches 69.82%, functions 79.68%, thresholds passed);
+LCOV file-set check; `git diff --check`. Local Node 26.12.0 / npm 11.20.0.
+CHECKS_NOT_RUN: local Swift suites (no Swift changes; required PR CI must
+pass before merge). No application deployment.
+
+Hosted Node 24, CodeQL Gate, Dependency Review, macOS script/fixture gates,
+remote-server Swift, and UI smoke passed on the initial PR commit. Run
+https://github.com/bbingz/engram/actions/runs/38999791866 failed only in the
+unchanged Swift test `testGenerateTitlesForContextsHonorsCancellationBeforeWork`
+(`EngramServiceIPCTests.swift:403`, cancellation assertion). The same Swift
+source passed in the Actions-pin PR's first run; this is an apparent timing
+flake, not a demonstrated Vitest regression. The second run passed every
+required gate, including swift-unit, without changing Swift source:
+https://github.com/bbingz/engram/actions/runs/39003511121.
+Main's knip 6.41.0 update conflicted with the Vitest lockfile; resolved
+by retaining main's lock entries and regenerating the combined dependency
+graph with npm install. Both Vitest packages remain 5.0.5.
+The final main sync also retains sharp and grpc-js updates and the merged
+Actions pins from #469; required checks must pass again on this combined head.
+
 ## GitHub Actions pins updated with the workflow contract (2026-10-17)
 
 Updated setup-node v7.0.0 -> v7.1.0, upload-artifact v7.0.1 -> v7.0.2,
@@ -25,6 +67,10 @@ CHECKS_RUN: `npm ci`; reproduced the stale-pin assertion before updating
 `actionlint .github/workflows/*.yml`; `git diff --check`.
 CHECKS_NOT_RUN: full TypeScript and Swift suites locally (workflow/pin-only
 change; required CI gates must pass before merge).
+
+Merged as #469 (`9af798787e783be4ede166d42497c6c1753ab205`) after CI Gate,
+CodeQL Gate, and Dependency Review passed on the up-to-date branch.
+Closed #461, #465, #467, and #468 with a superseding-PR comment after merge.
 
 ## Collector stop no longer fails on its own shutdown signal (2026-10-10)
 
