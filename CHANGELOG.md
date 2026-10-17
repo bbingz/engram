@@ -10,10 +10,12 @@ Vitest peer on 4.1.11 and fails with ERESOLVE. Reproduced this with an
 install dry-run, then upgraded both dev dependencies from ^4.1.11 to ^5.0.5
 using npm install. The registry listed 5.0.5 for both packages on 2026-10-17;
 the regenerated lockfile resolves Vitest/coverage-v8 5.0.5 and Vite 8.3.4.
-No test or configuration changes were needed.
+No test or Vitest configuration changes were needed. The package Node engine
+range is narrowed from >=24 <27 to ^24.0.0 || ^26.0.0 because Vitest 5
+excludes Node 25; hosted CI continues to use Node 24.
 
-Reviewed https://vitest.dev/guide/migration/: the existing Node range meets
-5.x prerequisites; npm resolves the Vite peer. Hoisted mock calls are already
+Reviewed https://vitest.dev/guide/migration/ and the npm package engines;
+npm resolves the Vite peer. Hoisted mock calls are already
 at module scope, and the suite passes with the new clearMocks default and
 async-assertion enforcement. There are no workspace/projects, browser,
 benchmark, sequential, or removed-entrypoint usages requiring migration.
