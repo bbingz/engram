@@ -3,6 +3,35 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Transformers.js bumped to 4.3.1 to clear the Dependabot alert subtree (2026-10-17)
+
+`@huggingface/transformers` (root `optionalDependencies`, the opt-in
+Transformers.js embedding provider behind `src/core/embeddings.ts`) moves
+from `^4.2.0` to `^4.3.1`. No source change. This addresses 11 of the 12
+open Dependabot security alerts recorded in the entry below: the lockfile
+now resolves a single `sharp` 0.35.5 (the nested 0.34.5 copy under
+transformers is gone, closing #3 #12 #24), `onnxruntime-node` 1.30.0 with
+`adm-zip` 0.6.1 (closing #1 #13 #14 #15 #16 #17 #18 and the no-fix #9), and
+`sprintf-js` / `roarr` / `global-agent` drop out of the tree entirely, so
+#23 (no upstream fix) closes as well once Dependabot rescans main.
+`npm install` removed 10 packages and changed 12; the only notable new
+pin is `onnxruntime-web` `1.31.0-dev.20260914-8d85527a0`, a prerelease that
+transformers 4.3.1 itself pins and that the Node runtime does not load.
+
+CHECKS_RUN: `npm install @huggingface/transformers@^4.3.1 --save-optional`;
+lockfile inspection for the packages above; `npm run build`; `npm run
+lint` (1 pre-existing warning, 40 infos); `npm run knip`; `npm test`
+(Vitest 5.0.5, 139 files, 2055 passed, 49 skipped, 17.8 s); an opt-in
+embedding smoke through `createEmbeddingClient({ provider: 'transformers'
+})` from `dist/core/embeddings.js` on Node 26.12.0: model
+`all-MiniLM-L6-v2`, dimension 384, L2 norm 1.0, cosine 0.32 between two
+Engram sentences versus -0.03 against an unrelated one, 75.6 s including
+the first-time 97 MB download of `Xenova/all-MiniLM-L6-v2` (fp32 ONNX plus
+tokenizer) into `node_modules/@huggingface/transformers/.cache`.
+CHECKS_NOT_RUN: Ollama and OpenAI providers (unchanged code, no provider
+configured here); Swift suites (no Swift change; CI gates run per PR).
+
+
 ## GitHub quota exhaustion is private-repo artifact storage, not Engram CI (2026-10-17)
 
 **Question.** The account's GitHub quota keeps running out although Engram CI
