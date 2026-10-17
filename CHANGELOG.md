@@ -3,6 +3,29 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## GitHub Actions pins updated with the workflow contract (2026-10-17)
+
+Updated setup-node v7.0.0 -> v7.1.0, upload-artifact v7.0.1 -> v7.0.2,
+download-artifact v8.0.1 -> v8.0.2, and codeql-action v4.38.2 -> v4.38.3
+across all applicable workflows and `tests/scripts/ci-workflow.test.ts`.
+This supersedes Dependabot #461, #465, #467, and #468, whose workflow-only
+updates leave the immutable-SHA test contract stale.
+
+Verified each release through the upstream GitHub tag API. The commits are
+`949feb2413d6458794dcd2491c4babbbce0c15c1` (setup-node),
+`cf430e030ddbb5b0abf93d22962f4752f3646cd9` (upload-artifact),
+`9000827ccba6bdab643e8b6fd33ac0654aef8333` (download-artifact), and
+`24c54180a607b1449ed407dd24f251e4e9147c8d` (CodeQL, dereferenced from
+annotated tag `cee97f86b972a3ded3c58d04148362b193ddc518`). All match
+Dependabot. No old pins remain under `.github`, `tests`, `scripts`, or `docs`.
+
+CHECKS_RUN: `npm ci`; reproduced the stale-pin assertion before updating
+`actionPins`; `npm run lint` (pass, existing schema warning and lint infos);
+`npx vitest run tests/scripts/` (35 files, 793 passed, 49 skipped);
+`actionlint .github/workflows/*.yml`; `git diff --check`.
+CHECKS_NOT_RUN: full TypeScript and Swift suites locally (workflow/pin-only
+change; required CI gates must pass before merge).
+
 ## Collector stop no longer fails on its own shutdown signal (2026-10-10)
 
 **Failure.** Three `swift-unit` jobs on 2026-10-08 failed with

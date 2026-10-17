@@ -2,6 +2,11 @@
 
 ## Changelog Memo
 
+### 2026-10-17
+
+- [变更] 四组 Actions pin 与测试契约同步升级，替代 Dependabot #461/#465/#467/#468；SHA 均经上游 tag API 核验，CodeQL 已解引用 annotated tag。详见 `CHANGELOG.md`。
+- [验证] 先复现旧 pin 断言失败；修复后脚本测试 793 过、49 跳过，lint/actionlint 通过；合并仍需 required CI 全绿。
+
 ### 2026-10-08
 
 - [修复] 采集器 `stop` 不再把自身停机信号 `CollectorRuntimeError.closed` 当成失败。2026-10-08 有 3 个 `swift-unit` 因此失败后重跑才过。详见 `CHANGELOG.md`。
