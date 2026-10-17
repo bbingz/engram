@@ -3,6 +3,189 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## GitHub quota exhaustion is private-repo artifact storage, not Engram CI (2026-10-17)
+
+**Question.** The account's GitHub quota keeps running out although Engram CI
+config was changed several times. Investigated read-only, inline plus a
+6-agent Opus workflow (`wf_c24fea1b-ab8`: 2 verifiers, 3 refuters, 1
+synthesizer; 0 of 3 refuters overturned the finding).
+
+**Finding.** The exhausted meter is the account-wide GitHub Actions artifact
+storage pool (shared with Packages, scoped to private repositories; 500 MB on
+Free and 2 GB on Pro per
+https://docs.github.com/en/billing/concepts/product-billing/github-actions).
+Exact error in private repos since 2026-10-12, via
+`gh run view -R bbingz/<repo> <id> --log-failed`:
+`Failed to CreateArtifact: Artifact storage quota has been hit. Unable to
+upload any new artifacts. Usage is recalculated every 6-12 hours.` Seen in
+GXSM-3D runs `38297476744` (first, 2026-10-12) and `38954442688`, CCTV_Admin
+`38955850305` and `38860957362`, opensense `38945883891`. Active private
+artifacts on 2026-10-17 (`gh api --paginate /repos/bbingz/<r>/actions/artifacts`,
+`expired==false`): GXSM-3D 1013.6 MB (nine `campus-verification-*` artifacts
+of 107-122 MB, uploaded `if: always()` on push, PR and a daily cron, 30-day
+retention), mingtang 481.5 MB (90-day default retention), CCTV_Admin 70.3 MB,
+opensense 1.5 MB; total 1567 MB.
+
+**Engram is not involved.** `bbingz/engram` has been public since 2026-04-29
+(`7d62cd6d`). Standard hosted and self-hosted minutes are free for public
+repos. Its artifacts total 35.6 MB in a public repo, and uploads kept
+succeeding on 10-12 through 10-16 while the private repos were blocked. Git
+LFS is a separate 10 GiB meter: 8.9 MB per `lfs: true` checkout in
+`test.yml` ui-test jobs (about 340 MB/month, estimate) and an LFS batch-API
+probe on 2026-10-17 still returned a download action. No failed Engram run
+since 2026-09-01 logs any quota or billing message. Every past Engram CI
+change (PR #35 and its revert PR #36 on 2026-06-03, the 2026-07-12
+self-hosted migration, `78bb9a91` / `cc24bf50` / `78667af6` moving lanes back
+to hosted runners) targeted Actions minutes; PR #36 already recorded that the
+minutes premise was wrong for a public repo. The entry "CI migrated to
+self-hosted runners on macmini-m1 (2026-07-12)" below is stale: `test.yml`
+and `codeql.yml` run on hosted `macos-15` / `macos-26` / `ubuntu-24.04`
+again; only `perf.yml` and `release-bundle-gate` stay self-hosted.
+
+**Why it recurs.** Earlier fixes in other repos only soft-failed the upload
+step (zhiwei `1f8d361a` / `87e55252`, mediahub `4ebad6ff`, CCTV_Admin and
+mingtang `f51f594e` / PR #261) without cutting artifact volume or retention.
+
+**Caveats.** `billable` from `GET /repos/{r}/actions/runs/{id}/timing` is 0
+even for a 30-minute private hosted job (SpiderFinder `30733376667`); the
+endpoint is closing down, so treat it as no evidence.
+
+**Billing confirmation (same day, after the user granted the `gh` token the
+`user` scope).** `GET /users/bbingz/settings/billing/usage?year=2026&month=10`
+and `/usage/summary` (saved as `billing_usage_2026_10.json` in the session
+scratchpad): plan `pro`. Private-repo Actions storage metered 2026-10-01
+through 10-11 sums to 1488.5 GB-hours, exactly the Pro allowance of 2 GB x
+744 h for October; from 10-12 private storage meters 0 and uploads are
+blocked, while public engram and orca keep metering (3.1 and 11.6 GB-hours a
+day, fully discounted). GXSM-3D used 1354 of those GB-hours (91 percent,
+about 5-6 GB held per day), mingtang 115, CCTV_Admin 17. The quota is
+therefore time-integrated for the calendar month, so deleting artifacts
+mid-month does not restore it; it resets with the November report. Minutes
+are not an issue: engram 3313 macOS plus 562 Linux minutes and every other
+repo are fully discounted (public repos free, private Linux minutes inside
+the 3000 included), net $0. September private storage was 566.9 GB-hours,
+under the allowance; the ramp began 2026-09-27 when GXSM-3D started
+uploading `campus-verification-*` artifacts. Unverified: why GXSM-3D metered
+5-6 GB a day while only 1 GB is listed now (deletion around 10-11 is the
+likely reason; deleted artifacts are not listed). The blocking mechanism
+was confirmed later the same day (see Remediation): after the budget went
+from its previous value to $3, private uploads succeeded again and private
+storage started metering at the undiscounted overage rate.
+
+**Remediation (executed later the same day, outside this repo, on the
+owner's instruction).**
+- GXSM-3D had already shipped the structural fix before this session:
+  PR #29 (`f790205e`) keeps verification, browser and package evidence on
+  the self-hosted macmini-m2 under `~/gxsm-ci-evidence/` and passes
+  `packages/` between the `web` and `observations` jobs via that local path,
+  PR #30 (`91d0b6ff`) prunes it after 7 days through
+  `web/scripts/ci-evidence-retain.mjs`. The workflow no longer contains any
+  `upload-artifact` step. Post-change main runs `38993501558` and
+  `38995864543` succeeded and zero artifacts were created on 2026-10-17.
+- GXSM-3D's nine remaining `campus-verification-*` artifacts (1013.3 MB)
+  were deleted with `gh api -X DELETE` after the owner approved; 40 tiny
+  observation artifacts (0.27 MB) remain.
+- mingtang was handed to the Claude session in the mingtang Herdr pane
+  (`wG:p1T`). It opened PR #426 (`4d8a4546`): `retention-days: 7` on all four
+  upload steps in `ci.yml` and `publish-images.yml`, PR media evidence
+  uploaded on `failure()` only, a Rust static test pinning both rules, and a
+  changelog fragment. It also deleted all 304 unexpired mingtang artifacts
+  (481.5 MB); the inventory read back as 0. CI sat queued because the
+  three `mingtang-m4-pro-*` runners (labels `cctv-meta` / `cctv-mac`) had
+  been offline since at least 2026-10-14; the mingtang session restarted
+  the mac and meta runners with `launchctl kickstart` on the Mac mini and
+  run `38998320149` started at 07:44Z. Its `go2rtc / Image and dependency
+  gate` failed in the Trivy scan step (four HIGH CVEs with fixes in the
+  go2rtc image: Go stdlib 1.27.1 -> 1.27.2, golang.org/x/net 0.57.0 ->
+  0.60.0), which is unrelated to this PR; the owner authorized that
+  session (answer "A" in pane `wG:p1T`) to open a separate go2rtc
+  toolchain PR first, so #426 stays open until that lands and CI reruns.
+- The owner edited the account's Actions budget on
+  github.com/settings/billing/budgets from the previous value to $3 with
+  "stop usage when limit is reached" and 75/90/100 percent alerts. The
+  budgets REST API exists only for organizations, so this could not be done
+  from the CLI.
+- Unblock verified the same afternoon. In mingtang run `38998320149`
+  (PR #426) the step `Upload go2rtc PR scan findings` succeeded and
+  `GET /repos/bbingz/mingtang/actions/artifacts` lists exactly one
+  artifact, `go2rtc-pr-security-artifacts`, 35,697 bytes, created
+  2026-10-17T07:47:16Z, `expires_at` 2026-10-24 (the new 7-day retention),
+  while `Upload go2rtc media evidence` was skipped on a successful media
+  check (the new `if: failure()`). The billing usage report confirms the
+  mechanism: on 2026-10-16 every private repo metered about 0 GB-hours of
+  Actions storage with net 0; on 2026-10-17 private repos meter again
+  (GXSM-3D 1.13, CCTV_Admin 0.33, mingtang 0.09 GB-hours by the time of
+  the read) at full price with no discount, net about $0.0005 so far,
+  i.e. $0.000336 per GB-hour (about $0.25 per GB-month). The account is
+  therefore past its included storage and paying overage inside the $3
+  budget until the November reset. With roughly 72 MB of private
+  artifacts left (CCTV_Admin 70 MB plus small GXSM-3D, opensense and
+  mingtang files) the projected overage for the rest of October is about
+  $0.01; every new private artifact adds about $0.008 per GB per day of
+  retention. Saved as `billing_usage_2026_10_16.json` and
+  `billing_usage_2026_10_17.json` in the session scratchpad.
+- No Engram change was needed. CCTV_Admin (70 MB, 1 percent, already
+  `continue-on-error`) was left alone. Workflow transcript:
+  `~/.claude/projects/-Users-bing--Code--engram/0b1bebd5-496a-40ce-b2bb-5e7d5709541b/subagents/workflows/wf_c24fea1b-ab8/journal.jsonl`.
+
+**Engram backlog cleared while waiting (same day).** Not quota-related, done
+because the owner asked to use the waiting time. Dependabot PRs merged
+serially (branch protection requires up-to-date branches, so each got
+`gh pr update-branch`, a green CI Gate / CodeQL Gate / Dependency Review,
+then a normal `gh pr merge --merge`): #466 yaml 2.9.1 (`ccb96c60`), #464
+knip 6.41.0 (`e1fd967c`), #462 sharp 0.35.5 (`824aeef6`), #460
+@grpc/grpc-js 1.14.6 (`be90c615`). The remaining five Dependabot PRs could
+not merge as-is (workflow pin bumps without the test contract, Vitest bump
+with a coverage-v8 peer conflict), so Codex (GPT-6-Astra in Herdr pane
+`wH:p6`) prepared and merged #469 (`9af79878`, Actions pins plus
+`tests/scripts/ci-workflow.test.ts`, supersedes #461 #465 #467 #468) and
+#470 (`36d78375`, Vitest and coverage-v8 5.0.5, supersedes #463); the two
+entries below are Codex's own records. Verified independently on
+`origin/main` after the fact: every `uses:` under `.github/workflows` and
+the `actionPins` map carry the new SHAs, `package.json` has
+`vitest`/`@vitest/coverage-v8` `^5.0.5` and `node` `^24.0.0 || ^26.0.0`, the
+five superseded PRs are CLOSED with a superseding comment, and `gh pr list
+--state open` is empty. Post-merge runs on `36d78375`: CodeQL
+`39012885103` success; Tests `39012885008` success with every job green
+(Node quality and tests, swift-unit, remote-server-swift, macOS script
+and fixture gates, ui-test-full, CI Gate; ui-test-smoke skipped by the
+change classifier). Local check of the merged head on this Mac (Node
+26.12.0): `npm ci`, `npm run build`, `npm run lint` (1 pre-existing
+warning, 40 infos) and `npm test` on Vitest 5.0.5 all pass, 139 files,
+2055 passed, 49 skipped, 22 s.
+
+**Open Dependabot security alerts (12) all come from one optional
+dependency.** `gh api repos/bbingz/engram/dependabot/alerts?state=open`
+lists 8 high and 4 medium alerts, every one in `package-lock.json` under
+`@huggingface/transformers` 4.2.0 (root `optionalDependencies`, the
+opt-in Transformers.js embedding provider dynamically imported in
+`src/core/embeddings.ts`; TypeScript reference tooling, not the shipped
+Swift product): sharp 0.34.5 nested under transformers (#3 #12 #24, root
+sharp is already 0.35.5), adm-zip 0.5.18 via onnxruntime-node 1.24.3
+(#1 #9 #13 #14 #15 #16 #17 #18; #9 has no fix), and sprintf-js 1.1.3 via
+global-agent -> roarr inside the same optional tree (#23, no fix
+published). Upstream already ships the fix: `@huggingface/transformers`
+4.3.1 depends on sharp ^0.35.4 and onnxruntime-node 1.30.0, which depends
+on adm-zip ^0.6.0 (0.6.1 is latest). Bumping the root range from ^4.2.0
+to ^4.3.1 should clear 11 of the 12 alerts without an `overrides` block;
+the sprintf-js alert stays until roarr or global-agent moves. Not done
+in this session: it changes the embedding runtime and needs an opt-in
+Transformers.js embedding smoke that CI does not run.
+
+**Verification.** CHECKS_RUN: read-only `gh api` (runs, jobs, timing,
+artifacts, runners, cache usage, workflow contents), `gh run view
+--log-failed`, LFS batch-API probe, web fetch of docs.github.com billing pages
+and github.blog changelogs; for the backlog, `gh pr view`/`gh pr checks`
+per PR, `gh run list --branch main`, `git show origin/main:<file>` for the
+pin and dependency checks, `git diff --check` on this doc edit; for the
+unblock, mingtang jobs/steps API, artifacts API, runners API, and the
+billing usage API for 10-16 and 10-17 (the go2rtc job log itself could
+not be fetched while the run was in progress).
+CHECKS_NOT_RUN: Packages storage (needs `read:packages`); no local
+`npm test` or Swift run by the orchestrator (Codex ran the npm suites, CI
+ran the Swift gates per PR); no code or tests changed by the orchestrator.
+
+
 ## Vitest and V8 coverage upgraded together to 5.0.5 (2026-10-17)
 
 Supersedes Dependabot #463: upgrading only Vitest leaves coverage-v8's exact
