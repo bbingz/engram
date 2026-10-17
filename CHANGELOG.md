@@ -3,6 +3,80 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Collector reconcile command deployed to Daily; HQ service-index moved to main with P2 (2026-10-17)
+
+Owner authorization: "同意，按顺序来" for the three-step plan (recover Daily,
+ship the command and redeploy service-index, update docs). PR #473 merged as
+`b95d99ad` after every check passed (swift-unit 20 min, remote-server-swift
+9 min, ui-test-smoke 9 min, CodeQL Swift product 30 min). Built Release/arm64
+from a detached worktree at `b95d99ad` (tree identical to the PR head
+`ca6f3272`), packaged with `macos/scripts/package-collector.sh` and
+`package-service.sh` after a `--dry-run` of both against a warm build;
+`--verify-only` PASS for both bundles. `bin/EngramCollector` sha256
+`b83ada40644a5fc7750746123bb426f739992eb642e214b9c60cd38ef9005c01`,
+`bin/EngramService` sha256
+`e6095b53c26e60184e47570b3df5e2cedbc1f2ca8f905ea83ecb0075e873afd5`,
+BUILD-METADATA sourceRevision `b95d99ada1d665bb2d8080d65b8fee9cea1f2127`.
+Both hosts were changed the same way as on 2026-10-02 and 2026-10-07: a new
+sibling package directory, the LaunchAgent plist backed up, only
+`ProgramArguments[0]` replaced (by a helper that refuses any other key
+change), `launchctl bootout` then `bootstrap`. Settings, credentials,
+spools, databases and the other jobs were not touched.
+
+**HQ service-index (`com.engram.service-index`).** Package
+`hq/service-index-main-b95d99ad-20261017` (SHA256SUMS all OK, `codesign
+--verify --deep --strict` ok; `strings` shows `cross_machine_duplicate` and
+`capture_ingest_identity_bindings_native_id_source` in the new
+EngramCoreWrite and in neither string of the running `8a6cdf6c` build).
+Plist backup `state/service-index/persistent/main-b95d99ad-20261017-job-before.plist`;
+bootout 13:37:49 UTC, bootstrap 13:37:52; new PID 20105 logged the
+listening line, stderr stayed at 0 bytes, and the startup migration created
+the P2 index. T+10 (13:48 UTC): 19 percent CPU, 52 MB, ledger index_ready
+11,314 / parsed 34,267 / pending 0 / quarantined 694 (692
+`parse.noVisibleMessages`, 2 `obsolete_generation`, no
+`cross_machine_duplicate` yet), `origin=local` rows 6,191 unchanged across
+the upgrade, receiver and tailnet Web `/v1/health` 200 throughout. This
+closes the P2 "deployed" criterion and moves HQ from a 2026-10-02 build 67
+commits behind `main` to `main`. Rollback: restore the backed-up plist and
+bootstrap it; the `8a6cdf6c` package is kept.
+
+**Daily collector (`com.engram.collector`).** Package
+`daily/collector-native-epoch-reconcile-20261017` copied with rsync
+(SHA256SUMS all OK, codesign ok). Real-host checks of the new command before
+the swap: with the old collector still running,
+`--reconcile-native-epoch --dry-run` refused with
+`CollectorRuntimeError.busy` (exit 70); after `launchctl bootout` at
+13:38:39 UTC the dry run reported `affectedRoots` 0 with 4 roots `current`
+under the new epoch `E99B19DE-…` and 12 `noCheckpoint`, i.e. the morning's
+hand-made reconciliation left nothing to do. Plist backup
+`state/collector/persistent/native-epoch-reconcile-job-before.plist`;
+bootstrap 13:38:43; one launchd run (PID 96925), `engram-collector:
+running`, no new stderr line. T+10: 73 percent CPU and 62 MB while the
+claude-code root re-walks after the restart (15 of 16 roots converged), the
+`collector_root_epoch_transitions` table created by the new binary with 0
+rows. Rollback: restore the backed-up plist and bootstrap it; the
+`collector-vanished-directory-20261002` package is kept. The next FSEvents
+epoch change is handled by `launchctl bootout`, the dry run, the real run,
+`launchctl bootstrap`, as written in the design doc's Rollout section.
+
+**Cleanup.** Worktrees `engram-epoch-reconcile-20261017`,
+`engram-release-b95d99ad` and the two merged Codex worktrees from earlier
+today (`engram-actions-pins-20261017`, `engram-vitest5-20261017`) removed
+with their merged local branches; the dedicated release DerivedData (1.7 GB)
+deleted; the packages stay in the session scratchpad. Still untracked and
+unexplained: `.grok/workflows/engram-session-status.rhai`.
+
+CHECKS_RUN: PR #473 CI (all pass); `package-*.sh --dry-run` and
+`--verify-only`; SHA256SUMS and `codesign --verify` on both hosts; the
+`busy` refusal and the stopped-collector dry run of the new command on
+Daily; post-deploy process, log, socket, migration-index, ledger, receiver
+and Web probes at T+0 and T+10 on both hosts. CHECKS_NOT_RUN: the
+post-merge `main` runs of Tests (`39036852071`) and CodeQL
+(`39036852094`) were still in progress when this entry was written (the
+PR's CI passed on the identical tree); a real cross-machine duplicate has
+not occurred yet, so the P2 ledger code is deployed but unexercised on HQ.
+
+
 ## Daily collector stopped on a changed FSEvents epoch; operator reconcile command added (2026-10-17)
 
 **Incident (found during a read-only status check of `docs/TODO.md`).** The

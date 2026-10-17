@@ -30,9 +30,11 @@ authorizes host changes.
   `EngramCollector --reconcile-native-epoch [--dry-run]` after the Daily
   reboot left seven roots on a stale FSEvents epoch
   (`docs/superpowers/specs/2026-10-17-collector-native-epoch-reconcile-design.md`,
-  invariant "Native Epoch Reconciliation Is An Explicit Operator Action").
-  Still open: the HQ-side `collectorApproveEpoch` action for a new collector
-  epoch (spool reset) and its registry callers.
+  invariant "Native Epoch Reconciliation Is An Explicit Operator Action"),
+  deployed to Daily the same day as `collector-native-epoch-reconcile-20261017`
+  (real-host dry run: 0 affected roots). Still open: the HQ-side
+  `collectorApproveEpoch` action for a new collector epoch (spool reset) and
+  its registry callers.
 - **Real-binary chain in a recorded gate (plan W6 item 2).** Every test in
   `CollectorBinaryShadowIntegrationTests.swift` skips unless three binary-path
   environment variables are set, and no CI workflow sets them. Done when CI sets
@@ -43,9 +45,11 @@ authorizes host changes.
 - **P2 exact-content cross-machine duplicate quarantine (cutover design §3-B,
   decision D6; added 2026-10-07).** Merged as PR #455 (`5d7d684d`, 2026-10-07):
   `testIdenticalCrossMachineCaptureIsQuarantinedNotDuplicated_repro` passes and
-  the ledger entry exists. Not yet deployed: on 2026-10-17 HQ still ran
-  service-index `8a6cdf6c` (2026-10-02, 67 commits behind `main`), which does
-  not contain it. Done when a service-index build carrying it is deployed.
+  the ledger entry exists. Deployed 2026-10-17: HQ service-index moved to
+  `b95d99ad` (package `service-index-main-b95d99ad-20261017`), whose startup
+  migration created `capture_ingest_identity_bindings_native_id_source`.
+  Done; the ledger code is live but unexercised until a real cross-machine
+  duplicate arrives.
 - **P3 install tooling (cutover design §4.1-4.6, decision D12; added
   2026-10-07).** Done: merged as PR #454 (`63e0a17e`, 2026-10-07) with the
   `tests/scripts` suites and `CollectorRenderedSettingsFixtureTests`; the
