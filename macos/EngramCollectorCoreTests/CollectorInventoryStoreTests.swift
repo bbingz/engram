@@ -372,6 +372,7 @@ final class CollectorInventoryStoreTests: XCTestCase {
                 DROP TABLE IF EXISTS collector_capture_reservations;
                 DROP TABLE IF EXISTS collector_streams;
                 DROP TABLE IF EXISTS collector_root_bindings;
+                DROP TABLE IF EXISTS collector_root_epoch_transitions;
                 DELETE FROM collector_metadata WHERE key = 'publication_schema_version';
                 UPDATE collector_metadata SET value = '1' WHERE key = 'schema_version';
                 CREATE TRIGGER n1_no_locator_update BEFORE UPDATE ON collector_locators
@@ -397,6 +398,10 @@ final class CollectorInventoryStoreTests: XCTestCase {
         XCTAssertEqual(try check.read { try String.fetchOne($0, sql: "SELECT value FROM collector_metadata WHERE key = 'schema_version'") }, "2")
         XCTAssertEqual(try check.read { try String.fetchOne($0, sql: "SELECT claim_owner_run_id FROM collector_locators") }, "run-1")
         XCTAssertEqual(try check.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM collector_root_bindings") }, 0)
+        // Additive tables arrive on the first open of an older inventory.
+        XCTAssertEqual(try check.read {
+            try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'collector_root_epoch_transitions'")
+        }, 1)
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.configuration.rootPath))
     }
 
@@ -964,7 +969,8 @@ final class CollectorInventoryStoreTests: XCTestCase {
         let database = try fixture.openDatabase()
         let tables = try database.read { try String.fetchAll($0, sql: "SELECT name FROM sqlite_master WHERE type = 'table'") }
         XCTAssertEqual(Set(tables), ["collector_metadata", "collector_roots", "collector_locators", "collector_frontier", "collector_root_bindings",
-            "collector_streams", "collector_capture_reservations", "collector_capture_reservation_dependencies", "collector_publications", "collector_publication_replicas", "collector_cursor_legacy_sessions", "collector_cursor_legacy_workspaces"])
+            "collector_streams", "collector_capture_reservations", "collector_capture_reservation_dependencies", "collector_publications", "collector_publication_replicas", "collector_cursor_legacy_sessions", "collector_cursor_legacy_workspaces",
+            "collector_root_epoch_transitions"])
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent("index.sqlite").path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent("archive.sqlite").path))
     }

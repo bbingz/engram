@@ -278,6 +278,14 @@ final class CollectorInventoryOwner {
         try withStore { try $0.rootState(rootID: rootID) }
     }
 
+    /// Operator-only: see `CollectorInventoryStore.reconcileNativeEpoch`. Returns
+    /// the root's new requested revision.
+    func reconcileNativeEpoch(
+        configuration: CollectorRootConfiguration, expected: CollectorEventCheckpoint, liveEpoch: String
+    ) throws -> Int64 {
+        try withStore { try $0.reconcileNativeEpoch(configuration: configuration, expected: expected, liveEpoch: liveEpoch) }
+    }
+
     func capturedDependencyObservationPage(
         configuration: CollectorRootConfiguration, after: String?, limit: Int
     ) throws -> [CollectorLocatorState] {

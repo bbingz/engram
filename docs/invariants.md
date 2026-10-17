@@ -198,6 +198,13 @@ Invariants are properties that must survive every change; each entry names where
 - **Verified by** - `macos/EngramCollectorCoreTests/CollectorEventCoordinatorTests.swift` (testReplayLossFromStoredCheckpointConvergesWithoutReplayingItAgain_repro, testRestartResumesOnlyDurableCheckpointAndEpochMismatchCannotRebase), `macos/EngramServiceCoreTests/CollectorRuntimeTests.swift` (testReplayLossDuringStartKeepsRuntimeAndOtherRootsRunning_repro, testNativeEpochChangeStillStopsRuntimeWithoutRebasingCheckpoint, testFailureReasonNamesErrorTypeAndCaseWithoutPayload).
 - **Gate** - `none`.
 
+## Native Epoch Reconciliation Is An Explicit Operator Action
+
+- **Statement** - A stored FSEvents checkpoint whose epoch differs from the live FSEvents database UUID is cleared only by the operator command `EngramCollector --reconcile-native-epoch`, run while no collector owns the inventory (the command takes the owner lock and reports `busy` otherwise). In the same transaction it records the transition (previous epoch and cursor, live epoch, requested revision before and after, owner run id, timestamp) in `collector_root_epoch_transitions` and advances the requested revision so the next start walks the whole root. `--dry-run` changes nothing. The runtime itself still fails closed on the mismatch and never rebases the checkpoint.
+- **Enforced by** - `macos/EngramCollectorCore/CollectorRuntime.swift`, `macos/EngramCollectorCore/CollectorInventoryStore.swift`, `macos/EngramCollector/main.swift`.
+- **Verified by** - `macos/EngramServiceCoreTests/CollectorRuntimeTests.swift` (testReconcileNativeEpochClearsMismatchedCheckpointAndRecordsTransition_repro, testReconcileNativeEpochRefusesWhileRuntimeOwnsInventory, testNativeEpochChangeStillStopsRuntimeWithoutRebasingCheckpoint).
+- **Gate** - `none`.
+
 ## Collector Bootstrap Scan Finishes Past Vanished Directories
 
 - **Statement** - A queued non-root directory that no longer exists, or is no longer a directory and is not a symlink, finishes as empty, and so do its queued descendants; locators observed under it earlier are left unchanged. Any other failure to open a directory still blocks the scan and records `last_scan_failure`, and a symlink swapped in for a component is still refused. A missing or replaced root keeps its unavailable-source handling. A root whose bootstrap stays blocked for five consecutive steps is reported once on stderr, by root ID, and once more when it recovers; a shorter block writes nothing. A blocked root is still retried every turn without back-off.

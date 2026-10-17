@@ -1390,6 +1390,34 @@ final class CollectorInventoryStore {
         }
     }
 
+    /// Operator-only native epoch reconciliation. The stored checkpoint belongs to
+    /// another FSEvents history and is never rebased in place: the transition is
+    /// recorded first, then the checkpoint is cleared and the requested revision
+    /// advances so the next start walks the whole root before trusting new events.
+    /// Invariant "Native Epoch Reconciliation Is An Explicit Operator Action";
+    /// docs/superpowers/specs/2026-10-17-collector-native-epoch-reconcile-design.md
+    func reconcileNativeEpoch(
+        configuration: CollectorRootConfiguration, expected: CollectorEventCheckpoint, liveEpoch: String
+    ) throws -> Int64 {
+        try write { db in
+            let state = try Self.requireRoot(db, configuration)
+            guard state.eventCheckpoint == expected else { throw CollectorInventoryError.staleCheckpoint }
+            guard !liveEpoch.isEmpty, !expected.epoch.utf8.elementsEqual(liveEpoch.utf8) else {
+                throw CollectorInventoryError.invalidState
+            }
+            let next = try Self.increment(state.requestedRevision)
+            try db.execute(sql: """
+                INSERT INTO collector_root_epoch_transitions(root_id, root_revision, previous_epoch, previous_cursor, next_epoch,
+                    requested_revision_before, requested_revision_after, owner_run_id, reconciled_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """, arguments: [configuration.rootID, configuration.revision, expected.epoch, expected.cursor, liveEpoch,
+                                 state.requestedRevision, next, ownerRunID])
+            try db.execute(sql: "UPDATE collector_roots SET event_epoch = NULL, event_cursor = NULL, requested_revision = ? WHERE root_id = ?",
+                           arguments: [next, configuration.rootID])
+            return next
+        }
+    }
+
     func applyEventBatch(
         configuration: CollectorRootConfiguration,
         expectedCheckpoint: CollectorEventCheckpoint?,
@@ -2850,6 +2878,18 @@ final class CollectorInventoryStore {
             ) WITHOUT ROWID;
             CREATE INDEX IF NOT EXISTS collector_pending_frontier ON collector_frontier(root_id, root_revision, scan_id, relative_directory)
                 WHERE completed = 0;
+            CREATE TABLE IF NOT EXISTS collector_root_epoch_transitions (
+                root_id TEXT NOT NULL, root_revision INTEGER NOT NULL CHECK(root_revision > 0),
+                previous_epoch TEXT NOT NULL CHECK(length(previous_epoch) > 0),
+                previous_cursor TEXT NOT NULL CHECK(length(previous_cursor) > 0),
+                next_epoch TEXT NOT NULL CHECK(length(next_epoch) > 0 AND next_epoch <> previous_epoch),
+                requested_revision_before INTEGER NOT NULL CHECK(requested_revision_before > 0),
+                requested_revision_after INTEGER NOT NULL CHECK(requested_revision_after > requested_revision_before),
+                owner_run_id TEXT NOT NULL CHECK(length(owner_run_id) > 0),
+                reconciled_at TEXT NOT NULL CHECK(length(reconciled_at) > 0),
+                PRIMARY KEY(root_id, requested_revision_after),
+                FOREIGN KEY(root_id) REFERENCES collector_roots(root_id)
+            ) WITHOUT ROWID;
             """)
     }
 }

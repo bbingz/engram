@@ -690,6 +690,101 @@ final class CollectorRuntimeTests: XCTestCase {
         }
     }
 
+    // Repro for the 2026-10-17 Daily incident (CHANGELOG "Daily collector stopped on a
+    // changed FSEvents epoch"): after a reboot the stored checkpoint epoch no longer
+    // matched the live FSEvents database UUID, the runtime stopped by design on every
+    // launchd restart, and no operator action existed. Invariant "Native Epoch
+    // Reconciliation Is An Explicit Operator Action": only the command clears the
+    // checkpoint, it records the transition in the same transaction, and a dry run
+    // changes nothing.
+    func testReconcileNativeEpochClearsMismatchedCheckpointAndRecordsTransition_repro() async throws {
+        let f = try RuntimeFixture(); defer { f.remove() }
+        let replicas = try await RuntimeReplicas.start(parent: f.base)
+        let factory: Runtime.EventStreamFactory = { request, _ in RuntimeReplayStream(request: request, poisonCursor: "100") }
+        let stale = "fsevents-device-v1:00000000-0000-0000-0000-000000000000"
+        var active: Runtime?
+        do {
+            try f.writeTranscript("enrolled before the epoch change")
+            try f.writeSettings(f.document(replicas: replicas))
+            active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: f.secret,
+                                                diagnostics: { _ in }, eventStreamFactory: factory))
+            _ = try await f.drive(active!, acknowledged: 2)
+            try await active!.stop(); active = nil
+            try f.execute("UPDATE collector_roots SET event_epoch = ?, event_cursor = '100' WHERE root_id = 'runtime-codex'", [stale])
+            let before = try f.integer("SELECT requested_revision FROM collector_roots WHERE root_id = 'runtime-codex'")
+            let configuration = CollectorRootConfiguration(rootID: "runtime-codex", source: .codex, rootPath: f.sources.path, revision: 1)
+            let live = try CollectorNativeEventStream.currentEpoch(
+                binding: CollectorPOSIXRootEnumerator.observeRoot(configuration: configuration))
+            XCTAssertNotEqual(live, stale)
+
+            let preview = try Runtime.reconcileNativeEpoch(settingsURL: f.settings, dryRun: true)
+            XCTAssertTrue(preview.dryRun)
+            XCTAssertEqual(preview.affectedRoots, 1)
+            XCTAssertEqual(preview.roots.map(\.outcome), [.mismatch])
+            XCTAssertEqual(preview.roots.first?.storedEpoch, stale)
+            XCTAssertEqual(preview.roots.first?.liveEpoch, live)
+            XCTAssertEqual(try f.integer("""
+                SELECT count(*) FROM collector_roots
+                WHERE root_id = 'runtime-codex' AND event_epoch = '\(stale)' AND event_cursor = '100' AND requested_revision = \(before)
+                """), 1)
+            XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_root_epoch_transitions"), 0)
+
+            let applied = try Runtime.reconcileNativeEpoch(settingsURL: f.settings, dryRun: false)
+            XCTAssertFalse(applied.dryRun)
+            XCTAssertEqual(applied.roots.map(\.outcome), [.cleared])
+            XCTAssertEqual(applied.roots.first?.requestedRevision, Int64(before + 1))
+            XCTAssertEqual(try f.integer("""
+                SELECT count(*) FROM collector_roots
+                WHERE root_id = 'runtime-codex' AND event_epoch IS NULL AND event_cursor IS NULL AND requested_revision = \(before + 1)
+                """), 1)
+            XCTAssertEqual(try f.integer("""
+                SELECT count(*) FROM collector_root_epoch_transitions
+                WHERE root_id = 'runtime-codex' AND root_revision = 1 AND previous_epoch = '\(stale)' AND previous_cursor = '100'
+                  AND next_epoch = '\(live)' AND requested_revision_before = \(before) AND requested_revision_after = \(before + 1)
+                  AND length(owner_run_id) > 0 AND length(reconciled_at) > 0
+                """), 1)
+
+            let again = try Runtime.reconcileNativeEpoch(settingsURL: f.settings, dryRun: false)
+            XCTAssertEqual(again.roots.map(\.outcome), [.noCheckpoint])
+            XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_root_epoch_transitions"), 1)
+
+            // The same inventory starts again instead of failing closed.
+            active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: f.secret,
+                                                diagnostics: { _ in }, eventStreamFactory: factory))
+            try await active!.start()
+            try await active!.stop(); active = nil
+            await replicas.stop()
+        } catch {
+            try? await active?.stop()
+            await replicas.stop()
+            throw error
+        }
+    }
+
+    // The command takes the inventory owner lock, so it cannot run under a live
+    // collector; launchd must be booted out first.
+    func testReconcileNativeEpochRefusesWhileRuntimeOwnsInventory() async throws {
+        let f = try RuntimeFixture(); defer { f.remove() }
+        let replicas = try await RuntimeReplicas.start(parent: f.base)
+        var active: Runtime?
+        do {
+            try f.writeSettings(f.document(replicas: replicas))
+            active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: f.secret, diagnostics: { _ in }))
+            XCTAssertThrowsError(try Runtime.reconcileNativeEpoch(settingsURL: f.settings, dryRun: true)) { error in
+                XCTAssertEqual(error as? RuntimeError, .busy)
+            }
+            try await active!.stop(); active = nil
+            let report = try Runtime.reconcileNativeEpoch(settingsURL: f.settings, dryRun: true)
+            XCTAssertEqual(report.roots.map(\.outcome), [.noCheckpoint])
+            XCTAssertEqual(report.affectedRoots, 0)
+            await replicas.stop()
+        } catch {
+            try? await active?.stop()
+            await replicas.stop()
+            throw error
+        }
+    }
+
     // The process-exit line names the reason with type and case only, never a payload.
     func testFailureReasonNamesErrorTypeAndCaseWithoutPayload() {
         XCTAssertEqual(Runtime.failureReason(RuntimeError.reconciliationRequired), "CollectorRuntimeError.reconciliationRequired")

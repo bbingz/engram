@@ -1049,3 +1049,104 @@ private struct CollectorRuntimeConfiguration {
         return "\(url.scheme!)://\(host.lowercased()):\(url.port ?? (url.scheme == "https" ? 443 : 80))"
     }
 }
+
+/// Result of `EngramCollector --reconcile-native-epoch`, one row per configured root.
+public struct CollectorNativeEpochReconciliation: Equatable, Sendable {
+    public enum Outcome: String, Equatable, Sendable {
+        /// No stored FSEvents checkpoint, or the settings revision no longer matches
+        /// the stored root (the next start re-enrolls it and clears the checkpoint).
+        case noCheckpoint
+        /// Stored epoch equals the live FSEvents database UUID; nothing to do.
+        case current
+        /// Dry run: the stored epoch differs from the live one; nothing changed.
+        case mismatch
+        /// The transition was recorded, the checkpoint cleared and the requested
+        /// revision advanced.
+        case cleared
+        /// The root could not be observed or its live epoch read; `failure` names
+        /// the error type and case.
+        case unavailable
+    }
+
+    public struct Root: Equatable, Sendable {
+        public let rootID: String
+        public let source: String
+        public let rootPath: String
+        public let storedEpoch: String?
+        public let liveEpoch: String?
+        public let outcome: Outcome
+        public let requestedRevision: Int64?
+        public let failure: String?
+    }
+
+    public let dryRun: Bool
+    public let roots: [Root]
+
+    /// Roots whose stored epoch differs from the live one (reported or cleared).
+    public var affectedRoots: Int { roots.filter { $0.outcome == .mismatch || $0.outcome == .cleared }.count }
+}
+
+extension CollectorRuntime {
+    /// Operator command for a changed FSEvents epoch. The runtime itself fails
+    /// closed when a root's stored checkpoint epoch differs from the live FSEvents
+    /// database UUID and never rebases that checkpoint (see
+    /// `startEventsIfNeeded`). This command is the explicit reconciliation: it
+    /// takes the inventory owner lock, so it refuses while a collector is running
+    /// (`busy`), compares every configured root read-only, and for each mismatch
+    /// records the transition and clears the checkpoint in one transaction so the
+    /// next start subscribes from the present and the forced full walk covers the
+    /// gap. `dryRun` only reports. Invariant "Native Epoch Reconciliation Is An
+    /// Explicit Operator Action";
+    /// docs/superpowers/specs/2026-10-17-collector-native-epoch-reconcile-design.md
+    public static func reconcileNativeEpoch(settingsURL: URL, dryRun: Bool) throws -> CollectorNativeEpochReconciliation {
+        try Task.checkCancellation()
+        guard let configuration = try CollectorRuntimeConfiguration.load(at: settingsURL) else {
+            throw CollectorRuntimeError.invalidConfiguration
+        }
+        let owner: CollectorInventoryOwner
+        do {
+            guard let opened = try CollectorInventoryOwner.open(enabled: true,
+                shadowRoot: configuration.shadowURL, identityCatalog: configuration.identityURL,
+                ownerRunID: UUID().uuidString) else { throw CollectorRuntimeError.invalidConfiguration }
+            owner = opened
+        } catch CollectorInventoryOwnerError.alreadyOwned {
+            throw CollectorRuntimeError.busy
+        }
+        defer { try? owner.close() }
+        var roots: [CollectorNativeEpochReconciliation.Root] = []
+        for root in configuration.rootConfigurations {
+            try Task.checkCancellation()
+            roots.append(try reconcileNativeEpoch(root, owner: owner, dryRun: dryRun))
+        }
+        return .init(dryRun: dryRun, roots: roots)
+    }
+
+    private static func reconcileNativeEpoch(
+        _ root: CollectorRootConfiguration, owner: CollectorInventoryOwner, dryRun: Bool
+    ) throws -> CollectorNativeEpochReconciliation.Root {
+        func report(_ outcome: CollectorNativeEpochReconciliation.Outcome, stored: String? = nil, live: String? = nil,
+                    revision: Int64? = nil, failure: String? = nil) -> CollectorNativeEpochReconciliation.Root {
+            .init(rootID: root.rootID, source: root.source.rawValue, rootPath: root.rootPath, storedEpoch: stored,
+                  liveEpoch: live, outcome: outcome, requestedRevision: revision, failure: failure)
+        }
+        guard let state = try owner.rootState(rootID: root.rootID), state.configuration == root,
+              let stored = state.eventCheckpoint else { return report(.noCheckpoint) }
+        let live: String
+        do {
+            // Observe without enrolling: a dry run must not write, and the next
+            // start performs its own enrollment and st_dev validation anyway.
+            let binding = try CollectorPOSIXRootEnumerator.observeRoot(configuration: root)
+            live = try CollectorNativeEventStream.currentEpoch(binding: binding)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return report(.unavailable, stored: stored.epoch, revision: state.requestedRevision, failure: failureReason(error))
+        }
+        guard !stored.epoch.utf8.elementsEqual(live.utf8) else {
+            return report(.current, stored: stored.epoch, live: live, revision: state.requestedRevision)
+        }
+        guard !dryRun else { return report(.mismatch, stored: stored.epoch, live: live, revision: state.requestedRevision) }
+        let next = try owner.reconcileNativeEpoch(configuration: root, expected: stored, liveEpoch: live)
+        return report(.cleared, stored: stored.epoch, live: live, revision: next)
+    }
+}
