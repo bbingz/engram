@@ -4,6 +4,17 @@
 
 ### 2026-10-17
 
+- [排查] GitHub 配额耗尽的是 Actions **制品存储**（账户级、只计私有仓库，Pro 月额度 2 GB），不是分钟数：10-12 起 GXSM-3D、CCTV_Admin、opensense 的 CI 日志直接报 `Artifact storage quota has been hit`；私有仓库活跃制品 1567 MB（GXSM-3D 1013.6、mingtang 481.5、CCTV_Admin 70.3）。详见 `CHANGELOG.md`。
+- [排查] Engram 与此无关：仓库自 2026-04-29 起 public，托管与自托管分钟免费，制品仅 35.6 MB 且封锁期间仍能上传，LFS 单独计量且未封锁；过去 #35/#36 与 07-12 自托管迁移针对的是分钟数，PR #36 当时已指出前提不成立。不要再为配额改 Engram CI；07-12「迁到自托管」那条记录已过时。
+- [变更] Engram 无代码改动。6 个 Opus agent 的 workflow 结论一致，3 名反驳者均未推翻。
+- [变更] 其他仓库的处置（业主授权）：GXSM-3D 今晨 PR #29/#30 已把证据留在 macmini-m2 本地并 7 天清理，workflow 不再上传制品，改后运行全绿；其旧制品 9 个 1013.3 MB 已删。mingtang 经 Herdr 交给其 Claude 会话完成：PR #426 给 4 处上传加 `retention-days: 7`、PR 媒体证据仅失败时上传、Rust 静态测试钉住规则；304 个旧制品 481.5 MB 已全部删除，PR 待 runner 恢复后合并。业主在网页把 Actions 预算改为 $3 并开 75/90/100% 提醒（预算 API 仅对组织开放）。详见 `CHANGELOG.md`。
+- [验证] 授权 `user` scope 后读到账单：账户为 Pro；10-01 至 10-11 私有仓库 Actions 存储累计 1488.5 GB·小时，恰好等于 Pro 的 2 GB × 744 小时月额度，10-12 起私有仓库计量归零、上传被封；GXSM-3D 占 91%。额度按整月 GB·小时累计，月中删制品不会恢复，11 月报表才重置。分钟数全部折扣抵消、净额 0。
+- [未验证] GXSM-3D 10 月初每天计量 5–6 GB 而现在只列出 1 GB 的差额来源（疑似 10-11 前后删过制品）；封锁机制已于当天下午证实为预算封顶（见上一条）。
+- [变更] 等待期间清掉 Engram 的 Dependabot 积压（与配额无关）：按序合并 #466 yaml、#464 knip、#462 sharp、#460 grpc-js（`ccb96c60`/`e1fd967c`/`824aeef6`/`be90c615`）；Codex 经 Herdr 准备并合并 #469 Actions pin（`9af79878`）与 #470 Vitest 5（`36d78375`），关闭被替代的 #461/#463/#465/#467/#468，open PR 清零；pin、package.json 与关闭状态已在 origin/main 独立复核，合并后 main（`36d78375`）的 CodeQL 与 Tests 全绿。详见 `CHANGELOG.md`。
+- [验证] 本机（Node 26.12.0）在合并后的 main 上 `npm ci`/build/lint/`npm test` 全过：Vitest 5.0.5，139 个文件、2055 过、49 跳过。
+- [排查] 12 条 open 的 Dependabot 安全告警全部来自可选依赖 `@huggingface/transformers` 4.2.0 的子树（嵌套 sharp 0.34.5、onnxruntime-node 带的 adm-zip 0.5.18、global-agent→roarr 带的 sprintf-js），只影响 TS 参考工具链里的可选 Transformers.js 嵌入提供方，不在 Swift 产品路径。上游 4.3.1 已带 sharp ^0.35.4 与 onnxruntime-node 1.30.0（adm-zip ^0.6.0），把根依赖升到 ^4.3.1 预计清掉 11 条，sprintf-js 那条暂无修复。未动手，待决定。详见 `CHANGELOG.md`。
+- [验证] 私有仓库上传已解封：mingtang 会话用 `launchctl kickstart` 恢复两台 M4 Pro runner 后，PR #426 的 run `38998320149` 成功上传 `go2rtc-pr-security-artifacts`（35.7 KB，7 天后过期），媒体证据在检查通过时按新规则跳过；账单显示 10-16 私有仓库存储计量为 0、10-17 恢复计量且按无折扣溢价计费（约 $0.000336/GB·小时，当天累计约 $0.0005），即已超出包含额度、在 $3 预算内付费到 11 月重置，剩余约 72 MB 制品本月预计约 $0.01。详见 `CHANGELOG.md`。
+- [未验证] mingtang PR #426 仍未合并：go2rtc 镜像门禁因 Trivy 报出 4 个可修复 HIGH CVE（Go 1.27.1→1.27.2、x/net 0.57→0.60）而红，与本 PR 无关；业主已在该面板授权其 Claude 先开 go2rtc 工具链升级 PR，之后重跑 #426 再合并。
 - [变更] Vitest 与 coverage-v8 从 4.1.11 同升 5.0.5，替代 #463 的 peer 冲突；已核对官方迁移指南，无需改测试或 Vitest 配置；Node 声明收紧为 24/26（上游不支持 25）。详见 `CHANGELOG.md`。
 - [验证] 139 个文件、2055 过、49 跳过；build/lint/knip/测试类型检查通过；coverage 覆盖预期 113 个文件，行 80.18%、分支 69.82%、函数 79.68%，门槛通过；合并仍需 required CI 全绿。
 - [排查] 首轮 CI 的既有 Swift 取消时序测试失败（`EngramServiceIPCTests.swift:403`），第二轮全部通过且未改 Swift；已保留 main 的 knip/sharp/grpc-js 升级及 #469 Actions pins，最终同步后仍需新一轮 CI。详见 `CHANGELOG.md`。
