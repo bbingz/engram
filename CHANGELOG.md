@@ -27,8 +27,19 @@ schema warning/infos); `npm test` (139 files, 2055 passed, 49 skipped);
 `npm run knip`; `npm run typecheck:test`; `npm run test:coverage` (same test
 counts; lines 80.18%, branches 69.82%, functions 79.68%, thresholds passed);
 LCOV file-set check; `git diff --check`. Local Node 26.12.0 / npm 11.20.0.
-CHECKS_NOT_RUN: local Swift suites and hosted Node 24 CI (no Swift changes;
-required PR CI must pass before merge). No application deployment.
+CHECKS_NOT_RUN: local Swift suites (no Swift changes; required PR CI must
+pass before merge). No application deployment.
+
+Hosted Node 24, CodeQL Gate, Dependency Review, macOS script/fixture gates,
+remote-server Swift, and UI smoke passed on the initial PR commit. Run
+https://github.com/bbingz/engram/actions/runs/38999791866 failed only in the
+unchanged Swift test `testGenerateTitlesForContextsHonorsCancellationBeforeWork`
+(`EngramServiceIPCTests.swift:403`, cancellation assertion). The same Swift
+source passed in the Actions-pin PR's first run; this is an apparent timing
+flake, not a demonstrated Vitest regression. Merge remains gated on a green
+rerun. Main's knip 6.41.0 update conflicted with the Vitest lockfile; resolved
+by retaining main's lock entries and regenerating the combined dependency
+graph with npm install. Both Vitest packages remain 5.0.5.
 
 ## Collector stop no longer fails on its own shutdown signal (2026-10-10)
 
