@@ -4,6 +4,8 @@
 
 ### 2026-10-17
 
+- [变更] 可选依赖 `@huggingface/transformers` 从 ^4.2.0 升到 ^4.3.1，无源码改动：锁文件里嵌套的 sharp 0.34.5 消失、onnxruntime-node 升 1.30.0 并带 adm-zip 0.6.1、sprintf-js/roarr 整体移出依赖树，预计 12 条 Dependabot 安全告警全部关闭（含两条无修复的，因为包已不在树中）。详见 `CHANGELOG.md`。
+- [验证] build/lint/knip/`npm test`（2055 过、49 跳过）通过；本机 opt-in Transformers.js 嵌入冒烟通过：all-MiniLM-L6-v2、384 维、范数 1、相关句余弦 0.32 对无关句 -0.03，首次含 97 MB 模型下载共 75.6 秒。
 - [排查] GitHub 配额耗尽的是 Actions **制品存储**（账户级、只计私有仓库，Pro 月额度 2 GB），不是分钟数：10-12 起 GXSM-3D、CCTV_Admin、opensense 的 CI 日志直接报 `Artifact storage quota has been hit`；私有仓库活跃制品 1567 MB（GXSM-3D 1013.6、mingtang 481.5、CCTV_Admin 70.3）。详见 `CHANGELOG.md`。
 - [排查] Engram 与此无关：仓库自 2026-04-29 起 public，托管与自托管分钟免费，制品仅 35.6 MB 且封锁期间仍能上传，LFS 单独计量且未封锁；过去 #35/#36 与 07-12 自托管迁移针对的是分钟数，PR #36 当时已指出前提不成立。不要再为配额改 Engram CI；07-12「迁到自托管」那条记录已过时。
 - [变更] Engram 无代码改动。6 个 Opus agent 的 workflow 结论一致，3 名反驳者均未推翻。
