@@ -58,6 +58,8 @@ enum ServiceCapabilityToken {
         "archiveReclamationUpdateSettings",
         "archiveReclamationRun",
         "archiveV2RecoveryDrill",
+        "legacyLocalPurgePreview",
+        "legacyLocalPurgeApply",
         "configureClaudeCodeProfiles",
         "webAddProjectAlias",
         "webRemoveProjectAlias",

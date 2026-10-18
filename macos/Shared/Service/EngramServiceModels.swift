@@ -2810,6 +2810,71 @@ struct EngramServiceServiceLogsRequest: Codable, Equatable, Sendable {
     let limit: Int?
 }
 
+// MARK: - Legacy local-origin purge operator wire contract (D7)
+
+enum EngramServiceLegacyLocalPurgeWireError: Error, Equatable, Sendable {
+    case invalidField(String)
+}
+
+struct EngramServiceLegacyLocalPurgeSourceSummary: Codable, Equatable, Sendable {
+    let source: String
+    let sessions: Int
+    let newestIndexedAt: String?
+    let newestStartTime: String?
+}
+
+struct EngramServiceLegacyLocalPurgePreviewResponse: Codable, Equatable, Sendable {
+    let predicateVersion: Int
+    let sessionCount: Int
+    let planToken: String
+    let sources: [EngramServiceLegacyLocalPurgeSourceSummary]
+    let blocking: [String: Int]
+    let derived: [String: Int]
+    let retained: [String: Int]
+    let captureBoundExcluded: Int
+    let otherLocalOriginSessions: [String: Int]
+    let purgeAllowed: Bool
+}
+
+struct EngramServiceLegacyLocalPurgeApplyRequest: Codable, Equatable, Sendable {
+    let expectedSessionCount: Int
+    let expectedPlanToken: String
+
+    init(expectedSessionCount: Int, expectedPlanToken: String) throws {
+        guard expectedSessionCount >= 1 else {
+            throw EngramServiceLegacyLocalPurgeWireError.invalidField("expectedSessionCount")
+        }
+        // Inline lowercase-hex SHA-256 check: ArchiveV2Hash is not compiled into EngramCLI.
+        guard expectedPlanToken.utf8.count == 64,
+              expectedPlanToken.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+            throw EngramServiceLegacyLocalPurgeWireError.invalidField("expectedPlanToken")
+        }
+        self.expectedSessionCount = expectedSessionCount
+        self.expectedPlanToken = expectedPlanToken
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            expectedSessionCount: container.decode(Int.self, forKey: .expectedSessionCount),
+            expectedPlanToken: container.decode(String.self, forKey: .expectedPlanToken)
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case expectedSessionCount
+        case expectedPlanToken
+    }
+}
+
+struct EngramServiceLegacyLocalPurgeApplyResponse: Codable, Equatable, Sendable {
+    let planToken: String
+    let sessionsDeleted: Int
+    let deleted: [String: Int]
+    let auditKey: String
+    let purgedAt: String
+}
+
 // MARK: - Remote per-project session sync (Layer 2)
 
 struct EngramServiceRemoteProjectSyncRequest: Codable, Sendable {
