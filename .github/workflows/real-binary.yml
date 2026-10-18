@@ -1,0 +1,72 @@
+# Policy: weekly/workflow_dispatch plus pull requests that change this gate; not a required merge gate.
+name: Real-binary chain
+
+on:
+  schedule:
+    - cron: "17 20 * * 0"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/real-binary.yml
+      - scripts/ci/run-real-binary-gate.sh
+      - scripts/ci/check-real-binary-results.py
+      - macos/EngramServiceCoreTests/CollectorBinaryShadowIntegrationTests.swift
+      - macos/EngramServiceCoreTests/CollectorCLIIntegrationTests.swift
+
+permissions:
+  contents: read
+
+concurrency:
+  group: real-binary-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+env:
+  XCODEGEN_SHA256: "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef"
+  XCODEGEN_VERSION: "2.45.4"
+
+jobs:
+  real-binary-chain:
+    name: Real-binary chain
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install xcodegen
+        run: bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
+
+      - name: Cache SPM packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/Library/Caches/EngramSourcePackages
+          key: spm-${{ runner.os }}-${{ runner.arch }}-hosted-realbinary-${{ hashFiles('macos/project.yml', 'macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-${{ runner.arch }}-hosted-realbinary-
+
+      - name: Generate Xcode project
+        run: scripts/check-xcodeproj-drift.sh
+
+      - name: Build binaries and run the real-binary chain
+        run: |
+          # Hosted macos-15 is several times slower, and varies run to run, than
+          # the Mac that produced the local receipt: the 114 MB large-history
+          # chain's HQ ingest took about 7 min in run 39093667839 (pass) and
+          # more than 12 min in run 39097383289 (deadline at 3x), while every
+          # other test passed each time. The scale lengthens deadlines only.
+          bash scripts/ci/run-real-binary-gate.sh \
+            --out "$RUNNER_TEMP/engram-real-binary-out" \
+            --derived-data "$RUNNER_TEMP/engram-real-binary-derived" \
+            --cloned-source-packages "$HOME/Library/Caches/EngramSourcePackages" \
+            --timeout-scale 6
+
+      - name: Publish receipt
+        if: always()
+        run: |
+          out="$RUNNER_TEMP/engram-real-binary-out"
+          if [ -f "$out/receipt.md" ]; then
+            cat "$out/receipt.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No real-binary receipt was written." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f "$out/receipt.json" ]; then
+            cat "$out/receipt.json"
+          fi

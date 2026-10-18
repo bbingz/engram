@@ -21,6 +21,14 @@ const perfWorkflow = readFileSync(
   resolve(repoRoot, '.github/workflows/perf.yml'),
   'utf8',
 );
+const realBinaryWorkflow = readFileSync(
+  resolve(repoRoot, '.github/workflows/real-binary.yml'),
+  'utf8',
+);
+const realBinaryGateScript = readFileSync(
+  resolve(repoRoot, 'scripts/ci/run-real-binary-gate.sh'),
+  'utf8',
+);
 const xcodegenInstallerPath = resolve(
   repoRoot,
   'scripts/ci/install-xcodegen.sh',
@@ -70,12 +78,14 @@ const xcodegenWorkflows = [
   releaseWorkflow,
   codeqlWorkflow,
   perfWorkflow,
+  realBinaryWorkflow,
 ];
 const allWorkflows = [
   testWorkflow,
   releaseWorkflow,
   codeqlWorkflow,
   perfWorkflow,
+  realBinaryWorkflow,
   dependencyReviewWorkflow,
 ];
 const actionPins = {
@@ -280,6 +290,8 @@ describe('CI workflow hardening', () => {
   it('keeps pull-request code off persistent self-hosted runners', () => {
     expect(testWorkflow).not.toContain('runs-on: [self-hosted');
     expect(codeqlWorkflow).not.toContain('runs-on: [self-hosted');
+    expect(realBinaryWorkflow).not.toContain('runs-on: [self-hosted');
+    expect(realBinaryWorkflow).toContain('runs-on: macos-15');
 
     const macosVitest = testWorkflow.slice(
       testWorkflow.indexOf('  macos-vitest:'),
@@ -876,6 +888,77 @@ describe('Perf workflow', () => {
     expect(engramCoreTestsScheme).toContain(
       'value = "$(TEST_RUNNER_ENGRAM_PERF)"',
     );
+  });
+});
+
+describe('Real-binary workflow', () => {
+  const parsed = parseDocument(realBinaryWorkflow).toJS() as {
+    on?: {
+      schedule?: Array<{ cron?: string }>;
+      pull_request?: { paths?: string[] };
+    } & Record<string, unknown>;
+  };
+
+  it('documents weekly/on-demand policy as non-gating', () => {
+    expect(realBinaryWorkflow).toMatch(
+      /^# Policy: weekly\/workflow_dispatch plus pull requests that change this gate; not a required merge gate\.\nname: Real-binary chain\n/,
+    );
+    expect(parsed.on?.schedule).toEqual([{ cron: '17 20 * * 0' }]);
+    expect(parsed.on).toHaveProperty('workflow_dispatch');
+    expect(parsed.on?.pull_request?.paths).toEqual([
+      '.github/workflows/real-binary.yml',
+      'scripts/ci/run-real-binary-gate.sh',
+      'scripts/ci/check-real-binary-results.py',
+      'macos/EngramServiceCoreTests/CollectorBinaryShadowIntegrationTests.swift',
+      'macos/EngramServiceCoreTests/CollectorCLIIntegrationTests.swift',
+    ]);
+    expect(realBinaryWorkflow).toContain('runs-on: macos-15');
+    expect(realBinaryWorkflow).toContain('timeout-minutes: 60');
+    expect(realBinaryWorkflow).toContain(
+      'group: real-binary-$' + '{{ github.ref }}-$' + '{{ github.event_name }}',
+    );
+    expect(realBinaryWorkflow).toContain('cancel-in-progress: true');
+    expect(realBinaryWorkflow).toContain(
+      'bash scripts/ci/run-real-binary-gate.sh',
+    );
+    expect(realBinaryWorkflow).toContain('GITHUB_STEP_SUMMARY');
+    // Not wired into the required Tests workflow or its ci-gate.
+    expect(testWorkflow).not.toContain('real-binary');
+  });
+
+  it('runs only the binary classes with explicit binaries and never opts into the browser hold', () => {
+    for (const target of [
+      'CollectorBinaryShadowIntegrationTests',
+      'CollectorLargeHistoryBinaryTests',
+      'CollectorCLIIntegrationTests',
+    ]) {
+      expect(realBinaryGateScript).toContain(
+        `-only-testing:EngramServiceCoreTests/${target}`,
+      );
+    }
+    for (const variable of [
+      'TEST_RUNNER_ENGRAM_COLLECTOR_BINARY',
+      'TEST_RUNNER_ENGRAM_SERVICE_BINARY',
+      'TEST_RUNNER_ENGRAM_REMOTE_SERVER_BINARY',
+      'TEST_RUNNER_CFFIXED_USER_HOME',
+      'TEST_RUNNER_ENGRAM_REAL_BINARY_TIMEOUT_SCALE',
+    ]) {
+      expect(realBinaryGateScript).toContain(variable);
+    }
+    // Hosted runners get longer scope deadlines, never different assertions.
+    expect(realBinaryWorkflow).toContain('--timeout-scale 6');
+    expect(realBinaryGateScript).toContain('test-without-building');
+    expect(realBinaryGateScript).toContain(
+      'xcresulttool get test-results tests',
+    );
+    expect(realBinaryGateScript).toContain('check-real-binary-results.py');
+    expect(realBinaryGateScript).toContain(
+      '--allow-skip testRealBinaryHTTPSBrowserDemoWithBoundedHold',
+    );
+    for (const text of [realBinaryWorkflow, realBinaryGateScript]) {
+      expect(text).not.toMatch(/^(?!\s*#).*ENGRAM_SHADOW_/m);
+      expect(text).not.toContain('upload-artifact');
+    }
   });
 });
 

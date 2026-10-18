@@ -49,6 +49,25 @@ authorizes host changes.
   `CollectorBinaryShadowIntegrationTests.swift` skips unless three binary-path
   environment variables are set, and no CI workflow sets them. Done when CI sets
   them or a documented manual gate with a receipt exists.
+  Update 2026-10-18 (branch `ci/real-binary-gate-20261018`): shipped the
+  non-required `.github/workflows/real-binary.yml` (weekly Sunday 20:17 UTC,
+  `workflow_dispatch`, and pull requests that touch its own five gate paths;
+  not in `test.yml` or `ci-gate`) and `scripts/ci/run-real-binary-gate.sh`,
+  which builds the Debug `EngramCollector`/`EngramService`/`EngramRemoteServer`
+  tools, sets the three binary variables (plain and `TEST_RUNNER_` forms) with
+  an isolated `CFFIXED_USER_HOME`, and runs
+  `CollectorBinaryShadowIntegrationTests`, `CollectorLargeHistoryBinaryTests`
+  and `CollectorCLIIntegrationTests` (CLI needs only the collector binary).
+  `scripts/ci/check-real-binary-results.py` compares the exact test set parsed
+  from the Swift sources with the xcresult tree and fails on any missing,
+  extra, failed or skipped test except the opt-in browser demo. Local Debug
+  receipt on Xcode 26.4 at `b2e8ef2a` (dirty paths 0):
+  `REAL_BINARY_GATE result=pass expected=50 passed=49 skipped=1 failed=0`; the
+  same classes run without the variables exit 0 with 50 skipped and the
+  verifier rejects them (`result=fail ... skipped=50`). Remains: the PR's own
+  hosted macos-15 "Real-binary chain" run must be green with that line (Debug
+  tool loading and the 25 s scope deadlines are unproven on hosted runners);
+  record the run URL here and close the item.
 - **App "open Web reader" entry (design section 1).** In `collector`/`replica`
   roles the App shows only the unavailable message; it has no action that opens
   the Web reader as the design states.
