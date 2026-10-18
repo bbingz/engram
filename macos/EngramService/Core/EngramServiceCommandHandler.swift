@@ -26,6 +26,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     private let usageEmitter: @Sendable ([StartupUsageSnapshot]) -> Void
     /// Immutable producer hooks (test injection only; production uses `.none`).
     let longOpHooks: ProjectMoveLongOpHooks
+    /// Startup runtime role; gates operator commands that only an index host may run.
+    let runtimeRole: EngramRuntimeRole
 
     /// Commands excluded from telemetry span recording: `status` is a poll the
     /// app/launcher fires continuously (would drown out real signal), `telemetry`
@@ -75,7 +77,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         usageEmitter: @escaping @Sendable ([StartupUsageSnapshot]) -> Void = { snapshots in
             EngramServiceRunner.emitUsageSnapshots(snapshots)
         },
-        longOpHooks: ProjectMoveLongOpHooks = .none
+        longOpHooks: ProjectMoveLongOpHooks = .none,
+        runtimeRole: EngramRuntimeRole = .local
     ) {
         self.writerGate = writerGate
         self.archiveV2Coordinator = archiveV2Coordinator
@@ -92,6 +95,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         self.usageTokenLimitsProvider = usageTokenLimitsProvider
         self.usageEmitter = usageEmitter
         self.longOpHooks = longOpHooks
+        self.runtimeRole = runtimeRole
     }
 
     func handle(_ request: EngramServiceRequestEnvelope) async -> EngramServiceResponseEnvelope {
@@ -223,6 +227,35 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(try await archiveV2RetryResponse(payload))
+                )
+            case "legacyLocalPurgePreview":
+                guard request.payload == nil else {
+                    throw EngramServiceError.invalidRequest(
+                        message: "legacyLocalPurgePreview does not accept a payload"
+                    )
+                }
+                let result = try await legacyLocalPurgePreviewResponse()
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "legacyLocalPurgeApply":
+                try requireExactPayloadKeys(
+                    request,
+                    allowed: [["expectedSessionCount", "expectedPlanToken"]]
+                )
+                let payload: EngramServiceLegacyLocalPurgeApplyRequest
+                do {
+                    payload = try decodePayload(EngramServiceLegacyLocalPurgeApplyRequest.self, from: request)
+                } catch {
+                    throw EngramServiceError.invalidRequest(message: "Invalid payload for legacyLocalPurgeApply")
+                }
+                let result = try await legacyLocalPurgeApplyResponse(payload)
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
                 )
             case "archiveReclamationStatus":
                 guard request.payload == nil else {

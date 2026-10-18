@@ -200,6 +200,16 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         try await command("archiveV2Retry", payload: request)
     }
 
+    func legacyLocalPurgePreview() async throws -> EngramServiceLegacyLocalPurgePreviewResponse {
+        try await commandWithAbsentPayload("legacyLocalPurgePreview")
+    }
+
+    func legacyLocalPurgeApply(
+        _ request: EngramServiceLegacyLocalPurgeApplyRequest
+    ) async throws -> EngramServiceLegacyLocalPurgeApplyResponse {
+        try await command("legacyLocalPurgeApply", payload: request)
+    }
+
     func archiveV2StoreToken(
         _ request: EngramServiceArchiveV2StoreTokenRequest
     ) async throws -> EngramServiceArchiveV2StoreTokenResponse {
