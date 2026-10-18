@@ -28,8 +28,8 @@ authorizes host changes.
   (`docs/followups.md` `collector-publication-cost-1`). Still open; receipt in
   the retirement checklist and `CHANGELOG.md`.
   2026-10-18 local profiling found and fixed the largest per-publication cost
-  (privacy assessment repeated per replica; branch
-  `perf/collector-publication-cost-20261018`, 20-46% less collector CPU per
+  (privacy assessment repeated per replica; PR #482
+  `059fe3b9`, 20-46% less collector CPU per
   publication), but it explains only part of Daily's bursts. Next: deploy to
   Daily (separately authorized), re-measure the 30-minute window, and if it
   still fails, `sample` the Daily collector during a burst (owner approval).
