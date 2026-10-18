@@ -3,6 +3,61 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## D7 legacy grok/pi purge applied on HQ; service-index moved to main `9ef7fb4f` (2026-10-18)
+
+Owner authorization, in order: "批准" for the D7 dry-run report, then
+"如果 dry-run 没问题，就批准部署和 apply" (deploy and apply if the dry run is
+clean). The offline report and the live preview were both clean, so both steps
+ran.
+
+**Deploy.** Release/arm64 built from a detached worktree at `9ef7fb4f`
+(`main` with #476-#478; no schema migration since `b95d99ad`), packaged with
+`macos/scripts/package-service.sh` after `--dry-run`; `--verify-only` PASS in
+scratch and again at the destination, `codesign --verify --deep --strict` ok.
+`bin/EngramService` sha256
+`2714e296484802ddda31f732a7e1ecade325239a2e63a7e21b5c2b3d86c114a2`,
+BUILD-METADATA sourceRevision `9ef7fb4f01c60e40406bfcd864add09127a7170e`.
+Package `hq/service-index-main-9ef7fb4f-20261018`; plist backup
+`state/service-index/persistent/main-9ef7fb4f-20261018-job-before.plist`; only
+`ProgramArguments[0]` changed; bootout 05:13:31Z, bootstrap 05:13:34Z, new
+PID 625 logged the listening line, stderr stayed at 0 bytes, receiver
+`127.0.0.1:18787` and tailnet Web `/v1/health` 200. Rollback: restore the
+backed-up plist and bootstrap it; `service-index-main-b95d99ad-20261017` is
+kept. The operator CLI is `EngramCLI` Release from the same build (sha256
+`6670a54ee4b5892eaea8703dc9fe5511b33e36cb204b1cfed2c400e51b59d094`), run from
+DerivedData, not installed anywhere.
+
+**Pre-apply checks.** Live `EngramCLI maintenance legacy-local-purge preview`
+through the new service (16 s) reproduced the approved values exactly:
+`sessionCount` 6,191, `planToken`
+`9fa54d7d1ab87778faf42d525076f8544b322207313ed06b4bb916f9d8890b8f`, every
+blocking dependent 0. Rollback copy taken right before the apply with
+`sqlite3 -readonly SRC "VACUUM INTO ..."` (05:14:31-05:16:16Z, 12.8 GB,
+quick_check ok, 45,815 sessions, 6,191 candidates) at
+`state/service-index/persistent/d7-rollback-20261018/index.sqlite`. Restore
+path: bootout, replace the database file and remove its `-wal`/`-shm`,
+bootstrap; anything ingested after 05:14Z would have to be re-delivered.
+
+**Apply.** `apply --expect-sessions 6191 --expect-token 9fa54d7d…` ran
+05:17:15-05:17:45Z (30 s, inside the token-protected 10-minute client
+budget): `sessionsDeleted` 6,191; derived rows deleted sessionsFts 51,937,
+ftsMap 51,937, session_index_jobs 11,578, session_tools 23,232,
+session_costs 6,191, session_work_beats 531, everything else 0; audit row
+`legacy_local_purge.v1.2026-10-18T05:17:15Z` in `metadata`.
+
+**Verified independently.** Re-preview: `sessionCount` 0. Read-only SQL on
+the live index: candidate predicate 0, `origin=local` rows of any source 0,
+capture-bound grok 866 and pi 573 unchanged, no orphan `fts_map` or
+`session_index_jobs` rows, 39,626 sessions, ledger pending 0, audit row
+present. Service PID 625 still up, stderr 0 bytes, receiver and Web 200.
+Freed pages stay in the file until an owner-scheduled vacuum; that is
+outside D7. This closes the D7 TODO item.
+
+Note: a pre-apply check suspected the CLI's IPC timeout (30 s default) was
+too short for a 13 GB index; a throwaway repro test showed token-protected
+commands already get the 10-minute `mutatingCommandTimeout`, so no change
+was made.
+
 ## Open-item cleanup by Opus workflows: four TODO items shipped, Daily CPU measured, two items need owner decisions (2026-10-18)
 
 Owner request: "继续组织opus清理开放项" (keep orchestrating Opus to clear the open
@@ -74,12 +129,8 @@ changed.
   6,191, work beats 531; retained file_index_state 6,191; the 866 grok and
   573 pi capture-bound rows are outside the predicate. The candidate count
   has not grown since 2026-10-07, so the HQ role gate holds. The owner
-  approved this report on 2026-10-18 ("批准"; the approval covers the report,
-  not the host steps). Remaining D7 steps, each separately authorized: deploy
-  service-index and EngramCLI to HQ from a `main` containing #478, take a
-  fresh rollback `.backup`, confirm `legacy-local-purge preview` on the live
-  socket reproduces `sessionCount` 6,191 and the approved `planToken`, then
-  apply and re-preview to 0.
+  approved this report on 2026-10-18 and then authorized the deploy and apply;
+  both are recorded in the entry above.
 
 Verification per PR is in each PR description (implementer plus independent
 re-run with the test.yml HOME isolation; verifiers also ran mutation checks,

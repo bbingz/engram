@@ -130,13 +130,13 @@ authorizes host changes.
   role gate), every blocking dependent 0, `purgeAllowed` true, `planToken`
   `9fa54d7d1ab87778faf42d525076f8544b322207313ed06b4bb916f9d8890b8f`; see
   `CHANGELOG.md` 2026-10-18. The owner approved that report on 2026-10-18
-  ("批准": `sessionCount` 6,191, `planToken` `9fa54d7d…90b8f`). Still open,
-  each separately authorized: the HQ service-index and EngramCLI deploy from
-  a `main` that contains #478, a fresh rollback `.backup` of the live index,
-  `EngramCLI maintenance legacy-local-purge preview` on the live socket
-  reproducing the approved count and token, then `apply --expect-sessions
-  6191 --expect-token <approved>`. Done when the purge clears the rows plus
-  their derived rows and a re-run preview reports 0.
+  ("批准": `sessionCount` 6,191, `planToken` `9fa54d7d…90b8f`). Done
+  2026-10-18: HQ service-index deployed from `9ef7fb4f`, the live preview
+  reproduced the approved values, a `VACUUM INTO` rollback copy was taken,
+  and the apply deleted the 6,191 rows plus their derived rows (audit
+  `legacy_local_purge.v1.2026-10-18T05:17:15Z`); re-preview 0, no
+  `origin=local` rows left, capture-bound grok/pi rows untouched. See
+  `CHANGELOG.md` 2026-10-18.
 
 Earlier status: no implementation-ready engineering task is selected as of 2026-08-16.
 
