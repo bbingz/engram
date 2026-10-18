@@ -42,6 +42,16 @@ authorizes host changes.
 - **App "open Web reader" entry (design section 1).** In `collector`/`replica`
   roles the App shows only the unavailable message; it has no action that opens
   the Web reader as the design states.
+  2026-10-18: shipped on `feat/app-open-web-reader-20261018`. The unavailable
+  window and Settings fallback now show "Open Web Reader" for collector/replica,
+  driven by an optional top-level `webReaderURL` in the owner-only
+  `settings.json` (https only, host required, no userinfo/query/fragment,
+  printable ASCII, <= 2048 bytes), parsed only by the App. Unset or invalid
+  keeps the button disabled; the action opens the default browser and never
+  opens the DB or spawns/adopts the Service. Still open: each collector/replica
+  host's `settings.json` needs the key (owner-approved manual edit, value checked
+  against the live `ENGRAM_REMOTE_WEB_ORIGIN`); `render-collector-settings.mjs`
+  does not write it.
 - **P2 exact-content cross-machine duplicate quarantine (cutover design §3-B,
   decision D6; added 2026-10-07).** Merged as PR #455 (`5d7d684d`, 2026-10-07):
   `testIdenticalCrossMachineCaptureIsQuarantinedNotDuplicated_repro` passes and
