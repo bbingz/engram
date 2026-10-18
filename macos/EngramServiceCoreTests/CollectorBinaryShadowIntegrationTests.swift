@@ -674,8 +674,8 @@ private final class BinaryShadowScope: @unchecked Sendable {
         try checkRunning()
         let configuration = URLSessionConfiguration.ephemeral
         configuration.connectionProxyDictionary = [:]
-        configuration.timeoutIntervalForRequest = 0.5
-        configuration.timeoutIntervalForResource = 1.5
+        configuration.timeoutIntervalForRequest = 0.5 * ShadowBinaries.timeoutScale
+        configuration.timeoutIntervalForResource = 1.5 * ShadowBinaries.timeoutScale
         let session = URLSession(configuration: configuration)
         defer { session.invalidateAndCancel() }
         var request = URLRequest(url: replica.baseURL.appendingPathComponent(path))
@@ -3750,7 +3750,7 @@ private extension BinaryShadowScope {
             XCTAssertEqual(manifest.wholeSourceSHA256, EngramCollectorCore.ArchiveV2Hash.sha256(expected))
             let configuration = URLSessionConfiguration.ephemeral
             configuration.connectionProxyDictionary = [:]
-            configuration.timeoutIntervalForRequest = 10
+            configuration.timeoutIntervalForRequest = 10 * ShadowBinaries.timeoutScale
             let session = URLSession(configuration: configuration)
             defer { session.invalidateAndCancel() }
             var offset = 0
