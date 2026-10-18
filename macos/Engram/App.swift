@@ -77,7 +77,10 @@ struct EngramApp: App {
                         .environment(appDelegate.serviceStatusStore)
                         .environment(\.engramServiceClient, appDelegate.serviceClient)
                 } else {
-                    RuntimeRoleUnavailableView(role: appDelegate.environment.runtimeRole)
+                    RuntimeRoleUnavailableView(
+                        role: appDelegate.environment.runtimeRole,
+                        openWebReader: appDelegate.webReaderAction
+                    )
                 }
             }
             .defaultAppStorage(appDelegate.appStorage)
@@ -87,11 +90,22 @@ struct EngramApp: App {
 
 private struct RuntimeRoleUnavailableView: View {
     let role: EngramRuntimeRole
+    let openWebReader: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Local index unavailable").font(.headline)
             Text(role.unavailableMessage).fixedSize(horizontal: false, vertical: true)
+            if role == .collector || role == .replica {
+                Button("Open Web Reader") { openWebReader?() }
+                    .disabled(openWebReader == nil)
+                    .accessibilityIdentifier("runtime-role-open-web-reader")
+                if openWebReader == nil {
+                    Text("Set an https webReaderURL in ~/.engram/settings.json to enable this.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .padding(24)
         .frame(width: 420)
@@ -115,6 +129,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var runtimeRoleWindow: NSWindow?
     private var serviceConnectionTask: Task<Void, Never>?
     private var isTerminating = false
+    var urlOpener: (URL) -> Bool = { NSWorkspace.shared.open($0) }
 
     override convenience init() {
         self.init(environment: AppEnvironment.fromCommandLine())
@@ -407,7 +422,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         serviceStatusStore.apply(.error(message: environment.runtimeRole.unavailableMessage))
         if runtimeRoleWindow == nil {
             let window = NSWindow(contentViewController: NSHostingController(
-                rootView: RuntimeRoleUnavailableView(role: environment.runtimeRole)
+                rootView: RuntimeRoleUnavailableView(
+                    role: environment.runtimeRole,
+                    openWebReader: webReaderAction
+                )
             ))
             window.title = "Engram"
             window.styleMask = [.titled, .closable]
@@ -417,6 +435,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         NSApp.setActivationPolicy(.regular)
         runtimeRoleWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    /// The unavailable view's Web reader action, nil when no URL is configured.
+    var webReaderAction: (() -> Void)? {
+        environment.webReaderURL.map { url in
+            { [weak self] in self?.openWebReader(url: url) }
+        }
+    }
+
+    /// Invariant "Persisted Host Role Before Local Index Access": the Web entry
+    /// only hands the configured URL to the default browser on blocked roles;
+    /// it never opens the local DB or starts/adopts a service.
+    func openWebReader(url: URL) {
+        guard !environment.runtimeRole.allowsLocalIndex,
+              url == environment.webReaderURL else { return }
+        _ = urlOpener(url)
     }
 
     private func showOnboarding() {
