@@ -71,7 +71,7 @@ changed.
 
 **Shipped (PRs opened from this session; merged in the order #477, #476, #478, #475, each after its required checks passed on a branch updated to the then-current `main`):**
 
-- PR #475 `__SHA_475__` — W6.2 real-binary chain gate.
+- PR #475 `5b5b09af` — W6.2 real-binary chain gate.
   `.github/workflows/real-binary.yml` (weekly, `workflow_dispatch`, and PRs
   touching the gate; **not** a required check, `CI Gate` contract unchanged),
   `scripts/ci/run-real-binary-gate.sh` (builds Debug EngramCollector /
@@ -81,7 +81,15 @@ changed.
   expected test set executed (a green run with 50 skips is a fail; proven
   locally: `result=fail expected=50 passed=0 skipped=50`). Local full run:
   `result=pass expected=50 passed=49 skipped=1` (browser demo skipped by
-  design). Hosted result on the PR: pass on the third run (run 39093667839, head eb62c039): `result=pass expected=50 passed=49 skipped=1 failed=0`, large-history test 429.6 s. The first two hosted runs failed only on that test (240 s scope deadline, then the fixture's 0.5 s replica request timeout), so the gate now scales its deadlines and fixture HTTP timeouts by `--timeout-scale 3` on hosted runners; assertions and the expected test set are unchanged.
+  design). Hosted runs on the PR: every run executed all 50 tests and only
+  the 114 MB large-history test ever failed. Run 1 hit its fixed 240 s scope
+  deadline, run 2 the fixture's 0.5 s replica request timeout, run 3
+  (39093667839) passed with that test at 429.6 s, run 4 (39097383289) hit the
+  3x deadline with HQ ingest still running after 12 min. The runner's speed
+  varies about 2x between runs, so the merged gate scales the scope deadlines
+  and the fixture's replica HTTP timeouts by `--timeout-scale 6` with a
+  60-minute job budget; assertions and the expected test set are unchanged.
+  Final run on the merged head (39098816343, 10f5ab21): success.
 - PR #476 `7a48d19d` — App "Open Web Reader" action in `collector`/`replica`
   roles, driven by a new optional `webReaderURL` key in `settings.json`
   (https only, host required, no userinfo/query/fragment), disabled with a

@@ -68,7 +68,7 @@ authorizes host changes.
   `CollectorBinaryShadowIntegrationTests.swift` skips unless three binary-path
   environment variables are set, and no CI workflow sets them. Done when CI sets
   them or a documented manual gate with a receipt exists.
-  Update 2026-10-18 (branch `ci/real-binary-gate-20261018`): shipped the
+  Done 2026-10-18: merged as PR #475 (`5b5b09af`), hosted run 39098816343 passed with `--timeout-scale 6`. Shipped the
   non-required `.github/workflows/real-binary.yml` (weekly Sunday 20:17 UTC,
   `workflow_dispatch`, and pull requests that touch its own five gate paths;
   not in `test.yml` or `ci-gate`) and `scripts/ci/run-real-binary-gate.sh`,
