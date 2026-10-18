@@ -109,12 +109,42 @@ final class CollectorInventoryStore {
                         cursor_legacy_observer_peer = NULL, cursor_legacy_observer_after = NULL,
                         cursor_legacy_observer_error = NULL, cursor_legacy_observer_initialized = 0 WHERE root_id = ?
                     """, arguments: [configuration.source.rawValue, configuration.rootPath, configuration.revision, configuration.cursorLegacy, configuration.cursorModernRootID, configuration.rootID])
+                try Self.carrySourceInstances(db, from: existing.configuration, to: configuration)
             } else {
                 try db.execute(sql: """
                     INSERT INTO collector_roots(root_id, source, root_path, root_revision, cursor_legacy, cursor_modern_root_id, requested_revision, completed_revision)
                     VALUES (?, ?, ?, ?, ?, ?, 1, 0)
                     """, arguments: [configuration.rootID, configuration.source.rawValue, configuration.rootPath, configuration.revision, configuration.cursorLegacy, configuration.cursorModernRootID])
             }
+        }
+    }
+
+    /// Invariant "Collector Root Revision Bump Keeps The Source Instance": when the
+    /// source and the byte-exact root path are unchanged, every stream of the previous
+    /// revision continues under the same source instance with a fresh collector epoch
+    /// and sequence 0, so HQ's registration (machine, source, configured root) stays
+    /// valid and `collectorApproveEpoch` approves the new epoch. Any other change keeps
+    /// the old behaviour: the new revision mints a fresh instance at its first capture.
+    /// Existing stream rows are never rewritten.
+    /// docs/superpowers/specs/2026-10-18-collector-epoch-rotation-and-root-scope-design.md
+    private static func carrySourceInstances(
+        _ db: Database, from previous: CollectorRootConfiguration, to next: CollectorRootConfiguration
+    ) throws {
+        guard previous.source == next.source, previous.rootPath.utf8.elementsEqual(next.rootPath.utf8) else { return }
+        // An empty effective source is an unresolved pre-schema-10 row; it never allocates.
+        let streams = try Row.fetchAll(db, sql: """
+            SELECT effective_source, source_instance_id FROM collector_streams
+            WHERE root_id = ? AND root_revision = ? AND effective_source != '' ORDER BY effective_source
+            """, arguments: [previous.rootID, previous.revision])
+        for stream in streams {
+            let rawSource: String = stream["effective_source"]
+            let sourceInstanceID: String = stream["source_instance_id"]
+            guard let source = SourceName(rawValue: rawSource), validEffectiveSource(source, configuration: next),
+                  UUID(uuidString: sourceInstanceID) != nil else { throw CollectorInventoryError.invalidState }
+            try db.execute(sql: """
+                INSERT INTO collector_streams(root_id, root_revision, effective_source, source_instance_id, collector_epoch, last_sequence)
+                VALUES (?, ?, ?, ?, ?, 0)
+                """, arguments: [next.rootID, next.revision, rawSource, sourceInstanceID, UUID().uuidString])
         }
     }
 

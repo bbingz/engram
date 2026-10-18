@@ -1,6 +1,8 @@
 # Design Doc: Native FSEvents epoch reconciliation is an explicit collector operator command
 
-- **Status**: Accepted (implemented in the same PR)
+- **Status**: Accepted (implemented in the same PR). Runtime scope amended on
+  2026-10-18: a changed epoch now suspends only that root instead of ending the
+  process (`docs/superpowers/specs/2026-10-18-collector-epoch-rotation-and-root-scope-design.md`).
 - **Owner**: Engram maintainers (Claude session, 2026-10-17)
 - **Date**: 2026-10-17
 - **Related**: `docs/superpowers/specs/2026-10-02-collector-replay-loss-design.md`
@@ -109,6 +111,8 @@ nine days, so this recurs.
   runtime still never rewrites a stored checkpoint after a loss and still
   stops on an epoch mismatch; this change adds no automatic path. Preserved;
   `testNativeEpochChangeStillStopsRuntimeWithoutRebasingCheckpoint` stays.
+  (2026-10-18: the runtime now suspends only the mismatched root, and that test
+  was replaced by `testChangedNativeEpochSuspendsOnlyThatRoot_repro`.)
 - New: "Native Epoch Reconciliation Is An Explicit Operator Action" (added to
   the ledger in this PR): the checkpoint is cleared only by the command, only
   without a running collector, and only together with a durable transition
@@ -154,6 +158,14 @@ nine days, so this recurs.
   are unchanged. Daily gets it with the next collector package
   (`macos/scripts/package-collector.sh`), installed by swapping
   `ProgramArguments[0]` in `com.engram.collector` as on 2026-10-02.
+- Trigger (since 2026-10-18): the collector keeps running for the other roots
+  and writes `engram-collector: source roots suspended for native epoch change:
+  N/M (<root ids>)` to stderr instead of exiting 70 with
+  `runtime failed: CollectorRuntimeError.reconciliationRequired`. The command
+  still takes the owner lock, so the job is still booted out first; the
+  suspended roots resume on the bootstrap that follows. HQ needs no action. Do
+  not bump the root revision instead: a bump now rotates the collector epoch and
+  needs an HQ approval.
 - Operator procedure on a stopped host: `launchctl bootout gui/<uid>/com.engram.collector`,
   `EngramCollector --settings <settings> --reconcile-native-epoch --dry-run`,
   review, run again without `--dry-run`, `launchctl bootstrap gui/<uid> <plist>`,
@@ -170,4 +182,5 @@ nine days, so this recurs.
   the volume; if it is not, the root reports `unavailable` and nothing is
   cleared.
 - Whether an epoch change should end the process at all remains the owner
-  decision recorded in `docs/followups.md`.
+  decision recorded in `docs/followups.md`. (Decided 2026-10-18: it suspends
+  only that root; see the 2026-10-18 design doc.)

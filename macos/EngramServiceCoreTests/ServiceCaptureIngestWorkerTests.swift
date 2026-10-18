@@ -935,6 +935,65 @@ final class ServiceCaptureIngestWorkerTests: XCTestCase {
         XCTAssertEqual(try work(stale).attempt, 0)
     }
 
+    // HQ half of owner decision (a) for followup collector-epoch-producer-1 (2026-10-18;
+    // collector half: CollectorRuntimeTests.testRootRevisionBumpKeepsSourceInstanceAndRotatesEpoch_repro).
+    // After a root revision bump the collector keeps the source instance, mints a new epoch
+    // and restarts its sequence at 1. The dry run names that epoch for the registered
+    // instance, and once approved the lower sequence continues the same session as a newer
+    // generation (authority generation orders it before the sequence) instead of a second
+    // session. docs/superpowers/specs/2026-10-18-collector-epoch-rotation-and-root-scope-design.md
+    func testRotatedEpochWithRestartedSequenceContinuesSessionAfterApproval() async throws {
+        _ = try await seedEligible(relative: "project/rotated.jsonl", nativeID: "rotated", sequence: 9)
+        let worker = makeWorker()
+        guard case .parsed(let earlier) = try await worker.step() else {
+            return XCTFail("approved epoch must parse")
+        }
+        let rotated = try await seedEligible(
+            relative: "project/rotated.jsonl", nativeID: "rotated", publicationEpoch: otherEpoch, sequence: 1,
+            bytes: claudeBytes(nativeID: "rotated", model: "claude-rotated")
+        )
+        let idle = try await worker.step()
+        XCTAssertEqual(idle, .idle)
+
+        let settingsURL = directory.appendingPathComponent("settings.json")
+        try JSONSerialization.data(withJSONObject: [
+            "runtimeRole": "index", "disabledSources": [String](), "archivedDefaultOffSourcesMigrated": true,
+            "captureIngest": ["enabled": true, "serverID": "hq", "baseURL": "http://127.0.0.1:8787",
+                "credentialID": "hq", "requestTimeout": 0.2, "retryCount": 0],
+        ] as [String: Any], options: [.sortedKeys]).write(to: settingsURL, options: .atomic)
+        XCTAssertEqual(chmod(settingsURL.path, 0o600), 0)
+        let previous = getenv("ENGRAM_SETTINGS_PATH").map { String(cString: $0) }
+        setenv("ENGRAM_SETTINGS_PATH", settingsURL.path, 1)
+        defer {
+            if let previous { setenv("ENGRAM_SETTINGS_PATH", previous, 1) }
+            else { unsetenv("ENGRAM_SETTINGS_PATH") }
+        }
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let dryRun = await handler.handle(EngramServiceRequestEnvelope(command: "collectorEpochDryRun",
+            payload: try JSONSerialization.data(withJSONObject: [
+                "machineID": machine, "sourceInstanceID": instance, "candidateEpoch": otherEpoch,
+            ])))
+        guard case .success(_, let previewBytes, _) = dryRun else { return XCTFail("dry run must succeed, got \(dryRun)") }
+        let preview = try JSONDecoder().decode(EngramServiceCollectorEpochDryRunResponse.self, from: previewBytes)
+        XCTAssertEqual(preview.current.approvedEpoch, epoch)
+        XCTAssertEqual(preview.observedUnapprovedEpochs,
+                       [EngramServiceCollectorObservedEpoch(collectorEpoch: otherEpoch, publicationCount: 1)])
+        let approve = await handler.handle(EngramServiceRequestEnvelope(command: "collectorApproveEpoch",
+            payload: try JSONSerialization.data(withJSONObject: [
+                "machineID": machine, "sourceInstanceID": instance, "candidateEpoch": otherEpoch,
+                "expectedEpoch": epoch, "expectedAuthorityGeneration": preview.current.authorityGeneration,
+            ] as [String: Any])))
+        guard case .success = approve else { return XCTFail("approve must succeed, got \(approve)") }
+
+        guard case .parsed(let continued) = try await worker.step() else {
+            return XCTFail("the approved rotated epoch must parse")
+        }
+        XCTAssertEqual(continued.sessionID, earlier.sessionID, "the kept source instance continues the same session")
+        XCTAssertGreaterThan(continued.syncVersion, earlier.syncVersion)
+        XCTAssertEqual(try work(rotated).status, .parsed)
+        XCTAssertEqual(try count("sessions"), 1)
+    }
+
     func testCallerCancelQueuedJoinsWithoutEarlyReturn() async throws {
         try await assertCancelOrStop(stop: false, replayEntered: false)
     }

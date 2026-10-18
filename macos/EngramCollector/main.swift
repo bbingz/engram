@@ -87,8 +87,8 @@ usage: EngramCollector --settings ABS [--credentials-file ABS] [--once]
        EngramCollector --help
 --once runs one bounded cycle; it does not wait for bootstrap or replica acknowledgements.
 --initialize creates a new private spool using the configured existing machine identity; it never starts collection.
---reconcile-native-epoch is the operator action for a changed FSEvents epoch (exit line
-  "runtime failed: CollectorRuntimeError.reconciliationRequired"): with the collector stopped it records each
+--reconcile-native-epoch is the operator action for a changed FSEvents epoch (stderr line
+  "source roots suspended for native epoch change"): with the collector stopped it records each
   affected root's transition, clears its stored event checkpoint and forces a full walk; --dry-run only reports.
 --initialize-identity creates a new identity catalog only; use only after confirming this host has no existing identity.
 """

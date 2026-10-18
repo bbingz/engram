@@ -3,6 +3,60 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Collector keeps the source instance on a root revision bump; a changed FSEvents epoch suspends only its root (2026-10-18)
+
+Implements the owner's 2026-10-18 decisions on `collector-epoch-producer-1`
+(option a) and `collector-epoch-change-scope-1`. Design:
+`docs/superpowers/specs/2026-10-18-collector-epoch-rotation-and-root-scope-design.md`.
+Written by an Opus agent in an isolated worktree; the orchestrator reviewed the
+diff, verified the two findings below in source and re-ran both test schemes.
+Not deployed.
+
+- `CollectorInventoryStore.registerRoot` now carries every resolved stream of
+  the previous revision to the new revision with the same `source_instance_id`,
+  a fresh `collector_epoch` and `last_sequence` 0, in the same transaction, but
+  only when the root's source and byte-exact path are unchanged. Anything else
+  mints a fresh instance at the first capture, as before. Existing rows are
+  never rewritten. HQ needs no change: the publication envelope carries no root
+  revision, every HQ and replica sequence key includes the epoch, and the
+  committer orders by authority generation first; a kept instance also keeps
+  the HQ session identity. New invariant "Collector Root Revision Bump Keeps
+  The Source Instance".
+- `CollectorRuntime.startEventsIfNeeded` no longer throws
+  `reconciliationRequired` (removed) on a stored-vs-live FSEvents epoch
+  mismatch. It suspends that root for the rest of the process (no checkpoint
+  rebase, no walk, no live capture; staged publications still deliver) and
+  writes one stderr line `source roots suspended for native epoch change: N/M
+  (ids)` when the set changes. Other roots and both upload loops keep running.
+  The root resumes on the first start after `--reconcile-native-epoch`, which
+  still needs the collector stopped.
+- Operator-visible change: an epoch change no longer ends the process, so the
+  launchd restart loop that exposed the 2026-10-17 Daily incident is gone; the
+  signal is now the stderr line, the `--once` deferred count and
+  `--reconcile-native-epoch --dry-run`.
+- Tests: `testChangedNativeEpochSuspendsOnlyThatRoot_repro` (replaces
+  `testNativeEpochChangeStillStopsRuntimeWithoutRebasingCheckpoint`),
+  `testRootRevisionBumpKeepsSourceInstanceAndRotatesEpoch_repro`,
+  `testRevisionBumpCarriesSourceInstancesOnlyForUnchangedSourceAndPath`, and the
+  HQ half `testRotatedEpochWithRestartedSequenceContinuesSessionAfterApproval`.
+  Both repro tests failed on the old production code (agent run).
+
+Findings recorded as followups:
+
+- `collector-epoch-authority-file-1` (present since PR #477): the service-index
+  re-provisions from the source-authority file on every start and accepts a
+  known instance only when the file's `initialEpoch` equals the current
+  approved epoch, so after any `collectorApproveEpoch` an unedited file aborts
+  the next start with `sourceInstanceConflict`. Runbook step for now; a code
+  change is an owner decision.
+- `collector-revision-bump-staged-1` (pre-existing): publication claims and
+  reservation recovery join on the current `root_revision`, so publications
+  staged under the previous revision are never uploaded after a bump. Runbook:
+  drain the root first.
+
+The HQ service-index deployed today (`9ef7fb4f`) already contains PR #477, so
+the approval command exists on HQ; `EngramCLI` is still only in DerivedData.
+
 ## Owner decisions on four open items; collector CPU hotspot re-scoped (2026-10-18)
 
 Owner request: "你帮我选的话，接着怎么走？" (pick for me and say how to proceed),

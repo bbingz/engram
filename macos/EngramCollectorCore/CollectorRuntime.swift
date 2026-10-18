@@ -10,7 +10,6 @@ public enum CollectorRuntimeError: Error, Equatable, Sendable {
     case invalidCredential
     case closed
     case busy
-    case reconciliationRequired
     case notStarted
 }
 
@@ -95,6 +94,11 @@ public actor CollectorRuntime {
     private let eventStreamFactory: EventStreamFactory
     private var identitySuspendedRoots = Set<Int>()
     private var reportedIdentitySuspendedRoots = Set<Int>()
+    /// Roots whose stored FSEvents checkpoint belongs to another native epoch. Kept for
+    /// the process lifetime: only `reconcileNativeEpoch` clears the checkpoint, and it
+    /// needs this runtime's owner lock, so such a root resumes on the next start.
+    private var epochSuspendedRoots = Set<Int>()
+    private var reportedEpochSuspendedRoots = Set<Int>()
     /// A transient block (a directory changed mid-read) clears on the next reopen; only a
     /// root blocked this many bootstrap steps in a row is reported, so stderr does not flap.
     private static let blockedReportThreshold = 5
@@ -515,7 +519,7 @@ public actor CollectorRuntime {
         }
         for (index, root) in configuration.rootConfigurations.enumerated() {
             try Task.checkCancellation()
-            if live.contains(where: { $0.0 == index }) { continue }
+            if live.contains(where: { $0.0 == index }) || epochSuspendedRoots.contains(index) { continue }
             do {
                 // Missing or recovery-required coordinators still enroll and start.
                 let binding = try owner.enrollAndActivateRoot(root)
@@ -533,15 +537,21 @@ public actor CollectorRuntime {
                     try coordinator.start(epoch: epoch)
                 }
                 // A changed native epoch is not permission to erase history: the stored
-                // checkpoint belongs to another event history and is never rebased, so
-                // that alone stops the runtime. A stream loss admitted while the stream
-                // was starting is not fatal. Its durable gap forces this root's full walk
-                // and the next turn restarts the stream; other roots and uploads go on.
-                // docs/superpowers/specs/2026-10-02-collector-replay-loss-design.md
+                // checkpoint belongs to another event history and is never rebased. Only
+                // this root is suspended (no walk and no live capture; already staged
+                // publications still deliver), like an identity change; other roots and
+                // both upload loops go on.
+                // Invariant "Native Epoch Reconciliation Is An Explicit Operator Action".
+                // A stream loss admitted while the stream was starting is not fatal. Its
+                // durable gap forces this root's full walk and the next turn restarts the
+                // stream (docs/superpowers/specs/2026-10-02-collector-replay-loss-design.md).
                 if try coordinators[index]?.snapshot().phase == .recoveryRequired,
                    let stored = try owner.rootState(rootID: root.rootID)?.eventCheckpoint,
                    !stored.epoch.utf8.elementsEqual(epoch.utf8) {
-                    throw CollectorRuntimeError.reconciliationRequired
+                    try suspendSource(at: index, owner: owner)
+                    epochSuspendedRoots.insert(index)
+                    identitySuspendedRoots.remove(index)
+                    continue
                 }
                 available.insert(Data(root.rootID.utf8))
                 identitySuspendedRoots.remove(index)
@@ -555,7 +565,22 @@ public actor CollectorRuntime {
             }
         }
         reportIdentitySuspensionsIfChanged()
+        reportEpochSuspensionsIfChanged()
         return (available, observations)
+    }
+
+    /// One line, root IDs only, each time the set of roots suspended for a changed
+    /// FSEvents epoch changes; `--reconcile-native-epoch` is the operator action.
+    /// docs/superpowers/specs/2026-10-18-collector-epoch-rotation-and-root-scope-design.md
+    private func reportEpochSuspensionsIfChanged() {
+        guard epochSuspendedRoots != reportedEpochSuspendedRoots else { return }
+        reportedEpochSuspendedRoots = epochSuspendedRoots
+        let roots = configuration.rootConfigurations
+        let ids = epochSuspendedRoots.sorted().map { roots[$0].rootID }
+        var line = "engram-collector: source roots suspended for native epoch change: \(ids.count)/\(roots.count)"
+        if !ids.isEmpty { line += " (" + ids.joined(separator: ", ") + ")" }
+        if !ids.isEmpty, ids.count == roots.count { line += "; capture stopped" }
+        diagnostics(line)
     }
 
     /// A root that is still suspended after the renumbering rebind was refused has
@@ -1088,9 +1113,10 @@ public struct CollectorNativeEpochReconciliation: Equatable, Sendable {
 
 extension CollectorRuntime {
     /// Operator command for a changed FSEvents epoch. The runtime itself fails
-    /// closed when a root's stored checkpoint epoch differs from the live FSEvents
-    /// database UUID and never rebases that checkpoint (see
-    /// `startEventsIfNeeded`). This command is the explicit reconciliation: it
+    /// closed for that root (it suspends the root for the process lifetime) when the
+    /// stored checkpoint epoch differs from the live FSEvents database UUID, and
+    /// never rebases that checkpoint (see `startEventsIfNeeded`); the root resumes
+    /// on the next start after this command. This command is the explicit reconciliation: it
     /// takes the inventory owner lock, so it refuses while a collector is running
     /// (`busy`), compares every configured root read-only, and for each mismatch
     /// records the transition and clears the checkpoint in one transaction so the
