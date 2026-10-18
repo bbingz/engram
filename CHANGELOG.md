@@ -3,6 +3,46 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Owner decisions on four open items; collector CPU hotspot re-scoped (2026-10-18)
+
+Owner request: "你帮我选的话，接着怎么走？" (pick for me and say how to proceed),
+then "按这个走" (go with those picks and that order). Decisions recorded in
+`docs/TODO.md` and `docs/followups.md`:
+
+- W4.1 alias reconciliation: closed as superseded by D7(c) and D9. The cutover
+  design kept the alias only for HQ's own legacy rows (D7, purged earlier
+  today) and the old local history (D9, gap accepted). Reopen trigger: once
+  the HQ collector (D6/D8) is live, if the owner wants the old HQ local DB's
+  user state carried over, open a new item scoped as an old-DB user-state
+  import.
+- W4.5 old-receipt bootstrap: won't do. D9 stands and its W4.1 prerequisite is
+  closed; the old DB and archives stay retained.
+- `collector-epoch-producer-1`: option (a). The collector keeps the source
+  instance across a root revision bump and rotates only the epoch, so
+  `collectorApproveEpoch` becomes the recovery path. Source read:
+  `CollectorInventoryStore` creates a stream row (fresh instance and epoch
+  UUIDs) only for a new root, root revision and effective source, and
+  `registerRoot` keeps the inventory across a configuration revision bump; no
+  collector code deletes the inventory. A manual spool wipe loses the instance
+  ID and stays a documented operator limitation.
+- `collector-epoch-change-scope-1`: suspend only the root whose FSEvents epoch
+  changed, as an identity change already does. Today
+  `CollectorRuntime.startEventsIfNeeded` throws `reconciliationRequired` and
+  stops every root, which is what happened on Daily on 2026-10-17.
+
+Collector CPU (`collector-publication-cost-1`): a source read confirmed that
+each capture re-reads the whole source file, hashes it (whole file, per chunk,
+and again per chunk in `ImmutableArchiveCAS.stage`) and stages every chunk to
+a temp file with file and directory fsyncs. But `rawChunkSize` is 8 MiB and
+this Mac's Claude Code transcripts from the last 14 days are small (229 files:
+p50 0.7 MB, p90 1.9 MB, p99 4.9 MB, max 23.5 MB), so hashing alone cannot
+account for 3-9 s of CPU per publication. The hotspot is being measured
+locally with synthetic transcripts before any fix. Still an owner question:
+whether to re-baseline the 2% target, since the quiet floor alone was
+1.5-3.5% on an active host.
+
+Docs only; no code changed and no host was touched.
+
 ## D7 legacy grok/pi purge applied on HQ; service-index moved to main `9ef7fb4f` (2026-10-18)
 
 Owner authorization, in order: "批准" for the D7 dry-run report, then

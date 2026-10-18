@@ -36,12 +36,22 @@ authorizes host changes.
   current production need: close as superseded, build as designed for a future
   local-role host that also ingests its own collector, or re-scope as an old-DB
   user-state import. See `CHANGELOG.md` 2026-10-18.
+  Closed 2026-10-18 by owner decision: superseded by D7(c) and D9. The cutover
+  design (`docs/superpowers/specs/2026-10-02-hq-local-collector-cutover-design.md`)
+  kept the alias only for HQ's own legacy rows (D7, purged on 2026-10-18) and
+  the old local history (D9, gap accepted); neither remains in the central DB.
+  Reopen trigger: when the HQ collector (D6/D8) goes live and the owner wants
+  the old HQ local DB's user state (favorites, custom names, insights, manual
+  links) carried over, open a new item scoped as an old-DB user-state import,
+  not as this alias.
 - **Old-receipt bootstrap (plan W4 item 5).** Not started; no implementing code.
   2026-10-18: scoped as XL (the ingest generation and ledger assume a collector
   publication envelope; receipt provenance needs a schema change) and dependent
   on W4.1 or an explicit duplicate rule. D9 ("accept the history gap, W4.5 is a
   later decision") still stands; needs an owner decision to reopen or to mark
   won't-do. See `CHANGELOG.md` 2026-10-18.
+  Closed 2026-10-18 by owner decision: won't do. D9 stands and W4.1 is closed,
+  so the prerequisite is gone; the old DB and archives stay retained.
 - **Operator epoch reconcile command (plan W4 item 7).** `dryRunEpoch` and
   `approveEpoch` exist in `CaptureIngestSourceRegistry.swift` without a non-test
   caller. Done when a local authenticated IPC/CLI action and its test exist.
