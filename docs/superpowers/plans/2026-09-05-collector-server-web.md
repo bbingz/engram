@@ -21,9 +21,15 @@ checked against source on 2026-10-02:
   rows, insights and user state. The committer refuses any occupied proposed ID
   (`macos/EngramCoreWrite/CaptureIngest/CaptureIngestCommitter.swift`). W4 item 5
   old-receipt bootstrap has no implementing code.
-- **Partial:** W4 item 7. `dryRunEpoch`/`approveEpoch` exist in
-  `macos/EngramCoreWrite/CaptureIngest/CaptureIngestSourceRegistry.swift` with no
-  non-test caller, so there is no operator command. W6 item 2: the real-binary
+- **Done (2026-10-18, not yet deployed):** W4 item 7. The collector-local
+  `EngramCollector --reconcile-native-epoch` shipped on 2026-10-17; the HQ
+  `collectorApproveEpoch` / `collectorEpochDryRun` Service commands and
+  `EngramCLI collector-epoch` are the production callers of
+  `dryRunEpoch`/`approveEpoch`
+  (`docs/superpowers/specs/2026-10-18-hq-collector-epoch-approval-design.md`).
+  The collector does not yet produce a same-instance epoch change
+  (`docs/followups.md` `collector-epoch-producer-1`).
+- **Partial:** W6 item 2: the real-binary
   chain tests in
   `macos/EngramServiceCoreTests/CollectorBinaryShadowIntegrationTests.swift`
   skip unless three binary-path environment variables are set, and no CI
