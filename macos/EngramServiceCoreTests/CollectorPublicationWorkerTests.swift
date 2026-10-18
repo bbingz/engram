@@ -5525,11 +5525,19 @@ final class CollectorPublicationCostProfileTests: XCTestCase {
                     raw.append(try f.cas.readObject(sha256: chunk.rawSHA256, maximumByteCount: chunk.rawByteCount))
                 }
             })
+            // Line ends are found before timing so this row is the parser alone.
+            var lines: [Range<Data.Index>] = []
+            raw.withUnsafeBytes { buffer in
+                var start = 0
+                while start < buffer.count, let found = memchr(buffer.baseAddress! + start, 0x0A, buffer.count - start) {
+                    let end = buffer.baseAddress!.distance(to: UnsafeRawPointer(found))
+                    lines.append((raw.startIndex + start)..<(raw.startIndex + end))
+                    start = end + 1
+                }
+            }
             add("direct: JSONSerialization of every line only", try Self.timedSync {
-                var start = raw.startIndex
-                while let newline = raw[start...].firstIndex(of: 0x0A) {
-                    _ = try autoreleasepool { try JSONSerialization.jsonObject(with: raw[start..<newline]) }
-                    start = raw.index(after: newline)
+                for line in lines {
+                    _ = try autoreleasepool { try JSONSerialization.jsonObject(with: raw[line]) }
                 }
             })
         }
