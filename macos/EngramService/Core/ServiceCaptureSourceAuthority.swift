@@ -88,7 +88,7 @@ public enum ServiceCaptureSourceAuthority {
 
     /// Index-only gate, then the same enabled capture policy intake uses.
     /// `ServiceCaptureIngestRuntime.policy` also admits `local`; this path does not.
-    private static func requireIndexCaptureAdmission(
+    static func requireIndexCaptureAdmission(
         at settingsURL: URL
     ) throws -> ServiceCaptureIngestParserPolicy {
         guard let root = settingsRoot(at: settingsURL) else {

@@ -98,9 +98,10 @@ public struct CaptureIngestEpochDryRun: Equatable, Sendable {
     public let candidateBacklog: CaptureIngestEpochBacklog
 }
 
-/// Database-only authority. The local authenticated Service command is the
-/// future caller of mutations; this module neither exposes HTTP nor reads a
-/// client's filesystem. Eligibility assumes replay verified the chunk bytes.
+/// Database-only authority. The local authenticated Service command
+/// `collectorApproveEpoch` is the only production caller of `approveEpoch`;
+/// this module neither exposes HTTP nor reads a client's filesystem.
+/// Eligibility assumes replay verified the chunk bytes.
 public enum CaptureIngestSourceRegistry {
     static func createSchema(_ db: Database) throws {
         try db.execute(sql: """
@@ -292,6 +293,28 @@ public enum CaptureIngestSourceRegistry {
             currentBacklog: try backlog(db, binding: current, epoch: current.approvedEpoch),
             candidateBacklog: try backlog(db, binding: current, epoch: candidateEpoch)
         )
+    }
+
+    /// Read-only operator aid: epochs observed in accepted publications for
+    /// this instance that no history row ever approved, with publication
+    /// counts. Ordered by epoch so output is stable.
+    public static func observedUnapprovedEpochs(
+        _ db: Database, machineID: String, sourceInstanceID: String
+    ) throws -> [(epoch: String, publicationCount: Int64)] {
+        try validateIdentity(machineID: machineID, sourceInstanceID: sourceInstanceID)
+        return try Row.fetchAll(db, sql: """
+            SELECT p.collector_epoch AS epoch, COUNT(*) AS publication_count
+            FROM capture_ingest_publications p
+            WHERE p.machine_id = ? AND p.source_instance_id = ?
+              AND NOT EXISTS (
+                SELECT 1 FROM capture_ingest_epoch_history h
+                WHERE h.machine_id = p.machine_id AND h.source_instance_id = p.source_instance_id
+                  AND h.approved_epoch = p.collector_epoch
+              )
+            GROUP BY p.collector_epoch ORDER BY p.collector_epoch
+            """, arguments: [machineID, sourceInstanceID]).map { row in
+                (epoch: row["epoch"], publicationCount: row["publication_count"])
+            }
     }
 
     public static func approveEpoch(

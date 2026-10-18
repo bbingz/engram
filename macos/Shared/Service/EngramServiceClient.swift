@@ -236,6 +236,20 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         try await command("archiveV2RecoveryDrill", payload: request)
     }
 
+    /// Operator-only (EngramCLI collector-epoch); intentionally not on
+    /// EngramServiceClientProtocol.
+    func collectorEpochDryRun(
+        _ request: EngramServiceCollectorEpochDryRunRequest
+    ) async throws -> EngramServiceCollectorEpochDryRunResponse {
+        try await command("collectorEpochDryRun", payload: request)
+    }
+
+    func collectorApproveEpoch(
+        _ request: EngramServiceCollectorApproveEpochRequest
+    ) async throws -> EngramServiceCollectorApproveEpochResponse {
+        try await command("collectorApproveEpoch", payload: request)
+    }
+
     func archiveReadSessionPage(
         _ request: EngramServiceArchiveReadSessionPageRequest
     ) async throws -> EngramServiceArchiveReadSessionPageResponse {

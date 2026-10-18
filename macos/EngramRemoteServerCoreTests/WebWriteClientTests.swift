@@ -30,7 +30,8 @@ final class WebWriteClientTests: XCTestCase {
         XCTAssertNoThrow(try EngramServiceWebWriteClient.validateCommand("webGenerateSummary"))
         XCTAssertNoThrow(try EngramServiceWebWriteClient.validateCommand("webRegenerateTitles"))
         XCTAssertNoThrow(try EngramServiceWebWriteClient.validateCommand("webPatchAiSettings"))
-        for command in ["webSettings", "webSourceSettings", "webAiSettings", "manageProjectAlias", "setSourceEnabled", "saveInsight", "generateSummary", "regenerateAllTitles", "webCosts", ""] {
+        for command in ["webSettings", "webSourceSettings", "webAiSettings", "manageProjectAlias", "setSourceEnabled", "saveInsight", "generateSummary", "regenerateAllTitles", "webCosts",
+                        "collectorApproveEpoch", "collectorEpochDryRun", ""] {
             XCTAssertThrowsError(try EngramServiceWebWriteClient.validateCommand(command)) {
                 XCTAssertEqual($0 as? EngramServiceWebWriteClientError, .unsupported)
             }
