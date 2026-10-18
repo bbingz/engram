@@ -11,7 +11,7 @@ an isolated worktree built a local harness (Release `EngramCollector`,
 synthetic Claude Code-shaped transcripts of 2, 8 and 20 MB with repeated
 appends, loopback fixture replicas, `sample` attached to that local process
 only); the orchestrator reviewed the diff and re-ran both test schemes. No
-host was touched. Not deployed.
+host was touched. Merged as PR #482 (`059fe3b9`); not deployed.
 
 - Root cause: `CollectorPublicationWorker.transmit` called
   `authorize(..., prior: nil)`, so `CollectorPrivacyProof.assess` re-read and
@@ -50,7 +50,7 @@ Implements the owner's 2026-10-18 decisions on `collector-epoch-producer-1`
 `docs/superpowers/specs/2026-10-18-collector-epoch-rotation-and-root-scope-design.md`.
 Written by an Opus agent in an isolated worktree; the orchestrator reviewed the
 diff, verified the two findings below in source and re-ran both test schemes.
-Not deployed.
+Merged as PR #481 (`c157caeb`); not deployed.
 
 - `CollectorInventoryStore.registerRoot` now carries every resolved stream of
   the previous revision to the new revision with the same `source_instance_id`,
@@ -101,7 +101,7 @@ the approval command exists on HQ; `EngramCLI` is still only in DerivedData.
 
 Owner request: "你帮我选的话，接着怎么走？" (pick for me and say how to proceed),
 then "按这个走" (go with those picks and that order). Decisions recorded in
-`docs/TODO.md` and `docs/followups.md`:
+`docs/TODO.md` and `docs/followups.md` (PR #480, `db830e54`):
 
 - W4.1 alias reconciliation: closed as superseded by D7(c) and D9. The cutover
   design kept the alias only for HQ's own legacy rows (D7, purged earlier
