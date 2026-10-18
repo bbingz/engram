@@ -3,6 +3,86 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Collector `ea2bbb57` deployed to Daily; CPU window still fails on the idle per-turn floor (2026-10-18)
+
+Owner authorization: "授权部署，并观测好给，你来决策完成" (deploy, observe it,
+and make the remaining calls). Daily only; HQ needs no build for #481/#482.
+
+**Deploy.** Release/arm64 `EngramCollector` built from a detached worktree at
+`ea2bbb57` (main with #481 and #482; post-merge Tests and CodeQL on
+`ea2bbb57` both success), packaged with `macos/scripts/package-collector.sh`
+after `--dry-run`; `--verify-only` PASS. `bin/EngramCollector` sha256
+`5654083131695c2a6f9acb78805f7f98a628b6f12e41518894e2599314ae8868`,
+`EngramCollectorCore` sha256
+`1a34823758ecbb2c914d763ac6bab7166e8595ca2ee01ac98581ef89103e370e`,
+BUILD-METADATA sourceRevision `ea2bbb57925332928404f214b195b91595417ee6`;
+`strings` shows the new `source roots suspended for native epoch change`
+line in the new framework and not in the 2026-10-17 one. Copied with rsync
+to `daily/collector-epoch-proof-reuse-20261018` (SHA256SUMS 16/16 OK,
+`codesign --verify --deep --strict` ok for binary and framework). Pre-state:
+PID 96925 up 21 h 57 m, 16/16 roots converged, both replicas 47,604 ACKed,
+`privacyWithheld` 412, HQ ledger with no pending rows. `launchctl bootout`
+11:37:34Z; the NEW binary's `--reconcile-native-epoch --dry-run` with the
+collector stopped reported `affectedRoots` 0 (5 roots `current` on epoch
+`E99B19DE-…`, 11 `noCheckpoint`); plist backed up to
+`state/collector/persistent/epoch-proof-reuse-job-before.plist`, only
+`ProgramArguments[0]` replaced; `bootstrap` 11:37:36Z. PID 6028, launchd runs
+1, `engram-collector: running`, stderr unchanged at 740,238 bytes. Files
+written on Daily: the package directory, the plist and its backup; two temp
+directories (deploy script, `sample` output) were created under `/tmp` and
+removed. Rollback: restore the backed-up plist and bootstrap it; the
+`collector-native-epoch-reconcile-20261017` package is kept.
+
+**Post-deploy.** T+10 (11:47Z): 15/16 roots converged (`daily-claude`
+re-walking, as on 2026-10-17), 51% CPU during the walk, both replicas
+47,660 ACKed (+56), HQ arrivals 47,607 -> 47,660 with `index_ready` +9 and
+`parsed` +44 and no failures, so the shared privacy proof works on the real
+host. All 16 roots converged at 12:00:59Z.
+
+**30-minute window** (same method as the earlier 2026-10-18 receipt: `ps -o
+time=,rss=` over SSH every 30 s, nothing written on Daily), 12:01:00Z to
+12:31:00Z: 61 samples, wall 1800 s, **CPU 5.847% (target <= 2%: FAIL)**, max
+RSS 96.9 MiB (target <= 150 MiB: PASS; up from 81.2 MiB, not explained), PID
+stable, 16/16 converged before and after, stderr unchanged. Per 30 s
+interval: 5 below 2%, 27 at 2-5%, 28 at or above 5%; min 1.33%, median 3.80%,
+max 19.90%; 105.25 s CPU in total. Workload: 26 publications ACKed by both
+replicas (47,663 -> 47,689), `privacyWithheld` 414 -> 416, HQ arrivals
+47,663 -> 47,689; load average 5.9 at the start. Against the pre-fix window
+(5.891%, 37 publications, median 3.4%) the floor dominates and the fix's
+effect is below what this method resolves.
+
+**Daily `sample`** (90 s at 1 ms on PID 6028 at 12:31Z, no capture in the
+window, 2.8 s CPU): inside `captureOnce`, Cursor legacy observation
+reconciliation was 31% of sampled busy stacks (`discoverModern` 801 samples,
+legacy observation paging 558, applying observations 171),
+`drainUnavailableDeferrals` -> `deferClaims` 13%, captured-dependency checks
+11%, `claimDirty` 5%, Gemini registry reconcile 5%, Copilot and Kimi groups
+8%; `validateStorage` appeared in 1,313 samples across turns. Leaves under the
+three largest subtrees are mostly `openat`, `fstatat` and `getdirentries64`
+(real system time, which `ps` counts), with SQL handling and allocation under
+`deferClaims`. So the floor is per-turn reconciliation that re-opens and
+re-stats many paths; the 2026-09-12 hint cache and 10 s gate made the Cursor
+scan less frequent (about 9 calls of about 90 ms in 90 s), not cheaper. New
+followup `collector-idle-turn-cost-1`; `collector-stuck-dirty-locators-1`
+updated.
+
+**Decisions** (owner delegated them):
+
+- `collector-epoch-authority-file-1`: runbook only, no HQ code change now. It
+  would alter an authority check and need another service-index restart, and
+  no approval has run yet; revisit before the first real approval.
+- The 2% target is unchanged. Roadmap D2 already says it blocks only a
+  "lightweight" claim, not "finished"; the item stays open with the idle-turn
+  lead instead of a moved target.
+- No floor fix in this round: it is a new build and a second Daily deploy.
+
+CHECKS_RUN: package `--dry-run`, packaging and `--verify-only`; SHA256SUMS and
+`codesign` on Daily; pre-swap reconcile dry run; T+0, T+10 and window
+before/after probes of process, launchd runs, stderr, root convergence,
+replica ACKs and the HQ ledger; the 30-minute window; a 90 s `sample`.
+CHECKS_NOT_RUN: a real FSEvents epoch change and a real root revision bump
+(neither occurred); HQ was not changed.
+
 ## Collector assesses a capture's privacy once for both replicas (2026-10-18)
 
 Plan step 2 of the owner-approved order ("按这个走"): measure the

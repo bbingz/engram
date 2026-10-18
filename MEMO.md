@@ -4,6 +4,10 @@
 
 ### 2026-10-18
 
+- [变更] 业主授权（「授权部署，并观测好给，你来决策完成」）后把 `ea2bbb57` 的 collector 部署到 Daily：包 `collector-epoch-proof-reuse-20261018`（`56540831…8868`），换版前新二进制 dry-run 0 个受影响根，只改 `ProgramArguments[0]`，bootout 11:37:34Z、bootstrap 11:37:36Z，PID 6028，launchd 仅 1 次，stderr 不变；T+10 两副本新增 56 条 ACK、HQ 照常入账无失败，隐私证明复用在真机正常。回滚：恢复备份 plist 后 bootstrap，旧包保留。详见 `CHANGELOG.md`。
+- [验证] 全部收敛后 30 分钟窗口（12:01–12:31Z）：CPU 5.847%（目标 2%，未达标）、最大 RSS 96.9 MiB（达标），26 次发布，30 秒区间中位数 3.8%；与修复前（5.891%，37 次发布）相比，地板占主导，修复效果在这个方法下分辨不出。
+- [排查] Daily 上 90 秒 `sample`（期间无捕获）：每轮空转对账占主导：Cursor 旧版观察对账 31%（现代目录发现、旧版观察分页）、不可用来源延期 13%、已捕获依赖检查 11%，叶子多为 `openat`/`fstatat`/`getdirentries`。09-12 的提示缓存与 10 秒门控只降低了频率，没降低单次成本。新 followup `collector-idle-turn-cost-1`。
+- [变更] 代业主决定：`collector-epoch-authority-file-1` 只保留运维步骤、暂不改 HQ 代码；2% 目标不改（路线图 D2 只拿它挡「轻量」说法）；本轮不修地板开销，那需要新构建和再一次 Daily 部署。
 - [变更] 本轮三个 PR 均已合并：#480 `db830e54`（四项决定）、#481 `c157caeb`（epoch 两项）、#482 `059fe3b9`（隐私评估复用）；均未部署到任何主机。
 - [变更] 计划第 2 步：Opus agent 在本机用 Release 二进制、合成 Claude Code 转写（2/8/20 MB 反复追加）、回环副本和本地 `sample` 定位热点：真正的大头是每个副本各跑一遍整份转写的隐私评估（20 MB 时占 69%，其中逐字节换行扫描 36%、逐行 JSON 解析 51%），不是之前猜的 CAS 哈希与 fsync。修复：同一捕获的合格证明供两个副本复用（复用前仍读最新策略并校验 `isCurrent`），默认 JSONL 换行扫描改用 `memchr`。每次发布 collector CPU：2 MB 0.146→0.117 s、8 MB 0.240→0.167 s、20 MB 0.437→0.236 s。未部署，未碰任何主机。详见 `CHANGELOG.md`。
 - [未验证] 这只解释 Daily 峰值的一部分：Daily 每次发布多出约 1.2–2.1 s，是本机的 3–17 倍，安静段地板也高得多；下一条线索是每轮固定开销（`advanceInventory`、`validateStorage`），要确认需部署后在 Daily 峰值时 `sample`（需业主批准）。

@@ -33,6 +33,13 @@
   ACKed by both replicas, 35 from `daily-claude`. Quiet floor 1.5-3.5%, bursts
   to 29% during transcript appends. Diagnostics D1-D3 negative (details in
   `CHANGELOG.md` 2026-10-18).
+  2026-10-18 post-deploy window (PID 6028, `ea2bbb57` package
+  `collector-epoch-proof-reuse-20261018` with the shared privacy proof, 16
+  roots converged before and after): 12:01-12:31Z, 61 samples over 1800 s,
+  CPU 5.847% (FAIL), max RSS 96.9 MiB (PASS), PID stable, 26 publications
+  ACKed by both replicas; per-interval min 1.33%, median 3.80%, max 19.90%.
+  A 90 s `sample` attributes the idle floor to per-turn reconciliation
+  (`docs/followups.md` `collector-idle-turn-cost-1`).
 - **Resolved by owner decision D3 (2026-10-02, recorded here 2026-10-07):**
   the "Registered sources" rule says the old ingestion path must remain enabled
   wherever a source is enabled, and the verifier says not to change jobs. The
@@ -217,7 +224,10 @@ The repeated Cursor peer scan is the next measured optimization lead.
 the 10 s gate before the 13.178% window; the 2026-10-18 window above shows a
 polling floor near the target plus bursts tied to Claude Code transcript
 appends, so the next lead is the per-change capture cost of large appended
-transcripts, unprofiled; `sample` on Daily needs owner approval.) Neither a
+transcripts, unprofiled; `sample` on Daily needs owner approval.) (Later on 2026-10-18: the Daily `sample` after the
+publication-cost fix shows the Cursor legacy observation reconciliation is
+still the largest idle cost, 31% of sampled busy stacks; the gate reduced its
+frequency, not its cost.) Neither a
 zero historical queue nor reboot was added as a new retirement prerequisite.
 
 Daily cutover update (2026-09-12): the old com.engram.service job is now disabled
