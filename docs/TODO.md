@@ -57,10 +57,22 @@ authorizes host changes.
   tooling has still never run against a real host; that remains under
   `docs/followups.md` `cutover-install-tooling-1`.
 - **D7 purge of legacy `origin=local` grok/pi rows, dry-run first (added
-  2026-10-07).** Not started. The HQ central index held 6,188 such rows on
-  2026-10-07 (P0 counted 6,140) and they grow until the role gate runs on HQ.
-  Done when a dry-run report exists, the owner approves it, and the purge
-  clears the rows plus their derived rows.
+  2026-10-07).** Tooling implemented 2026-10-18 on branch
+  `feat/d7-legacy-local-purge-20261018`
+  (`docs/superpowers/specs/2026-10-18-d7-legacy-local-origin-purge-design.md`):
+  a SELECT-only report and a plan-bound purge in
+  `LegacyLocalSessionPurge`, the index-role-only, capability-protected
+  service commands `legacyLocalPurgePreview` / `legacyLocalPurgeApply`
+  (one `ServiceWriterGate` transaction, refused on any user-state
+  dependent, metadata audit row), `EngramCLI maintenance legacy-local-purge
+  preview|apply`, and the offline read-only
+  `EngramService --legacy-local-purge-report --database-path ABS`. Still
+  open: run the read-only backup-copy report (design doc Rollout step 2),
+  owner approval of its `sessionCount` and `planToken`, the owner-run HQ
+  service-index and EngramCLI deploy, and the apply. The HQ central index
+  held 6,191 such rows on 2026-10-17 (grok 5,959, pi 232), unchanged since
+  the role gate. Done when a dry-run report exists, the owner approves it,
+  and the purge clears the rows plus their derived rows.
 
 Earlier status: no implementation-ready engineering task is selected as of 2026-08-16.
 
