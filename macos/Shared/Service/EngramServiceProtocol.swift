@@ -78,6 +78,8 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     // three are in fact the only remote* methods on the concrete EngramServiceClient —
     // the older remoteOffload/remoteRehydrate/remoteSyncStatus are invoked by name and
     // have no client method at all. Consumers that need these three hold the concrete type.
+    // collectorEpochDryRun / collectorApproveEpoch are likewise concrete-client-only:
+    // they are the HQ operator surface used by EngramCLI, not an App or MCP action.
     func events() -> AsyncThrowingStream<EngramServiceEvent, Error>
     func close()
 }

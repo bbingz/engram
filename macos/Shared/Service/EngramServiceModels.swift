@@ -1498,6 +1498,60 @@ struct EngramServiceArchiveV2RecoveryDrillResponse: Codable, Equatable, Sendable
     let verifiedBytes: Int64
 }
 
+// HQ collector epoch operator surface (W4.7). Validation lives in
+// CaptureIngestSourceRegistry; these are plain wire shapes.
+struct EngramServiceCollectorEpochBinding: Codable, Equatable, Sendable {
+    let machineID: String
+    let sourceInstanceID: String
+    let source: String
+    let parseFormat: String
+    let configuredRoot: String
+    let approvedEpoch: String
+    let authorityGeneration: Int64
+}
+
+struct EngramServiceCollectorEpochBacklog: Codable, Equatable, Sendable {
+    let publicationCount: Int64
+    let ledgerTaskCounts: [String: Int64]
+}
+
+/// An epoch seen in `capture_ingest_publications` for the requested source
+/// instance that no history row ever approved.
+struct EngramServiceCollectorObservedEpoch: Codable, Equatable, Sendable {
+    let collectorEpoch: String
+    let publicationCount: Int64
+}
+
+struct EngramServiceCollectorEpochDryRunRequest: Codable, Equatable, Sendable {
+    let machineID: String
+    let sourceInstanceID: String
+    let candidateEpoch: String
+}
+
+struct EngramServiceCollectorEpochDryRunResponse: Codable, Equatable, Sendable {
+    let dryRun: Bool
+    let current: EngramServiceCollectorEpochBinding
+    let candidateEpoch: String
+    let candidateWasPreviouslyApproved: Bool
+    let currentBacklog: EngramServiceCollectorEpochBacklog
+    let candidateBacklog: EngramServiceCollectorEpochBacklog
+    let observedUnapprovedEpochs: [EngramServiceCollectorObservedEpoch]
+}
+
+struct EngramServiceCollectorApproveEpochRequest: Codable, Equatable, Sendable {
+    let machineID: String
+    let sourceInstanceID: String
+    let candidateEpoch: String
+    let expectedEpoch: String
+    let expectedAuthorityGeneration: Int64
+}
+
+struct EngramServiceCollectorApproveEpochResponse: Codable, Equatable, Sendable {
+    let previousEpoch: String
+    let previousAuthorityGeneration: Int64
+    let current: EngramServiceCollectorEpochBinding
+}
+
 struct EngramServiceArchiveV2StoreTokenRequest: Codable, Equatable, Sendable {
     let replicaID: String
     let token: String
