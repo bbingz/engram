@@ -58,6 +58,7 @@ enum ServiceCapabilityToken {
         "archiveReclamationUpdateSettings",
         "archiveReclamationRun",
         "archiveV2RecoveryDrill",
+        "collectorApproveEpoch",
         "legacyLocalPurgePreview",
         "legacyLocalPurgeApply",
         "configureClaudeCodeProfiles",
