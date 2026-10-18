@@ -4,6 +4,8 @@
 
 ### 2026-10-18
 
+- [变更] 计划第 2 步：Opus agent 在本机用 Release 二进制、合成 Claude Code 转写（2/8/20 MB 反复追加）、回环副本和本地 `sample` 定位热点：真正的大头是每个副本各跑一遍整份转写的隐私评估（20 MB 时占 69%，其中逐字节换行扫描 36%、逐行 JSON 解析 51%），不是之前猜的 CAS 哈希与 fsync。修复：同一捕获的合格证明供两个副本复用（复用前仍读最新策略并校验 `isCurrent`），默认 JSONL 换行扫描改用 `memchr`。每次发布 collector CPU：2 MB 0.146→0.117 s、8 MB 0.240→0.167 s、20 MB 0.437→0.236 s。未部署，未碰任何主机。详见 `CHANGELOG.md`。
+- [未验证] 这只解释 Daily 峰值的一部分：Daily 每次发布多出约 1.2–2.1 s，是本机的 3–17 倍，安静段地板也高得多；下一条线索是每轮固定开销（`advanceInventory`、`validateStorage`），要确认需部署后在 Daily 峰值时 `sample`（需业主批准）。
 - [变更] 落地业主对 epoch 两项的决定（Opus agent 在隔离 worktree 实现，我审 diff 并独立复跑）：root revision 升级且 source 与根路径逐字节不变时，collector 保留原 source instance、换新 epoch、序号从 0 起；FSEvents epoch 变化只暂停该根直到操作员 `--reconcile-native-epoch`，其他根与两条上传照常，`reconciliationRequired` 移除。HQ 无需改代码。未部署。详见 `CHANGELOG.md`。
 - [排查] 新 followup：`collector-epoch-authority-file-1`（#477 起就有）：HQ 每次启动按 source-authority 文件 provision，且要求 `initialEpoch` 等于当前批准的 epoch，批准后不改文件下次启动即 `sourceInstanceConflict` 中止，暂以运维步骤处理，是否改代码待业主决定；`collector-revision-bump-staged-1`：revision 升级后旧 revision 已暂存的发布永不上传，运维上先排空再升级。
 - [变更] 业主让我代选并按建议推进（「你帮我选的话，接着怎么走？」，随后「按这个走」）：W4.1 别名对账作为已被 D7(c)/D9 取代关闭，重开条件是 HQ collector 上线后若要带走旧 HQ 本地库的用户状态，另立「旧库用户状态导入」项；W4.5 旧回执引导标记不做；`collector-epoch-producer-1` 选 (a)，root revision 升级时保留 source instance、只轮换 epoch；`collector-epoch-change-scope-1` 改为只暂停 epoch 变化的那个根。实现进行中。详见 `CHANGELOG.md`。

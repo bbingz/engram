@@ -27,6 +27,12 @@ authorizes host changes.
   per-change capture cost of large appended transcripts
   (`docs/followups.md` `collector-publication-cost-1`). Still open; receipt in
   the retirement checklist and `CHANGELOG.md`.
+  2026-10-18 local profiling found and fixed the largest per-publication cost
+  (privacy assessment repeated per replica; branch
+  `perf/collector-publication-cost-20261018`, 20-46% less collector CPU per
+  publication), but it explains only part of Daily's bursts. Next: deploy to
+  Daily (separately authorized), re-measure the 30-minute window, and if it
+  still fails, `sample` the Daily collector during a burst (owner approval).
 - **Alias reconciliation (plan W4 item 1, design section 4).** Not started. The
   committer refuses any occupied proposed ID, so pre-cutover local rows, their
   insights and parent links stay in the local-ID namespace and are not visible
