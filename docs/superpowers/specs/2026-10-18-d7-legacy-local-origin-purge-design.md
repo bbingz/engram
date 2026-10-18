@@ -202,7 +202,11 @@ error and is not created.
 - New: "Legacy Local-Origin Purge Is An Explicit Operator Action".
 - Amended: "Legacy Host Scan Runs Only in the Local Role" now says the gate
   itself neither removes nor rewrites local-origin rows and names the purge
-  as the only remover.
+  as the only operator/IPC path that targets them. It does not claim the
+  purge is the only remover: the generic startup duplicate-`file_path` dedup
+  (`StartupBackfills.deduplicateFilePaths`, run by `runStartupBackfills` at
+  every service start with no source or origin filter) still applies to all
+  sources, these rows included.
 - #1 Single-Writer: the apply runs inside `ServiceWriterGate`; the offline
   mode is read-only and the CLI only speaks IPC.
 - #2 (Subagent Sessions Stay Skip) and #10 (Manual Unlink Is Respected):
@@ -324,6 +328,9 @@ code revert is removing the two commands; there is no schema to undo.
 - Any legacy row added, removed or newly bound between the approved report
   and the apply makes the apply fail closed with "plan changed"; a second
   approval round may be needed. This is intended.
+- A service restart between the report and the apply runs the startup
+  duplicate-`file_path` dedup; if it deletes a candidate row, the recomputed
+  plan token and count differ and the apply fails closed with "plan changed".
 - The `sessions_fts` delete is a full scan of the FTS5 table and holds the
   writer gate (long-running classification); capture ingest commits queue
   behind it.
