@@ -140,6 +140,127 @@ final class RuntimeRoleAppTests: XCTestCase {
             let body = source[start.lowerBound...].prefix(500)
             XCTAssertTrue(body.contains("guard environment.runtimeRole.allowsLocalIndex"), name)
         }
+        // docs/TODO.md "App open Web reader entry": both unavailable views get
+        // the Web action, and the action body never reaches the DB or Service.
+        XCTAssertEqual(source.components(separatedBy: "openWebReader: appDelegate.webReaderAction").count, 2)
+        XCTAssertEqual(source.components(separatedBy: "openWebReader: webReaderAction").count, 2)
+        let actionStart = try XCTUnwrap(source.range(of: "func openWebReader(url: URL)"))
+        let actionEnd = try XCTUnwrap(source.range(of: "private func showOnboarding", range: actionStart.upperBound..<source.endIndex))
+        let actionBody = source[actionStart.lowerBound..<actionEnd.lowerBound]
+        XCTAssertTrue(actionBody.contains("guard !environment.runtimeRole.allowsLocalIndex"))
+        for forbidden in ["db.", "serviceLauncher", "serviceClient"] {
+            XCTAssertFalse(actionBody.contains(forbidden), forbidden)
+        }
+    }
+
+    // docs/TODO.md "App open Web reader entry" (collector-server-web design
+    // section 1): collector/replica App offers the Web reader from settings.
+    func testWebReaderURLResolvesOnlyForCollectorAndReplica_repro() throws {
+        let url = "https://hq.example.invalid:8443/web/"
+        for (value, role) in [("collector", EngramRuntimeRole.collector), ("replica", .replica)] {
+            try write("{\"runtimeRole\":\"\(value)\",\"webReaderURL\":\"\(url)\"}")
+            let environment = makeEnvironment()
+            XCTAssertEqual(environment.runtimeRole, role)
+            XCTAssertEqual(environment.webReaderURL, URL(string: url))
+            XCTAssertFalse(environment.autoStartService)
+            let dataDir = makeEnvironment(arguments: ["Engram", "--data-dir", root.appendingPathComponent("other").path])
+            XCTAssertEqual(dataDir.webReaderURL, URL(string: url))
+            XCTAssertEqual(dataDir.runtimeRole, role)
+        }
+        for (value, role) in [(#""local""#, EngramRuntimeRole.local), (#""index""#, .index), ("null", .invalidSettings), (#""bogus""#, .invalidSettings)] {
+            try write("{\"runtimeRole\":\(value),\"webReaderURL\":\"\(url)\"}")
+            let environment = makeEnvironment()
+            XCTAssertEqual(environment.runtimeRole, role, value)
+            XCTAssertNil(environment.webReaderURL, value)
+            XCTAssertEqual(environment.autoStartService, role.allowsLocalIndex, value)
+        }
+    }
+
+    func testWebReaderURLRejectsUnsafeOrMalformedValues_repro() throws {
+        let rejected: [String] = [
+            #""http://hq.example.invalid/web/""#,
+            #""javascript:alert(1)""#,
+            #""file:///etc/passwd""#,
+            #""https://user:pw@hq.example.invalid/""#,
+            #""https://user@hq.example.invalid/""#,
+            #""https://hq.example.invalid/web/?x=1""#,
+            #""https://hq.example.invalid/#f""#,
+            #""HTTPS://hq.example.invalid/""#,
+            #""https:///web/""#,
+            #""https://hq.example.invalid/a b""#,
+            #""""#,
+            "123",
+            "null",
+            "[]",
+            "\"https://h\u{00E9}.example.invalid/\"",
+            "\"https://hq.example.invalid/\(String(repeating: "a", count: 2049))\"",
+        ]
+        for value in rejected {
+            try write("{\"runtimeRole\":\"collector\",\"webReaderURL\":\(value)}")
+            let environment = makeEnvironment()
+            XCTAssertEqual(environment.runtimeRole, .collector, value)
+            XCTAssertNil(environment.webReaderURL, value)
+        }
+        try write(#"{"runtimeRole":"collector"}"#)
+        XCTAssertNil(makeEnvironment().webReaderURL)
+    }
+
+    func testWebReaderURLIgnoredWhenSettingsNotOwnerOnly_repro() throws {
+        try write(#"{"runtimeRole":"collector","webReaderURL":"https://hq.example.invalid/web/"}"#)
+        XCTAssertEqual(chmod(settings.path, 0o644), 0)
+        let environment = makeEnvironment()
+        XCTAssertEqual(environment.runtimeRole, .invalidSettings)
+        XCTAssertNil(environment.webReaderURL)
+        XCTAssertNil(AppEnvironment.webReaderURL(settingsURL: settings, role: .collector))
+    }
+
+    func testTestModeAndXCTestHostNeverReadWebReaderURL() throws {
+        try write(#"{"runtimeRole":"replica","webReaderURL":"https://hq.example.invalid/web/"}"#)
+        let fixture = root.appendingPathComponent("fixture.sqlite").path
+        XCTAssertNil(makeEnvironment(arguments: ["Engram", "--test-mode", "--fixture-db", fixture]).webReaderURL)
+        let host = AppEnvironment.fromCommandLine(arguments: ["Engram"], environment: [
+            "XCTestConfigurationFilePath": "/test/config", "ENGRAM_SETTINGS_PATH": settings.path,
+        ])
+        XCTAssertNil(host.webReaderURL)
+        XCTAssertEqual(host.runtimeRole, .local)
+    }
+
+    @MainActor
+    func testOpenWebReaderOpensConfiguredURLWithoutDatabaseOrService_repro() throws {
+        let url = try XCTUnwrap(URL(string: "https://hq.example.invalid:8443/web/"))
+        try write(#"{"runtimeRole":"collector","webReaderURL":"https://hq.example.invalid:8443/web/"}"#)
+        let environment = makeEnvironment()
+        XCTAssertEqual(environment.webReaderURL, url)
+        let delegate = AppDelegate(environment: environment)
+        var opened: [URL] = []
+        delegate.urlOpener = { opened.append($0); return true }
+        let action = try XCTUnwrap(delegate.webReaderAction)
+        action()
+        XCTAssertEqual(opened, [url])
+        XCTAssertThrowsError(try delegate.db.readInBackground { _ in 0 }) { error in
+            XCTAssertTrue(error is RuntimeRoleSettings.UnavailableError)
+        }
+        XCTAssertEqual(delegate.serviceStatusStore.status, .stopped)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: environment.dbPath))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: environment.serviceSocketPath))
+
+        var unset = environment
+        unset.webReaderURL = nil
+        XCTAssertNil(AppDelegate(environment: unset).webReaderAction)
+
+        for role in [EngramRuntimeRole.local, .index] {
+            var forced = environment
+            forced.runtimeRole = role
+            let localDelegate = AppDelegate(environment: forced)
+            var localOpened = 0
+            localDelegate.urlOpener = { _ in localOpened += 1; return true }
+            localDelegate.openWebReader(url: url)
+            localDelegate.webReaderAction?()
+            XCTAssertEqual(localOpened, 0, "\(role)")
+        }
+        let other = try XCTUnwrap(URL(string: "https://elsewhere.example.invalid/"))
+        delegate.openWebReader(url: other)
+        XCTAssertEqual(opened, [url])
     }
 
     private func makeEnvironment(arguments: [String] = ["Engram"]) -> AppEnvironment {
