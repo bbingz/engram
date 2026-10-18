@@ -650,38 +650,154 @@ final class CollectorRuntimeTests: XCTestCase {
         }
     }
 
-    // A changed FSEvents database UUID is the one condition that still stops the runtime:
-    // the stored checkpoint belongs to another event history and is never rebased.
-    // docs/superpowers/plans/2026-09-05-collector-server-web.md (N3-B2: mismatched epochs
-    // fail closed without rebasing)
-    func testNativeEpochChangeStillStopsRuntimeWithoutRebasingCheckpoint() async throws {
+    // Repro for followup collector-epoch-change-scope-1 (owner decision 2026-10-18) and the
+    // 2026-10-17 Daily reboot, where seven roots on a stale FSEvents epoch stopped the whole
+    // collector, uploads included. A changed native epoch now suspends only that root: its
+    // checkpoint is never rebased and nothing is walked or captured from it, one line
+    // reports it, the inventory is not rewritten every turn, the healthy root keeps
+    // capturing and both replicas keep receiving, and after --reconcile-native-epoch the
+    // root resumes on the next start. Invariant "Native Epoch Reconciliation Is An
+    // Explicit Operator Action";
+    // docs/superpowers/specs/2026-10-18-collector-epoch-rotation-and-root-scope-design.md
+    func testChangedNativeEpochSuspendsOnlyThatRoot_repro() async throws {
         let f = try RuntimeFixture(); defer { f.remove() }
         let replicas = try await RuntimeReplicas.start(parent: f.base)
+        let other = f.base.appendingPathComponent("sources-other")
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         let factory: Runtime.EventStreamFactory = { request, _ in RuntimeReplayStream(request: request, poisonCursor: "100") }
-        let changed = "fsevents-device-v1:00000000-0000-0000-0000-000000000000"
+        let stale = "fsevents-device-v1:00000000-0000-0000-0000-000000000000"
+        let lines = RuntimeLocked<[String]>([])
+        let report: @Sendable (String) -> Void = { line in lines.update { $0.append(line) } }
+        let suspendedLine = "engram-collector: source roots suspended for native epoch change: 1/2 (runtime-codex)"
+        var document = f.document(replicas: replicas)
+        var block = try XCTUnwrap(document["collector"] as? [String: Any])
+        var roots = try XCTUnwrap(block["roots"] as? [[String: Any]])
+        roots.append(["rootID": "runtime-codex-other", "source": "codex", "rootPath": other.path, "revision": 1])
+        block["roots"] = roots
+        document["collector"] = block
         var active: Runtime?
         do {
             try f.writeTranscript("enrolled before the epoch change")
-            try f.writeSettings(f.document(replicas: replicas))
+            try f.writeSettings(document)
             active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: f.secret,
-                                                diagnostics: { _ in }, eventStreamFactory: factory))
+                                                diagnostics: report, eventStreamFactory: factory))
             _ = try await f.drive(active!, acknowledged: 2)
             try await active!.stop(); active = nil
-            try f.execute("UPDATE collector_roots SET event_epoch = ?, event_cursor = '100' WHERE root_id = 'runtime-codex'", [changed])
+            try f.execute("UPDATE collector_roots SET event_epoch = ?, event_cursor = '100' WHERE root_id = 'runtime-codex'", [stale])
+            try f.writeTranscript("written while the epoch was stale", name: "rollout-two.jsonl", sessionID: "native-runtime-session-two")
+            try f.writeTranscript("captured by the healthy root", name: "rollout-staged.jsonl", sessionID: "native-runtime-session-other")
+            try FileManager.default.moveItem(at: f.sources.appendingPathComponent("rollout-staged.jsonl"),
+                                             to: other.appendingPathComponent("rollout-other.jsonl"))
+
             active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: f.secret,
-                                                diagnostics: { _ in }, eventStreamFactory: factory))
-            do {
-                try await active!.start()
-                XCTFail("a changed native epoch must stop the runtime")
-            } catch {
-                XCTAssertEqual(error as? RuntimeError, .reconciliationRequired)
-                XCTAssertEqual(Runtime.failureReason(error), "CollectorRuntimeError.reconciliationRequired")
+                                                diagnostics: report, eventStreamFactory: factory))
+            do { try await active!.start() } catch {
+                XCTFail("a changed native epoch on one root must not stop the runtime: \(error)")
+                throw error
             }
+            try await f.awaitACKs(4, timeout: 20)
+            let revisionSQL = "SELECT requested_revision FROM collector_roots WHERE root_id = 'runtime-codex'"
+            let suspendedRevision = try f.integer(revisionSQL)
+            try await Task.sleep(for: .milliseconds(500)) // about ten 50 ms turns
+            XCTAssertEqual(try f.integer(revisionSQL), suspendedRevision, "a suspended root is not restarted every turn")
             try await active!.stop(); active = nil
+            XCTAssertEqual(lines.value, [suspendedLine])
             XCTAssertEqual(try f.integer("""
                 SELECT count(*) FROM collector_roots
-                WHERE root_id = 'runtime-codex' AND event_epoch = '\(changed)' AND event_cursor = '100'
-                """), 1)
+                WHERE root_id = 'runtime-codex' AND event_epoch = '\(stale)' AND event_cursor = '100'
+                """), 1, "the stale checkpoint is never rebased")
+            XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_locators WHERE relative_path = 'rollout-two.jsonl'"), 0,
+                           "nothing is walked from the suspended root")
+            XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_publications"), 2)
+            let hq = try await replicas.hq.count(), m1 = try await replicas.m1.count()
+            XCTAssertEqual(hq, 2); XCTAssertEqual(m1, 2)
+
+            let reconciled = try Runtime.reconcileNativeEpoch(settingsURL: f.settings, dryRun: false)
+            XCTAssertEqual(reconciled.roots.map(\.outcome), [.cleared, .noCheckpoint])
+            active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: f.secret,
+                                                diagnostics: report, eventStreamFactory: factory))
+            try await active!.start()
+            try await f.awaitCaptured(relativePath: "rollout-two.jsonl", timeout: 20)
+            try await f.awaitACKs(6, timeout: 20)
+            try await active!.stop(); active = nil
+            XCTAssertEqual(lines.value, [suspendedLine], "a reconciled root resumes without a new suspension line")
+            XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_publications"), 3)
+            await replicas.stop()
+        } catch {
+            try? await active?.stop()
+            await replicas.stop()
+            throw error
+        }
+    }
+
+    // Repro for followup collector-epoch-producer-1 (owner decision (a), 2026-10-18): a root
+    // revision bump used to mint a fresh source instance as well as a fresh epoch, which HQ
+    // cannot register on an already registered root (overlappingRoot), so its publications
+    // stayed pending. With the same source and root path the new revision keeps the source
+    // instance, rotates only the collector epoch and restarts the sequence at 1, and both
+    // replicas accept it; HQ's collectorApproveEpoch is then the recovery path. Invariant
+    // "Collector Root Revision Bump Keeps The Source Instance";
+    // docs/superpowers/specs/2026-10-18-collector-epoch-rotation-and-root-scope-design.md
+    func testRootRevisionBumpKeepsSourceInstanceAndRotatesEpoch_repro() async throws {
+        let f = try RuntimeFixture(); defer { f.remove() }
+        let replicas = try await RuntimeReplicas.start(parent: f.base)
+        var active: Runtime?
+        do {
+            try f.writeTranscript("captured under the first revision")
+            try f.writeSettings(f.document(replicas: replicas))
+            active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: f.secret, diagnostics: { _ in }))
+            let delivered = try await f.drive(active!, acknowledged: 2)
+            let original = try XCTUnwrap(delivered.first)
+            try await active!.stop(); active = nil
+
+            var document = f.document(replicas: replicas)
+            var block = try XCTUnwrap(document["collector"] as? [String: Any])
+            var roots = try XCTUnwrap(block["roots"] as? [[String: Any]])
+            roots[0]["revision"] = 3 // a bump may skip revision numbers
+            block["roots"] = roots
+            document["collector"] = block
+            try f.writeSettings(document)
+            try f.writeTranscript("captured under the bumped revision", name: "rollout-two.jsonl", sessionID: "native-runtime-session-two")
+            active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: f.secret, diagnostics: { _ in }))
+            let deadline = Date().addingTimeInterval(20)
+            while try f.integer("SELECT count(*) FROM collector_publication_replicas WHERE state != 'acknowledged'") > 0
+                    || f.integer("""
+                        SELECT count(*) FROM collector_locators
+                        WHERE root_revision = 3 AND relative_path = 'rollout-two.jsonl' AND last_capture_id IS NOT NULL
+                        """) == 0 {
+                guard Date() < deadline else { throw RuntimeFixture.Failure.deadline }
+                _ = try await active!.runOnce(now: Int64(Date().timeIntervalSince1970))
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            try await active!.stop(); active = nil
+
+            var readOnly = Configuration(); readOnly.readonly = true
+            let database = try DatabaseQueue(path: f.inventory.path, configuration: readOnly)
+            let (streams, bumped) = try await database.read { db in
+                (try Row.fetchAll(db, sql: """
+                    SELECT root_revision, effective_source, source_instance_id, collector_epoch, last_sequence
+                    FROM collector_streams ORDER BY root_revision
+                    """),
+                 try Data.fetchAll(db, sql: "SELECT canonical_bytes FROM collector_publications WHERE root_revision = 3 ORDER BY sequence").map {
+                     try EngramCollectorCore.ArchiveCanonicalJSON.decode(EngramCollectorCore.CollectorPublicationEnvelope.self, from: $0)
+                 })
+            }
+            try database.close()
+            XCTAssertEqual(streams.count, 2)
+            XCTAssertEqual(streams[0]["root_revision"] as Int64, 1)
+            XCTAssertEqual(streams[0]["source_instance_id"] as String, original.sourceInstanceID, "the old stream row is not rewritten")
+            XCTAssertEqual(streams[0]["collector_epoch"] as String, original.collectorEpoch)
+            XCTAssertEqual(streams[0]["last_sequence"] as Int64, 1)
+            XCTAssertEqual(streams[1]["root_revision"] as Int64, 3)
+            XCTAssertEqual(streams[1]["effective_source"] as String, "codex")
+            XCTAssertEqual(streams[1]["source_instance_id"] as String, original.sourceInstanceID, "the source instance is kept")
+            let rotated: String = streams[1]["collector_epoch"]
+            XCTAssertNotEqual(rotated, original.collectorEpoch, "only the collector epoch rotates")
+            XCTAssertFalse(bumped.isEmpty)
+            XCTAssertEqual(bumped.map(\.sequence), Array(1...Int64(bumped.count)), "the new epoch restarts its sequence at 1")
+            XCTAssertTrue(bumped.allSatisfy { $0.sourceInstanceID == original.sourceInstanceID && $0.collectorEpoch == rotated })
+            let hq = try await replicas.hq.count(), m1 = try await replicas.m1.count()
+            XCTAssertEqual(hq, 1 + bumped.count); XCTAssertEqual(m1, 1 + bumped.count)
             await replicas.stop()
         } catch {
             try? await active?.stop()
@@ -787,7 +903,7 @@ final class CollectorRuntimeTests: XCTestCase {
 
     // The process-exit line names the reason with type and case only, never a payload.
     func testFailureReasonNamesErrorTypeAndCaseWithoutPayload() {
-        XCTAssertEqual(Runtime.failureReason(RuntimeError.reconciliationRequired), "CollectorRuntimeError.reconciliationRequired")
+        XCTAssertEqual(Runtime.failureReason(RuntimeError.busy), "CollectorRuntimeError.busy")
         XCTAssertEqual(Runtime.failureReason(CollectorPOSIXEnumerationError.rootIdentityChanged),
                        "CollectorPOSIXEnumerationError.rootIdentityChanged")
         XCTAssertEqual(Runtime.failureReason(RuntimeLeakyFailure.carrying("/Users/someone/private token")),

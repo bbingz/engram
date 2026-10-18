@@ -78,6 +78,63 @@ final class CollectorInventoryStoreTests: XCTestCase {
         XCTAssertEqual(try db.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM collector_streams") }, 4)
     }
 
+    // Owner decision (a) for followup collector-epoch-producer-1 (2026-10-18), the store
+    // half of CollectorRuntimeTests.testRootRevisionBumpKeepsSourceInstanceAndRotatesEpoch_repro.
+    // Invariant "Collector Root Revision Bump Keeps The Source Instance": only an unchanged
+    // source and byte-exact root path carry each resolved stream's instance, with a fresh
+    // epoch and sequence 0, and no existing stream row is rewritten.
+    // docs/superpowers/specs/2026-10-18-collector-epoch-rotation-and-root-scope-design.md
+    func testRevisionBumpCarriesSourceInstancesOnlyForUnchangedSourceAndPath() throws {
+        let f = try CollectorInventoryTestFixture(); defer { f.remove() }
+        let store = try f.open()
+        let db = try f.openDatabase()
+        let path = f.configuration.rootPath
+        func root(_ source: SourceName, _ rootPath: String, _ revision: Int64) -> CollectorRootConfiguration {
+            CollectorRootConfiguration(rootID: f.configuration.rootID, source: source, rootPath: rootPath, revision: revision)
+        }
+        func streams(_ revision: Int64) throws -> [Row] {
+            try db.read { try Row.fetchAll($0, sql: """
+                SELECT effective_source, source_instance_id, collector_epoch, last_sequence FROM collector_streams
+                WHERE root_revision = ? ORDER BY effective_source
+                """, arguments: [revision]) }
+        }
+        func seed(_ revision: Int64, _ sources: [String]) throws {
+            try db.write { db in
+                for source in sources {
+                    try db.execute(sql: """
+                        INSERT INTO collector_streams(root_id, root_revision, effective_source,
+                            source_instance_id, collector_epoch, last_sequence) VALUES (?, ?, ?, ?, ?, 7)
+                        """, arguments: [f.configuration.rootID, revision, source, UUID().uuidString, UUID().uuidString])
+                }
+            }
+        }
+        try store.registerRoot(root(.claudeCode, path, 1))
+        // An empty effective source is an unresolved pre-schema-10 row and is never carried.
+        try seed(1, ["", "claude-code", "minimax"])
+        let original = try streams(1)
+
+        try store.registerRoot(root(.claudeCode, path, 4))
+        let carried = try streams(4)
+        XCTAssertEqual(carried.map { $0["effective_source"] as String }, ["claude-code", "minimax"])
+        XCTAssertEqual(carried.map { $0["source_instance_id"] as String }, original.dropFirst().map { $0["source_instance_id"] as String })
+        XCTAssertEqual(carried.map { $0["last_sequence"] as Int64 }, [0, 0])
+        let epochs = carried.map { $0["collector_epoch"] as String }
+        XCTAssertEqual(Set(epochs).count, 2)
+        XCTAssertTrue(Set(epochs).isDisjoint(with: original.map { $0["collector_epoch"] as String }))
+        XCTAssertTrue(epochs.allSatisfy { UUID(uuidString: $0)?.uuidString == $0 })
+        XCTAssertEqual(try streams(1), original, "existing stream rows are not rewritten")
+
+        // A changed root path or source carries nothing: the first capture of that
+        // revision mints a fresh instance, as before.
+        try store.registerRoot(root(.claudeCode, path + "-moved", 5))
+        XCTAssertTrue(try streams(5).isEmpty)
+        try seed(5, ["claude-code"])
+        try store.registerRoot(root(.codex, path + "-moved", 6))
+        XCTAssertTrue(try streams(6).isEmpty)
+        XCTAssertEqual(try streams(4), carried)
+        XCTAssertTrue(try db.read { try Row.fetchAll($0, sql: "PRAGMA foreign_key_check") }.isEmpty)
+    }
+
     private func downgradeStreamsToSchemaNine(_ database: DatabaseQueue) throws {
         try database.writeWithoutTransaction { db in
             try db.execute(sql: "PRAGMA foreign_keys = OFF")
