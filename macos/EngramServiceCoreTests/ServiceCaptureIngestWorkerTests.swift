@@ -881,6 +881,60 @@ final class ServiceCaptureIngestWorkerTests: XCTestCase {
         XCTAssertEqual(try work(unknown).attempt, 0)
     }
 
+    // W4.7 HQ half (branch feat/w47-hq-approve-epoch-20261018): before the
+    // collectorApproveEpoch operator command, an unapproved epoch's publication
+    // stayed pending forever. Invariant "Collector Epoch Approval Is A Local
+    // Operator Action": approval only makes the new epoch claimable; it neither
+    // retracts earlier sessions nor promotes other epochs.
+    func testUnapprovedEpochBecomesIngestibleAfterOperatorApproval_repro() async throws {
+        _ = try await seedEligible(relative: "project/approved.jsonl", nativeID: "approved")
+        let worker = makeWorker()
+        guard case .parsed(let earlier) = try await worker.step() else {
+            return XCTFail("approved epoch must parse")
+        }
+        let candidate = try await seedEligible(
+            relative: "project/candidate.jsonl", nativeID: "candidate", publicationEpoch: otherEpoch
+        )
+        let idle = try await worker.step()
+        XCTAssertEqual(idle, .idle)
+        XCTAssertEqual(try work(candidate).status, .pending)
+        XCTAssertEqual(try work(candidate).attempt, 0)
+
+        let settingsURL = directory.appendingPathComponent("settings.json")
+        try JSONSerialization.data(withJSONObject: [
+            "runtimeRole": "index", "disabledSources": [String](), "archivedDefaultOffSourcesMigrated": true,
+            "captureIngest": ["enabled": true, "serverID": "hq", "baseURL": "http://127.0.0.1:8787",
+                "credentialID": "hq", "requestTimeout": 0.2, "retryCount": 0],
+        ] as [String: Any], options: [.sortedKeys]).write(to: settingsURL, options: .atomic)
+        XCTAssertEqual(chmod(settingsURL.path, 0o600), 0)
+        let previous = getenv("ENGRAM_SETTINGS_PATH").map { String(cString: $0) }
+        setenv("ENGRAM_SETTINGS_PATH", settingsURL.path, 1)
+        defer {
+            if let previous { setenv("ENGRAM_SETTINGS_PATH", previous, 1) }
+            else { unsetenv("ENGRAM_SETTINGS_PATH") }
+        }
+        let payload = try JSONSerialization.data(withJSONObject: [
+            "machineID": machine, "sourceInstanceID": instance, "candidateEpoch": otherEpoch,
+            "expectedEpoch": epoch, "expectedAuthorityGeneration": 1,
+        ] as [String: Any])
+        let response = await EngramServiceCommandHandler(writerGate: gate).handle(
+            EngramServiceRequestEnvelope(command: "collectorApproveEpoch", payload: payload)
+        )
+        guard case .success = response else { return XCTFail("approve must succeed, got \(response)") }
+        XCTAssertEqual(try currentBinding().approvedEpoch, otherEpoch)
+
+        let stale = try await seedEligible(relative: "project/stale.jsonl", nativeID: "stale")
+        guard case .parsed = try await worker.step() else {
+            return XCTFail("approved candidate epoch must parse")
+        }
+        XCTAssertEqual(try work(candidate).status, .parsed)
+        XCTAssertNoThrow(try session(earlier.sessionID), "approval must not retract earlier sessions")
+        let after = try await worker.step()
+        XCTAssertEqual(after, .idle)
+        XCTAssertEqual(try work(stale).status, .pending, "the superseded epoch must not be promoted")
+        XCTAssertEqual(try work(stale).attempt, 0)
+    }
+
     func testCallerCancelQueuedJoinsWithoutEarlyReturn() async throws {
         try await assertCancelOrStop(stop: false, replayEntered: false)
     }
