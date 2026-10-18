@@ -4,6 +4,8 @@
 
 ### 2026-10-18
 
+- [变更] 落地业主对 epoch 两项的决定（Opus agent 在隔离 worktree 实现，我审 diff 并独立复跑）：root revision 升级且 source 与根路径逐字节不变时，collector 保留原 source instance、换新 epoch、序号从 0 起；FSEvents epoch 变化只暂停该根直到操作员 `--reconcile-native-epoch`，其他根与两条上传照常，`reconciliationRequired` 移除。HQ 无需改代码。未部署。详见 `CHANGELOG.md`。
+- [排查] 新 followup：`collector-epoch-authority-file-1`（#477 起就有）：HQ 每次启动按 source-authority 文件 provision，且要求 `initialEpoch` 等于当前批准的 epoch，批准后不改文件下次启动即 `sourceInstanceConflict` 中止，暂以运维步骤处理，是否改代码待业主决定；`collector-revision-bump-staged-1`：revision 升级后旧 revision 已暂存的发布永不上传，运维上先排空再升级。
 - [变更] 业主让我代选并按建议推进（「你帮我选的话，接着怎么走？」，随后「按这个走」）：W4.1 别名对账作为已被 D7(c)/D9 取代关闭，重开条件是 HQ collector 上线后若要带走旧 HQ 本地库的用户状态，另立「旧库用户状态导入」项；W4.5 旧回执引导标记不做；`collector-epoch-producer-1` 选 (a)，root revision 升级时保留 source instance、只轮换 epoch；`collector-epoch-change-scope-1` 改为只暂停 epoch 变化的那个根。实现进行中。详见 `CHANGELOG.md`。
 - [排查] 捕获路径源码确认每次捕获都整文件重读、多次哈希并逐块写临时文件加 fsync，但分块为 8 MiB、本机近 14 天转写 p99 只有 4.9 MB，哈希解释不了每次发布数秒 CPU；先在本机用合成转写测量热点再修，未碰 Daily。是否把 2% 目标改为按安静段衡量仍待业主决定。
 - [变更] 业主授权（「批准」报告，随后「如果 dry-run 没问题，就批准部署和 apply」）后：HQ service-index 从 `b95d99ad` 换到 main `9ef7fb4f`（PID 625，stderr 0 字节，receiver/Web 200，plist 备份与旧包保留可回滚）；live preview 复现 6,191 / `9fa54d7d…`，`VACUUM INTO` 做了 12.8 GB 回滚副本，然后 apply：删除 6,191 个旧 grok/pi 会话及派生行（FTS 51,937、index jobs 11,578、tools 23,232 等），审计键 `legacy_local_purge.v1.2026-10-18T05:17:15Z`。详见 `CHANGELOG.md`。
