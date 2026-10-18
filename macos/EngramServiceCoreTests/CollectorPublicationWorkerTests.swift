@@ -1454,6 +1454,77 @@ final class CollectorPublicationWorkerTests: XCTestCase {
         }
     }
 
+    // collector-publication-cost-1: each replica's upload re-ran the whole-transcript
+    // privacy assessment of the same capture, which dominated per-publication CPU.
+    // One assessment of the immutable captured bytes serves both replicas; invariant
+    // "Local Privacy Proof Binds Captured Bytes and Current Format".
+    func testOnePrivacyAssessmentServesBothReplicasOfOneCapture_repro() async throws {
+        let f = try PublicationFixture(sourceName: .claudeCode)
+        let replicas = try await replicas(for: f)
+        let assessed = PublicationLocked<[String]>([])
+        let worker = try f.worker(replicas.endpoints, hooks: .init(beforePrivacyAssessment: { manifest in
+            assessed.change { $0.append(manifest) }
+        }))
+        let first = try await worker.runOnce(now: 100)
+        XCTAssertEqual([first.captured, first.acknowledgedHQ, first.acknowledgedM1], [1, 1, 1])
+        XCTAssertEqual(assessed.value.count, 1, "both replicas must share one assessment of one capture")
+        try f.writeTranscript(text: "second synthetic generation")
+        try f.markDirty()
+        let second = try await worker.runOnce(now: 200)
+        XCTAssertEqual([second.captured, second.acknowledgedHQ, second.acknowledgedM1], [1, 1, 1])
+        let intents = try f.owner.publicationIntents(limit: 8)
+        XCTAssertEqual(intents.count, 2)
+        XCTAssertEqual(assessed.value, intents.map(\.publication.manifestSHA256), "each new capture is assessed once")
+        await replicas.stop()
+    }
+
+    func testPolicyChangeBetweenReplicasReassessesAndCanWithholdTheSharedCapture() async throws {
+        let f = try PublicationFixture(sourceName: .claudeCode)
+        let replicas = try await replicas(for: f)
+        let assessed = PublicationLocked(0)
+        let worker = try f.worker(replicas.endpoints, hooks: .init(beforePrivacyAssessment: { _ in
+            assessed.change { $0 += 1 }
+        }))
+        var captured = try await worker.captureOnce(now: 100)
+        XCTAssertEqual(captured.captured, 1)
+        var hq = try await worker.uploadOnce(replicaID: "hq", now: 100)
+        XCTAssertEqual(hq.acknowledged, 1)
+        XCTAssertEqual(assessed.value, 1)
+        // A new revision with the same exclusions still makes HQ's proof stale for M1.
+        f.policy.change { $0 = try! .init(revision: 2, excludedProjectRoots: [], allowedSources: [.claudeCode, .codex]) }
+        var m1 = try await worker.uploadOnce(replicaID: "m1", now: 100)
+        XCTAssertEqual(m1.acknowledged, 1)
+        XCTAssertEqual(assessed.value, 2)
+
+        try f.writeTranscript(text: "second synthetic generation")
+        try f.markDirty()
+        captured = try await worker.captureOnce(now: 200)
+        XCTAssertEqual(captured.captured, 1)
+        hq = try await worker.uploadOnce(replicaID: "hq", now: 200)
+        XCTAssertEqual(hq.acknowledged, 1)
+        XCTAssertEqual(assessed.value, 3)
+        // An exclusion added after HQ's proof withholds M1's upload of the same bytes.
+        f.policy.change { $0 = try! .init(revision: 3, excludedProjectRoots: [f.project.path], allowedSources: [.claudeCode, .codex]) }
+        m1 = try await worker.uploadOnce(replicaID: "m1", now: 200)
+        XCTAssertEqual(m1.acknowledged, 0)
+        XCTAssertEqual(m1.deferred, 1)
+        XCTAssertEqual(assessed.value, 4)
+        let hqRecords = try await replicas.hq.publications()
+        let m1Records = try await replicas.m1.publications()
+        XCTAssertEqual(hqRecords.count, 2)
+        XCTAssertEqual(m1Records.count, 1)
+        XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_publication_replicas WHERE replica_id = 'm1' AND last_error = 'privacyWithheld'"), 1)
+        let withheld = try XCTUnwrap(f.owner.publicationIntents(limit: 8).last)
+        let capture = try XCTUnwrap(f.catalog.capture(captureID: withheld.captureID))
+        let manifest = try Canonical.decode(EngramCollectorCore.ArchiveSourceManifest.self, from: capture.unboundManifestBytes)
+        XCTAssertFalse(manifest.chunks.isEmpty)
+        for chunk in manifest.chunks {
+            let object = try await replicas.m1.get("/v2/archive/objects/\(chunk.rawSHA256)")
+            XCTAssertEqual(object.1, 404, "a proof shared across replicas must not let a withheld object reach M1")
+        }
+        await replicas.stop()
+    }
+
     func testRetrySkipsExistingObjectPUTAfterSuccessfulHEAD_repro() async throws {
         let f = try PublicationFixture()
         let replicas = try await replicas(for: f)
