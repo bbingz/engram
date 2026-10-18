@@ -3,6 +3,46 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Collector assesses a capture's privacy once for both replicas (2026-10-18)
+
+Plan step 2 of the owner-approved order ("按这个走"): measure the
+capture/publication hotspot locally, then fix it with tests. An Opus agent in
+an isolated worktree built a local harness (Release `EngramCollector`,
+synthetic Claude Code-shaped transcripts of 2, 8 and 20 MB with repeated
+appends, loopback fixture replicas, `sample` attached to that local process
+only); the orchestrator reviewed the diff and re-ran both test schemes. No
+host was touched. Not deployed.
+
+- Root cause: `CollectorPublicationWorker.transmit` called
+  `authorize(..., prior: nil)`, so `CollectorPrivacyProof.assess` re-read and
+  re-parsed the whole transcript once per replica. In a Release `sample` of six
+  20 MB appends it was 69% of busy samples; inside it the per-byte
+  `Data.firstIndex` newline scan was 36% and per-line `JSONSerialization` 51%.
+  The earlier hypothesis (CAS hashing and fsync) was a minor cost.
+- Fix: a bounded per-worker map (64 entries) of eligible proofs keyed by the
+  unbound manifest SHA-256 is passed as `prior`. It is a hint, not authority:
+  `authorize` still reads a fresh policy and the resolved format and requires
+  `isCurrent` (manifest, whole-source hash, generation, source, policy
+  revision and digest, format, observed project roots) before reuse and before
+  every request, and `transmit` still re-verifies every CAS chunk. The default
+  JSONL line scan now uses `memchr` (same index as before). Invariant "Local
+  Privacy Proof Binds Captured Bytes and Current Format" records the reuse.
+- Measured collector CPU per publication above the quiet floor, before ->
+  after: 2 MB 0.146 -> 0.117 s, 8 MB 0.240 -> 0.167 s, 20 MB 0.437 -> 0.236 s,
+  2 MB with 16 roots 0.145 -> 0.103 s; busy samples for 20 MB x 6 2140 -> 1127.
+- Tests: `testOnePrivacyAssessmentServesBothReplicasOfOneCapture_repro` (failed
+  before with 2 assessments instead of 1),
+  `testPolicyChangeBetweenReplicasReassessesAndCanWithholdTheSharedCapture`,
+  `testDefaultLineScanKeepsBlankLinesAndANewlineEndingTheFirstChunk`, and an
+  opt-in profile `CollectorPublicationCostProfileTests` (skipped unless
+  `ENGRAM_COLLECTOR_PUBLICATION_PROFILE=1`, no timing asserts).
+- Not solved: Daily's excess was about 1.2-2.1 s per publication, 3-17x the
+  local cost, and its quiet floor is far higher (1.5-3.5% against
+  0.1-0.33%). The next lead is a fixed per-turn cost (`advanceInventory`,
+  `validateStorage`); confirming it needs a Daily `sample` during a burst.
+  New test followups: `collector-settings-write-flake-1` (a one-off hosted
+  failure on PR #481 from a non-atomic settings rewrite in a test fixture) and
+  `collector-test-fixture-leak-1`.
 ## Collector keeps the source instance on a root revision bump; a changed FSEvents epoch suspends only its root (2026-10-18)
 
 Implements the owner's 2026-10-18 decisions on `collector-epoch-producer-1`

@@ -123,6 +123,7 @@ struct CollectorPublicationWorkerTestHooks: Sendable {
     var beforeACKCommit: (@Sendable (CollectorPublicationClaim) throws -> Void)?
     var beforeDiscoverModern: (@Sendable (_ rootPath: String, _ purpose: CollectorDiscoverModernPurpose) throws -> Void)?
     var beforePeerRootState: (@Sendable () throws -> Void)?
+    var beforePrivacyAssessment: (@Sendable (_ manifestSHA256: String) throws -> Void)?
 }
 
 /// Native capture and publication only. No index, app, service or product writer.
@@ -155,6 +156,11 @@ actor CollectorPublicationWorker {
     private var dependencyObservationRoot = 0
     private var dependencyObservationAfter: [Data: String] = [:]
     private var peerFingerprintHints: [Data: PeerFingerprintHint] = [:]
+    /// Eligible proofs by unbound manifest SHA-256, oldest first out. A hint for
+    /// `authorize`, never authority: reuse still requires `isCurrent`.
+    private var privacyProofs: [String: CollectorPrivacyProof] = [:]
+    private var privacyProofOrder: [String] = []
+    private static let maximumCachedPrivacyProofs = 64
 
     private struct PeerFingerprintHint {
         let configuration: CollectorRootConfiguration
@@ -1945,7 +1951,13 @@ actor CollectorPublicationWorker {
             result = ArchiveCaptureResult(capture: capture, manifest: manifest)
         } catch is CancellationError { throw CancellationError() }
         catch { throw CollectorPublicationWorkerError.invalidCapture }
-        var proof = try authorize(result, root: root, prior: nil)
+        // One whole-transcript assessment of these immutable, just re-verified CAS
+        // bytes serves both replicas and retries. authorize still reads a fresh
+        // policy and the resolved format and requires isCurrent here and before
+        // every request; invariant "Local Privacy Proof Binds Captured Bytes and
+        // Current Format" (followup collector-publication-cost-1).
+        var proof = try authorize(result, root: root, prior: privacyProofs[capture.unboundManifestSHA256])
+        rememberPrivacyProof(proof)
         let capabilities = try await request(replica, path: "/v2/archive/publication-capabilities", method: "GET",
             body: nil, capture: result, root: root, claim: claim, proof: proof)
         proof = capabilities.proof
@@ -2001,10 +2013,19 @@ actor CollectorPublicationWorker {
         case .codex, .claudeCode, .pi, .copilot: maximumLineBytes = 32 * 1024 * 1024
         default: maximumLineBytes = CollectorPrivacyLimits().maxLineBytes
         }
+        try testHooks.beforePrivacyAssessment?(capture.capture.unboundManifestSHA256)
         let assessment = try CollectorPrivacyProof.assess(capture: capture, cas: cas, format: format, policy: current,
             limits: .init(maxSourceBytes: budget.maxCaptureBytes, maxLineBytes: maximumLineBytes))
         guard case .eligible(let proof) = assessment else { throw CollectorPublicationWorkerError.withheld }
         return proof
+    }
+
+    private func rememberPrivacyProof(_ proof: CollectorPrivacyProof) {
+        guard privacyProofs.updateValue(proof, forKey: proof.manifestSHA256) == nil else { return }
+        privacyProofOrder.append(proof.manifestSHA256)
+        if privacyProofOrder.count > Self.maximumCachedPrivacyProofs {
+            privacyProofs.removeValue(forKey: privacyProofOrder.removeFirst())
+        }
     }
 
     private func request(

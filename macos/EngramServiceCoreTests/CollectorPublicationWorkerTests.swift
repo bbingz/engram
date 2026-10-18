@@ -1454,6 +1454,77 @@ final class CollectorPublicationWorkerTests: XCTestCase {
         }
     }
 
+    // collector-publication-cost-1: each replica's upload re-ran the whole-transcript
+    // privacy assessment of the same capture, which dominated per-publication CPU.
+    // One assessment of the immutable captured bytes serves both replicas; invariant
+    // "Local Privacy Proof Binds Captured Bytes and Current Format".
+    func testOnePrivacyAssessmentServesBothReplicasOfOneCapture_repro() async throws {
+        let f = try PublicationFixture(sourceName: .claudeCode)
+        let replicas = try await replicas(for: f)
+        let assessed = PublicationLocked<[String]>([])
+        let worker = try f.worker(replicas.endpoints, hooks: .init(beforePrivacyAssessment: { manifest in
+            assessed.change { $0.append(manifest) }
+        }))
+        let first = try await worker.runOnce(now: 100)
+        XCTAssertEqual([first.captured, first.acknowledgedHQ, first.acknowledgedM1], [1, 1, 1])
+        XCTAssertEqual(assessed.value.count, 1, "both replicas must share one assessment of one capture")
+        try f.writeTranscript(text: "second synthetic generation")
+        try f.markDirty()
+        let second = try await worker.runOnce(now: 200)
+        XCTAssertEqual([second.captured, second.acknowledgedHQ, second.acknowledgedM1], [1, 1, 1])
+        let intents = try f.owner.publicationIntents(limit: 8)
+        XCTAssertEqual(intents.count, 2)
+        XCTAssertEqual(assessed.value, intents.map(\.publication.manifestSHA256), "each new capture is assessed once")
+        await replicas.stop()
+    }
+
+    func testPolicyChangeBetweenReplicasReassessesAndCanWithholdTheSharedCapture() async throws {
+        let f = try PublicationFixture(sourceName: .claudeCode)
+        let replicas = try await replicas(for: f)
+        let assessed = PublicationLocked(0)
+        let worker = try f.worker(replicas.endpoints, hooks: .init(beforePrivacyAssessment: { _ in
+            assessed.change { $0 += 1 }
+        }))
+        var captured = try await worker.captureOnce(now: 100)
+        XCTAssertEqual(captured.captured, 1)
+        var hq = try await worker.uploadOnce(replicaID: "hq", now: 100)
+        XCTAssertEqual(hq.acknowledged, 1)
+        XCTAssertEqual(assessed.value, 1)
+        // A new revision with the same exclusions still makes HQ's proof stale for M1.
+        f.policy.change { $0 = try! .init(revision: 2, excludedProjectRoots: [], allowedSources: [.claudeCode, .codex]) }
+        var m1 = try await worker.uploadOnce(replicaID: "m1", now: 100)
+        XCTAssertEqual(m1.acknowledged, 1)
+        XCTAssertEqual(assessed.value, 2)
+
+        try f.writeTranscript(text: "second synthetic generation")
+        try f.markDirty()
+        captured = try await worker.captureOnce(now: 200)
+        XCTAssertEqual(captured.captured, 1)
+        hq = try await worker.uploadOnce(replicaID: "hq", now: 200)
+        XCTAssertEqual(hq.acknowledged, 1)
+        XCTAssertEqual(assessed.value, 3)
+        // An exclusion added after HQ's proof withholds M1's upload of the same bytes.
+        f.policy.change { $0 = try! .init(revision: 3, excludedProjectRoots: [f.project.path], allowedSources: [.claudeCode, .codex]) }
+        m1 = try await worker.uploadOnce(replicaID: "m1", now: 200)
+        XCTAssertEqual(m1.acknowledged, 0)
+        XCTAssertEqual(m1.deferred, 1)
+        XCTAssertEqual(assessed.value, 4)
+        let hqRecords = try await replicas.hq.publications()
+        let m1Records = try await replicas.m1.publications()
+        XCTAssertEqual(hqRecords.count, 2)
+        XCTAssertEqual(m1Records.count, 1)
+        XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_publication_replicas WHERE replica_id = 'm1' AND last_error = 'privacyWithheld'"), 1)
+        let withheld = try XCTUnwrap(f.owner.publicationIntents(limit: 8).last)
+        let capture = try XCTUnwrap(f.catalog.capture(captureID: withheld.captureID))
+        let manifest = try Canonical.decode(EngramCollectorCore.ArchiveSourceManifest.self, from: capture.unboundManifestBytes)
+        XCTAssertFalse(manifest.chunks.isEmpty)
+        for chunk in manifest.chunks {
+            let object = try await replicas.m1.get("/v2/archive/objects/\(chunk.rawSHA256)")
+            XCTAssertEqual(object.1, 404, "a proof shared across replicas must not let a withheld object reach M1")
+        }
+        await replicas.stop()
+    }
+
     func testRetrySkipsExistingObjectPUTAfterSuccessfulHEAD_repro() async throws {
         let f = try PublicationFixture()
         let replicas = try await replicas(for: f)
@@ -5348,5 +5419,239 @@ private final class PublicationHeldArchiveProxy: @unchecked Sendable {
                 headers: headers,
                 body: .init(byteBuffer: ByteBuffer(data: bytes)))
         }
+    }
+}
+
+/// Opt-in local cost profile for appended Claude Code transcripts (followup
+/// `collector-publication-cost-1`). Skipped unless the runner environment sets
+/// ENGRAM_COLLECTOR_PUBLICATION_PROFILE=1 (xcodebuild passes it with the
+/// TEST_RUNNER_ prefix); ENGRAM_COLLECTOR_PUBLICATION_PROFILE_MB (default
+/// "2,8,20") and ENGRAM_COLLECTOR_PUBLICATION_PROFILE_APPENDS (default 5) size it.
+/// Synthetic data under the checkout fixture only. Prints one table; it asserts
+/// that every append publishes to both replicas, never a timing.
+final class CollectorPublicationCostProfileTests: XCTestCase {
+    private struct Phase { var wallMs = 0.0; var cpuMs = 0.0 }
+
+    func testAppendedClaudeTranscriptCostByPhase() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["ENGRAM_COLLECTOR_PUBLICATION_PROFILE"] == "1" else {
+            throw XCTSkip("Publication cost profile is opt-in; no fixture was created")
+        }
+        let sizes = (environment["ENGRAM_COLLECTOR_PUBLICATION_PROFILE_MB"] ?? "2,8,20")
+            .split(separator: ",").compactMap { Int($0) }
+        let appends = Int(environment["ENGRAM_COLLECTOR_PUBLICATION_PROFILE_APPENDS"] ?? "") ?? 5
+        var report: [String] = []
+        for megabytes in sizes {
+            let f = try PublicationFixture(sourceName: .claudeCode)
+            let replicas: PublicationReplicas
+            do { replicas = try await PublicationReplicas.start(in: f.base) } catch { f.remove(); throw error }
+            do { report += try await profile(f, replicas: replicas, megabytes: megabytes, appends: appends) }
+            catch { await replicas.stop(); f.remove(); throw error }
+            await replicas.stop()
+            f.remove()
+        }
+        print((["PUBLICATION_COST_PROFILE begin"] + report + ["PUBLICATION_COST_PROFILE end"]).joined(separator: "\n"))
+    }
+
+    private func profile(_ f: PublicationFixture, replicas: PublicationReplicas, megabytes: Int,
+                         appends: Int) async throws -> [String] {
+        let allowed = try EngramCollectorCore.CollectorPrivacyPolicy(revision: 2, excludedProjectRoots: [],
+            allowedSources: [.claudeCode, .minimax, .lobsterai])
+        f.policy.change { $0 = allowed }
+        var transcript = ProfileClaudeTranscript(cwd: f.project.path)
+        try f.writeBytes(transcript.bytes(atLeast: megabytes * 1_048_576))
+        let requests = PublicationLocked(0)
+        let policyReads = PublicationLocked(0)
+        let policy = f.policy
+        var budget = EngramCollectorCore.CollectorPublicationBudget()
+        budget.maxCaptureBytes = 64 * 1_048_576
+        let worker = try PublicationWorker(owner: f.owner, catalog: f.catalog, cas: f.cas, roots: [f.configuration],
+            replicas: replicas.endpoints, policy: { policyReads.change { $0 += 1 }; return policy.value },
+            budget: budget, testHooks: .init(beforeHTTP: { _, _, _ in requests.change { $0 += 1 } }))
+        // The first full publication is setup, not a measured append.
+        let initial = try await worker.runOnce(now: 100)
+        XCTAssertEqual([initial.captured, initial.acknowledgedHQ, initial.acknowledgedM1], [1, 1, 1])
+        var phases: [(String, Phase)] = []
+        func add(_ name: String, _ phase: Phase) {
+            if let index = phases.firstIndex(where: { $0.0 == name }) {
+                phases[index].1.wallMs += phase.wallMs
+                phases[index].1.cpuMs += phase.cpuMs
+            } else { phases.append((name, phase)) }
+        }
+        var hintBytes: Int64 = 0
+        var appendedBytes = 0
+        var requestCount = 0
+        var policyCount = 0
+        var finalSize = 0
+        var chunkCount = 0
+        for ordinal in 0..<appends {
+            let step = try transcript.step()
+            appendedBytes += step.count
+            let handle = try FileHandle(forWritingTo: f.source)
+            try handle.seekToEnd(); try handle.write(contentsOf: step); try handle.close()
+            try f.markDirty()
+            let now = Int64(200 + ordinal)
+            let requestsBefore = requests.value
+            let policyBefore = policyReads.value
+            let (captured, capturePhase) = try await Self.timed { try await worker.captureOnce(now: now) }
+            XCTAssertEqual(captured.captured, 1)
+            hintBytes += captured.sourceHintBytesRead
+            add("capture cycle (hint, reserve, capture, finish)", capturePhase)
+            let (hq, hqPhase) = try await Self.timed { try await worker.uploadOnce(replicaID: "hq", now: now) }
+            add("upload hq (includes in-process replica CPU)", hqPhase)
+            let (m1, m1Phase) = try await Self.timed { try await worker.uploadOnce(replicaID: "m1", now: now) }
+            add("upload m1 (includes in-process replica CPU)", m1Phase)
+            XCTAssertEqual([hq.acknowledged, m1.acknowledged], [1, 1])
+            requestCount += requests.value - requestsBefore
+            policyCount += policyReads.value - policyBefore
+            // Direct single-threaded replays of the same capture's upload phases.
+            let intent = try XCTUnwrap(f.owner.publicationIntents(limit: 64).last)
+            let capture = try XCTUnwrap(f.catalog.capture(captureID: intent.captureID))
+            let manifest = try Canonical.decode(EngramCollectorCore.ArchiveSourceManifest.self,
+                from: capture.unboundManifestBytes)
+            finalSize = Int(manifest.rawByteCount)
+            chunkCount = manifest.chunks.count
+            let result = CaptureResult(capture: capture, manifest: manifest)
+            add("direct: privacy assess once", try Self.timedSync {
+                let assessed = try EngramCollectorCore.CollectorPrivacyProof.assess(capture: result, cas: f.cas,
+                    format: .claudeCode(forceClaudeCodeSource: false), policy: policy.value,
+                    limits: .init(maxSourceBytes: budget.maxCaptureBytes, maxLineBytes: 32 * 1_048_576))
+                guard case .eligible = assessed else { throw PublicationFixture.Failure.unsafeFixture }
+            })
+            var raw = Data()
+            add("direct: CAS verified read of every chunk once", try Self.timedSync {
+                raw = Data()
+                for chunk in manifest.chunks {
+                    raw.append(try f.cas.readObject(sha256: chunk.rawSHA256, maximumByteCount: chunk.rawByteCount))
+                }
+            })
+            // Line ends are found before timing so this row is the parser alone.
+            var lines: [Range<Data.Index>] = []
+            raw.withUnsafeBytes { buffer in
+                var start = 0
+                while start < buffer.count, let found = memchr(buffer.baseAddress! + start, 0x0A, buffer.count - start) {
+                    let end = buffer.baseAddress!.distance(to: UnsafeRawPointer(found))
+                    lines.append((raw.startIndex + start)..<(raw.startIndex + end))
+                    start = end + 1
+                }
+            }
+            add("direct: JSONSerialization of every line only", try Self.timedSync {
+                for line in lines {
+                    _ = try autoreleasepool { try JSONSerialization.jsonObject(with: raw[line]) }
+                }
+            })
+        }
+        let label = "sizeMB=\(megabytes) bytes=\(finalSize) chunks=\(chunkCount) appends=\(appends)"
+            + " appendBytesAvg=\(appendedBytes / max(appends, 1))"
+        var rows = ["\(label) requestsPerAppend=\(Double(requestCount) / Double(appends))"
+            + " policyReadsPerAppend=\(Double(policyCount) / Double(appends))"
+            + " hintBytesPerAppend=\(hintBytes / Int64(max(appends, 1)))"]
+        for (name, phase) in phases {
+            rows.append(label + String(format: " wallMsPerAppend=%.1f cpuMsPerAppend=%.1f phase=",
+                phase.wallMs / Double(appends), phase.cpuMs / Double(appends)) + name)
+        }
+        return rows
+    }
+
+    private static func processCPUMilliseconds() -> Double {
+        var usage = rusage()
+        getrusage(RUSAGE_SELF, &usage)
+        return Double(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) * 1_000
+            + Double(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1_000
+    }
+
+    private static func milliseconds(_ duration: Duration) -> Double {
+        Double(duration.components.seconds) * 1_000 + Double(duration.components.attoseconds) / 1e15
+    }
+
+    /// Whole-process CPU: an upload phase also counts the in-process replica.
+    private static func timed<T>(_ body: () async throws -> T) async throws -> (T, Phase) {
+        let wall = ContinuousClock.now
+        let cpu = processCPUMilliseconds()
+        let value = try await body()
+        return (value, Phase(wallMs: milliseconds(wall.duration(to: .now)), cpuMs: processCPUMilliseconds() - cpu))
+    }
+
+    /// Calling-thread CPU for a synchronous phase.
+    private static func timedSync(_ body: () throws -> Void) throws -> Phase {
+        let wall = ContinuousClock.now
+        let cpu = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
+        try body()
+        return Phase(wallMs: milliseconds(wall.duration(to: .now)),
+            cpuMs: Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - cpu) / 1e6)
+    }
+}
+
+/// Deterministic Claude Code-shaped JSONL: prompts, assistant thinking/tool_use
+/// lines and escape-heavy tool_result lines duplicated in toolUseResult, as the
+/// native client writes them.
+private struct ProfileClaudeTranscript {
+    let cwd: String
+    private var state: UInt64 = 0x9E37_79B9_7F4A_7C15
+    private var ordinal = 0
+    private static let fragments = [
+        "let path = \"/Users/example/project/Sources/Module/File.swift\"\n",
+        "\tif value.isEmpty { return \"empty\\\\value\" }\n",
+        "// 中文注释：验证非 ASCII 内容的转义与解析\n",
+        "{\"key\": [1, 2, 3], \"nested\": {\"enabled\": true, \"name\": \"x\"}}\n",
+        "    XCTAssertEqual(result.count, 42, \"unexpected count\")\n",
+        "error: cannot convert value of type 'Int' to expected argument type 'String'\n",
+        "  1234\tfunc example(_ input: [String: Any]) throws -> Data {\n",
+    ]
+
+    init(cwd: String) { self.cwd = cwd }
+
+    private mutating func next() -> UInt64 {
+        state ^= state << 13; state ^= state >> 7; state ^= state << 17
+        return state
+    }
+
+    private mutating func text(_ count: Int) -> String {
+        var value = ""
+        value.reserveCapacity(count + 128)
+        var length = 0
+        while length < count {
+            let fragment = Self.fragments[Int(next() % UInt64(Self.fragments.count))]
+            value += fragment
+            length += fragment.utf8.count
+        }
+        return value
+    }
+
+    private mutating func record(_ type: String, _ message: [String: Any], extra: [String: Any] = [:]) throws -> Data {
+        ordinal += 1
+        var object: [String: Any] = ["parentUuid": "uuid-\(ordinal - 1)", "isSidechain": false, "userType": "external",
+            "cwd": cwd, "sessionId": "profile-native-session", "version": "2.0.0", "gitBranch": "main",
+            "type": type, "message": message, "uuid": "uuid-\(ordinal)",
+            "timestamp": "2026-10-18T00:00:\(String(format: "%02d", ordinal % 60)).000Z"]
+        for (key, value) in extra { object[key] = value }
+        var bytes = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        bytes.append(0x0A)
+        return bytes
+    }
+
+    mutating func step() throws -> Data {
+        let tool = "toolu_\(ordinal)"
+        var bytes = Data()
+        if ordinal % 10 == 0 {
+            bytes.append(try record("user", ["role": "user", "content": text(400)]))
+        }
+        bytes.append(try record("assistant", ["id": "msg_\(ordinal)", "type": "message", "role": "assistant",
+            "model": "claude-opus-4-1-20250805", "stop_reason": NSNull(),
+            "content": [["type": "thinking", "thinking": text(600), "signature": String(repeating: "s", count: 300)],
+                ["type": "tool_use", "id": tool, "name": "Bash", "input": ["command": text(120), "description": "Run"]]],
+            "usage": ["input_tokens": 12, "cache_creation_input_tokens": 340, "cache_read_input_tokens": 9_000,
+                "output_tokens": 77]], extra: ["requestId": "req_\(ordinal)"]))
+        let output = text(2_048 + Int(next() % 30_720))
+        bytes.append(try record("user", ["role": "user", "content": [["tool_use_id": tool, "type": "tool_result",
+            "content": output, "is_error": false]]],
+            extra: ["toolUseResult": ["stdout": output, "stderr": "", "interrupted": false, "isImage": false]]))
+        return bytes
+    }
+
+    mutating func bytes(atLeast count: Int) throws -> Data {
+        var bytes = try record("user", ["role": "user", "content": text(800)])
+        while bytes.count < count { bytes.append(try step()) }
+        return bytes
     }
 }
