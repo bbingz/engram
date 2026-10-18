@@ -4,6 +4,8 @@
 
 ### 2026-10-18
 
+- [变更] 业主让我代选并按建议推进（「你帮我选的话，接着怎么走？」，随后「按这个走」）：W4.1 别名对账作为已被 D7(c)/D9 取代关闭，重开条件是 HQ collector 上线后若要带走旧 HQ 本地库的用户状态，另立「旧库用户状态导入」项；W4.5 旧回执引导标记不做；`collector-epoch-producer-1` 选 (a)，root revision 升级时保留 source instance、只轮换 epoch；`collector-epoch-change-scope-1` 改为只暂停 epoch 变化的那个根。实现进行中。详见 `CHANGELOG.md`。
+- [排查] 捕获路径源码确认每次捕获都整文件重读、多次哈希并逐块写临时文件加 fsync，但分块为 8 MiB、本机近 14 天转写 p99 只有 4.9 MB，哈希解释不了每次发布数秒 CPU；先在本机用合成转写测量热点再修，未碰 Daily。是否把 2% 目标改为按安静段衡量仍待业主决定。
 - [变更] 业主授权（「批准」报告，随后「如果 dry-run 没问题，就批准部署和 apply」）后：HQ service-index 从 `b95d99ad` 换到 main `9ef7fb4f`（PID 625，stderr 0 字节，receiver/Web 200，plist 备份与旧包保留可回滚）；live preview 复现 6,191 / `9fa54d7d…`，`VACUUM INTO` 做了 12.8 GB 回滚副本，然后 apply：删除 6,191 个旧 grok/pi 会话及派生行（FTS 51,937、index jobs 11,578、tools 23,232 等），审计键 `legacy_local_purge.v1.2026-10-18T05:17:15Z`。详见 `CHANGELOG.md`。
 - [验证] re-preview 为 0；只读 SQL：候选 0、全库 `origin=local` 0、capture 绑定的 grok 866 / pi 573 未动、无孤儿派生行、账本 pending 0。D7 关闭。
 - [变更] 业主要求继续用 Opus 清理开放项：两轮 Workflow（7 个只读 scoping agent、15 个实现/复核 agent），4 项落地为 PR 并按序合并：#475 `5b5b09af` W6.2 真实二进制门禁（非必需工作流 + 校验脚本，跳过即失败）；#476 `7a48d19d` App 在 collector/replica 角色下的「Open Web Reader」入口（新可选键 `webReaderURL`，仅 https）；#477 `9f131f25` W4.7 HQ 侧 `collectorEpochDryRun`/`collectorApproveEpoch` IPC + `EngramCLI collector-epoch`（令牌保护、不进 Web）；#478 `9ef7fb4f` D7 旧 `origin=local` grok/pi 清理的 dry-run/apply 工具与离线报告模式。均未部署，未改任何主机。详见 `CHANGELOG.md`。
