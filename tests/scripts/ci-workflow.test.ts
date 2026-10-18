@@ -913,7 +913,7 @@ describe('Real-binary workflow', () => {
       'macos/EngramServiceCoreTests/CollectorCLIIntegrationTests.swift',
     ]);
     expect(realBinaryWorkflow).toContain('runs-on: macos-15');
-    expect(realBinaryWorkflow).toContain('timeout-minutes: 45');
+    expect(realBinaryWorkflow).toContain('timeout-minutes: 60');
     expect(realBinaryWorkflow).toContain(
       'group: real-binary-$' + '{{ github.ref }}-$' + '{{ github.event_name }}',
     );
@@ -946,7 +946,7 @@ describe('Real-binary workflow', () => {
       expect(realBinaryGateScript).toContain(variable);
     }
     // Hosted runners get longer scope deadlines, never different assertions.
-    expect(realBinaryWorkflow).toContain('--timeout-scale 3');
+    expect(realBinaryWorkflow).toContain('--timeout-scale 6');
     expect(realBinaryGateScript).toContain('test-without-building');
     expect(realBinaryGateScript).toContain(
       'xcresulttool get test-results tests',

@@ -28,7 +28,7 @@ jobs:
   real-binary-chain:
     name: Real-binary chain
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -47,15 +47,16 @@ jobs:
 
       - name: Build binaries and run the real-binary chain
         run: |
-          # Hosted macos-15 is several times slower than the Mac that produced
-          # the local receipt: the 114 MB large-history chain exceeded its
-          # 240 s scope deadline there (PR #475 run 39084776142) while every
-          # other test passed. The scale lengthens deadlines only.
+          # Hosted macos-15 is several times slower, and varies run to run, than
+          # the Mac that produced the local receipt: the 114 MB large-history
+          # chain's HQ ingest took about 7 min in run 39093667839 (pass) and
+          # more than 12 min in run 39097383289 (deadline at 3x), while every
+          # other test passed each time. The scale lengthens deadlines only.
           bash scripts/ci/run-real-binary-gate.sh \
             --out "$RUNNER_TEMP/engram-real-binary-out" \
             --derived-data "$RUNNER_TEMP/engram-real-binary-derived" \
             --cloned-source-packages "$HOME/Library/Caches/EngramSourcePackages" \
-            --timeout-scale 3
+            --timeout-scale 6
 
       - name: Publish receipt
         if: always()
