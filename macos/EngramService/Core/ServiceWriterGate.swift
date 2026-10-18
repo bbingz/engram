@@ -340,6 +340,9 @@ public actor ServiceWriterGate {
         // rather than hit the 60s WriterBusy timeout while it runs.
         case "remoteVacuum", "userDataBackup", "checkpointWal", "checkpointTruncate":
             return true
+        // D7 legacy local purge: one full-scan FTS5 delete may exceed 60s.
+        case "legacyLocalPurgeApply":
+            return true
         // Wave 7C H02: multi-minute index/backfill/FTS/embed phases hold the gate
         // under healthy progress — do not false-timeout followers at 60s.
         case "initialScanIndex",

@@ -329,6 +329,11 @@ public enum EngramServiceRunner {
         environment: [String: String],
         testHooks: RunnerTestHooks
     ) async throws {
+        // One-shot offline D7 dry-run on a backup copy: no socket, lock or migration.
+        if let reportPath = try legacyLocalPurgeReportDatabasePath(arguments: arguments) {
+            print(try legacyLocalPurgeReportJSON(databasePath: reportPath))
+            return
+        }
         try engramServiceValidateExpectedHome(
             arguments: arguments, actualHome: FileManager.default.homeDirectoryForCurrentUser
         )
@@ -582,7 +587,8 @@ public enum EngramServiceRunner {
             readProvider: readProvider,
             statusMonitor: statusMonitor,
             telemetry: telemetry,
-            logRing: logRing
+            logRing: logRing,
+            runtimeRole: runtimeRole
         )
         let server = UnixSocketServiceServer(
             socketPath: socketPath,
