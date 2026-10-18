@@ -866,6 +866,28 @@ final class CollectorPrivacyProofTests: XCTestCase {
         XCTAssertEqual(try assess(conflict, format: .codex, limits: limits), .withheld(.conflictingProjectRoots))
     }
 
+    // collector-publication-cost-1: the default JSONL newline scan reads the CAS
+    // buffer directly. Blank, whitespace-only and CR lines, and a record whose
+    // newline is the last byte of the first chunk, keep their meaning.
+    func testDefaultLineScanKeepsBlankLinesAndANewlineEndingTheFirstChunk() throws {
+        let opening = try transcript(format: .codex, cwd: "/allowed")
+        let blank = Data("\n  \t\r\n\r\n".utf8)
+        let empty = try JSONSerialization.data(withJSONObject: ["type": "ignored", "padding": ""], options: [.sortedKeys])
+        let fill = Int(ArchiveSourceManifest.rawChunkSize) - opening.count - blank.count - empty.count - 1
+        let padding = try JSONSerialization.data(withJSONObject: ["type": "ignored",
+            "padding": String(repeating: "x", count: fill)], options: [.sortedKeys]) + Data([0x0A])
+        XCTAssertEqual(opening.count + blank.count + padding.count, Int(ArchiveSourceManifest.rawChunkSize))
+        let limits = CollectorPrivacyLimits(maxLineBytes: 9 * 1024 * 1024)
+        let allowed = try capture(opening + blank + padding + blank, source: .codex)
+        XCTAssertEqual(allowed.result.manifest.chunks.count, 2)
+        XCTAssertEqual(try eligible(assess(allowed, format: .codex, limits: limits)).projectRoot, "/allowed")
+        let conflict = try capture(opening + blank + padding + transcript(format: .codex, cwd: "/excluded"), source: .codex)
+        XCTAssertEqual(conflict.result.manifest.chunks.count, 2)
+        XCTAssertEqual(try assess(conflict, format: .codex, limits: limits), .withheld(.conflictingProjectRoots))
+        let unterminated = try capture(opening + blank + padding + Data("  ".utf8), source: .codex)
+        XCTAssertEqual(try assess(unterminated, format: .codex, limits: limits), .withheld(.incompleteMetadata))
+    }
+
     func testDefaultClaudeMultiRootInvalidatesWhenLaterRootBecomesExcludedSymlink() throws {
         let format = SourceMetadataProjection.Format.claudeCode(forceClaudeCodeSource: false)
         let first = root.appendingPathComponent("allowed-root")

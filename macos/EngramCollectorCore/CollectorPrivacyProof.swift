@@ -193,7 +193,7 @@ public struct CollectorPrivacyProof: Equatable, Sendable {
                 var start = bytes.startIndex
                 while start < bytes.endIndex {
                     try Task.checkCancellation()
-                    let newline = bytes[start...].firstIndex(of: 0x0A)
+                    let newline = firstNewline(in: bytes, from: start)
                     let end = newline ?? bytes.endIndex
                     let count = bytes.distance(from: start, to: end)
                     guard count <= limits.maxLineBytes - pendingLine.count else { return .withheld(.limitsExceeded) }
@@ -305,6 +305,19 @@ public struct CollectorPrivacyProof: Equatable, Sendable {
                     && Self.isCanonicalPublicationRoot(root)
                     && !policy.excludes(root)
             }
+    }
+
+    /// Same result as `bytes[start...].firstIndex(of: 0x0A)`, found by memchr over
+    /// the contiguous buffer instead of Data's per-byte storage accessors, which
+    /// cost about a third of each whole-transcript assessment
+    /// (followup collector-publication-cost-1).
+    private static func firstNewline(in bytes: Data, from start: Data.Index) -> Data.Index? {
+        bytes.withUnsafeBytes { raw -> Data.Index? in
+            let offset = start - bytes.startIndex
+            guard let base = raw.baseAddress, offset < raw.count,
+                  let found = memchr(base + offset, 0x0A, raw.count - offset) else { return nil }
+            return bytes.startIndex + base.distance(to: UnsafeRawPointer(found))
+        }
     }
 
     private static func isCanonicalPublicationRoot(_ root: String) -> Bool {
