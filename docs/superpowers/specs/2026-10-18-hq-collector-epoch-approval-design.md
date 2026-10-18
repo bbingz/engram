@@ -187,6 +187,11 @@ At `4b84e3d5`:
   branch" under a stable instance. The owner must choose between the collector
   rotating only the epoch (making this command the recovery path) and an HQ
   source-instance retire/rebind design.
+  Update 2026-10-18: the owner chose the first option. A root revision bump
+  with an unchanged source and root path now keeps the instance and rotates
+  only the epoch (`docs/superpowers/specs/2026-10-18-collector-epoch-rotation-and-root-scope-design.md`,
+  invariant "Collector Root Revision Bump Keeps The Source Instance"); a spool
+  or inventory wipe is still not covered.
 - The dry run is unprotected, so any same-user process that can open the socket
   can read configured root paths and backlog counts. This matches the other
   read-only operator commands.
