@@ -33,6 +33,19 @@ authorizes host changes.
   publication), but it explains only part of Daily's bursts. Next: deploy to
   Daily (separately authorized), re-measure the 30-minute window, and if it
   still fails, `sample` the Daily collector during a burst (owner approval).
+  2026-10-18 deployed to Daily (owner-authorized; `ea2bbb57`, package
+  `collector-epoch-proof-reuse-20261018`) and re-measured after the restart
+  walk converged: 12:01-12:31Z, 61 samples over 1800 s, CPU 5.847% (FAIL),
+  max RSS 96.9 MiB (PASS), PID stable, 26 publications ACKed by both
+  replicas, median 30 s interval 3.8%. A 90 s `sample` with no capture in it
+  shows the idle per-turn floor dominates (Cursor legacy observation
+  reconciliation 31% of sampled busy stacks, unavailable-source deferrals 13%,
+  captured-dependency checks 11%, mostly `openat`/`fstatat`/`getdirentries`).
+  This corrects the sentence above: the 2026-09-12 hint cache and 10 s gate
+  made the Cursor scan less frequent, not cheaper. The 2% target is unchanged
+  (roadmap D2: it blocks only a "lightweight" claim, not "finished"). Next:
+  `docs/followups.md` `collector-idle-turn-cost-1`, then
+  `collector-stuck-dirty-locators-1`.
 - **Alias reconciliation (plan W4 item 1, design section 4).** Not started. The
   committer refuses any occupied proposed ID, so pre-cutover local rows, their
   insights and parent links stay in the local-ID namespace and are not visible
