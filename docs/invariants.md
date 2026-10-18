@@ -116,7 +116,7 @@ Invariants are properties that must survive every change; each entry names where
 
 ## Persisted Host Role Before Local Index Access
 
-- **Statement** - The App and MCP resolve the same owner-only persisted role before local-index access. Collector, replica and invalid settings cannot open the local product DB or start a service through the App; they do not automatically migrate settings/credentials. Missing role preserves local behavior. This is a host-entry guard, not proof of a complete collector or source coverage.
+- **Statement** - The App and MCP resolve the same owner-only persisted role before local-index access. Collector, replica and invalid settings cannot open the local product DB or start a service through the App; they do not automatically migrate settings/credentials. In collector/replica the unavailable view may offer Open Web Reader only for an https `webReaderURL` read from the same owner-only settings file; the action opens that URL in the default browser and never opens the local DB or starts/adopts a service. Missing role preserves local behavior. This is a host-entry guard, not proof of a complete collector or source coverage.
 - **Enforced by** - `macos/Shared/EngramCore/RuntimeRoleSettings.swift`, `macos/Engram/Core/AppEnvironment.swift`, `macos/Engram/App.swift`, `macos/Engram/Core/Database.swift`, `macos/EngramMCP/Core/MCPConfig.swift`, `macos/EngramMCP/Core/MCPToolRegistry.swift`.
 - **Verified by** - `macos/EngramCoreTests/RuntimeRoleSettingsTests.swift`, `macos/EngramTests/RuntimeRoleAppTests.swift`, `macos/EngramTests/DatabaseManagerTests.swift`, `macos/EngramMCPTests/EngramMCPExecutableTests.swift` (runtime-role tests).
 - **Gate** - `none`.

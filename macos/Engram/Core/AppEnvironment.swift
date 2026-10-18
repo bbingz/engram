@@ -26,6 +26,7 @@ struct AppEnvironment {
     let showOnboarding: Bool
     let isTestMode: Bool
     var runtimeRole: EngramRuntimeRole = .local
+    var webReaderURL: URL? = nil
 
     static var production: AppEnvironment {
         production(environment: ProcessInfo.processInfo.environment)
@@ -46,8 +47,43 @@ struct AppEnvironment {
             mockDaemon: false,
             showOnboarding: false,
             isTestMode: false,
-            runtimeRole: role
+            runtimeRole: role,
+            webReaderURL: webReaderURL(
+                settingsURL: RuntimeRoleSettings.settingsURL(environment: environment), role: role
+            )
         )
+    }
+
+    /// Optional Web reader entry for hosts without a local index. Invariant
+    /// "Persisted Host Role Before Local Index Access": only collector/replica
+    /// roles get a URL, read from the same owner-only settings file as the role.
+    static func webReaderURL(settingsURL: URL, role: EngramRuntimeRole) -> URL? {
+        guard role == .collector || role == .replica,
+              let data = SecureRegularFile.read(
+                  atPath: settingsURL.path,
+                  maximumBytes: RuntimeRoleSettings.maximumBytes,
+                  repairPermissions: false
+              ),
+              let settings = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let raw = settings["webReaderURL"] as? String else {
+            return nil
+        }
+        return validatedWebReaderURL(raw)
+    }
+
+    /// Accepts only a plain https URL with a host: printable ASCII, at most
+    /// 2048 bytes, no userinfo, query or fragment.
+    static func validatedWebReaderURL(_ raw: String) -> URL? {
+        guard !raw.isEmpty, raw.utf8.count <= 2048,
+              raw.unicodeScalars.allSatisfy({ (0x21...0x7E).contains($0.value) }),
+              let components = URLComponents(string: raw),
+              components.scheme == "https",
+              let host = components.host, !host.isEmpty,
+              components.user == nil, components.password == nil,
+              components.query == nil, components.fragment == nil else {
+            return nil
+        }
+        return components.url
     }
 
     static func test(fixturePath: String) -> AppEnvironment {
@@ -160,7 +196,10 @@ struct AppEnvironment {
                     mockDaemon: false,
                     showOnboarding: false,
                     isTestMode: false,
-                    runtimeRole: role
+                    runtimeRole: role,
+                    webReaderURL: webReaderURL(
+                        settingsURL: RuntimeRoleSettings.settingsURL(environment: environment), role: role
+                    )
                 )
             }
             let dataDirectory = URL(fileURLWithPath: normalizedDataDir, isDirectory: true)
@@ -179,7 +218,10 @@ struct AppEnvironment {
                 mockDaemon: false,
                 showOnboarding: false,
                 isTestMode: false,
-                runtimeRole: role
+                runtimeRole: role,
+                webReaderURL: webReaderURL(
+                    settingsURL: RuntimeRoleSettings.settingsURL(environment: environment), role: role
+                )
             )
         }
         return production(environment: environment)
