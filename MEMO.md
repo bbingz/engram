@@ -2,6 +2,15 @@
 
 ## Changelog Memo
 
+### 2026-10-18
+
+- [变更] 业主要求继续用 Opus 清理开放项：两轮 Workflow（7 个只读 scoping agent、15 个实现/复核 agent），4 项落地为 PR 并按序合并：#475 `__SHA_475__` W6.2 真实二进制门禁（非必需工作流 + 校验脚本，跳过即失败）；#476 `7a48d19d` App 在 collector/replica 角色下的「Open Web Reader」入口（新可选键 `webReaderURL`，仅 https）；#477 `9f131f25` W4.7 HQ 侧 `collectorEpochDryRun`/`collectorApproveEpoch` IPC + `EngramCLI collector-epoch`（令牌保护、不进 Web）；#478 `9ef7fb4f` D7 旧 `origin=local` grok/pi 清理的 dry-run/apply 工具与离线报告模式。均未部署，未改任何主机。详见 `CHANGELOG.md`。
+- [验证] 每个 PR 由实现者与独立复核者各跑一遍测试（ServiceCore 用 CI 的 HOME 隔离），复核者另做了变异验证（去掉关键守卫后对应测试确实失败）；PR 的 required CI 全绿后才合并。#475 自身触发的托管 `Real-binary chain` 结果：第三次运行通过（run 39093667839，头 eb62c039）：`result=pass expected=50 passed=49 skipped=1 failed=0`，大历史测试 429.6 秒；前两次只在该测试上失败（240 秒作用域期限、夹具 0.5 秒副本请求超时），已给托管机加 `--timeout-scale 3`（只拉长期限，不改断言）。
+- [排查] Daily collector 30 分钟只读测量（10-17 23:49Z 起，PID 96925，`b83ada40…`，poll 10 s，16 根全程收敛）：CPU 5.891%（目标 ≤ 2%，未达标）、最大 RSS 81.2 MiB（达标）；安静段地板 1.5% 到 3.5%，峰值与 35 条 Claude Code 转写发布对应；TODO 里的 Cursor peer scan 线索 9-12 已缓解，D1 到 D3 判别诊断均为阴性。新线索：大转写文件每次追加的捕获成本，未剖析（`sample` 需业主批准）。该项保持开放。
+- [新增] followup `collector-epoch-producer-1`：collector 从不在同一 source instance 下轮换 epoch，spool 重置到 HQ 表现为新 instance，provisioning 会报 `overlappingRoot`；W4.7 新命令只覆盖设计假设的同 instance 场景，生产者侧待业主决定。
+- [验证] D7 dry-run 报告已从 HQ 库只读快照（02:24Z，`VACUUM INTO`，13.4 GB，quick_check ok）生成（合并后 main `9ef7fb4f` 的二进制重跑，JSON 逐字节一致）并经独立 SQL 交叉核对：候选 6,191 行（grok 5,959、最新 indexed_at 10-07；pi 232），阻塞依赖全 0，`purgeAllowed=true`，planToken `9fa54d7d…90b8f`；capture 绑定的 grok 866 / pi 573 行正确排除；候选数自 10-07 起未增长。业主已于 10-18 批准该报告（仅报告，不含主机步骤）；HQ 部署、回滚备份、live preview 复核与 apply 另需逐项授权。
+- [未验证] W4.1 别名对账、W4.5 旧回执引导需要业主决策（关闭 / 按设计建 / 重定范围），详见 `CHANGELOG.md`。
+
 ### 2026-10-17
 
 - [变更] #473 合并为 `b95d99ad` 后，用同一提交的 Release/arm64 构建打包并部署：HQ 的 service-index 从 10-02 的 `8a6cdf6c` 换到 main（启动迁移建出 P2 索引，PID 20105，stderr 0 字节，账本无积压，`origin=local` 6,191 不变）；Daily 的 collector 换到带 `--reconcile-native-epoch` 的新包（PID 96925，一次启动无错误）。两处都只改 plist 的 `ProgramArguments[0]`，旧包与 plist 备份保留可回滚。详见 `CHANGELOG.md`。

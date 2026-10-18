@@ -18,10 +18,21 @@
 - The real-binary chain tests that cover every source skip unless
   `ENGRAM_COLLECTOR_BINARY`, `ENGRAM_SERVICE_BINARY` and
   `ENGRAM_REMOTE_SERVER_BINARY` are set; no CI workflow sets them.
+  2026-10-18: PR #475 adds `.github/workflows/real-binary.yml`, a non-required
+  weekly / dispatch / PR gate that builds the three Debug binaries, sets the
+  variables and fails unless the expected test set executed; its hosted run
+  passed 49 of 50 with only the browser demo skipped by design.
 - Daily resource acceptance is still open. The last recorded full Daily window
   (observer 49875, Daily build 92844) measured 13.178% CPU against the 2% target;
   observer 7119 for the later capture-schedule build has no recorded result.
   The 2026-09-13 handoff deferred resource work; it did not pass.
+  2026-10-18 read-only window (PID 96925, binary `b83ada40…5c01` from the
+  2026-10-17 deployment, `pollIntervalMilliseconds` 10000, 16 roots converged
+  before and after, host in active use): 61 samples over 1803 s, CPU 5.891%
+  (FAIL), max RSS 81.2 MiB (PASS), PID stable, no re-walk; 37 publications
+  ACKed by both replicas, 35 from `daily-claude`. Quiet floor 1.5-3.5%, bursts
+  to 29% during transcript appends. Diagnostics D1-D3 negative (details in
+  `CHANGELOG.md` 2026-10-18).
 - **Resolved by owner decision D3 (2026-10-02, recorded here 2026-10-07):**
   the "Registered sources" rule says the old ingestion path must remain enabled
   wherever a source is enabled, and the verifier says not to change jobs. The
@@ -201,7 +212,12 @@ and same-snapshot HTTP walks passed all17 streams; see
 This supersedes the earlier undifferentiated overview503 note for the observed
 paged flow, without claiming cold/p95 acceptance. Daily resource acceptance
 remains open: current backfill measured24.492% of one core /75.172MiB over60s.
-The repeated Cursor peer scan is the next measured optimization lead. Neither a
+The repeated Cursor peer scan is the next measured optimization lead.
+(2026-10-18: that lead was mitigated on 2026-09-12 by the 30 s hint cache and
+the 10 s gate before the 13.178% window; the 2026-10-18 window above shows a
+polling floor near the target plus bursts tied to Claude Code transcript
+appends, so the next lead is the per-change capture cost of large appended
+transcripts, unprofiled; `sample` on Daily needs owner approval.) Neither a
 zero historical queue nor reboot was added as a new retirement prerequisite.
 
 Daily cutover update (2026-09-12): the old com.engram.service job is now disabled

@@ -3,6 +3,134 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Open-item cleanup by Opus workflows: four TODO items shipped, Daily CPU measured, two items need owner decisions (2026-10-18)
+
+Owner request: "继续组织opus清理开放项" (keep orchestrating Opus to clear the open
+items). Two Workflow runs with Opus agents, orchestrated from this session:
+a read-only scoping pass (7 agents, one per `docs/TODO.md` open item, 11 min)
+and an implementation pass (15 agents: 4 implementers in isolated worktrees
+off `4b84e3d5`, a spec/invariants reviewer plus an independent test executor
+per item, one fix round for D7, 67 min). The orchestrator read every diff,
+pushed the branches and opened the PRs; nothing was deployed and no host was
+changed.
+
+**Shipped (PRs opened from this session; merged in the order #477, #476, #478, #475, each after its required checks passed on a branch updated to the then-current `main`):**
+
+- PR #475 `__SHA_475__` — W6.2 real-binary chain gate.
+  `.github/workflows/real-binary.yml` (weekly, `workflow_dispatch`, and PRs
+  touching the gate; **not** a required check, `CI Gate` contract unchanged),
+  `scripts/ci/run-real-binary-gate.sh` (builds Debug EngramCollector /
+  EngramService / EngramRemoteServer, runs `CollectorBinaryShadowIntegrationTests`,
+  `CollectorCLIIntegrationTests` with the env vars set, writes a receipt) and
+  `scripts/ci/check-real-binary-results.py`, which fails unless the exact
+  expected test set executed (a green run with 50 skips is a fail; proven
+  locally: `result=fail expected=50 passed=0 skipped=50`). Local full run:
+  `result=pass expected=50 passed=49 skipped=1` (browser demo skipped by
+  design). Hosted result on the PR: pass on the third run (run 39093667839, head eb62c039): `result=pass expected=50 passed=49 skipped=1 failed=0`, large-history test 429.6 s. The first two hosted runs failed only on that test (240 s scope deadline, then the fixture's 0.5 s replica request timeout), so the gate now scales its deadlines and fixture HTTP timeouts by `--timeout-scale 3` on hosted runners; assertions and the expected test set are unchanged.
+- PR #476 `7a48d19d` — App "Open Web Reader" action in `collector`/`replica`
+  roles, driven by a new optional `webReaderURL` key in `settings.json`
+  (https only, host required, no userinfo/query/fragment), disabled with a
+  caption when unset; the blocked-role branch still never opens the DB or
+  spawns a Service. 5 new `RuntimeRoleAppTests`. The per-host settings edit is
+  a later operator step.
+- PR #477 `9f131f25` — W4.7 HQ half: `collectorEpochDryRun` (writer-gate
+  read, peer-UID gated, index role only, also lists observed-but-unapproved
+  epochs per instance) and `collectorApproveEpoch` (writer-gate write,
+  capability-token protected, exact expected epoch + authority generation,
+  role and enabled source re-checked inside the write), reached through
+  `EngramCLI collector-epoch dry-run|approve`; not on any Web allowlist, not on
+  the client protocol or mock. Design
+  `docs/superpowers/specs/2026-10-18-hq-collector-epoch-approval-design.md`,
+  ledger entry "Collector Epoch Approval Is A Local Operator Action", repro
+  `testUnapprovedEpochBecomesIngestibleAfterOperatorApproval_repro`.
+  Finding recorded as followup `collector-epoch-producer-1`: the collector
+  never rotates an epoch under an existing source instance
+  (`CollectorInventoryStore` mints fresh instance and epoch UUIDs per root
+  revision), so a spool reset arrives at HQ as a new instance on a registered
+  root and would hit `overlappingRoot` in provisioning; the new command covers
+  the design's same-instance case, the producer side is an owner decision.
+- PR #478 `9ef7fb4f` — D7 option (c) tooling: `LegacyLocalSessionPurge`
+  (candidate predicate for legacy `origin=local` grok/pi rows that are not
+  capture-bound, blocking user-state counts, `planToken` over the sorted IDs,
+  one-transaction purge that refuses on plan change or any blocking dependent,
+  explicit FTS cleanup, audit metadata row), IPC `legacyLocalPurgePreview` /
+  `legacyLocalPurgeApply` (token protected, index role only), the offline
+  `EngramService --legacy-local-purge-report --database-path <copy>` for a
+  report from a backup copy, and `EngramCLI maintenance legacy-local-purge
+  preview|apply --expect-sessions --expect-token`. Design
+  `docs/superpowers/specs/2026-10-18-d7-legacy-local-origin-purge-design.md`
+  (Rollout holds the operator runbook), ledger entry "Legacy Local-Origin
+  Purge Is Dry-Run First And Dependent-Free". Dry-run report produced from
+  a read-only `VACUUM INTO` snapshot of the HQ index (02:24Z, 13.4 GB,
+  quick_check ok, 45,764 sessions), first with the branch's Debug binary and
+  again with one built from merged `main` `9ef7fb4f` (byte-identical JSON),
+  and cross-checked with plain SQL: 6,191 candidates (grok 5,959, newest
+  indexed_at 2026-10-07T11:20Z; pi 232, newest 2026-09-11), every blocking
+  dependent 0 (insights, outside parent/suggested links, local state,
+  favorites, tags, offloaded), `purgeAllowed` true, planToken
+  `9fa54d7d1ab87778faf42d525076f8544b322207313ed06b4bb916f9d8890b8f`
+  (identical to the SQL recomputation); derived rows ftsMap/sessionsFts
+  51,937, session_index_jobs 11,578, session_tools 23,232, session_costs
+  6,191, work beats 531; retained file_index_state 6,191; the 866 grok and
+  573 pi capture-bound rows are outside the predicate. The candidate count
+  has not grown since 2026-10-07, so the HQ role gate holds. The owner
+  approved this report on 2026-10-18 ("批准"; the approval covers the report,
+  not the host steps). Remaining D7 steps, each separately authorized: deploy
+  service-index and EngramCLI to HQ from a `main` containing #478, take a
+  fresh rollback `.backup`, confirm `legacy-local-purge preview` on the live
+  socket reproduces `sessionCount` 6,191 and the approved `planToken`, then
+  apply and re-preview to 0.
+
+Verification per PR is in each PR description (implementer plus independent
+re-run with the test.yml HOME isolation; verifiers also ran mutation checks,
+for example removing the capture-binding exclusion or the index-role gate made
+the named tests fail). All four PRs passed the required checks before merge.
+
+**Daily collector CPU window (plan W6 item 3), read-only, not passed.** The
+scoping agent found that the TODO's lead (the every-second Cursor peer
+fingerprint scan) had already been mitigated on 2026-09-12 by the 30 s hint
+cache and the 10 s gate, both present in the build that measured 13.178%, so
+no code was changed; the done criterion is a host measurement. Window
+2026-10-17T23:49:19Z to 2026-10-18T00:19:22Z on Daily (PID 96925, binary
+`b83ada40…5c01` from the 2026-10-17 deployment, `pollIntervalMilliseconds`
+10000, 16 roots, process uptime 10 h): 61 samples, wall 1803 s, **CPU 5.891%
+of one core (target <= 2%: FAIL)**, max RSS 81.2 MiB (target <= 150 MiB:
+PASS), PID stable, all 16 roots requested_revision == completed_revision
+before and after (no re-walk). Per 30 s interval: 10 below 2%, 29 at 2-5%,
+21 at or above 5%; quiet floor 0.45-1.0 s CPU per 30 s (1.5-3.5%), bursts of
+3-9 s. Workload: 37 publications ACKed by both replicas (46,782 -> 46,819),
+35 of them from the `daily-claude` root; the host was in active use (load
+average 3.6 to 13, Spotlight `mds_stores` at 47% at the end). Discriminating
+diagnostics all negative: `cursor_legacy_observer_error` 0 before and after
+(FIX A not indicated), modern Cursor root revision unchanged (FIX B not
+indicated), `~/.cursor` dirents 963 < 2048 (discoverModern budget fine);
+`sample` (D4) not run because it attaches to the process and writes on Daily.
+Reading: the cost is a polling floor near the target plus bursts tied to
+Claude Code transcript appends; the next measured lead is the per-change
+capture cost of large appended transcripts, unprofiled. Raw samples and the
+receipt are in the session scratchpad; the checklist, TODO and followups carry
+the summary. The item stays open.
+
+**Needs owner decisions (scoped, not built):**
+
+- W4.1 alias reconciliation: D7 chose the purge over the alias for the only
+  legacy rows in the central DB, D9 accepts the history gap, and HQ's legacy
+  Claude Code / Codex user state lives in the separate old local DB that an
+  alias inside the central DB cannot reach. Options: (a) close as superseded
+  by D7(c)/D9; (b) build as designed (about 800-1,100 lines, schema change,
+  design doc first) for a future local-role host that also ingests its own
+  collector; (c) re-scope as an old-DB user-state import. Also unverified:
+  whether the archive-v2 catalog is the accepted byte proof for any legacy row.
+- W4.5 old-receipt bootstrap: D9 recorded it as "a later decision"; nothing
+  since reopens it. Building it needs W4.1 or an explicit duplicate rule and a
+  provenance change to `capture_ingest_generations` (publication sha and
+  sequence are NOT NULL), size XL. Options: keep D9 and mark won't-do, or
+  reopen with a design doc.
+
+Not in scope of this cleanup and unchanged: `cutover-hq-local-gap-1` (needs
+owner credential and root steps on HQ), `collector-epoch-change-scope-1`
+(owner decision), the untracked `.grok/workflows/engram-session-status.rhai`.
+
 ## Collector reconcile command deployed to Daily; HQ service-index moved to main with P2 (2026-10-17)
 
 Owner authorization: "同意，按顺序来" for the three-step plan (recover Daily,
