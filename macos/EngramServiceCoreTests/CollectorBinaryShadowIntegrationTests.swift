@@ -114,6 +114,15 @@ private struct ShadowBinaries {
         }
         return Self(collector: paths[0], service: paths[1], remote: paths[2])
     }
+
+    /// Deadline multiplier for slower hosts (hosted CI runners), set by
+    /// scripts/ci/run-real-binary-gate.sh --timeout-scale. Clamped to 1...10;
+    /// anything unset or malformed means 1. It never changes an assertion.
+    static var timeoutScale: Double {
+        guard let raw = ProcessInfo.processInfo.environment["ENGRAM_REAL_BINARY_TIMEOUT_SCALE"],
+              let value = Double(raw), value.isFinite else { return 1 }
+        return min(max(value, 1), 10)
+    }
 }
 
 private struct ShadowRole {
@@ -209,7 +218,7 @@ private final class BinaryShadowScope: @unchecked Sendable {
          cursorLegacy: Bool = false, seedStores: Bool = true, timeout: TimeInterval = 25, piLargeReply: Bool = false) throws {
         guard [.codex, .claudeCode, .minimax, .lobsterai, .qwen, .qoder, .iflow, .vscode, .cline, .commandcode, .copilot, .geminiCli, .opencode, .kimi, .cursor, .antigravity, .windsurf, .pi, .grok].contains(sourceKind) else { throw BinaryShadowFailure.fixture }
         guard !cursorLegacy || sourceKind == .cursor else { throw BinaryShadowFailure.fixture }
-        self.deadline = Date().addingTimeInterval(timeout)
+        self.deadline = Date().addingTimeInterval(timeout * ShadowBinaries.timeoutScale)
         self.binaries = binaries
         self.sourceKind = sourceKind
         self.piLargeReply = piLargeReply

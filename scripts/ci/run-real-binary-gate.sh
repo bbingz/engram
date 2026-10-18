@@ -6,10 +6,14 @@
 #
 # Usage: run-real-binary-gate.sh --out DIR [--derived-data DIR]
 #                                [--cloned-source-packages DIR]
+#                                [--timeout-scale N]
+# --timeout-scale multiplies the shadow scope deadlines inside the tests
+# (ENGRAM_REAL_BINARY_TIMEOUT_SCALE, 1-10, default 1) for slower hosts such as
+# hosted runners; it changes no assertion, only how long the chain may take.
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 --out DIR [--derived-data DIR] [--cloned-source-packages DIR]" >&2
+  echo "usage: $0 --out DIR [--derived-data DIR] [--cloned-source-packages DIR] [--timeout-scale N]" >&2
   exit 2
 }
 
@@ -21,15 +25,21 @@ fi
 OUT=""
 DD=""
 SPM=""
+SCALE="1"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --out) [ "$#" -ge 2 ] || usage; OUT="$2"; shift 2 ;;
     --derived-data) [ "$#" -ge 2 ] || usage; DD="$2"; shift 2 ;;
     --cloned-source-packages) [ "$#" -ge 2 ] || usage; SPM="$2"; shift 2 ;;
+    --timeout-scale) [ "$#" -ge 2 ] || usage; SCALE="$2"; shift 2 ;;
     *) usage ;;
   esac
 done
 [ -n "$OUT" ] || usage
+case "$SCALE" in
+  [1-9]|10) ;;
+  *) echo "--timeout-scale must be an integer from 1 to 10, got '$SCALE'" >&2; exit 2 ;;
+esac
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 if [ -e "$OUT" ] && [ -n "$(ls -A "$OUT")" ]; then
@@ -81,8 +91,11 @@ chmod 700 "$TEST_HOME"
 
 # ENGRAM_SHADOW_* is deliberately never set here: the browser demo stays an
 # operator opt-in and is the only test the verifier allows to skip.
+echo "REAL_BINARY_GATE timeout_scale=$SCALE"
 set +e
 env \
+  ENGRAM_REAL_BINARY_TIMEOUT_SCALE="$SCALE" \
+  TEST_RUNNER_ENGRAM_REAL_BINARY_TIMEOUT_SCALE="$SCALE" \
   ENGRAM_COLLECTOR_BINARY="$COLLECTOR" \
   TEST_RUNNER_ENGRAM_COLLECTOR_BINARY="$COLLECTOR" \
   ENGRAM_SERVICE_BINARY="$SERVICE" \

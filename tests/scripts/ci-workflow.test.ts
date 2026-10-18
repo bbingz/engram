@@ -941,9 +941,12 @@ describe('Real-binary workflow', () => {
       'TEST_RUNNER_ENGRAM_SERVICE_BINARY',
       'TEST_RUNNER_ENGRAM_REMOTE_SERVER_BINARY',
       'TEST_RUNNER_CFFIXED_USER_HOME',
+      'TEST_RUNNER_ENGRAM_REAL_BINARY_TIMEOUT_SCALE',
     ]) {
       expect(realBinaryGateScript).toContain(variable);
     }
+    // Hosted runners get longer scope deadlines, never different assertions.
+    expect(realBinaryWorkflow).toContain('--timeout-scale 3');
     expect(realBinaryGateScript).toContain('test-without-building');
     expect(realBinaryGateScript).toContain(
       'xcresulttool get test-results tests',
