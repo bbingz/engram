@@ -32,9 +32,19 @@ authorizes host changes.
   (`docs/superpowers/specs/2026-10-17-collector-native-epoch-reconcile-design.md`,
   invariant "Native Epoch Reconciliation Is An Explicit Operator Action"),
   deployed to Daily the same day as `collector-native-epoch-reconcile-20261017`
-  (real-host dry run: 0 affected roots). Still open: the HQ-side
-  `collectorApproveEpoch` action for a new collector epoch (spool reset) and
-  its registry callers.
+  (real-host dry run: 0 affected roots). 2026-10-18: the HQ half is done in
+  code on branch `feat/w47-hq-approve-epoch-20261018`
+  (`docs/superpowers/specs/2026-10-18-hq-collector-epoch-approval-design.md`,
+  invariant "Collector Epoch Approval Is A Local Operator Action"): the
+  token-protected Service command `collectorApproveEpoch` and the read-only
+  `collectorEpochDryRun` (which also lists observed but unapproved epochs for
+  the source instance), reached through
+  `EngramCLI collector-epoch dry-run|approve`; repro test
+  `testUnapprovedEpochBecomesIngestibleAfterOperatorApproval_repro`. Remaining:
+  the HQ service-index and EngramCLI deployment is a separate owner-authorized
+  step, and the command has no real-world trigger yet because the collector
+  never rotates an epoch under an existing source instance (owner decision in
+  `docs/followups.md` `collector-epoch-producer-1`).
 - **Real-binary chain in a recorded gate (plan W6 item 2).** Every test in
   `CollectorBinaryShadowIntegrationTests.swift` skips unless three binary-path
   environment variables are set, and no CI workflow sets them. Done when CI sets

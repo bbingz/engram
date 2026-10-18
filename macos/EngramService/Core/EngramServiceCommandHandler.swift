@@ -295,6 +295,31 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                         try await archiveV2RemoteRecoveryProbeResponse(payload)
                     )
                 )
+            case "collectorEpochDryRun":
+                try requireExactPayloadKeys(request, allowed: [["machineID", "sourceInstanceID", "candidateEpoch"]])
+                let payload = try decodePayload(EngramServiceCollectorEpochDryRunRequest.self, from: request)
+                let settingsURL = EngramServiceRunner.engramSettingsURL(
+                    environment: ProcessInfo.processInfo.environment
+                )
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(try await collectorEpochDryRunResponse(payload, settingsURL: settingsURL))
+                )
+            case "collectorApproveEpoch":
+                try requireExactPayloadKeys(
+                    request,
+                    allowed: [["machineID", "sourceInstanceID", "candidateEpoch", "expectedEpoch", "expectedAuthorityGeneration"]]
+                )
+                let payload = try decodePayload(EngramServiceCollectorApproveEpochRequest.self, from: request)
+                let settingsURL = EngramServiceRunner.engramSettingsURL(
+                    environment: ProcessInfo.processInfo.environment
+                )
+                let result = try await collectorApproveEpochResponse(payload, settingsURL: settingsURL)
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
             case "status":
                 let status = try await writerGate.indexStatus()
                 return .success(
