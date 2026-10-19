@@ -20,12 +20,6 @@ struct SessionsScreen {
             .firstMatch
     }
 
-    // MARK: - KPI Cards
-
-    var kpiTotal: XCUIElement { app.element(id: "sessions_kpiCard_total") }
-    var kpiMessages: XCUIElement { app.element(id: "sessions_kpiCard_messages") }
-    var kpiAvgDuration: XCUIElement { app.element(id: "sessions_kpiCard_avgDuration") }
-
     // MARK: - Session Rows
 
     func row(at index: Int) -> XCUIElement {

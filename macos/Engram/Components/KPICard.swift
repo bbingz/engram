@@ -7,6 +7,14 @@ struct KPICard: View {
     var delta: String? = nil
     var deltaPositive: Bool = true
 
+    /// Compact KPI value ("1.2K" / "3.4M") — the one shared abbreviator for
+    /// hero numbers (HomeView, SourcePulseView).
+    static func compactNumber(_ n: Int) -> String {
+        if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
+        if n >= 1_000 { return String(format: "%.1fK", Double(n) / 1_000) }
+        return "\(n)"
+    }
+
     var body: some View {
         VStack(spacing: 4) {
             Text(value)

@@ -248,4 +248,86 @@ final class BrowseReloadCoalescerTests: XCTestCase {
             )
         )
     }
+
+    // MARK: - SessionsPageView.buildRows (agent-sessions table flatten)
+
+    /// Minimal Session factory (same JSON-decode path as SessionModelTests).
+    private func makeSession(id: String, summary: String = "S") -> Session {
+        let dict: [String: Any] = [
+            "id": id,
+            "source": "claude-code",
+            "start_time": "2026-03-20T10:00:00Z",
+            "end_time": "2026-03-20T11:00:00Z",
+            "cwd": "/tmp",
+            "project": "engram",
+            "message_count": 10,
+            "user_message_count": 5,
+            "assistant_message_count": 4,
+            "system_message_count": 1,
+            "summary": summary,
+            "file_path": "/tmp/\(id).jsonl",
+            "size_bytes": 50000,
+            "indexed_at": "2026-03-20T12:00:00Z",
+            "tier": "normal",
+            "tool_message_count": 0,
+            "access_count": 0,
+        ]
+        let data = try! JSONSerialization.data(withJSONObject: dict)
+        return try! JSONDecoder().decode(Session.self, from: data)
+    }
+
+    func testBuildRowsCollapsedParentsOnly() {
+        let parents = [makeSession(id: "p1"), makeSession(id: "p2")]
+        let rows = SessionsPageView.buildRows(
+            sessions: parents,
+            confirmedCounts: ["p1": 2, "p2": 0],
+            suggestedCounts: ["p1": 1, "p2": 0],
+            expandedParents: [],
+            childrenByParent: [:]
+        )
+        XCTAssertEqual(rows.map(\.id), ["p1", "p2"])
+        XCTAssertEqual(rows.map(\.index), [0, 1])
+        XCTAssertEqual(rows.map(\.kind), [.parent, .parent])
+        XCTAssertEqual(rows.map(\.depth), [0, 0])
+        XCTAssertEqual(rows[0].hasChildren, true)
+        XCTAssertEqual(rows[0].childCount, 3)
+        XCTAssertEqual(rows[1].hasChildren, false)
+        XCTAssertEqual(rows[1].childCount, 0)
+    }
+
+    func testBuildRowsExpandedParentFlattensConfirmedThenSuggestedChildren() {
+        let parents = [makeSession(id: "p1"), makeSession(id: "p2")]
+        let box = SessionChildrenBox(
+            confirmed: [makeSession(id: "c1"), makeSession(id: "c2")],
+            suggested: [makeSession(id: "s1")]
+        )
+        let rows = SessionsPageView.buildRows(
+            sessions: parents,
+            confirmedCounts: ["p1": 3],
+            suggestedCounts: [:],
+            expandedParents: ["p1"],
+            childrenByParent: ["p1": box]
+        )
+        XCTAssertEqual(rows.map(\.id), ["p1", "c1", "c2", "s1", "p2"])
+        XCTAssertEqual(rows.map(\.index), [0, 1, 2, 3, 4])
+        XCTAssertEqual(rows[0].isExpanded, true)
+        XCTAssertEqual(rows[1...3].map(\.depth), [1, 1, 1])
+        XCTAssertEqual(rows[1].kind, .confirmedChild)
+        XCTAssertEqual(rows[3].kind, .suggestedChild)
+        XCTAssertEqual(rows[4].kind, .parent)
+    }
+
+    func testBuildRowsExpandedParentWithoutLoadedBoxEmitsNoChildRows() {
+        let parents = [makeSession(id: "p1")]
+        let rows = SessionsPageView.buildRows(
+            sessions: parents,
+            confirmedCounts: ["p1": 2],
+            suggestedCounts: [:],
+            expandedParents: ["p1"],
+            childrenByParent: [:]
+        )
+        XCTAssertEqual(rows.map(\.id), ["p1"])
+        XCTAssertEqual(rows[0].hasChildren, true)
+        XCTAssertEqual(rows[0].isExpanded, true)
+    }
 }

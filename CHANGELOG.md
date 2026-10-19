@@ -3,6 +3,113 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Shared display-format helpers deduped (2026-10-19)
+
+Phase 3 (cross-page dedupe) of the agent-sessions UI alignment, same branch.
+
+- `ProjectBadge.shortLabel(_:)` is now the canonical last-path-component
+  project label. HomeView's two private `projectLabel` copies and
+  SearchPageView's delegate to it; ProjectsView's inline copy calls it
+  directly. TodayWorkbenchSupport keeps its two inline copies deliberately —
+  they are basename *matching* logic, not display formatting.
+- `KPICard.compactNumber(_:)` is the one KPI abbreviator ("1.2K"/"3.4M");
+  HomeView and SourcePulseView delegate to it (SourcePulseView gains the
+  ≥1M tier its older copy lacked).
+- `ServiceDataFreshness.asOfText(_:)` (EngramServiceStatusStore) is the sole
+  "as of HH:mm" implementation: HomeView and PopoverView's private copies and
+  their duplicate `DateFormatter`s are deleted, and the "HomeView /
+  PopoverView keep their private copies" comment is updated to reflect that
+  no private copies remain.
+- Assessed and deliberately NOT deduped: `SessionCard` / `LiveSessionCard` /
+  `ExpandableSessionCard` serve distinct row types (generic row, live session
+  with pulsing dot, expandable parent), and the Sessions/Timeline
+  confirm/dismiss-suggestion bodies diverge in refresh strategy and error
+  surface — forcing an abstraction there would be two callbacks for two call
+  sites. `RenameSessionSheet` was already shared.
+
+**Verification**: Debug build succeeds; 12 suites covering the touched
+surfaces pass (360 tests): HomePopoverActionsTests, SearchOutcomeTests,
+SourcePulseUsageFormattingTests, ProjectsMigrationTests, TodayWorkbenchTests,
+TodayWorkbenchScopeTests, SourcesSyncTests, UIUXPolishWiringTests,
+TranscriptFindTests, AppSearchServiceCutoverScanTests,
+MCPActivationOnboardingTests, ViewMainThreadReadTests, plus
+LiveSessionsHoldTests.
+
+Remaining phase-3 scope (deep visual restyle of Home/Search/Timeline/Activity)
+is deferred: the reference app has no such pages to copy, and local visual
+verification is blocked by the testmanagerd hang (see phase 2 entry).
+
+
+## Transcript: collapsed tool runs + agent-sessions role palette (2026-10-19)
+
+Phase 2 of the agent-sessions UI alignment, same branch.
+
+- **Tool-run collapse**: consecutive tool-ish rows (`tool` / `toolCall` /
+  `toolResult`, runs of ≥2) collapse into one "› N tool calls" header row in
+  the session-view transcript (new `TranscriptBlock` model +
+  `TranscriptBlockGrouper`, pure and unit-tested with 5 tests). Click expands
+  the run in place. Errors stay standalone so red rows remain scannable.
+  `displayIndexed` remains the canonical row space — find indices, match
+  counts, and type chips are untouched; blocks are only a rendering
+  projection. Find navigation into a collapsed run expands it before
+  scrolling (one runloop hop so the target view exists for `scrollTo`).
+  Expansion state resets on session switch.
+- **Assistant role color** → warm brown (agent-sessions palette), dark-mode
+  aware via a dynamic `NSColor` provider: light rgb(0.55, 0.34, 0.12), dark
+  rgb(0.74, 0.46, 0.22). User blue / tool purple / error red were already
+  aligned; the assistant rows had been purple, colliding with tool calls.
+- Turn-duration chips already existed on assistant rows ("4.8s"); kept
+  Engram's no-call-count format (documented row-30 decision).
+
+**Verification**: `xcodegen generate` (new file) then Debug build succeeds;
+transcript suites pass (`TranscriptLabelAndCopyTests` incl. the 5 new grouping
+tests, `TranscriptFindTests`, `UIUXPolishWiringTests`,
+`AppSearchServiceCutoverScanTests`). Full `EngramTests` suite (exit 65):
+3374 passed, 1 failed — `EngramServiceLauncherTests.testRestartWaitsThroughCooperativeShutdownBeforeReplacing_repro`
+at line 1239 (`XCTAssertTrue(initialStarted)`, a 500ms spawn-marker wait).
+Solo re-run of that one test passes (3.43s, TEST SUCCEEDED): the failure is a
+timing flake under full-suite load (helper process spawn latency), unrelated
+to this UI diff — no launcher code was touched.
+
+## Sessions page rebuilt as agent-sessions-style master-detail (2026-10-19)
+
+`SessionsPageView` is rewritten on branch `refactor/ui-agent-sessions-20261019`
+to match the interaction structure of jazzyalex/agent-sessions (the reference
+Engram's UI was originally modeled on). No schema, service, or query changes.
+
+- **Split layout**: `HSplitView` with the filter header + session list on the
+  left and an embedded `SessionDetailView` (no back button) on the right.
+  Table selection paints instantly; the transcript pane follows after a 150ms
+  settle debounce so arrow-key scrubbing does not rebuild it per row.
+- **SwiftUI `Table`** replaces the `LazyVStack` of `ExpandableSessionCard`s:
+  columns ★ (favorite toggle) / Source (pill + origin badge) / Session /
+  Updated (mono relative time) / Project / Msgs (mono). Row height comes from
+  the table style instead of padded cards.
+- **Flattened hierarchy**: confirmed and suggested child sessions render as
+  depth-1 rows inside the same table (`SessionsPageView.buildRows`, pure and
+  unit-tested). Collapsed parents show a child count; expanding loads children
+  lazily and keeps them in a per-parent box. Suggested rows carry inline
+  Confirm/Dismiss; all rows keep the full context menu
+  (`SessionWriteMenuItems` promoted from private to internal for reuse).
+- **Footer status bar** replaces the three KPI cards: service state on the
+  left, "N sessions" / "N of M sessions · Clear filters" on the right.
+- Unchanged: filter pills, source picker, Show-all / Show-hidden / HQ-only
+  toggles, generation-gated loads, browse-reload coalescing, pagination, and
+  every `sessions_*` accessibility identifier the UI tests query.
+  `SessionsScreen` KPI accessors (unreferenced by any test) were removed.
+
+**Verification**: `xcodebuild` Debug build succeeds (`CODE_SIGNING_ALLOWED=NO`;
+this machine has no Mac Development certificate). Unit suites pass:
+`BrowseReloadCoalescerTests` (incl. 3 new `buildRows` tests),
+`SessionModelTests`, `UIUXPolishWiringTests`, `ViewMainThreadReadTests`,
+`SessionActionsTests`, `AppSearchServiceCutoverScanTests`. Two source-scan
+assertions were updated for the new wiring (raw `favoriteIds()` call count
+2→3 because the child-box load joins favorites; keyboard-reachability assertion
+now checks native `Table` selection instead of the card focus ring).
+`EngramUITests` smoke runs could not be executed here: the test runner hung
+before establishing a connection to `testmanagerd` on three attempts (twice
+before any app launch), an environment failure independent of this change.
+
 ## Collector idle-turn cost fixes deployed to Daily as `81bf3f1a` (2026-10-19)
 
 Build/fix entry: "Collector idle-turn cost: frontier reclaim, cached ancestor

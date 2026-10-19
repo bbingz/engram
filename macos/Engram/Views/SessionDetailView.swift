@@ -73,6 +73,10 @@ struct SessionDetailView: View {
     @State private var typeVisibility: [MessageType: Bool] = Self.defaultTypeVisibility
     @State private var navPositions: [MessageType: Int] = Dictionary(uniqueKeysWithValues: MessageType.allCases.map { ($0, -1) })
     @State private var scrollTarget: UUID? = nil
+    /// Collapsed tool runs the user (or find navigation) has expanded, keyed by
+    /// the run's first message id. `displayIndexed` stays the canonical row
+    /// space; tool runs are only a rendering projection of it.
+    @State private var expandedToolRuns: Set<UUID> = []
 
     @State private var displayIndexed: [IndexedMessage] = []
     @State private var matchIndices: [Int] = []
@@ -369,6 +373,56 @@ struct SessionDetailView: View {
         parseFailed || truncated || producedCount < requestedLimit
     }
 
+    /// A collapsed tool run (agent-sessions pattern): a 30pt "› N tool calls"
+    /// header; expanding reveals the individual rows. Keyed by the run's first
+    /// message id so ForEach identity is stable and expanding only adds rows
+    /// inside the block.
+    @ViewBuilder
+    private func toolRunBlock(_ rows: [IndexedMessage]) -> some View {
+        let runId = rows[0].id
+        let needle = ColorBarMessageView.normalizedFindNeedle(searchText)
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                if expandedToolRuns.contains(runId) {
+                    expandedToolRuns.remove(runId)
+                } else {
+                    expandedToolRuns.insert(runId)
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: expandedToolRuns.contains(runId) ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(MessageType.toolCall.color)
+                    Text("\(rows.count) tool calls")
+                        .scaledFont(10, weight: .medium)
+                        .monospacedDigit()
+                        .foregroundStyle(MessageType.toolCall.color)
+                    Spacer(minLength: 0)
+                }
+                // 3pt color bar + row content padding keep the header aligned
+                // with the message bodies below.
+                .padding(.leading, 15)
+                .padding(.trailing, 12)
+                .frame(height: 30)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(
+                expandedToolRuns.contains(runId)
+                    ? "Collapse \(rows.count) tool calls"
+                    : "Expand \(rows.count) tool calls"
+            )
+            .accessibilityIdentifier("detail_toolRun_\(runId)")
+
+            if expandedToolRuns.contains(runId) {
+                ForEach(rows) { indexed in
+                    ColorBarMessageView(indexed: indexed, searchText: needle, onCopyAll: { copyAllTranscript() })
+                        .id(indexed.id)
+                }
+            }
+        }
+    }
+
     /// Re-runs the match scan whenever the query OR the displayed set changes.
     /// `\u{1}` separates the two so distinct (version, query) pairs can't collide.
     private var findIndexedMessages: [IndexedMessage] {
@@ -377,6 +431,12 @@ struct SessionDetailView: View {
 
     private var matchScanToken: String {
         "\(session.id)\u{1}\(displayVersion)\u{1}\(viewMode.rawValue)\u{1}\(ColorBarMessageView.normalizedFindNeedle(searchText))"
+    }
+
+    /// Rendering projection of `displayIndexed` (session view mode): runs of
+    /// consecutive tool rows collapse into single "N tool calls" blocks.
+    private var transcriptBlocks: [TranscriptBlock] {
+        TranscriptBlockGrouper.group(displayIndexed)
     }
 
     private var currentFindMatchMessageID: UUID? {
@@ -788,9 +848,14 @@ struct SessionDetailView: View {
                         LazyVStack(alignment: .leading, spacing: 0) {
                             switch viewMode {
                             case .session:
-                                ForEach(displayIndexed) { indexed in
-                                    ColorBarMessageView(indexed: indexed, searchText: findNeedle, onCopyAll: { copyAllTranscript() })
-                                        .id(indexed.id)
+                                ForEach(transcriptBlocks) { block in
+                                    switch block {
+                                    case .message(let indexed):
+                                        ColorBarMessageView(indexed: indexed, searchText: findNeedle, onCopyAll: { copyAllTranscript() })
+                                            .id(indexed.id)
+                                    case .toolRun(let rows):
+                                        toolRunBlock(rows)
+                                    }
                                 }
                             case .text:
                                 ForEach(messages) { msg in
@@ -806,10 +871,23 @@ struct SessionDetailView: View {
                     }
                     .accessibilityIdentifier("detail_transcript")
                     .onChange(of: scrollTarget) { _, target in
-                        if let target {
+                        guard let target else { return }
+                        let performScroll = {
                             MotionAware.animate(.default, reduceMotion: reduceMotion) {
                                 proxy.scrollTo(target, anchor: .center)
                             }
+                        }
+                        // A find match inside a collapsed tool run must expand
+                        // the run first; defer the scroll one runloop hop so the
+                        // expanded rows exist before scrollTo resolves the id.
+                        if let runId = TranscriptBlockGrouper.toolRunId(
+                            containing: target,
+                            in: transcriptBlocks
+                        ), !expandedToolRuns.contains(runId) {
+                            expandedToolRuns.insert(runId)
+                            DispatchQueue.main.async { performScroll() }
+                        } else {
+                            performScroll()
                         }
                     }
                     .overlay(alignment: .bottomTrailing) {
@@ -902,6 +980,7 @@ struct SessionDetailView: View {
             searchText = searchTerm ?? ""
             showFind = (searchTerm?.isEmpty == false)
             scrollTarget = nil
+            expandedToolRuns = []
             summaryText = session.summary
             isSummarizing = false
             summaryError = nil

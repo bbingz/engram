@@ -23,8 +23,8 @@ enum ServiceDataFreshness: Equatable, Sendable {
     case stale(asOf: Date)
     case expired
 
-    /// Shared "as of HH:mm" caption for stale surfaces. HomeView / PopoverView
-    /// keep their private copies; new call sites must use this (no third copy).
+    /// Shared "as of HH:mm" caption for stale surfaces (HomeView and
+    /// PopoverView delegate here; no private copies remain).
     static func asOfText(_ date: Date) -> String {
         "as of \(timeFormatter.string(from: date))"
     }

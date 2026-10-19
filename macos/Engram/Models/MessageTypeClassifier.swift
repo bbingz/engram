@@ -1,4 +1,5 @@
 // macos/Engram/Models/MessageTypeClassifier.swift
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -30,7 +31,13 @@ enum MessageType: String, CaseIterable {
     var color: Color {
         switch self {
         case .user:       return Color(red: 0.23, green: 0.51, blue: 0.96)
-        case .assistant:  return Color(red: 0.55, green: 0.36, blue: 0.96)
+        // Warm brown (agent-sessions role palette): keeps assistant visually
+        // distinct from the purple tool calls and the blue user turns.
+        case .assistant:  return Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.isDark
+                ? NSColor(srgbRed: 0.74, green: 0.46, blue: 0.22, alpha: 1)
+                : NSColor(srgbRed: 0.55, green: 0.34, blue: 0.12, alpha: 1)
+        })
         case .tool:       return Color(red: 0.06, green: 0.73, blue: 0.51)
         case .toolCall:   return Color(red: 0.60, green: 0.32, blue: 0.85) // purple
         case .toolResult: return Color(red: 0.15, green: 0.65, blue: 0.60) // teal

@@ -119,7 +119,7 @@ struct ProjectsView: View {
                                     }
                                     Button(action: { selectedProject = group }) {
                                         HStack {
-                                            Text(group.project.split(separator: "/").last.map(String.init) ?? group.project)
+                                            Text(ProjectBadge.shortLabel(group.project))
                                                 .font(.callout)
                                                 .foregroundStyle(Theme.primaryText)
                                             Text(group.project)

@@ -545,7 +545,7 @@ struct CompactChildRow: View {
 /// Favorite / Rename / Export / Hide menu items shared by the parent card and
 /// child rows. Each item renders only when its closure is non-nil, so callers
 /// that pass none (e.g. SessionDetailView child rows) get an unchanged menu.
-private struct SessionWriteMenuItems: View {
+struct SessionWriteMenuItems: View {
     let isHidden: Bool
     var isFavorite: Bool = false
     var onToggleFavorite: (() -> Void)? = nil

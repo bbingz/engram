@@ -199,4 +199,74 @@ final class TranscriptLabelAndCopyTests: XCTestCase {
         XCTAssertFalse(emptyMessage.contains("case \"vscode\""))
         XCTAssertFalse(emptyMessage.contains("conversation preview is not yet supported"))
     }
+
+    // MARK: - Transcript block grouping (agent-sessions "N tool calls" collapse)
+
+    private func makeIndexed(_ type: MessageType) -> IndexedMessage {
+        IndexedMessage(
+            message: ChatMessage(role: "assistant", content: "x", systemCategory: .none),
+            messageType: type,
+            typeIndex: 1
+        )
+    }
+
+    func testGroupMergesConsecutiveToolRowsIntoRun() {
+        let user = makeIndexed(.user)
+        let toolCall = makeIndexed(.toolCall)
+        let toolResult = makeIndexed(.toolResult)
+        let tool = makeIndexed(.tool)
+        let blocks = TranscriptBlockGrouper.group([user, toolCall, toolResult, tool])
+        XCTAssertEqual(blocks.count, 2)
+        XCTAssertEqual(blocks[0], .message(user))
+        guard case .toolRun(let rows) = blocks[1] else {
+            return XCTFail("expected a collapsed tool run")
+        }
+        XCTAssertEqual(rows.map(\.id), [toolCall.id, toolResult.id, tool.id])
+        // Block identity is the run's first message id (stable across expansion).
+        XCTAssertEqual(blocks[1].id, toolCall.id)
+    }
+
+    func testGroupLeavesSingleToolRowStandalone() {
+        let toolCall = makeIndexed(.toolCall)
+        let assistant = makeIndexed(.assistant)
+        let blocks = TranscriptBlockGrouper.group([toolCall, assistant])
+        XCTAssertEqual(blocks, [.message(toolCall), .message(assistant)])
+    }
+
+    func testGroupKeepsErrorRowsStandalone() {
+        let toolCall = makeIndexed(.toolCall)
+        let error = makeIndexed(.error)
+        let toolResult = makeIndexed(.toolResult)
+        // Errors must stay scannable: they break the run and render themselves.
+        let blocks = TranscriptBlockGrouper.group([toolCall, error, toolResult])
+        XCTAssertEqual(blocks, [.message(toolCall), .message(error), .message(toolResult)])
+    }
+
+    func testGroupSplitAcrossNonToolRows() {
+        let user = makeIndexed(.user)
+        let toolCall = makeIndexed(.toolCall)
+        let toolResult = makeIndexed(.toolResult)
+        let blocks = TranscriptBlockGrouper.group([toolCall, toolResult, user, toolCall, toolResult])
+        XCTAssertEqual(blocks.count, 3)
+        guard case .toolRun(let first) = blocks[0], case .message(let mid) = blocks[1],
+              case .toolRun(let second) = blocks[2] else {
+            return XCTFail("expected run / message / run")
+        }
+        XCTAssertEqual(first.count, 2)
+        XCTAssertEqual(mid.id, user.id)
+        XCTAssertEqual(second.count, 2)
+    }
+
+    func testToolRunIdContainingResolvesCollapsedRun() {
+        let user = makeIndexed(.user)
+        let toolCall = makeIndexed(.toolCall)
+        let toolResult = makeIndexed(.toolResult)
+        let blocks = TranscriptBlockGrouper.group([user, toolCall, toolResult])
+        XCTAssertNil(TranscriptBlockGrouper.toolRunId(containing: user.id, in: blocks))
+        // Any contained id resolves to the run's first-message id.
+        XCTAssertEqual(
+            TranscriptBlockGrouper.toolRunId(containing: toolResult.id, in: blocks),
+            toolCall.id
+        )
+    }
 }

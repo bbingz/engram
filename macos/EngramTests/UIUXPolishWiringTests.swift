@@ -349,12 +349,15 @@ final class UIUXPolishWiringTests: XCTestCase {
     }
 
     /// Wave 7-1/10: list rows on the Sessions and Memory pages must be keyboard
-    /// reachable — focus, visible ring, and Enter/Space activation (6A-5 pattern).
+    /// reachable. Sessions moved to a SwiftUI Table (agent-sessions master-detail):
+    /// arrow keys move the native selection, and selection drives the detail pane.
+    /// Memory keeps the 6A-5 focus-ring + Enter/Space pattern.
     func testListRowsAreKeyboardNavigable() throws {
         let sessions = try source("macos/Engram/Views/Pages/SessionsPageView.swift")
-        XCTAssertTrue(sessions.contains("@FocusState private var focusedSessionId"))
-        XCTAssertTrue(sessions.contains(".onKeyPress(keys: [.return, .space])"))
-        XCTAssertTrue(sessions.contains("open(session)"), "Enter and tap must share one open path")
+        XCTAssertTrue(
+            sessions.contains("Table(tableRows, selection: $selectedSessionId)"),
+            "Sessions rows are keyboard reachable through native Table selection (7-1)"
+        )
 
         let memory = try source("macos/Engram/Views/Pages/MemoryView.swift")
         XCTAssertTrue(memory.contains("@FocusState private var focusedRowId"))
