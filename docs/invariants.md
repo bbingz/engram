@@ -242,21 +242,21 @@ Invariants are properties that must survive every change; each entry names where
 ## Collector Frontier Rows Live Only For The Active Scan
 
 - **Statement** - `collector_frontier` holds rows only while a root has an active bootstrap scan. When `finishBootstrap` completes a scan it deletes every frontier row of that root in the same transaction, including rows left by older scan ids, and a scan that returns false keeps its rows. A root that never finishes a scan keeps the rows of its current scan. The next scan of a root starts from an empty frontier.
-- **Enforced by** - `macos/EngramCollectorCore/CollectorInventoryStore.swift` (`finishBootstrap`).
+- **Enforced by** - `macos/EngramCollectorCore/CollectorInventoryStore.swift` (finishBootstrap).
 - **Verified by** - `macos/EngramCollectorCoreTests/CollectorInventoryStoreTests.swift` (testFinishedBootstrapDeletesFrontierRowsIncludingOlderScans_repro, testUnfinishedBootstrapKeepsFrontierRowsUntilItFinishes).
 - **Gate** - `none`.
 
 ## Collector Storage Separation Is Proven Once Per Open
 
 - **Statement** - The collector inventory owner proves once, while it is open, that the shadow spool directory and the identity-catalog directory are not the same directory and neither is an ancestor of the other, by walking the real parent directories. Later storage fences re-stat each cached ancestor and repeat the walk only when an ancestor's identity or permission bits changed, so a parent that loses read permission is still refused. The leaf directories are re-opened and re-stated on every fence regardless.
-- **Enforced by** - `macos/EngramCollectorCore/CollectorInventoryOwner.swift` (`proveStorageSeparation`, `requireSeparateStorage`).
+- **Enforced by** - `macos/EngramCollectorCore/CollectorInventoryOwner.swift` (proveStorageSeparation, requireSeparateStorage).
 - **Verified by** - `macos/EngramCollectorCoreTests/CollectorInventoryOwnerTests.swift` (testStorageValidationDoesNotRewalkAncestorsAfterOpen_repro, testStorageValidationKeepsAncestorReadPermissionChecksAtEntryAndCommit).
 - **Gate** - `none`.
 
 ## Collector Vanished Uncaptured Locators Leave The Dirty Set
 
 - **Statement** - A dirty locator whose source cannot be opened, and that has never been captured, is acknowledged at its current dirty revision without a capture, so it leaves the dirty set instead of being re-read on later turns. A locator that was captured before its source vanished keeps the one-second unavailable retry, and a source that is present but empty or has no usable entrypoint keeps its retry. Observing the path again re-dirties the locator and it is captured.
-- **Enforced by** - `macos/EngramCollectorCore/CollectorPublicationWorker.swift` (`drainUnavailableDeferrals`), `macos/EngramCollectorCore/CollectorInventoryStore.swift` (`applyDeferClaim`).
+- **Enforced by** - `macos/EngramCollectorCore/CollectorPublicationWorker.swift` (drainUnavailableDeferrals), `macos/EngramCollectorCore/CollectorInventoryStore.swift` (applyDeferClaim).
 - **Verified by** - `macos/EngramServiceCoreTests/CollectorPublicationWorkerTests.swift` (testNeverCapturedMissingSourceLeavesDirtySetAndRearmsOnReobservation_repro, testPreviouslyCapturedMissingSourceDefersOneSecondAndStaysUnacknowledged_repro, testMixedCapturedAndNeverCapturedMissingCodexShareOneBatchAndDeadlines_repro).
 - **Gate** - `none`.
 
