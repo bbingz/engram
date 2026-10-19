@@ -84,6 +84,9 @@ final class CollectorInventoryOwner {
     private var lockIdentity: Identity?
     private var mainIdentity: Identity?
     private var sidecarIdentities: [String: Identity] = [:]
+    // Ancestor chains of the shadow and live roots, proven once per open.
+    // Invariant "Collector Storage Separation Is Proven Once Per Open".
+    private var provenAncestorSeparation: (shadow: [AncestorLevel], live: [AncestorLevel])?
     private var database: DatabaseQueue?
     private var store: CollectorInventoryStore?
     private var activeRoots: [Data: (binding: CollectorPOSIXRootBinding, walker: CollectorBootstrapWalker)] = [:]
@@ -130,7 +133,7 @@ final class CollectorInventoryOwner {
         defer { CollectorPOSIXDirectoryAccess.close(live.descriptor) }
         try requirePrivateDirectory(shadow.info)
         try requirePrivateDirectory(live.info)
-        try requireSeparateStorage(shadow: shadow.descriptor, live: live.descriptor)
+        _ = try requireSeparateStorage(shadow: shadow.descriptor, live: live.descriptor, observation: testHooks.storageValidationOpenHooks?.didWalkAncestor)
 
         // No file or directory may be created before both existing identities
         // pass. In particular, never use the writable ArchiveCatalog opener here.
@@ -601,7 +604,8 @@ final class CollectorInventoryOwner {
     func deferClaims(
         _ items: [(claim: CollectorDirtyClaim, retryNotBefore: Int64)],
         configuration: CollectorRootConfiguration,
-        reason: CollectorDirtyDeferReason
+        reason: CollectorDirtyDeferReason,
+        acknowledgeWithoutCapture: Set<String> = []
     ) throws -> [Bool] {
         guard !items.isEmpty else { return [] }
         return try withDirtyStore(configuration: configuration, allowsUnavailableRoot: true, validateInput: {
@@ -612,7 +616,7 @@ final class CollectorInventoryOwner {
         }) { store in
             try store.deferClaims(items.map { item in
                 (claim: item.claim, retryNotBefore: item.retryNotBefore, reason: reason.rawValue)
-            })
+            }, acknowledgeWithoutCapture: acknowledgeWithoutCapture)
         }
     }
 
@@ -1182,7 +1186,7 @@ final class CollectorInventoryOwner {
         try Self.validateDirectoryDescriptor(shadowDescriptor, expected: shadowIdentity)
         try Self.validateDirectoryDescriptor(shadow.descriptor, expected: shadowIdentity)
         try Self.validateDirectoryDescriptor(live.descriptor, expected: liveRootIdentity)
-        try Self.requireSeparateStorage(shadow: shadow.descriptor, live: live.descriptor)
+        try proveStorageSeparation(shadow: shadow.descriptor, live: live.descriptor, observation: openHooks.didWalkAncestor)
         _ = try Self.fileIdentity(parent: shadowDescriptor, name: Self.lockName, expected: lockIdentity, descriptor: lockDescriptor)
         if inventoryDescriptor >= 0, let inventoryIdentity {
             let current = try Self.openStorageValidationDirectory(inventoryRoot, testHooks: .init())
@@ -1247,31 +1251,80 @@ final class CollectorInventoryOwner {
         lhs.device == rhs.device && lhs.inode == rhs.inode
     }
 
-    private static func requireSeparateStorage(shadow: Int32, live: Int32) throws {
+    // The leaf directories are re-stated by the caller on every fence. The
+    // ancestor walk is repeated only when a cached level's identity or permission
+    // bits no longer match a fresh stat, so a parent losing read is still refused
+    // while an unchanged tree pays only the stats.
+    // Invariant "Collector Storage Separation Is Proven Once Per Open".
+    private func proveStorageSeparation(shadow: Int32, live: Int32, observation: (() -> Void)?) throws {
+        if let proven = provenAncestorSeparation,
+           try ancestorChainHolds(shadow, proven.shadow), try ancestorChainHolds(live, proven.live) {
+            return
+        }
+        provenAncestorSeparation = try Self.requireSeparateStorage(shadow: shadow, live: live, observation: observation)
+    }
+
+    // Re-stats each cached ancestor by relative ".." depth from the leaf, without
+    // opening any of them. Returns false, without throwing, when a level was
+    // replaced or its mode changed, so the caller re-walks. A real stat failure
+    // still throws.
+    private func ancestorChainHolds(_ start: Int32, _ cached: [AncestorLevel]) throws -> Bool {
+        for (depth, level) in cached.enumerated() {
+            let relative = depth == 0 ? "." : String(repeating: "../", count: depth).dropLast()
+            var info = stat()
+            let result = relative.withCString { fstatat(start, $0, &info, AT_SYMLINK_NOFOLLOW) }
+            guard result == 0 else { throw CollectorPOSIXEnumerationError.io(.statDirectory, errno) }
+            let identity = try CollectorPOSIXDirectoryAccess.identity(info)
+            guard Self.sameInode(identity, level.identity), info.st_mode == level.mode else { return false }
+        }
+        return true
+    }
+
+    private static func requireSeparateStorage(
+        shadow: Int32, live: Int32, observation: (() -> Void)? = nil
+    ) throws -> (shadow: [AncestorLevel], live: [AncestorLevel]) {
         let shadowIdentity = try CollectorPOSIXDirectoryAccess.identity(CollectorPOSIXDirectoryAccess.directoryStat(shadow))
         let liveIdentity = try CollectorPOSIXDirectoryAccess.identity(CollectorPOSIXDirectoryAccess.directoryStat(live))
         // Walk actual parent directories, not text prefixes or realpath strings.
         // This includes paths reached through macOS Users/Data firmlink aliases.
-        guard try !ancestorIdentities(shadow).contains(where: { sameInode($0, liveIdentity) }),
-              try !ancestorIdentities(live).contains(where: { sameInode($0, shadowIdentity) }) else {
+        let shadowAncestors = try ancestorChain(shadow, observation: observation)
+        let liveAncestors = try ancestorChain(live, observation: observation)
+        guard !shadowAncestors.contains(where: { sameInode($0.identity, liveIdentity) }),
+              !liveAncestors.contains(where: { sameInode($0.identity, shadowIdentity) }) else {
             throw CollectorInventoryOwnerError.unsafePath
         }
+        return (shadowAncestors, liveAncestors)
     }
 
-    private static func ancestorIdentities(_ start: Int32) throws -> [Identity] {
+    // One ancestor level: its identity plus the permission bits the separation
+    // proof depends on. A mode change (for example a parent losing read) must
+    // invalidate a cached chain even though the inode is unchanged.
+    private struct AncestorLevel {
+        let identity: Identity
+        let mode: mode_t
+    }
+
+    private static func ancestorChain(
+        _ start: Int32, observation: (() -> Void)? = nil
+    ) throws -> [AncestorLevel] {
         var current = try CollectorPOSIXDirectoryAccess.openComponent(".", parent: start)
         defer { CollectorPOSIXDirectoryAccess.close(current) }
-        var identities: [Identity] = []
+        var levels: [AncestorLevel] = []
         for _ in 0...CollectorPOSIXRootEnumerator.maximumAbsoluteComponents {
-            let identity = try CollectorPOSIXDirectoryAccess.identity(CollectorPOSIXDirectoryAccess.directoryStat(current))
-            identities.append(identity)
+            observation?()
+            let info = try CollectorPOSIXDirectoryAccess.directoryStat(current)
+            let level = AncestorLevel(
+                identity: try CollectorPOSIXDirectoryAccess.identity(info), mode: info.st_mode
+            )
+            levels.append(level)
             let parent = try CollectorPOSIXDirectoryAccess.openComponent("..", parent: current)
-            let parentIdentity: Identity
-            do { parentIdentity = try CollectorPOSIXDirectoryAccess.identity(CollectorPOSIXDirectoryAccess.directoryStat(parent)) }
+            let parentInfo: stat
+            do { parentInfo = try CollectorPOSIXDirectoryAccess.directoryStat(parent) }
             catch { CollectorPOSIXDirectoryAccess.close(parent); throw error }
-            if sameInode(identity, parentIdentity) {
+            let parentIdentity = try CollectorPOSIXDirectoryAccess.identity(parentInfo)
+            if sameInode(level.identity, parentIdentity) {
                 CollectorPOSIXDirectoryAccess.close(parent)
-                return identities
+                return levels
             }
             CollectorPOSIXDirectoryAccess.close(current)
             current = parent

@@ -2911,6 +2911,26 @@ private func collectorOwnerFixtureDescriptors(under root: URL) throws -> [Int32]
 }
 
 extension CollectorInventoryOwnerTests {
+    // RED before / GREEN after for the per-call ancestor walk:
+    // Setup: an accepted owner; count openat("..") during repeated rootState reads.
+    // RED (old): requireSeparateStorage re-walks both ancestor chains on every
+    //        validateStorageFilesystem call, so 4 reads produce more than 0 walks.
+    // GREEN (new): the separation is proven once while the owner is open and the
+    //        chains are cached, so later reads re-stat the leaves but walk nothing.
+    // Invariant "Collector Storage Separation Is Proven Once Per Open".
+    func testStorageValidationDoesNotRewalkAncestorsAfterOpen_repro() throws {
+        let fixture = try CollectorOwnerFixture()
+        defer { fixture.remove() }
+        let probe = StorageValidationDescriptorProbe()
+        let owner = try XCTUnwrap(fixture.open(hooks: .init(storageValidationOpenHooks: probe.hooks)))
+        defer { try? owner.close() }
+        probe.arm()
+        for _ in 0..<4 { XCTAssertNil(try owner.rootState(rootID: "not-enrolled")) }
+        XCTAssertEqual(probe.ancestorWalks, 0, "a stable owner must not re-walk ancestor chains per read")
+        XCTAssertEqual(probe.opened, 16, "the leaf routes are still re-opened on every fence")
+        probe.disarm()
+    }
+
     func testStorageValidationUsesOneActualOpenPerRouteAndKeepsBothRootStateFences() throws {
         let fixture = try CollectorOwnerFixture()
         defer { fixture.remove() }
@@ -3284,6 +3304,7 @@ private final class StorageValidationDescriptorProbe {
     private(set) var allDirectories = true
     private(set) var allReadOnly = true
     private(set) var allCloseOnExec = true
+    private(set) var ancestorWalks = 0
     var beforeOpen: (() throws -> Void)?
     var afterOpen: (() -> Void)?
 
@@ -3316,12 +3337,15 @@ private final class StorageValidationDescriptorProbe {
             if fstat(descriptor, &info) == 0 {
                 XCTAssertNotEqual(CollectorOwnerFixture.Identity(device: info.st_dev, inode: info.st_ino), expected)
             } else { XCTAssertEqual(errno, EBADF) }
+        }, didWalkAncestor: { [weak self] in
+            guard let self, self.armed else { return }
+            self.ancestorWalks += 1
         })
     }
 
     func arm() {
         XCTAssertTrue(live.isEmpty)
-        opened = 0; closed = 0; maximumLive = 0; identities = []
+        opened = 0; closed = 0; maximumLive = 0; identities = []; ancestorWalks = 0
         allDirectories = true; allReadOnly = true; allCloseOnExec = true
         beforeOpen = nil; afterOpen = nil; armed = true
     }

@@ -46,6 +46,14 @@ authorizes host changes.
   (roadmap D2: it blocks only a "lightweight" claim, not "finished"). Next:
   `docs/followups.md` `collector-idle-turn-cost-1`, then
   `collector-stuck-dirty-locators-1`.
+  2026-10-19: a 15 s `sample` of the Daily collector put the per-turn floor on
+  `validateStorageFilesystem`'s ancestor walk, not on directory enumeration.
+  Built locally on `perf/collector-idle-turn-cost-20261019`, not deployed: a
+  finished scan deletes its root's frontier rows, the ancestor walk is proven
+  once per open, and vanished never-captured locators leave the dirty set. The
+  Cursor legacy observation reconciliation, the largest share of the
+  2026-10-18 sample, is untouched. Deploy and the next 30-minute window need a
+  separate authorization.
 - **Alias reconciliation (plan W4 item 1, design section 4).** Not started. The
   committer refuses any occupied proposed ID, so pre-cutover local rows, their
   insights and parent links stay in the local-ID namespace and are not visible

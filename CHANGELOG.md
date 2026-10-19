@@ -3,6 +3,36 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Collector idle-turn cost: frontier reclaim, cached ancestor walk, vanished locators (2026-10-19)
+
+Built locally on `perf/collector-idle-turn-cost-20261019` from `1388e6a5`. Not
+deployed; Daily is unchanged. A 15 s `sample` of the Daily collector put the
+per-turn floor on `CollectorInventoryOwner.ancestorIdentities` inside
+`validateStorageFilesystem`, not on the per-entry directory validation the
+earlier note assumed, so the per-entry `validateDirectory` calls are kept.
+
+- A finished bootstrap deletes every `collector_frontier` row of that root in
+  the same transaction, including rows from older scan ids. A scan that cannot
+  finish keeps its rows. On Daily the table had grown to about 12 M rows
+  because finished scans were never deleted. Invariant "Collector Frontier Rows
+  Live Only For The Active Scan".
+- The proof that the shadow spool and the identity catalog are separate
+  directories is cached for the life of the owner. Later fences re-stat each
+  cached ancestor and re-walk only when an ancestor's identity or permission
+  bits changed, so a parent losing read permission is still refused. The leaf
+  directories are still re-opened on every fence. Invariant "Collector Storage
+  Separation Is Proven Once Per Open".
+- A dirty locator whose source cannot be opened and that was never captured is
+  acknowledged at its current dirty revision without a capture, so it leaves
+  the dirty set. A locator captured before it vanished keeps the one-second
+  retry, a present but empty or entrypoint-less source keeps its retry, and
+  observing the path again re-dirties it. Invariant "Collector Vanished
+  Uncaptured Locators Leave The Dirty Set".
+
+The Cursor legacy observation reconciliation, the largest share of the
+2026-10-18 sample, is not touched. `privacyWithheld` growth was observed and
+left out of scope.
+
 ## Collector `ea2bbb57` deployed to Daily; CPU window still fails on the idle per-turn floor (2026-10-18)
 
 Owner authorization: "授权部署，并观测好给，你来决策完成" (deploy, observe it,

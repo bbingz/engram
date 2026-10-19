@@ -147,6 +147,9 @@ actor CollectorPublicationWorker {
         let claim: CollectorDirtyClaim
         let configuration: CollectorRootConfiguration
         let retryNotBefore: Int64
+        // True only when the source could not be opened at all. A present but
+        // empty or entrypoint-less source stays retriable.
+        let sourceVanished: Bool
     }
     private var dependencyObservationTime: Int64?
     private var cursorLegacyObservationTime: Int64?
@@ -594,7 +597,8 @@ actor CollectorPublicationWorker {
                 }
                 catch is CancellationError { throw CancellationError() }
                 catch {
-                    try deferDirty(claim, root: root, now: now, sourceUnavailable: true)
+                    // sourceGeneration throws only when the file cannot be opened.
+                    try deferDirty(claim, root: root, now: now, sourceUnavailable: true, sourceVanished: true)
                     result.deferred += 1
                     continue
                 }
@@ -966,9 +970,11 @@ actor CollectorPublicationWorker {
         _ group: [CollectorDirtyClaim], root: CollectorRootConfiguration, now: Int64,
         remainingBytes: inout Int64, result: inout CollectorPublicationCycle
     ) throws {
-        func deferAll(sourceUnavailable: Bool = false) throws {
+        func deferAll(sourceUnavailable: Bool = false, sourceVanished: Bool = false) throws {
             for claim in group {
-                try deferDirty(claim, root: root, now: now, sourceUnavailable: sourceUnavailable)
+                try deferDirty(
+                    claim, root: root, now: now, sourceUnavailable: sourceUnavailable, sourceVanished: sourceVanished
+                )
                 result.deferred += 1
             }
         }
@@ -997,7 +1003,8 @@ actor CollectorPublicationWorker {
             }
         } catch is CancellationError { throw CancellationError() }
         catch {
-            try deferAll(sourceUnavailable: true)
+            // observe throws when the session directory cannot be opened.
+            try deferAll(sourceUnavailable: true, sourceVanished: true)
             return
         }
         let reservedBytes: Int64
@@ -1118,9 +1125,11 @@ actor CollectorPublicationWorker {
         _ group: [CollectorDirtyClaim], root: CollectorRootConfiguration, now: Int64,
         remainingBytes: inout Int64, result: inout CollectorPublicationCycle
     ) throws {
-        func deferAll(sourceUnavailable: Bool = false) throws {
+        func deferAll(sourceUnavailable: Bool = false, sourceVanished: Bool = false) throws {
             for claim in group {
-                try deferDirty(claim, root: root, now: now, sourceUnavailable: sourceUnavailable)
+                try deferDirty(
+                    claim, root: root, now: now, sourceUnavailable: sourceUnavailable, sourceVanished: sourceVanished
+                )
                 result.deferred += 1
             }
         }
@@ -1149,7 +1158,8 @@ actor CollectorPublicationWorker {
             }
         } catch is CancellationError { throw CancellationError() }
         catch {
-            try deferAll(sourceUnavailable: true)
+            // observe throws when the session cannot be opened.
+            try deferAll(sourceUnavailable: true, sourceVanished: true)
             return
         }
         let reservedBytes: Int64
@@ -1619,20 +1629,23 @@ actor CollectorPublicationWorker {
 
     private func deferDirty(
         _ claim: CollectorDirtyClaim, root: CollectorRootConfiguration, now: Int64,
-        sourceUnavailable: Bool = false
+        sourceUnavailable: Bool = false, sourceVanished: Bool = false
     ) throws {
         let delay: Int64 = sourceUnavailable && claim.lastCaptureID == nil ? 60 : 1
         let next = now.addingReportingOverflow(delay)
         guard !next.overflow else { throw CollectorPublicationWorkerError.invalidBudget }
         if sourceUnavailable {
-            try enqueueUnavailableDeferral(claim, root: root, retryNotBefore: next.partialValue)
+            try enqueueUnavailableDeferral(
+                claim, root: root, retryNotBefore: next.partialValue, sourceVanished: sourceVanished
+            )
             return
         }
         _ = try owner.deferClaim(claim, configuration: root, retryNotBefore: next.partialValue, reason: .unavailable)
     }
 
     private func enqueueUnavailableDeferral(
-        _ claim: CollectorDirtyClaim, root: CollectorRootConfiguration, retryNotBefore: Int64
+        _ claim: CollectorDirtyClaim, root: CollectorRootConfiguration, retryNotBefore: Int64,
+        sourceVanished: Bool
     ) throws {
         if let first = pendingUnavailableDeferrals.first {
             guard first.configuration.rootID.utf8.elementsEqual(root.rootID.utf8),
@@ -1642,7 +1655,7 @@ actor CollectorPublicationWorker {
         }
         guard pendingUnavailableDeferrals.count < 64 else { throw CollectorPublicationWorkerError.invalidBudget }
         pendingUnavailableDeferrals.append(
-            .init(claim: claim, configuration: root, retryNotBefore: retryNotBefore)
+            .init(claim: claim, configuration: root, retryNotBefore: retryNotBefore, sourceVanished: sourceVanished)
         )
     }
 
@@ -1650,10 +1663,15 @@ actor CollectorPublicationWorker {
         try Task.checkCancellation()
         guard !pendingUnavailableDeferrals.isEmpty else { return }
         let items = pendingUnavailableDeferrals
+        // Vanished locators that were never captured leave the dirty set; ones
+        // already captured, or present but not yet capturable, keep their retry.
+        // Invariant "Collector Vanished Uncaptured Locators Leave The Dirty Set".
+        let uncaptured = Set(items.filter { $0.sourceVanished && $0.claim.lastCaptureID == nil }.map { $0.claim.relativePath })
         _ = try owner.deferClaims(
             items.map { (claim: $0.claim, retryNotBefore: $0.retryNotBefore) },
             configuration: items[0].configuration,
-            reason: .unavailable
+            reason: .unavailable,
+            acknowledgeWithoutCapture: uncaptured
         )
         pendingUnavailableDeferrals.removeAll()
     }

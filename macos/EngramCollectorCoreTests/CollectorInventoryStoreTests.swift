@@ -1196,6 +1196,60 @@ final class CollectorInventoryStoreTests: XCTestCase {
         XCTAssertTrue(try store.finishBootstrap(second))
     }
 
+    // RED before / GREEN after for finishBootstrap frontier retention:
+    // Setup: scan-1 finishes one directory; an older scan id's completed row is
+    //        left behind; a later scan finishes the same root.
+    // RED (old): finishBootstrap only nulls active_scan_id, so both scans'
+    //        rows stay and COUNT(*) FROM collector_frontier is 2.
+    // GREEN (new): the successful finish deletes every frontier row of the root
+    //        in the same transaction, including the older scan id.
+    // Invariant "Collector Frontier Rows Live Only For The Active Scan".
+    func testFinishedBootstrapDeletesFrontierRowsIncludingOlderScans_repro() throws {
+        let fixture = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        let store = try fixture.openRegistered()
+        let database = try fixture.openDatabase()
+        let first = try store.beginBootstrap(configuration: fixture.configuration, scanID: "scan-1")
+        try store.applyBootstrapBatch(fixture.batch(scan: first, children: ["nested"], finished: true))
+        try store.applyBootstrapBatch(fixture.batch(scan: first, directory: "nested", finished: true))
+        XCTAssertTrue(try store.finishBootstrap(first))
+        XCTAssertEqual(try frontierCount(database, fixture), 0, "a finished scan leaves no frontier rows")
+
+        try database.write { db in
+            try db.execute(sql: """
+                INSERT INTO collector_frontier(root_id, root_revision, scan_id, relative_directory, completed)
+                VALUES (?, ?, 'older-scan', 'stale', 1)
+                """, arguments: [fixture.configuration.rootID, fixture.configuration.revision])
+        }
+        XCTAssertEqual(try frontierCount(database, fixture), 1)
+        try store.requestReconciliation(configuration: fixture.configuration)
+        let second = try store.beginBootstrap(configuration: fixture.configuration, scanID: "scan-2")
+        try store.applyBootstrapBatch(fixture.batch(scan: second, finished: true))
+        XCTAssertTrue(try store.finishBootstrap(second))
+        XCTAssertEqual(
+            try frontierCount(database, fixture), 0,
+            "finishing reclaims rows from every scan id of the root"
+        )
+        let complete = try XCTUnwrap(store.rootState(rootID: fixture.configuration.rootID))
+        XCTAssertNil(complete.activeScan)
+        XCTAssertEqual(complete.requestedRevision, complete.completedRevision)
+    }
+
+    func testUnfinishedBootstrapKeepsFrontierRowsUntilItFinishes() throws {
+        let fixture = try CollectorInventoryTestFixture()
+        defer { fixture.remove() }
+        let store = try fixture.openRegistered()
+        let database = try fixture.openDatabase()
+        let scan = try store.beginBootstrap(configuration: fixture.configuration, scanID: "scan")
+        try store.applyBootstrapBatch(fixture.batch(scan: scan, children: ["nested"], finished: true))
+        XCTAssertFalse(try store.finishBootstrap(scan))
+        XCTAssertEqual(try frontierCount(database, fixture), 2, "a scan that cannot finish keeps its frontier")
+        XCTAssertEqual(try store.pendingDirectories(scan: scan, limit: 8), ["nested"])
+        try store.applyBootstrapBatch(fixture.batch(scan: scan, directory: "nested", finished: true))
+        XCTAssertTrue(try store.finishBootstrap(scan))
+        XCTAssertEqual(try frontierCount(database, fixture), 0)
+    }
+
     func testNewGapDuringScanCannotBeClearedByOldCompletionAndSurvivesReopen() throws {
         let fixture = try CollectorInventoryTestFixture()
         defer { fixture.remove() }
@@ -1723,6 +1777,16 @@ final class CollectorInventoryStoreTests: XCTestCase {
         trace.uninstallSafely(database)
         XCTAssertEqual(try store.pendingLocators(configuration: fixture.configuration, limit: prefixCount + 1).count, prefixCount + 1)
         XCTAssertEqual(try store.locator(configuration: fixture.configuration, relativePath: prefix.last!.relativePath)?.retryNotBefore, 1_000)
+    }
+
+    private func frontierCount(
+        _ database: DatabaseQueue, _ fixture: CollectorInventoryTestFixture
+    ) throws -> Int {
+        try database.read { db in
+            try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM collector_frontier WHERE root_id = ?
+                """, arguments: [fixture.configuration.rootID]) ?? 0
+        }
     }
 
     private func frontierCompleted(
