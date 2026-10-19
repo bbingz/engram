@@ -3,11 +3,64 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Collector idle-turn cost fixes deployed to Daily as `81bf3f1a` (2026-10-19)
+
+Build/fix entry: "Collector idle-turn cost: frontier reclaim, cached ancestor
+walk, vanished locators" above. The 12 modified files were committed locally as
+`81bf3f1a5c4173cc838b28caddbf52d245fc7a25` on
+`perf/collector-idle-turn-cost-20261019` (untracked `.grok/` file excluded),
+because the deploy flow stamps BUILD-METADATA `sourceRevision` from a commit
+SHA. Owner authorization: "授权部署，再测。"
+
+**Deploy** (Daily only; package `collector-idle-turn-20261019`). Release/arm64
+`EngramCollector`, `package-collector.sh` `--dry-run`, packaging and
+`--verify-only` all PASS. `bin/EngramCollector` sha256
+`bab65b3a376642c0af7e3011d550760a4bf0e2f40afabdf2a195cc87de5a1134`,
+`EngramCollectorCore` sha256
+`59af885620c9c31d7c8a3e6630f895d748c3924baff67bf1cf8ca02151ccf4cf`,
+BUILD-METADATA sourceRevision `81bf3f1a5c4173cc838b28caddbf52d245fc7a25`; the
+new `DELETE FROM collector_frontier WHERE root_id` string is present in the new
+framework and absent from the deployed 2026-10-18 one. rsync to
+`daily/collector-idle-turn-20261019`, SHA256SUMS 16/16 OK,
+`codesign --verify --deep --strict` ok. Pre-state: PID 6028 up 19 h 38 m,
+16/16 roots converged, both replicas 48,970 ACKed, `privacyWithheld` 497,
+stderr 740,238 bytes, `collector_frontier` 12,130,812 rows. `launchctl
+bootout` 07:14Z; the NEW binary's `--reconcile-native-epoch --dry-run` with the
+collector stopped reported `affectedRoots` 0 (5 `current`, 11 `noCheckpoint`).
+plist backed up to `state/collector/persistent/idle-turn-job-before.plist`,
+only `ProgramArguments[0]` replaced; `bootstrap` 07:15Z. PID 32180, launchd
+runs 1, stderr unchanged. Rollback: restore the backed-up plist and bootstrap
+it; `collector-epoch-proof-reuse-20261018` is kept.
+
+**Fixes verified live.** Frontier rows fell 12,130,812 -> ~1,000 (remaining
+rows belong to the active scan; the reclaim deleted them as each restart-walk
+scan finished). A 60 s `sample` shows `ancestorChainHolds` (the cached
+fstatat-only check) and no full `requireSeparateStorage` re-walk, so the
+ancestor cache holds. Dirty locators fell 414+ stuck -> 266 (the 255 Copilot +
+6 Kimi present-but-uncapturable members from `collector-stuck-dirty-locators-1`
+keep their retry), `retry_not_before` 269. Both replicas +34 ACKed within the
+first 30 minutes; `privacyWithheld` unchanged at 497; stderr unchanged.
+
+**30-minute window (07:59:27Z-08:25:10Z, 52 of 61 samples over 1,543 s, same
+`ps` method): CPU 34.6% (FAIL), max RSS 95.0 MiB (PASS). NOT a steady-state
+receipt**: throughout the window an active multi-agent Claude Code workflow on
+Daily wrote `~/.claude/projects` continuously (8 jsonl files per 5 min,
+`daily-claude` requested_revision rising ~5-16/min), so the `daily-claude`
+root never converged (lag grew 2 -> 48) and every 30 s interval was >= 6.3%
+(median 34.7%, min 6.33%, max 47.77%, 0 of 51 intervals below 2%). This
+measures the per-scan re-walk churn under a live workload, not the idle floor
+the fixes target; it is not comparable to the 2026-10-18 5.847% window, which
+had no such workload. A 60 s `sample` during the churn puts the busy stacks in
+`validateStorageFilesystem` (cached ancestor holds, leaf opens,
+`openBoundDirectory`), i.e. the pre-existing per-scan walk cost, which was out
+of scope. The comparable quiet-host window still needs to be taken once the
+workload ends.
+
 ## Collector idle-turn cost: frontier reclaim, cached ancestor walk, vanished locators (2026-10-19)
 
-Built locally on `perf/collector-idle-turn-cost-20261019` from `1388e6a5`. Not
-deployed; Daily is unchanged. A 15 s `sample` of the Daily collector put the
-per-turn floor on `CollectorInventoryOwner.ancestorIdentities` inside
+Built locally on `perf/collector-idle-turn-cost-20261019` from `1388e6a5`, then
+committed as `81bf3f1a` and deployed to Daily the same day (entry above). A 15 s
+`sample` of the Daily collector put the per-turn floor on `CollectorInventoryOwner.ancestorIdentities` inside
 `validateStorageFilesystem`, not on the per-entry directory validation the
 earlier note assumed, so the per-entry `validateDirectory` calls are kept.
 

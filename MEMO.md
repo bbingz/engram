@@ -4,10 +4,11 @@
 
 ### 2026-10-19
 
-- [变更] 业主授权（「授权，按顺序执行」）后在 `perf/collector-idle-turn-cost-20261019` 落地三项，均未部署、未碰 Daily：扫描成功结束时同事务删除该 root 的全部 frontier 行（Daily 上已积到约 1200 万行）；存储分离的祖先遍历改为每次打开只证明一次，祖先身份或权限变化才重走，叶子目录每次仍重新打开；从未采集且源文件打不开的 locator 直接认领、离开脏集，已采集过的仍按 1 秒重试，文件重新出现会重新置脏。详见 `CHANGELOG.md`。
+- [变更] 业主授权（「授权，按顺序执行」）后在 `perf/collector-idle-turn-cost-20261019` 落地三项：扫描成功结束时同事务删除该 root 的全部 frontier 行（Daily 上已积到约 1200 万行）；存储分离的祖先遍历改为每次打开只证明一次，祖先身份或权限变化才重走，叶子目录每次仍重新打开；从未采集且源文件打不开的 locator 直接认领、离开脏集，已采集过的仍按 1 秒重试，文件重新出现会重新置脏。详见 `CHANGELOG.md`。
 - [排查] Daily 上 15 秒 `sample` 显示每轮地板的大头是 `validateStorageFilesystem` 里的祖先遍历，不是之前猜的逐条目目录校验，所以逐条目校验保留不动。2026-10-18 样本里占比最大的 Cursor 旧版观察对账这次没动；`privacyWithheld` 的增长观察到了，不在本次范围。
 - [验证] 三个套件通过：`CollectorInventoryStoreTests` 107、`CollectorInventoryOwnerTests` 89、`CollectorPublicationWorkerTests` 132。新增不变量三条：「Collector Frontier Rows Live Only For The Active Scan」「Collector Storage Separation Is Proven Once Per Open」「Collector Vanished Uncaptured Locators Leave The Dirty Set」。
-- [未验证] 未部署，所以 Daily 的 CPU 是否降到 2% 以下未测；部署和下一轮 30 分钟窗口需要单独授权。
+- [变更] 业主授权（「授权部署，再测」）后把改动提交为 `81bf3f1a` 并部署到 Daily：包 `collector-idle-turn-20261019`（`bab65b3a…1134`），换版前新二进制 dry-run 0 个受影响根，只改 `ProgramArguments[0]`，PID 32180、launchd 仅 1 次、stderr 不变；回滚可恢复备份 plist，旧包保留。三项修复线上均验证生效：frontier 12,130,812 → 约 1,000 行；60 秒 `sample` 只见缓存命中路径、无全量重走；卡住的脏 locator 414+ → 266。
+- [排查] 部署后的 07:59–08:25Z 窗口 CPU 34.6%（52/61 个样本），但这不是稳态测量：Daily 上有一个多子代理 Claude Code 工作流持续写 `~/.claude/projects`，`daily-claude` 全程未收敛（落后 2 → 48），51 个区间无一低于 2%；热点是负载下的每轮重走成本（范围外），不是修复目标的地板。安静段的 30 分钟窗口待该工作流结束后补测。
 
 ### 2026-10-18
 

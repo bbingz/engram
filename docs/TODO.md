@@ -48,12 +48,20 @@ authorizes host changes.
   `collector-stuck-dirty-locators-1`.
   2026-10-19: a 15 s `sample` of the Daily collector put the per-turn floor on
   `validateStorageFilesystem`'s ancestor walk, not on directory enumeration.
-  Built locally on `perf/collector-idle-turn-cost-20261019`, not deployed: a
-  finished scan deletes its root's frontier rows, the ancestor walk is proven
-  once per open, and vanished never-captured locators leave the dirty set. The
-  Cursor legacy observation reconciliation, the largest share of the
-  2026-10-18 sample, is untouched. Deploy and the next 30-minute window need a
-  separate authorization.
+  Built locally on `perf/collector-idle-turn-cost-20261019`: a finished scan
+  deletes its root's frontier rows, the ancestor walk is proven once per open,
+  and vanished never-captured locators leave the dirty set. The Cursor legacy
+  observation reconciliation, the largest share of the 2026-10-18 sample, is
+  untouched. Deployed to Daily 2026-10-19 as `collector-idle-turn-20261019`
+  (owner-authorized "授权部署，再测"; commit `81bf3f1a`): all three fixes
+  verified live (frontier 12,130,812 -> ~1,000 rows; cached ancestor holds with
+  no full re-walk in a 60 s `sample`; dirty locators 414+ stuck -> 266). The
+  07:59-08:25Z window read 34.6% CPU but is NOT a steady-state receipt: an
+  active multi-agent Claude Code workflow wrote `~/.claude/projects` the whole
+  time, `daily-claude` never converged, and 0 of 51 intervals were below 2%.
+  The comparable quiet-host 30-minute window (CPU <= 2%, RSS <= 150 MiB) still
+  needs to be taken once that workload ends; record it here and in
+  `CHANGELOG.md`.
 - **Alias reconciliation (plan W4 item 1, design section 4).** Not started. The
   committer refuses any occupied proposed ID, so pre-cutover local rows, their
   insights and parent links stay in the local-ID namespace and are not visible
