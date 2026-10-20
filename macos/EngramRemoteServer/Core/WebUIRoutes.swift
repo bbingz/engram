@@ -355,11 +355,13 @@ enum WebUIRoutes {
         :root { color-scheme: dark; --bg:#0f172a; --panel:#1e293b; --text:#f8fafc; --muted:#94a3b8; --line:#334155; --accent:#22c55e; --code:#0d1117; }
         * { box-sizing: border-box; }
         html { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-        body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; overflow-wrap: anywhere; }
+        body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; overflow-wrap: anywhere; letter-spacing: -0.006em; }
+        :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        ::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); }
         a { color: inherit; text-decoration: none; }
         .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-        .top-nav { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; min-height: 48px; padding: 10px 20px; margin-bottom: 16px; border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 20; background: rgba(15,23,42,0.85); backdrop-filter: blur(12px); }
-        h1 { margin: 0; font-size: 18px; line-height: 1.25; letter-spacing: -0.02em; }
+        .top-nav { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; min-height: 52px; padding: 12px 20px; margin-bottom: 20px; border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 20; background: rgba(15,23,42,0.82); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
+        h1 { margin: 0; font-size: 17px; line-height: 1.25; letter-spacing: -0.03em; font-weight: 650; }
         .lede, #status { margin: 0; color: var(--muted); font-size: 12px; }
         .lede { flex: 1; }
         #status:empty { display: none; }
@@ -389,15 +391,19 @@ enum WebUIRoutes {
         .session-jump { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
         .session-jump input { flex: 1 1 16rem; min-width: 0; }
         .agent-filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
-        .agent-filters button { border-radius: 16px; font-size: 12px; }
-        .agent-filters button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--panel)); }
+        .agent-filters button { border-radius: 999px; font-size: 12px; padding: 5px 12px; }
+        .agent-filters button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--panel)); font-weight: 650; }
         .agent-label { color: light-dark(#7e22ce, #c084fc); font-weight: 600; }
-        input, select { margin: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); }
-        button { margin: 0; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); }
+        input, select { margin: 0; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: color-mix(in srgb, var(--bg) 55%, var(--panel)); color: var(--text); transition: border-color 0.12s ease, background 0.12s ease; }
+        input:hover, select:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+        input:focus, select:focus { border-color: var(--accent); background: var(--bg); outline: none; }
+        button { margin: 0; padding: 7px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); font-weight: 550; cursor: pointer; transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease; }
         button:hover { border-color: var(--accent); color: var(--accent); }
+        button:active { background: color-mix(in srgb, var(--accent) 12%, var(--panel)); }
+        button:disabled { opacity: 0.45; cursor: default; }
         #workspace { width: 100%; max-width: 960px; margin: 0 auto; padding: 0 20px 40px; }
-        .page-nav { display: flex; gap: 4px; padding-bottom: 12px; margin-bottom: 16px; border-bottom: 1px solid var(--line); overflow-x: auto; }
-        .page-nav a { padding: 5px 10px; border-radius: 6px; color: var(--muted); font-weight: 500; white-space: nowrap; }
+        .page-nav { display: flex; gap: 2px; padding-bottom: 14px; margin-bottom: 18px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+        .page-nav a { padding: 6px 12px; border-radius: 8px; color: var(--muted); font-weight: 550; font-size: 13px; letter-spacing: -0.01em; white-space: nowrap; transition: color 0.12s ease, background 0.12s ease; }
         .page-nav a:hover { color: var(--text); background: var(--panel); }
         .page-nav a[aria-current="page"] { color: var(--accent); background: rgba(34,197,94,0.12); }
         .advanced-filters label.tool-filter { display: flex; flex-direction: row; align-items: center; gap: 6px; padding: 8px 0; }
@@ -411,7 +417,7 @@ enum WebUIRoutes {
         #insight-save-form { display: grid; gap: 12px; margin: 12px 0; }
         #insight-save-form label { display: grid; gap: 5px; }
         #insight-save-form textarea { width: 100%; resize: vertical; padding: 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
-        .insight-card { padding: 12px; margin: 10px 0; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+        .insight-card { padding: 14px 16px; margin: 10px 0; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: 0 1px 2px #0004; }
         .insight-card p { white-space: pre-wrap; }
         #insight-dialog { width: min(760px, calc(100vw - 32px)); max-height: 85vh; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); overflow-wrap: anywhere; }
         #insight-dialog::backdrop { background: rgba(0,0,0,.65); }
@@ -428,7 +434,7 @@ enum WebUIRoutes {
         .page-heading h2 { margin: 0; font-size: 20px; }
         #health-page > p { color: var(--muted); }
         .health-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 12px; }
-        .health-card { padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); min-width: 0; }
+        .health-card { padding: 16px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); min-width: 0; box-shadow: 0 1px 2px #0004; }
         #usage-content table { font-size: 12px; }
         #usage-rows td:first-child, #usage-rows td:nth-child(5) { white-space: nowrap; }
         #repos-rows p, #repos-rows h3 { overflow-wrap: anywhere; }
@@ -451,16 +457,18 @@ enum WebUIRoutes {
         .ai-counts dt { color: var(--muted); }
         .ai-counts dd { margin: 0; text-align: right; }
         .stats-totals { display: flex; flex-wrap: wrap; gap: 12px; margin: 16px 0; }
-        .stats-totals > div { flex: 1 1 120px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
-        .stats-totals dt { font-size: 12px; color: var(--muted); }
-        .stats-totals dd { margin: 4px 0 0; font-size: 24px; font-weight: 650; }
+        .stats-totals > div { flex: 1 1 120px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: 0 1px 2px #0004; }
+        .stats-totals dt { font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+        .stats-totals dd { margin: 6px 0 0; font-size: 26px; font-weight: 650; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
         .stats-table { max-width: 100%; overflow-x: auto; }
         .stats-table table { width: 100%; min-width: 580px; border-collapse: collapse; }
-        .stats-table th, .stats-table td { padding: 10px; text-align: right; border-bottom: 1px solid var(--line); }
+        .stats-table th, .stats-table td { padding: 10px 12px; text-align: right; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+        .stats-table th { font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+        .stats-table tbody tr:hover td { background: color-mix(in srgb, var(--panel) 60%, transparent); }
         .stats-table th:first-child, .stats-table td:first-child { text-align: left; }
         #stats-more, #settings-more { margin-top: 12px; }
         #settings-status { color: var(--muted); }
-        .settings-section { padding: 16px; margin-top: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+        .settings-section { padding: 18px; margin-top: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: 0 1px 2px #0004; }
         #ai-config > summary { color: var(--text); font-size: 16px; font-weight: 600; cursor: pointer; }
         .ai-config-group { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 14px; border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin: 16px 0; min-width: 0; }
         .ai-config-group legend { color: var(--text); font-size: 14px; padding: 0 6px; }
@@ -480,7 +488,7 @@ enum WebUIRoutes {
         .settings-section th, .settings-section td { text-align: left; padding: 8px 4px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
         #workspace:not(.showing-detail) .detail-pane, #workspace.showing-detail .list-pane { display: none; }
         #back { margin: 0 0 10px; }
-        .sticky h2 { margin: 0 0 8px; font-size: 18px; line-height: 1.3; font-weight: 600; }
+        .sticky h2 { margin: 0 0 8px; font-size: 20px; line-height: 1.3; font-weight: 650; letter-spacing: -0.02em; }
         .sticky .meta { margin: 0; }
 
         @media (min-width: 880px) {
@@ -504,12 +512,12 @@ enum WebUIRoutes {
           }
         }
         .list-pane, .detail-pane { min-width: 0; }
-        .session { display: block; width: 100%; text-align: left; border: 1px solid color-mix(in srgb, var(--line) 45%, transparent); border-radius: 8px; padding: 10px 12px; margin: 4px 0; background: transparent; cursor: pointer; }
-        .session:hover, .session:focus-visible { border-color: var(--accent); background: var(--panel); color: var(--text); }
-        .title { color: var(--text); font-weight: 600; line-height: 1.4; margin-bottom: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-        .meta { color: var(--muted); display: flex; gap: 8px; flex-wrap: wrap; font-size: 12px; align-items: center; }
-        .meta .sep { color: color-mix(in srgb, var(--muted) 70%, transparent); }
-        .badge { display: inline-block; color: white; background: var(--source-color, #64748b); border-radius: 4px; padding: 1px 6px; font-size: 11px; font-weight: 600; }
+        .session { display: block; width: 100%; text-align: left; border: 1px solid color-mix(in srgb, var(--line) 55%, transparent); border-radius: 12px; padding: 12px 14px; margin: 6px 0; background: color-mix(in srgb, var(--panel) 35%, transparent); cursor: pointer; transition: border-color 0.12s ease, background 0.12s ease, transform 0.12s ease; }
+        .session:hover, .session:focus-visible { border-color: var(--accent); background: var(--panel); color: var(--text); transform: translateY(-1px); }
+        .title { color: var(--text); font-weight: 600; font-size: 14.5px; letter-spacing: -0.012em; line-height: 1.4; margin-bottom: 6px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .meta { color: var(--muted); display: flex; gap: 7px; flex-wrap: wrap; font-size: 12px; align-items: center; }
+        .meta .sep { color: color-mix(in srgb, var(--muted) 55%, transparent); }
+        .badge { display: inline-block; color: white; background: var(--source-color, #64748b); border-radius: 999px; padding: 1px 8px; font-size: 10.5px; font-weight: 650; letter-spacing: 0.02em; }
         .source-codex { --source-color: #237a43; }
         .source-claude-code { --source-color: #a65b20; }
         .source-copilot, .source-vscode { --source-color: #64748b; }
@@ -527,16 +535,16 @@ enum WebUIRoutes {
         .source-iflow { --source-color: #8547a0; }
         .source-pi { --source-color: #4a6d8c; }
         .source-grok { --source-color: #7a5c2e; }
-        .sticky { position: sticky; top: 0; background: var(--bg); border-bottom: 1px solid var(--line); z-index: 2; padding: 12px 0 16px; }
-        #messages { padding: 8px 0 24px; display: flex; flex-direction: column; gap: 14px; }
-        .message { max-width: 86%; min-width: 0; }
+        .sticky { position: sticky; top: 0; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); z-index: 2; padding: 14px 0 16px; }
+        #messages { padding: 12px 0 32px; display: flex; flex-direction: column; gap: 16px; }
+        .message { max-width: 84%; min-width: 0; }
         .message.user { align-self: flex-end; }
         .message.assistant { align-self: flex-start; }
         .message.tool, .message.system { align-self: stretch; max-width: 100%; }
-        .role { color: var(--muted); font-size: 11px; font-weight: 700; margin: 0 8px 3px; }
+        .role { color: var(--muted); font-size: 11px; font-weight: 650; letter-spacing: 0.01em; margin: 0 10px 4px; }
         .user .role { text-align: right; }
         .message.assistant .role { color: var(--source-color, var(--muted)); }
-        .message .body { min-width: 0; overflow-wrap: anywhere; margin: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); font: inherit; line-height: 1.6; }
+        .message .body { min-width: 0; overflow-wrap: anywhere; margin: 0; padding: 12px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); font: inherit; line-height: 1.65; box-shadow: 0 1px 2px #0003; }
         .message .body > * { margin: 0; }
         .message .body > * + * { margin-top: 0.55em; }
         .message .body p { overflow-wrap: anywhere; }
@@ -555,13 +563,13 @@ enum WebUIRoutes {
         .message .body .copy-btn { margin: 0; padding: 2px 8px; }
         .message .body .code-block pre { margin: 0; padding: 0.75em; border: 0; border-radius: 0; background: transparent; white-space: pre; overflow-x: auto; }
         .message .body .code-block code { padding: 0; background: transparent; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
-        .user .body { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: color-mix(in srgb, var(--accent) 10%, var(--panel)); border-bottom-right-radius: 4px; }
-        .message.assistant .body { border-bottom-left-radius: 4px; }
+        .user .body { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); background: color-mix(in srgb, var(--accent) 13%, var(--panel)); border-bottom-right-radius: 4px; }
+        .message.assistant .body { border-bottom-left-radius: 4px; border-color: color-mix(in srgb, var(--source-color, var(--line)) 30%, var(--line)); }
         pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
         .user pre { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: color-mix(in srgb, var(--accent) 10%, var(--panel)); }
         details { margin-top: 6px; color: var(--muted); font-size: 12px; }
         details pre { margin-top: 6px; }
-        .message details { padding: 0.5em 0.75em; border: 1px dashed color-mix(in srgb, var(--muted) 45%, transparent); border-radius: 8px; background: transparent; }
+        .message details { padding: 0.55em 0.85em; border: 1px dashed color-mix(in srgb, var(--muted) 40%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--code) 55%, transparent); }
         .message.system > details { border-color: color-mix(in srgb, #f59e0b 35%, var(--line)); }
         .message.tool > details, .message details.tool-call { border-color: color-mix(in srgb, #a855f7 35%, var(--line)); }
         .message details summary { cursor: pointer; display: flex; gap: 0.5em; align-items: baseline; min-width: 0; }
