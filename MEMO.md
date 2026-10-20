@@ -6,7 +6,7 @@
 
 - [合并] UI 重构 PR #485 合入 main（`c22bc822`），全部必需 CI 绿；顺带把已部署 Daily 但从未进 main 的 collector 提交 `81bf3f1a` 带进 main。CI 修复两项：`docs/invariants.md` 三个 collector 锚点的裸符号去反引号（账本门禁要求反引号 token 必须是受检路径）、`detail_transcript` 基线用 CI smoke 的 actual 重生成。
 - [部署] Release 包（1.0.5）已装入 `/Applications/Engram.app`（旧包为 3 月 v1.0，GUI 未在运行）；`~/.engram-service/current` 的独立服务（PID 30392）在 bundle 之外，未受影响。
-- [修复中] main 合并后的 `ui-test-full`（run 39348447706）精确挂 3 张基线（`detail_transcript_dark`、`sessions_list_dark`、`detail_findBar`，其余 28 张通过），均为有意视觉变化；PR #486 用该 run 的 actual 重生成，CI 中。详见 `CHANGELOG.md`。
+- [验证] main 合并后的 `ui-test-full`（run 39348447706）精确挂 3 张基线（`detail_transcript_dark`、`sessions_list_dark`、`detail_findBar`，其余 28 张通过），均为有意视觉变化；PR #486 用该 run 的 actual 重生成并合入 main（`1c048825`），随后 main 的 `ui-test-full` 全绿收口，31 张基线全部通过。详见 `CHANGELOG.md`。
 
 ### 2026-10-19
 
