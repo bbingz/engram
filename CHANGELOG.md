@@ -15,9 +15,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   `detail_transcript` baseline was regenerated from the CI smoke run's
   actual (SSIM 0.8449 before, 1.000 after).
 - Post-merge `ui-test-full` on main (run 39348447706) failed exactly three
-  baselines, all intentional visual changes; PR #486 regenerates
+  baselines, all intentional visual changes; PR #486 regenerated
   `detail_transcript_dark`, `sessions_list_dark`, and `detail_findBar`
-  from that run's actuals. The other 28 baselines passed.
+  from that run's actuals, merged as `1c048825`. The post-merge
+  `ui-test-full` run on main then passed: all 31 baselines green, CI Gate
+  success.
 - Installed the Release build (1.0.5, ad-hoc signed) to
   `/Applications/Engram.app` (old bundle was the March v1.0 build; GUI was
   not running). The externally managed service at
