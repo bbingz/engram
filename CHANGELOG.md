@@ -3,6 +3,28 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## UI refactor merged, dark baselines regenerated, app installed (2026-10-20)
+
+- PR #485 merged to main as `c22bc822` (all required CI green: swift-unit,
+  remote-server-swift, Node quality, macOS gates, ui-test-smoke, both
+  CodeQL Swift jobs). The merge also carried the previously unmerged
+  collector commit `81bf3f1a` (already deployed to Daily) into main.
+- CI fixes on the branch: the three collector `Enforced by` anchors in
+  `docs/invariants.md` had backticked bare symbol names (ledger gate
+  requires every backticked token to be a checked path), and the
+  `detail_transcript` baseline was regenerated from the CI smoke run's
+  actual (SSIM 0.8449 before, 1.000 after).
+- Post-merge `ui-test-full` on main (run 39348447706) failed exactly three
+  baselines, all intentional visual changes; PR #486 regenerates
+  `detail_transcript_dark`, `sessions_list_dark`, and `detail_findBar`
+  from that run's actuals. The other 28 baselines passed.
+- Installed the Release build (1.0.5, ad-hoc signed) to
+  `/Applications/Engram.app` (old bundle was the March v1.0 build; GUI was
+  not running). The externally managed service at
+  `~/.engram-service/current` (PID 30392) is outside the bundle and was
+  untouched.
+
+
 ## Shared display-format helpers deduped (2026-10-19)
 
 Phase 3 (cross-page dedupe) of the agent-sessions UI alignment, same branch.
