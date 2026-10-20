@@ -3,6 +3,35 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Web viewer polish deployed to the HQ receiver (2026-10-20)
+
+Owner pointed out the session was already running on HQ (`Bing-HuaQiao`,
+`100.125.101.60`); an earlier attempt to reach it over SSH was the long way
+round and is abandoned.
+
+**Package.** Release/arm64 `EngramRemoteServer` built from main `881d3ffa`
+and packaged with `macos/scripts/package-remote-server.sh` into
+`~/.engram-shadow-core-20260911/hq/remote-server-main-881d3ffa-20261020`
+(`--verify-only` PASS, sourceRevision `881d3ffa…`).
+
+**Deploy (`com.engram.capture-core.receiver`).** Plist backed up to
+`state/remote-server/persistent/main-881d3ffa-20261020-job-before.plist`
+(0600). Only `ProgramArguments[0]` changed, via plistlib; the environment
+(including credentials) is untouched. `bootout` 03:36:08 UTC; the first
+`bootstrap` returned `Bootstrap failed: 5: Input/output error` and left the
+job unloaded, and a retry at 03:36:24 UTC succeeded. New PID 79714 running
+the new program path. Rollback: bootstrap the backed-up plist; the
+`remote-server-main-1e3b5c34-20261008` package is kept. `service-index` was
+not touched.
+
+**Verification.** `/v1/health` 200; `/web/` with the Serve Host header
+returns `data-auth-mode="tailscale-serve"`; `/web/app.css` serves the new
+rules (`translateY(-1px)` present) with `--bg:#0f172a` unchanged. A local
+render of the served HTML/CSS/JS with stubbed data shows the pill badges,
+rounded session cards, and the green user / source-tinted assistant
+transcript bubbles. stderr gained only the listening line and the archive
+index-warm notice.
+
 ## Web viewer visual polish, palette unchanged (2026-10-20)
 
 - CSS-only refinement of the shipped Web viewer in

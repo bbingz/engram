@@ -4,6 +4,7 @@
 
 ### 2026-10-20
 
+- [部署] Web 视觉精修已上 HQ：Release/arm64 从 main `881d3ffa` 打包为 `remote-server-main-881d3ffa-20261020`（verify-only 通过），receiver 只改 `ProgramArguments[0]`，plist 已备份。第一次 bootstrap 报 `5: Input/output error` 且任务被卸下，03:36:24Z 重试成功，新 PID 79714。`/v1/health` 200，新 CSS 已在线上，调色板未变，本地渲染确认徽标、卡片和转录气泡生效。回滚：用备份 plist bootstrap，旧包保留。详见 `CHANGELOG.md`。
 - [变更] Web 端视觉精修（仅 CSS，`WebUIRoutes.swift`）：字号层级、间距、圆角（卡片 12px、徽标和筛选 chip 改胶囊）、悬停/按下/键盘焦点态、卡片微阴影、表格等宽数字、转录气泡按来源着色边框、吸顶标题加毛玻璃。锁定的深色 slate/绿调色板、960px 居中布局和全部 DOM id 原样保留，HTML 与 JS 未动。Swift `WebUIRoutesTests` 9 项、TS `collector-web-ui` 180 项通过。详见 `CHANGELOG.md`。
 - [合并] UI 重构 PR #485 合入 main（`c22bc822`），全部必需 CI 绿；顺带把已部署 Daily 但从未进 main 的 collector 提交 `81bf3f1a` 带进 main。CI 修复两项：`docs/invariants.md` 三个 collector 锚点的裸符号去反引号（账本门禁要求反引号 token 必须是受检路径）、`detail_transcript` 基线用 CI smoke 的 actual 重生成。
 - [部署] Release 包（1.0.5）已装入 `/Applications/Engram.app`（旧包为 3 月 v1.0，GUI 未在运行）；`~/.engram-service/current` 的独立服务（PID 30392）在 bundle 之外，未受影响。
