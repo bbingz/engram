@@ -3,6 +3,21 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Web viewer visual polish, palette unchanged (2026-10-20)
+
+- CSS-only refinement of the shipped Web viewer in
+  `macos/EngramRemoteServer/Core/WebUIRoutes.swift`. The locked dark
+  slate/green palette (`--bg:#0f172a`, `--panel:#1e293b`, `--accent:#22c55e`
+  and the rest of the legacy `:root` line) is byte-for-byte unchanged, as are
+  the 960px centered layout, the list/detail toggle, and every DOM id.
+- What changed: type scale and tracking (nav, titles, table headers, KPI
+  numbers), spacing rhythm, larger radii (12px cards, pill badges and filter
+  chips), hover/active/focus-visible states on buttons, inputs and session
+  rows, a soft card shadow, tabular numerals, and transcript bubbles with a
+  source-tinted assistant border and a blurred sticky header.
+- No HTML or JavaScript changed, so the no-inline-code / textContent-only
+  contracts are untouched.
+
 ## UI refactor merged, dark baselines regenerated, app installed (2026-10-20)
 
 - PR #485 merged to main as `c22bc822` (all required CI green: swift-unit,
