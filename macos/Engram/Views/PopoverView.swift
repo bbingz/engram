@@ -364,7 +364,7 @@ struct PopoverView: View {
             return serviceStatusStore.status == .starting ? "Indexing your sessions…" : "No sessions yet"
         case .stale(let asOf):
             let base = serviceStatusStore.status == .starting ? "Indexing your sessions…" : "No sessions yet"
-            return "\(base) \(Self.asOfText(asOf))"
+            return "\(base) \(ServiceDataFreshness.asOfText(asOf))"
         case .expired:
             return "No sessions yet"
         }
@@ -373,22 +373,11 @@ struct PopoverView: View {
     private func serviceFreshnessDetail(_ freshness: ServiceDataFreshness) -> String? {
         switch freshness {
         case .stale(let asOf):
-            return Self.asOfText(asOf)
+            return ServiceDataFreshness.asOfText(asOf)
         case .live, .expired:
             return nil
         }
     }
-
-    private static func asOfText(_ date: Date) -> String {
-        "as of \(serviceFreshnessTimeFormatter.string(from: date))"
-    }
-
-    private static let serviceFreshnessTimeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "HH:mm"
-        return formatter
-    }()
 
     private static let dateOnlyFormatter: DateFormatter = {
         let f = DateFormatter()

@@ -3535,23 +3535,41 @@ final class CollectorPublicationWorkerTests: XCTestCase {
         let intents = try f.owner.publicationIntents(limit: 8)
         XCTAssertEqual(intents.count, 1)
         XCTAssertEqual(intents.first?.relativePath, "two.jsonl")
-        XCTAssertEqual(try f.integer("SELECT acknowledged_revision FROM collector_locators WHERE relative_path = 'one.jsonl'"), 0)
+        // one.jsonl vanished before any capture, so it leaves the dirty set.
+        XCTAssertEqual(
+            try f.integer("SELECT acknowledged_revision FROM collector_locators WHERE relative_path = 'one.jsonl'"),
+            try f.integer("SELECT dirty_revision FROM collector_locators WHERE relative_path = 'one.jsonl'")
+        )
         XCTAssertFalse(FileManager.default.fileExists(atPath: f.source.path))
         await replicas.stop()
     }
 
-    func testNeverCapturedMissingSourceDefersSixtySecondsAndStaysUnacknowledged_repro() async throws {
+    // RED before / GREEN after for vanished never-captured locators:
+    // Setup: one.jsonl is marked dirty, then deleted before any capture.
+    // RED (old): it is deferred 60 s and stays dirty, so claimDirty re-reads it
+    //        on every later turn even though retry_not_before is in the future.
+    // GREEN (new): a vanished locator that was never captured leaves the dirty
+    //        set. It is re-dirtied if the path is observed again.
+    // Invariant "Collector Vanished Uncaptured Locators Leave The Dirty Set".
+    func testNeverCapturedMissingSourceLeavesDirtySetAndRearmsOnReobservation_repro() async throws {
         let f = try PublicationFixture()
         defer { f.remove() }
         try FileManager.default.removeItem(at: f.source)
         let result = try await f.worker(Self.captureOnlyEndpoints).captureOnce(now: 100)
         XCTAssertEqual(result.captured, 0)
-        XCTAssertGreaterThanOrEqual(result.deferred, 1)
-        XCTAssertEqual(try f.integer("SELECT retry_not_before FROM collector_locators WHERE relative_path = 'one.jsonl'"), 160)
-        XCTAssertEqual(try f.text("SELECT last_error FROM collector_locators WHERE relative_path = 'one.jsonl'"), "unavailable")
-        XCTAssertEqual(try f.integer("SELECT acknowledged_revision FROM collector_locators WHERE relative_path = 'one.jsonl'"), 0)
-        XCTAssertGreaterThan(try f.integer("SELECT dirty_revision FROM collector_locators WHERE relative_path = 'one.jsonl'"), 0)
+        XCTAssertEqual(
+            try f.integer("SELECT acknowledged_revision FROM collector_locators WHERE relative_path = 'one.jsonl'"),
+            try f.integer("SELECT dirty_revision FROM collector_locators WHERE relative_path = 'one.jsonl'"),
+            "a vanished never-captured locator must leave the dirty set"
+        )
         XCTAssertEqual(try f.integer("SELECT COUNT(*) FROM collector_locators WHERE relative_path = 'one.jsonl' AND last_capture_id IS NULL"), 1)
+        let again = try await f.worker(Self.captureOnlyEndpoints).captureOnce(now: 101)
+        XCTAssertEqual(again.captured, 0, "it must not be reclaimed on the next turn")
+        try f.transcript(text: "reappeared").write(to: f.source)
+        XCTAssertEqual(chmod(f.source.path, 0o600), 0)
+        try f.markDirty()
+        let rearmed = try await f.worker(Self.captureOnlyEndpoints).captureOnce(now: 102)
+        XCTAssertEqual(rearmed.captured, 1, "a later observation must capture it")
     }
 
     func testPreviouslyCapturedMissingSourceDefersOneSecondAndStaysUnacknowledged_repro() async throws {
@@ -3635,10 +3653,10 @@ final class CollectorPublicationWorkerTests: XCTestCase {
         f.probe.action = { commits += 1 }
         let result = try await f.worker(Self.captureOnlyEndpoints, budget: .init(maxCaptureFiles: 8)).captureOnce(now: 100)
         XCTAssertEqual(result.captured, 0)
-        XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_locators WHERE last_error = 'unavailable'"), 2)
-        XCTAssertEqual(try f.integer("SELECT retry_not_before FROM collector_locators WHERE relative_path = 'one.jsonl'"), 160)
-        XCTAssertEqual(try f.integer("SELECT retry_not_before FROM collector_locators WHERE relative_path = 'two.jsonl'"), 160)
-        XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_locators WHERE acknowledged_revision > 0"), 0)
+        // Both vanished before any capture, so both leave the dirty set.
+        XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_locators WHERE last_error = 'unavailable'"), 0)
+        XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_locators WHERE retry_not_before IS NOT NULL"), 0)
+        XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_locators WHERE acknowledged_revision = dirty_revision"), 2)
         XCTAssertEqual(commits, 3, "claimDirty + one unavailable batch + first privacy reconcile")
     }
 
@@ -3655,6 +3673,8 @@ final class CollectorPublicationWorkerTests: XCTestCase {
         f.probe.action = { commits += 1 }
         let result = try await f.worker(Self.captureOnlyEndpoints, budget: .init(maxCaptureFiles: 2)).captureOnce(now: 100)
         XCTAssertEqual(result.captured, 0)
+        // The session is present but has no usable entrypoint, so both locators
+        // stay dirty and retry rather than leaving the dirty set.
         XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_locators WHERE last_error = 'unavailable'"), 2)
         XCTAssertEqual(
             try f.integer("SELECT retry_not_before FROM collector_locators WHERE relative_path = 'session-1/events.jsonl'"),
@@ -3679,13 +3699,17 @@ final class CollectorPublicationWorkerTests: XCTestCase {
         f.probe.action = { commits += 1 }
         let result = try await f.worker(Self.captureOnlyEndpoints, budget: .init(maxCaptureFiles: 8)).captureOnce(now: 200)
         XCTAssertEqual(result.captured, 0)
+        // one.jsonl was captured before it vanished, so it keeps the short retry.
+        // two.jsonl was never captured, so it leaves the dirty set.
         XCTAssertEqual(try f.integer("SELECT retry_not_before FROM collector_locators WHERE relative_path = 'one.jsonl'"), 201)
-        XCTAssertEqual(try f.integer("SELECT retry_not_before FROM collector_locators WHERE relative_path = 'two.jsonl'"), 260)
         XCTAssertEqual(try f.text("SELECT last_error FROM collector_locators WHERE relative_path = 'one.jsonl'"), "unavailable")
-        XCTAssertEqual(try f.text("SELECT last_error FROM collector_locators WHERE relative_path = 'two.jsonl'"), "unavailable")
         XCTAssertGreaterThan(
             try f.integer("SELECT dirty_revision FROM collector_locators WHERE relative_path = 'one.jsonl'"),
             try f.integer("SELECT acknowledged_revision FROM collector_locators WHERE relative_path = 'one.jsonl'")
+        )
+        XCTAssertEqual(
+            try f.integer("SELECT acknowledged_revision FROM collector_locators WHERE relative_path = 'two.jsonl'"),
+            try f.integer("SELECT dirty_revision FROM collector_locators WHERE relative_path = 'two.jsonl'")
         )
         XCTAssertEqual(try f.integer("SELECT COUNT(*) FROM collector_locators WHERE relative_path = 'one.jsonl' AND last_capture_id IS NOT NULL"), 1)
         XCTAssertEqual(try f.integer("SELECT COUNT(*) FROM collector_locators WHERE relative_path = 'two.jsonl' AND last_capture_id IS NULL"), 1)
@@ -3717,9 +3741,9 @@ final class CollectorPublicationWorkerTests: XCTestCase {
         f.probe.action = nil
         let drained = try await worker.captureOnce(now: 50)
         XCTAssertEqual(drained.captured, 0)
-        XCTAssertEqual(try f.integer("SELECT retry_not_before FROM collector_locators WHERE relative_path = 'one.jsonl'"), 160)
-        XCTAssertEqual(try f.integer("SELECT retry_not_before FROM collector_locators WHERE relative_path = 'two.jsonl'"), 160)
-        XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_locators WHERE acknowledged_revision > 0"), 0)
+        // Neither was captured before it vanished, so both leave the dirty set.
+        XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_locators WHERE retry_not_before IS NOT NULL"), 0)
+        XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_locators WHERE acknowledged_revision = dirty_revision"), 2)
     }
 
     func testUnavailableBusyThenNewerDirtyWakesOnlyThatClaimOnDrain_repro() async throws {
@@ -3745,10 +3769,14 @@ final class CollectorPublicationWorkerTests: XCTestCase {
         try f.markDirty(relativePath: "two.jsonl")
         let drained = try await worker.captureOnce(now: 50)
         XCTAssertEqual(drained.captured, 1)
-        XCTAssertEqual(try f.integer("SELECT retry_not_before FROM collector_locators WHERE relative_path = 'one.jsonl'"), 160)
+        // one.jsonl vanished before any capture, so it leaves the dirty set.
+        XCTAssertEqual(
+            try f.integer("SELECT acknowledged_revision FROM collector_locators WHERE relative_path = 'one.jsonl'"),
+            try f.integer("SELECT dirty_revision FROM collector_locators WHERE relative_path = 'one.jsonl'")
+        )
         XCTAssertGreaterThan(try f.integer("SELECT acknowledged_revision FROM collector_locators WHERE relative_path = 'two.jsonl'"), 0)
         XCTAssertEqual(try f.integer("SELECT COUNT(*) FROM collector_locators WHERE relative_path = 'two.jsonl' AND last_capture_id IS NOT NULL"), 1)
-        XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_locators WHERE relative_path = 'one.jsonl' AND acknowledged_revision > 0"), 0)
+        XCTAssertEqual(try f.integer("SELECT COUNT(*) FROM collector_locators WHERE relative_path = 'one.jsonl' AND last_capture_id IS NULL"), 1)
     }
 
     func testUnavailableCancellationRetainsBatchForLaterNoncancelledOrNewOwner_repro() async throws {
@@ -3785,8 +3813,17 @@ final class CollectorPublicationWorkerTests: XCTestCase {
         handle.change { $0 = nil }
         let drained = try await worker.captureOnce(now: 50)
         XCTAssertEqual(drained.captured, 0)
-        XCTAssertEqual(try f.integer("SELECT retry_not_before FROM collector_locators WHERE relative_path = 'one.jsonl'"), 160)
-        XCTAssertEqual(try f.integer("SELECT retry_not_before FROM collector_locators WHERE relative_path = 'two.jsonl'"), 160)
+        // Neither was captured before it vanished, so both leave the dirty set.
+        XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_locators WHERE acknowledged_revision = dirty_revision"), 2)
+        // A locator captured before it vanished still defers, so a later owner has a
+        // batch to retain across cancellation.
+        try f.transcript(text: "captured-then-removed").write(to: f.source)
+        XCTAssertEqual(chmod(f.source.path, 0o600), 0)
+        try f.markDirty()
+        let captured = try await f.worker(Self.captureOnlyEndpoints).captureOnce(now: 60)
+        XCTAssertEqual(captured.captured, 1)
+        try FileManager.default.removeItem(at: f.source)
+        try f.markDirty()
         try f.reopen()
         let replacementHandle = PublicationLocked<Task<EngramCollectorCore.CollectorPublicationCycle, Error>?>(nil)
         var laterCommits = 0
@@ -3812,9 +3849,13 @@ final class CollectorPublicationWorkerTests: XCTestCase {
         f.probe.action = nil
         let recovered = try await f.worker(Self.captureOnlyEndpoints, budget: .init(maxCaptureFiles: 8)).captureOnce(now: 300)
         XCTAssertEqual(recovered.captured, 0)
-        XCTAssertEqual(try f.integer("SELECT retry_not_before FROM collector_locators WHERE relative_path = 'one.jsonl'"), 360)
-        XCTAssertEqual(try f.integer("SELECT retry_not_before FROM collector_locators WHERE relative_path = 'two.jsonl'"), 360)
-        XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_locators WHERE acknowledged_revision > 0"), 0)
+        // one.jsonl was captured before it vanished, so the recovered owner defers it.
+        XCTAssertEqual(try f.integer("SELECT retry_not_before FROM collector_locators WHERE relative_path = 'one.jsonl'"), 301)
+        // two.jsonl was never captured, so it stays acknowledged without a retry.
+        XCTAssertEqual(
+            try f.integer("SELECT acknowledged_revision FROM collector_locators WHERE relative_path = 'two.jsonl'"),
+            try f.integer("SELECT dirty_revision FROM collector_locators WHERE relative_path = 'two.jsonl'")
+        )
     }
 
     func testEndpointConfigurationRejectsCredentialAndOriginAliasing() throws {
@@ -3976,7 +4017,11 @@ final class CollectorPublicationWorkerTests: XCTestCase {
         let intents = try f.owner.publicationIntents(limit: 8)
         XCTAssertEqual(intents.count, 1)
         XCTAssertEqual(intents.first?.relativePath, "two.jsonl")
-        XCTAssertEqual(try f.integer("SELECT acknowledged_revision FROM collector_locators WHERE relative_path = 'nested/one.jsonl'"), 0)
+        // nested/one.jsonl vanished before any capture, so it leaves the dirty set.
+        XCTAssertEqual(
+            try f.integer("SELECT acknowledged_revision FROM collector_locators WHERE relative_path = 'nested/one.jsonl'"),
+            try f.integer("SELECT dirty_revision FROM collector_locators WHERE relative_path = 'nested/one.jsonl'")
+        )
         XCTAssertFalse(FileManager.default.fileExists(atPath: nested.path))
         await replicas.stop()
     }

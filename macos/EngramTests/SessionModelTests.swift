@@ -426,7 +426,9 @@ final class SessionModelTests: XCTestCase {
             encoding: .utf8
         )
 
-        XCTAssertEqual(source.components(separatedBy: "db.favoriteIds()").count - 1, 2)
+        // 3 raw-id sites: initial load, pagination append, and the expanded
+        // hierarchy child-box load (agent-sessions table flatten).
+        XCTAssertEqual(source.components(separatedBy: "db.favoriteIds()").count - 1, 3)
         XCTAssertFalse(
             source.contains("db.listFavorites()"),
             "Browse and pagination need raw favorite membership; listFavorites remains the Starred browse query"

@@ -625,7 +625,7 @@ struct SearchPageView: View {
     }
 
     private func projectLabel(_ project: String) -> String {
-        project.split(separator: "/").last.map(String.init) ?? project
+        ProjectBadge.shortLabel(project)
     }
 
     /// Leading value-band bar color (from Session.qualityScore). `.clear` for

@@ -117,7 +117,7 @@ struct HomeView: View {
                 )
                     .accessibilityIdentifier("home_kpiCard_today")
                 Button { navigate(to: .sessions) } label: {
-                    KPICard(value: formatNumber(kpi.sessions), label: "Sessions")
+                    KPICard(value: KPICard.compactNumber(kpi.sessions), label: "Sessions")
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("home_kpiCard_sessions")
@@ -381,7 +381,7 @@ struct HomeView: View {
     private func serviceTodayLabel(_ freshness: ServiceDataFreshness) -> String {
         switch freshness {
         case .stale(let asOf):
-            return "Today \(Self.asOfText(asOf))"
+            return "Today \(ServiceDataFreshness.asOfText(asOf))"
         case .live, .expired:
             return "Today"
         }
@@ -390,7 +390,7 @@ struct HomeView: View {
     private func serviceStatusDetail(_ freshness: ServiceDataFreshness) -> String? {
         switch freshness {
         case .stale(let asOf):
-            return Self.asOfText(asOf)
+            return ServiceDataFreshness.asOfText(asOf)
         case .live, .expired:
             return nil
         }
@@ -399,7 +399,7 @@ struct HomeView: View {
     private func serviceStatusText(_ freshness: ServiceDataFreshness) -> String {
         switch freshness {
         case .stale(let asOf):
-            return "\(serviceStatusStore.displayString) \(Self.asOfText(asOf))"
+            return "\(serviceStatusStore.displayString) \(ServiceDataFreshness.asOfText(asOf))"
         case .live, .expired:
             return serviceStatusStore.displayString
         }
@@ -419,20 +419,9 @@ struct HomeView: View {
                 String(localized: "%lld parent sessions"),
                 serviceStatusStore.todayParentSessions
             )
-            return "\(parentSessions) \(Self.asOfText(asOf))"
+            return "\(parentSessions) \(ServiceDataFreshness.asOfText(asOf))"
         }
     }
-
-    private static func asOfText(_ date: Date) -> String {
-        "as of \(serviceFreshnessTimeFormatter.string(from: date))"
-    }
-
-    private static let serviceFreshnessTimeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "HH:mm"
-        return formatter
-    }()
 
     private func loadData() async {
         loadGeneration += 1
@@ -576,17 +565,11 @@ struct HomeView: View {
     }
 
     private func projectLabel(_ project: String) -> String {
-        project.split(separator: "/").last.map(String.init) ?? project
+        ProjectBadge.shortLabel(project)
     }
 
     private func compactPath(_ path: String) -> String {
         path.split(separator: "/").suffix(2).joined(separator: "/")
-    }
-
-    private func formatNumber(_ n: Int) -> String {
-        if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
-        if n >= 1_000 { return String(format: "%.1fK", Double(n) / 1_000) }
-        return "\(n)"
     }
 }
 
@@ -733,7 +716,7 @@ private struct ChangedRepoRow: View {
     }
 
     private func projectLabel(_ project: String) -> String {
-        project.split(separator: "/").last.map(String.init) ?? project
+        ProjectBadge.shortLabel(project)
     }
 }
 

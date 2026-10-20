@@ -2,6 +2,21 @@
 
 ## Changelog Memo
 
+### 2026-10-19
+
+- [变更] 第三阶段跨页去重落地：`ProjectBadge.shortLabel`（项目短名 ×3 副本收编，TodayWorkbenchSupport 的匹配逻辑副本刻意保留）、`KPICard.compactNumber`（KPI 数字缩写 ×2 收编，SourcePulseView 补上 ≥1M 档）、`ServiceDataFreshness.asOfText`（"as of HH:mm" 双副本及重复 DateFormatter 删除）。三个卡片组件与 confirm/dismiss 建议动作经评估为非重复面，不强抽。Debug 构建通过，12 个相关套件 360 项测试通过。Home/Search/Timeline/Activity 的深度视觉重排延后：参考应用没有这些页面可抄，且本机 UI 视觉验证被 testmanagerd 挂起阻塞。详见 `CHANGELOG.md`。
+
+- [变更] transcript 面板完成 agent-sessions 对齐第二阶段：连续 ≥2 条工具行折叠为 "› N tool calls" 单行（新增 `TranscriptBlock`/`TranscriptBlockGrouper` 纯函数 + 5 个单测，点击展开，error 行保持独立可扫读；find 命中折叠区时先展开再滚动）；assistant 角色色从紫色改为参考的暖棕色（深浅色自适应）。`displayIndexed` 仍是唯一行空间，find/类型 chip 机制未动。详见 `CHANGELOG.md`。
+- [变更] `SessionsPageView` 按 jazzyalex/agent-sessions 的交互结构重写（分支 `refactor/ui-agent-sessions-20261019`）：左侧 SwiftUI Table（★/来源/标题/更新时间/项目/消息数）+ 底部状态栏，右侧内嵌 transcript 详情面板（选中 150ms 去抖后加载）；子会话按层级扁平进同一张表，折叠显示计数、展开懒加载，建议子会话带 Confirm/Dismiss。三张 KPI 卡被状态栏计数替代。过滤、分页、generation gate、coalescer 和全部 `sessions_*` 测试标识符保留。详见 `CHANGELOG.md`。
+- [验证] Debug 构建通过；单测 6 个套件通过（含新增 3 个 `buildRows` 测试）。两个源码扫描断言按新接线更新（`favoriteIds()` 计数 2→3、键盘可达改为断言 Table 原生选择）。
+- [未验证] UI 冒烟测试在本机跑不起来：`testmanagerd` 三次都在建立连接前挂起（其中两次 app 尚未启动），属环境问题，与本次改动无关。
+- [验证] 全量 `EngramTests` 3374 通过 / 1 失败，失败项为 `EngramServiceLauncherTests.testRestartWaitsThroughCooperativeShutdownBeforeReplacing_repro`（500ms spawn-marker 等待超时）；单独重跑通过，判定为全量高负载下的时序 flake，与本次 UI 改动无关（未触碰 launcher 代码）。详见 `CHANGELOG.md`。
+- [变更] 业主授权（「授权，按顺序执行」）后在 `perf/collector-idle-turn-cost-20261019` 落地三项：扫描成功结束时同事务删除该 root 的全部 frontier 行（Daily 上已积到约 1200 万行）；存储分离的祖先遍历改为每次打开只证明一次，祖先身份或权限变化才重走，叶子目录每次仍重新打开；从未采集且源文件打不开的 locator 直接认领、离开脏集，已采集过的仍按 1 秒重试，文件重新出现会重新置脏。详见 `CHANGELOG.md`。
+- [排查] Daily 上 15 秒 `sample` 显示每轮地板的大头是 `validateStorageFilesystem` 里的祖先遍历，不是之前猜的逐条目目录校验，所以逐条目校验保留不动。2026-10-18 样本里占比最大的 Cursor 旧版观察对账这次没动；`privacyWithheld` 的增长观察到了，不在本次范围。
+- [验证] 三个套件通过：`CollectorInventoryStoreTests` 107、`CollectorInventoryOwnerTests` 89、`CollectorPublicationWorkerTests` 132。新增不变量三条：「Collector Frontier Rows Live Only For The Active Scan」「Collector Storage Separation Is Proven Once Per Open」「Collector Vanished Uncaptured Locators Leave The Dirty Set」。
+- [变更] 业主授权（「授权部署，再测」）后把改动提交为 `81bf3f1a` 并部署到 Daily：包 `collector-idle-turn-20261019`（`bab65b3a…1134`），换版前新二进制 dry-run 0 个受影响根，只改 `ProgramArguments[0]`，PID 32180、launchd 仅 1 次、stderr 不变；回滚可恢复备份 plist，旧包保留。三项修复线上均验证生效：frontier 12,130,812 → 约 1,000 行；60 秒 `sample` 只见缓存命中路径、无全量重走；卡住的脏 locator 414+ → 266。
+- [排查] 部署后的 07:59–08:25Z 窗口 CPU 34.6%（52/61 个样本），但这不是稳态测量：Daily 上有一个多子代理 Claude Code 工作流持续写 `~/.claude/projects`，`daily-claude` 全程未收敛（落后 2 → 48），51 个区间无一低于 2%；热点是负载下的每轮重走成本（范围外），不是修复目标的地板。安静段的 30 分钟窗口待该工作流结束后补测。
+
 ### 2026-10-18
 
 - [变更] 业主授权（「授权部署，并观测好给，你来决策完成」）后把 `ea2bbb57` 的 collector 部署到 Daily：包 `collector-epoch-proof-reuse-20261018`（`56540831…8868`），换版前新二进制 dry-run 0 个受影响根，只改 `ProgramArguments[0]`，bootout 11:37:34Z、bootstrap 11:37:36Z，PID 6028，launchd 仅 1 次，stderr 不变；T+10 两副本新增 56 条 ACK、HQ 照常入账无失败，隐私证明复用在真机正常。回滚：恢复备份 plist 后 bootstrap，旧包保留。详见 `CHANGELOG.md`。

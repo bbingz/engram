@@ -3,6 +3,196 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Shared display-format helpers deduped (2026-10-19)
+
+Phase 3 (cross-page dedupe) of the agent-sessions UI alignment, same branch.
+
+- `ProjectBadge.shortLabel(_:)` is now the canonical last-path-component
+  project label. HomeView's two private `projectLabel` copies and
+  SearchPageView's delegate to it; ProjectsView's inline copy calls it
+  directly. TodayWorkbenchSupport keeps its two inline copies deliberately —
+  they are basename *matching* logic, not display formatting.
+- `KPICard.compactNumber(_:)` is the one KPI abbreviator ("1.2K"/"3.4M");
+  HomeView and SourcePulseView delegate to it (SourcePulseView gains the
+  ≥1M tier its older copy lacked).
+- `ServiceDataFreshness.asOfText(_:)` (EngramServiceStatusStore) is the sole
+  "as of HH:mm" implementation: HomeView and PopoverView's private copies and
+  their duplicate `DateFormatter`s are deleted, and the "HomeView /
+  PopoverView keep their private copies" comment is updated to reflect that
+  no private copies remain.
+- Assessed and deliberately NOT deduped: `SessionCard` / `LiveSessionCard` /
+  `ExpandableSessionCard` serve distinct row types (generic row, live session
+  with pulsing dot, expandable parent), and the Sessions/Timeline
+  confirm/dismiss-suggestion bodies diverge in refresh strategy and error
+  surface — forcing an abstraction there would be two callbacks for two call
+  sites. `RenameSessionSheet` was already shared.
+
+**Verification**: Debug build succeeds; 12 suites covering the touched
+surfaces pass (360 tests): HomePopoverActionsTests, SearchOutcomeTests,
+SourcePulseUsageFormattingTests, ProjectsMigrationTests, TodayWorkbenchTests,
+TodayWorkbenchScopeTests, SourcesSyncTests, UIUXPolishWiringTests,
+TranscriptFindTests, AppSearchServiceCutoverScanTests,
+MCPActivationOnboardingTests, ViewMainThreadReadTests, plus
+LiveSessionsHoldTests.
+
+Remaining phase-3 scope (deep visual restyle of Home/Search/Timeline/Activity)
+is deferred: the reference app has no such pages to copy, and local visual
+verification is blocked by the testmanagerd hang (see phase 2 entry).
+
+
+## Transcript: collapsed tool runs + agent-sessions role palette (2026-10-19)
+
+Phase 2 of the agent-sessions UI alignment, same branch.
+
+- **Tool-run collapse**: consecutive tool-ish rows (`tool` / `toolCall` /
+  `toolResult`, runs of ≥2) collapse into one "› N tool calls" header row in
+  the session-view transcript (new `TranscriptBlock` model +
+  `TranscriptBlockGrouper`, pure and unit-tested with 5 tests). Click expands
+  the run in place. Errors stay standalone so red rows remain scannable.
+  `displayIndexed` remains the canonical row space — find indices, match
+  counts, and type chips are untouched; blocks are only a rendering
+  projection. Find navigation into a collapsed run expands it before
+  scrolling (one runloop hop so the target view exists for `scrollTo`).
+  Expansion state resets on session switch.
+- **Assistant role color** → warm brown (agent-sessions palette), dark-mode
+  aware via a dynamic `NSColor` provider: light rgb(0.55, 0.34, 0.12), dark
+  rgb(0.74, 0.46, 0.22). User blue / tool purple / error red were already
+  aligned; the assistant rows had been purple, colliding with tool calls.
+- Turn-duration chips already existed on assistant rows ("4.8s"); kept
+  Engram's no-call-count format (documented row-30 decision).
+
+**Verification**: `xcodegen generate` (new file) then Debug build succeeds;
+transcript suites pass (`TranscriptLabelAndCopyTests` incl. the 5 new grouping
+tests, `TranscriptFindTests`, `UIUXPolishWiringTests`,
+`AppSearchServiceCutoverScanTests`). Full `EngramTests` suite (exit 65):
+3374 passed, 1 failed — `EngramServiceLauncherTests.testRestartWaitsThroughCooperativeShutdownBeforeReplacing_repro`
+at line 1239 (`XCTAssertTrue(initialStarted)`, a 500ms spawn-marker wait).
+Solo re-run of that one test passes (3.43s, TEST SUCCEEDED): the failure is a
+timing flake under full-suite load (helper process spawn latency), unrelated
+to this UI diff — no launcher code was touched.
+
+## Sessions page rebuilt as agent-sessions-style master-detail (2026-10-19)
+
+`SessionsPageView` is rewritten on branch `refactor/ui-agent-sessions-20261019`
+to match the interaction structure of jazzyalex/agent-sessions (the reference
+Engram's UI was originally modeled on). No schema, service, or query changes.
+
+- **Split layout**: `HSplitView` with the filter header + session list on the
+  left and an embedded `SessionDetailView` (no back button) on the right.
+  Table selection paints instantly; the transcript pane follows after a 150ms
+  settle debounce so arrow-key scrubbing does not rebuild it per row.
+- **SwiftUI `Table`** replaces the `LazyVStack` of `ExpandableSessionCard`s:
+  columns ★ (favorite toggle) / Source (pill + origin badge) / Session /
+  Updated (mono relative time) / Project / Msgs (mono). Row height comes from
+  the table style instead of padded cards.
+- **Flattened hierarchy**: confirmed and suggested child sessions render as
+  depth-1 rows inside the same table (`SessionsPageView.buildRows`, pure and
+  unit-tested). Collapsed parents show a child count; expanding loads children
+  lazily and keeps them in a per-parent box. Suggested rows carry inline
+  Confirm/Dismiss; all rows keep the full context menu
+  (`SessionWriteMenuItems` promoted from private to internal for reuse).
+- **Footer status bar** replaces the three KPI cards: service state on the
+  left, "N sessions" / "N of M sessions · Clear filters" on the right.
+- Unchanged: filter pills, source picker, Show-all / Show-hidden / HQ-only
+  toggles, generation-gated loads, browse-reload coalescing, pagination, and
+  every `sessions_*` accessibility identifier the UI tests query.
+  `SessionsScreen` KPI accessors (unreferenced by any test) were removed.
+
+**Verification**: `xcodebuild` Debug build succeeds (`CODE_SIGNING_ALLOWED=NO`;
+this machine has no Mac Development certificate). Unit suites pass:
+`BrowseReloadCoalescerTests` (incl. 3 new `buildRows` tests),
+`SessionModelTests`, `UIUXPolishWiringTests`, `ViewMainThreadReadTests`,
+`SessionActionsTests`, `AppSearchServiceCutoverScanTests`. Two source-scan
+assertions were updated for the new wiring (raw `favoriteIds()` call count
+2→3 because the child-box load joins favorites; keyboard-reachability assertion
+now checks native `Table` selection instead of the card focus ring).
+`EngramUITests` smoke runs could not be executed here: the test runner hung
+before establishing a connection to `testmanagerd` on three attempts (twice
+before any app launch), an environment failure independent of this change.
+
+## Collector idle-turn cost fixes deployed to Daily as `81bf3f1a` (2026-10-19)
+
+Build/fix entry: "Collector idle-turn cost: frontier reclaim, cached ancestor
+walk, vanished locators" above. The 12 modified files were committed locally as
+`81bf3f1a5c4173cc838b28caddbf52d245fc7a25` on
+`perf/collector-idle-turn-cost-20261019` (untracked `.grok/` file excluded),
+because the deploy flow stamps BUILD-METADATA `sourceRevision` from a commit
+SHA. Owner authorization: "授权部署，再测。"
+
+**Deploy** (Daily only; package `collector-idle-turn-20261019`). Release/arm64
+`EngramCollector`, `package-collector.sh` `--dry-run`, packaging and
+`--verify-only` all PASS. `bin/EngramCollector` sha256
+`bab65b3a376642c0af7e3011d550760a4bf0e2f40afabdf2a195cc87de5a1134`,
+`EngramCollectorCore` sha256
+`59af885620c9c31d7c8a3e6630f895d748c3924baff67bf1cf8ca02151ccf4cf`,
+BUILD-METADATA sourceRevision `81bf3f1a5c4173cc838b28caddbf52d245fc7a25`; the
+new `DELETE FROM collector_frontier WHERE root_id` string is present in the new
+framework and absent from the deployed 2026-10-18 one. rsync to
+`daily/collector-idle-turn-20261019`, SHA256SUMS 16/16 OK,
+`codesign --verify --deep --strict` ok. Pre-state: PID 6028 up 19 h 38 m,
+16/16 roots converged, both replicas 48,970 ACKed, `privacyWithheld` 497,
+stderr 740,238 bytes, `collector_frontier` 12,130,812 rows. `launchctl
+bootout` 07:14Z; the NEW binary's `--reconcile-native-epoch --dry-run` with the
+collector stopped reported `affectedRoots` 0 (5 `current`, 11 `noCheckpoint`).
+plist backed up to `state/collector/persistent/idle-turn-job-before.plist`,
+only `ProgramArguments[0]` replaced; `bootstrap` 07:15Z. PID 32180, launchd
+runs 1, stderr unchanged. Rollback: restore the backed-up plist and bootstrap
+it; `collector-epoch-proof-reuse-20261018` is kept.
+
+**Fixes verified live.** Frontier rows fell 12,130,812 -> ~1,000 (remaining
+rows belong to the active scan; the reclaim deleted them as each restart-walk
+scan finished). A 60 s `sample` shows `ancestorChainHolds` (the cached
+fstatat-only check) and no full `requireSeparateStorage` re-walk, so the
+ancestor cache holds. Dirty locators fell 414+ stuck -> 266 (the 255 Copilot +
+6 Kimi present-but-uncapturable members from `collector-stuck-dirty-locators-1`
+keep their retry), `retry_not_before` 269. Both replicas +34 ACKed within the
+first 30 minutes; `privacyWithheld` unchanged at 497; stderr unchanged.
+
+**30-minute window (07:59:27Z-08:25:10Z, 52 of 61 samples over 1,543 s, same
+`ps` method): CPU 34.6% (FAIL), max RSS 95.0 MiB (PASS). NOT a steady-state
+receipt**: throughout the window an active multi-agent Claude Code workflow on
+Daily wrote `~/.claude/projects` continuously (8 jsonl files per 5 min,
+`daily-claude` requested_revision rising ~5-16/min), so the `daily-claude`
+root never converged (lag grew 2 -> 48) and every 30 s interval was >= 6.3%
+(median 34.7%, min 6.33%, max 47.77%, 0 of 51 intervals below 2%). This
+measures the per-scan re-walk churn under a live workload, not the idle floor
+the fixes target; it is not comparable to the 2026-10-18 5.847% window, which
+had no such workload. A 60 s `sample` during the churn puts the busy stacks in
+`validateStorageFilesystem` (cached ancestor holds, leaf opens,
+`openBoundDirectory`), i.e. the pre-existing per-scan walk cost, which was out
+of scope. The comparable quiet-host window still needs to be taken once the
+workload ends.
+
+## Collector idle-turn cost: frontier reclaim, cached ancestor walk, vanished locators (2026-10-19)
+
+Built locally on `perf/collector-idle-turn-cost-20261019` from `1388e6a5`, then
+committed as `81bf3f1a` and deployed to Daily the same day (entry above). A 15 s
+`sample` of the Daily collector put the per-turn floor on `CollectorInventoryOwner.ancestorIdentities` inside
+`validateStorageFilesystem`, not on the per-entry directory validation the
+earlier note assumed, so the per-entry `validateDirectory` calls are kept.
+
+- A finished bootstrap deletes every `collector_frontier` row of that root in
+  the same transaction, including rows from older scan ids. A scan that cannot
+  finish keeps its rows. On Daily the table had grown to about 12 M rows
+  because finished scans were never deleted. Invariant "Collector Frontier Rows
+  Live Only For The Active Scan".
+- The proof that the shadow spool and the identity catalog are separate
+  directories is cached for the life of the owner. Later fences re-stat each
+  cached ancestor and re-walk only when an ancestor's identity or permission
+  bits changed, so a parent losing read permission is still refused. The leaf
+  directories are still re-opened on every fence. Invariant "Collector Storage
+  Separation Is Proven Once Per Open".
+- A dirty locator whose source cannot be opened and that was never captured is
+  acknowledged at its current dirty revision without a capture, so it leaves
+  the dirty set. A locator captured before it vanished keeps the one-second
+  retry, a present but empty or entrypoint-less source keeps its retry, and
+  observing the path again re-dirties it. Invariant "Collector Vanished
+  Uncaptured Locators Leave The Dirty Set".
+
+The Cursor legacy observation reconciliation, the largest share of the
+2026-10-18 sample, is not touched. `privacyWithheld` growth was observed and
+left out of scope.
+
 ## Collector `ea2bbb57` deployed to Daily; CPU window still fails on the idle per-turn floor (2026-10-18)
 
 Owner authorization: "授权部署，并观测好给，你来决策完成" (deploy, observe it,

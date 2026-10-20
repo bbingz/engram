@@ -339,6 +339,7 @@
 		503F6AB19677C080E2E039C6 /* CollectorTargetDependencyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26FCEEADA6D04FB4DE500145 /* CollectorTargetDependencyTests.swift */; };
 		5057F6035C8F68FCB0C53221 /* EngramServiceWebReadModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A6573AD58745EE908427A0A /* EngramServiceWebReadModels.swift */; };
 		5081799F7F73B3B9C3041F00 /* CodexAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6241BC63B4B0010E1081420 /* CodexAdapter.swift */; };
+		514009458CA7BED4A60A553D /* TranscriptBlock.swift in Sources */ = {isa = PBXBuildFile; fileRef = F62EEB8AE87B55E696C49CD1 /* TranscriptBlock.swift */; };
 		5142C1AAF13492F8D35289A7 /* EngramCoreWrite.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C3BD994C35766F89AECF7BB2 /* EngramCoreWrite.framework */; };
 		51687E247B2D42F924963F81 /* CollectorPublicationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D86E359AB4C9D27820D7BCD /* CollectorPublicationModels.swift */; };
 		526030325B2865F0EB25F39F /* WebUsageProducerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1C3E108726BB93A5D53DAAD /* WebUsageProducerTests.swift */; };
@@ -2050,6 +2051,7 @@
 		F5304C92DF9D1BD43029D4FC /* AIGenerationSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIGenerationSettings.swift; sourceTree = "<group>"; };
 		F5C71A73606B0BEBE33B3711 /* EngramServiceCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = EngramServiceCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		F5D8E6CE491EEB5169A98DD5 /* TranscriptText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptText.swift; sourceTree = "<group>"; };
+		F62EEB8AE87B55E696C49CD1 /* TranscriptBlock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptBlock.swift; sourceTree = "<group>"; };
 		F664FE74C22C161038EEA943 /* CollectorEventCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectorEventCoordinator.swift; sourceTree = "<group>"; };
 		F6CC5E6E6447F051C0B38BD4 /* UsagePressureNotifierTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsagePressureNotifierTests.swift; sourceTree = "<group>"; };
 		F79004FF2727D008428CE643 /* PerformanceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceView.swift; sourceTree = "<group>"; };
@@ -2334,6 +2336,7 @@
 				51752B6C2AE5177EA8DAAD92 /* Screen.swift */,
 				C62F48F2296F24C91C48040D /* Session.swift */,
 				949F3B9D319F2BE562AABCBB /* SourceCatalog.swift */,
+				F62EEB8AE87B55E696C49CD1 /* TranscriptBlock.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -5148,6 +5151,7 @@
 				4AB3A951ACD139D2958E01AF /* ToolCallView.swift in Sources */,
 				BB44467984C988916B3447DA /* ToolResultView.swift in Sources */,
 				289DEA40252ED902AC0E0E24 /* TraceExplorerView.swift in Sources */,
+				514009458CA7BED4A60A553D /* TranscriptBlock.swift in Sources */,
 				DFF5CA1CCDDFB87FA2133E02 /* TranscriptFindBar.swift in Sources */,
 				C207E1C3E8602FABDBF1B4F2 /* TranscriptRedactionPolicy.swift in Sources */,
 				8E212ACBA96B9853B294BB40 /* TranscriptSizeGuard.swift in Sources */,

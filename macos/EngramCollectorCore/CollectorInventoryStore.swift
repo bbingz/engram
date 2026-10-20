@@ -1243,11 +1243,15 @@ final class CollectorInventoryStore {
     }
 
     func deferClaims(
-        _ items: [(claim: CollectorDirtyClaim, retryNotBefore: Int64, reason: String)]
+        _ items: [(claim: CollectorDirtyClaim, retryNotBefore: Int64, reason: String)],
+        acknowledgeWithoutCapture: Set<String> = []
     ) throws -> [Bool] {
         try write { db in
             try items.map { item in
-                try applyDeferClaim(db, item.claim, retryNotBefore: item.retryNotBefore, reason: item.reason)
+                try applyDeferClaim(
+                    db, item.claim, retryNotBefore: item.retryNotBefore, reason: item.reason,
+                    acknowledgeWithoutCapture: acknowledgeWithoutCapture.contains(item.claim.relativePath)
+                )
             }
         }
     }
@@ -1396,6 +1400,13 @@ final class CollectorInventoryStore {
                 UPDATE collector_roots SET completed_revision = ?, active_scan_id = NULL,
                     active_scan_requested_revision = NULL, last_scan_failure = NULL WHERE root_id = ?
                 """, arguments: [completedRevision, scan.rootID])
+            // A finished scan is never resumed, so its frontier rows, and any
+            // orphaned rows from older scan ids of this root, have no reader.
+            // Invariant "Collector Frontier Rows Live Only For The Active Scan".
+            try db.execute(
+                sql: "DELETE FROM collector_frontier WHERE root_id = ?",
+                arguments: [scan.rootID]
+            )
             return true
         }
     }
@@ -2034,11 +2045,27 @@ final class CollectorInventoryStore {
     }
 
     private func applyDeferClaim(
-        _ db: Database, _ claim: CollectorDirtyClaim, retryNotBefore: Int64, reason: String
+        _ db: Database, _ claim: CollectorDirtyClaim, retryNotBefore: Int64, reason: String,
+        acknowledgeWithoutCapture: Bool = false
     ) throws -> Bool {
         guard Self.isSafeRelativePath(claim.relativePath),
               let row = try currentClaimRow(db, claim) else { return false }
         let currentDirty: Int64 = row["dirty_revision"]
+        // A vanished locator that was never captured has nothing to deliver, so it
+        // leaves the dirty set instead of being re-read on every later turn. A
+        // newer observation keeps it dirty, and upsertDirty re-dirties it if the
+        // path is seen again. Invariant "Collector Vanished Uncaptured Locators
+        // Leave The Dirty Set".
+        if acknowledgeWithoutCapture, currentDirty == claim.dirtyRevision {
+            let lastCapture: String? = row["last_capture_id"]
+            guard lastCapture == nil else { throw CollectorInventoryError.invalidState }
+            try db.execute(sql: """
+                UPDATE collector_locators SET acknowledged_revision = ?, claimed_dirty_revision = NULL,
+                    claim_owner_run_id = NULL, retry_not_before = NULL, last_error = NULL
+                WHERE root_id = ? AND root_revision = ? AND relative_path = ?
+                """, arguments: [claim.dirtyRevision, claim.rootID, claim.rootRevision, claim.relativePath])
+            return true
+        }
         if currentDirty > claim.dirtyRevision {
             try db.execute(sql: """
                 UPDATE collector_locators SET claimed_dirty_revision = NULL, claim_owner_run_id = NULL,

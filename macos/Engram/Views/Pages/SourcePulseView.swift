@@ -475,8 +475,7 @@ struct SourcePulseView: View {
     }
 
     private func formatNumber(_ n: Int) -> String {
-        if n >= 1_000 { return String(format: "%.1fK", Double(n) / 1_000) }
-        return "\(n)"
+        KPICard.compactNumber(n)
     }
 
     /// One row in the merged Sources list: either a live (detected) source with

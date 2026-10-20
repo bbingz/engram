@@ -72,6 +72,9 @@ struct CollectorPOSIXRootEnumeratorTestHooks {
     var directoryStreamFailure: (() -> Int32?)?
     var didOpenDescriptor: ((Int32) -> Void)?
     var didCloseDescriptor: ((Int32, Bool) -> Void)?
+    // Test-only observation of the storage-separation ancestor walk. Production
+    // passes the default and the walk is unchanged.
+    var didWalkAncestor: (() -> Void)?
 }
 
 // Shared native primitives for source binding and the inventory owner's explicit
