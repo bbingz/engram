@@ -45,7 +45,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
     "@types/better-sqlite3": "^7.6.12",
-    "@types/node": "^26.6.4",
+    "@types/node": "^26.6.5",
     "@vitest/coverage-v8": "^5.0.5",
     "husky": "^9.1.7",
     "knip": "^6.41.0",
