@@ -4457,8 +4457,14 @@ final class RuntimeFixture: @unchecked Sendable {
     }
 
     func writeSettings(_ document: [String: Any]) throws {
-        try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys]).write(to: settings)
-        guard chmod(settings.path, 0o600) == 0 else { throw Failure.unsafeFixture }
+        let staged = settings.deletingLastPathComponent()
+            .appendingPathComponent(".settings-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: staged) }
+        try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+            .write(to: staged, options: .withoutOverwriting)
+        // Readers must see a complete owner-only document, including during reload.
+        guard chmod(staged.path, 0o600) == 0,
+              rename(staged.path, settings.path) == 0 else { throw Failure.unsafeFixture }
     }
 
     func writeTranscript(_ text: String, name: String = "rollout-one.jsonl",

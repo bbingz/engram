@@ -2,6 +2,13 @@
 
 ## Changelog Memo
 
+### 2026-10-23
+
+- [盘点] 建立持续开发目标与隔离工作树 `codex/leader-loop-20261023`；盘点 21 份实施计划、24 份规格、27 份设计文档，校正 ROADMAP/TODO/followups。397 个未勾选标记不是 397 个待开发功能；产品台账现为 12 个开放/条件性方向、1 个已实现方向。完整路由见 `docs/reviews/2026-10-23-development-reconciliation.md`。
+- [修复] MCP 在 collector/replica/无效配置下不再广告不可调用的工具；正常角色保留 27 个工具。另修复 collector 测试设置文件的非原子写入与一处夹具清理遗漏。
+- [验证] MCP 先复现 8 个预期断言失败，再通过 215 项可执行测试；collector/AI 审计相关 94 项通过。lint、invariants 与 72 个文档链接检查通过；lint 保留原有 1 warning/40 infos。详见 `CHANGELOG.md`。
+- [未验证] 尚未推送、部署或跑本分支 hosted CI/UI；真实主机 CPU、HQ/M1 cutover 与历史安全/UI 残项仍分别跟进。持续目标下一项是 blocked-root backoff，没有安装无人值守后台调度器。
+
 ### 2026-10-20
 
 - [部署] Web 视觉精修已上 HQ：Release/arm64 从 main `881d3ffa` 打包为 `remote-server-main-881d3ffa-20261020`（verify-only 通过），receiver 只改 `ProgramArguments[0]`，plist 已备份。第一次 bootstrap 报 `5: Input/output error` 且任务被卸下，03:36:24Z 重试成功，新 PID 79714。`/v1/health` 200，新 CSS 已在线上，调色板未变，本地渲染确认徽标、卡片和转录气泡生效。回滚：用备份 plist bootstrap，旧包保留。详见 `CHANGELOG.md`。

@@ -1,0 +1,283 @@
+# Engram development reconciliation — 2026-10-23
+
+## Baseline and counting rules
+
+- Baseline: local `main` and live `origin/main` both
+  `5216ff3a61202b4c113b1e20799a03ad7e7df706` (`git ls-remote`, 2026-10-23).
+- Implementation checkout: `.worktrees/leader-loop-20261023`, branch
+  `codex/leader-loop-20261023`. The main checkout's untracked
+  `.grok/workflows/engram-session-status.rhai` is unrelated and preserved.
+- Canonical ownership remains `docs/TODO.md` (engineering),
+  `docs/followups.md` (verification/residuals), and `docs/roadmap.md` (product).
+  This dated report supplies routing and evidence, not a second backlog.
+- Inventory covers all 21 files in `docs/superpowers/plans`, 24 specs, root
+  design documents, the lifecycle/relaunch plans, current follow-ups, and
+  their explicitly referenced closeout/checklist records. Archives, generated
+  reports, fixtures, and historical review findings are not new work queues.
+- The 397 literal unchecked markers in the 21 plans include procedural steps
+  and even checkbox examples. They are **not 397 outstanding deliverables**.
+  Count one named residual/product decision, deduplicate repeated IDs, and
+  retain deployment and real-host acceptance separately from implementation.
+- Live GitHub query: 0 open issues and 6 open dependency PRs (#490–#495).
+  Baseline Tests [39366050861](https://github.com/bbingz/engram/actions/runs/39366050861)
+  and CodeQL [39366050927](https://github.com/bbingz/engram/actions/runs/39366050927)
+  succeeded at this baseline. They do not validate this branch.
+
+## Development loop
+
+Owner requested continuous project leadership on 2026-10-23. For each batch:
+refresh current source and worktree; choose a bounded confirmed item; capture
+a failing behavioral regression; make the minimum fix; run focused and
+affected contract checks; review the diff; update canonical status and
+CHANGELOG/MEMO; select the next item. A failed check is not completion.
+
+Local development and tests are authorized. Push, PR publication, merge,
+deployment, service restart, production configuration/data writes, public
+release, and reboot remain separate actions requiring task-specific owner
+authorization. No local Docker. No production database is a test fixture.
+The active goal is the continuation mechanism for this conversation; no
+background daemon, scheduler, or unattended external-write loop was installed.
+
+Leadership default after reliability: finish the software side of collector
+cutover and Web authority honesty, then improve human search and measured
+value visibility, then evaluate opt-in memory automation. Write acceptance
+criteria before schema/adapter-wide changes. Existing explicit exclusions
+(native sqlite-vec, removed corpus mining, remote deletion, new release
+channels) are not silently overturned. Routine implementation choices within
+the selected local batch do not need repeated owner confirmation.
+
+## First engineering queue
+
+| Order | Canonical item | Current evidence / disposition | Completion verifier |
+|---|---|---|---|
+| 1 | `cutover-role-surface-1` | Fixed locally; 215 MCP executable tests passed after 8 expected RED assertions. `MCPToolRegistry.tools` still returned 27 definitions for collector/replica/invalid roles while calls were refused. | Executable legacy/modern `tools/list` returns an empty list; local/index/default catalogs remain usable; direct calls still fail before DB/service access. |
+| 2 | `collector-settings-write-flake-1` | Fixed locally: complete sibling file, 0600 before rename; all 85 runtime tests passed. Hosted recurrence unmeasured. | Publish a complete owner-only fixture atomically; exercise invalid configuration reload without transient JSON/permission failures. |
+| 3 | `collector-test-fixture-leak-1` | Fixed locally: deferred fixture removal; affected test passed. | Match fixture cleanup pattern and run the affected test. |
+| 4 | `collector-blocked-root-backoff-1` | Source confirmed: blocked bootstrap streaks only control stderr; no retry deadline. Design a bounded per-root delay without starving healthy roots or suppressing recovery. | Deterministic clock/recovery tests, healthy-root progress, bounded blocked attempts. |
+| 5 | Round-12 secrets cluster | Security triage first: `secrets-nofollow-*`, `apikey-empty-2`, `invariant-6-prod-2`. Old line numbers are not proof of a current defect. | Hermetic reproduction against current launcher/AI settings; then minimal fix. |
+| 6 | `session-detail-id-*` | Re-adjudicate after the October master/detail refactor; avoid applying old line-based patches. | Delayed-result identity/generation tests against current views. |
+| 7 | `cutover-web-editor-hardening-1` | Split into credential-mode global throttle, endpoint/key reuse triage, and accepted identity-auth phase-2 audit actor propagation. | Verify threat/authority boundary; actor comes from server session, never browser body; IPC + Web tests. |
+| 8 | Collector CPU work | One parent acceptance item, not separate counts for every hotspot. Publication, idle-turn, stuck-dirty and startup leads remain below. | Profile the changed path before tuning; retain CPU <=2% / RSS <=150 MiB real-host acceptance separately. |
+
+## Collector / cutover residuals (all named rows routed)
+
+| Item | Current disposition / next action |
+|---|---|
+| `cutover-feed-stalled-1` | Recovery implemented and deployment recorded; reboot/real-host recovery remains unverified this session. Do not label the October 2 outage current. |
+| `cutover-hq-local-gap-1` | HQ collector/canary/central-index/Web acceptance remains operational work. Runbook R2–R10 includes credential/root steps and host mutations. |
+| `codex-resume-window-1` | `CodexAdapter(modifiedSince:)` and repros exist. Old-host backlog recovery/deployment needs fresh host evidence; never restart the old stack merely to close this row. |
+| `collector-stuck-dirty-locators-1` | Vanished never-captured half fixed. Present-but-uncapturable Copilot/Kimi members remain an unverified cause, not a proven parser defect. |
+| `collector-blocked-root-backoff-1` | Selected engineering queue above. |
+| `collector-start-cost-1` | Full startup walk cost remains unmeasured; startup must not be confused with steady-state CPU. |
+| `collector-epoch-change-scope-1` | Root-local suspension implemented in #481; Daily deployment recorded October 18. Retain real-host trigger verification separately. |
+| `collector-epoch-producer-1` | Same-instance epoch rotation implemented in #481; manual inventory wipe still loses identity by accepted design. Real revision-bump recovery remains unexercised. |
+| `collector-epoch-authority-file-1` | Existing owner decision is runbook-only: update `initialEpoch` before next restart. Revisit before first real approval; no silent authority relaxation. |
+| `collector-revision-bump-staged-1` | Drain pending publications before revision bump. Old-revision staged publication handling remains a design/operational limitation. |
+| `collector-publication-cost-1` | Shared privacy proof and `memchr` landed. Remaining byte scans/CAS reads are low-priority measured-performance candidates. |
+| `collector-idle-turn-cost-1` | Frontier cleanup, ancestor proof reuse, and vanished-locator handling landed. Cursor legacy reconciliation and comparable quiet-host receipt remain. |
+| `collector-settings-write-flake-1` | Closed locally; hosted recurrence not claimed. |
+| `collector-test-fixture-leak-1` | Closed locally; no historical temp cleanup. |
+| `cutover-install-tooling-1` | P3 scripts/templates exist (#454); old claim of no tooling is stale. First real-host install/upgrade/rollback remains unverified. |
+| `cutover-web-editor-hardening-1` | Split triage/actor batch above; Tailscale mode does not prove credential-mode behavior safe. |
+| `cutover-role-surface-1` | First batch passed locally; no deployment claim. |
+
+Additional cutover gates: configure and verify `webReaderURL` on each intended
+host; deploy/probe current HQ epoch CLI/Service together when authorized;
+obtain per-source capture → dual receipt → HQ index → Web proof for the 19
+sources / 17 collector root formats; retain D3 cache/PB exceptions; decide M1
+collector inclusion after fresh source evidence. Local synthetic success does
+not satisfy these host receipts. Daily's last comparable recorded CPU window
+was 5.847% (October 18), while October 19's 34.6% active-workload window is not
+a comparable quiet-state receipt. Neither is a current runtime measurement.
+
+## Other residuals (all nonterminal families routed)
+
+| Canonical family | Remaining scope |
+|---|---|
+| Live ingest SLA | Unique natural session through HQ publish and App/MCP search, including post-reboot path, before claiming 16-minute SLA. |
+| Live enable / token / helper / first publish | Restart-on-first-enable contract, ad-hoc helper credentials, independent helper lifetime, and initial-scan gating are recorded operational constraints; refresh on the intended host. |
+| Live launchd / boot / hardening | Old jobs were installed; reboot without console login, injected degraded sentinel, duplicate start, and executed rollback were not proven. Cutover may retire these jobs; decide applicability before testing. |
+| `live-ingest-settings-repro-1` | Already closed locally; not a new implementation task. |
+| Live hard-delete retract / manifest GC retry | Conditional: only promote if a periodic hard-delete producer or storage-hygiene need appears. |
+| `live-session-scan-timeout-1` | Data path fixed historically; unlocked menu rendering acceptance remains. |
+| `startup-initial-scan-latency-1` | Historical Daily local-Service startup symptom; check whether that retired role still applies before optimizing or probing it. |
+| Project-move stale-break claim | TS reference-only crash recovery needs an ownership-safe delete design; do not weaken fail-closed locking. |
+| Round-12 `mcp-hermetic-1` | Foreground UI harness failure policy still needs current repro and UI test. |
+| Round-12 `live-export-terminal-*` | Warp cleanup and Terminal/iTerm/Ghostty cancellation need real terminal integration testing. |
+| Round-12 `workitem-localtime-1` / `xcodeproj-untracked-*` | Fixes are on the verified remote-main baseline (`00bb5809`); “local, not pushed” is stale. Tests are not rerun by a Git history check. |
+| Round-12 `r11-dropped-2` | Current source already separates `NIOTooManyBytesError` →413 from generic body failure →503 on bundle PUT and MCP; bounded GET exists. `testLegacyBodyCollectionMapsOnlySizeErrorsTo413_repro` exists. Old defect text is stale; runtime transport injection is not claimed. |
+| `ALIAS-P2` | Conditional same-basename ghost removal; only reopen with a repro. OPS-ALIAS-001 is closed, not authorization to rewrite production aliases. |
+| Blind-audit A1–D1 | Old stacked-PR table is implementation history, not an open-PR queue. Only a newly reproduced residual is promoted; no current open implementation PR is hidden there. |
+| `ARCH-001` | A/B/C/D shipped. Full CoreRead pool/DTO migration remains structural investment. |
+| `R6` | Writer-gate availability redesign deferred; current long FS+patch gate is an integrity choice. |
+| Accepted security residuals | SEC-M4/M5/I1/I2/L4 and release/TS-only notes remain explicit product/threat-model decisions, not automatic remediation. |
+| Archive discovery | ARCHIVE-DISCOVERY-001 needs durable restart/event-loss design; no safe prefix-limit patch. Collector inventory does not automatically fix the legacy archive coordinator. |
+| Additional archive exporters | Each virtual/composite/database-backed source needs canonical source-set and delete-original/replay-equivalence proof. |
+| Remote archive GC/erasure | Separate design, backup/restore and explicit destructive-operation authorization; API stays immutable. |
+| UI restyle / launcher flake | October 19 deferred deeper Home/Search/Timeline/Activity restyle. Launcher full-suite timing failure was observed and passed alone; reproduce before changing it. |
+
+## Product roadmap reconciliation
+
+The historical table had 12 decision rows. One is already implemented
+(`ai_audit_log` body redaction); two are partly implemented (plugin integration
+and Grok/Pi/provider work). Lifecycle 3.2 was parked in its source plan but
+missing from the table; it is now explicitly routed. The resulting table has
+13 rows: **12 open or conditional product families, 1 implemented family**.
+These are not 12 ready-to-code defects.
+
+1. Value score evolution, measured thresholds, and outcome/access signals.
+2. Human BM25/CJK search ranking and facets beyond current search contracts.
+3. Tool-result normalization plus structured summary job.
+4. Value band UI and `value_override` (current Sessions UI is a table).
+5. Embedding-cosine insight supersession.
+6. Opt-in automatic insight extraction.
+7. Native sqlite-vec: conditional only on measured bottleneck and explicit
+   architecture decision; current repo instructions prohibit introducing it.
+8. Corpus/rule mining: intentionally removed, not accidentally unfinished.
+9. Plugin Stop/SessionEnd insight capture and distribution channels:
+   SessionStart hook already exists; no release/channel publication authorized.
+10. Remaining provider taxonomy/capability choices: Grok/Pi adapters already
+    register in `SessionAdapterFactory`; do not rebuild them from archive.
+11. Sources/Settings navigation consolidation.
+12. Lifecycle-state/shadow-archive model (not Archive V2 source reclamation).
+
+`ServiceAIAuditRecorder.record` already writes via `ServiceWriterGate`, gates
+bodies with `logBodies`, redacts before truncating, and has
+`ServiceAIAuditRecordTests.testLogBodiesStoresRedactedTruncatedTextWhileWebKeepsFlagsOnly`.
+This closes the old “no Swift writer/body-redaction” assumption, not a broad
+security audit. Historical retention-cadence assumptions must be reconsidered
+now that a live writer exists.
+
+## Dependency maintenance lane
+
+Live open PRs on October 23: #490 lint-staged 17.6.0, #491 pixelmatch 8.0.0,
+#492 openai 7.38.0, #493 @types/node 26.6.5, #494 tsx 4.23.15, #495 CodeQL
+Actions group. These are PR titles, not independently approved upgrade
+recommendations. Inspect exact diffs and required checks before selecting a
+batch; treat pixelmatch's major version and immutable Actions pins separately.
+No dependency bump is bundled into the MCP fix.
+
+## Verification record
+
+- Read-only baseline: Git status/history/worktrees, live main SHA, issue/PR
+  inventory and main CI conclusions.
+- Real-binary historical gate rechecked live:
+  [39098816343](https://github.com/bbingz/engram/actions/runs/39098816343),
+  success at `10f5ab21f876b73b768a4a940165d41cc0dfc3bd`; workflow and runner
+  exist on the baseline. This closes stale “no recorded gate” prose, not
+  current-branch or real-host acceptance.
+- Current branch: 215 MCP executable tests and 94 service tests passed
+  (85 collector runtime, 1 publication, 8 AI audit). The MCP RED run first
+  failed eight expected assertions. `npm run lint` passed with 1 existing
+  warning / 40 infos; invariant-ledger/module-boundary/Swift-convention checks
+  and 72 local document links passed. Commands/logs are in `CHANGELOG.md`.
+  Other source-existence and historical receipts are not freshly run tests.
+- No production state readback, host mutation, release, UI rendering, or full
+  all-target regression has been performed for this reconciliation.
+
+## Plan-by-plan routing appendix
+
+Each implementation plan is listed once. “Exists” is source/navigation evidence,
+not proof that every historical acceptance criterion was rerun.
+
+| Plan | Current route |
+|---|---|
+| [2026-06-04-followup-remediation](../superpowers/plans/2026-06-04-followup-remediation.md) | Historical remediation; residuals use current followups, not checkbox count. |
+| [2026-06-04-fts-table-swap-rebuild](../superpowers/plans/2026-06-04-fts-table-swap-rebuild.md) | Explicit completed header (#48); preserve current FTS swap invariants. |
+| [2026-06-06-claude-qoder-dir-reconcile](../superpowers/plans/2026-06-06-claude-qoder-dir-reconcile.md) | Explicit completed header; current project-move tests are the verifier. |
+| [2026-06-06-project-move-gemini-iflow](../superpowers/plans/2026-06-06-project-move-gemini-iflow.md) | Explicit completed header (#65); not an open implementation batch. |
+| [2026-06-10-audit-complete-remediation](../superpowers/plans/2026-06-10-audit-complete-remediation.md) | Historical audit campaign; current residuals are in followups. |
+| [2026-06-27-session-implementation-timeline](../superpowers/plans/2026-06-27-session-implementation-timeline.md) | Extractor, persistence and Timeline implementation exist; unchecked procedural steps are stale. |
+| [2026-07-10-wave7-43-item-remediation](../superpowers/plans/2026-07-10-wave7-43-item-remediation.md) | Terminal Wave 8 closeout in followups; do not reopen 43 historical findings. |
+| [2026-07-10-wave7-engineering-zero-closeout](../superpowers/plans/2026-07-10-wave7-engineering-zero-closeout.md) | Terminal Wave 8 closeout; zero was a dated campaign count, not current project count. |
+| [2026-07-11-exact-source-dual-replica-archive](../superpowers/plans/2026-07-11-exact-source-dual-replica-archive.md) | Implemented; conditional discovery/exporter/remote-GC residuals remain. |
+| [2026-07-12-archive-remote-telemetry](../superpowers/plans/2026-07-12-archive-remote-telemetry.md) | ArchiveRemoteTelemetryStore and tests exist; historical implementation, not new queue. |
+| [2026-07-12-archive-settings-sync-status-localization](../superpowers/plans/2026-07-12-archive-settings-sync-status-localization.md) | ArchiveSettingsSection and service status exist; acceptance is historical. |
+| [2026-07-12-archive-sync-observability](../superpowers/plans/2026-07-12-archive-sync-observability.md) | ArchiveV2ServiceCoordinator/status implementation exists; no new task from unchecked steps. |
+| [2026-07-12-archive-v2-automatic-reclamation](../superpowers/plans/2026-07-12-archive-v2-automatic-reclamation.md) | ArchiveReclamationCoordinator and tests exist; never infer authorization to enable or delete. |
+| [2026-07-12-archive-v2-production-deployment](../superpowers/plans/2026-07-12-archive-v2-production-deployment.md) | Historical operational closeout; fresh production mutation requires authorization. |
+| [2026-07-13-archive-v2-backlog-drain](../superpowers/plans/2026-07-13-archive-v2-backlog-drain.md) | ArchiveV2BacklogDrainer and tests exist; discovery limitation remains separate. |
+| [2026-07-13-archive-v2-drain-fairness-remediation](../superpowers/plans/2026-07-13-archive-v2-drain-fairness-remediation.md) | Historical replication/coordinator fix; no claim of current host drain health. |
+| [2026-07-13-claude-profile-registry](../superpowers/plans/2026-07-13-claude-profile-registry.md) | ClaudeCodeProfileResolver/Service and tests exist; not a new feature. |
+| [2026-08-24-hq-live-session-ingest](../superpowers/plans/2026-08-24-hq-live-session-ingest.md) | Implemented historically; SLA/boot and retirement applicability remain operational. |
+| [2026-09-05-collector-server-web](../superpowers/plans/2026-09-05-collector-server-web.md) | Implemented core with cutover/performance residuals listed above; W4.1/W4.5 closed by owner. |
+| [2026-09-13-web-native-parity](../superpowers/plans/2026-09-13-web-native-parity.md) | Web read/write surfaces implemented; current actor/security and real-host acceptance residuals above. |
+| [2026-09-14-hq-web-residuals](../superpowers/plans/2026-09-14-hq-web-residuals.md) | Explicit landed header (#446); do not rerun six historical fixes. |
+
+### Specification inventory
+
+All 24 specifications were inventoried. Paired specs use the plan route above;
+a Draft/Accepted label alone neither opens nor closes an implementation task.
+
+| Specification | Routing |
+|---|---|
+| [2026-04-23-swift-single-stack-design](../superpowers/specs/2026-04-23-swift-single-stack-design.md) | Swift-only product runtime already authoritative; never revive Node product entrypoints. |
+| [2026-06-01-today-workbench-design](../superpowers/specs/2026-06-01-today-workbench-design.md) | Paired plan/current follow-ups; historical status is not a fresh acceptance receipt. |
+| [2026-06-04-fts-table-swap-rebuild-design](../superpowers/specs/2026-06-04-fts-table-swap-rebuild-design.md) | Paired plan/current follow-ups; historical status is not a fresh acceptance receipt. |
+| [2026-06-06-claude-qoder-dir-reconcile-design](../superpowers/specs/2026-06-06-claude-qoder-dir-reconcile-design.md) | Paired plan/current follow-ups; historical status is not a fresh acceptance receipt. |
+| [2026-07-10-wave7-43-item-remediation-design](../superpowers/specs/2026-07-10-wave7-43-item-remediation-design.md) | Paired plan/current follow-ups; historical status is not a fresh acceptance receipt. |
+| [2026-07-11-exact-source-dual-replica-archive-design](../superpowers/specs/2026-07-11-exact-source-dual-replica-archive-design.md) | Paired plan/current follow-ups; historical status is not a fresh acceptance receipt. |
+| [2026-07-12-archive-remote-telemetry-design](../superpowers/specs/2026-07-12-archive-remote-telemetry-design.md) | Paired plan/current follow-ups; historical status is not a fresh acceptance receipt. |
+| [2026-07-12-archive-settings-sync-status-localization-design](../superpowers/specs/2026-07-12-archive-settings-sync-status-localization-design.md) | Paired plan/current follow-ups; historical status is not a fresh acceptance receipt. |
+| [2026-07-12-archive-sync-observability-design](../superpowers/specs/2026-07-12-archive-sync-observability-design.md) | Paired plan/current follow-ups; historical status is not a fresh acceptance receipt. |
+| [2026-07-12-archive-v2-automatic-reclamation-design](../superpowers/specs/2026-07-12-archive-v2-automatic-reclamation-design.md) | Paired plan/current follow-ups; historical status is not a fresh acceptance receipt. |
+| [2026-07-13-archive-v2-backlog-drain-design](../superpowers/specs/2026-07-13-archive-v2-backlog-drain-design.md) | Paired plan/current follow-ups; historical status is not a fresh acceptance receipt. |
+| [2026-07-13-archive-v2-drain-fairness-remediation-design](../superpowers/specs/2026-07-13-archive-v2-drain-fairness-remediation-design.md) | Paired plan/current follow-ups; historical status is not a fresh acceptance receipt. |
+| [2026-07-13-claude-profile-registry-design](../superpowers/specs/2026-07-13-claude-profile-registry-design.md) | Paired plan/current follow-ups; historical status is not a fresh acceptance receipt. |
+| [2026-07-16-typescript-7-upgrade-design](../superpowers/specs/2026-07-16-typescript-7-upgrade-design.md) | Explicit implemented/merged header; no dependency reimplementation. |
+| [2026-08-24-hq-live-session-ingest-design](../superpowers/specs/2026-08-24-hq-live-session-ingest-design.md) | Paired plan/current follow-ups; historical status is not a fresh acceptance receipt. |
+| [2026-09-05-collector-server-web-design](../superpowers/specs/2026-09-05-collector-server-web-design.md) | Paired plan/current follow-ups; historical status is not a fresh acceptance receipt. |
+| [2026-10-02-collector-replay-loss-design](../superpowers/specs/2026-10-02-collector-replay-loss-design.md) | Draft header is stale: #447/#448 recovery fixes exist; real-host reboot proof remains separate. |
+| [2026-10-02-collector-volume-identity-design](../superpowers/specs/2026-10-02-collector-volume-identity-design.md) | Draft header is stale: #447/#448 recovery fixes exist; real-host reboot proof remains separate. |
+| [2026-10-02-hq-local-collector-cutover-design](../superpowers/specs/2026-10-02-hq-local-collector-cutover-design.md) | Active host cutover R1-R10 and D1-D12; engineering/ops boundaries above. |
+| [2026-10-08-web-tailscale-identity-auth-design](../superpowers/specs/2026-10-08-web-tailscale-identity-auth-design.md) | Phase 1 implemented; phase 2 actor propagation remains selected for triage. |
+| [2026-10-17-collector-native-epoch-reconcile-design](../superpowers/specs/2026-10-17-collector-native-epoch-reconcile-design.md) | Source implemented; epoch/operator/real-host residuals above. |
+| [2026-10-18-collector-epoch-rotation-and-root-scope-design](../superpowers/specs/2026-10-18-collector-epoch-rotation-and-root-scope-design.md) | Source implemented; epoch/operator/real-host residuals above. |
+| [2026-10-18-d7-legacy-local-origin-purge-design](../superpowers/specs/2026-10-18-d7-legacy-local-origin-purge-design.md) | Source implemented; epoch/operator/real-host residuals above. |
+| [2026-10-18-hq-collector-epoch-approval-design](../superpowers/specs/2026-10-18-hq-collector-epoch-approval-design.md) | Source implemented; epoch/operator/real-host residuals above. |
+
+### Root design inventory
+
+Root designs are retained reference specifications. Paths below exist on this
+baseline and establish navigation only; full criterion-by-criterion re-audit
+remains UNVERIFIED unless a specific result appears above. Product choices
+route to the reconciled roadmap, implementation defects to failing repros.
+
+| Design | Existing source/test pointer |
+|---|---|
+| [adapter-format-drift-design-2026-07](../adapter-format-drift-design-2026-07.md) | `macos/Shared/EngramCore/Indexing/SessionTier.swift`; `macos/Shared/EngramCore/Adapters/Sources/ClaudeCodeAdapter.swift` |
+| [archive-list-index-robustness-design](../archive-list-index-robustness-design.md) | `macos/EngramRemoteServer/Core/ArchiveStore.swift`; `macos/EngramRemoteServer/Core/EngramRemoteServerApp.swift` |
+| [archive-windowed-read-design](../archive-windowed-read-design.md) | `macos/EngramRemoteServer/Core/EngramRemoteServerApp.swift`; `macos/EngramRemoteServer/Core/ArchiveStore.swift` |
+| [build-provenance-perf-design-2026-07](../build-provenance-perf-design-2026-07.md) | `macos/Engram/App.swift`; `tests/scripts/build-release-script.test.ts` |
+| [claude-workflow-subagents-design-2026-07](../claude-workflow-subagents-design-2026-07.md) | `macos/Shared/EngramCore/AI/SessionSemanticSearchPolicy.swift`; `macos/EngramCoreTests/Adapters/ClaudeCodeMultiRootAdapterTests.swift` |
+| [codex-native-parentage-design-2026-07](../codex-native-parentage-design-2026-07.md) | `macos/EngramCoreWrite/Indexing/StartupBackfills.swift`; `macos/Shared/EngramCore/Adapters/Sources/CodexAdapter.swift` |
+| [cursor-cwd-ownership-design](../cursor-cwd-ownership-design.md) | `macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift` |
+| [diagnostic-bundle-design-2026-07](../diagnostic-bundle-design-2026-07.md) | `macos/Engram/Views/Settings/AboutSettingsSection.swift`; `macos/Engram/Core/Database.swift` |
+| [embedding-guardrails-design-2026-07](../embedding-guardrails-design-2026-07.md) | `macos/Shared/EngramCore/AI/EmbeddingClient.swift`; `macos/Shared/EngramCore/AI/EmbeddingSettings.swift` |
+| [file-index-state-orphan-prune-design-2026-07](../file-index-state-orphan-prune-design-2026-07.md) | `macos/EngramCoreTests/FileIndexStateOrphanPruneTests.swift` |
+| [human-driven-sessions-design-2026-06](../human-driven-sessions-design-2026-06.md) | `macos/EngramCoreWrite/Indexing/SwiftIndexer.swift`; `macos/Shared/EngramCore/Indexing/InstructionExtractor.swift` |
+| [insight-supersede-filter-design-2026-07](../insight-supersede-filter-design-2026-07.md) | `macos/EngramService/Core/EngramServiceCommandHandler.swift`; `macos/Shared/Service/EngramCLIContextCommand.swift` |
+| [mcp-2026-07-28-dual-era-design](../mcp-2026-07-28-dual-era-design.md) | `macos/EngramMCP/Core/MCPStdioServer.swift`; `macos/EngramMCPTests/EngramMCPExecutableTests.swift` |
+| [mcp-activation-onboarding-design-2026-07](../mcp-activation-onboarding-design-2026-07.md) | `macos/Engram/App.swift`; `macos/Shared/Service/EngramCLIContextCommand.swift` |
+| [mcp-cost-honesty-design-2026-07](../mcp-cost-honesty-design-2026-07.md) | `macos/EngramMCP/Core/MCPInsightsTool.swift`; `macos/EngramCoreWrite/Indexing/SessionSnapshotWriter.swift` |
+| [mcp-protocol-alignment-design](../mcp-protocol-alignment-design.md) | `macos/EngramMCP/Core/MCPStdioServer.swift`; `macos/EngramRemoteServer/Core/EngramRemoteServerApp.swift` |
+| [mcp-semantic-search-design-2026-07](../mcp-semantic-search-design-2026-07.md) | Current roadmap / semantic-memory residuals; review source before promotion. |
+| [p1-semantic-memory-design-2026-06](../p1-semantic-memory-design-2026-06.md) | Current roadmap / semantic-memory residuals; review source before promotion. |
+| [publish-readiness-design-2026-07](../publish-readiness-design-2026-07.md) | `macos/EngramTests/AppSearchServiceCutoverScanTests.swift`; `macos/EngramService/Core/IndexingSchedulePolicy.swift` |
+| [remote-mcp-2026-07-28-design](../remote-mcp-2026-07-28-design.md) | `macos/EngramRemoteServer/Core/EngramRemoteServerApp.swift`; `macos/EngramRemoteServer/Core/EngramRemoteServerConfig.swift` |
+| [resume-suppression-subagents-design-2026-07](../resume-suppression-subagents-design-2026-07.md) | `macos/EngramService/Core/EngramServiceReadProvider.swift`; `macos/Shared/Service/EngramServiceModels.swift` |
+| [service-resilience-design-2026-07](../service-resilience-design-2026-07.md) | `macos/Engram/AppNotifications.swift`; `tests/fixtures/mcp-golden/stats.source.json` |
+| [source-health-predicate-design-2026-07](../source-health-predicate-design-2026-07.md) | `macos/EngramService/Core/EngramServiceReadProvider.swift`; `macos/Engram/Views/Pages/SourcePulseView.swift` |
+| [tail-parse-design-2026-07](../tail-parse-design-2026-07.md) | `macos/EngramCoreWrite/Indexing/IndexingWriteSink.swift`; `macos/EngramCoreWrite/Database/EngramMigrations.swift` |
+| [transcript-find-rendering-design-2026-07](../transcript-find-rendering-design-2026-07.md) | `macos/Engram/Views/ContentSegmentViews.swift`; `macos/EngramTests/TranscriptLabelAndCopyTests.swift` |
+| [transcript-paging-timing-design-2026-07](../transcript-paging-timing-design-2026-07.md) | `macos/EngramCoreTests/AdapterWindowedReadTests.swift`; `macos/EngramTests/MessageParserTests.swift` |
+| [uiux-polish-a11y-design-2026-07](../uiux-polish-a11y-design-2026-07.md) | `scripts/invariant-gates.json`; `macos/EngramTests/PopoverUsageSectionTests.swift` |
+
+Additional retained planning surfaces: `docs/engram-lifecycle-upgrade-plan.md`,
+`docs/competitive-relaunch-2026-06.md`, `docs/competitive-mirror-2026-07.md`,
+`docs/backlog-audit-2026-05-24.md`,
+`docs/reviews/2026-08-12-stewardship-queue.md`, and
+`docs/reviews/2026-09-07-collector-source-retirement-checklist.md`. The old
+stewardship queue explicitly terminated on August 16; its scheduler is not
+silently re-enabled by this new conversation goal. Competitive research is
+historical, not a verified October market comparison.

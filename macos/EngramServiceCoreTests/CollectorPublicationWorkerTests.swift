@@ -3388,6 +3388,7 @@ final class CollectorPublicationWorkerTests: XCTestCase {
 
     func testFreshOnlyReservationDoesNotReuseAnExistingCapture() throws {
         let f = try PublicationFixture()
+        defer { f.remove() }
         let vscode = try f.installNativeVSCodePrimary(rootID: "daily-vscode")
         let observed = try EngramCollectorCore.CollectorVSCodeSource.observe(
             rootPath: vscode.configuration.rootPath, primaryRelative: vscode.relativePath,

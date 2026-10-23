@@ -3,6 +3,71 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Development queue reconciled; MCP role discovery and collector fixtures fixed (2026-10-23)
+
+Owner requested continuous development leadership. Work is isolated in
+`.worktrees/leader-loop-20261023` on `codex/leader-loop-20261023`, starting at
+local/live remote main `5216ff3a61202b4c113b1e20799a03ad7e7df706`.
+
+**Inventory.** `docs/reviews/2026-10-23-development-reconciliation.md` routes
+all 21 implementation plans, 24 specs, 27 root design documents and every
+nonterminal follow-up family. The 397 unchecked plan markers are historical
+procedural steps, not an outstanding-task count. Updated TODO/followups/roadmap
+and the review index; closed stale no-real-binary-gate/no-install-tooling text,
+reclassified Grok/Pi and SessionStart plugin work as partial, recognized the
+existing Swift AI audit writer/redaction, and restored the omitted lifecycle
+3.2 decision. Product ledger: 13 families, 12 open/conditional and 1 implemented.
+GitHub readback found 0 issues and 6 dependency PRs (#490–#495); baseline Tests
+39366050861 and CodeQL 39366050927 passed. Historical real-binary run
+39098816343 was rechecked successful, not rerun for this branch.
+
+**Batch 1.** `MCPToolRegistry.tools` now returns an empty catalog for collector,
+replica and invalid-settings roles before a database probe. Direct calls still
+provide role-unavailable guidance. Local/index/default roles keep all 27 tools
+and embedding-dependent search modes. Updated the persisted-role invariant
+and executable tests in both legacy and modern response formats.
+
+**Batch 2 (test infrastructure only).** `RuntimeFixture.writeSettings` now
+stages a complete sibling document and sets 0600 before atomic rename, avoiding
+both truncated JSON and temporary permission failures during runtime reload.
+The publication reservation test now defers fixture cleanup. No production
+collector behavior or existing temp directories were changed. The historical
+hosted flake was not independently reproduced this session; hosted recurrence
+is not proven eliminated by local success.
+
+**Validation (Xcode 26.4, Node 24.22.1).**
+
+- RED: `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramMCPTests
+  -destination 'platform=macOS' -derivedDataPath
+  /Users/bing/Library/Developer/Xcode/DerivedData/Engram-LeaderLoop-20261023
+  CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramMCPTests/EngramMCPExecutableTests/testRuntimeRoleDiscoveryOmitsUnavailableTools_repro`:
+  1 test failed with exactly 8 expected catalog assertions, exit 65.
+- GREEN: same command, selecting `EngramMCPTests/EngramMCPExecutableTests`:
+  215 tests passed, 0 failed, exit 0.
+- GREEN: same project/destination/DerivedData/signing, scheme
+  `EngramServiceCore`, selecting `CollectorRuntimeTests`,
+  `CollectorPublicationWorkerTests/testFreshOnlyReservationDoesNotReuseAnExistingCapture`
+  and `ServiceAIAuditRecordTests` under `EngramServiceCoreTests`:
+  94 tests passed (85 + 1 + 8), 0 failed, exit 0. AI audit tests provide fresh
+  evidence for the roadmap correction, including redaction and opt-in bodies.
+- `npm run lint`: exit 0, 1 existing warning and 40 infos; no autofix or
+  unrelated formatting changes. `bash scripts/check-invariants-ledger.sh`:
+  PASS, including registered Swift module-boundary and convention checks.
+- Reconciliation's 72 local Markdown links resolve; `git diff --check` passed.
+  Logs and xcresults are local-only under
+  `/tmp/engram-leader-loop-20261023/` (`mcp-role-red`, `mcp-role-green`,
+  `collector-fixtures-green`, plus `lint.log` and `invariants.log`).
+
+**Not run / boundary.** Full all-target tests, UI/render checks, hosted checks
+for this branch, current production readback and real-host CPU/cutover gates
+were not run. No push, merge, deployment, service restart, live database write,
+release, Docker or global-memory change. The main checkout's pre-existing
+untracked Grok workflow is preserved. No unattended scheduler was installed;
+the active conversation goal carries continuation. Next bounded work is
+blocked-root retry backoff, with current security/UI residual adjudication and
+Web actor propagation queued; measure collector CPU before further tuning.
+
 ## Web viewer polish deployed to the HQ receiver (2026-10-20)
 
 Owner pointed out the session was already running on HQ (`Bing-HuaQiao`,

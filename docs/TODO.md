@@ -3,7 +3,33 @@
 Confirmed engineering tasks. Product-level work belongs in `docs/roadmap.md`;
 verification and low-priority follow-ups belong in `docs/followups.md`.
 
-## Open
+## Current execution status (2026-10-23)
+
+Fresh routing: [development reconciliation](reviews/2026-10-23-development-reconciliation.md).
+The detailed dated entries below preserve history; their presence does not
+make a closed item open again. Local baseline and live remote main were both
+`5216ff3a`. Current development is in `codex/leader-loop-20261023`.
+
+| Item | Current status | Remaining verifier |
+|---|---|---|
+| Collector CPU | Open | Comparable 30-minute Daily window: CPU <=2%, RSS <=150 MiB; optimize only measured leads. |
+| W4.1 alias reconciliation | Closed, superseded by D7(c)/D9 | Reopen only as a separately scoped old-DB user-state import. |
+| W4.5 old-receipt bootstrap | Closed, owner won't-do | Preserve retained old DB/archive; no automatic reimplementation. |
+| W4.7 epoch operator command | Implemented | Authorized HQ binary/CLI readback and real recovery; authority-file runbook remains. |
+| W6.2 real-binary gate | Closed, recorded gate exists | Hosted [39098816343](https://github.com/bbingz/engram/actions/runs/39098816343) rechecked success; not a real-host acceptance receipt. |
+| App Open Web Reader | Implemented | Set/verify each intended host's URL under host-change authorization. |
+| P2 duplicate quarantine | Implemented, deployment recorded | Real cross-machine duplicate remains unexercised. |
+| P3 install tooling | Implemented | First real-host installation/upgrade/rollback receipt. |
+| D7 legacy local rows | Closed, purge recorded | Do not rerun destructive action. |
+| `cutover-role-surface-1` | Fixed locally | RED: 8 expected catalog assertions failed. GREEN: 215 MCP executable tests passed; not pushed/deployed. |
+| Collector fixture race/leak | Fixed locally | 85 CollectorRuntime tests plus the affected publication test passed; hosted flake recurrence not measured. |
+
+Security/UI historical residuals require current repro before promotion;
+collector backoff and measured performance follow the bounded queue in the
+reconciliation. Product choices stay in `roadmap.md`. Production changes,
+push/merge and releases require separate authorization.
+
+## Dated engineering ledger
 
 ### Collector / central index cutover gaps (added 2026-10-02)
 
