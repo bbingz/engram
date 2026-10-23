@@ -3,6 +3,53 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Transcript paging tasks retain ownership through session switches (2026-10-23)
+
+Mounted SessionDetailView verification narrowed `session-detail-id-3` to two
+concrete paging races. A cancelled old page/all/copy task still ran an unconditional
+defer and cleared the next session's busy flag; another click then cancelled the
+valid new page and started a duplicate. Independently, two actions before the
+scheduled task began both passed the not-busy guard. Page/all/copy now set busy
+synchronously and own a fresh load token; only the owning task can clear busy or
+the stored task handle. Switch/disappear invalidates the token. Returning A-B-A
+cannot restore old ownership. Existing cancellation checks already prevented the
+tested stale initial success/error and indexed-message applications; those paths
+received verification rather than redundant production rewrites.
+
+Added instance-scoped DEBUG-only parse/build/copy hooks and a mounted NSHostingView
+regression using controlled non-cooperative continuations. The real view's State,
+task cancellation, indexing and page/copy actions run; fake transcripts, a mock
+service client and an explicit absent temporary DB path avoid live data. Clipboard
+output is captured by the test hook. Final tests read mounted State locations on
+demand: the initial snapshot observer lagged coalesced offscreen render passes and
+produced timeouts, including a same-frame onChange warning. Those failed runs are
+retained; they are not passed acceptance. No test hook is compiled into Release.
+The new test file was registered using the CI-pinned XcodeGen 2.45.4; initial PATH
+2.46.0 generation was replaced before final acceptance, leaving four project entries.
+
+Validation: baseline RED demonstrated both races; after stabilizing observation,
+all five mounted tests passed five iterations (25 executions). A negative control
+temporarily removed both fixes with the final harness and failed 17 expected
+assertions, including page/all/copy success/error and A-B-A. Restoring the fix then
+passed the final 72 tests: mounted switch 5, find 40, labels/copy 19, paging/timing 6,
+accessibility 2. All final passes had zero failures and exit 0. Lint passed with the
+existing 1 warning/40 infos; invariant/module-boundary/convention checks, Xcode
+project drift and diff checks passed. Exact commands, logs and xcresults are under
+`/tmp/engram-leader-transcript-20261023/`: `red-matrix`, `green-live-state`,
+`negative-control`, `green-final`, `lint-final.log`, `invariants-final.log`, and
+`xcodegen-drift.log`. Both fixed-home environment variables point to its `home/`.
+Release `xcodebuild build` (scheme Engram, CODE_SIGNING_ALLOWED=NO) also passed
+for arm64 and x86_64. The Debug dylib contains the test-hook symbols and the
+Release executable contains none; `build-receipt.json` records their paths,
+architectures and the Release executable SHA-256. Build log: `release-build.log`.
+All 77 local links in the touched canonical routing documents resolve.
+
+This closes the reproduced local transcript residual and the documented bounded
+interleavings, not every possible UI sequence or end-to-end parser/clipboard case.
+No production data, service restart, push, deploy or hosted CI. The next independent
+residual is `r11-dropped-2` transport-error mapping verification; performance and
+cutover/real-host receipts remain separate queue items.
+
 ## Credential-mode throttle reconciled against its accepted scope (2026-10-23)
 
 Current source still shares five login attempts per minute across credential

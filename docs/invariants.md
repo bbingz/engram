@@ -156,6 +156,13 @@ Invariants are properties that must survive every change; each entry names where
 - **Verified by** - `macos/EngramCollectorCoreTests/CollectorPrivacyProofTests.swift`, `macos/EngramCoreTests/Adapters/SourceMetadataProjectionParityTests.swift`, `macos/EngramServiceCoreTests/CollectorPublicationWorkerTests.swift` (testPolicyIsRefreshedImmediatelyBeforeEveryHTTPStage, testOnePrivacyAssessmentServesBothReplicasOfOneCapture_repro, testPolicyChangeBetweenReplicasReassessesAndCanWithholdTheSharedCapture).
 - **Gate** - `none`.
 
+## Transcript Paging Cleanup Belongs To Its Load Task
+
+- **Statement** - Session detail marks paging busy before scheduling a page/all/copy task. Each such task owns a fresh token; only that token may clear busy state or the stored task handle. Session switches and disappearance invalidate ownership; late non-cooperative parse/build completions cannot release a subsequent load. A return to the same session is a new load, not the old task's ownership. Existing cancellation guards protect transcript success/error/index application, and cancelled copy work cannot write its result to the clipboard.
+- **Enforced by** - `macos/Engram/Views/SessionDetailView.swift`.
+- **Verified by** - `macos/EngramTests/TranscriptSessionSwitchTests.swift` (mounted initial success/error, delayed index, page/all/copy cancellation, A-B-A, immediate duplicate actions and normal completion), `macos/EngramTests/TranscriptPagingTimingTests.swift`, `macos/EngramTests/TranscriptLabelAndCopyTests.swift`.
+- **Gate** - `none`.
+
 ## Transcript Continuation Preserves Redacted UTF-8 Payloads
 
 - **Statement** - The pure Service pager redacts every string field before fragmenting normalized message JSON at UTF-8 boundaries. Cursors bind session, immutable generation, projection, redaction revision, roles, ordinal, offset and payload digest; stale or unavailable snapshots fail explicitly. Encoded envelope sizing includes Data/base64 escaping and reserves framing headroom. The pager does not itself establish snapshot authority or expose an IPC command.

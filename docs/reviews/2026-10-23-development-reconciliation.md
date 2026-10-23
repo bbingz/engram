@@ -55,7 +55,7 @@ the selected local batch do not need repeated owner confirmation.
 | 3 | `collector-test-fixture-leak-1` | Fixed locally: deferred fixture removal; affected test passed. | Match fixture cleanup pattern and run the affected test. |
 | 4 | `collector-blocked-root-backoff-1` | Fixed locally; final 87 runtime tests passed after behavioral RED and scheduler negative control. Per-root monotonic backoff, capped at 60 seconds, preserves healthy-root progress and recovery. | Deterministic clock/recovery tests, healthy-root progress, bounded blocked attempts. |
 | 5 | Round-12 secrets cluster | Existing fixes verified locally for the summarized scope; part of the 210-test App GREEN below. No redundant production patch. | Filesystem/secret failure cases, empty-key policy and injected-home/socket routing. |
-| 6 | `session-detail-id-*` | Live-navigation/favorite residuals closed locally after current tests. Transcript apply (`-3`) remains verification pending; cancellation guards exist, but delayed mounted-view behavior is not proven. | Current predicate/source-wiring tests passed; a mounted-view delayed-result scenario is still needed for `-3`. |
+| 6 | `session-detail-id-*` | Live-navigation/favorite residuals closed locally. Mounted transcript verification found and fixed stale paging cleanup/duplicate scheduling; initial/result/index cancellation passed the tested interleavings. | Five mounted tests passed five iterations; final-harness negative control failed 17 expected assertions; restored final 72 transcript tests passed. No full UI/production claim. |
 | 7 | `cutover-web-editor-hardening-1` | Project-operation actor propagation and endpoint/key reuse fixed locally. Remaining: credential throttle and alias audit storage design. | Actor/dispatcher receipts below. Endpoint batch: 26 service, 24 HTTP/IPC/UI-route and 181 JS tests passed after RED; fake keys only. |
 | 8 | Collector CPU work | One parent acceptance item, not separate counts for every hotspot. Publication, idle-turn, stuck-dirty and startup leads remain below. | Profile the changed path before tuning; retain CPU <=2% / RSS <=150 MiB real-host acceptance separately. |
 
@@ -99,7 +99,7 @@ and fresh tests at local commit `414b7c18`.
 | AI key deletion/save failures are reported as successful | OVERTURNED. `APIKeyPersistencePolicy` checks settings writes/deletion; `reconcilingRuntimeBridgeRefresh` preserves marker failures and reports bridge failures. Empty unavailable keys are preserved until explicit clearing. Policy and call-site tests passed; no real Keychain was used. |
 | Settings refresh/default test DB falls through to the login user's runtime | OVERTURNED for the reported entry paths. App/menu/main-window Settings pass the resolved socket to `AISettingsSection`; default DB uses `EngramUserDataDirectory.resolvedHomeDirectory`. Injected socket/source-wiring and temporary-home regression passed. This is not a fresh whole-suite filesystem-access audit. |
 | Live navigation and delayed favorite reads lack identity guards | OVERTURNED. Popover/SourcePulse complete captured nil-resolution tokens; favorites compare generation and invalidate it on successful toggle/disappear. Current navigation/predicate/source-wiring tests passed. |
-| Every transcript apply is identity-fenced | UNVERIFIED. `loadInitialTranscript`, `appendMessages` and `rebuildIndexed` currently check cancellation; tracked tasks cancel on session switch/disappear. Parent/related/trailing initial-load paths have explicit identity checks. Existing tests do not simulate every delayed mounted-view interleaving, so `session-detail-id-3` stays open for bounded reproduction. |
+| Every transcript apply is identity-fenced | NARROWED by the mounted-view batch below. Existing cancellation checks protect the tested initial success/error, page/error and delayed index applications. The actual reproduced defect was unowned paging cleanup plus duplicate scheduling; both fixed locally. This is bounded concurrency evidence, not an exhaustive proof of every UI interleaving. |
 
 Fresh validation: `xcodebuild test`, scheme `EngramTests`, isolated
 `CFFIXED_USER_HOME` and `TEST_RUNNER_CFFIXED_USER_HOME`, same DerivedData as
@@ -167,8 +167,31 @@ address contract in the credential route; arbitrary forwarded/identity headers
 must not become throttle keys. Preserve this design item until client/proxy
 provenance and a global guessing budget are defined. No auth-code change.
 Receipt: `auth-adjudication.{log,xcresult}` in the same evidence directory.
-Next independent item: mounted-view delayed transcript completion/switching,
-including paging-task cleanup; no new transcript defect has yet been reproduced.
+The following batch completed the mounted-view transcript investigation.
+
+## Completed local batch: transcript paging ownership
+
+Mounted SessionDetailView tests held non-cooperative parsing/index completion
+across A-B and A-B-A switches. Existing initial success/error and index-apply
+cancellation guards passed. Old page/all/copy cleanup, however, cleared a new
+session's busy state and let a duplicate action cancel its valid page. Two actions
+before the task started also both entered. The minimal runtime change sets busy
+before scheduling, assigns a fresh load token, invalidates it on switch/disappear,
+and lets only its owner release busy/task state.
+
+The DEBUG-only instance hooks exercise actual mounted State and actions with
+fake transcripts, mock service and captured clipboard output. Snapshot-observer
+timeouts were diagnosed and replaced with on-demand mounted State reads; retain
+those failures in the evidence directory. Final five mounted tests passed five
+iterations (25 executions). Removing both runtime protections with that final
+harness failed 17 expected assertions; restoring them passed all 72 selected
+transcript tests. Lint/invariants/project-drift/diff checks passed.
+Release arm64/x86_64 build passed; binary inspection confirms test hooks only
+in the Debug dylib, not the Release executable (`build-receipt.json`). Evidence:
+`/tmp/engram-leader-transcript-20261023/`; details in CHANGELOG. No hosted or
+production acceptance, exhaustive UI stress or real-parser/clipboard end-to-end
+claim. `session-detail-id-3` closes locally for this reproduced/verified scope.
+Next independent item: `r11-dropped-2` transport-error mapping verification.
 
 ## Collector / cutover residuals (all named rows routed)
 
