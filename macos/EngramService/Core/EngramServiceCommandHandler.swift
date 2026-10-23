@@ -535,7 +535,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 try requireAllowedPayloadKeys(
                     request,
                     required: ["src", "dst", "dry_run", "operation_id"],
-                    optional: ["force", "audit_note"]
+                    optional: ["force", "audit_note", "actor"]
                 )
                 let payload = try decodePayload(EngramServiceWebProjectMoveRequest.self, from: request)
                 let result = try await Self.webProjectMove(payload, writerGate: writerGate)
@@ -548,7 +548,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 try requireAllowedPayloadKeys(
                     request,
                     required: ["src", "dry_run", "operation_id"],
-                    optional: ["archive_to", "force", "audit_note"]
+                    optional: ["archive_to", "force", "audit_note", "actor"]
                 )
                 let payload = try decodePayload(EngramServiceWebProjectArchiveRequest.self, from: request)
                 let result = try await Self.webProjectArchive(payload, writerGate: writerGate)
@@ -561,7 +561,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 try requireAllowedPayloadKeys(
                     request,
                     required: ["migration_id", "operation_id"],
-                    optional: ["force"]
+                    optional: ["force", "actor"]
                 )
                 let payload = try decodePayload(EngramServiceWebProjectUndoRequest.self, from: request)
                 let result = try await Self.webProjectUndo(payload, writerGate: writerGate)
@@ -574,7 +574,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 try requireAllowedPayloadKeys(
                     request,
                     required: ["yaml", "dry_run", "operation_id"],
-                    optional: ["force"]
+                    optional: ["force", "actor"]
                 )
                 let payload = try decodePayload(EngramServiceWebProjectMoveBatchRequest.self, from: request)
                 let result = try await Self.webProjectMoveBatch(payload, writerGate: writerGate)

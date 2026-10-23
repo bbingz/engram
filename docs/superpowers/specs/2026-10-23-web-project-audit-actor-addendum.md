@@ -61,3 +61,11 @@ zero failures. Lint and invariants passed. Evidence lives under
 `/tmp/engram-leader-web-actor-20261023/`. These runs do not prove hosted CI,
 production rollout or alias auditing. No schema migration or historical-row
 rewrite occurred.
+
+Continuation correction: the first component GREEN did not traverse the real
+Service dispatcher, whose optional payload-key allowlists omitted actor. The
+existing audit/replay regression now uses the real Web client, socket listener
+and dispatcher before SQL readback. It reproduced invalid at `6d30437a`; after
+adding actor to all four IPC allowlists, 18 related service tests passed.
+Evidence: `/tmp/engram-leader-web-dispatch-20261023/`. Browser actor injection
+remains rejected by the unchanged HTTP body allowlists.

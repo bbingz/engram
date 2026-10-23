@@ -3,6 +3,27 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Web project audit actor accepted by the real service dispatcher (2026-10-23)
+
+A continuation check found a gap in the preceding actor batch: the typed Web
+client encoded actor and direct business-handler calls stored it, but the real
+Service dispatcher still rejected actor as an unknown payload key. The earlier
+123 passing tests verified the components separately and did not prove their
+composition. Added actor to the four project commands' optional IPC field
+allowlists; the HTTP body allowlists still reject browser-supplied actor.
+
+Upgraded the existing audit/replay regression to use the production Web write
+client, a real temporary UnixSocketServiceServer and EngramServiceCommandHandler
+before reading back the fixture migration_log. It exercises move, archive,
+undo, batch, cross-actor replay conflict and missing-actor compatibility.
+RED at `6d30437a`: the first real request failed with invalid before mutation.
+GREEN: all 6 WebProjectMigrationWriteTests plus 12 ProjectMoveLongOpIPCTests
+passed (18 total, 0 failures, exit 0). Lint and invariant gates passed. Evidence:
+`/tmp/engram-leader-web-dispatch-20261023/` (red/green logs and xcresults,
+lint/invariants logs). No new schema, production write, hosted check, push,
+deploy or restart. The original method-only green was insufficient evidence
+for the service-dispatch claim; this receipt supplies the missing boundary.
+
 ## Web project operations retain the authenticated audit actor (2026-10-23)
 
 RemoteServer previously dropped the editor identity; Service forced project

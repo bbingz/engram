@@ -127,6 +127,12 @@ is included in replay fingerprints. Native actor parsing/defaults stay intact.
 RED: 8 HTTP identity assertions, and 8 service assertions covering malformed
 actor decoding, audit readback and cross-actor replay. GREEN: 60 Web HTTP/auth/IPC tests, 29 service/project-registry tests and 34
 native batch/store tests passed. Lint and invariant gates also passed. Evidence: `/tmp/engram-leader-web-actor-20261023/`.
+Continuation found the dispatcher still rejected actor despite the component
+GREEN at `6d30437a`. The four optional IPC field allowlists are now updated.
+The audit/replay test now uses the real Web client/socket/dispatcher/storage:
+it failed before the fix, then passed with all 18 selected service tests.
+Evidence: `/tmp/engram-leader-web-dispatch-20261023/`. This supersedes the prior
+component-only evidence for complete service dispatch.
 No browser/render, hosted or production verification. Both RemoteServer and
 Service must be updated before claiming attribution on a host; an old Service
 may ignore the additive actor field. Existing historical rows are untouched.

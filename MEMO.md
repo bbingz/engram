@@ -4,6 +4,7 @@
 
 ### 2026-10-23
 
+- [修复] 持续复核发现上一批 Web actor 漏了服务总入口字段白名单：此前传输与业务方法分开通过，组合仍会被拒绝。补齐四条 IPC 白名单，把审计回归改为真实 socket→总入口→数据库链路；先复现 invalid，再通过 18 项相关测试。HTTP 仍拒绝浏览器自带 actor。详见 `CHANGELOG.md`。
 - [修复] Web 项目 move/archive/undo/batch 的审计身份从登录会话贯穿到 IPC 与 migration log；共享口令模式记为 web-editor，拒绝浏览器伪造 actor，不同 actor 不能复用同一操作 ID 的缓存结果。无 schema 迁移，原生 CLI/MCP 默认行为保留。详见 `CHANGELOG.md`。
 - [验证] HTTP 8 个、服务 8 个预期断言先失败；修复后 Web/认证/IPC 60 项、服务/注册表 29 项、底层 batch/store 34 项通过，lint/invariants 通过。尚未推送或部署；别名没有现成审计存储，单独保留设计项，Web 限流与 endpoint/key 风险仍待核实。
 - [盘点] 发现 Round-12 台账漏记后续修复：密钥文件/保存结果/测试路径隔离、导航与收藏 generation 已有实现；核对当前调用链并通过隔离 home 下 210 项 App 测试后，本地关闭这些已描述范围，未重复改生产代码。转录 apply 的快速切换场景仍未验证，单独保留。下一项为 Web 审计 actor 透传。详见 `CHANGELOG.md`。
