@@ -3,6 +3,29 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Add read-only lifecycle storage and score measurements (2026-10-23)
+
+Added `scripts/db/measure-database.py --database PATH [--timeout SECONDS]` for
+Lifecycle 3.6/P0-6. Python standard library only; an explicit existing database is
+required. One read-only/query-only transaction includes committed WAL and emits
+aggregate JSON: page/free-page counts, per-object dbstat bytes, FTS page share
+(including custom indexes on shadow tables), tier session/FTS-row counts, orphan
+FTS rows, and non-skip score histogram/nearest-rank percentiles. NULL and invalid
+scores are separate; no transcript or session ID is emitted. Missing optional
+dbstat/FTS is explicit; failed/locked reads exit nonzero without partial JSON.
+No migration, checkpoint, optimize, default home lookup or threshold change.
+SQLite can create/use WAL coordination sidecars; directory byte invariance is
+only verified for the closed non-WAL fixture, not promised for arbitrary live WAL.
+
+Validation: six CLI tests passed (distribution/storage/custom-index accounting,
+empty/missing-FTS, open-writer committed WAL, missing DB/schema, argument bounds,
+exclusive-lock timeout). The non-WAL database bytes and directory entries stayed
+identical. A copied repository fixture produced 20 sessions, 18 FTS rows and
+106 pages; this is synthetic evidence, not a production measurement. Biome on the
+new TS test passed after formatting. Evidence:
+`/tmp/engram-leader-measurement-20261023/` (tests-final.log, fixture-report.json).
+No Swift runtime changed; no Xcode tests, production read or hosted CI was run.
+
 ## Filter human search by the existing session value bands (2026-10-23)
 
 Search's advanced filters now offer any/high/medium/low/not-scored values, with

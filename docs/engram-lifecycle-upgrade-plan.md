@@ -248,6 +248,17 @@ execution queue; `parked-see-roadmap` items are listed in
 
 ### 3.6 数据模型与规模支撑（enabler 3）
 
+> Measurement tooling implemented locally (2026-10-23):
+> `python3 scripts/db/measure-database.py --database /explicit/path/index.sqlite`
+> emits aggregate JSON to stdout (redirect to the desired report file).
+> It reads one transaction with committed WAL, reports dbstat object bytes/FTS
+> share, tier counts and non-skip score histogram/p10/p33/p50/p67/p90. No default
+> user database, checkpoint, optimize or migration. `--timeout` defaults to 30s;
+> failed reads exit nonzero without partial JSON. Missing dbstat is explicit.
+> SQLite may create/use WAL coordination sidecars; for an unchanged directory,
+> use a pre-existing consistent snapshot. Fixture validation is not a current
+> production distribution or authorization to retune thresholds.
+
 **目标**：用实测数据驱动决策，加必要索引，支撑价值/归档/老化查询。
 
 **方案设计**：

@@ -369,13 +369,16 @@ a comparable quiet-state receipt. Neither is a current runtime measurement.
 ## Product roadmap reconciliation
 
 The historical table had 12 decision rows. One is already implemented
-(`ai_audit_log` body redaction); four are partly implemented (human search, value-band UI,
-plugin integration and Grok/Pi/provider work). Lifecycle 3.2 was parked in its source plan but
+(`ai_audit_log` body redaction); five have partial implementation or prerequisites (score measurement, human search,
+value-band UI, plugin integration and Grok/Pi/provider work). Lifecycle 3.2 was parked in its source plan but
 missing from the table; it is now explicitly routed. The resulting table has
 13 rows: **12 open or conditional product families, 1 implemented family**.
 These are not 12 ready-to-code defects.
 
 1. Value score evolution, measured thresholds, and outcome/access signals.
+   Measurement tooling now exists: `scripts/db/measure-database.py`; six behavioral
+   tests passed and a copied repository fixture produced aggregate JSON. Current
+   production distribution and a revised factor/outcome contract remain open.
 2. Human search beyond the all-term/CJK ranking batch and existing basic filters:
    value-band filtering is now implemented locally (Service/offline, before
    result and short-token candidate limits). Title/quality/recency weighting and
