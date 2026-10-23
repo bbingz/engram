@@ -56,7 +56,7 @@ the selected local batch do not need repeated owner confirmation.
 | 4 | `collector-blocked-root-backoff-1` | Fixed locally; final 87 runtime tests passed after behavioral RED and scheduler negative control. Per-root monotonic backoff, capped at 60 seconds, preserves healthy-root progress and recovery. | Deterministic clock/recovery tests, healthy-root progress, bounded blocked attempts. |
 | 5 | Round-12 secrets cluster | Existing fixes verified locally for the summarized scope; part of the 210-test App GREEN below. No redundant production patch. | Filesystem/secret failure cases, empty-key policy and injected-home/socket routing. |
 | 6 | `session-detail-id-*` | Live-navigation/favorite residuals closed locally after current tests. Transcript apply (`-3`) remains verification pending; cancellation guards exist, but delayed mounted-view behavior is not proven. | Current predicate/source-wiring tests passed; a mounted-view delayed-result scenario is still needed for `-3`. |
-| 7 | `cutover-web-editor-hardening-1` | Project-operation actor propagation fixed locally. Remaining: credential throttle, endpoint/key reuse triage and alias audit storage design. | HTTP/auth/IPC 60, service/registry 29 and native batch/store 34 passed. Session-derived actor, browser rejection and actor-aware replay are covered. |
+| 7 | `cutover-web-editor-hardening-1` | Project-operation actor propagation and endpoint/key reuse fixed locally. Remaining: credential throttle and alias audit storage design. | Actor/dispatcher receipts below. Endpoint batch: 26 service, 24 HTTP/IPC/UI-route and 181 JS tests passed after RED; fake keys only. |
 | 8 | Collector CPU work | One parent acceptance item, not separate counts for every hotspot. Publication, idle-turn, stuck-dirty and startup leads remain below. | Profile the changed path before tuning; retain CPU <=2% / RSS <=150 MiB real-host acceptance separately. |
 
 ## Completed local batch: blocked-root retry backoff
@@ -137,6 +137,28 @@ No browser/render, hosted or production verification. Both RemoteServer and
 Service must be updated before claiming attribution on a host; an old Service
 may ignore the additive actor field. Existing historical rows are untouched.
 
+## Completed local batch: Web AI endpoint credential boundary
+
+Confirmed and reproduced the Web editor changing an endpoint while retaining
+the service credential. The existing locked settings mutation now rejects the
+whole patch if a changed effective destination can reuse an existing key.
+Comparison includes full paths, summary-to-embedding fallback, legacy title
+casing/defaults and title-provider changes; disabled providers and env URL
+overrides do not bypass the guard. Relevant stored values/markers, env keys,
+runtime sidecars and markerless Keychain metadata participate. Unknown secret
+state fails closed. Keychain lookup requests attributes with interaction disabled,
+not secret data. Credential-free endpoint editing and unrelated edits remain.
+
+The structured IPC refusal maps to HTTP 409, preserving the draft and explicitly
+saying nothing was saved. Verification includes the real capability-protected Web
+client/socket/dispatcher and unchanged file bytes, independent HTTP error mapping,
+and executable page-JS correction/retry behavior. RED: two service assertions plus
+one UI regression. GREEN: 26 service, 24 HTTP/client/UI-route, 181 JS tests; lint and
+invariant gates passed. Evidence: `/tmp/engram-leader-web-endpoint-20261023/`.
+No real Keychain, outbound AI request, rendered browser, all-target suite, hosted
+or production acceptance. This is not DNS/redirect pinning or isolation from a
+trusted local settings writer. Next: credential-mode login throttle adjudication.
+
 ## Collector / cutover residuals (all named rows routed)
 
 | Item | Current disposition / next action |
@@ -156,7 +178,7 @@ may ignore the additive actor field. Existing historical rows are untouched.
 | `collector-settings-write-flake-1` | Closed locally; hosted recurrence not claimed. |
 | `collector-test-fixture-leak-1` | Closed locally; no historical temp cleanup. |
 | `cutover-install-tooling-1` | P3 scripts/templates exist (#454); old claim of no tooling is stale. First real-host install/upgrade/rollback remains unverified. |
-| `cutover-web-editor-hardening-1` | Project actor batch above; credential throttle, endpoint/key reuse and alias audit design remain. Tailscale mode does not prove credential-mode behavior safe. |
+| `cutover-web-editor-hardening-1` | Project actor and endpoint credential batches above; credential throttle and alias audit design remain. Tailscale mode does not prove credential-mode behavior safe. |
 | `cutover-role-surface-1` | First batch passed locally; no deployment claim. |
 
 Additional cutover gates: configure and verify `webReaderURL` on each intended

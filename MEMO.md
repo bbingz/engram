@@ -4,6 +4,8 @@
 
 ### 2026-10-23
 
+- [修复] Web AI 修改地址不能继续复用服务端旧密钥：覆盖共享 Embedding 回退、旧标题字段、禁用凭据、环境变量、sidecar 与 Keychain；无法确认无凭据时拒绝整笔保存。无凭据地址编辑和普通模型/提示词编辑保留，页面明确说明未保存并允许修正草稿。详见 `CHANGELOG.md`。
+- [验证] 先复现地址重定向与页面误报，再通过 26 项 Service、24 项 HTTP/IPC/UI 路由、181 项 Web 行为测试及 lint/invariants；真实 socket 请求拒绝后文件逐字节不变。均为本地假密钥夹具，未读真实 Keychain、未推送部署。下一项核实凭据登录全局限流。
 - [修复] 持续复核发现上一批 Web actor 漏了服务总入口字段白名单：此前传输与业务方法分开通过，组合仍会被拒绝。补齐四条 IPC 白名单，把审计回归改为真实 socket→总入口→数据库链路；先复现 invalid，再通过 18 项相关测试。HTTP 仍拒绝浏览器自带 actor。详见 `CHANGELOG.md`。
 - [修复] Web 项目 move/archive/undo/batch 的审计身份从登录会话贯穿到 IPC 与 migration log；共享口令模式记为 web-editor，拒绝浏览器伪造 actor，不同 actor 不能复用同一操作 ID 的缓存结果。无 schema 迁移，原生 CLI/MCP 默认行为保留。详见 `CHANGELOG.md`。
 - [验证] HTTP 8 个、服务 8 个预期断言先失败；修复后 Web/认证/IPC 60 项、服务/注册表 29 项、底层 batch/store 34 项通过，lint/invariants 通过。尚未推送或部署；别名没有现成审计存储，单独保留设计项，Web 限流与 endpoint/key 风险仍待核实。

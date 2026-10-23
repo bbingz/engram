@@ -1,6 +1,8 @@
 import Darwin
 import Foundation
 import EngramCoreRead
+import LocalAuthentication
+import Security
 
 extension EngramServiceCommandHandler {
     static func webAiSettings(
@@ -14,16 +16,99 @@ extension EngramServiceCommandHandler {
 
     static func webPatchAiSettings(
         _ request: EngramServiceWebPatchAiSettingsRequest,
-        settingsURL: URL
+        settingsURL: URL,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        keychainMayContain: (String) -> Bool = { webAiKeychainMayContain($0) }
     ) throws -> EngramServiceWebAiSettingsResponse {
         do {
             try SecureSettingsFileWriter.mutateJSON(at: settingsURL) { object in
-                applyWebAiSettingsPatch(request, to: &object)
+                var proposed = object
+                applyWebAiSettingsPatch(request, to: &proposed)
+                try requireSafeWebAiEndpointChange(
+                    from: object, to: proposed, settingsURL: settingsURL,
+                    environment: environment, keychainMayContain: keychainMayContain
+                )
+                object = proposed
             }
+        } catch let error as EngramServiceError {
+            throw error
         } catch {
             throw webAiSettingsUnavailable
         }
         return try webAiSettings(settingsURL: settingsURL)
+    }
+
+    // Check dormant credentials too: disabling a provider or using an env URL
+    // must not permit staging a new destination for its saved key. These are
+    // full base URLs, including paths, rather than just host names.
+    private static func requireSafeWebAiEndpointChange(
+        from current: [String: Any], to proposed: [String: Any], settingsURL: URL,
+        environment: [String: String], keychainMayContain: (String) -> Bool
+    ) throws {
+        func summaryURL(_ object: [String: Any]) -> String {
+            text(object["aiBaseURL"]) ?? "https://api.openai.com"
+        }
+        func embeddingURL(_ object: [String: Any]) -> String {
+            text(object["embeddingBaseURL"]) ?? text(object["aiBaseURL"]) ?? "https://api.openai.com/v1"
+        }
+        func titleProvider(_ object: [String: Any]) -> String {
+            text(object["titleProvider"]) ?? "ollama"
+        }
+        func titleURL(_ object: [String: Any]) -> String {
+            text(object["titleBaseUrl"]) ?? text(object["titleBaseURL"])
+                ?? (titleProvider(object) == "ollama" ? "http://localhost:11434" : "https://api.openai.com")
+        }
+        var accounts = Set<String>()
+        if summaryURL(current) != summaryURL(proposed) { accounts.insert("aiApiKey") }
+        if titleURL(current) != titleURL(proposed) || titleProvider(current) != titleProvider(proposed) {
+            accounts.insert("titleApiKey")
+        }
+        let embeddingChanged = embeddingURL(current) != embeddingURL(proposed)
+        if embeddingChanged { accounts.formUnion(["aiApiKey", "embeddingApiKey"]) }
+        guard !accounts.isEmpty else { return }
+
+        // Markers are protected even when the corresponding store is locked or
+        // temporarily empty. Nothing here migrates or reads Keychain secret data.
+        let storedKey = accounts.contains { (current[$0] as? String)?.isEmpty == false }
+        let environmentKey = embeddingChanged && environment["ENGRAM_EMBEDDING_API_KEY"]?.isEmpty == false
+        let sidecarPath = environment["ENGRAM_RUNTIME_AI_SECRETS_PATH"]
+            ?? settingsURL.deletingLastPathComponent().appendingPathComponent("run/ai-secrets.json").path
+        if storedKey || environmentKey
+            || webAiRuntimeMayContain(accounts, path: sidecarPath)
+            || accounts.sorted().contains(where: keychainMayContain) {
+            throw EngramServiceError.commandFailed(
+                name: "WebAiEndpointRequiresLocalUpdate",
+                message: "AI endpoint changes with saved or unavailable credentials require a local server settings update.",
+                retryPolicy: "never", details: nil
+            )
+        }
+    }
+
+    private static func webAiRuntimeMayContain(_ accounts: Set<String>, path: String) -> Bool {
+        var info = stat()
+        if lstat(path, &info) != 0 { return errno != ENOENT }
+        guard let data = SecureRegularFile.read(atPath: path, maximumBytes: 1024 * 1024),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return true // Unreadable/unsafe is not evidence of credential absence.
+        }
+        return accounts.contains { (object[$0] as? String)?.isEmpty == false }
+    }
+
+    static func webAiKeychainMayContain(
+        _ account: String,
+        lookup: (CFDictionary) -> OSStatus = { SecItemCopyMatching($0, nil) }
+    ) -> Bool {
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: KeychainSecretStore.service,
+            kSecAttrAccount as String: account,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecReturnAttributes as String: true,
+            kSecUseAuthenticationContext as String: context,
+        ]
+        return lookup(query as CFDictionary) != errSecItemNotFound
     }
 
     private static func readWebAiSettingsObject(at url: URL) throws -> [String: Any] {

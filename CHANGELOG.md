@@ -3,6 +3,46 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Web AI endpoint changes cannot redirect saved credentials (2026-10-23)
+
+The Web AI editor could change a provider base URL while retaining the server's
+API key. The service writer now checks the proposed effective destinations
+under the existing settings-file lock and rejects the entire patch when any
+relevant credential exists or its absence cannot be established. The policy
+covers summary-to-embedding fallback, legacy title URLs, title-provider switches,
+disabled providers, settings markers/plaintext, environment keys, custom/default
+runtime sidecars and markerless Keychain items. Environment URL overrides do not
+permit staging a later credential redirect. Full URL/path changes are protected.
+Keychain inspection requests attributes with interaction disabled, never secret
+data; unsafe sidecars and indeterminate Keychain status fail closed. No credential
+migration, clearing, schema change or new configuration flag is introduced.
+
+Credential-free endpoint editing and unrelated model/prompt edits remain usable.
+A typed service rejection survives the real Web client/socket/dispatcher boundary,
+maps to HTTP 409, and leaves a correctable draft with an explicit not-saved message.
+Credential-bound endpoint changes require a local server settings operation.
+
+Validation: the behavioral RED reproduced an accepted redirect and changed file
+bytes (2 failing assertions); the UI RED reproduced the misleading uncertain-save
+message. GREEN: 26 Service tests (16 Web AI plus 10 secure writer), 24 RemoteServer
+tests (6 AI HTTP, 9 Web write client, 9 Web UI routes), and all 181 Web JS behavior
+tests passed. The service suite includes real capability-protected IPC and exact
+settings-byte readback. Security queries are injected; fixtures contain fake keys.
+Both fixed-home environment variables point to an isolated temporary directory.
+Lint passed after formatting the new test (existing 1 warning / 40 infos);
+invariant/module-boundary/convention gates and diff checks passed. Logs and exact
+xcodebuild invocations: `/tmp/engram-leader-web-endpoint-20261023/`
+(`service-red`, `service-green`, `http-green` logs/xcresults; `ui-red.log`,
+`ui-green.log`, `lint-final.log`, `invariants.log`). JS verifier:
+`npx vitest run tests/scripts/collector-web-ui.test.ts`.
+
+Scope: this protects Web configuration writes, not DNS/HTTP redirects or a trusted
+local administrator changing credentials concurrently. Locked/inaccessible secret
+stores can conservatively block legitimate endpoint edits. No live Keychain,
+outbound AI request, browser render, all-target suite, hosted CI or production
+acceptance. No push/deploy/restart. Credential login throttle and alias audit
+storage remain separate work; the continuous local-development goal remains active.
+
 ## Web project audit actor accepted by the real service dispatcher (2026-10-23)
 
 A continuation check found a gap in the preceding actor batch: the typed Web

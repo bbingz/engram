@@ -26,6 +26,7 @@ make a closed item open again. Local baseline and live remote main were both
 | `collector-blocked-root-backoff-1` | Fixed locally | Final 87 runtime tests passed after behavioral RED and scheduler negative control. Per-root 1–60 second monotonic retry preserves healthy-root progress and recovery/reset/restart; no real-host CPU claim. |
 | Round-12 secrets / live navigation / favorites | Existing fixes verified locally | 210 selected App tests passed with an isolated home; source and exact coverage in the reconciliation. Transcript apply concurrency remains a narrower verification item. |
 | Web project audit actor | Fixed locally for four project commands | HTTP/auth/IPC 60, service/registry 29 and native batch/store 34 tests passed after RED. Follow-up real socket/dispatcher regression caught a missing IPC allowlist; fixed and 18 service tests passed. Alias audit storage and other Web hardening remain separate; not deployed. |
+| Web AI endpoint/key reuse | Fixed locally | Atomic rejection protects existing/dormant credentials across settings, env, sidecar and Keychain sources, including shared embedding fallback. 26 service, 24 HTTP/IPC/UI-route and 181 JS behavior tests passed after RED. No live Keychain or deployment acceptance. |
 
 Remaining historical residuals require current repro before promotion;
 remaining Web hardening and measured performance follow the bounded queue

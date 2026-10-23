@@ -8,6 +8,7 @@ enum EngramServiceWebWriteClientError: Error, Equatable, LocalizedError, Sendabl
     case unavailable
     case notFound
     case malformed
+    case aiEndpointRequiresLocalUpdate
     case project(EngramServiceWebProjectFailure)
 
     var errorDescription: String? {
@@ -18,6 +19,7 @@ enum EngramServiceWebWriteClientError: Error, Equatable, LocalizedError, Sendabl
         case .unavailable: return "Web alias service is unavailable."
         case .notFound: return "Web write target was not found."
         case .malformed: return "Web alias response is invalid."
+        case .aiEndpointRequiresLocalUpdate: return "Change AI endpoints and credentials in the server's local settings."
         case .project(let failure): return failure.message
         }
     }

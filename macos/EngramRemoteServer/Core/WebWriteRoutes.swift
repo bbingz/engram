@@ -351,6 +351,7 @@ enum WebWriteRoutes {
 
     private static func writeFailure(_ error: EngramServiceWebWriteClientError) -> Response {
         switch error {
+        case .aiEndpointRequiresLocalUpdate: return Response(status: .conflict)
         case .invalid: return Response(status: .badRequest)
         case .stale: return Response(status: .conflict)
         case .notFound: return Response(status: .notFound)
