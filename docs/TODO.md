@@ -23,6 +23,7 @@ make a closed item open again. Local baseline and live remote main were both
 | D7 legacy local rows | Closed, purge recorded | Do not rerun destructive action. |
 | `cutover-role-surface-1` | Fixed locally | RED: 8 expected catalog assertions failed. GREEN: 215 MCP executable tests passed; not pushed/deployed. |
 | Collector fixture race/leak | Fixed locally | 85 CollectorRuntime tests plus the affected publication test passed; hosted flake recurrence not measured. |
+| `collector-blocked-root-backoff-1` | Fixed locally | Final 87 runtime tests passed after behavioral RED and scheduler negative control. Per-root 1–60 second monotonic retry preserves healthy-root progress and recovery/reset/restart; no real-host CPU claim. |
 
 Security/UI historical residuals require current repro before promotion;
 collector backoff and measured performance follow the bounded queue in the

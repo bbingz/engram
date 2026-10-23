@@ -53,11 +53,38 @@ the selected local batch do not need repeated owner confirmation.
 | 1 | `cutover-role-surface-1` | Fixed locally; 215 MCP executable tests passed after 8 expected RED assertions. `MCPToolRegistry.tools` still returned 27 definitions for collector/replica/invalid roles while calls were refused. | Executable legacy/modern `tools/list` returns an empty list; local/index/default catalogs remain usable; direct calls still fail before DB/service access. |
 | 2 | `collector-settings-write-flake-1` | Fixed locally: complete sibling file, 0600 before rename; all 85 runtime tests passed. Hosted recurrence unmeasured. | Publish a complete owner-only fixture atomically; exercise invalid configuration reload without transient JSON/permission failures. |
 | 3 | `collector-test-fixture-leak-1` | Fixed locally: deferred fixture removal; affected test passed. | Match fixture cleanup pattern and run the affected test. |
-| 4 | `collector-blocked-root-backoff-1` | Source confirmed: blocked bootstrap streaks only control stderr; no retry deadline. Design a bounded per-root delay without starving healthy roots or suppressing recovery. | Deterministic clock/recovery tests, healthy-root progress, bounded blocked attempts. |
+| 4 | `collector-blocked-root-backoff-1` | Fixed locally; final 87 runtime tests passed after behavioral RED and scheduler negative control. Per-root monotonic backoff, capped at 60 seconds, preserves healthy-root progress and recovery. | Deterministic clock/recovery tests, healthy-root progress, bounded blocked attempts. |
 | 5 | Round-12 secrets cluster | Security triage first: `secrets-nofollow-*`, `apikey-empty-2`, `invariant-6-prod-2`. Old line numbers are not proof of a current defect. | Hermetic reproduction against current launcher/AI settings; then minimal fix. |
 | 6 | `session-detail-id-*` | Re-adjudicate after the October master/detail refactor; avoid applying old line-based patches. | Delayed-result identity/generation tests against current views. |
 | 7 | `cutover-web-editor-hardening-1` | Split into credential-mode global throttle, endpoint/key reuse triage, and accepted identity-auth phase-2 audit actor propagation. | Verify threat/authority boundary; actor comes from server session, never browser body; IPC + Web tests. |
 | 8 | Collector CPU work | One parent acceptance item, not separate counts for every hotspot. Publication, idle-turn, stuck-dirty and startup leads remain below. | Profile the changed path before tuning; retain CPU <=2% / RSS <=150 MiB real-host acceptance separately. |
+
+## Completed local batch: blocked-root retry backoff
+
+- Scope: runtime scheduling only; preserve coordinator loss persistence, scan
+  fences, source identities, fail-closed filesystem checks and upload workers.
+- On blocked bootstrap, postpone that root's restart and new capture by 1, 2,
+  4, 8, 16, 32, then at most 60 seconds on a monotonic clock. A healthy root
+  can continue its own scan/capture/publication. Existing durable publications
+  remain eligible for the independent upload loops.
+- Partial re-walk progress does not reset the accumulated delay; a completed
+  scan does. Fresh process start retries immediately; no schema or persisted
+  deadline is introduced. Missing/replaced root handling keeps its own guard.
+- A cooling root must not make the resident capture scheduler spin on its
+  pending loss/recovery signal. Retry becomes eligible at the deadline and is
+  observed at the existing cheap-wake cadence (at most one second), subject to
+  work already in progress. Cancellation still interrupts normal waits.
+- Acceptance: deterministic clock tests prove bounded stream/revision churn,
+  delay cap, healthy-root ACKs, permission recovery, reset and restart;
+  resident-loop regression proves no hot capture spin during the delay.
+- Verification: behavioral RED produced 24 expected assertions; omitting the
+  cooling-root mailbox filter made the resident regression fail. After restoring
+  the filter, all 87 runtime tests passed. Lint and the invariant ledger passed.
+  Logs and xcresults: `/tmp/engram-leader-backoff-20261023/`; final result is
+  `green-final.xcresult`. Next batch is current-source security/UI adjudication.
+- Risk: a newly readable blocked root can wait up to the remaining 60-second
+  delay plus scheduler/work latency. No CPU target or host recovery claim is
+  made without a separately authorized real-host receipt.
 
 ## Collector / cutover residuals (all named rows routed)
 
@@ -67,7 +94,7 @@ the selected local batch do not need repeated owner confirmation.
 | `cutover-hq-local-gap-1` | HQ collector/canary/central-index/Web acceptance remains operational work. Runbook R2–R10 includes credential/root steps and host mutations. |
 | `codex-resume-window-1` | `CodexAdapter(modifiedSince:)` and repros exist. Old-host backlog recovery/deployment needs fresh host evidence; never restart the old stack merely to close this row. |
 | `collector-stuck-dirty-locators-1` | Vanished never-captured half fixed. Present-but-uncapturable Copilot/Kimi members remain an unverified cause, not a proven parser defect. |
-| `collector-blocked-root-backoff-1` | Selected engineering queue above. |
+| `collector-blocked-root-backoff-1` | Closed locally; behavioral/runtime evidence above. Deployment and real-host CPU acceptance remain separate. |
 | `collector-start-cost-1` | Full startup walk cost remains unmeasured; startup must not be confused with steady-state CPU. |
 | `collector-epoch-change-scope-1` | Root-local suspension implemented in #481; Daily deployment recorded October 18. Retain real-host trigger verification separately. |
 | `collector-epoch-producer-1` | Same-instance epoch rotation implemented in #481; manual inventory wipe still loses identity by accepted design. Real revision-bump recovery remains unexercised. |

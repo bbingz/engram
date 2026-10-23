@@ -4,10 +4,12 @@
 
 ### 2026-10-23
 
+- [修复] blocked-root 重试改为逐根单调时钟退避（1 秒起、最高 60 秒）；冷却期间不触发捕获空转，健康根与独立上传继续，扫描完成后重置、重启后立即尝试。该 followup 本地关闭。详见 `CHANGELOG.md`。
+- [验证] 先复现 24 个行为断言失败，再通过最终 87 项运行时测试；移除调度过滤的负对照确实失败，恢复后全绿。lint/invariants 通过。尚未推送或部署；权限恢复可能等待剩余退避时间，不能据此宣称 Daily CPU 达标。下一批核实现有安全/UI 残项。
 - [盘点] 建立持续开发目标与隔离工作树 `codex/leader-loop-20261023`；盘点 21 份实施计划、24 份规格、27 份设计文档，校正 ROADMAP/TODO/followups。397 个未勾选标记不是 397 个待开发功能；产品台账现为 12 个开放/条件性方向、1 个已实现方向。完整路由见 `docs/reviews/2026-10-23-development-reconciliation.md`。
 - [修复] MCP 在 collector/replica/无效配置下不再广告不可调用的工具；正常角色保留 27 个工具。另修复 collector 测试设置文件的非原子写入与一处夹具清理遗漏。
 - [验证] MCP 先复现 8 个预期断言失败，再通过 215 项可执行测试；collector/AI 审计相关 94 项通过。lint、invariants 与 72 个文档链接检查通过；lint 保留原有 1 warning/40 infos。详见 `CHANGELOG.md`。
-- [未验证] 尚未推送、部署或跑本分支 hosted CI/UI；真实主机 CPU、HQ/M1 cutover 与历史安全/UI 残项仍分别跟进。持续目标下一项是 blocked-root backoff，没有安装无人值守后台调度器。
+- [未验证] 尚未推送、部署或跑本分支 hosted CI/UI；真实主机 CPU、HQ/M1 cutover 与历史安全/UI 残项仍分别跟进。持续目标通过当前会话推进，没有安装无人值守后台调度器。
 
 ### 2026-10-20
 

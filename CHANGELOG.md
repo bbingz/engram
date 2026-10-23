@@ -3,6 +3,39 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Collector blocked roots retry with bounded backoff (2026-10-23)
+
+`CollectorRuntime` previously restarted a blocked bootstrap root on subsequent
+capture turns, repeatedly walking it and recording continuity loss. It now
+uses per-root monotonic delays of 1, 2, 4, 8, 16, 32 and at most 60 seconds.
+Cooling roots are excluded from listener restarts, inventory steps, new
+capture and scheduler samples; healthy roots and independent upload loops
+continue. Partial re-walk progress retains the delay, a completed scan resets
+it, and reopening the runtime retries immediately. No schema or settings
+format changed. Updated the invariant and closed
+`collector-blocked-root-backoff-1` locally in the canonical ledgers.
+
+**Validation.** Deterministic-clock regression first failed with 24 behavioral
+assertions (exit 65; an earlier scaffold compile error was corrected before
+this RED). Focused GREEN and the 87-test runtime suite passed. A negative
+control removing the cooling-root scheduler filter made the resident test
+fail with an extra capture turn. The filter was restored, then the final
+`EngramServiceCoreTests/CollectorRuntimeTests` run passed all 87 tests with
+0 failures (exit 0). Tests cover cap, wall-clock jumps, healthy-root two-replica
+ACKs, permission recovery, reset/restart and resident wake behavior.
+`npm run lint` passed with the existing 1 warning/40 infos;
+`bash scripts/check-invariants-ledger.sh` passed. Evidence is local-only in
+`/tmp/engram-leader-backoff-20261023/`: `red-behavior`, `negative-scheduler`,
+`green-final` logs/xcresults, plus lint/invariant logs. Xcode uses
+`Engram-LeaderLoop-20261023` under DerivedData, not `macos/build`.
+
+**Limits.** Newly readable blocked roots may wait the remaining cooldown
+(up to 60 seconds) plus scheduler/work latency. This does not establish the
+Daily CPU <=2% target. No all-target suite, UI/render or hosted checks were
+run for this batch; no push, deployment, restart, production write or Docker.
+Next local batch is current-source adjudication of historical secrets/UI
+residuals, followed by Web audit actor propagation.
+
 ## Development queue reconciled; MCP role discovery and collector fixtures fixed (2026-10-23)
 
 Owner requested continuous development leadership. Work is isolated in
