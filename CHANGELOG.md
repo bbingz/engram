@@ -3,6 +3,57 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Web alias mutations now commit bounded actor history atomically (2026-10-23)
+
+Completed the alias gap in identity-auth phase 2 under
+`docs/superpowers/specs/2026-10-23-web-alias-audit-design.md`. Web alias add/remove
+now takes optional validated actor metadata, injected by RemoteServer from the
+bound editor session after rejecting unknown browser body keys. Credential mode
+and older clients use web-editor; later identity headers cannot replace the actor.
+The real Service dispatcher admits the optional field through existing capability
+and writer-gate boundaries. Native alias normalization is unchanged.
+
+Swift's additive schema creates web_alias_audit_log with insertion ID, UTC time,
+action, actor and published alias/canonical identities. An actual exact-pair change
+and its audit row share one writer transaction. No-op/refused requests create no
+history. Audit insertion or retention failure rolls the entire business mutation
+back and returns the existing generic unavailable error. Keep the latest 10,000
+transitions by insertion ID, independent of clock rollback; no raw paths, request
+bodies, historical backfill or public audit endpoint. This is bounded local Web
+mutation history, not permanent auditing or coverage of native alias changes.
+User-data-only backup payloads do not include the diagnostic table; whole-database
+backups retain it. Existing alias data and prior project migration history stay
+intact.
+
+RED: 12 selected Service tests produced 20 failures, including four missing-table
+errors and 16 invalid-actor assertions; five HTTP tests produced four missing-actor
+assertions. GREEN: all 13 selected Service tests passed (12 WebAliasWriteTests plus
+CollectorWebDemoTests.testAliasEditorThroughHTTPAndServiceIPC), including actual
+HTTP -> Web client -> capability socket -> dispatcher -> SQLite readback, and a
+separate identity-actor socket/dispatcher test. The latter also verifies an audit
+failure becomes generic unavailable without deleting the alias. All 46 selected
+RemoteServer tests passed (alias HTTP 5, auth routes 28, project HTTP 4, write
+client 9), plus all 20 MigrationRunnerTests. SQLite trigger injection verifies
+add/remove audit rollback and prune rollback; 10,000 seeded rows prove insertion-
+ordered retention. Old and repeated migrations preserve business data/history.
+All passes had zero failures. Lint and invariant/module/convention gates passed.
+
+Evidence: `/tmp/engram-leader-alias-audit-20261023/`, with `service-red`, `http-red`,
+`service-green`, `http-green`, `migrations-green` logs and xcresults; `lint.log`
+and `invariants-final.log`. Both fixed-home variables point to its `home/`.
+Tests use EngramServiceCore, EngramRemoteServerCore and EngramCoreTests with the
+shared Engram-LeaderLoop-20261023 DerivedData, macOS destination and signing off.
+The new spec and invariant describe storage, retention, rollback and exact scope;
+canonical TODO/followups/reconciliation and the prior auth/addendum now agree.
+
+No all-target suite, hosted CI, browser rendering, production migration, restart,
+push or deployment. Upgrade Service before RemoteServer: old Service rejects the
+new actor key, while old RemoteServer/new Service uses web-editor. Rolling back
+Service alone can interrupt writes from the new RemoteServer; mixed-host behavior
+has not been accepted on a real host. Credential-mode global throttling remains
+its accepted provenance/design residual. Next local queue item: reproduce or
+adjudicate foreground UI harness failure policy (`mcp-hermetic-1`).
+
 ## Measured Cursor observation cost reduced without weakening source checks (2026-10-23)
 
 Isolated profiling of `CollectorCursorLegacyOwnership.ownershipObservationPage`

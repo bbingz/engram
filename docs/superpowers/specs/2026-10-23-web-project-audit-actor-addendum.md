@@ -11,8 +11,9 @@ actor. The migration log already stored unrestricted TEXT, but the Swift actor
 enum only represented cli/mcp/swift-ui/batch. Forwarding a new DTO field alone is
 insufficient. Alias add/remove have neither an actor field nor an audit-log
 write in the current service, contrary to the older design assumption. Alias
-history requires its own storage/retention decision and remains a separate
-follow-up; this batch does not claim the whole phase 2 is complete.
+history was a separate follow-up; the subsequent [alias audit batch](2026-10-23-web-alias-audit-design.md)
+now implements and verifies its storage/retention contract locally. The original
+project-operation batch below did not include alias auditing.
 
 ## Contract
 

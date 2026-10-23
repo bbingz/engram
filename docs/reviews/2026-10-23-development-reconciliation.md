@@ -56,7 +56,7 @@ the selected local batch do not need repeated owner confirmation.
 | 4 | `collector-blocked-root-backoff-1` | Fixed locally; final 87 runtime tests passed after behavioral RED and scheduler negative control. Per-root monotonic backoff, capped at 60 seconds, preserves healthy-root progress and recovery. | Deterministic clock/recovery tests, healthy-root progress, bounded blocked attempts. |
 | 5 | Round-12 secrets cluster | Existing fixes verified locally for the summarized scope; part of the 210-test App GREEN below. No redundant production patch. | Filesystem/secret failure cases, empty-key policy and injected-home/socket routing. |
 | 6 | `session-detail-id-*` | Live-navigation/favorite residuals closed locally. Mounted transcript verification found and fixed stale paging cleanup/duplicate scheduling; initial/result/index cancellation passed the tested interleavings. | Five mounted tests passed five iterations; final-harness negative control failed 17 expected assertions; restored final 72 transcript tests passed. No full UI/production claim. |
-| 7 | `cutover-web-editor-hardening-1` | Project-operation actor propagation and endpoint/key reuse fixed locally. Remaining: credential throttle and alias audit storage design. | Actor/dispatcher receipts below. Endpoint batch: 26 service, 24 HTTP/IPC/UI-route and 181 JS tests passed after RED; fake keys only. |
+| 7 | `cutover-web-editor-hardening-1` | Project-operation actor propagation and endpoint/key reuse fixed locally. Alias audit storage now implemented below; credential throttle remains an accepted design residual. | Actor/dispatcher receipts below. Endpoint batch: 26 service, 24 HTTP/IPC/UI-route and 181 JS tests passed after RED; fake keys only. |
 | 8 | Collector CPU work | One parent acceptance item, not separate counts for every hotspot. Publication, idle-turn, stuck-dirty and startup leads remain below. | Profile the changed path before tuning; retain CPU <=2% / RSS <=150 MiB real-host acceptance separately. |
 
 ## Completed local batch: blocked-root retry backoff
@@ -116,8 +116,8 @@ forwarding alone.
 ## Web project audit actor batch
 
 The [phase-2 addendum](../superpowers/specs/2026-10-23-web-project-audit-actor-addendum.md)
-records a current-source correction: alias add/remove have no audit-log writer
-or actor field, so their history/retention needs a separate design. This batch
+recorded a baseline correction: alias add/remove had no audit-log writer
+or actor field. The later alias-audit batch below closes that separate design. This batch
 covers the four existing project audit paths only, with no schema migration.
 RemoteServer injects the bound editor identity (credential fallback web-editor)
 after browser-key validation, typed IPC carries it with the existing capability
@@ -230,9 +230,33 @@ The 512-workspace baseline varied 3.49-6.37 ms; do not generalize its larger del
 Temporary profile instrumentation was removed; its exact method, command, input
 counts, logs, samples, binary hashes and comparison JSON remain under
 `/tmp/engram-leader-cursor-perf-20261023/`. Correctness receipt is in CHANGELOG.
-Next local batch: define alias audit storage/transaction/retention semantics and
-acceptance before implementing that remaining Web editor design gap. Host cutover
+The following batch defined and implemented alias audit storage/transaction/
+retention semantics with failure-path acceptance. Host cutover
 and the comparable 30-minute resource window remain external acceptance work.
+
+## Completed local batch: transactional Web alias audit
+
+The [alias design](../superpowers/specs/2026-10-23-web-alias-audit-design.md)
+adds a dedicated diagnostic table, not project migration records. HTTP supplies
+the editor session actor after browser-key validation; additive DTOs and the real
+capability dispatcher forward it. Missing actor uses web-editor. A changed exact
+pair records action, actor, published identities and UTC time in the mutation's
+transaction. Repeated/no-op/refused writes create no rows. Audit insert or retention
+failure rolls back the business mutation. The latest 10,000 transitions are kept
+by insertion ID; raw paths and request bodies are not retained in this history.
+
+RED: Service 20 failures including four missing-table errors; HTTP four missing
+actor assertions. GREEN: 13 Service tests (including real HTTP/socket/dispatcher/SQL
+and capability-socket attribution), 46 HTTP/client/auth/project tests, 20 migration
+tests. Insertion/pruning triggers prove rollback; 10,000 seeded rows prove retention
+across clock rollback; old/repeated migration preserves aliases/history. Lint and
+invariants passed. Receipt: `/tmp/engram-leader-alias-audit-20261023/`.
+No all-target, hosted, rendered-browser or production upgrade claim. Upgrade Service
+before RemoteServer: old Service rejects actor on aliases; old RemoteServer with
+new Service works with web-editor attribution. Native alias and permanent audit
+history are explicitly outside this log. Credential throttle remains the accepted
+provenance/design residual. Next local item: current-source repro of the remaining
+foreground UI test-harness failure policy (`mcp-hermetic-1`), before product search.
 
 ## Collector / cutover residuals (all named rows routed)
 
@@ -253,7 +277,7 @@ and the comparable 30-minute resource window remain external acceptance work.
 | `collector-settings-write-flake-1` | Closed locally; hosted recurrence not claimed. |
 | `collector-test-fixture-leak-1` | Closed locally; no historical temp cleanup. |
 | `cutover-install-tooling-1` | P3 scripts/templates exist (#454); old claim of no tooling is stale. First real-host install/upgrade/rollback remains unverified. |
-| `cutover-web-editor-hardening-1` | Project actor and endpoint credential batches above; credential throttle and alias audit design remain. Tailscale mode does not prove credential-mode behavior safe. |
+| `cutover-web-editor-hardening-1` | Project actor, alias audit and endpoint credential batches above; credential throttle remains an accepted design residual. Tailscale mode does not prove credential-mode behavior safe. |
 | `cutover-role-surface-1` | First batch passed locally; no deployment claim. |
 
 Additional cutover gates: configure and verify `webReaderURL` on each intended
@@ -382,7 +406,7 @@ not proof that every historical acceptance criterion was rerun.
 ### Specification inventory
 
 All 24 baseline specifications were inventoried; this loop added the Web
-project-audit addendum below. Paired specs use the plan route above;
+project-audit addendum and alias-audit design below. Paired specs use the plan route above;
 a Draft/Accepted label alone neither opens nor closes an implementation task.
 
 | Specification | Routing |
@@ -406,8 +430,9 @@ a Draft/Accepted label alone neither opens nor closes an implementation task.
 | [2026-10-02-collector-replay-loss-design](../superpowers/specs/2026-10-02-collector-replay-loss-design.md) | Draft header is stale: #447/#448 recovery fixes exist; real-host reboot proof remains separate. |
 | [2026-10-02-collector-volume-identity-design](../superpowers/specs/2026-10-02-collector-volume-identity-design.md) | Draft header is stale: #447/#448 recovery fixes exist; real-host reboot proof remains separate. |
 | [2026-10-02-hq-local-collector-cutover-design](../superpowers/specs/2026-10-02-hq-local-collector-cutover-design.md) | Active host cutover R1-R10 and D1-D12; engineering/ops boundaries above. |
-| [2026-10-08-web-tailscale-identity-auth-design](../superpowers/specs/2026-10-08-web-tailscale-identity-auth-design.md) | Phase 1 implemented; project actor propagation fixed locally; alias storage remains a design gap. |
+| [2026-10-08-web-tailscale-identity-auth-design](../superpowers/specs/2026-10-08-web-tailscale-identity-auth-design.md) | Phase 1 implemented; project actor propagation and alias storage verified locally; host acceptance remains separate. |
 | [2026-10-23-web-project-audit-actor-addendum](../superpowers/specs/2026-10-23-web-project-audit-actor-addendum.md) | Added by this loop; current implementation scope, compatibility and acceptance contract. |
+| [2026-10-23-web-alias-audit-design](../superpowers/specs/2026-10-23-web-alias-audit-design.md) | Added by this loop; implemented bounded transactional Web alias history, attribution and additive migration. |
 | [2026-10-17-collector-native-epoch-reconcile-design](../superpowers/specs/2026-10-17-collector-native-epoch-reconcile-design.md) | Source implemented; epoch/operator/real-host residuals above. |
 | [2026-10-18-collector-epoch-rotation-and-root-scope-design](../superpowers/specs/2026-10-18-collector-epoch-rotation-and-root-scope-design.md) | Source implemented; epoch/operator/real-host residuals above. |
 | [2026-10-18-d7-legacy-local-origin-purge-design](../superpowers/specs/2026-10-18-d7-legacy-local-origin-purge-design.md) | Source implemented; epoch/operator/real-host residuals above. |

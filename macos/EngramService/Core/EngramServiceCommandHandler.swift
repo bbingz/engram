@@ -630,7 +630,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     databaseGeneration: result.databaseGeneration
                 )
             case "webAddProjectAlias":
-                try requireExactPayloadKeys(request, allowed: [["canonical", "alias"]])
+                try requireAllowedPayloadKeys(request, required: ["canonical", "alias"], optional: ["actor"])
                 let payload = try decodePayload(EngramServiceWebAddAliasRequest.self, from: request)
                 let result = try await writerGate.performWriteCommand(name: request.command) { writer in
                     try self.addWebProjectAlias(payload, writer: writer)
@@ -641,7 +641,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     databaseGeneration: result.databaseGeneration
                 )
             case "webRemoveProjectAlias":
-                try requireExactPayloadKeys(request, allowed: [["alias", "canonical"]])
+                try requireAllowedPayloadKeys(request, required: ["alias", "canonical"], optional: ["actor"])
                 let payload = try decodePayload(EngramServiceWebRemoveAliasRequest.self, from: request)
                 let result = try await writerGate.performWriteCommand(name: request.command) { writer in
                     try self.removeWebProjectAlias(payload, writer: writer)

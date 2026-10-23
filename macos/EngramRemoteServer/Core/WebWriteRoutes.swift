@@ -99,13 +99,25 @@ enum WebWriteRoutes {
         boundary: WebRequestBoundary, sessions: WebAuthSessionStore
     ) {
         router.post("/web/api/settings/aliases") { request, _ in
-            try await mutate(request, keys: addKeys) { data in
-                try await surface.addAlias(try JSONDecoder().decode(EngramServiceWebAddAliasRequest.self, from: data))
+            guard let token = boundary.sessionToken(in: request),
+                  let actor = await sessions.writeActor(sessionToken: token) else {
+                return Response(status: .unauthorized)
+            }
+            return try await mutate(request, keys: addKeys) { data in
+                try await surface.addAlias(
+                    try JSONDecoder().decode(EngramServiceWebAddAliasRequest.self, from: attributed(data, actor: actor))
+                )
             }
         }
         router.delete("/web/api/settings/aliases") { request, _ in
-            try await mutate(request, keys: removeKeys) { data in
-                try await surface.removeAlias(try JSONDecoder().decode(EngramServiceWebRemoveAliasRequest.self, from: data))
+            guard let token = boundary.sessionToken(in: request),
+                  let actor = await sessions.writeActor(sessionToken: token) else {
+                return Response(status: .unauthorized)
+            }
+            return try await mutate(request, keys: removeKeys) { data in
+                try await surface.removeAlias(
+                    try JSONDecoder().decode(EngramServiceWebRemoveAliasRequest.self, from: attributed(data, actor: actor))
+                )
             }
         }
         router.post("/web/api/settings/sources") { request, _ in

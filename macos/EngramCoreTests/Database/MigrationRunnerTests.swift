@@ -143,6 +143,34 @@ final class MigrationRunnerTests: XCTestCase {
         ])
     }
 
+    func testWebAliasAuditMigrationIsAdditiveAndPreservesHistory() throws {
+        let writer = try EngramDatabaseWriter(path: databasePath("alias-audit.sqlite"))
+        try writer.migrate()
+        XCTAssertTrue(try writer.read { try $0.tableExists("web_alias_audit_log") })
+        // Model an existing database from before this additive table.
+        try writer.write { db in
+            try db.execute(sql: """
+                DROP TABLE IF EXISTS web_alias_audit_log;
+                INSERT INTO project_aliases(alias, canonical) VALUES ('/old/path', '/new/path');
+                """)
+        }
+        try writer.migrate()
+        XCTAssertEqual(try writer.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM web_alias_audit_log") }, 0)
+        XCTAssertEqual(try writer.read {
+            try String.fetchOne($0, sql: "SELECT canonical FROM project_aliases WHERE alias = '/old/path'")
+        }, "/new/path")
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO web_alias_audit_log(action, actor, alias, canonical)
+                VALUES ('add', 'editor@example.com', 'old', 'new');
+                """)
+        }
+        try writer.migrate()
+        XCTAssertEqual(try writer.read {
+            try String.fetchOne($0, sql: "SELECT actor FROM web_alias_audit_log")
+        }, "editor@example.com")
+    }
+
     func testMigrationIsIdempotentAcrossRepeatedRuns() throws {
         let writer = try EngramDatabaseWriter(path: databasePath("idempotent.sqlite"))
 
