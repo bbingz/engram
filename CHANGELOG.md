@@ -3,6 +3,22 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Close the local delivery batch before expanding scope (2026-10-23)
+
+After owner feedback on cycle time, bound this delivery at `b17783c9` (16 local
+commits since `5216ff3a`) and prepare it for review. Updated the canonical search
+row to include completed value filters. Cosine insight supersession remains a
+decision: synchronous save checks Web source visibility, while later embedding
+maintenance has no originating caller policy. No replacement code was added.
+
+Validation: clean implementation worktree, commit/diff readback, and
+`git diff --check 5216ff3a..HEAD` passed. Re-read the existing receipts: measurement
+6 tests, value-filter App 193 / Service 66 and final render 20 all passed; these
+were not rerun. Closeout changes are documentation only. Full all-target tests,
+hosted branch CI, foreground UI and production acceptance remain unverified.
+The existing reconciliation routes every plan and residual. PR publication,
+merge and deployment have not been authorized or performed.
+
 ## Add read-only lifecycle storage and score measurements (2026-10-23)
 
 Added `scripts/db/measure-database.py --database PATH [--timeout SECONDS]` for

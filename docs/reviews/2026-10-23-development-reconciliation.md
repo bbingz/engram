@@ -46,6 +46,21 @@ criteria before schema/adapter-wide changes. Existing explicit exclusions
 channels) are not silently overturned. Routine implementation choices within
 the selected local batch do not need repeated owner confirmation.
 
+## Delivery boundary after owner feedback
+
+The owner requested shorter delivery cycles instead of continued scope growth.
+The implementation batch ends at `b17783c9`: 16 local commits since the baseline,
+covering reliability/Web fixes, search ranking/value visibility and measurement
+tooling. Preserve the individual commits for review; do not start another product
+family before this delivery is reviewed. This is local completion, not a release.
+
+Cosine supersession remains a product decision: `saveInsight` is synchronous and
+checks Web visibility in its transaction; the later embedding backfill has no
+originating caller policy. An unconditional backfill replacement would bypass
+that check. No semantic replacement code was added. Remaining decisions stay in
+the product ledger; real-host acceptance stays in followups. Push/PR publication
+is the next external authorization boundary, followed separately by deployment.
+
 ## First engineering queue
 
 | Order | Canonical item | Current evidence / disposition | Completion verifier |
@@ -389,7 +404,8 @@ These are not 12 ready-to-code defects.
    score function; 31 App/model/read/render tests plus two score tests passed.
    Four bilingual light/dark component renders inspected; no full-page interaction
    or production claim. Receipt: `/tmp/engram-leader-value-bands-20261023/`.
-5. Embedding-cosine insight supersession.
+5. Embedding-cosine insight supersession: decision pending on replacement timing
+   and authority scope; asynchronous embedding must not bypass Web visibility.
 6. Opt-in automatic insight extraction.
 7. Native sqlite-vec: conditional only on measured bottleneck and explicit
    architecture decision; current repo instructions prohibit introducing it.
