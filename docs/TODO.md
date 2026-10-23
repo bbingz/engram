@@ -12,7 +12,7 @@ make a closed item open again. Local baseline and live remote main were both
 
 | Item | Current status | Remaining verifier |
 |---|---|---|
-| Collector CPU | Open | Comparable 30-minute Daily window: CPU <=2%, RSS <=150 MiB; optimize only measured leads. |
+| Collector CPU | Open; local digest-formatting optimization verified by isolated profiling | Comparable 30-minute Daily window: CPU <=2%, RSS <=150 MiB. Synthetic 2048-workspace/64-item observation CPU fell 23.1%; no whole-process or real-host acceptance claim. Details in CHANGELOG and `collector-idle-turn-cost-1`. |
 | W4.1 alias reconciliation | Closed, superseded by D7(c)/D9 | Reopen only as a separately scoped old-DB user-state import. |
 | W4.5 old-receipt bootstrap | Closed, owner won't-do | Preserve retained old DB/archive; no automatic reimplementation. |
 | W4.7 epoch operator command | Implemented | Authorized HQ binary/CLI readback and real recovery; authority-file runbook remains. |

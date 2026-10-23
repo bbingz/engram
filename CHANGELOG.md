@@ -3,6 +3,60 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Measured Cursor observation cost reduced without weakening source checks (2026-10-23)
+
+Isolated profiling of `CollectorCursorLegacyOwnership.ownershipObservationPage`
+used a temporary XCTest method, synthetic workspace.json/database/WAL placeholders,
+Release optimization with testability enabled, and native arm64. There was no live
+source, database or running collector access. Three rounds of 50 pages per case
+measured process user+system CPU, excluding fixture creation. A five-second sample
+during an additional 2048-workspace/64-item loop found 699/3738 sampled stacks in
+SHA-256 digest hex formatting (`String(format:)`). The cryptographic hash itself
+was not the hotspot. `ArchiveV2Hash.sha256` now uses a fixed lowercase byte table
+and a 64-byte buffer. Existing directory enumeration, no-follow stat/open checks,
+observation cadence, ownership fingerprint input and SHA-256 algorithm remain.
+
+| Workspaces | Page size | Baseline CPU ms/page | Optimized CPU ms/page | Reduction |
+|---|---:|---:|---:|---:|
+| 64 | 1 | 0.298 | 0.248 | 16.8% |
+| 64 | 64 | 2.982 | 1.536 | 48.5% |
+| 512 | 1 | 1.017 | 0.970 | 4.6% |
+| 512 | 64 | 5.232 | 2.323 | 55.6% |
+| 2048 | 1 | 3.867 | 3.746 | 3.1% |
+| 2048 | 64 | 6.824 | 5.245 | 23.1% |
+
+Values are medians, not a whole-collector CPU claim. The 512/64 baseline varied
+3.49-6.37 ms across its rounds; its percentage is especially timing-sensitive.
+The stable 2048/64 rounds were 6.686-7.044 before and 5.242-5.255 after. The final
+sample contains zero digest-formatting stacks among 3764 samples. One-item pages
+still pay the full membership scan; this patch does not close collector CPU,
+modern-peer discovery or startup cost. Daily's comparable 30-minute CPU <=2% /
+RSS <=150 MiB acceptance remains open and separately authorized.
+
+Verification: 121 Collector tests passed (ownership 35, capture 6, privacy 80),
+plus 169 Core archive tests (model 48, catalog 46, legacy session 9, exact source
+capture 37, immutable CAS 29), all with zero failures. Fixed SHA-256 vectors now
+include leading zero bytes, binary 0...255 and a 65-byte input; expected values
+were independently checked with Python hashlib. Both profile test runs passed.
+The initial Release attempt failed before tests because testability was disabled;
+rerunning with `ENABLE_TESTABILITY=YES ONLY_ACTIVE_ARCH=YES` resolved that setup
+issue without changing project configuration. Lint and invariant/module/convention
+gates passed; the temporary benchmark method was removed byte-for-byte before
+final correctness tests. The persistent code diff is limited to the hash helper
+and its existing fixed-vector test.
+
+Evidence: `/tmp/engram-leader-cursor-perf-20261023/` contains `command.txt`,
+`benchmark-method.swift.txt`, `measurement-context.json`, `baseline-measured` and
+`optimized` logs/xcresults, both `.sample.txt` profiles, `comparison.json`, the
+baseline binary receipt, `collector-green` and `archive-green` logs/xcresults,
+`lint.log`, and `invariants.log`. The first failed build is `baseline.log`.
+Correctness uses schemes EngramCollectorCore and EngramCoreTests, the shared
+`Engram-LeaderLoop-20261023` DerivedData, signing disabled, and both fixed-home
+variables pointing to this evidence directory's `home/`. No hosted CI, all-target
+suite, actual collector CPU window, production rollout, push or restart.
+Next local batch: specify alias audit storage, transaction and retention semantics
+before implementing the remaining Web editor audit gap.
+
 ## Legacy body error mapping verified through production routes (2026-10-23)
 
 Closed the local verification residual `r11-dropped-2` without a runtime patch:

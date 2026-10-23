@@ -208,9 +208,31 @@ assertions in the two error tests. Restoring unchanged production source passed
 all 28 server tests. Lint and invariant/module/convention gates passed. Evidence:
 `/tmp/engram-leader-body-20261023/` (`negative-control`, `green-final`, lint and
 invariant logs/xcresults). No hosted/production or real socket-disconnect claim.
-`r11-dropped-2` closes locally. Next: measure the Cursor legacy observation path
-in isolated synthetic fixtures before selecting a collector performance change;
-quiet-host CPU/RSS acceptance remains separately authorized.
+`r11-dropped-2` closes locally. The following batch measured and optimized a
+Cursor legacy observation hotspot; quiet-host CPU/RSS acceptance remains
+separately authorized.
+
+## Measured local batch: Cursor observation digest formatting
+
+An isolated Release XCTest used 64/512/2048 synthetic workspaces, pages of 1/64,
+and three rounds of 50 pages. Process CPU excludes fixture setup. A five-second
+sample during a 2048-workspace/64-item loop attributed 699/3738 stacks to digest
+`String(format:)` calls. The shared SHA-256 function now converts the digest with
+a fixed hex lookup table, retaining its exact lowercase 64-byte representation.
+No directory cache, filesystem check, observer cadence or capture authority changed.
+
+The 2048-workspace/64-item median fell 6.824 -> 5.245 CPU ms/page (23.1%); the
+64-workspace/64-item case fell 2.982 -> 1.536 (48.5%). At one item per page the
+2048 case improved only 3.1%, preserving enumeration/stat work as a residual.
+The optimized sample has zero formatting stacks among 3764 samples. These are
+synthetic path measurements, not whole Collector CPU/RSS or production acceptance.
+The 512-workspace baseline varied 3.49-6.37 ms; do not generalize its larger delta.
+Temporary profile instrumentation was removed; its exact method, command, input
+counts, logs, samples, binary hashes and comparison JSON remain under
+`/tmp/engram-leader-cursor-perf-20261023/`. Correctness receipt is in CHANGELOG.
+Next local batch: define alias audit storage/transaction/retention semantics and
+acceptance before implementing that remaining Web editor design gap. Host cutover
+and the comparable 30-minute resource window remain external acceptance work.
 
 ## Collector / cutover residuals (all named rows routed)
 
@@ -227,7 +249,7 @@ quiet-host CPU/RSS acceptance remains separately authorized.
 | `collector-epoch-authority-file-1` | Existing owner decision is runbook-only: update `initialEpoch` before next restart. Revisit before first real approval; no silent authority relaxation. |
 | `collector-revision-bump-staged-1` | Drain pending publications before revision bump. Old-revision staged publication handling remains a design/operational limitation. |
 | `collector-publication-cost-1` | Shared privacy proof and `memchr` landed. Remaining byte scans/CAS reads are low-priority measured-performance candidates. |
-| `collector-idle-turn-cost-1` | Frontier cleanup, ancestor proof reuse, and vanished-locator handling landed. Cursor legacy reconciliation and comparable quiet-host receipt remain. |
+| `collector-idle-turn-cost-1` | Frontier/ancestor/vanished-locator fixes landed. Local digest formatting optimization measured above; legacy enumeration/stat and modern-peer discovery costs plus comparable quiet-host receipt remain. |
 | `collector-settings-write-flake-1` | Closed locally; hosted recurrence not claimed. |
 | `collector-test-fixture-leak-1` | Closed locally; no historical temp cleanup. |
 | `cutover-install-tooling-1` | P3 scripts/templates exist (#454); old claim of no tooling is stale. First real-host install/upgrade/rollback remains unverified. |
