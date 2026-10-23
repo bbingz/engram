@@ -157,7 +157,18 @@ one UI regression. GREEN: 26 service, 24 HTTP/client/UI-route, 181 JS tests; lin
 invariant gates passed. Evidence: `/tmp/engram-leader-web-endpoint-20261023/`.
 No real Keychain, outbound AI request, rendered browser, all-target suite, hosted
 or production acceptance. This is not DNS/redirect pinning or isolation from a
-trusted local settings writer. Next: credential-mode login throttle adjudication.
+trusted local settings writer.
+
+Credential-throttle adjudication: current source and 47 fresh auth session/route
+tests confirm the shared five-attempt window and its availability limitation.
+The accepted [identity-auth design](../superpowers/specs/2026-10-08-web-tailscale-identity-auth-design.md)
+explicitly parks per-client credential throttling. There is no trusted client
+address contract in the credential route; arbitrary forwarded/identity headers
+must not become throttle keys. Preserve this design item until client/proxy
+provenance and a global guessing budget are defined. No auth-code change.
+Receipt: `auth-adjudication.{log,xcresult}` in the same evidence directory.
+Next independent item: mounted-view delayed transcript completion/switching,
+including paging-task cleanup; no new transcript defect has yet been reproduced.
 
 ## Collector / cutover residuals (all named rows routed)
 

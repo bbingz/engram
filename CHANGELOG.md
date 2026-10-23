@@ -3,6 +3,25 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Credential-mode throttle reconciled against its accepted scope (2026-10-23)
+
+Current source still shares five login attempts per minute across credential
+clients, including successful attempts. Fresh WebAuthSessionTests (19) and
+WebAuthRouteTests (28) passed, including concurrent limits, retry-window expiry,
+logout behavior and forged forwarding/identity headers. Evidence:
+`/tmp/engram-leader-web-endpoint-20261023/auth-adjudication.{log,xcresult}`.
+This confirms the limitation; it does not fix global-lockout availability.
+
+The accepted 2026-10-08 identity-auth design explicitly parks credential-mode
+per-client throttling. Credential routes currently have no trusted client-address
+contract and intentionally ignore identity/forwarded headers. Keep this as a
+deployment/auth design item: define trusted proxy/client provenance and a global
+guessing budget before partitioning it. No weakening of credential checks, new
+forwarded-header trust, auth-code change or host configuration change. The next
+independent verification item is delayed transcript completion during session
+switching; current cancellation checks and unguarded paging-task cleanup need a
+mounted-view reproducer before promoting a new defect.
+
 ## Web AI endpoint changes cannot redirect saved credentials (2026-10-23)
 
 The Web AI editor could change a provider base URL while retaining the server's
