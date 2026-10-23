@@ -3,6 +3,20 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Align the archive safety gate with authenticated alias deletion (2026-10-24)
+
+PR #496's Node and macOS gate failures shared one stale exact-body allowlist:
+Web alias DELETE now validates the session actor and attributes the request.
+Updated that exact allowlist and its fixture, retaining path/file/count checks.
+Added rejection cases for an unverified actor, unattributed payload and extra
+archive deletion. No Swift runtime or authorization behavior changed.
+
+Validation: repository gate regression failed before the fix; all 65 gate tests
+then passed. Direct safety gate, Bash syntax, test typecheck and targeted Biome
+passed (after formatting). Evidence: `/tmp/engram-pr496-gate-fix-20261024/`.
+Hosted verification will run on the pushed fix; prior green Swift/UI/CodeQL
+results belong to `a4d9837`, not this new commit.
+
 ## Close the local delivery batch before expanding scope (2026-10-23)
 
 After owner feedback on cycle time, bound this delivery at `b17783c9` (16 local
