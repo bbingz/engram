@@ -3,6 +3,46 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Human keyword search ranks all terms and aligns offline CJK behavior (2026-10-23)
+
+Reconciled Lifecycle 3.4 against current source: Service already had FTS rank and
+CJK trigram matching, windowed highlights were shipped, and SearchPage already
+filtered by source/project/time/origin. Both Service and App local queries still
+used only the first term's rank. A query beginning with a short LIKE term lost
+all relevance ranking; App's separate all-CJK LIKE route also disagreed with Service.
+
+Under `docs/superpowers/specs/2026-10-23-keyword-ranking-design.md`, both readers
+sum each term's existing best-row rank in canonical token order, preserving
+session-level AND across messages. Start time descending and session ID ascending
+break ties before LIMIT and in Service's final projection. App search and
+searchWithSnippets now use the shared scalar-count trigram routing. Snippet order,
+Service's short-term candidate cap and existing visibility/filter boundaries stay.
+No schema change, index rebuild, new preference or dependency. Native MCP's separate
+ranking policy is outside this human-search change. Value/lifecycle facets and
+title/quality/recency weighting remain separate roadmap work.
+
+The initial test build caught a missing await in fixture setup, fixed before the
+behavioral experiment. RED: three shared-fixture App/Service regressions produced
+72 expected ordering failures. GREEN: 163 tests passed under EngramTests
+(DatabaseManagerTests, SearchModeTests, SearchOutcomeTests), plus 63 under
+EngramServiceCore (selected IPC search tests, SemanticSearchIntegrityTests,
+ServiceSearchInsightTests, WebSearchInsightProducerTests and four Web metadata
+admission tests). Zero failures. Tests cover six permutations of three terms,
+cross-message matching, relevance before LIMIT, recency/identity ties, short-first
+Latin/Chinese/Japanese/Korean queries, highlights, both FTS identity layouts,
+filters, SQL plan shape, busy handling and semantic fallback. Lint and invariant/
+module/convention gates passed; lint retains one existing warning and 40 infos.
+
+Evidence: `/tmp/engram-leader-keyword-ranking-20261023/`: ranking-red (compile),
+ranking-red-behavior, app-green and service-green logs/xcresults, exact Service
+selectors in service-command.txt, lint.log and invariants.log. Both fixed-home
+variables use that directory's home/; xcodebuild uses macOS, signing off and the
+existing Engram-LeaderLoop-20261023 DerivedData. Canonical roadmap/TODO,
+reconciliation, historical plan annotation, invariant and MEMO now agree.
+No all-target suite, UI render, hosted CI, production corpus latency/relevance
+measurement or deployment. Next: inspect existing value-score/band UI and access/
+outcome signals before defining the next bounded visibility improvement.
+
 ## UI harness residual narrowed to foreground acceptance (2026-10-23)
 
 Current-source review found isolated environment/test-mode configuration before

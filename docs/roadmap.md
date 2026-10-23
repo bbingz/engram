@@ -138,8 +138,8 @@ not scheduled engineering work.
 ## Product decision ledger (reconciled 2026-10-23)
 
 The July plan-completion audit originally parked 12 product families. Current
-source closes the audit-body prerequisite and partially implements plugin and
-provider work. Lifecycle 3.2 is explicitly added from its source plan. The
+source closes the audit-body prerequisite and partially implements human search,
+plugin and provider work. Lifecycle 3.2 is explicitly added from its source plan. The
 remaining 12 families are product/design choices, not confirmed defects.
 The continuous-development request selects prioritization and local work;
 irreversible operations and new release channels remain separately authorized.
@@ -147,7 +147,7 @@ irreversible operations and new release channels remain separately authorized.
 | Item | Source | Audit status | Size estimate | Decision needed |
 |------|--------|--------------|---------------|-----------------|
 | Lifecycle 3.1 multi-factor value score (+ P0-6 measurement-script prerequisite) | `docs/engram-lifecycle-upgrade-plan.md` §3.1 | not_done | L (2–3d + measurement) | Whether to evolve `quality_score` formula and expose bands in GUI |
-| Lifecycle 3.4 BM25/CJK ranking + faceting | `docs/engram-lifecycle-upgrade-plan.md` §3.4 | not_done | L (3–4d) | Whether human search ranking upgrade is next after MCP semantic |
+| Lifecycle 3.4 BM25/CJK ranking + faceting | `docs/engram-lifecycle-upgrade-plan.md` §3.4; [ranking contract](superpowers/specs/2026-10-23-keyword-ranking-design.md) | partial | re-scope | FTS rank, highlights and source/project/time/origin filters already exist. Local loop fixes all-term ranking and offline CJK parity. Value/lifecycle facets and title/quality/recency weighting remain separate decisions; old blanket missing-BM25 estimate is stale. |
 | Lifecycle 3.5 tool-result normalization + structured summary job | `docs/engram-lifecycle-upgrade-plan.md` §3.5 | not_done | XL (~15 adapters + summary job) | Accept adapter regression surface vs keep lossy tool results |
 | P0.5 value-band badge on session cards + `value_override` | `docs/engram-lifecycle-upgrade-plan.md` §3.1 / P0.5 | not_done | M (~1d after score parity) | Whether to show quality bands before multi-factor scoring |
 | Insight supersession via embedding cosine > 0.92 | `docs/p1-semantic-memory-design-2026-06.md` §d | partial (text match only) | M | Whether cosine supersession is required once embeddings are common |

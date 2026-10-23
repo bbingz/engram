@@ -1246,9 +1246,13 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     candidateJoins.append("JOIN \(alias) ON \(alias).session_id = m0.session_id")
                 }
             }
+            // Every term contributes its best row rank. Canonical addition
+            // order keeps query permutations stable even for floating-point ties.
+            let rankExpression = tokens.indices.sorted { tokens[$0] < tokens[$1] }
+                .map { "m\($0).rank" }.joined(separator: " + ")
             var topParts = ["""
                 top AS MATERIALIZED (
-                    SELECT s.*, m0.rank AS search_rank
+                    SELECT s.*, \(rankExpression) AS search_rank
                     FROM m0
                     \(candidateJoins.joined(separator: " "))
                     CROSS JOIN sessions s ON s.id = m0.session_id
@@ -1258,7 +1262,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             """]
             appendSearchFilters(for: request, scope: scope, to: &topParts, args: &args)
             topParts.append("""
-                    ORDER BY m0.rank, s.start_time DESC
+                    ORDER BY search_rank, s.start_time DESC, s.id
                     LIMIT ?
                 )
             """)
@@ -1334,7 +1338,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 SELECT top.*, \(snippetExpression) AS snippet
                 FROM top
                 \(bestJoins.joined(separator: " "))
-                ORDER BY top.search_rank, top.start_time DESC
+                ORDER BY top.search_rank, top.start_time DESC, top.id
                 """
             let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(args))
             return EngramServiceSearchResponse(

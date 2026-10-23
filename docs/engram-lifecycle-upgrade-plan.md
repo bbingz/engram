@@ -211,6 +211,13 @@ execution queue; `parked-see-roadmap` items are listed in
 
 ### 3.4 人工检索升级（enabler 1）
 
+> Current-source reconciliation (2026-10-23): the proposals below are historical.
+> FTS rank, highlighted snippets, source/project/time/origin filters and Service
+> CJK trigram ranking already exist. The local development loop implements the
+> [all-term ranking and offline CJK consistency contract](superpowers/specs/2026-10-23-keyword-ranking-design.md).
+> Value/lifecycle facets and score weighting remain open in the roadmap; native
+> sqlite-vec remains excluded by current repository instructions.
+
 **目标**：把"已为 AI 接好"的检索能力补给人，CJK 用户拿到真排序。
 
 **方案设计**：

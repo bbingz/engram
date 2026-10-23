@@ -617,8 +617,8 @@ final class DatabaseManager: @unchecked Sendable {
     /// somewhere in the session. This replaces the old correlated shape that
     /// probed MATCH once per `sessions` row (audit #25: 80-100s vs 81ms for the
     /// identical query). `withSnippet` adds the FTS5 `<mark>` snippet used by the
-    /// offline-fallback GUI path. Ordering (`m0.rank, s.start_time DESC`) and the
-    /// hidden/tier/source/project/since filters are preserved exactly.
+    /// offline-fallback GUI path. All terms contribute to rank, with recency and
+    /// session ID as tie-breakers; hidden/tier/source/project/since filters stay.
     static func keywordSearchSQL(
         rawTokens: [String],
         termMatches: [String],
@@ -638,7 +638,7 @@ final class DatabaseManager: @unchecked Sendable {
             // mixed-token-1: classify the original whitespace token. Peeling
             // the escaped MATCH phrase first turns quoted `"I"` into `%I%` and
             // empty quotes into a broad `%%` LIKE.
-            if CJKText.containsCJK(rawTerm) || rawTerm.count < 3 {
+            if !CJKText.usesTrigramMatch(rawTerm) {
                 if withSnippet {
                     ctes.append("""
                         \(alias)_hits AS (
@@ -754,8 +754,11 @@ final class DatabaseManager: @unchecked Sendable {
             origin: origin,
             since: since
         )
+        // Match Service's canonical addition order without reordering snippets.
+        let rankExpression = rawTokens.indices.sorted { rawTokens[$0] < rawTokens[$1] }
+            .map { "m\($0).rank" }.joined(separator: " + ")
         parts.append("""
-            ORDER BY m0.rank, s.start_time DESC
+            ORDER BY \(rankExpression), s.start_time DESC, s.id
             LIMIT ?
         """)
         args.append(limit)

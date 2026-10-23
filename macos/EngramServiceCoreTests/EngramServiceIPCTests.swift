@@ -4238,6 +4238,10 @@ final class EngramServiceIPCTests: XCTestCase {
             EngramServiceSearchRequest(query: "需要修复 测试", mode: "keyword", limit: 10)
         )
         XCTAssertEqual(mixed.items.map(\.id), ["s1", "s2"])
+        let shortFirst = try await provider.search(
+            EngramServiceSearchRequest(query: "测试 需要修复", mode: "keyword", limit: 1)
+        )
+        XCTAssertEqual(shortFirst.items.map(\.id), ["s1"], "short terms must not erase later MATCH ranks")
     }
 
     func testKeywordSearchSubTrigramHitsAreRecencyBounded_repro() async throws {
@@ -4310,7 +4314,7 @@ final class EngramServiceIPCTests: XCTestCase {
                   ('lite', 'usage monitor go');
                 """)
         }
-        let queries = ["monitor", "usage monitor", "monitor go", "go", "parser fix"]
+        let queries = ["monitor", "usage monitor", "monitor usage", "monitor go", "go monitor", "go", "parser fix"]
 
         func run() async throws -> [String: [(String, String?)]] {
             let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
@@ -4344,7 +4348,9 @@ final class EngramServiceIPCTests: XCTestCase {
         // Ranking, filters and conjunction semantics on the indexed layout.
         XCTAssertEqual(indexed["monitor"]?.map(\.0), ["s3", "s1", "s2"])
         XCTAssertEqual(indexed["usage monitor"]?.map(\.0), ["s3", "s1"])
+        XCTAssertEqual(indexed["monitor usage"]?.map(\.0), ["s3", "s1"])
         XCTAssertEqual(indexed["monitor go"]?.map(\.0), ["s3", "s2"])
+        XCTAssertEqual(indexed["go monitor"]?.map(\.0), ["s3", "s2"])
         XCTAssertEqual(Set(indexed["go"]?.map(\.0) ?? []), ["s2", "s3"])
         XCTAssertEqual(indexed["parser fix"]?.map(\.0), ["s1"])
         let parserSnippet = try XCTUnwrap(indexed["parser fix"]?.first?.1)

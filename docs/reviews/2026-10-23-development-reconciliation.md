@@ -279,7 +279,35 @@ regressions passed in isolated fixed homes. They verify source ordering/wiring,
 not foreground behavior. Evidence: `/tmp/engram-leader-ui-harness-20261023/`,
 `failure-stop.{log,xcresult}`, `source-policy.{log,xcresult}` and original backups.
 The residual stays open only for foreground acceptance when the runner can start.
-Independent product-search development can continue without changing this policy.
+The following product-search batch continued without changing this policy.
+
+## Completed local batch: human keyword ranking consistency
+
+Lifecycle 3.4's missing-BM25/CJK/facet premise was stale: Service already used
+FTS rank, windowed highlights and CJK trigram routing; SearchPage already had
+source/project/time/origin filters. The actual reproducible gaps were that both
+readers ranked by only the first term, and App offline search routed all CJK to
+zero-rank LIKE. A short-first query such as AI needle discarded needle relevance.
+
+The [ranking contract](../superpowers/specs/2026-10-23-keyword-ranking-design.md)
+keeps session-level AND and sums each term's existing best-row rank in canonical
+token order. Time descending and ID ascending break ties before the result limit
+and final projection. App search/searchWithSnippets now use Service's scalar-count
+trigram/LIKE routing. No schema/index rebuild, UI layout, embedding or new facet.
+Service's short-term candidate cap remains an explicit recall limitation; native
+MCP's separate ranking policy is outside this human-search contract.
+
+After fixing an initial missing-await test compile error, behavioral RED produced
+72 expected ranking assertions across three real App/Service shared-fixture tests.
+GREEN: 163 App data/search tests and 63 Service search/semantic/insight/Web tests,
+zero failures. Six term permutations, cross-message matching, rank-before-limit,
+stable ties, Latin/Chinese/Japanese/Korean, highlights, both Service FTS layouts,
+filters, busy handling and semantic fallback passed. Lint/invariants passed.
+Receipt: `/tmp/engram-leader-keyword-ranking-20261023/`. No all-target, rendered UI,
+hosted, production-corpus relevance/latency or deployment acceptance. Lifecycle 3.4
+stays partial: title/quality/recency weighting and value/lifecycle facets need
+separate contracts. Next product batch: adjudicate existing value-score/band UI
+and access/outcome signals before selecting a measured visibility improvement.
 
 ## Collector / cutover residuals (all named rows routed)
 
@@ -341,14 +369,15 @@ a comparable quiet-state receipt. Neither is a current runtime measurement.
 ## Product roadmap reconciliation
 
 The historical table had 12 decision rows. One is already implemented
-(`ai_audit_log` body redaction); two are partly implemented (plugin integration
-and Grok/Pi/provider work). Lifecycle 3.2 was parked in its source plan but
+(`ai_audit_log` body redaction); three are partly implemented (human search,
+plugin integration and Grok/Pi/provider work). Lifecycle 3.2 was parked in its source plan but
 missing from the table; it is now explicitly routed. The resulting table has
 13 rows: **12 open or conditional product families, 1 implemented family**.
 These are not 12 ready-to-code defects.
 
 1. Value score evolution, measured thresholds, and outcome/access signals.
-2. Human BM25/CJK search ranking and facets beyond current search contracts.
+2. Human search beyond the all-term/CJK ranking batch and existing basic filters:
+   title/quality/recency weighting and value/lifecycle facets remain.
 3. Tool-result normalization plus structured summary job.
 4. Value band UI and `value_override` (current Sessions UI is a table).
 5. Embedding-cosine insight supersession.
@@ -429,11 +458,12 @@ not proof that every historical acceptance criterion was rerun.
 ### Specification inventory
 
 All 24 baseline specifications were inventoried; this loop added the Web
-project-audit addendum and alias-audit design below. Paired specs use the plan route above;
+project-audit addendum, alias-audit and keyword-ranking designs below. Paired specs use the plan route above;
 a Draft/Accepted label alone neither opens nor closes an implementation task.
 
 | Specification | Routing |
 |---|---|
+| [2026-10-23-keyword-ranking-design](../superpowers/specs/2026-10-23-keyword-ranking-design.md) | Local all-term ranking/offline CJK consistency implemented; 226 focused tests passed after behavioral RED. Broader search weighting/facets remain product decisions. |
 | [2026-04-23-swift-single-stack-design](../superpowers/specs/2026-04-23-swift-single-stack-design.md) | Swift-only product runtime already authoritative; never revive Node product entrypoints. |
 | [2026-06-01-today-workbench-design](../superpowers/specs/2026-06-01-today-workbench-design.md) | Paired plan/current follow-ups; historical status is not a fresh acceptance receipt. |
 | [2026-06-04-fts-table-swap-rebuild-design](../superpowers/specs/2026-06-04-fts-table-swap-rebuild-design.md) | Paired plan/current follow-ups; historical status is not a fresh acceptance receipt. |

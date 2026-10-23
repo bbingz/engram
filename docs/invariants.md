@@ -288,6 +288,13 @@ Invariants are properties that must survive every change; each entry names where
 - **Verified by** - `macos/EngramServiceCoreTests/CollectorPublicationWorkerTests.swift` (testNeverCapturedMissingSourceLeavesDirtySetAndRearmsOnReobservation_repro, testPreviouslyCapturedMissingSourceDefersOneSecondAndStaysUnacknowledged_repro, testMixedCapturedAndNeverCapturedMissingCodexShareOneBatchAndDeadlines_repro).
 - **Gate** - `none`.
 
+## Human Keyword Ranking Uses All Search Terms
+
+- **Statement** - Service keyword search and the App's local search/searchWithSnippets require every searchable term at session scope and rank by the sum of each term's best row rank, summed in canonical token order. Short terms retain zero-rank LIKE; long Latin/CJK terms use the same scalar-count trigram routing. Recency descending and session ID ascending break ties before LIMIT and final projection. Existing filters and Service's short-token candidate cap remain; cap-limited recall, native MCP ranking and weighted quality/title scores are outside this contract.
+- **Enforced by** - `macos/EngramService/Core/EngramServiceReadProvider.swift`, `macos/Engram/Core/Database.swift`, `macos/Shared/EngramCore/CJKTextHelpers.swift` (usesTrigramMatch).
+- **Verified by** - `macos/EngramTests/DatabaseManagerTests.swift` (testKeywordRankingUsesEveryTermBeforeLimitAcrossReaders_repro, testKeywordRankingShortFirstKeepsLongTermRelevanceAcrossReaders_repro, testKeywordRankingBreaksTiesByRecencyThenIdentityAcrossReaders), `macos/EngramServiceCoreTests/EngramServiceIPCTests.swift` (testSQLiteReadProviderCJKTrigramTermsRankByRelevance_repro, testSQLiteReadProviderKeywordSearchIdentityIndexLayoutMatchesFallback_repro).
+- **Gate** - `none`.
+
 ## Unverified Anchors
 
 None.
