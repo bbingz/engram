@@ -54,8 +54,8 @@ the selected local batch do not need repeated owner confirmation.
 | 2 | `collector-settings-write-flake-1` | Fixed locally: complete sibling file, 0600 before rename; all 85 runtime tests passed. Hosted recurrence unmeasured. | Publish a complete owner-only fixture atomically; exercise invalid configuration reload without transient JSON/permission failures. |
 | 3 | `collector-test-fixture-leak-1` | Fixed locally: deferred fixture removal; affected test passed. | Match fixture cleanup pattern and run the affected test. |
 | 4 | `collector-blocked-root-backoff-1` | Fixed locally; final 87 runtime tests passed after behavioral RED and scheduler negative control. Per-root monotonic backoff, capped at 60 seconds, preserves healthy-root progress and recovery. | Deterministic clock/recovery tests, healthy-root progress, bounded blocked attempts. |
-| 5 | Round-12 secrets cluster | Security triage first: `secrets-nofollow-*`, `apikey-empty-2`, `invariant-6-prod-2`. Old line numbers are not proof of a current defect. | Hermetic reproduction against current launcher/AI settings; then minimal fix. |
-| 6 | `session-detail-id-*` | Re-adjudicate after the October master/detail refactor; avoid applying old line-based patches. | Delayed-result identity/generation tests against current views. |
+| 5 | Round-12 secrets cluster | Existing fixes verified locally for the summarized scope; part of the 210-test App GREEN below. No redundant production patch. | Filesystem/secret failure cases, empty-key policy and injected-home/socket routing. |
+| 6 | `session-detail-id-*` | Live-navigation/favorite residuals closed locally after current tests. Transcript apply (`-3`) remains verification pending; cancellation guards exist, but delayed mounted-view behavior is not proven. | Current predicate/source-wiring tests passed; a mounted-view delayed-result scenario is still needed for `-3`. |
 | 7 | `cutover-web-editor-hardening-1` | Split into credential-mode global throttle, endpoint/key reuse triage, and accepted identity-auth phase-2 audit actor propagation. | Verify threat/authority boundary; actor comes from server session, never browser body; IPC + Web tests. |
 | 8 | Collector CPU work | One parent acceptance item, not separate counts for every hotspot. Publication, idle-turn, stuck-dirty and startup leads remain below. | Profile the changed path before tuning; retain CPU <=2% / RSS <=150 MiB real-host acceptance separately. |
 
@@ -85,6 +85,33 @@ the selected local batch do not need repeated owner confirmation.
 - Risk: a newly readable blocked root can wait up to the remaining 60-second
   delay plus scheduler/work latency. No CPU target or host recovery claim is
   made without a separately authorized real-host receipt.
+
+## Current-source adjudication: secrets and session identity
+
+The September `.grok/all-confirmed-remediation-ledger-2026-09-02.md` records
+W1/W7/W9 remediation and explains why the August blanket-open text was stale.
+That record was only a navigation lead; the decisions below use current source
+and fresh tests at local commit `414b7c18`.
+
+| Summarized claim | Verdict / current evidence |
+|---|---|
+| Runtime-secret writes/cleanup follow caller-controlled paths or own unrelated siblings | OVERTURNED for the described current paths. `EngramServiceLauncher.writeRuntimeAISecrets` validates the runtime parent; `SecureRegularFile` pins directory FDs and uses no-follow read/write/unlink operations. Custom socket sidecars are namespaced. Tests exercise leaf/intermediate symlinks, hardlinks, failed publication and unrelated siblings. |
+| AI key deletion/save failures are reported as successful | OVERTURNED. `APIKeyPersistencePolicy` checks settings writes/deletion; `reconcilingRuntimeBridgeRefresh` preserves marker failures and reports bridge failures. Empty unavailable keys are preserved until explicit clearing. Policy and call-site tests passed; no real Keychain was used. |
+| Settings refresh/default test DB falls through to the login user's runtime | OVERTURNED for the reported entry paths. App/menu/main-window Settings pass the resolved socket to `AISettingsSection`; default DB uses `EngramUserDataDirectory.resolvedHomeDirectory`. Injected socket/source-wiring and temporary-home regression passed. This is not a fresh whole-suite filesystem-access audit. |
+| Live navigation and delayed favorite reads lack identity guards | OVERTURNED. Popover/SourcePulse complete captured nil-resolution tokens; favorites compare generation and invalidate it on successful toggle/disappear. Current navigation/predicate/source-wiring tests passed. |
+| Every transcript apply is identity-fenced | UNVERIFIED. `loadInitialTranscript`, `appendMessages` and `rebuildIndexed` currently check cancellation; tracked tasks cancel on session switch/disappear. Parent/related/trailing initial-load paths have explicit identity checks. Existing tests do not simulate every delayed mounted-view interleaving, so `session-detail-id-3` stays open for bounded reproduction. |
+
+Fresh validation: `xcodebuild test`, scheme `EngramTests`, isolated
+`CFFIXED_USER_HOME` and `TEST_RUNNER_CFFIXED_USER_HOME`, same DerivedData as
+above, passed 210 tests: AISettingsSection 36, selected launcher 19,
+UnixSocketTransport 32, injected-home DB 1, HomePopoverActions 43,
+TodayWorkbenchScope 39 and TranscriptFind 40. No production code changed;
+there is no newly claimed RED. Logs, exact selectors and xcresult:
+`/tmp/engram-leader-residuals-20261023/app-{command.txt,residuals.log,residuals.xcresult}`
+(command file is `app-command.txt`). No mounted UI/render, hosted or live
+credential test was run. Next ready implementation is Web audit actor
+propagation; the current migration actor enum still admits only cli/mcp/
+swift-ui/batch, so DTO forwarding alone cannot satisfy the phase-2 design.
 
 ## Collector / cutover residuals (all named rows routed)
 

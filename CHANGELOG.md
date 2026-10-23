@@ -3,6 +3,32 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Historical secrets and session-identity residuals re-adjudicated (2026-10-23)
+
+Current source at local `414b7c18` already contains later fixes missing from
+the August Round-12 follow-up table: dirfd-pinned secret operations, custom
+socket sidecar isolation, explicit bridge/marker failure results, empty-key
+preservation, injected Settings socket/default test home, nil-navigation
+completion and favorite generation invalidation. Rechecked the call sites and
+ran the existing regressions before closing that summarized scope locally.
+Updated TODO/followups and the dated reconciliation; no production code changed.
+
+Validation: `EngramTests` selected App run passed 210 tests, 0 failures, exit 0
+(36 AI settings, 19 launcher, 32 Unix socket, 1 default DB home, 43 home/popover,
+39 scope and 40 transcript-find). Both `CFFIXED_USER_HOME` and
+`TEST_RUNNER_CFFIXED_USER_HOME` point to a temporary home under
+`/tmp/engram-leader-residuals-20261023/`; that directory holds the exact command,
+`app-residuals.log` and `app-residuals.xcresult`. These are fresh tests of
+existing fixes, not a new RED/GREEN implementation claim. No live Keychain,
+mounted-view/render, full-suite or hosted acceptance was performed.
+
+`session-detail-id-3` remains verification pending: transcript apply paths
+check cancellation and their tasks cancel on switch/disappear, but the
+existing predicate/source tests do not prove every delayed mounted-view
+interleaving. Do not claim it fixed or re-count the closed navigation/favorite
+subitems. Web audit actor propagation is next; its actor enum limitation must
+be handled along with the DTO boundary. No push, deployment or restart.
+
 ## Collector blocked roots retry with bounded backoff (2026-10-23)
 
 `CollectorRuntime` previously restarted a blocked bootstrap root on subsequent
