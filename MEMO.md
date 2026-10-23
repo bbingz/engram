@@ -4,6 +4,8 @@
 
 ### 2026-10-23
 
+- [修复] Web 项目 move/archive/undo/batch 的审计身份从登录会话贯穿到 IPC 与 migration log；共享口令模式记为 web-editor，拒绝浏览器伪造 actor，不同 actor 不能复用同一操作 ID 的缓存结果。无 schema 迁移，原生 CLI/MCP 默认行为保留。详见 `CHANGELOG.md`。
+- [验证] HTTP 8 个、服务 8 个预期断言先失败；修复后 Web/认证/IPC 60 项、服务/注册表 29 项、底层 batch/store 34 项通过，lint/invariants 通过。尚未推送或部署；别名没有现成审计存储，单独保留设计项，Web 限流与 endpoint/key 风险仍待核实。
 - [盘点] 发现 Round-12 台账漏记后续修复：密钥文件/保存结果/测试路径隔离、导航与收藏 generation 已有实现；核对当前调用链并通过隔离 home 下 210 项 App 测试后，本地关闭这些已描述范围，未重复改生产代码。转录 apply 的快速切换场景仍未验证，单独保留。下一项为 Web 审计 actor 透传。详见 `CHANGELOG.md`。
 - [修复] blocked-root 重试改为逐根单调时钟退避（1 秒起、最高 60 秒）；冷却期间不触发捕获空转，健康根与独立上传继续，扫描完成后重置、重启后立即尝试。该 followup 本地关闭。详见 `CHANGELOG.md`。
 - [验证] 先复现 24 个行为断言失败，再通过最终 87 项运行时测试；移除调度过滤的负对照确实失败，恢复后全绿。lint/invariants 通过。尚未推送或部署；权限恢复可能等待剩余退避时间，不能据此宣称 Daily CPU 达标。下一批核实现有安全/UI 残项。

@@ -115,6 +115,12 @@ actor WebAuthSessionStore {
         validSession(sessionToken: sessionToken)?.login
     }
 
+    /// Resolve editor attribution and authority from the same live session.
+    func writeActor(sessionToken: String) -> String? {
+        guard let session = validSession(sessionToken: sessionToken), session.canWrite else { return nil }
+        return session.login ?? "web-editor"
+    }
+
     private func validSession(sessionToken: String) -> Session? {
         let instant = monotonicNow()
         purgeExpired(at: instant)

@@ -3,6 +3,47 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Web project operations retain the authenticated audit actor (2026-10-23)
+
+RemoteServer previously dropped the editor identity; Service forced project
+move/archive/undo to mcp, while batch items wrote batch. Move, archive, undo
+and move-batch now derive attribution from the live editor session (bound
+Tailscale login or web-editor for credential mode), reject browser-supplied
+actor fields, and carry a bounded optional actor through capability-protected
+IPC. Older Web clients omitting actor receive web-editor. Native CLI/MCP actor
+parsing and native batch defaults remain unchanged.
+
+The native audit actor is now a bounded RawRepresentable value instead of a
+four-case enum. An explicit internal Web override reaches the existing
+migration-log TEXT field and each batch item; the same value participates in
+operation fingerprints so another actor cannot replay a cached operation ID.
+No schema migration, broader IPC command allowlist or historical-row rewrite.
+Updated the invariant, canonical ledgers and the phase-2 design addendum.
+
+**Validation.** HTTP RED: 8 missing-attribution assertions across the four
+routes in both auth modes. Service RED: 8 assertions covering ignored invalid
+actors, wrong stored actors and cross-actor replay. Final GREEN: 60 HTTP/auth/
+IPC tests (including forged later headers, browser actor rejection and local
+capability-token transport); 29 service/project registry/long-operation tests
+(including real temporary project move/archive/undo/batch and SQL audit
+readback); 34 Core batch/migration-store tests. All passed with 0 failures,
+exit 0. Service tests used an isolated fixed home. Lint passed with the
+existing 1 warning/40 infos; invariant/module-boundary/convention gates and
+final diff/link checks passed. Exact commands are in the xcodebuild logs;
+logs and xcresults are local-only under
+`/tmp/engram-leader-web-actor-20261023/` (http-red, service-red, service-green,
+http-green, core-green; plus lint/invariants logs).
+
+**Limits and remaining scope.** The older phase-2 design incorrectly assumed
+aliases already had an audit writer/actor field. Their history storage and
+retention remain a separate design item; the four project operations do not
+close all Web hardening. Credential throttle and endpoint/key reuse still need
+triage. Audit attribution is metadata, not isolation from another authorized
+editor or a trusted local capability holder. Deploy Service and RemoteServer
+together before claiming identity attribution on a host; an old Service may
+ignore the additive field. No full all-target suite, UI/render, hosted CI or
+production acceptance; no push, deployment, restart, Docker or live data write.
+
 ## Historical secrets and session-identity residuals re-adjudicated (2026-10-23)
 
 Current source at local `414b7c18` already contains later fixes missing from

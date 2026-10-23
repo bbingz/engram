@@ -25,9 +25,10 @@ make a closed item open again. Local baseline and live remote main were both
 | Collector fixture race/leak | Fixed locally | 85 CollectorRuntime tests plus the affected publication test passed; hosted flake recurrence not measured. |
 | `collector-blocked-root-backoff-1` | Fixed locally | Final 87 runtime tests passed after behavioral RED and scheduler negative control. Per-root 1–60 second monotonic retry preserves healthy-root progress and recovery/reset/restart; no real-host CPU claim. |
 | Round-12 secrets / live navigation / favorites | Existing fixes verified locally | 210 selected App tests passed with an isolated home; source and exact coverage in the reconciliation. Transcript apply concurrency remains a narrower verification item. |
+| Web project audit actor | Fixed locally for four project commands | HTTP/auth/IPC 60, service/registry 29 and native batch/store 34 tests passed after RED. Alias audit storage and other Web hardening remain separate; not deployed. |
 
 Remaining historical residuals require current repro before promotion;
-Web audit actor propagation and measured performance follow the bounded queue
+remaining Web hardening and measured performance follow the bounded queue
 in the reconciliation. Product choices stay in `roadmap.md`. Production changes,
 push/merge and releases require separate authorization.
 

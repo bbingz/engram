@@ -56,7 +56,7 @@ the selected local batch do not need repeated owner confirmation.
 | 4 | `collector-blocked-root-backoff-1` | Fixed locally; final 87 runtime tests passed after behavioral RED and scheduler negative control. Per-root monotonic backoff, capped at 60 seconds, preserves healthy-root progress and recovery. | Deterministic clock/recovery tests, healthy-root progress, bounded blocked attempts. |
 | 5 | Round-12 secrets cluster | Existing fixes verified locally for the summarized scope; part of the 210-test App GREEN below. No redundant production patch. | Filesystem/secret failure cases, empty-key policy and injected-home/socket routing. |
 | 6 | `session-detail-id-*` | Live-navigation/favorite residuals closed locally after current tests. Transcript apply (`-3`) remains verification pending; cancellation guards exist, but delayed mounted-view behavior is not proven. | Current predicate/source-wiring tests passed; a mounted-view delayed-result scenario is still needed for `-3`. |
-| 7 | `cutover-web-editor-hardening-1` | Split into credential-mode global throttle, endpoint/key reuse triage, and accepted identity-auth phase-2 audit actor propagation. | Verify threat/authority boundary; actor comes from server session, never browser body; IPC + Web tests. |
+| 7 | `cutover-web-editor-hardening-1` | Project-operation actor propagation fixed locally. Remaining: credential throttle, endpoint/key reuse triage and alias audit storage design. | HTTP/auth/IPC 60, service/registry 29 and native batch/store 34 passed. Session-derived actor, browser rejection and actor-aware replay are covered. |
 | 8 | Collector CPU work | One parent acceptance item, not separate counts for every hotspot. Publication, idle-turn, stuck-dirty and startup leads remain below. | Profile the changed path before tuning; retain CPU <=2% / RSS <=150 MiB real-host acceptance separately. |
 
 ## Completed local batch: blocked-root retry backoff
@@ -109,9 +109,27 @@ TodayWorkbenchScope 39 and TranscriptFind 40. No production code changed;
 there is no newly claimed RED. Logs, exact selectors and xcresult:
 `/tmp/engram-leader-residuals-20261023/app-{command.txt,residuals.log,residuals.xcresult}`
 (command file is `app-command.txt`). No mounted UI/render, hosted or live
-credential test was run. Next ready implementation is Web audit actor
-propagation; the current migration actor enum still admits only cli/mcp/
-swift-ui/batch, so DTO forwarding alone cannot satisfy the phase-2 design.
+credential test was run. The next batch implemented Web project audit actor propagation (below);
+the former fixed actor enum required a bounded identity value, not DTO
+forwarding alone.
+
+## Web project audit actor batch
+
+The [phase-2 addendum](../superpowers/specs/2026-10-23-web-project-audit-actor-addendum.md)
+records a current-source correction: alias add/remove have no audit-log writer
+or actor field, so their history/retention needs a separate design. This batch
+covers the four existing project audit paths only, with no schema migration.
+RemoteServer injects the bound editor identity (credential fallback web-editor)
+after browser-key validation, typed IPC carries it with the existing capability
+token, and Service writes it through the native pipeline/batch override. Actor
+is included in replay fingerprints. Native actor parsing/defaults stay intact.
+
+RED: 8 HTTP identity assertions, and 8 service assertions covering malformed
+actor decoding, audit readback and cross-actor replay. GREEN: 60 Web HTTP/auth/IPC tests, 29 service/project-registry tests and 34
+native batch/store tests passed. Lint and invariant gates also passed. Evidence: `/tmp/engram-leader-web-actor-20261023/`.
+No browser/render, hosted or production verification. Both RemoteServer and
+Service must be updated before claiming attribution on a host; an old Service
+may ignore the additive actor field. Existing historical rows are untouched.
 
 ## Collector / cutover residuals (all named rows routed)
 
@@ -132,7 +150,7 @@ swift-ui/batch, so DTO forwarding alone cannot satisfy the phase-2 design.
 | `collector-settings-write-flake-1` | Closed locally; hosted recurrence not claimed. |
 | `collector-test-fixture-leak-1` | Closed locally; no historical temp cleanup. |
 | `cutover-install-tooling-1` | P3 scripts/templates exist (#454); old claim of no tooling is stale. First real-host install/upgrade/rollback remains unverified. |
-| `cutover-web-editor-hardening-1` | Split triage/actor batch above; Tailscale mode does not prove credential-mode behavior safe. |
+| `cutover-web-editor-hardening-1` | Project actor batch above; credential throttle, endpoint/key reuse and alias audit design remain. Tailscale mode does not prove credential-mode behavior safe. |
 | `cutover-role-surface-1` | First batch passed locally; no deployment claim. |
 
 Additional cutover gates: configure and verify `webReaderURL` on each intended
@@ -260,7 +278,8 @@ not proof that every historical acceptance criterion was rerun.
 
 ### Specification inventory
 
-All 24 specifications were inventoried. Paired specs use the plan route above;
+All 24 baseline specifications were inventoried; this loop added the Web
+project-audit addendum below. Paired specs use the plan route above;
 a Draft/Accepted label alone neither opens nor closes an implementation task.
 
 | Specification | Routing |
@@ -284,7 +303,8 @@ a Draft/Accepted label alone neither opens nor closes an implementation task.
 | [2026-10-02-collector-replay-loss-design](../superpowers/specs/2026-10-02-collector-replay-loss-design.md) | Draft header is stale: #447/#448 recovery fixes exist; real-host reboot proof remains separate. |
 | [2026-10-02-collector-volume-identity-design](../superpowers/specs/2026-10-02-collector-volume-identity-design.md) | Draft header is stale: #447/#448 recovery fixes exist; real-host reboot proof remains separate. |
 | [2026-10-02-hq-local-collector-cutover-design](../superpowers/specs/2026-10-02-hq-local-collector-cutover-design.md) | Active host cutover R1-R10 and D1-D12; engineering/ops boundaries above. |
-| [2026-10-08-web-tailscale-identity-auth-design](../superpowers/specs/2026-10-08-web-tailscale-identity-auth-design.md) | Phase 1 implemented; phase 2 actor propagation remains selected for triage. |
+| [2026-10-08-web-tailscale-identity-auth-design](../superpowers/specs/2026-10-08-web-tailscale-identity-auth-design.md) | Phase 1 implemented; project actor propagation fixed locally; alias storage remains a design gap. |
+| [2026-10-23-web-project-audit-actor-addendum](../superpowers/specs/2026-10-23-web-project-audit-actor-addendum.md) | Added by this loop; current implementation scope, compatibility and acceptance contract. |
 | [2026-10-17-collector-native-epoch-reconcile-design](../superpowers/specs/2026-10-17-collector-native-epoch-reconcile-design.md) | Source implemented; epoch/operator/real-host residuals above. |
 | [2026-10-18-collector-epoch-rotation-and-root-scope-design](../superpowers/specs/2026-10-18-collector-epoch-rotation-and-root-scope-design.md) | Source implemented; epoch/operator/real-host residuals above. |
 | [2026-10-18-d7-legacy-local-origin-purge-design](../superpowers/specs/2026-10-18-d7-legacy-local-origin-purge-design.md) | Source implemented; epoch/operator/real-host residuals above. |

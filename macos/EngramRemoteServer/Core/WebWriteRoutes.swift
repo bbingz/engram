@@ -94,7 +94,10 @@ enum WebWriteRoutes {
         )
     }
 
-    static func mount<Context: RequestContext>(on router: Router<Context>, surface: Surface) {
+    static func mount<Context: RequestContext>(
+        on router: Router<Context>, surface: Surface,
+        boundary: WebRequestBoundary, sessions: WebAuthSessionStore
+    ) {
         router.post("/web/api/settings/aliases") { request, _ in
             try await mutate(request, keys: addKeys) { data in
                 try await surface.addAlias(try JSONDecoder().decode(EngramServiceWebAddAliasRequest.self, from: data))
@@ -208,37 +211,53 @@ enum WebWriteRoutes {
             }
         }
         router.post("/web/api/projects/move") { request, _ in
-            try await mutate(
+            guard let token = boundary.sessionToken(in: request),
+                  let actor = await sessions.writeActor(sessionToken: token) else {
+                return Response(status: .unauthorized)
+            }
+            return try await mutate(
                 request, required: moveKeys, allowed: moveKeys.union(moveOptionalKeys)
             ) { data in
-                try await surface.projectMove(try JSONDecoder().decode(EngramServiceWebProjectMoveRequest.self, from: data))
+                try await surface.projectMove(try JSONDecoder().decode(EngramServiceWebProjectMoveRequest.self, from: attributed(data, actor: actor)))
             }
         }
         router.post("/web/api/projects/archive") { request, _ in
-            try await mutate(
+            guard let token = boundary.sessionToken(in: request),
+                  let actor = await sessions.writeActor(sessionToken: token) else {
+                return Response(status: .unauthorized)
+            }
+            return try await mutate(
                 request, required: archiveKeys, allowed: archiveKeys.union(archiveOptionalKeys)
             ) { data in
                 try await surface.projectArchive(
-                    try JSONDecoder().decode(EngramServiceWebProjectArchiveRequest.self, from: data)
+                    try JSONDecoder().decode(EngramServiceWebProjectArchiveRequest.self, from: attributed(data, actor: actor))
                 )
             }
         }
         router.post("/web/api/projects/undo") { request, _ in
-            try await mutate(
+            guard let token = boundary.sessionToken(in: request),
+                  let actor = await sessions.writeActor(sessionToken: token) else {
+                return Response(status: .unauthorized)
+            }
+            return try await mutate(
                 request, required: undoKeys, allowed: undoKeys.union(undoOptionalKeys)
             ) { data in
-                try await surface.projectUndo(try JSONDecoder().decode(EngramServiceWebProjectUndoRequest.self, from: data))
+                try await surface.projectUndo(try JSONDecoder().decode(EngramServiceWebProjectUndoRequest.self, from: attributed(data, actor: actor)))
             }
         }
         router.post("/web/api/projects/move-batch") { request, _ in
-            try await mutate(
+            guard let token = boundary.sessionToken(in: request),
+                  let actor = await sessions.writeActor(sessionToken: token) else {
+                return Response(status: .unauthorized)
+            }
+            return try await mutate(
                 request,
                 required: batchKeys,
                 allowed: batchKeys.union(batchOptionalKeys),
                 maximumBodyBytes: maximumProjectBodyBytes
             ) { data in
                 try await surface.projectMoveBatch(
-                    try JSONDecoder().decode(EngramServiceWebProjectMoveBatchRequest.self, from: data)
+                    try JSONDecoder().decode(EngramServiceWebProjectMoveBatchRequest.self, from: attributed(data, actor: actor))
                 )
             }
         }
@@ -249,6 +268,15 @@ enum WebWriteRoutes {
                 )
             }
         }
+    }
+
+    /// Called only after the browser key allowlist has rejected an actor field.
+    private static func attributed(_ data: Data, actor: String) throws -> Data {
+        guard var body = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw EngramServiceWebWriteClientError.invalid
+        }
+        body["actor"] = try EngramServiceWebProjectValidation.auditActor(actor)
+        return try JSONSerialization.data(withJSONObject: body)
     }
 
     private struct ParentIdBody: Decodable {
