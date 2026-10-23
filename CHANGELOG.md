@@ -3,6 +3,31 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## UI harness residual narrowed to foreground acceptance (2026-10-23)
+
+Current-source review found isolated environment/test-mode configuration before
+fallible fixture setup and fail-fast policy at all 27 configure call sites. The
+old mcp-hermetic-1 wording overstated a missing policy; it now retains only the
+unproven foreground behavior. No production or harness code changed.
+
+A temporary missing-fixture test, using an isolated App bundle identifier and no
+actual app.launch call, built successfully but never executed: the XCUITest runner
+failed initialization with LocalAuthentication Code=-4, system authentication
+running. No authentication process was touched or immediate retry attempted.
+The four experimental files were verified against their HEAD backups and restored
+byte-for-byte. The negative control and normal foreground smoke were not run.
+
+After restoration, EngramTests/MCPActivationOnboardingTests source regressions
+testUITestLaunchesUseHermeticHomeAndSkipSettingsMutation_repro and
+testUITestConfigureFailsClosedBeforeReportingSetupFailure_repro passed (2 tests,
+zero failures). These prove source ordering/wiring only. Both fixed-home variables
+used `/tmp/engram-leader-ui-harness-20261023/home`; xcodebuild used the existing
+Engram-LeaderLoop-20261023 DerivedData, macOS destination and signing off.
+Evidence: `/tmp/engram-leader-ui-harness-20261023/`, failure-stop and source-policy
+logs/xcresults, original backups and temporary test source. Canonical followups
+and reconciliation updated. No full suite, hosted CI or production verification.
+Next independent batch adjudicates the current human keyword-search contract.
+
 ## Web alias mutations now commit bounded actor history atomically (2026-10-23)
 
 Completed the alias gap in identity-auth phase 2 under

@@ -255,8 +255,31 @@ No all-target, hosted, rendered-browser or production upgrade claim. Upgrade Ser
 before RemoteServer: old Service rejects actor on aliases; old RemoteServer with
 new Service works with web-editor attribution. Native alias and permanent audit
 history are explicitly outside this log. Credential throttle remains the accepted
-provenance/design residual. Next local item: current-source repro of the remaining
-foreground UI test-harness failure policy (`mcp-hermetic-1`), before product search.
+provenance/design residual. The following batch adjudicated the foreground UI
+test-harness failure policy (`mcp-hermetic-1`), before product search.
+
+## UI harness failure-policy adjudication
+
+Current `TestLaunchConfig.configure` installs isolated HOME/fixed-home, settings,
+secret paths and test mode before any fallible setup. All 27 configure call sites
+have `continueAfterFailure = false` in the test or its setup. The old claim that
+the suite still lacks fail-fast policy is stale; the helper uses XCTFail + return,
+so a caller's XCTest failure policy remains part of the behavioral contract.
+
+A temporary injected missing-fixture test used a distinct App bundle identifier
+and no actual app.launch statement. Xcode built it, but the UI runner failed to
+initialize with LocalAuthentication Code=-4, "System authentication is running."
+The test body never ran. This proves neither stop-before-launch nor continuation;
+the negative control and normal foreground smoke were not run. No authentication
+process was changed and no immediate retry was attempted. All four backed-up files
+were checked against HEAD and restored byte-for-byte; the worktree was then clean.
+
+After restoration, both existing `MCPActivationOnboardingTests` source-policy
+regressions passed in isolated fixed homes. They verify source ordering/wiring,
+not foreground behavior. Evidence: `/tmp/engram-leader-ui-harness-20261023/`,
+`failure-stop.{log,xcresult}`, `source-policy.{log,xcresult}` and original backups.
+The residual stays open only for foreground acceptance when the runner can start.
+Independent product-search development can continue without changing this policy.
 
 ## Collector / cutover residuals (all named rows routed)
 
@@ -301,7 +324,7 @@ a comparable quiet-state receipt. Neither is a current runtime measurement.
 | `live-session-scan-timeout-1` | Data path fixed historically; unlocked menu rendering acceptance remains. |
 | `startup-initial-scan-latency-1` | Historical Daily local-Service startup symptom; check whether that retired role still applies before optimizing or probing it. |
 | Project-move stale-break claim | TS reference-only crash recovery needs an ownership-safe delete design; do not weaken fail-closed locking. |
-| Round-12 `mcp-hermetic-1` | Foreground UI harness failure policy still needs current repro and UI test. |
+| Round-12 `mcp-hermetic-1` | Source policy present and two source tests passed; foreground failure-injection acceptance blocked before test execution by system authentication. Details above; no new product defect proven. |
 | Round-12 `live-export-terminal-*` | Warp cleanup and Terminal/iTerm/Ghostty cancellation need real terminal integration testing. |
 | Round-12 `workitem-localtime-1` / `xcodeproj-untracked-*` | Fixes are on the verified remote-main baseline (`00bb5809`); “local, not pushed” is stale. Tests are not rerun by a Git history check. |
 | Round-12 `r11-dropped-2` | Closed locally: production-router injected body failures, limits, auth ordering and storage non-mutation passed; historical-mapping negative control failed five expected assertions. Details above; real transport-disconnect/host verification remains unclaimed. |
