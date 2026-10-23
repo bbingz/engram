@@ -3,6 +3,37 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Legacy body error mapping verified through production routes (2026-10-23)
+
+Closed the local verification residual `r11-dropped-2` without a runtime patch:
+`EngramRemoteServerTests` now dispatches controlled asynchronous body streams
+through `EngramRemoteServerApp.buildRouter()` instead of inspecting source strings.
+Four tests cover partial failure (503), cumulative overflow (413), exact-limit
+success, and authentication/Origin rejection before any stream read. Failed bundle
+uploads leave both new keys absent and existing encrypted file bytes unchanged.
+MCP checks JSON-RPC error code/message/null ID, complete malformed JSON (400),
+and initialize at the exact 1 MiB boundary. Stores and tokens are temporary test
+fixtures; an EmbeddedChannel supplies request context without binding a listener.
+The existing live-socket initialization and other server tests remain in the suite.
+
+Negative control temporarily reinstated the historical catch-all 413 mapping in
+both body handlers: the two error tests failed five expected assertions. The file
+was restored byte-for-byte (SHA-256
+`7b2560e39c4bb41313e9a3984d2c9d5637639231a96797796c5bef499a2f5bdc`), then all 28
+EngramRemoteServerTests passed with zero failures. Lint and invariant/module/
+convention gates passed. Evidence: `/tmp/engram-leader-body-20261023/`, including
+`negative-control.{log,xcresult}`, `green-final.{log,xcresult}`, `lint.log`, and
+`invariants.log`. Both fixed-home variables point to its `home/`. Test command:
+`xcodebuild test -project macos/Engram.xcodeproj -scheme EngramRemoteServerCore
+-destination 'platform=macOS' -derivedDataPath
+/Users/bing/Library/Developer/Xcode/DerivedData/Engram-LeaderLoop-20261023
+CODE_SIGNING_ALLOWED=NO
+-only-testing:EngramRemoteServerCoreTests/EngramRemoteServerTests`.
+
+No actual network disconnect, hosted CI, all-target suite or production acceptance
+was exercised. Next local batch measures Cursor legacy observation cost using
+isolated synthetic fixtures; no current-host CPU claim or service restart.
+
 ## Transcript paging tasks retain ownership through session switches (2026-10-23)
 
 Mounted SessionDetailView verification narrowed `session-detail-id-3` to two

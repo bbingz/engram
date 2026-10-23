@@ -191,7 +191,26 @@ in the Debug dylib, not the Release executable (`build-receipt.json`). Evidence:
 `/tmp/engram-leader-transcript-20261023/`; details in CHANGELOG. No hosted or
 production acceptance, exhaustive UI stress or real-parser/clipboard end-to-end
 claim. `session-detail-id-3` closes locally for this reproduced/verified scope.
-Next independent item: `r11-dropped-2` transport-error mapping verification.
+The following batch completed `r11-dropped-2` transport-error mapping verification.
+
+## Completed local batch: legacy request-body error verification
+
+Replaced the source-string check with four production-router behavioral tests.
+Injected streams prove partial read errors return 503, accumulated oversize bodies
+return 413, and failed bundle uploads neither create blobs nor replace existing
+ciphertext. Exact-limit uploads and MCP initialize pass. MCP error envelopes
+separate transport failure, size failure and malformed complete JSON; auth/Origin
+refusals do not read the stream. The router, body collector and storage are real;
+only the inbound transport stream is controlled, with temporary stores/fake keys.
+
+Temporarily restoring the historical catch-all mapping failed five expected
+assertions in the two error tests. Restoring unchanged production source passed
+all 28 server tests. Lint and invariant/module/convention gates passed. Evidence:
+`/tmp/engram-leader-body-20261023/` (`negative-control`, `green-final`, lint and
+invariant logs/xcresults). No hosted/production or real socket-disconnect claim.
+`r11-dropped-2` closes locally. Next: measure the Cursor legacy observation path
+in isolated synthetic fixtures before selecting a collector performance change;
+quiet-host CPU/RSS acceptance remains separately authorized.
 
 ## Collector / cutover residuals (all named rows routed)
 
@@ -239,7 +258,7 @@ a comparable quiet-state receipt. Neither is a current runtime measurement.
 | Round-12 `mcp-hermetic-1` | Foreground UI harness failure policy still needs current repro and UI test. |
 | Round-12 `live-export-terminal-*` | Warp cleanup and Terminal/iTerm/Ghostty cancellation need real terminal integration testing. |
 | Round-12 `workitem-localtime-1` / `xcodeproj-untracked-*` | Fixes are on the verified remote-main baseline (`00bb5809`); “local, not pushed” is stale. Tests are not rerun by a Git history check. |
-| Round-12 `r11-dropped-2` | Current source already separates `NIOTooManyBytesError` →413 from generic body failure →503 on bundle PUT and MCP; bounded GET exists. `testLegacyBodyCollectionMapsOnlySizeErrorsTo413_repro` exists. Old defect text is stale; runtime transport injection is not claimed. |
+| Round-12 `r11-dropped-2` | Closed locally: production-router injected body failures, limits, auth ordering and storage non-mutation passed; historical-mapping negative control failed five expected assertions. Details above; real transport-disconnect/host verification remains unclaimed. |
 | `ALIAS-P2` | Conditional same-basename ghost removal; only reopen with a repro. OPS-ALIAS-001 is closed, not authorization to rewrite production aliases. |
 | Blind-audit A1–D1 | Old stacked-PR table is implementation history, not an open-PR queue. Only a newly reproduced residual is promoted; no current open implementation PR is hidden there. |
 | `ARCH-001` | A/B/C/D shipped. Full CoreRead pool/DTO migration remains structural investment. |

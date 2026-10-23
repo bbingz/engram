@@ -1,5 +1,10 @@
 import XCTest
 import CryptoKit
+import Hummingbird
+import HTTPTypes
+import Logging
+import NIOCore
+import NIOEmbedded
 @testable import EngramRemoteServerCore
 import EngramCoreWrite
 
@@ -30,6 +35,43 @@ private final class PortWaiter: @unchecked Sendable {
             }
         }
     }
+}
+
+private actor LegacyRequestStream {
+    enum Failure: Error { case disconnected }
+    private let chunks: [ByteBuffer]
+    private let fails: Bool
+    private(set) var reads = 0
+
+    init(chunks: [ByteBuffer], fails: Bool = false) {
+        self.chunks = chunks
+        self.fails = fails
+    }
+
+    func next() throws -> ByteBuffer? {
+        let index = reads
+        reads += 1
+        if index < chunks.count { return chunks[index] }
+        if fails { throw Failure.disconnected }
+        return nil
+    }
+}
+
+private actor LegacyResponseBytes {
+    private(set) var data = Data()
+    func append(_ buffer: ByteBuffer) { data.append(contentsOf: buffer.readableBytesView) }
+}
+
+private struct LegacyResponseWriter: ResponseBodyWriter {
+    let storage: LegacyResponseBytes
+    mutating func write(_ buffer: ByteBuffer) async throws { await storage.append(buffer) }
+    consuming func finish(_ trailingHeaders: HTTPFields?) async throws {}
+}
+
+private func legacyResponseData(_ response: Response) async throws -> Data {
+    let storage = LegacyResponseBytes()
+    try await response.body.write(LegacyResponseWriter(storage: storage))
+    return await storage.data
 }
 
 final class EngramRemoteServerTests: XCTestCase {
@@ -261,25 +303,122 @@ final class EngramRemoteServerTests: XCTestCase {
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 413)
     }
 
-    func testLegacyBodyCollectionMapsOnlySizeErrorsTo413_repro() throws {
-        let macosRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let source = try String(
-            contentsOf: macosRoot.appendingPathComponent("EngramRemoteServer/Core/EngramRemoteServerApp.swift"),
-            encoding: .utf8
-        )
-        let putStart = try XCTUnwrap(source.range(of: "router.put(\"/v1/bundles/:key\")"))
-        let putEnd = try XCTUnwrap(source.range(of: "router.delete(\"/v1/bundles/:key\")", range: putStart.upperBound..<source.endIndex))
-        let putBody = source[putStart.lowerBound..<putEnd.lowerBound]
-        XCTAssertTrue(putBody.contains("catch is NIOTooManyBytesError"))
-        XCTAssertTrue(putBody.contains("status: .serviceUnavailable"))
+    func testLegacyBundleBodyErrorsDoNotCreateOrReplaceBlobs_repro() async throws {
+        let (app, store) = try bodyCollectionApp()
+        let original = Data("original".utf8)
+        try store.put("existing.bundle", plaintext: original)
+        let before = try regularFileBytes(under: tempDir.appendingPathComponent("legacy"))
 
-        let mcpStart = try XCTUnwrap(source.range(of: "private static func handle(request: Request"))
-        let parseStart = try XCTUnwrap(source.range(of: "guard let parsed", range: mcpStart.upperBound..<source.endIndex))
-        let mcpBodyCollection = source[mcpStart.lowerBound..<parseStart.lowerBound]
-        XCTAssertTrue(mcpBodyCollection.contains("catch is NIOTooManyBytesError"))
-        XCTAssertTrue(mcpBodyCollection.contains("status: .serviceUnavailable"))
+        for key in ["new.bundle", "existing.bundle"] {
+            // Two individually legal chunks cross the limit only when accumulated.
+            for (chunks, failure, status) in [
+                (["part"], true, 503),
+                (["1234", "56789"], false, 413),
+            ] {
+                let body = LegacyRequestStream(chunks: chunks.map { ByteBuffer(string: $0) }, fails: failure)
+                let response = try await legacyResponse(app, method: .put, path: "/v1/bundles/\(key)", body: body)
+                XCTAssertEqual(response.status.code, status, key)
+                let reads = await body.reads
+                XCTAssertEqual(reads, 2, "The route must actually consume the stream")
+                XCTAssertFalse(try store.exists("new.bundle"))
+                XCTAssertEqual(try store.get("existing.bundle"), original)
+                XCTAssertEqual(try regularFileBytes(under: tempDir.appendingPathComponent("legacy")), before)
+            }
+        }
+
+        let complete = LegacyRequestStream(chunks: [ByteBuffer(string: "1234"), ByteBuffer(string: "5678")])
+        let response = try await legacyResponse(app, method: .put, path: "/v1/bundles/new.bundle", body: complete)
+        XCTAssertEqual(response.status.code, 201, "A complete body exactly at the limit remains valid")
+        XCTAssertEqual(try store.get("new.bundle"), Data("12345678".utf8))
+    }
+
+    func testLegacyMCPBodyCollectionMapsOnlySizeErrorsTo413_repro() async throws {
+        let (app, _) = try bodyCollectionApp()
+        let halfLimit = ByteBuffer(repeating: 0x20, count: 524_288)
+        let cases: [([ByteBuffer], Bool, Int, Int, String)] = [
+            ([ByteBuffer(string: #"{"jsonrpc":"2.0","#)], true, 503, -32603, "Request body unavailable"),
+            ([halfLimit, halfLimit, ByteBuffer(string: " ")], false, 413, -32600, "Request body too large"),
+            ([ByteBuffer(string: "{")], false, 400, -32700, "Parse error"),
+        ]
+        for (chunks, fails, status, code, message) in cases {
+            let stream = LegacyRequestStream(chunks: chunks, fails: fails)
+            let response = try await legacyResponse(app, method: .post, path: "/mcp", token: "mcp-token", body: stream)
+            XCTAssertEqual(response.status.code, status)
+            let data = try await legacyResponseData(response)
+            let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+            XCTAssertEqual(json["jsonrpc"] as? String, "2.0")
+            XCTAssertTrue(json["id"] is NSNull)
+            let error = try XCTUnwrap(json["error"] as? [String: Any])
+            XCTAssertEqual(error["code"] as? Int, code)
+            XCTAssertEqual(error["message"] as? String, message)
+            XCTAssertNil(json["result"])
+        }
+    }
+
+    func testLegacyMCPCompleteStreamAtLimitStillInitializes() async throws {
+        let (app, _) = try bodyCollectionApp()
+        let json = ByteBuffer(string: #"{"jsonrpc":"2.0","id":"complete","method":"initialize"}"#)
+        let stream = LegacyRequestStream(chunks: [
+            json, ByteBuffer(repeating: 0x20, count: 1_048_576 - json.readableBytes),
+        ])
+        let response = try await legacyResponse(app, method: .post, path: "/mcp", token: "mcp-token", body: stream)
+        XCTAssertEqual(response.status.code, 200)
+        let data = try await legacyResponseData(response)
+        let result = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(result["id"] as? String, "complete")
+        XCTAssertNotNil(result["result"] as? [String: Any])
+        XCTAssertNil(result["error"])
+    }
+
+    func testLegacyBodyIsNotReadBeforeAuthorizationAndOriginChecks() async throws {
+        let (app, store) = try bodyCollectionApp()
+        let cases: [(HTTPRequest.Method, String, String, String?, Int)] = [
+            (.put, "/v1/bundles/denied.bundle", "wrong-token", nil, 401),
+            (.post, "/mcp", "wrong-token", nil, 401),
+            (.post, "/mcp", "mcp-token", "https://untrusted.example", 403),
+        ]
+        for (method, path, token, origin, status) in cases {
+            let stream = LegacyRequestStream(chunks: [], fails: true)
+            let response = try await legacyResponse(app, method: method, path: path, token: token, origin: origin, body: stream)
+            XCTAssertEqual(response.status.code, status)
+            let reads = await stream.reads
+            XCTAssertEqual(reads, 0, "Rejected requests must not consume their body")
+        }
+        XCTAssertFalse(try store.exists("denied.bundle"))
+    }
+
+    private func bodyCollectionApp() throws -> (EngramRemoteServerApp, BlobStore) {
+        let key = SymmetricKey(size: .bits256)
+        let root = tempDir.appendingPathComponent("legacy")
+        let config = EngramRemoteServerConfig(
+            host: "127.0.0.1", port: 0, storeRoot: root,
+            bearerToken: "legacy-token", atRestKey: key, maxBundleBytes: 8,
+            archiveV2: EngramRemoteArchiveConfig(
+                serverID: "hq", root: tempDir.appendingPathComponent("archive"),
+                bearerToken: "archive-token", atRestKey: SymmetricKey(size: .bits256)
+            ),
+            mcp: EngramRemoteMCPConfig(bearerToken: "mcp-token")
+        )
+        return (try EngramRemoteServerApp(config: config), try BlobStore(root: root, key: key))
+    }
+
+    /// Dispatch through the production router with a controllable transport stream.
+    private func legacyResponse(
+        _ app: EngramRemoteServerApp, method: HTTPRequest.Method, path: String,
+        token: String = "legacy-token", origin: String? = nil, body: LegacyRequestStream
+    ) async throws -> Response {
+        var fields: HTTPFields = [.authorization: "Bearer \(token)"]
+        if let origin { fields[HTTPField.Name("Origin")!] = origin }
+        let request = Request(
+            head: HTTPRequest(method: method, scheme: "http", authority: "localhost", path: path, headerFields: fields),
+            body: RequestBody(asyncSequence: AsyncThrowingStream { try await body.next() })
+        )
+        let channel = EmbeddedChannel()
+        defer { _ = try? channel.finish() }
+        let context = BasicRequestContext(source: ApplicationRequestContextSource(
+            channel: channel, logger: Logger(label: "legacy-body-test")
+        ))
+        return try await app.buildRouter().buildResponder().respond(to: request, context: context)
     }
 
     // MCP retro F12: validates the legacy initialize handshake over a real bound socket.
