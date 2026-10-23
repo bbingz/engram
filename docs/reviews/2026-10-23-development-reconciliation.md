@@ -377,7 +377,9 @@ These are not 12 ready-to-code defects.
 
 1. Value score evolution, measured thresholds, and outcome/access signals.
 2. Human search beyond the all-term/CJK ranking batch and existing basic filters:
-   title/quality/recency weighting and value/lifecycle facets remain.
+   value-band filtering is now implemented locally (Service/offline, before
+   result and short-token candidate limits). Title/quality/recency weighting and
+   lifecycle facets remain. Receipt: `/tmp/engram-leader-value-filter-20261023/`.
 3. Tool-result normalization plus structured summary job.
 4. Value band UI now implemented locally in cards and Sessions table cells;
    `value_override` remains open. Reused existing <=35 / >=60 bands and shared

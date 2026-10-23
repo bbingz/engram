@@ -1,6 +1,24 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Any value" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Any value" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "所有价值" } }
+      }
+    },
+    "Not scored" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Not scored" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "未评分" } }
+      }
+    },
+    "Value" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Value" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "价值" } }
+      }
+    },
     "High value" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "High value" } },

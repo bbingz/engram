@@ -3,6 +3,30 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Filter human search by the existing session value bands (2026-10-23)
+
+Search's advanced filters now offer any/high/medium/low/not-scored values, with
+clear/reset and captured request state for Service and offline search. The shared
+SQL predicates reuse the badge thresholds (<=35, >=60), intersect existing filters
+before LIMIT and apply before both short-token candidate layouts' caps. Unknown
+filter values return no session hits; omitted/blank fields preserve prior behavior.
+Semantic/hybrid candidate filtering also uses the predicate; insight-library results
+have no session value band. No schema, scoring formula or Web/MCP UI change.
+
+RED: actual client/socket/dispatcher requests failed four expected assertions.
+GREEN: 193 App data/model/search tests and 66 Service tests passed, including
+boundary/NULL values, rank-before-limit, a 270-row short-token interference fixture
+in both layouts, and semantic/hybrid interference. Invariant/module/convention gates
+passed. Evidence: `/tmp/engram-leader-value-filter-20261023/` (red/app/service logs,
+xcresults and exact service-command.txt). Initial ImageRenderer picker screenshots
+were unsupported placeholders; final visual verification uses an offscreen AppKit
+host instead; the final 20 SearchOutcome tests passed and both English/Chinese
+menu screenshots were inspected (`render-final.xcresult`, `renders-final/`).
+Full-page interaction/VoiceOver, production-corpus latency, hosted CI
+and deployment remain unverified. Upgrade App and Service together: an old Service
+ignores the additive request field. Existing localization catalog duplicate keys
+were compared to HEAD; this batch adds none and leaves the pre-existing key intact.
+
 ## Show existing value bands in session cards and list rows (2026-10-23)
 
 Added a shared compact High/Medium/Low value badge to SessionCard and the Sessions

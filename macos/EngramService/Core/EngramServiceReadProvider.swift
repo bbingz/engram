@@ -1231,7 +1231,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     }
                     args.append(termMatches[index])
                 } else {
-                    ctes.append(try shortTokenHitsCTE(alias: alias, db: db))
+                    ctes.append(try shortTokenHitsCTE(alias: alias, db: db, valueBand: request.valueBand))
                     args.append("%\(CJKText.escapeLikePattern(token))%")
                     args.append(Self.shortQueryHitCap(limit: limit))
                 }
@@ -2788,8 +2788,9 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         max(256, min(limit * 32, 2_048))
     }
 
-    private func shortTokenHitsCTE(alias: String, db: GRDB.Database) throws -> String {
+    private func shortTokenHitsCTE(alias: String, db: GRDB.Database, valueBand: String?) throws -> String {
         let mapped = try tableExists("fts_map", db: db) && indexExists("idx_sessions_activity_time", db: db)
+        let valueFilter = SearchFilterPredicates.clauses(valueBand: valueBand).first?.sql
         if mapped {
             return """
                 \(alias)_hits AS MATERIALIZED (
@@ -2800,14 +2801,17 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     WHERE s.hidden_at IS NULL
                       AND (s.tier IS NULL OR s.tier != 'skip')
                       AND f.content LIKE ? ESCAPE '\\'
+                      AND \(valueFilter ?? "1 = 1")
                     LIMIT ?)
             """
         }
         return """
             \(alias)_hits AS MATERIALIZED (
-                SELECT rowid AS fts_rowid, session_id, 0.0 AS rank
+                SELECT sessions_fts.rowid AS fts_rowid, session_id, 0.0 AS rank
                 FROM sessions_fts
+                \(valueFilter == nil ? "" : "JOIN sessions s ON s.id = sessions_fts.session_id")
                 WHERE content LIKE ? ESCAPE '\\'
+                  AND \(valueFilter ?? "1 = 1")
                 LIMIT ?)
         """
     }
@@ -3058,7 +3062,8 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             sources: request.source.map { [$0] } ?? [],
             projects: request.project.map { [$0] } ?? [],
             origin: request.origin,
-            since: request.since
+            since: request.since,
+            valueBand: request.valueBand
         )
         for clause in clauses {
             parts.append("AND \(clause.sql)")

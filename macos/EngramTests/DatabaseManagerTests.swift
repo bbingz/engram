@@ -1311,6 +1311,51 @@ final class DatabaseManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testSearchValueBandsMatchBadgesAndApplyBeforeLimitAcrossReaders() async throws {
+        let scores: [(String, Int?)] = [
+            ("top", 100), ("high", 60), ("mid-high", 59), ("mid-low", 36),
+            ("low", 35), ("zero", 0), ("unknown", nil),
+        ]
+        let queue = try DatabaseQueue(path: dbPath)
+        for (index, entry) in scores.enumerated() {
+            try insertTestSession(at: dbPath, id: entry.0, startTime: "2026-05-0\(index + 1)T00:00:00Z")
+            try insertFTSContent(at: dbPath, sessionId: entry.0, content: "bandneedle AI")
+            try await queue.write { db in
+                try db.execute(sql: "UPDATE sessions SET quality_score = ? WHERE id = ?",
+                               arguments: [entry.1, entry.0])
+            }
+        }
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: dbPath)
+        let cases: [(String?, [String])] = [
+            (nil, scores.reversed().map(\.0)), ("high", ["high", "top"]),
+            ("medium", ["mid-low", "mid-high"]), ("low", ["zero", "low"]),
+            ("unknown", ["unknown"]), ("invalid", []),
+        ]
+        for (band, expected) in cases {
+            for query in ["bandneedle", "AI"] {
+                for limit in [1, 10] {
+                    let ids = Array(expected.prefix(limit))
+                    let local = try db.search(query: query, limit: limit, valueBand: band)
+                    XCTAssertEqual(local.map(\.id), ids, "plain \(query), \(String(describing: band))")
+                    if let band, band != "invalid" {
+                        XCTAssertTrue(local.allSatisfy { $0.valueBand.rawValue == band })
+                    }
+                    let snippets = try db.searchWithSnippets(query: query, limit: limit, valueBand: band)
+                    XCTAssertEqual(snippets.map(\.session.id), ids)
+                    let response = try await provider.search(.init(
+                        query: query, mode: "keyword", limit: limit, valueBand: band
+                    ))
+                    XCTAssertEqual(response.items.map(\.id), ids, "service \(query), \(String(describing: band))")
+                }
+            }
+        }
+        let combined = try db.search(query: "bandneedle", sources: ["codex"], valueBand: "high")
+        XCTAssertTrue(combined.isEmpty, "value filter must intersect existing filters")
+        let browse = try db.search(query: " ", valueBand: "high")
+        XCTAssertEqual(browse.map(\.id), ["high", "top"])
+    }
+
+    @MainActor
     func testKeywordRankingUsesEveryTermBeforeLimitAcrossReaders_repro() async throws {
         try insertTestSession(at: dbPath, id: "relevant", startTime: "2026-05-01T00:00:00Z")
         try insertTestSession(at: dbPath, id: "recent", startTime: "2026-05-02T00:00:00Z")
