@@ -369,7 +369,7 @@ a comparable quiet-state receipt. Neither is a current runtime measurement.
 ## Product roadmap reconciliation
 
 The historical table had 12 decision rows. One is already implemented
-(`ai_audit_log` body redaction); three are partly implemented (human search,
+(`ai_audit_log` body redaction); four are partly implemented (human search, value-band UI,
 plugin integration and Grok/Pi/provider work). Lifecycle 3.2 was parked in its source plan but
 missing from the table; it is now explicitly routed. The resulting table has
 13 rows: **12 open or conditional product families, 1 implemented family**.
@@ -379,7 +379,11 @@ These are not 12 ready-to-code defects.
 2. Human search beyond the all-term/CJK ranking batch and existing basic filters:
    title/quality/recency weighting and value/lifecycle facets remain.
 3. Tool-result normalization plus structured summary job.
-4. Value band UI and `value_override` (current Sessions UI is a table).
+4. Value band UI now implemented locally in cards and Sessions table cells;
+   `value_override` remains open. Reused existing <=35 / >=60 bands and shared
+   score function; 31 App/model/read/render tests plus two score tests passed.
+   Four bilingual light/dark component renders inspected; no full-page interaction
+   or production claim. Receipt: `/tmp/engram-leader-value-bands-20261023/`.
 5. Embedding-cosine insight supersession.
 6. Opt-in automatic insight extraction.
 7. Native sqlite-vec: conditional only on measured bottleneck and explicit

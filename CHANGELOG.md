@@ -3,6 +3,23 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Show existing value bands in session cards and list rows (2026-10-23)
+
+Added a shared compact High/Medium/Low value badge to SessionCard and the Sessions
+table title cell. Unknown scores show no badge; hover explains the activity-based
+estimate and accessibility labels include the score. English/Chinese strings use
+the existing catalog. Existing <=35 / >=60 thresholds and shared SessionQualityScore
+function are unchanged; user overrides remain roadmap work. SessionTableCell is
+internal so the render test exercises the actual row without production test hooks.
+
+Validation: 31 App model/read/render tests and two score golden/backfill tests passed
+with isolated fixed homes, signing off and Engram-LeaderLoop-20261023 DerivedData.
+Four ImageRenderer attachments (English/Chinese, light/dark) were exported and
+visually inspected for actual cards and 420-point table cells. Evidence:
+`/tmp/engram-leader-value-bands-20261023/` (app/score logs and xcresults, renders/).
+This additive UI batch has no claimed bug RED. No full-page interaction, live
+VoiceOver/tooltip, refreshed real-data distribution, hosted CI or deployment proof.
+
 ## Human keyword search ranks all terms and aligns offline CJK behavior (2026-10-23)
 
 Reconciled Lifecycle 3.4 against current source: Service already had FTS rank and

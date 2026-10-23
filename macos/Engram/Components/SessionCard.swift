@@ -17,6 +17,8 @@ struct SessionCard: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
 
+                SessionValueBadge(session: session)
+
                 Spacer()
 
                 if let project = session.project {
@@ -55,5 +57,34 @@ struct SessionCard: View {
             .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadius))
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// The existing search value bands, with a readable cue beyond color alone.
+struct SessionValueBadge: View {
+    let session: Session
+
+    private var title: LocalizedStringKey {
+        switch session.valueBand {
+        case .high: return "High value"
+        case .medium: return "Medium value"
+        case .low: return "Low value"
+        case .unknown: return ""
+        }
+    }
+
+    var body: some View {
+        if let score = session.qualityScore {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(session.valueBand == .high ? Theme.green : Theme.secondaryText)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Theme.surfaceHighlight, in: Capsule())
+                .fixedSize()
+                .help(Text("Estimated from session activity. Score: \(score)."))
+                .accessibilityLabel(Text(title) + Text(", score \(score)"))
+                .accessibilityIdentifier("session_valueBand")
+        }
     }
 }
