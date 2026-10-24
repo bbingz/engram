@@ -301,8 +301,16 @@ const expectedWildcardGuardBody = [
 ].join(' ');
 const expectedWebLogoutBody =
   'request, _ in await logout(request, boundary: boundary, sessions: sessions)';
-const expectedWebAliasDeleteBody =
-  'request, _ in try await mutate(request, keys: removeKeys) { data in try await surface.removeAlias(try JSONDecoder().decode(EngramServiceWebRemoveAliasRequest.self, from: data)) }';
+const expectedWebAliasDeleteBody = [
+  'request, _ in',
+  'guard let token = boundary.sessionToken(in: request),',
+  'let actor = await sessions.writeActor(sessionToken: token) else {',
+  'return Response(status: .unauthorized) }',
+  'return try await mutate(request, keys: removeKeys) { data in',
+  'try await surface.removeAlias(',
+  'try JSONDecoder().decode(EngramServiceWebRemoveAliasRequest.self, from: attributed(data, actor: actor))',
+  ') }',
+].join(' ');
 const expectedWebUnlinkDeleteBody =
   'request, context in try await mutate(request, keys: unlinkKeys) { _ in try await surface.unlink(try EngramServiceWebUnlinkRequest( sessionId: try pathSessionID(context.parameters.get("id")) )) }';
 const expectedWebSuggestionDeleteBody =

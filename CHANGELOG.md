@@ -2,6 +2,641 @@
 All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## Deploy the green PR 496 server and collector build (2026-10-24)
+
+Owner authorized deployment after CI passed. Rechecked exact PR head
+`fb9538a83f5eec95fab12af5cc5da9699ee80d25`: 14 successful checks; full UI and
+the smoke-failure reporter were conditionally skipped. PR remains Draft/open,
+unmerged. Release arm64 App (1.0.5, build 1779), Service, RemoteServer and
+Collector built successfully. App release verification and role package
+hash/layout/signature verification passed.
+
+Deployed HQ index Service (PID 37240), HQ receiver/Web (PID 37548), and Daily
+Collector (PID 98680). Each launch plist differs only in ProgramArguments[0];
+credentials, source roots and source authority remain intact. HQ status/search
+passed with real high/medium/low/unscored value filters; the additive alias audit
+table exists and FTS version remains 3. Both loopback and Tailscale HTTPS health
+returned `ok`; served JavaScript exactly matches the compiled source literal
+(SHA256 `48b4600994830eed6dcf9b9a324f83973a36017f0e690ac89cfd1d81bd2a5753`).
+Daily dry-run after stopping the old lock owner found zero affected native
+epochs. The new process stays on its first launch with no stderr growth;
+HQ/M1 acknowledgments advanced. At 09:44:50 UTC, after 2h56m uptime, all
+16/16 roots had converged with no recorded scan failure and no stderr growth.
+HQ and M1 each acknowledged 52,623 publications. The single snapshot was
+0.0% CPU / 77,104 KiB RSS; this does not prove the 30-minute CPU/RSS gate.
+
+Local App/legacy Service are **not upgraded**: system launchd denied an
+unprivileged restart; the administrator dialog timed out both initially and
+on the owner-requested continuation. No authenticated switch occurred. The old
+`cabeeb24-build1569` Service/PID 30392 is still running, its `current` link is
+restored, and `/Applications/Engram.app` is unchanged. New App is staged at
+`/Applications/Engram-fb9538a-stage.app`; paired Service at
+`~/.engram-service/releases/fb9538a-build1779`. The prepared
+`finish-local-deploy.py` in the backup directory resumes the paired update
+through macOS authentication. Its continuation attempt stopped at the
+180-second authentication timeout before any mutation. Readback at 09:48:19
+UTC confirms old PID 30392 and App build 1. The staged App has 62 files
+matching the verified Release bundle; its helper/frameworks match the staged
+paired Service. Installation and App runtime acceptance remain unverified.
+
+Persistent evidence and rollback root:
+`~/.engram-shadow-core-20260911/hq/state/deploy-fb9538a-20261024/`
+(`evidence/` holds CI, builds, package checks, IPC and runtime receipts).
+HQ index/local DB backups passed quick_check (39,879 / 60,119 sessions).
+Daily inventory/identity backups passed quick_check under the corresponding
+`daily/state/deploy-fb9538a-20261024/` directory. Old packages/plists remain;
+HQ `switch-agent.py ROLE --rollback` restores the old binary configuration.
+No data restore, rollback execution, business-write probe, live Keychain,
+foreground App UI, full UI suite or long-window performance acceptance is claimed.
+M1 replica and the separate legacy remote hub were not upgraded.
+
+
+## Align the archive safety gate with authenticated alias deletion (2026-10-24)
+
+PR #496's Node and macOS gate failures shared one stale exact-body allowlist:
+Web alias DELETE now validates the session actor and attributes the request.
+Updated that exact allowlist and its fixture, retaining path/file/count checks.
+Added rejection cases for an unverified actor, unattributed payload and extra
+archive deletion. No Swift runtime or authorization behavior changed.
+
+Validation: repository gate regression failed before the fix; all 65 gate tests
+then passed. Direct safety gate, Bash syntax, test typecheck and targeted Biome
+passed (after formatting). Evidence: `/tmp/engram-pr496-gate-fix-20261024/`.
+Hosted verification will run on the pushed fix; prior green Swift/UI/CodeQL
+results belong to `a4d9837`, not this new commit.
+
+## Close the local delivery batch before expanding scope (2026-10-23)
+
+After owner feedback on cycle time, bound this delivery at `b17783c9` (16 local
+commits since `5216ff3a`) and prepare it for review. Updated the canonical search
+row to include completed value filters. Cosine insight supersession remains a
+decision: synchronous save checks Web source visibility, while later embedding
+maintenance has no originating caller policy. No replacement code was added.
+
+Validation: clean implementation worktree, commit/diff readback, and
+`git diff --check 5216ff3a..HEAD` passed. Re-read the existing receipts: measurement
+6 tests, value-filter App 193 / Service 66 and final render 20 all passed; these
+were not rerun. Closeout changes are documentation only. Full all-target tests,
+hosted branch CI, foreground UI and production acceptance remain unverified.
+The existing reconciliation routes every plan and residual. PR publication,
+merge and deployment have not been authorized or performed.
+
+## Add read-only lifecycle storage and score measurements (2026-10-23)
+
+Added `scripts/db/measure-database.py --database PATH [--timeout SECONDS]` for
+Lifecycle 3.6/P0-6. Python standard library only; an explicit existing database is
+required. One read-only/query-only transaction includes committed WAL and emits
+aggregate JSON: page/free-page counts, per-object dbstat bytes, FTS page share
+(including custom indexes on shadow tables), tier session/FTS-row counts, orphan
+FTS rows, and non-skip score histogram/nearest-rank percentiles. NULL and invalid
+scores are separate; no transcript or session ID is emitted. Missing optional
+dbstat/FTS is explicit; failed/locked reads exit nonzero without partial JSON.
+No migration, checkpoint, optimize, default home lookup or threshold change.
+SQLite can create/use WAL coordination sidecars; directory byte invariance is
+only verified for the closed non-WAL fixture, not promised for arbitrary live WAL.
+
+Validation: six CLI tests passed (distribution/storage/custom-index accounting,
+empty/missing-FTS, open-writer committed WAL, missing DB/schema, argument bounds,
+exclusive-lock timeout). The non-WAL database bytes and directory entries stayed
+identical. A copied repository fixture produced 20 sessions, 18 FTS rows and
+106 pages; this is synthetic evidence, not a production measurement. Biome on the
+new TS test passed after formatting. Evidence:
+`/tmp/engram-leader-measurement-20261023/` (tests-final.log, fixture-report.json).
+No Swift runtime changed; no Xcode tests, production read or hosted CI was run.
+
+## Filter human search by the existing session value bands (2026-10-23)
+
+Search's advanced filters now offer any/high/medium/low/not-scored values, with
+clear/reset and captured request state for Service and offline search. The shared
+SQL predicates reuse the badge thresholds (<=35, >=60), intersect existing filters
+before LIMIT and apply before both short-token candidate layouts' caps. Unknown
+filter values return no session hits; omitted/blank fields preserve prior behavior.
+Semantic/hybrid candidate filtering also uses the predicate; insight-library results
+have no session value band. No schema, scoring formula or Web/MCP UI change.
+
+RED: actual client/socket/dispatcher requests failed four expected assertions.
+GREEN: 193 App data/model/search tests and 66 Service tests passed, including
+boundary/NULL values, rank-before-limit, a 270-row short-token interference fixture
+in both layouts, and semantic/hybrid interference. Invariant/module/convention gates
+passed. Evidence: `/tmp/engram-leader-value-filter-20261023/` (red/app/service logs,
+xcresults and exact service-command.txt). Initial ImageRenderer picker screenshots
+were unsupported placeholders; final visual verification uses an offscreen AppKit
+host instead; the final 20 SearchOutcome tests passed and both English/Chinese
+menu screenshots were inspected (`render-final.xcresult`, `renders-final/`).
+Full-page interaction/VoiceOver, production-corpus latency, hosted CI
+and deployment remain unverified. Upgrade App and Service together: an old Service
+ignores the additive request field. Existing localization catalog duplicate keys
+were compared to HEAD; this batch adds none and leaves the pre-existing key intact.
+
+## Show existing value bands in session cards and list rows (2026-10-23)
+
+Added a shared compact High/Medium/Low value badge to SessionCard and the Sessions
+table title cell. Unknown scores show no badge; hover explains the activity-based
+estimate and accessibility labels include the score. English/Chinese strings use
+the existing catalog. Existing <=35 / >=60 thresholds and shared SessionQualityScore
+function are unchanged; user overrides remain roadmap work. SessionTableCell is
+internal so the render test exercises the actual row without production test hooks.
+
+Validation: 31 App model/read/render tests and two score golden/backfill tests passed
+with isolated fixed homes, signing off and Engram-LeaderLoop-20261023 DerivedData.
+Four ImageRenderer attachments (English/Chinese, light/dark) were exported and
+visually inspected for actual cards and 420-point table cells. Evidence:
+`/tmp/engram-leader-value-bands-20261023/` (app/score logs and xcresults, renders/).
+This additive UI batch has no claimed bug RED. No full-page interaction, live
+VoiceOver/tooltip, refreshed real-data distribution, hosted CI or deployment proof.
+
+## Human keyword search ranks all terms and aligns offline CJK behavior (2026-10-23)
+
+Reconciled Lifecycle 3.4 against current source: Service already had FTS rank and
+CJK trigram matching, windowed highlights were shipped, and SearchPage already
+filtered by source/project/time/origin. Both Service and App local queries still
+used only the first term's rank. A query beginning with a short LIKE term lost
+all relevance ranking; App's separate all-CJK LIKE route also disagreed with Service.
+
+Under `docs/superpowers/specs/2026-10-23-keyword-ranking-design.md`, both readers
+sum each term's existing best-row rank in canonical token order, preserving
+session-level AND across messages. Start time descending and session ID ascending
+break ties before LIMIT and in Service's final projection. App search and
+searchWithSnippets now use the shared scalar-count trigram routing. Snippet order,
+Service's short-term candidate cap and existing visibility/filter boundaries stay.
+No schema change, index rebuild, new preference or dependency. Native MCP's separate
+ranking policy is outside this human-search change. Value/lifecycle facets and
+title/quality/recency weighting remain separate roadmap work.
+
+The initial test build caught a missing await in fixture setup, fixed before the
+behavioral experiment. RED: three shared-fixture App/Service regressions produced
+72 expected ordering failures. GREEN: 163 tests passed under EngramTests
+(DatabaseManagerTests, SearchModeTests, SearchOutcomeTests), plus 63 under
+EngramServiceCore (selected IPC search tests, SemanticSearchIntegrityTests,
+ServiceSearchInsightTests, WebSearchInsightProducerTests and four Web metadata
+admission tests). Zero failures. Tests cover six permutations of three terms,
+cross-message matching, relevance before LIMIT, recency/identity ties, short-first
+Latin/Chinese/Japanese/Korean queries, highlights, both FTS identity layouts,
+filters, SQL plan shape, busy handling and semantic fallback. Lint and invariant/
+module/convention gates passed; lint retains one existing warning and 40 infos.
+
+Evidence: `/tmp/engram-leader-keyword-ranking-20261023/`: ranking-red (compile),
+ranking-red-behavior, app-green and service-green logs/xcresults, exact Service
+selectors in service-command.txt, lint.log and invariants.log. Both fixed-home
+variables use that directory's home/; xcodebuild uses macOS, signing off and the
+existing Engram-LeaderLoop-20261023 DerivedData. Canonical roadmap/TODO,
+reconciliation, historical plan annotation, invariant and MEMO now agree.
+No all-target suite, UI render, hosted CI, production corpus latency/relevance
+measurement or deployment. Next: inspect existing value-score/band UI and access/
+outcome signals before defining the next bounded visibility improvement.
+
+## UI harness residual narrowed to foreground acceptance (2026-10-23)
+
+Current-source review found isolated environment/test-mode configuration before
+fallible fixture setup and fail-fast policy at all 27 configure call sites. The
+old mcp-hermetic-1 wording overstated a missing policy; it now retains only the
+unproven foreground behavior. No production or harness code changed.
+
+A temporary missing-fixture test, using an isolated App bundle identifier and no
+actual app.launch call, built successfully but never executed: the XCUITest runner
+failed initialization with LocalAuthentication Code=-4, system authentication
+running. No authentication process was touched or immediate retry attempted.
+The four experimental files were verified against their HEAD backups and restored
+byte-for-byte. The negative control and normal foreground smoke were not run.
+
+After restoration, EngramTests/MCPActivationOnboardingTests source regressions
+testUITestLaunchesUseHermeticHomeAndSkipSettingsMutation_repro and
+testUITestConfigureFailsClosedBeforeReportingSetupFailure_repro passed (2 tests,
+zero failures). These prove source ordering/wiring only. Both fixed-home variables
+used `/tmp/engram-leader-ui-harness-20261023/home`; xcodebuild used the existing
+Engram-LeaderLoop-20261023 DerivedData, macOS destination and signing off.
+Evidence: `/tmp/engram-leader-ui-harness-20261023/`, failure-stop and source-policy
+logs/xcresults, original backups and temporary test source. Canonical followups
+and reconciliation updated. No full suite, hosted CI or production verification.
+Next independent batch adjudicates the current human keyword-search contract.
+
+## Web alias mutations now commit bounded actor history atomically (2026-10-23)
+
+Completed the alias gap in identity-auth phase 2 under
+`docs/superpowers/specs/2026-10-23-web-alias-audit-design.md`. Web alias add/remove
+now takes optional validated actor metadata, injected by RemoteServer from the
+bound editor session after rejecting unknown browser body keys. Credential mode
+and older clients use web-editor; later identity headers cannot replace the actor.
+The real Service dispatcher admits the optional field through existing capability
+and writer-gate boundaries. Native alias normalization is unchanged.
+
+Swift's additive schema creates web_alias_audit_log with insertion ID, UTC time,
+action, actor and published alias/canonical identities. An actual exact-pair change
+and its audit row share one writer transaction. No-op/refused requests create no
+history. Audit insertion or retention failure rolls the entire business mutation
+back and returns the existing generic unavailable error. Keep the latest 10,000
+transitions by insertion ID, independent of clock rollback; no raw paths, request
+bodies, historical backfill or public audit endpoint. This is bounded local Web
+mutation history, not permanent auditing or coverage of native alias changes.
+User-data-only backup payloads do not include the diagnostic table; whole-database
+backups retain it. Existing alias data and prior project migration history stay
+intact.
+
+RED: 12 selected Service tests produced 20 failures, including four missing-table
+errors and 16 invalid-actor assertions; five HTTP tests produced four missing-actor
+assertions. GREEN: all 13 selected Service tests passed (12 WebAliasWriteTests plus
+CollectorWebDemoTests.testAliasEditorThroughHTTPAndServiceIPC), including actual
+HTTP -> Web client -> capability socket -> dispatcher -> SQLite readback, and a
+separate identity-actor socket/dispatcher test. The latter also verifies an audit
+failure becomes generic unavailable without deleting the alias. All 46 selected
+RemoteServer tests passed (alias HTTP 5, auth routes 28, project HTTP 4, write
+client 9), plus all 20 MigrationRunnerTests. SQLite trigger injection verifies
+add/remove audit rollback and prune rollback; 10,000 seeded rows prove insertion-
+ordered retention. Old and repeated migrations preserve business data/history.
+All passes had zero failures. Lint and invariant/module/convention gates passed.
+
+Evidence: `/tmp/engram-leader-alias-audit-20261023/`, with `service-red`, `http-red`,
+`service-green`, `http-green`, `migrations-green` logs and xcresults; `lint.log`
+and `invariants-final.log`. Both fixed-home variables point to its `home/`.
+Tests use EngramServiceCore, EngramRemoteServerCore and EngramCoreTests with the
+shared Engram-LeaderLoop-20261023 DerivedData, macOS destination and signing off.
+The new spec and invariant describe storage, retention, rollback and exact scope;
+canonical TODO/followups/reconciliation and the prior auth/addendum now agree.
+
+No all-target suite, hosted CI, browser rendering, production migration, restart,
+push or deployment. Upgrade Service before RemoteServer: old Service rejects the
+new actor key, while old RemoteServer/new Service uses web-editor. Rolling back
+Service alone can interrupt writes from the new RemoteServer; mixed-host behavior
+has not been accepted on a real host. Credential-mode global throttling remains
+its accepted provenance/design residual. Next local queue item: reproduce or
+adjudicate foreground UI harness failure policy (`mcp-hermetic-1`).
+
+## Measured Cursor observation cost reduced without weakening source checks (2026-10-23)
+
+Isolated profiling of `CollectorCursorLegacyOwnership.ownershipObservationPage`
+used a temporary XCTest method, synthetic workspace.json/database/WAL placeholders,
+Release optimization with testability enabled, and native arm64. There was no live
+source, database or running collector access. Three rounds of 50 pages per case
+measured process user+system CPU, excluding fixture creation. A five-second sample
+during an additional 2048-workspace/64-item loop found 699/3738 sampled stacks in
+SHA-256 digest hex formatting (`String(format:)`). The cryptographic hash itself
+was not the hotspot. `ArchiveV2Hash.sha256` now uses a fixed lowercase byte table
+and a 64-byte buffer. Existing directory enumeration, no-follow stat/open checks,
+observation cadence, ownership fingerprint input and SHA-256 algorithm remain.
+
+| Workspaces | Page size | Baseline CPU ms/page | Optimized CPU ms/page | Reduction |
+|---|---:|---:|---:|---:|
+| 64 | 1 | 0.298 | 0.248 | 16.8% |
+| 64 | 64 | 2.982 | 1.536 | 48.5% |
+| 512 | 1 | 1.017 | 0.970 | 4.6% |
+| 512 | 64 | 5.232 | 2.323 | 55.6% |
+| 2048 | 1 | 3.867 | 3.746 | 3.1% |
+| 2048 | 64 | 6.824 | 5.245 | 23.1% |
+
+Values are medians, not a whole-collector CPU claim. The 512/64 baseline varied
+3.49-6.37 ms across its rounds; its percentage is especially timing-sensitive.
+The stable 2048/64 rounds were 6.686-7.044 before and 5.242-5.255 after. The final
+sample contains zero digest-formatting stacks among 3764 samples. One-item pages
+still pay the full membership scan; this patch does not close collector CPU,
+modern-peer discovery or startup cost. Daily's comparable 30-minute CPU <=2% /
+RSS <=150 MiB acceptance remains open and separately authorized.
+
+Verification: 121 Collector tests passed (ownership 35, capture 6, privacy 80),
+plus 169 Core archive tests (model 48, catalog 46, legacy session 9, exact source
+capture 37, immutable CAS 29), all with zero failures. Fixed SHA-256 vectors now
+include leading zero bytes, binary 0...255 and a 65-byte input; expected values
+were independently checked with Python hashlib. Both profile test runs passed.
+The initial Release attempt failed before tests because testability was disabled;
+rerunning with `ENABLE_TESTABILITY=YES ONLY_ACTIVE_ARCH=YES` resolved that setup
+issue without changing project configuration. Lint and invariant/module/convention
+gates passed; the temporary benchmark method was removed byte-for-byte before
+final correctness tests. The persistent code diff is limited to the hash helper
+and its existing fixed-vector test.
+
+Evidence: `/tmp/engram-leader-cursor-perf-20261023/` contains `command.txt`,
+`benchmark-method.swift.txt`, `measurement-context.json`, `baseline-measured` and
+`optimized` logs/xcresults, both `.sample.txt` profiles, `comparison.json`, the
+baseline binary receipt, `collector-green` and `archive-green` logs/xcresults,
+`lint.log`, and `invariants.log`. The first failed build is `baseline.log`.
+Correctness uses schemes EngramCollectorCore and EngramCoreTests, the shared
+`Engram-LeaderLoop-20261023` DerivedData, signing disabled, and both fixed-home
+variables pointing to this evidence directory's `home/`. No hosted CI, all-target
+suite, actual collector CPU window, production rollout, push or restart.
+Next local batch: specify alias audit storage, transaction and retention semantics
+before implementing the remaining Web editor audit gap.
+
+## Legacy body error mapping verified through production routes (2026-10-23)
+
+Closed the local verification residual `r11-dropped-2` without a runtime patch:
+`EngramRemoteServerTests` now dispatches controlled asynchronous body streams
+through `EngramRemoteServerApp.buildRouter()` instead of inspecting source strings.
+Four tests cover partial failure (503), cumulative overflow (413), exact-limit
+success, and authentication/Origin rejection before any stream read. Failed bundle
+uploads leave both new keys absent and existing encrypted file bytes unchanged.
+MCP checks JSON-RPC error code/message/null ID, complete malformed JSON (400),
+and initialize at the exact 1 MiB boundary. Stores and tokens are temporary test
+fixtures; an EmbeddedChannel supplies request context without binding a listener.
+The existing live-socket initialization and other server tests remain in the suite.
+
+Negative control temporarily reinstated the historical catch-all 413 mapping in
+both body handlers: the two error tests failed five expected assertions. The file
+was restored byte-for-byte (SHA-256
+`7b2560e39c4bb41313e9a3984d2c9d5637639231a96797796c5bef499a2f5bdc`), then all 28
+EngramRemoteServerTests passed with zero failures. Lint and invariant/module/
+convention gates passed. Evidence: `/tmp/engram-leader-body-20261023/`, including
+`negative-control.{log,xcresult}`, `green-final.{log,xcresult}`, `lint.log`, and
+`invariants.log`. Both fixed-home variables point to its `home/`. Test command:
+`xcodebuild test -project macos/Engram.xcodeproj -scheme EngramRemoteServerCore
+-destination 'platform=macOS' -derivedDataPath
+/Users/bing/Library/Developer/Xcode/DerivedData/Engram-LeaderLoop-20261023
+CODE_SIGNING_ALLOWED=NO
+-only-testing:EngramRemoteServerCoreTests/EngramRemoteServerTests`.
+
+No actual network disconnect, hosted CI, all-target suite or production acceptance
+was exercised. Next local batch measures Cursor legacy observation cost using
+isolated synthetic fixtures; no current-host CPU claim or service restart.
+
+## Transcript paging tasks retain ownership through session switches (2026-10-23)
+
+Mounted SessionDetailView verification narrowed `session-detail-id-3` to two
+concrete paging races. A cancelled old page/all/copy task still ran an unconditional
+defer and cleared the next session's busy flag; another click then cancelled the
+valid new page and started a duplicate. Independently, two actions before the
+scheduled task began both passed the not-busy guard. Page/all/copy now set busy
+synchronously and own a fresh load token; only the owning task can clear busy or
+the stored task handle. Switch/disappear invalidates the token. Returning A-B-A
+cannot restore old ownership. Existing cancellation checks already prevented the
+tested stale initial success/error and indexed-message applications; those paths
+received verification rather than redundant production rewrites.
+
+Added instance-scoped DEBUG-only parse/build/copy hooks and a mounted NSHostingView
+regression using controlled non-cooperative continuations. The real view's State,
+task cancellation, indexing and page/copy actions run; fake transcripts, a mock
+service client and an explicit absent temporary DB path avoid live data. Clipboard
+output is captured by the test hook. Final tests read mounted State locations on
+demand: the initial snapshot observer lagged coalesced offscreen render passes and
+produced timeouts, including a same-frame onChange warning. Those failed runs are
+retained; they are not passed acceptance. No test hook is compiled into Release.
+The new test file was registered using the CI-pinned XcodeGen 2.45.4; initial PATH
+2.46.0 generation was replaced before final acceptance, leaving four project entries.
+
+Validation: baseline RED demonstrated both races; after stabilizing observation,
+all five mounted tests passed five iterations (25 executions). A negative control
+temporarily removed both fixes with the final harness and failed 17 expected
+assertions, including page/all/copy success/error and A-B-A. Restoring the fix then
+passed the final 72 tests: mounted switch 5, find 40, labels/copy 19, paging/timing 6,
+accessibility 2. All final passes had zero failures and exit 0. Lint passed with the
+existing 1 warning/40 infos; invariant/module-boundary/convention checks, Xcode
+project drift and diff checks passed. Exact commands, logs and xcresults are under
+`/tmp/engram-leader-transcript-20261023/`: `red-matrix`, `green-live-state`,
+`negative-control`, `green-final`, `lint-final.log`, `invariants-final.log`, and
+`xcodegen-drift.log`. Both fixed-home environment variables point to its `home/`.
+Release `xcodebuild build` (scheme Engram, CODE_SIGNING_ALLOWED=NO) also passed
+for arm64 and x86_64. The Debug dylib contains the test-hook symbols and the
+Release executable contains none; `build-receipt.json` records their paths,
+architectures and the Release executable SHA-256. Build log: `release-build.log`.
+All 77 local links in the touched canonical routing documents resolve.
+
+This closes the reproduced local transcript residual and the documented bounded
+interleavings, not every possible UI sequence or end-to-end parser/clipboard case.
+No production data, service restart, push, deploy or hosted CI. The next independent
+residual is `r11-dropped-2` transport-error mapping verification; performance and
+cutover/real-host receipts remain separate queue items.
+
+## Credential-mode throttle reconciled against its accepted scope (2026-10-23)
+
+Current source still shares five login attempts per minute across credential
+clients, including successful attempts. Fresh WebAuthSessionTests (19) and
+WebAuthRouteTests (28) passed, including concurrent limits, retry-window expiry,
+logout behavior and forged forwarding/identity headers. Evidence:
+`/tmp/engram-leader-web-endpoint-20261023/auth-adjudication.{log,xcresult}`.
+This confirms the limitation; it does not fix global-lockout availability.
+
+The accepted 2026-10-08 identity-auth design explicitly parks credential-mode
+per-client throttling. Credential routes currently have no trusted client-address
+contract and intentionally ignore identity/forwarded headers. Keep this as a
+deployment/auth design item: define trusted proxy/client provenance and a global
+guessing budget before partitioning it. No weakening of credential checks, new
+forwarded-header trust, auth-code change or host configuration change. The next
+independent verification item is delayed transcript completion during session
+switching; current cancellation checks and unguarded paging-task cleanup need a
+mounted-view reproducer before promoting a new defect.
+
+## Web AI endpoint changes cannot redirect saved credentials (2026-10-23)
+
+The Web AI editor could change a provider base URL while retaining the server's
+API key. The service writer now checks the proposed effective destinations
+under the existing settings-file lock and rejects the entire patch when any
+relevant credential exists or its absence cannot be established. The policy
+covers summary-to-embedding fallback, legacy title URLs, title-provider switches,
+disabled providers, settings markers/plaintext, environment keys, custom/default
+runtime sidecars and markerless Keychain items. Environment URL overrides do not
+permit staging a later credential redirect. Full URL/path changes are protected.
+Keychain inspection requests attributes with interaction disabled, never secret
+data; unsafe sidecars and indeterminate Keychain status fail closed. No credential
+migration, clearing, schema change or new configuration flag is introduced.
+
+Credential-free endpoint editing and unrelated model/prompt edits remain usable.
+A typed service rejection survives the real Web client/socket/dispatcher boundary,
+maps to HTTP 409, and leaves a correctable draft with an explicit not-saved message.
+Credential-bound endpoint changes require a local server settings operation.
+
+Validation: the behavioral RED reproduced an accepted redirect and changed file
+bytes (2 failing assertions); the UI RED reproduced the misleading uncertain-save
+message. GREEN: 26 Service tests (16 Web AI plus 10 secure writer), 24 RemoteServer
+tests (6 AI HTTP, 9 Web write client, 9 Web UI routes), and all 181 Web JS behavior
+tests passed. The service suite includes real capability-protected IPC and exact
+settings-byte readback. Security queries are injected; fixtures contain fake keys.
+Both fixed-home environment variables point to an isolated temporary directory.
+Lint passed after formatting the new test (existing 1 warning / 40 infos);
+invariant/module-boundary/convention gates and diff checks passed. Logs and exact
+xcodebuild invocations: `/tmp/engram-leader-web-endpoint-20261023/`
+(`service-red`, `service-green`, `http-green` logs/xcresults; `ui-red.log`,
+`ui-green.log`, `lint-final.log`, `invariants.log`). JS verifier:
+`npx vitest run tests/scripts/collector-web-ui.test.ts`.
+
+Scope: this protects Web configuration writes, not DNS/HTTP redirects or a trusted
+local administrator changing credentials concurrently. Locked/inaccessible secret
+stores can conservatively block legitimate endpoint edits. No live Keychain,
+outbound AI request, browser render, all-target suite, hosted CI or production
+acceptance. No push/deploy/restart. Credential login throttle and alias audit
+storage remain separate work; the continuous local-development goal remains active.
+
+## Web project audit actor accepted by the real service dispatcher (2026-10-23)
+
+A continuation check found a gap in the preceding actor batch: the typed Web
+client encoded actor and direct business-handler calls stored it, but the real
+Service dispatcher still rejected actor as an unknown payload key. The earlier
+123 passing tests verified the components separately and did not prove their
+composition. Added actor to the four project commands' optional IPC field
+allowlists; the HTTP body allowlists still reject browser-supplied actor.
+
+Upgraded the existing audit/replay regression to use the production Web write
+client, a real temporary UnixSocketServiceServer and EngramServiceCommandHandler
+before reading back the fixture migration_log. It exercises move, archive,
+undo, batch, cross-actor replay conflict and missing-actor compatibility.
+RED at `6d30437a`: the first real request failed with invalid before mutation.
+GREEN: all 6 WebProjectMigrationWriteTests plus 12 ProjectMoveLongOpIPCTests
+passed (18 total, 0 failures, exit 0). Lint and invariant gates passed. Evidence:
+`/tmp/engram-leader-web-dispatch-20261023/` (red/green logs and xcresults,
+lint/invariants logs). No new schema, production write, hosted check, push,
+deploy or restart. The original method-only green was insufficient evidence
+for the service-dispatch claim; this receipt supplies the missing boundary.
+
+## Web project operations retain the authenticated audit actor (2026-10-23)
+
+RemoteServer previously dropped the editor identity; Service forced project
+move/archive/undo to mcp, while batch items wrote batch. Move, archive, undo
+and move-batch now derive attribution from the live editor session (bound
+Tailscale login or web-editor for credential mode), reject browser-supplied
+actor fields, and carry a bounded optional actor through capability-protected
+IPC. Older Web clients omitting actor receive web-editor. Native CLI/MCP actor
+parsing and native batch defaults remain unchanged.
+
+The native audit actor is now a bounded RawRepresentable value instead of a
+four-case enum. An explicit internal Web override reaches the existing
+migration-log TEXT field and each batch item; the same value participates in
+operation fingerprints so another actor cannot replay a cached operation ID.
+No schema migration, broader IPC command allowlist or historical-row rewrite.
+Updated the invariant, canonical ledgers and the phase-2 design addendum.
+
+**Validation.** HTTP RED: 8 missing-attribution assertions across the four
+routes in both auth modes. Service RED: 8 assertions covering ignored invalid
+actors, wrong stored actors and cross-actor replay. Final GREEN: 60 HTTP/auth/
+IPC tests (including forged later headers, browser actor rejection and local
+capability-token transport); 29 service/project registry/long-operation tests
+(including real temporary project move/archive/undo/batch and SQL audit
+readback); 34 Core batch/migration-store tests. All passed with 0 failures,
+exit 0. Service tests used an isolated fixed home. Lint passed with the
+existing 1 warning/40 infos; invariant/module-boundary/convention gates and
+final diff/link checks passed. Exact commands are in the xcodebuild logs;
+logs and xcresults are local-only under
+`/tmp/engram-leader-web-actor-20261023/` (http-red, service-red, service-green,
+http-green, core-green; plus lint/invariants logs).
+
+**Limits and remaining scope.** The older phase-2 design incorrectly assumed
+aliases already had an audit writer/actor field. Their history storage and
+retention remain a separate design item; the four project operations do not
+close all Web hardening. Credential throttle and endpoint/key reuse still need
+triage. Audit attribution is metadata, not isolation from another authorized
+editor or a trusted local capability holder. Deploy Service and RemoteServer
+together before claiming identity attribution on a host; an old Service may
+ignore the additive field. No full all-target suite, UI/render, hosted CI or
+production acceptance; no push, deployment, restart, Docker or live data write.
+
+## Historical secrets and session-identity residuals re-adjudicated (2026-10-23)
+
+Current source at local `414b7c18` already contains later fixes missing from
+the August Round-12 follow-up table: dirfd-pinned secret operations, custom
+socket sidecar isolation, explicit bridge/marker failure results, empty-key
+preservation, injected Settings socket/default test home, nil-navigation
+completion and favorite generation invalidation. Rechecked the call sites and
+ran the existing regressions before closing that summarized scope locally.
+Updated TODO/followups and the dated reconciliation; no production code changed.
+
+Validation: `EngramTests` selected App run passed 210 tests, 0 failures, exit 0
+(36 AI settings, 19 launcher, 32 Unix socket, 1 default DB home, 43 home/popover,
+39 scope and 40 transcript-find). Both `CFFIXED_USER_HOME` and
+`TEST_RUNNER_CFFIXED_USER_HOME` point to a temporary home under
+`/tmp/engram-leader-residuals-20261023/`; that directory holds the exact command,
+`app-residuals.log` and `app-residuals.xcresult`. These are fresh tests of
+existing fixes, not a new RED/GREEN implementation claim. No live Keychain,
+mounted-view/render, full-suite or hosted acceptance was performed.
+
+`session-detail-id-3` remains verification pending: transcript apply paths
+check cancellation and their tasks cancel on switch/disappear, but the
+existing predicate/source tests do not prove every delayed mounted-view
+interleaving. Do not claim it fixed or re-count the closed navigation/favorite
+subitems. Web audit actor propagation is next; its actor enum limitation must
+be handled along with the DTO boundary. No push, deployment or restart.
+
+## Collector blocked roots retry with bounded backoff (2026-10-23)
+
+`CollectorRuntime` previously restarted a blocked bootstrap root on subsequent
+capture turns, repeatedly walking it and recording continuity loss. It now
+uses per-root monotonic delays of 1, 2, 4, 8, 16, 32 and at most 60 seconds.
+Cooling roots are excluded from listener restarts, inventory steps, new
+capture and scheduler samples; healthy roots and independent upload loops
+continue. Partial re-walk progress retains the delay, a completed scan resets
+it, and reopening the runtime retries immediately. No schema or settings
+format changed. Updated the invariant and closed
+`collector-blocked-root-backoff-1` locally in the canonical ledgers.
+
+**Validation.** Deterministic-clock regression first failed with 24 behavioral
+assertions (exit 65; an earlier scaffold compile error was corrected before
+this RED). Focused GREEN and the 87-test runtime suite passed. A negative
+control removing the cooling-root scheduler filter made the resident test
+fail with an extra capture turn. The filter was restored, then the final
+`EngramServiceCoreTests/CollectorRuntimeTests` run passed all 87 tests with
+0 failures (exit 0). Tests cover cap, wall-clock jumps, healthy-root two-replica
+ACKs, permission recovery, reset/restart and resident wake behavior.
+`npm run lint` passed with the existing 1 warning/40 infos;
+`bash scripts/check-invariants-ledger.sh` passed. Evidence is local-only in
+`/tmp/engram-leader-backoff-20261023/`: `red-behavior`, `negative-scheduler`,
+`green-final` logs/xcresults, plus lint/invariant logs. Xcode uses
+`Engram-LeaderLoop-20261023` under DerivedData, not `macos/build`.
+
+**Limits.** Newly readable blocked roots may wait the remaining cooldown
+(up to 60 seconds) plus scheduler/work latency. This does not establish the
+Daily CPU <=2% target. No all-target suite, UI/render or hosted checks were
+run for this batch; no push, deployment, restart, production write or Docker.
+Next local batch is current-source adjudication of historical secrets/UI
+residuals, followed by Web audit actor propagation.
+
+## Development queue reconciled; MCP role discovery and collector fixtures fixed (2026-10-23)
+
+Owner requested continuous development leadership. Work is isolated in
+`.worktrees/leader-loop-20261023` on `codex/leader-loop-20261023`, starting at
+local/live remote main `5216ff3a61202b4c113b1e20799a03ad7e7df706`.
+
+**Inventory.** `docs/reviews/2026-10-23-development-reconciliation.md` routes
+all 21 implementation plans, 24 specs, 27 root design documents and every
+nonterminal follow-up family. The 397 unchecked plan markers are historical
+procedural steps, not an outstanding-task count. Updated TODO/followups/roadmap
+and the review index; closed stale no-real-binary-gate/no-install-tooling text,
+reclassified Grok/Pi and SessionStart plugin work as partial, recognized the
+existing Swift AI audit writer/redaction, and restored the omitted lifecycle
+3.2 decision. Product ledger: 13 families, 12 open/conditional and 1 implemented.
+GitHub readback found 0 issues and 6 dependency PRs (#490–#495); baseline Tests
+39366050861 and CodeQL 39366050927 passed. Historical real-binary run
+39098816343 was rechecked successful, not rerun for this branch.
+
+**Batch 1.** `MCPToolRegistry.tools` now returns an empty catalog for collector,
+replica and invalid-settings roles before a database probe. Direct calls still
+provide role-unavailable guidance. Local/index/default roles keep all 27 tools
+and embedding-dependent search modes. Updated the persisted-role invariant
+and executable tests in both legacy and modern response formats.
+
+**Batch 2 (test infrastructure only).** `RuntimeFixture.writeSettings` now
+stages a complete sibling document and sets 0600 before atomic rename, avoiding
+both truncated JSON and temporary permission failures during runtime reload.
+The publication reservation test now defers fixture cleanup. No production
+collector behavior or existing temp directories were changed. The historical
+hosted flake was not independently reproduced this session; hosted recurrence
+is not proven eliminated by local success.
+
+**Validation (Xcode 26.4, Node 24.22.1).**
+
+- RED: `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramMCPTests
+  -destination 'platform=macOS' -derivedDataPath
+  /Users/bing/Library/Developer/Xcode/DerivedData/Engram-LeaderLoop-20261023
+  CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramMCPTests/EngramMCPExecutableTests/testRuntimeRoleDiscoveryOmitsUnavailableTools_repro`:
+  1 test failed with exactly 8 expected catalog assertions, exit 65.
+- GREEN: same command, selecting `EngramMCPTests/EngramMCPExecutableTests`:
+  215 tests passed, 0 failed, exit 0.
+- GREEN: same project/destination/DerivedData/signing, scheme
+  `EngramServiceCore`, selecting `CollectorRuntimeTests`,
+  `CollectorPublicationWorkerTests/testFreshOnlyReservationDoesNotReuseAnExistingCapture`
+  and `ServiceAIAuditRecordTests` under `EngramServiceCoreTests`:
+  94 tests passed (85 + 1 + 8), 0 failed, exit 0. AI audit tests provide fresh
+  evidence for the roadmap correction, including redaction and opt-in bodies.
+- `npm run lint`: exit 0, 1 existing warning and 40 infos; no autofix or
+  unrelated formatting changes. `bash scripts/check-invariants-ledger.sh`:
+  PASS, including registered Swift module-boundary and convention checks.
+- Reconciliation's 72 local Markdown links resolve; `git diff --check` passed.
+  Logs and xcresults are local-only under
+  `/tmp/engram-leader-loop-20261023/` (`mcp-role-red`, `mcp-role-green`,
+  `collector-fixtures-green`, plus `lint.log` and `invariants.log`).
+
+**Not run / boundary.** Full all-target tests, UI/render checks, hosted checks
+for this branch, current production readback and real-host CPU/cutover gates
+were not run. No push, merge, deployment, service restart, live database write,
+release, Docker or global-memory change. The main checkout's pre-existing
+untracked Grok workflow is preserved. No unattended scheduler was installed;
+the active conversation goal carries continuation. Next bounded work is
+blocked-root retry backoff, with current security/UI residual adjudication and
+Web actor propagation queued; measure collector CPU before further tuning.
 
 ## Web viewer polish deployed to the HQ receiver (2026-10-20)
 

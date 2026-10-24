@@ -103,8 +103,8 @@ struct Session: FetchableRecord, Decodable, Identifiable {
     /// non-skip; min 0 / max 74 / avg 42; scores cluster in 30–39): <=35 low,
     /// >=60 high — NOT 33/67-of-100, since scores top out near 74. nil → unknown.
     enum ValueBand: String { case high, medium, low, unknown }
-    static let valueBandLowMax = 35
-    static let valueBandHighMin = 60
+    static let valueBandLowMax = SearchFilterPredicates.valueBandLowMax
+    static let valueBandHighMin = SearchFilterPredicates.valueBandHighMin
     var valueBand: ValueBand {
         guard let score = qualityScore else { return .unknown }
         if score >= Self.valueBandHighMin { return .high }

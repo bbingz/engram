@@ -72,8 +72,8 @@ enum MCPToolRegistry {
     /// tools/list + argument validation surface. Search `mode` enum is gated by
     /// `SessionVectorSearchAvailability` on the given database path.
     static func tools(dbPath: String, runtimeRole: EngramRuntimeRole = .local) -> [MCPToolDefinition] {
-        let semanticUsable = runtimeRole.allowsLocalIndex
-            && FileManager.default.fileExists(atPath: dbPath)
+        guard runtimeRole.allowsLocalIndex else { return [] }
+        let semanticUsable = FileManager.default.fileExists(atPath: dbPath)
             && ((try? MCPDatabase(path: dbPath).vectorAvailabilityForAdvertising().isUsable) ?? false)
         return allToolDefinitions.compactMap { definition in
             guard !unavailableNativeProjectOperationTools.contains(definition.name) else {

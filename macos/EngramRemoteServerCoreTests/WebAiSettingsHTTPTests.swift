@@ -125,6 +125,21 @@ final class WebAiSettingsHTTPTests: XCTestCase {
         XCTAssertEqual(allowed.summaryPrompt, "Decisions\nNext steps")
     }
 
+    func testEndpointCredentialRejectionMapsToConflictWithoutLeakingSecrets() async throws {
+        try await withServer { server, recorder in
+            recorder.writeError = .aiEndpointRequiresLocalUpdate
+            let editor = try await Self.login(server, credential: Self.editor)
+            let response = try await server.request(
+                "POST", "/web/api/settings/ai",
+                headers: Self.headers + [("Cookie", editor)],
+                body: Data(#"{"aiBaseURL":"https://other.example/v1"}"#.utf8)
+            )
+            XCTAssertEqual(response.status, 409)
+            XCTAssertTrue(response.body.isEmpty)
+            XCTAssertEqual(recorder.patches.count, 1)
+        }
+    }
+
     private func withServer(
         editorCredential: String? = editor,
         failOnWrite: Bool = false,

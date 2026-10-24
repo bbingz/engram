@@ -102,12 +102,47 @@ final class WebAliasHTTPTests: XCTestCase {
         XCTAssertEqual(recorder.adds.count, 0)
     }
 
+    func testAliasActorIsBoundToSessionAndBrowserOverrideIsRejected_repro() async throws {
+        for identityMode in [false, true] {
+            let recorder = AliasRecorder()
+            try await withServer(write: recorder.surface(), identityMode: identityMode) { server in
+                let cookie: String
+                if identityMode {
+                    let login = try await server.request("POST", "/web/api/auth",
+                        headers: Self.writeHeaders + [("Tailscale-User-Login", "editor@example.com")],
+                        body: Data("{}".utf8))
+                    XCTAssertEqual(login.status, 204)
+                    cookie = try XCTUnwrap(login.header("set-cookie")?.split(separator: ";").first.map(String.init))
+                } else {
+                    cookie = try await Self.login(server, credential: Self.editor)
+                }
+                for method in ["POST", "DELETE"] {
+                    let headers = Self.writeHeaders + [("Cookie", cookie), ("Tailscale-User-Login", "forged@example.com")]
+                    let response = try await server.request(method, "/web/api/settings/aliases",
+                        headers: headers, body: Data(#"{"canonical":"new","alias":"old"}"#.utf8))
+                    XCTAssertEqual(response.status, 503) // recording surface has no backing service
+                    let encoded = try method == "POST"
+                        ? JSONEncoder().encode(XCTUnwrap(recorder.adds.last))
+                        : JSONEncoder().encode(XCTUnwrap(recorder.removes.last))
+                    let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+                    XCTAssertEqual(payload["actor"] as? String, identityMode ? "editor@example.com" : "web-editor")
+                    let rejected = try await server.request(method, "/web/api/settings/aliases", headers: headers,
+                        body: Data(#"{"canonical":"new","alias":"old","actor":"forged@example.com"}"#.utf8))
+                    XCTAssertEqual(rejected.status, 400)
+                }
+            }
+            XCTAssertEqual(recorder.adds.count, 1)
+            XCTAssertEqual(recorder.removes.count, 1)
+        }
+    }
+
     private func withServer(
         write: WebWriteRoutes.Surface,
+        identityMode: Bool = false,
         operation: (D4HTTPServer) async throws -> Void
     ) async throws {
         let app = try EngramRemoteServerApp(
-            config: config(),
+            config: config(identityMode: identityMode),
             webReadClientFactory: { _ in
                 WebReadRoutes.messagesOnly({ _ in throw EngramServiceWebReadClientError.unavailable })
             },
@@ -121,11 +156,13 @@ final class WebAliasHTTPTests: XCTestCase {
         try await server.stop()
     }
 
-    private func config() throws -> EngramRemoteServerConfig {
+    private func config(identityMode: Bool = false) throws -> EngramRemoteServerConfig {
         try EngramRemoteServerConfig(
             host: "127.0.0.1", port: 0, storeRoot: directory.appendingPathComponent("legacy"),
             bearerToken: "d4-bearer", atRestKey: SymmetricKey(data: Data(repeating: 1, count: 32)),
-            web: try EngramRemoteWebConfig(
+            web: try identityMode
+                ? EngramRemoteWebConfig(origin: Self.origin, tailscaleServeViewers: "reader@example.com", editors: "editor@example.com")
+                : EngramRemoteWebConfig(
                 origin: Self.origin, viewerCredential: Self.viewer,
                 serverBearerCredentials: ["d4-bearer"], editorCredential: Self.editor
             ),
@@ -160,7 +197,8 @@ private final class AliasRecorder: @unchecked Sendable {
             addAlias: { request in
                 if failOnCall { XCTFail("Write surface must not run") }
                 self.lock.lock(); self.addCalls.append(request); self.lock.unlock()
-                return try XCTUnwrap(self.addResult)
+                guard let result = self.addResult else { throw EngramServiceWebWriteClientError.unavailable }
+                return result
             },
             removeAlias: { request in
                 if failOnCall { XCTFail("Write surface must not run") }

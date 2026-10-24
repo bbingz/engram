@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import GRDB
 import XCTest
 import EngramCoreWrite
 @testable import EngramServiceCore
@@ -138,6 +139,86 @@ final class WebProjectMigrationWriteTests: XCTestCase {
             )
             ProjectMoveBatchCancelRegistry.shared.remove(operationId: nativeId)
             ProjectMoveBatchCancelRegistry.shared.remove(operationId: "web-project:\(operationId)")
+        }
+    }
+
+    func testWebProjectActorsReachAuditThroughRealIPCAndScopeReplay_repro() async throws {
+        try skipIfGitMissing()
+        try await withIsolatedFixedHome { home in
+            let paths = try makePaths()
+            defer { try? FileManager.default.removeItem(at: paths.database.deletingLastPathComponent()) }
+            try migrate(paths.database)
+            let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+            let handler = EngramServiceCommandHandler(writerGate: gate)
+            let socket = paths.runtime.appendingPathComponent("service.sock").path
+            let server = UnixSocketServiceServer(socketPath: socket) { request in await handler.handle(request) }
+            try server.start()
+            defer { server.stop() }
+            let client = try EngramServiceWebWriteClient(socketPath: socket)
+            let (src, dst) = try makeProjectPair(home: home, name: "audit-move")
+            let operationId = UUID().uuidString
+            var moveBody: [String: Any] = ["src": src, "dst": dst, "dry_run": false,
+                "operation_id": operationId, "actor": "editor@example.com"]
+            let moved = try await client.projectMove(
+                JSONDecoder().decode(EngramServiceWebProjectMoveRequest.self,
+                    from: JSONSerialization.data(withJSONObject: moveBody)))
+            XCTAssertEqual(moved.result.state, "committed")
+            moveBody["actor"] = "other@example.com"
+            do {
+                _ = try await client.projectMove(
+                    JSONDecoder().decode(EngramServiceWebProjectMoveRequest.self,
+                        from: JSONSerialization.data(withJSONObject: moveBody)))
+                XCTFail("a different actor must not receive the cached operation result")
+            } catch let error as EngramServiceWebWriteClientError {
+                guard case .project(let failure) = error else {
+                    return XCTFail("expected a Web operation conflict, got \(error)")
+                }
+                XCTAssertEqual(failure.category, "conflict")
+            }
+
+            let undoBody: [String: Any] = ["migration_id": moved.result.migrationId,
+                "operation_id": UUID().uuidString, "actor": "undo@example.com"]
+            let undone = try await client.projectUndo(
+                JSONDecoder().decode(EngramServiceWebProjectUndoRequest.self,
+                    from: JSONSerialization.data(withJSONObject: undoBody)))
+            XCTAssertEqual(undone.result.state, "committed")
+
+            let (archiveSrc, _) = try makeProjectPair(home: home, name: "audit-archive")
+            let archiveBody: [String: Any] = ["src": archiveSrc, "dry_run": false,
+                "operation_id": UUID().uuidString, "actor": "archive@example.com"]
+            let archived = try await client.projectArchive(
+                JSONDecoder().decode(EngramServiceWebProjectArchiveRequest.self,
+                    from: JSONSerialization.data(withJSONObject: archiveBody)))
+            XCTAssertEqual(archived.result.state, "committed")
+
+            let (batchSrc, batchDst) = try makeProjectPair(home: home, name: "audit-batch")
+            let yaml = String(decoding: try JSONSerialization.data(withJSONObject: ["version": 1,
+                "operations": [["src": batchSrc, "dst": batchDst]]]), as: UTF8.self)
+            let batchBody: [String: Any] = ["yaml": yaml, "dry_run": false,
+                "operation_id": UUID().uuidString, "actor": "batch@example.com"]
+            _ = try await client.projectMoveBatch(
+                JSONDecoder().decode(EngramServiceWebProjectMoveBatchRequest.self,
+                    from: JSONSerialization.data(withJSONObject: batchBody)))
+
+            let (legacySrc, legacyDst) = try makeProjectPair(home: home, name: "audit-legacy")
+            _ = try await client.projectMove(
+                EngramServiceWebProjectMoveRequest(src: legacySrc, dst: legacyDst,
+                    dryRun: false, operationId: UUID().uuidString))
+            let writer = try EngramDatabaseWriter(path: paths.database.path)
+            let actors = try writer.read { try String.fetchAll($0, sql: "SELECT actor FROM migration_log ORDER BY actor") }
+            XCTAssertEqual(actors, ["archive@example.com", "batch@example.com", "editor@example.com", "undo@example.com", "web-editor"])
+        }
+    }
+
+    func testWebProjectActorDecodingRejectsInvalidAttribution_repro() throws {
+        for actor in ["", "line\nbreak", "with space", "quote\"", "back\\slash", String(repeating: "x", count: 255)] {
+            let payload: [String: Any] = ["src": "/tmp/a", "dst": "/tmp/b", "dry_run": true,
+                "operation_id": UUID().uuidString, "actor": actor, "migration_id": "fixture", "yaml": "{}"]
+            let data = try JSONSerialization.data(withJSONObject: payload)
+            XCTAssertThrowsError(try JSONDecoder().decode(EngramServiceWebProjectMoveRequest.self, from: data), actor)
+            XCTAssertThrowsError(try JSONDecoder().decode(EngramServiceWebProjectArchiveRequest.self, from: data), actor)
+            XCTAssertThrowsError(try JSONDecoder().decode(EngramServiceWebProjectUndoRequest.self, from: data), actor)
+            XCTAssertThrowsError(try JSONDecoder().decode(EngramServiceWebProjectMoveBatchRequest.self, from: data), actor)
         }
     }
 

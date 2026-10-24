@@ -4080,8 +4080,13 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                 sql: "SELECT COUNT(*) FROM project_aliases WHERE alias = ? AND canonical = ?",
                 arguments: [request.alias, rawCanonical]
             ) ?? 0
+            let changed = after > before ? 1 : 0
+            if changed > 0 {
+                try Self.recordAliasAudit(db, action: "add", actor: request.actor,
+                                          alias: publishedAlias, canonical: request.canonical)
+            }
             return try EngramServiceWebAliasMutationResponse(
-                action: "add", alias: publishedAlias, canonical: request.canonical, changed: after > before ? 1 : 0
+                action: "add", alias: publishedAlias, canonical: request.canonical, changed: changed
             )
         }
     }
@@ -4111,10 +4116,30 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                 arguments: [pair.rawAlias, pair.rawCanonical]
             )
             let changed = db.changesCount > 0 ? 1 : 0
+            if changed > 0 {
+                try Self.recordAliasAudit(db, action: "remove", actor: request.actor,
+                                          alias: request.alias, canonical: request.canonical)
+            }
             return try EngramServiceWebAliasMutationResponse(
                 action: "remove", alias: request.alias, canonical: request.canonical, changed: changed
             )
         }
+    }
+
+    /// Called inside the alias mutation transaction; failure rolls back both.
+    /// Published keys avoid retaining removed raw paths in diagnostic history.
+    private static func recordAliasAudit(
+        _ db: Database, action: String, actor: String?, alias: String, canonical: String
+    ) throws {
+        try db.execute(
+            sql: "INSERT INTO web_alias_audit_log (action, actor, alias, canonical) VALUES (?, ?, ?, ?)",
+            arguments: [action, actor ?? "web-editor", alias, canonical]
+        )
+        // Bound local history by insertion order, independent of clock changes.
+        try db.execute(sql: """
+            DELETE FROM web_alias_audit_log
+            WHERE id < (SELECT id FROM web_alias_audit_log ORDER BY id DESC LIMIT 1 OFFSET 9999)
+            """)
     }
 
     /// Pins a cancelled metadata-read control so tests can prove alias writes
