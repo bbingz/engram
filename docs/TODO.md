@@ -3,6 +3,13 @@
 Confirmed engineering tasks. Product-level work belongs in `docs/roadmap.md`;
 verification and low-priority follow-ups belong in `docs/followups.md`.
 
+Deployment update (2026-10-24): PR #496 head `fb9538a` passed CI and is running
+on HQ index/Web and Daily Collector. App/legacy Service remain on their old
+versions pending macOS administrator authentication; build 1779 is staged.
+The dated local-only receipts below are historical; real-host acceptance is
+limited to the checks recorded in the newest CHANGELOG entry. Collector convergence is verified (16/16 roots); 30-minute CPU/RSS and App
+UI acceptance remain open.
+
 ## Current execution status (2026-10-23)
 
 Fresh routing: [development reconciliation](reviews/2026-10-23-development-reconciliation.md).

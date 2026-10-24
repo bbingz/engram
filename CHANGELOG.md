@@ -2,6 +2,54 @@
 All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## Deploy the green PR 496 server and collector build (2026-10-24)
+
+Owner authorized deployment after CI passed. Rechecked exact PR head
+`fb9538a83f5eec95fab12af5cc5da9699ee80d25`: 14 successful checks; full UI and
+the smoke-failure reporter were conditionally skipped. PR remains Draft/open,
+unmerged. Release arm64 App (1.0.5, build 1779), Service, RemoteServer and
+Collector built successfully. App release verification and role package
+hash/layout/signature verification passed.
+
+Deployed HQ index Service (PID 37240), HQ receiver/Web (PID 37548), and Daily
+Collector (PID 98680). Each launch plist differs only in ProgramArguments[0];
+credentials, source roots and source authority remain intact. HQ status/search
+passed with real high/medium/low/unscored value filters; the additive alias audit
+table exists and FTS version remains 3. Both loopback and Tailscale HTTPS health
+returned `ok`; served JavaScript exactly matches the compiled source literal
+(SHA256 `48b4600994830eed6dcf9b9a324f83973a36017f0e690ac89cfd1d81bd2a5753`).
+Daily dry-run after stopping the old lock owner found zero affected native
+epochs. The new process stays on its first launch with no stderr growth;
+HQ/M1 acknowledgments advanced. At 09:44:50 UTC, after 2h56m uptime, all
+16/16 roots had converged with no recorded scan failure and no stderr growth.
+HQ and M1 each acknowledged 52,623 publications. The single snapshot was
+0.0% CPU / 77,104 KiB RSS; this does not prove the 30-minute CPU/RSS gate.
+
+Local App/legacy Service are **not upgraded**: system launchd denied an
+unprivileged restart; the administrator dialog timed out both initially and
+on the owner-requested continuation. No authenticated switch occurred. The old
+`cabeeb24-build1569` Service/PID 30392 is still running, its `current` link is
+restored, and `/Applications/Engram.app` is unchanged. New App is staged at
+`/Applications/Engram-fb9538a-stage.app`; paired Service at
+`~/.engram-service/releases/fb9538a-build1779`. The prepared
+`finish-local-deploy.py` in the backup directory resumes the paired update
+through macOS authentication. Its continuation attempt stopped at the
+180-second authentication timeout before any mutation. Readback at 09:48:19
+UTC confirms old PID 30392 and App build 1. The staged App has 62 files
+matching the verified Release bundle; its helper/frameworks match the staged
+paired Service. Installation and App runtime acceptance remain unverified.
+
+Persistent evidence and rollback root:
+`~/.engram-shadow-core-20260911/hq/state/deploy-fb9538a-20261024/`
+(`evidence/` holds CI, builds, package checks, IPC and runtime receipts).
+HQ index/local DB backups passed quick_check (39,879 / 60,119 sessions).
+Daily inventory/identity backups passed quick_check under the corresponding
+`daily/state/deploy-fb9538a-20261024/` directory. Old packages/plists remain;
+HQ `switch-agent.py ROLE --rollback` restores the old binary configuration.
+No data restore, rollback execution, business-write probe, live Keychain,
+foreground App UI, full UI suite or long-window performance acceptance is claimed.
+M1 replica and the separate legacy remote hub were not upgraded.
+
 
 ## Align the archive safety gate with authenticated alias deletion (2026-10-24)
 

@@ -3,6 +3,12 @@
 Follow-ups are verification gaps, low-priority refactors, or items that need
 real data, UI exercise, or product confirmation before becoming TODOs.
 
+Deployment update (2026-10-24): green PR #496 head `fb9538a` is deployed to HQ
+index/Web and Daily Collector. Local App/legacy Service pairing is staged but
+blocked on macOS administrator authentication. This supersedes earlier
+"not pushed/deployed" notes only for those deployed roles; remaining business
+and long-window performance acceptance is unchanged. See CHANGELOG for receipts.
+
 ## Current routing (2026-10-23)
 
 [Full development reconciliation](reviews/2026-10-23-development-reconciliation.md)
