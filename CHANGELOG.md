@@ -2,6 +2,22 @@
 All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## Keep popover date-group identities unique (2026-10-25)
+
+Recent sessions are ordered by activity, so resumed sessions can produce date
+headings A/B/A. Using the heading as the SwiftUI identity duplicated IDs in the
+installed App's OSLog. Each nonempty group now uses its first session's stable ID;
+activity order, contiguous grouping and date labels are preserved. The grouping
+helper is static/internal so tests exercise the actual view's grouping path.
+
+The interleaved-date regression failed with 2 unique IDs for 3 groups before the
+fix. All 46 `HomePopoverActionsTests` then passed, including adjacent grouping,
+stable identity after inserting another group, and empty input. Tests ran with
+an isolated `CFFIXED_USER_HOME`/`TEST_RUNNER_CFFIXED_USER_HOME`. Evidence:
+`/tmp/engram-popover-id-20261025/{red,green}.log` and corresponding `.xcresult`
+bundles. Hosted CI and the App-only upgrade are pending for this change; the
+already deployed Service/Collector/Web source remains `fb9538a`.
+
 ## Complete the local App and Service upgrade (2026-10-25)
 
 Installed and launched `/Applications/Engram.app` 1.0.5 build 1779, with paired
