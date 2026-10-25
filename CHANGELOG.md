@@ -2,6 +2,46 @@
 All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## Complete the local App and Service upgrade (2026-10-25)
+
+Installed and launched `/Applications/Engram.app` 1.0.5 build 1779, with paired
+Service `~/.engram-service/releases/fb9538a-build1779-signed`. Runtime source
+remains green `fb9538a83f5eec95fab12af5cc5da9699ee80d25`; documentation head
+`1747748b` also had 14 successful checks and two conditional skips before this
+upgrade. App PID 21827 and system Service PID 21750 were independently read back.
+
+The first authenticated attempt exposed an ad-hoc/Hardened Runtime framework
+loading failure that static signature checks did not catch. Restored the old
+Service and verified IPC before continuing. HQ has no signing identity; used
+the existing Developer ID identity on Daily through a one-shot GUI launchd job
+(SSH signing lacked Keychain context). No key export, Keychain policy change or
+library-validation exception. The signing job exited 0 and was unloaded.
+Full Developer ID, secure timestamp and deep signature checks passed. Removing
+signatures from temporary verification copies proved all eight Mach-O files
+unchanged; 45 resources and 18 symlinks also matched the original build. A
+deliberately mismatched `--expected-home` then reached the Service's normal
+argument error before DB access, proving the framework load on HQ.
+
+After the second authenticated switch, real local IPC status and all value-band
+search probes passed. The installed helper matches the paired Service; the alias
+audit table exists and FTS version remains 3. App AX/screenshot verification
+confirmed its Welcome window (Step 1 of 5); onboarding and full search-page UI
+interaction were not performed. HQ health remained `ok`.
+
+Refreshed local backup passed quick_check with 60,128 rows. Startup logged 628
+deduplications; read-only backup/live comparison confirmed every missing row was
+already `skip`, had a duplicate path in the backup, and retained that path in the
+live DB. No non-skip rows disappeared. Old App, old Service, rejected ad-hoc
+candidate, refreshed DB backup and rollback instructions remain under the
+existing deploy backup root. No database restore or App rollback drill occurred.
+
+Evidence: `~/.engram-shadow-core-20260911/hq/state/deploy-fb9538a-20261024/evidence/`
+(`local-installed-20261025.json`, `signed-content-verification.json`,
+`verify-signed-app-20261025.log`, `signed-service-launch-smoke.json`,
+`local-ipc-after.jsonl`, `local-session-dedup-check.json`, `app-ui-smoke-20261025.json`).
+Runtime code was not changed. Full UI, live Keychain business flows and the
+separate 30-minute collector performance gate remain unverified.
+
 ## Deploy the green PR 496 server and collector build (2026-10-24)
 
 Owner authorized deployment after CI passed. Rechecked exact PR head

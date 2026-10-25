@@ -3,11 +3,12 @@
 Follow-ups are verification gaps, low-priority refactors, or items that need
 real data, UI exercise, or product confirmation before becoming TODOs.
 
-Deployment update (2026-10-24): green PR #496 head `fb9538a` is deployed to HQ
-index/Web and Daily Collector. Local App/legacy Service pairing is staged but
-blocked on macOS administrator authentication. This supersedes earlier
-"not pushed/deployed" notes only for those deployed roles; remaining business
-and long-window performance acceptance is unchanged. See CHANGELOG for receipts.
+Deployment update (2026-10-25): green PR #496 runtime source `fb9538a` is deployed
+to HQ index/Web, Daily Collector and the local App/paired Service (build 1779).
+The authentication/signing blocker is resolved. Local IPC filters and the App
+Welcome window passed bounded acceptance. This supersedes earlier
+"not pushed/deployed" notes for those roles; full UI, business-flow and long-window
+performance acceptance remain open. See CHANGELOG for receipts.
 
 ## Current routing (2026-10-23)
 
