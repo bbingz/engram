@@ -2,6 +2,39 @@
 All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## Stabilize timing-sensitive Swift CI regressions (2026-10-25)
+
+Hosted Tests run [40174238672](https://github.com/bbingz/engram/actions/runs/40174238672)
+on documentation head `db601947` failed two existing Swift assertions: the
+26 MiB digest regression used 10.197 seconds of wall time against a 10-second
+limit, and the launcher test assumed an ordinary sleeper would remain alive
+after SIGTERM. Both failure logs are retained; the previous green head does
+not establish success for this head.
+
+Only test code changed. The digest test now measures process CPU time while
+retaining its 10-second budget, full-size input and tail-marker assertions.
+The stop test uses the existing SIGTERM-ignoring fixture and waits for its
+readiness marker before asserting nonblocking return and retained ownership.
+A first local class run also reproduced five assertions in two restart tests
+whose fixture-start deadlines were only 250-500 ms. Those readiness deadlines
+are now 5 seconds; exit-ordering and elapsed-shutdown assertions are unchanged.
+
+All 70 related tests passed (10 digest and 60 launcher tests). Negative controls
+then disabled the ASCII search fast path and inserted a blocking stop wait:
+the tests correctly rejected 26.799 seconds of CPU work and 2.002 seconds of
+blocking, respectively. Both runtime files were restored byte for byte, and
+all 70 tests passed again. Tests used an isolated CFFIXED_USER_HOME and
+TEST_RUNNER_CFFIXED_USER_HOME with the Engram scheme and only the two test
+classes selected. Swift conventions, invariant ledger and whitespace checks
+passed. No product source, configuration or deployed binary changed.
+
+Durable logs, negative-control script and hashes:
+`~/.engram-shadow-core-20260911/hq/state/ci-timing-20261025/`.
+Local xcresult bundles remain under `/tmp/engram-ci-timing-20261025/`.
+The corrective head still requires hosted CI; the final exact-head result will
+be recorded on PR #496 without another documentation-only CI cycle. Active-write
+collector performance, full UI acceptance and rollback drills remain unverified.
+
 ## Verify Daily collector quiet-source resource targets (2026-10-25)
 
 Completed the previously missing 30-minute Daily resource window without
