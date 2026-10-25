@@ -4,9 +4,11 @@ Follow-ups are verification gaps, low-priority refactors, or items that need
 real data, UI exercise, or product confirmation before becoming TODOs.
 
 Deployment update (2026-10-25): green PR #496 runtime source `fb9538a` is deployed
-to HQ index/Web, Daily Collector and the local App/paired Service (build 1779).
-The authentication/signing blocker is resolved. Local IPC filters and the App
-Welcome window passed bounded acceptance. This supersedes earlier
+to HQ index/Web, Daily Collector and the local paired Service (build 1779).
+App-only follow-up `a9e59d50` passed all 14 executed CI checks and is installed
+as build 1782, fixing duplicate popover date-group IDs. The signing blocker is
+resolved; installed bytes, local IPC, HQ health and hosted UI smoke passed.
+Local screenshot access was unavailable. This supersedes earlier
 "not pushed/deployed" notes for those roles; full UI, business-flow and long-window
 performance acceptance remain open. See CHANGELOG for receipts.
 

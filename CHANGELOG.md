@@ -15,8 +15,36 @@ fix. All 46 `HomePopoverActionsTests` then passed, including adjacent grouping,
 stable identity after inserting another group, and empty input. Tests ran with
 an isolated `CFFIXED_USER_HOME`/`TEST_RUNNER_CFFIXED_USER_HOME`. Evidence:
 `/tmp/engram-popover-id-20261025/{red,green}.log` and corresponding `.xcresult`
-bundles. Hosted CI and the App-only upgrade are pending for this change; the
-already deployed Service/Collector/Web source remains `fb9538a`.
+bundles. Invariants and whitespace checks passed.
+
+Source `a9e59d50f3ef8563de956836ea9fe608ac0c2776` then passed all 14 executed
+hosted checks, with two conditional skips, and PR #496 was CLEAN. Receipts:
+[Tests / CI Gate](https://github.com/bbingz/engram/actions/runs/40169215543) and
+[CodeQL / CodeQL Gate](https://github.com/bbingz/engram/actions/runs/40169215501).
+Hosted UI smoke passed all 14 tests and screenshot comparison; full UI was
+conditionally skipped. An isolated real-App A/B/A fixture produced the warning
+on build 1779, then none during 92 seconds on the signed build 1782. Local window
+automation returned `cgWindowNotFound`; screenshot preflight found no Screen
+Recording permission, so no local visual acceptance is claimed.
+
+Installed `/Applications/Engram.app` 1.0.5 build 1782 at 07:02:31 UTC, after the
+exact-source gates completed. Release/arm64 was signed with the existing Daily
+Developer ID through a one-shot GUI job, which was unloaded. Full signature,
+runtime and timestamp verification passed; all eight code files matched the
+build after signature normalization. All 80 installed bundle entries matched
+the signed candidate. App PID 80289, installed version, local IPC status and both
+HQ health endpoints were read back successfully. Local Service PID 21750 and its
+`fb9538a-build1779-signed` release stayed unchanged; Collector/Web were not
+upgraded in this App-only follow-up. No duplicate-date warning appeared in the
+bounded post-install log check.
+
+Backup and evidence: `~/.engram-shadow-core-20260911/hq/state/deploy-a9e59d50-20261025/`
+contains `Engram-before.app` (build 1779), `ROLLBACK.md`, and `evidence/`
+(`installed.json`, `post-install.json`, `pr-before-install.json`,
+`signed-content-verification.json`, `ui-runtime-comparison.json`, test/build logs).
+No App rollback drill, complete local UI walkthrough or notarization was run.
+This was a local install, not a public release. The following closeout changes
+are documentation only; deployed App source remains `a9e59d50`.
 
 ## Complete the local App and Service upgrade (2026-10-25)
 
