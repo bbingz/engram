@@ -2,6 +2,51 @@
 All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## Verify Daily collector quiet-source resource targets (2026-10-25)
+
+Completed the previously missing 30-minute Daily resource window without
+changing code, configuration, source data or services. The deployed collector
+was `fb9538a83f5eec95fab12af5cc5da9699ee80d25`, PID 98680, SHA-256
+`38caff9c22b891b4e47034060632b51c2482e567a516bf158ca9a8c3084fcd5b`, with its
+existing 10,000 ms poll interval on the arm64 Daily MacBookPro18,4.
+
+The 07:16-07:46 UTC window contains 61 samples over 1800.000 monotonic seconds.
+Independent recomputation gives 34.57 CPU seconds, mean one-core CPU **1.921%**
+(target <=2%, PASS) and maximum sampled RSS **58.5 MiB** (target <=150 MiB,
+PASS). All 16 roots were converged at every sample; requested/completed revisions,
+PID/start time, binary hash and log sizes stayed unchanged. No active scan was
+observed. Maximum sampling gap was 30.023 seconds. The 30-second interval CPU
+range was 1.133-2.733%, median 1.917%; 37/60 intervals were <=2%. The gate uses
+the whole-window average, not a claim that every interval met the target.
+
+This is a quiet-source receipt: no root revision changes and no new publication
+ACKs occurred. It closes the missing steady-state window, not active-write or
+startup performance. It does not isolate the contribution of any one earlier
+optimization or supersede historical busy-workload failures. Margin below the
+CPU target is small; the next performance acceptance is a representative active
+source workload, with profiling only if measurements justify a code change.
+
+Read-only inventory checks found 603 pending publications per replica, all
+`privacyWithheld`; no transport-error backlog was found in that snapshot. The
+275 dirty locators remain: 14 previously captured Codex files are now absent,
+6 uncaptured Kimi files are empty, and 255 Copilot files are present/nonempty
+but their deferred entrypoint cause remains unverified. No transcripts or
+credential files were read, and no records were cleared to obtain the result.
+
+Evidence: `~/.engram-shadow-core-20260911/hq/state/collector-resource-20261025/`
+contains `samples.jsonl`, `verified-result.json`, observer/recomputation helpers,
+`inventory-details.json`, `runtime-settings.json`, and `sha256.json`. The observer
+completed exit 0; it used `ps`, query-only SQLite, file sizes and binary hashes,
+without process attachment or restarts. No new code tests or deployment were
+needed for this acceptance-only change. Full UI and per-source retirement remain
+outside this result.
+
+Also refreshed the previous delivery: App build 1782/PID 80289 and local Service
+PID 21750 were live; local IPC and both HQ health endpoints passed. Documentation
+head `148bfbb5ecd756dfdbafb56163b79fd0b3369736` reached 14 successful hosted checks,
+two conditional skips and CLEAN. PR #496 remains Draft/unmerged. The new receipt
+is documentation only and does not change any deployed runtime source.
+
 ## Keep popover date-group identities unique (2026-10-25)
 
 Recent sessions are ordered by activity, so resumed sessions can produce date

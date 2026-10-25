@@ -10,8 +10,9 @@ installed as Developer ID build 1782, fixing duplicate popover date-group IDs.
 Local IPC and HQ health passed; hosted UI smoke passed 14 tests and screenshot
 comparison. Full App UI remains unverified.
 The dated local-only receipts below are historical; real-host acceptance is
-limited to the checks recorded in CHANGELOG. Collector convergence was verified
-(16/16 roots); 30-minute CPU/RSS and full App UI acceptance remain open.
+limited to the checks recorded in CHANGELOG. Collector quiet-source acceptance
+passed on 2026-10-25: 61 samples/30 minutes, CPU 1.921%, RSS 58.5 MiB, 16/16 roots
+converged throughout. Active-write/startup performance and full App UI remain open.
 
 ## Current execution status (2026-10-23)
 
@@ -22,7 +23,7 @@ make a closed item open again. Local baseline and live remote main were both
 
 | Item | Current status | Remaining verifier |
 |---|---|---|
-| Collector CPU | Open; local digest-formatting optimization verified by isolated profiling | Comparable 30-minute Daily window: CPU <=2%, RSS <=150 MiB. Synthetic 2048-workspace/64-item observation CPU fell 23.1%; no whole-process or real-host acceptance claim. Details in CHANGELOG and `collector-idle-turn-cost-1`. |
+| Collector CPU | Quiet-source 30-minute window passed on deployed `fb9538a`; active-write/startup acceptance remains open | 61 samples over 1800 s: mean CPU 1.921%, max RSS 58.5 MiB, all 16 roots converged and no new publications. Small CPU margin; next measure a representative active-source workload. Details in CHANGELOG and `collector-idle-turn-cost-1`. |
 | W4.1 alias reconciliation | Closed, superseded by D7(c)/D9 | Reopen only as a separately scoped old-DB user-state import. |
 | W4.5 old-receipt bootstrap | Closed, owner won't-do | Preserve retained old DB/archive; no automatic reimplementation. |
 | W4.7 epoch operator command | Implemented | Authorized HQ binary/CLI readback and real recovery; authority-file runbook remains. |
@@ -105,6 +106,11 @@ authorizes host changes.
   The comparable quiet-host 30-minute window (CPU <= 2%, RSS <= 150 MiB) still
   needs to be taken once that workload ends; record it here and in
   `CHANGELOG.md`.
+  2026-10-25: the missing quiet-source window now passed on deployed `fb9538a`,
+  PID 98680, unchanged 10 s poll: 07:16-07:46Z, 61 samples/1800 s, CPU 1.921%,
+  max RSS 58.5 MiB, all 16 roots converged throughout, no root revision changes
+  or new ACKs. This closes the quiet-source verifier only; active-write/startup
+  acceptance remains open. Evidence in CHANGELOG and the retirement checklist.
 - **Alias reconciliation (plan W4 item 1, design section 4).** Not started. The
   committer refuses any occupied proposed ID, so pre-cutover local rows, their
   insights and parent links stay in the local-ID namespace and are not visible
