@@ -1,8 +1,31 @@
 # Collector source-retirement checklist
 
-## Current status (2026-10-02)
+## Resource acceptance update (2026-10-25)
 
-- The newest dated entry in this file is 2026-09-13. Nothing in the repo records
+The missing quiet-source 30-minute window passed on the deployed Daily
+`collector-fb9538a-20261024` (PID 98680, unchanged 10-second poll). Between
+07:16 and 07:46 UTC, 61 samples covered 1800.000 monotonic seconds: 34.57 CPU
+seconds / 1800 seconds = **1.921%** of one core (<=2%, PASS), maximum sampled
+RSS **58.5 MiB** (<=150 MiB, PASS). Independent recomputation checked all samples,
+the stable process start/binary hash, and a maximum sample gap of 30.023 seconds.
+
+All 16 roots were converged throughout; no requested-revision changes, active
+scan observations, new publication ACKs or log growth occurred. This supersedes
+the missing quiet-window receipt below, without overturning historical active
+workload failures. The 30-second CPU intervals ranged 1.133-2.733%; the acceptance
+metric is the whole-window average. Active-write and startup costs, the small
+CPU margin and per-source retirement verification remain separate follow-ups.
+
+Each replica retained 603 privacy-withheld pending publications. Dirty locators
+remained 275; no queue/data cleanup was performed. No source transcript or
+credential reads, process attachment, configuration change or service restart.
+Evidence: `~/.engram-shadow-core-20260911/hq/state/collector-resource-20261025/`
+(`samples.jsonl`, `verified-result.json`, metadata summaries and hashes).
+Full narrative and next verifier: `CHANGELOG.md` 2026-10-25.
+
+## Historical status (2026-10-02)
+
+- At this reconciliation, the newest dated entry was 2026-09-13. No repo entry recorded
   the terminal result of resource observer 7119 or append wrapper 58055, or a
   resumed acceptance pass, so their outcome is unknown here.
 - PR #446 merged as `3859f788`; HQ has run the r18 index-role Service and

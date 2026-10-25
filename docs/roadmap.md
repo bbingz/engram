@@ -52,6 +52,15 @@ correctly because `PopoverUsageSection` remains gated on real usage data.
 
 ## Current roadmap
 
+**Reconciled 2026-10-23:** see the [development inventory](reviews/2026-10-23-development-reconciliation.md)
+for all plan/spec routes and the local development loop. The former 12-row
+product table now has 13 rows: 12 open/conditional families and one already
+implemented audit family; lifecycle 3.2 was missing and is restored below.
+Grok/Pi and the plugin SessionStart hook are already present. P2/P3 and the
+real-binary gate are implemented; alias/bootstrap were closed by owner on
+October 18. Dated cutover descriptions below are history, not fresh runtime
+measurements or authorization for host changes.
+
 ### Collector / central index / Web cutover — open decisions (added 2026-10-02)
 
 PR #446 merged as `3859f788`; HQ has run the r18 index-role Service and
@@ -126,32 +135,30 @@ not scheduled engineering work.
   data, secrets, client settings, or public release channel. Exact hashes,
   probes, warm-up behavior, and rollback handles are in the runbook.
 
-## Decision pending (2026-07-09 plan-completion audit)
+## Product decision ledger (reconciled 2026-10-23)
 
-**Engineering zero ≠ roadmap zero (2026-07-11).** Wave 8 + Round 4 docs closed
-the Wave 7 defect ledger (43 terminal confirmed) and removed its open
-engineering TODO/follow-ups. The public release baseline selected later is now
-complete; the **12 rows below remain owner decisions** and are intentionally
-**not** implemented, scheduled, or mislabeled as engineering defects.
-
-Large product-decision items the audit confirmed **not done** and deliberately
-**not** implemented in wave 6. Each needs an explicit product decision before
-scheduling.
+The July plan-completion audit originally parked 12 product families. Current
+source closes the audit-body prerequisite and partially implements human search,
+plugin and provider work. Lifecycle 3.2 is explicitly added from its source plan. The
+remaining 12 families are product/design choices, not confirmed defects.
+The continuous-development request selects prioritization and local work;
+irreversible operations and new release channels remain separately authorized.
 
 | Item | Source | Audit status | Size estimate | Decision needed |
 |------|--------|--------------|---------------|-----------------|
-| Lifecycle 3.1 multi-factor value score (+ P0-6 measurement-script prerequisite) | `docs/engram-lifecycle-upgrade-plan.md` §3.1 | not_done | L (2–3d + measurement) | Whether to evolve `quality_score` formula and expose bands in GUI |
-| Lifecycle 3.4 BM25/CJK ranking + faceting | `docs/engram-lifecycle-upgrade-plan.md` §3.4 | not_done | L (3–4d) | Whether human search ranking upgrade is next after MCP semantic |
+| Lifecycle 3.1 multi-factor value score (+ P0-6 measurement-script prerequisite) | `docs/engram-lifecycle-upgrade-plan.md` §3.1 / §3.6 | partial prerequisite | L (formula + real measurement) | Read-only `scripts/db/measure-database.py` now reports storage/FTS/tier/score distributions; six tests and repository-fixture readback passed. GUI bands exist. A current production distribution and the revised factor/outcome contract remain prerequisites to changing the formula. |
+| Lifecycle 3.4 BM25/CJK ranking + faceting | `docs/engram-lifecycle-upgrade-plan.md` §3.4; [ranking contract](superpowers/specs/2026-10-23-keyword-ranking-design.md) | partial | re-scope | All-term/CJK ranking and source/project/time/origin/value-band filters implemented locally. Value filtering covers Service and offline queries before result limits and short-token candidate caps. Lifecycle facets and title/quality/recency weighting remain separate decisions. App and Service must be upgraded together for the additive filter field. |
 | Lifecycle 3.5 tool-result normalization + structured summary job | `docs/engram-lifecycle-upgrade-plan.md` §3.5 | not_done | XL (~15 adapters + summary job) | Accept adapter regression surface vs keep lossy tool results |
-| P0.5 value-band badge on session cards + `value_override` | `docs/engram-lifecycle-upgrade-plan.md` §3.1 / P0.5 | not_done | M (~1d after score parity) | Whether to show quality bands before multi-factor scoring |
-| Insight supersession via embedding cosine > 0.92 | `docs/p1-semantic-memory-design-2026-06.md` §d | partial (text match only) | M | Whether cosine supersession is required once embeddings are common |
+| P0.5 value-band badge on session cards + `value_override` | `docs/engram-lifecycle-upgrade-plan.md` §3.1 / P0.5 | partial | re-scope | Session cards and table cells now display existing bands locally (33 tests and bilingual light/dark component renders passed). Existing score function/thresholds reused; user override remains unimplemented and needs mutation semantics. |
+| Insight supersession via embedding cosine > 0.92 | `docs/p1-semantic-memory-design-2026-06.md` §d | partial (text match only); decision pending | M | Saving is synchronous; embeddings arrive in later maintenance. Web supersession checks source visibility inside the save transaction, while backfill has no originating caller policy. Choose whether approximate similarity should replace history, its timing and authority scope before implementation; do not add unconditional backfill supersession. |
 | P2 auto insight extraction | `docs/engram-lifecycle-upgrade-plan.md` §3.5; p1 design | not_done | L | Opt-in LLM mining of finished sessions into `insights` |
 | F2 sqlite-vec native target | `docs/p1-semantic-memory-design-2026-06.md` F2 | not_done / superseded by brute-force | XL (native dep + notarization) | Revisit only if brute-force KNN becomes a measured bottleneck |
 | F3/f corpus mining (`mined_rules`) | p1 design §f; removed feature-cut item 3 | not_done (surface deleted 2026-07-06) | L | Whether to reintroduce rule mining after feature-cut |
-| Competitive-relaunch activation after the public baseline (Claude Code plugin; Homebrew/Sparkle channel expansion) | `docs/competitive-relaunch-2026-06.md` | not_done | XL | After `v1.0.5` baseline proof, decide whether plugin integration, Homebrew packaging, or Sparkle updates should be scheduled |
-| `ai_audit_log` desensitization design | lifecycle §3.5 P0; no Swift writer today | not_done | M (design) then L | Design body redaction **before** any Swift audit-log writer lands (wave-6 task 9 descope) |
-| Provider-branch valuable-missing features (Grok/Pi adapters, session taxonomy filter, runtime capability gates) | `docs/reviews/provider-audit-branch-reconciliation-2026-07.md` | not_done | L each | Branch `codex-provider-audit-remediation` deleted local+origin 2026-07-09 after three-model adjudication; recovery path is archive tag `archive/codex-provider-audit-remediation` (`285453d7`) + the reconciliation doc |
+| Competitive-relaunch activation after the public baseline (Claude Code plugin; Homebrew/Sparkle channel expansion) | `docs/competitive-relaunch-2026-06.md` | partial | XL | SessionStart hook and plugin skills exist in `integrations/claude-code/engram`; Stop/SessionEnd insight capture and Homebrew/Sparkle remain choices. |
+| `ai_audit_log` body redaction | lifecycle §3.5 P0 | implemented in source | done | `ServiceAIAuditRecorder` uses the writer gate, opt-in bodies and redaction-before-truncation; `ServiceAIAuditRecordTests` covers it. Historical no-writer assumption is stale; broader audit/retention is separate. |
+| Provider-branch valuable-missing features (Grok/Pi adapters, session taxonomy filter, runtime capability gates) | `docs/reviews/provider-audit-branch-reconciliation-2026-07.md` | partial | re-scope | Grok/Pi adapters already register in `SessionAdapterFactory`; re-adjudicate taxonomy/capability residuals against current source before recovering anything from the archive tag. |
 | Sources-sync-3 nav consolidation | `docs/reviews/alignment-design-2026-06-14.md` ~:836,:896 | not_done (explicitly deferred) | M | Whether Sources/Settings nav consolidation is still wanted |
+| Lifecycle 3.2 lifecycle-state / shadow archive | `docs/engram-lifecycle-upgrade-plan.md` §3.2 | not_done / design decision | L | Define lifecycle transitions and user-state semantics before schema changes; existing Archive V2 reclamation is a different feature. |
 
 ## Closed on 2026-06-20
 

@@ -11,6 +11,14 @@ enum EngramServiceWebProjectValidation {
         "fs_pending", "fs_done", "committed", "failed", "rolled_back", "dry-run", "cancelled",
     ]
 
+    static func auditActor(_ value: String) throws -> String {
+        try EngramServiceWebMetadataValidation.require(
+            !value.isEmpty && value.utf8.count <= 254
+                && value.utf8.allSatisfy { (33...126).contains($0) && $0 != 34 && $0 != 92 }
+        )
+        return value
+    }
+
     static func publishedOperationId(_ value: String) throws -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         try EngramServiceWebMetadataValidation.require(!trimmed.hasPrefix(operationPrefix))
@@ -225,6 +233,7 @@ struct EngramServiceWebProjectMoveRequest: Codable, Equatable, Sendable {
     let force: Bool
     let auditNote: String?
     let operationId: String
+    let actor: String?
 
     init(
         src: String,
@@ -232,7 +241,8 @@ struct EngramServiceWebProjectMoveRequest: Codable, Equatable, Sendable {
         dryRun: Bool,
         force: Bool = false,
         auditNote: String? = nil,
-        operationId: String
+        operationId: String,
+        actor: String? = nil
     ) throws {
         self.src = try EngramServiceWebProjectValidation.confinedPath(src, label: "source")
         self.dst = try EngramServiceWebProjectValidation.confinedPath(dst, label: "destination")
@@ -240,6 +250,7 @@ struct EngramServiceWebProjectMoveRequest: Codable, Equatable, Sendable {
         self.force = force
         self.auditNote = try auditNote.map(Self.note)
         self.operationId = try EngramServiceWebProjectValidation.publishedOperationId(operationId)
+        self.actor = try actor.map(EngramServiceWebProjectValidation.auditActor)
     }
 
     init(from decoder: Decoder) throws {
@@ -251,7 +262,8 @@ struct EngramServiceWebProjectMoveRequest: Codable, Equatable, Sendable {
                 dryRun: try container.decode(Bool.self, forKey: .dryRun),
                 force: try container.decodeIfPresent(Bool.self, forKey: .force) ?? false,
                 auditNote: try container.decodeIfPresent(String.self, forKey: .auditNote),
-                operationId: try container.decode(String.self, forKey: .operationId)
+                operationId: try container.decode(String.self, forKey: .operationId),
+                actor: try container.decodeIfPresent(String.self, forKey: .actor)
             )
         } catch {
             throw DecodingError.dataCorruptedError(
@@ -266,6 +278,7 @@ struct EngramServiceWebProjectMoveRequest: Codable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
+        case actor
         case src, dst, force
         case dryRun = "dry_run"
         case auditNote = "audit_note"
@@ -280,6 +293,7 @@ struct EngramServiceWebProjectArchiveRequest: Codable, Equatable, Sendable {
     let force: Bool
     let auditNote: String?
     let operationId: String
+    let actor: String?
 
     init(
         src: String,
@@ -287,7 +301,8 @@ struct EngramServiceWebProjectArchiveRequest: Codable, Equatable, Sendable {
         dryRun: Bool,
         force: Bool = false,
         auditNote: String? = nil,
-        operationId: String
+        operationId: String,
+        actor: String? = nil
     ) throws {
         self.src = try EngramServiceWebProjectValidation.confinedPath(src, label: "source")
         self.archiveTo = try archiveTo.map {
@@ -301,6 +316,7 @@ struct EngramServiceWebProjectArchiveRequest: Codable, Equatable, Sendable {
             return $0
         }
         self.operationId = try EngramServiceWebProjectValidation.publishedOperationId(operationId)
+        self.actor = try actor.map(EngramServiceWebProjectValidation.auditActor)
     }
 
     init(from decoder: Decoder) throws {
@@ -312,7 +328,8 @@ struct EngramServiceWebProjectArchiveRequest: Codable, Equatable, Sendable {
                 dryRun: try container.decode(Bool.self, forKey: .dryRun),
                 force: try container.decodeIfPresent(Bool.self, forKey: .force) ?? false,
                 auditNote: try container.decodeIfPresent(String.self, forKey: .auditNote),
-                operationId: try container.decode(String.self, forKey: .operationId)
+                operationId: try container.decode(String.self, forKey: .operationId),
+                actor: try container.decodeIfPresent(String.self, forKey: .actor)
             )
         } catch {
             throw DecodingError.dataCorruptedError(
@@ -322,6 +339,7 @@ struct EngramServiceWebProjectArchiveRequest: Codable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
+        case actor
         case src, force
         case archiveTo = "archive_to"
         case dryRun = "dry_run"
@@ -334,12 +352,14 @@ struct EngramServiceWebProjectUndoRequest: Codable, Equatable, Sendable {
     let migrationId: String
     let force: Bool
     let operationId: String
+    let actor: String?
 
-    init(migrationId: String, force: Bool = false, operationId: String) throws {
+    init(migrationId: String, force: Bool = false, operationId: String, actor: String? = nil) throws {
         try EngramServiceWebMetadataValidation.trimmed(migrationId, maximumBytes: 128)
         self.migrationId = migrationId
         self.force = force
         self.operationId = try EngramServiceWebProjectValidation.publishedOperationId(operationId)
+        self.actor = try actor.map(EngramServiceWebProjectValidation.auditActor)
     }
 
     init(from decoder: Decoder) throws {
@@ -348,7 +368,8 @@ struct EngramServiceWebProjectUndoRequest: Codable, Equatable, Sendable {
             self = try Self(
                 migrationId: try container.decode(String.self, forKey: .migrationId),
                 force: try container.decodeIfPresent(Bool.self, forKey: .force) ?? false,
-                operationId: try container.decode(String.self, forKey: .operationId)
+                operationId: try container.decode(String.self, forKey: .operationId),
+                actor: try container.decodeIfPresent(String.self, forKey: .actor)
             )
         } catch {
             throw DecodingError.dataCorruptedError(
@@ -358,6 +379,7 @@ struct EngramServiceWebProjectUndoRequest: Codable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
+        case actor
         case force
         case migrationId = "migration_id"
         case operationId = "operation_id"
@@ -369,8 +391,9 @@ struct EngramServiceWebProjectMoveBatchRequest: Codable, Equatable, Sendable {
     let dryRun: Bool
     let force: Bool
     let operationId: String
+    let actor: String?
 
-    init(yaml: String, dryRun: Bool, force: Bool = false, operationId: String) throws {
+    init(yaml: String, dryRun: Bool, force: Bool = false, operationId: String, actor: String? = nil) throws {
         try EngramServiceWebMetadataValidation.require(
             !yaml.isEmpty
                 && yaml.utf8.count <= EngramServiceWebProjectValidation.maximumBatchBytes
@@ -380,6 +403,7 @@ struct EngramServiceWebProjectMoveBatchRequest: Codable, Equatable, Sendable {
         self.dryRun = dryRun
         self.force = force
         self.operationId = try EngramServiceWebProjectValidation.publishedOperationId(operationId)
+        self.actor = try actor.map(EngramServiceWebProjectValidation.auditActor)
     }
 
     init(from decoder: Decoder) throws {
@@ -389,7 +413,8 @@ struct EngramServiceWebProjectMoveBatchRequest: Codable, Equatable, Sendable {
                 yaml: try container.decode(String.self, forKey: .yaml),
                 dryRun: try container.decode(Bool.self, forKey: .dryRun),
                 force: try container.decodeIfPresent(Bool.self, forKey: .force) ?? false,
-                operationId: try container.decode(String.self, forKey: .operationId)
+                operationId: try container.decode(String.self, forKey: .operationId),
+                actor: try container.decodeIfPresent(String.self, forKey: .actor)
             )
         } catch {
             throw DecodingError.dataCorruptedError(
@@ -399,6 +424,7 @@ struct EngramServiceWebProjectMoveBatchRequest: Codable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
+        case actor
         case yaml, force
         case dryRun = "dry_run"
         case operationId = "operation_id"

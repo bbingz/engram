@@ -8,8 +8,10 @@ are not automatically current backlog items.
 
 Current routing and disposition entry points:
 
-- [stewardship queue](2026-08-12-stewardship-queue.md): ranked routing for the
-  current remediation stream.
+- [development reconciliation](2026-10-23-development-reconciliation.md): current
+  plan inventory and continuous-development routing.
+- [stewardship queue](2026-08-12-stewardship-queue.md): historical campaign,
+  explicitly closed on 2026-08-16.
 - [follow-ups](../followups.md): canonical observations and deferred work.
 - [TODO](../TODO.md): canonical confirmed engineering tasks.
 - [roadmap](../roadmap.md): canonical product and cross-module direction.

@@ -117,6 +117,7 @@ public enum BatchError: Error, Equatable {
 }
 
 public struct BatchOverrides: Sendable {
+    public var actor: MigrationLogActor
     public var homeDirectory: URL
     public var lockPath: String?
     public var force: Bool
@@ -127,11 +128,13 @@ public struct BatchOverrides: Sendable {
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         lockPath: String? = nil,
         force: Bool = false,
+        actor: MigrationLogActor = .batch,
         runOperation: (@Sendable (BatchOperation, String, String) async throws -> PipelineResult)? = nil
     ) {
         self.homeDirectory = homeDirectory
         self.lockPath = lockPath
         self.force = force
+        self.actor = actor
         self.runOperation = runOperation
     }
 }
@@ -302,7 +305,7 @@ public enum Batch {
                             force: overrides.force,
                             archived: op.archive,
                             auditNote: op.note,
-                            actor: .batch,
+                            actor: overrides.actor,
                             homeDirectory: overrides.homeDirectory,
                             lockPath: overrides.lockPath,
                             shouldCancel: shouldCancel,

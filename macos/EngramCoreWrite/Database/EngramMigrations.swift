@@ -142,6 +142,15 @@ enum EngramMigrations {
               PRIMARY KEY (alias, canonical)
             );
 
+            CREATE TABLE IF NOT EXISTS web_alias_audit_log (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+              action TEXT NOT NULL CHECK (action IN ('add', 'remove')),
+              actor TEXT NOT NULL,
+              alias TEXT NOT NULL,
+              canonical TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS session_local_state (
               session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
               hidden_at TEXT,

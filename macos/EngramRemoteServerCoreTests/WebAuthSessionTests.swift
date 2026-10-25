@@ -18,6 +18,10 @@ final class WebAuthSessionTests: XCTestCase {
         let editorCanWrite = await store.canWrite(sessionToken: editorToken)
         XCTAssertFalse(viewerCanWrite)
         XCTAssertTrue(editorCanWrite)
+        let viewerWriteActor = await store.writeActor(sessionToken: viewerToken)
+        let editorWriteActor = await store.writeActor(sessionToken: editorToken)
+        XCTAssertNil(viewerWriteActor)
+        XCTAssertEqual(editorWriteActor, "web-editor")
         for rawCredential in [viewer, "fixture-editor", "fixture-service", "", String(repeating: "A", count: 43)] {
             let canWrite = await store.canWrite(sessionToken: rawCredential)
             XCTAssertFalse(canWrite)
@@ -26,6 +30,8 @@ final class WebAuthSessionTests: XCTestCase {
         let revokedCanWrite = await store.canWrite(sessionToken: editorToken)
         let viewerStillValid = await store.isAuthenticated(sessionToken: viewerToken)
         XCTAssertFalse(revokedCanWrite)
+        let revokedWriteActor = await store.writeActor(sessionToken: editorToken)
+        XCTAssertNil(revokedWriteActor)
         XCTAssertTrue(viewerStillValid)
         guard let secondEditor = token(await store.login(credential: "fixture-editor")) else { return }
         clock.advance(seconds: 900)
@@ -33,6 +39,8 @@ final class WebAuthSessionTests: XCTestCase {
         let expiredCanRead = await store.isAuthenticated(sessionToken: secondEditor)
         XCTAssertFalse(expiredCanWrite)
         XCTAssertFalse(expiredCanRead)
+        let expiredWriteActor = await store.writeActor(sessionToken: secondEditor)
+        XCTAssertNil(expiredWriteActor)
     }
 
     func testViewerOnlyConfigurationNeverGrantsWriteAuthority() async throws {
@@ -282,6 +290,10 @@ final class WebAuthSessionTests: XCTestCase {
         let editorActor = await store.actor(sessionToken: editor)
         XCTAssertEqual(readerActor, "reader@example.com")
         XCTAssertEqual(editorActor, "editor@example.com")
+        let readerWriteActor = await store.writeActor(sessionToken: reader)
+        let editorWriteActor = await store.writeActor(sessionToken: editor)
+        XCTAssertNil(readerWriteActor)
+        XCTAssertEqual(editorWriteActor, "editor@example.com")
         for login in ["Reader@example.com", "reader@example.com ", "reader@example.co", "nobody@example.com", ""] {
             let outcome = await store.login(identity: WebIdentity(login: login))
             XCTAssertEqual(outcome, .forbidden, login)

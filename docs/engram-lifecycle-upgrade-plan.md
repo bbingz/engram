@@ -211,6 +211,13 @@ execution queue; `parked-see-roadmap` items are listed in
 
 ### 3.4 人工检索升级（enabler 1）
 
+> Current-source reconciliation (2026-10-23): the proposals below are historical.
+> FTS rank, highlighted snippets, source/project/time/origin filters and Service
+> CJK trigram ranking already exist. The local development loop implements the
+> [all-term ranking and offline CJK consistency contract](superpowers/specs/2026-10-23-keyword-ranking-design.md).
+> Value/lifecycle facets and score weighting remain open in the roadmap; native
+> sqlite-vec remains excluded by current repository instructions.
+
 **目标**：把"已为 AI 接好"的检索能力补给人，CJK 用户拿到真排序。
 
 **方案设计**：
@@ -240,6 +247,17 @@ execution queue; `parked-see-roadmap` items are listed in
 **优先级**：P0（脱敏）→ P1（归一+结构化摘要）→ P2（洞见抽取）。**工作量**：脱敏 1-2d；归一 3-4d（~15 adapter）；结构化摘要 3d。**风险**：adapter 归一回归面大（逐个测试 + fixture）。
 
 ### 3.6 数据模型与规模支撑（enabler 3）
+
+> Measurement tooling implemented locally (2026-10-23):
+> `python3 scripts/db/measure-database.py --database /explicit/path/index.sqlite`
+> emits aggregate JSON to stdout (redirect to the desired report file).
+> It reads one transaction with committed WAL, reports dbstat object bytes/FTS
+> share, tier counts and non-skip score histogram/p10/p33/p50/p67/p90. No default
+> user database, checkpoint, optimize or migration. `--timeout` defaults to 30s;
+> failed reads exit nonzero without partial JSON. Missing dbstat is explicit.
+> SQLite may create/use WAL coordination sidecars; for an unchanged directory,
+> use a pre-existing consistent snapshot. Fixture validation is not a current
+> production distribution or authorization to retune thresholds.
 
 **目标**：用实测数据驱动决策，加必要索引，支撑价值/归档/老化查询。
 

@@ -98,9 +98,46 @@ final class WebProjectMigrationHTTPTests: XCTestCase {
         }
     }
 
+    func testProjectAuditActorComesFromSessionAndRejectsBrowserOverride_repro() async throws {
+        for identityMode in [false, true] {
+            try await withServer(identityMode: identityMode) { server, recorder in
+                let cookie: String
+                if identityMode {
+                    let login = try await server.request("POST", "/web/api/auth",
+                        headers: Self.headers + [("Tailscale-User-Login", "editor@example.com")],
+                        body: Data("{}".utf8))
+                    XCTAssertEqual(login.status, 204)
+                    cookie = try XCTUnwrap(login.header("set-cookie")?.split(separator: ";").first.map(String.init))
+                } else {
+                    cookie = try await Self.login(server, credential: Self.editor)
+                }
+                let cases: [(String, [String: Any])] = [
+                    ("move", ["src": "/tmp/a", "dst": "/tmp/b", "dry_run": true]),
+                    ("archive", ["src": "/tmp/a", "dry_run": true]),
+                    ("undo", ["migration_id": "fixture-migration"]),
+                    ("move-batch", ["yaml": "{\"version\":1,\"operations\":[]}", "dry_run": true]),
+                ]
+                for (route, fields) in cases {
+                    var payload = fields
+                    payload["operation_id"] = UUID().uuidString
+                    let headers = Self.headers + [("Cookie", cookie), ("Tailscale-User-Login", "forged@example.com")]
+                    let response = try await server.request("POST", "/web/api/projects/" + route,
+                        headers: headers, body: JSONSerialization.data(withJSONObject: payload))
+                    XCTAssertEqual(response.status, 503) // recording surface has no backing service
+                    XCTAssertEqual(recorder.actors[route], identityMode ? "editor@example.com" : "web-editor", route)
+                    payload["actor"] = "forged@example.com"
+                    let rejected = try await server.request("POST", "/web/api/projects/" + route,
+                        headers: headers, body: JSONSerialization.data(withJSONObject: payload))
+                    XCTAssertEqual(rejected.status, 400)
+                }
+            }
+        }
+    }
+
     private func withServer(
         editorCredential: String? = editor,
         failOnWrite: Bool = false,
+        identityMode: Bool = false,
         operation: (D4HTTPServer, ProjectMigrationRecorder) async throws -> Void
     ) async throws {
         let directory = URL(fileURLWithPath: "/tmp/eg-d15-\(UUID().uuidString.prefix(8))", isDirectory: true)
@@ -124,16 +161,30 @@ final class WebProjectMigrationHTTPTests: XCTestCase {
         writes.projectMove = { request in
             if failOnWrite { XCTFail("Rejected request reached project move writer") }
             recorder.record(request)
+            try recorder.recordActor("move", request)
             throw EngramServiceWebWriteClientError.unavailable
         }
+        writes.projectArchive = { request in
+            try recorder.recordActor("archive", request)
+            throw EngramServiceWebWriteClientError.unavailable
+        }
+        writes.projectUndo = { request in
+            try recorder.recordActor("undo", request)
+            throw EngramServiceWebWriteClientError.unavailable
+        }
+        writes.projectMoveBatch = { request in
+            try recorder.recordActor("move-batch", request)
+            throw EngramServiceWebWriteClientError.unavailable
+        }
+        let web = try identityMode
+            ? EngramRemoteWebConfig(origin: Self.origin, tailscaleServeViewers: "reader@example.com", editors: "editor@example.com")
+            : EngramRemoteWebConfig(origin: Self.origin, viewerCredential: Self.viewer,
+                serverBearerCredentials: ["project-migration-bearer"], editorCredential: editorCredential)
         let app = try EngramRemoteServerApp(
             config: EngramRemoteServerConfig(
                 host: "127.0.0.1", port: 0, storeRoot: directory.appendingPathComponent("store"),
                 bearerToken: "project-migration-bearer", atRestKey: SymmetricKey(data: Data(repeating: 1, count: 32)),
-                web: EngramRemoteWebConfig(
-                    origin: Self.origin, viewerCredential: Self.viewer,
-                    serverBearerCredentials: ["project-migration-bearer"], editorCredential: editorCredential
-                ),
+                web: web,
                 webServiceSocketPath: directory.appendingPathComponent("service.sock").path
             ),
             webReadClientFactory: { _ in reads },
@@ -185,6 +236,15 @@ final class WebProjectMigrationHTTPTests: XCTestCase {
 private final class ProjectMigrationRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var calls: [EngramServiceWebProjectMoveRequest] = []
+    private var auditActors: [String: String] = [:]
+    var actors: [String: String] {
+        lock.lock(); defer { lock.unlock() }; return auditActors
+    }
+    func recordActor<T: Encodable>(_ route: String, _ request: T) throws {
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
+        lock.lock(); defer { lock.unlock() }
+        auditActors[route] = object["actor"] as? String
+    }
     var cwds: EngramServiceWebProjectCwdsResponse?
     var history: EngramServiceWebProjectMigrationsResponse?
     var historyReads = 0

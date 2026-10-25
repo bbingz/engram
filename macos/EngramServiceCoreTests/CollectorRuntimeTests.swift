@@ -539,21 +539,27 @@ final class CollectorRuntimeTests: XCTestCase {
             WHERE root_id = 'runtime-codex' AND last_scan_failure = 'enumerationUnavailable'
             """
         var active: Runtime?
+        let retryClock = RuntimeLocked(ContinuousClock.now)
         var now: Int64 = 100
         do {
             try f.writeSettings(f.document(replicas: replicas))
-            active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: f.secret, diagnostics: report))
+            active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: f.secret, diagnostics: report,
+                retryClock: { retryClock.value }))
             // (a) and flapping: each turn takes at most one bootstrap step per root, so
             // threshold - 1 turns hold fewer than threshold blocked steps. Block, recover
             // (the scan finishes and clears last_scan_failure), block again: no line.
             for _ in 0..<3 {
                 XCTAssertEqual(chmod(locked.path, 0), 0)
-                for _ in 0..<(threshold - 1) { _ = try await active!.runOnce(now: now); now += 1 }
+                for _ in 0..<(threshold - 1) {
+                    _ = try await active!.runOnce(now: now); now += 1
+                    retryClock.update { $0 = $0.advanced(by: .seconds(60)) }
+                }
                 XCTAssertEqual(try f.integer(failureSQL), 1, "the walk must actually block in this cycle")
                 XCTAssertEqual(chmod(locked.path, 0o700), 0)
                 var recoveryTurns = 0
                 while try f.integer(failureSQL) == 1, recoveryTurns < 20 {
                     _ = try await active!.runOnce(now: now); now += 1; recoveryTurns += 1
+                    retryClock.update { $0 = $0.advanced(by: .seconds(60)) }
                 }
                 XCTAssertEqual(try f.integer(failureSQL), 0, "the walk must recover in this cycle")
             }
@@ -563,18 +569,180 @@ final class CollectorRuntimeTests: XCTestCase {
             var turns = 0
             while lines.value.isEmpty, turns < 30 {
                 _ = try await active!.runOnce(now: now); now += 1; turns += 1
+                retryClock.update { $0 = $0.advanced(by: .seconds(60)) }
             }
             XCTAssertGreaterThanOrEqual(turns, threshold)
-            for _ in 0..<3 { _ = try await active!.runOnce(now: now); now += 1 }
+            for _ in 0..<3 {
+                _ = try await active!.runOnce(now: now); now += 1
+                retryClock.update { $0 = $0.advanced(by: .seconds(60)) }
+            }
             XCTAssertEqual(lines.value, [blocked])
             // (c) the first non-blocked step clears it: exactly one 0/1 line.
             XCTAssertEqual(chmod(locked.path, 0o700), 0)
             var clearTurns = 0
             while lines.value.count == 1, clearTurns < 20 {
                 _ = try await active!.runOnce(now: now); now += 1; clearTurns += 1
+                retryClock.update { $0 = $0.advanced(by: .seconds(60)) }
             }
-            for _ in 0..<3 { _ = try await active!.runOnce(now: now); now += 1 }
+            for _ in 0..<3 {
+                _ = try await active!.runOnce(now: now); now += 1
+                retryClock.update { $0 = $0.advanced(by: .seconds(60)) }
+            }
             XCTAssertEqual(lines.value, [blocked, cleared])
+            try await active!.stop(); active = nil
+            await replicas.stop()
+        } catch {
+            try? await active?.stop()
+            await replicas.stop()
+            throw error
+        }
+    }
+
+    func testBlockedBootstrapBacksOffWithoutDelayingHealthyRootAndRecovers_repro() async throws {
+        try XCTSkipIf(geteuid() == 0, "root bypasses the fixture's DAC permission denial")
+        let f = try RuntimeFixture(); defer { f.remove() }
+        let replicas = try await RuntimeReplicas.start(parent: f.base)
+        let blockedRoot = f.base.appendingPathComponent("blocked-source")
+        let locked = blockedRoot.appendingPathComponent("locked")
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        defer { _ = chmod(locked.path, 0o700) }
+        XCTAssertEqual(chmod(locked.path, 0), 0)
+        let clock = RuntimeLocked(ContinuousClock.now)
+        let starts = RuntimeLocked<[String: Int]>([:])
+        let streams = RuntimeLocked<[String: RuntimeSignalStream]>([:])
+        let factory: Runtime.EventStreamFactory = { request, _ in
+            starts.update { $0[request.binding.configuration.rootID, default: 0] += 1 }
+            let stream = RuntimeSignalStream()
+            streams.update { $0[request.binding.configuration.rootID] = stream }
+            return stream
+        }
+        var document = f.document(replicas: replicas)
+        var collector = try XCTUnwrap(document["collector"] as? [String: Any])
+        collector["roots"] = [
+            ["rootID": "blocked-codex", "source": "codex", "rootPath": blockedRoot.path, "revision": 1],
+            ["rootID": "runtime-codex", "source": "codex", "rootPath": f.sources.path, "revision": 1],
+        ]
+        document["collector"] = collector
+        let failureSQL = "SELECT count(*) FROM collector_roots WHERE root_id = 'blocked-codex' AND last_scan_failure = 'enumerationUnavailable'"
+        let revisionSQL = "SELECT requested_revision FROM collector_roots WHERE root_id = 'blocked-codex'"
+        var active: Runtime?
+        do {
+            try f.writeSettings(document)
+            try f.writeTranscript("healthy root still publishes during bootstrap backoff")
+            active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: f.secret,
+                diagnostics: { _ in }, eventStreamFactory: factory, retryClock: { clock.value }))
+            for _ in 0..<10 {
+                _ = try await active!.runOnce(now: 100)
+                if try f.integer(failureSQL) == 1,
+                   try f.integer("SELECT count(*) FROM collector_publication_replicas WHERE state = 'acknowledged'") == 2 { break }
+            }
+            XCTAssertEqual(try f.integer(failureSQL), 1)
+            XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_publication_replicas WHERE state = 'acknowledged'"), 2)
+            XCTAssertEqual(starts.value["runtime-codex"], 1)
+
+            // Partial progress at the start of each re-walk must not reset the delay.
+            for delay in [1, 2, 4, 8, 16, 32, 60, 60] {
+                let revision = try f.integer(revisionSQL)
+                let startCount = starts.value["blocked-codex", default: 0]
+                for wallTime: Int64 in [1, 9_000_000_000, 2] {
+                    let cycle = try await active!.runOnce(now: wallTime)
+                    XCTAssertGreaterThanOrEqual(cycle.deferred, 1)
+                }
+                clock.update { $0 = $0.advanced(by: .milliseconds(delay * 1_000 - 1)) }
+                _ = try await active!.runOnce(now: 100)
+                XCTAssertEqual(try f.integer(revisionSQL), revision, "no reconciliation churn before retry deadline")
+                XCTAssertEqual(starts.value["blocked-codex"], startCount)
+                clock.update { $0 = $0.advanced(by: .milliseconds(1)) }
+                for _ in 0..<10 {
+                    _ = try await active!.runOnce(now: 100)
+                    if starts.value["blocked-codex", default: 0] > startCount,
+                       try f.integer(failureSQL) == 1 { break }
+                }
+                XCTAssertEqual(starts.value["blocked-codex"], startCount + 1)
+                XCTAssertEqual(try f.integer(failureSQL), 1)
+            }
+            XCTAssertEqual(starts.value["runtime-codex"], 1, "healthy listener never restarts with the blocked root")
+            XCTAssertEqual(chmod(locked.path, 0o700), 0)
+            clock.update { $0 = $0.advanced(by: .seconds(60)) }
+            let convergedSQL = "SELECT count(*) FROM collector_roots WHERE root_id = 'blocked-codex' AND completed_revision = requested_revision AND last_scan_failure IS NULL"
+            for _ in 0..<10 {
+                _ = try await active!.runOnce(now: 100)
+                if try f.integer(convergedSQL) == 1 { break }
+            }
+            XCTAssertEqual(try f.integer(convergedSQL), 1, "permission recovery completes automatically")
+
+            // A later failure starts at one second again, even after reaching the cap.
+            XCTAssertEqual(chmod(locked.path, 0), 0)
+            _ = streams.value["blocked-codex"]?.emit(.loss(.continuityLoss))
+            for _ in 0..<10 {
+                _ = try await active!.runOnce(now: 100)
+                if try f.integer(failureSQL) == 1 { break }
+            }
+            let afterRecovery = starts.value["blocked-codex", default: 0]
+            clock.update { $0 = $0.advanced(by: .seconds(1)) }
+            for _ in 0..<10 {
+                _ = try await active!.runOnce(now: 100)
+                if starts.value["blocked-codex", default: 0] > afterRecovery,
+                   try f.integer(failureSQL) == 1 { break }
+            }
+            XCTAssertEqual(starts.value["blocked-codex"], afterRecovery + 1)
+
+            // Backoff is process-local; reopening does not inherit a stale deadline.
+            try await active!.stop(); active = nil
+            let beforeRestart = starts.value["blocked-codex", default: 0]
+            active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: f.secret,
+                diagnostics: { _ in }, eventStreamFactory: factory, retryClock: { clock.value }))
+            _ = try await active!.runOnce(now: 100)
+            XCTAssertEqual(starts.value["blocked-codex"], beforeRestart + 1)
+            try await active!.stop(); active = nil
+            await replicas.stop()
+        } catch {
+            try? await active?.stop()
+            await replicas.stop()
+            throw error
+        }
+    }
+
+    func testBlockedBootstrapResidentWaitDoesNotSpinAndRetriesBeforeLongPoll_repro() async throws {
+        try XCTSkipIf(geteuid() == 0, "root bypasses the fixture's DAC permission denial")
+        let f = try RuntimeFixture(); defer { f.remove() }
+        let replicas = try await RuntimeReplicas.start(parent: f.base)
+        let locked = f.sources.appendingPathComponent("locked")
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: false)
+        defer { _ = chmod(locked.path, 0o700) }
+        XCTAssertEqual(chmod(locked.path, 0), 0)
+        let clock = RuntimeLocked(ContinuousClock.now)
+        let turns = RuntimeLocked(0)
+        let starts = RuntimeLocked(0)
+        var active: Runtime?
+        do {
+            try f.writeSettings(f.document(replicas: replicas, pollIntervalMilliseconds: 10_000))
+            active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: f.secret,
+                diagnostics: { _ in }, eventStreamFactory: { _, _ in
+                    starts.update { $0 += 1 }
+                    return RuntimeSignalStream()
+                }, retryClock: { clock.value }))
+            await active!.setTestCaptureTurnBarrier { turns.update { $0 += 1 } }
+            try await active!.start()
+            let failureSQL = "SELECT count(*) FROM collector_roots WHERE last_scan_failure = 'enumerationUnavailable'"
+            let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+            while try f.integer(failureSQL) == 0, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertEqual(try f.integer(failureSQL), 1)
+            let blockedTurns = turns.value
+            try await Task.sleep(for: .milliseconds(1_200))
+            XCTAssertEqual(turns.value, blockedTurns, "pending recovery must not force repeated capture turns during backoff")
+            XCTAssertEqual(starts.value, 1)
+            XCTAssertEqual(chmod(locked.path, 0o700), 0)
+            clock.update { $0 = $0.advanced(by: .seconds(1)) }
+            let convergedSQL = "SELECT count(*) FROM collector_roots WHERE completed_revision = requested_revision AND last_scan_failure IS NULL"
+            let retryDeadline = ContinuousClock.now.advanced(by: .seconds(3))
+            while try f.integer(convergedSQL) == 0, ContinuousClock.now < retryDeadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            XCTAssertEqual(try f.integer(convergedSQL), 1, "retry uses cheap wakes, not the ten-second periodic deadline")
+            XCTAssertEqual(starts.value, 2)
             try await active!.stop(); active = nil
             await replicas.stop()
         } catch {
@@ -4304,6 +4472,21 @@ final class CollectorRuntimeTests: XCTestCase {
     }
 }
 
+private final class RuntimeSignalStream: CollectorEventStream {
+    private let callback = RuntimeLocked<((CollectorEventStreamSignal) -> CollectorEventAdmission)?>(nil)
+
+    func start(deliver: @escaping (CollectorEventStreamSignal) -> CollectorEventAdmission) throws {
+        callback.update { $0 = deliver }
+        _ = deliver(.historyDone)
+    }
+
+    func emit(_ signal: CollectorEventStreamSignal) -> CollectorEventAdmission {
+        callback.value?(signal) ?? .rejectedClosed
+    }
+
+    func stop() throws { callback.update { $0 = nil } }
+}
+
 private struct RuntimeStreamStart {
     let rootID: String
     let epoch: String
@@ -4457,8 +4640,14 @@ final class RuntimeFixture: @unchecked Sendable {
     }
 
     func writeSettings(_ document: [String: Any]) throws {
-        try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys]).write(to: settings)
-        guard chmod(settings.path, 0o600) == 0 else { throw Failure.unsafeFixture }
+        let staged = settings.deletingLastPathComponent()
+            .appendingPathComponent(".settings-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: staged) }
+        try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+            .write(to: staged, options: .withoutOverwriting)
+        // Readers must see a complete owner-only document, including during reload.
+        guard chmod(staged.path, 0o600) == 0,
+              rename(staged.path, settings.path) == 0 else { throw Failure.unsafeFixture }
     }
 
     func writeTranscript(_ text: String, name: String = "rollout-one.jsonl",

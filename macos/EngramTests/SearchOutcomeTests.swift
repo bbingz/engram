@@ -1,10 +1,43 @@
 import XCTest
+import SwiftUI
 @testable import Engram
 
 /// Locks the SearchPageView result-state classifier so a backend double-fault
 /// stays distinguishable from a genuine no-match (search-2/3, xc-states-4,
 /// command-palette-5).
 final class SearchOutcomeTests: XCTestCase {
+    @MainActor
+    func testValueFilterPickerRendersAllChoices() throws {
+        for locale in ["en", "zh-Hans"] {
+            let content = VStack(alignment: .leading, spacing: 8) {
+                ForEach(SearchValueFilter.allCases, id: \.self) { filter in
+                    SearchValueFilterPicker(selection: .constant(filter))
+                }
+            }
+            .padding(16)
+            .background(Color.white)
+            .environment(\.colorScheme, .light)
+            .environment(\.locale, Locale(identifier: locale))
+            // Native menu pickers cannot be flattened by ImageRenderer.
+            let hosting = NSHostingView(rootView: content.frame(width: 320, height: 220))
+            let window = NSWindow(contentRect: NSRect(x: -2000, y: -2000, width: 320, height: 220),
+                                  styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = hosting
+            window.orderBack(nil)
+            defer { window.contentView = nil; window.close() }
+            hosting.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
+            hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+            let image = NSImage(size: hosting.bounds.size)
+            image.addRepresentation(bitmap)
+            let attachment = XCTAttachment(image: image)
+            attachment.name = "value-filter-\(locale)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+    }
+
     // The selected origin is forwarded to both service and offline SQL search
     // before their result limits. This helper characterizes the corresponding
     // stored-origin semantics: HQ is exact, nil/non-HQ is local, and all passes.
