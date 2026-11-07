@@ -102,6 +102,7 @@ jobs:
         with:
           path: ~/.local/bin
           key: linux-cli-tools-${{ runner.os }}-${{ runner.arch }}-${{ env.ACTIONLINT_VERSION }}-rg1
+          save-always: true
       - name: Validate GitHub Actions workflows
         run: |
           mkdir -p "$HOME/.local/bin"
@@ -182,6 +183,7 @@ jobs:
         with:
           path: ~/.local/bin
           key: macos-cli-tools-${{ runner.os }}-${{ runner.arch }}-rg1
+          save-always: true
       - name: Install xcodegen and archive safety tools
         run: |
           mkdir -p "$HOME/.local/bin"
@@ -236,6 +238,10 @@ jobs:
             local scheme="$1"
             shift
             local log="xcodebuild-${scheme}.log"
+            local pkg_flags=()
+            if [ -d "$DERIVED_DATA/SourcePackages/checkouts" ]; then
+              pkg_flags=(-disableAutomaticPackageResolution)
+            fi
             # Prefer explicit coverage flag; default OFF on CI for wall-clock (PRs
             # still get full unit assertions). Set ENGRAM_CODE_COVERAGE=YES to re-enable.
             xcodebuild test \
@@ -244,6 +250,7 @@ jobs:
               -destination 'platform=macOS' \
               -derivedDataPath "$DERIVED_DATA" \
               -clonedSourcePackagesDirPath "$DERIVED_DATA/SourcePackages" \
+              "${pkg_flags[@]}" \
               -enableCodeCoverage "${ENGRAM_CODE_COVERAGE:-NO}" \
               COMPILER_INDEX_STORE_ENABLE=NO \
               CODE_SIGNING_ALLOWED=NO \
@@ -253,7 +260,7 @@ jobs:
           }
 
           if [ "${{ matrix.shard }}" = "app" ]; then
-            run_xcode_tests Engram -skip-testing:EngramUITests
+            run_xcode_tests Engram -only-testing:EngramCoreTests -only-testing:EngramTests
             ENGRAM_APP="$(
               find "$HOME/Library/Developer/Xcode/DerivedData" -path '*/Build/Products/Debug/Engram.app' -type d -print0 |
                 while IFS= read -r -d '' app; do
@@ -316,12 +323,17 @@ jobs:
                    "$RUNNER_TEMP/engram-remote-tests-derived/Build/Products/Debug/Engram"* \
                    "$RUNNER_TEMP/engram-remote-tests-derived/Logs"
           fi
+          pkg_flags=()
+          if [ -d "$HOME/.cache/engram-remote-ci/SourcePackages/checkouts" ]; then
+            pkg_flags=(-disableAutomaticPackageResolution)
+          fi
           xcodebuild test \
             -project Engram.xcodeproj \
             -scheme EngramRemoteServerCore \
             -destination 'platform=macOS' \
             -derivedDataPath "$RUNNER_TEMP/engram-remote-tests-derived" \
             -clonedSourcePackagesDirPath "$HOME/.cache/engram-remote-ci/SourcePackages" \
+            "${pkg_flags[@]}" \
             -enableCodeCoverage NO \
             COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_ALLOWED=NO
@@ -352,6 +364,7 @@ jobs:
             -destination 'generic/platform=macOS' \
             -derivedDataPath "$REMOTE_DERIVED_DATA" \
             -clonedSourcePackagesDirPath "$HOME/.cache/engram-remote-ci/SourcePackages" \
+            -disableAutomaticPackageResolution \
             ARCHS=arm64 \
             ONLY_ACTIVE_ARCH=NO \
             COMPILER_INDEX_STORE_ENABLE=NO \
@@ -433,6 +446,10 @@ jobs:
                  "$DERIVED_DATA/Build/Products/Debug/Engram"* \
                  "$DERIVED_DATA/Logs"
           trap 'rm -rf "$DERIVED_DATA/Build/Intermediates.noindex/Engram.build" "$DERIVED_DATA/Build/Products/Debug/Engram"* "$DERIVED_DATA/Logs"' EXIT
+          pkg_flags=()
+          if [ -d "$DERIVED_DATA/SourcePackages/checkouts" ]; then
+            pkg_flags=(-disableAutomaticPackageResolution)
+          fi
           xcodebuild test \
             -project macos/Engram.xcodeproj \
             -scheme EngramUITests \
@@ -446,6 +463,7 @@ jobs:
             -destination 'platform=macOS' \
             -derivedDataPath "$DERIVED_DATA" \
             -clonedSourcePackagesDirPath "$DERIVED_DATA/SourcePackages" \
+            "${pkg_flags[@]}" \
             -resultBundlePath ${{ runner.temp }}/ui-test-results \
             COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGN_IDENTITY="-" \
@@ -517,6 +535,10 @@ jobs:
                  "$DERIVED_DATA/Build/Products/Debug/Engram"* \
                  "$DERIVED_DATA/Logs"
           trap 'rm -rf "$DERIVED_DATA/Build/Intermediates.noindex/Engram.build" "$DERIVED_DATA/Build/Products/Debug/Engram"* "$DERIVED_DATA/Logs"' EXIT
+          pkg_flags=()
+          if [ -d "$DERIVED_DATA/SourcePackages/checkouts" ]; then
+            pkg_flags=(-disableAutomaticPackageResolution)
+          fi
           xcodebuild test \
             -project macos/Engram.xcodeproj \
             -scheme EngramUITests \
@@ -524,6 +546,7 @@ jobs:
             -destination 'platform=macOS' \
             -derivedDataPath "$DERIVED_DATA" \
             -clonedSourcePackagesDirPath "$DERIVED_DATA/SourcePackages" \
+            "${pkg_flags[@]}" \
             -resultBundlePath ${{ runner.temp }}/ui-test-results \
             COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGN_IDENTITY="-" \

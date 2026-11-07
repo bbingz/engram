@@ -88,8 +88,8 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.cache/engram-codeql-spm
-          key: codeql-spm-${{ runner.os }}-${{ runner.arch }}-xcode16-v2-${{ hashFiles('macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
-          restore-keys: codeql-spm-${{ runner.os }}-${{ runner.arch }}-xcode16-v2-
+          key: codeql-spm-${{ runner.os }}-${{ runner.arch }}-xcode16-${{ hashFiles('macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: codeql-spm-${{ runner.os }}-${{ runner.arch }}-xcode16-
 
       - name: Install xcodegen
         run: bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
@@ -97,24 +97,14 @@ jobs:
       - name: Generate project resources
         run: scripts/check-xcodeproj-drift.sh
 
-      - name: Warm up SPM dependencies before CodeQL tracing
+      - name: Resolve SPM packages before CodeQL tracing
         run: |
-          cd macos
-          DERIVED="$HOME/.cache/engram-codeql-spm/derived"
-          if [ ! -d "$DERIVED/Build/Intermediates.noindex/XCBuildData" ]; then
-            xcodebuild build \
-              -project Engram.xcodeproj \
+          if [ ! -d "$HOME/.cache/engram-codeql-spm/checkouts" ]; then
+            xcodebuild -resolvePackageDependencies \
+              -project macos/Engram.xcodeproj \
               -scheme Engram \
-              -destination 'platform=macOS' \
-              -derivedDataPath "$DERIVED" \
-              -clonedSourcePackagesDirPath "$HOME/.cache/engram-codeql-spm" \
-              ONLY_ACTIVE_ARCH=YES \
-              COMPILER_INDEX_STORE_ENABLE=NO \
-              CODE_SIGNING_ALLOWED=NO
+              -clonedSourcePackagesDirPath "$HOME/.cache/engram-codeql-spm"
           fi
-          rm -rf "$DERIVED/Build/Intermediates.noindex/Engram.build" \
-                 "$DERIVED/Build/Products/Debug/Engram"* \
-                 "$DERIVED/Logs"
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
@@ -125,15 +115,19 @@ jobs:
       - name: Build Swift product
         run: |
           cd macos
-          DERIVED="$HOME/.cache/engram-codeql-spm/derived"
           xcodebuild build \
             -project Engram.xcodeproj \
             -scheme Engram \
             -destination 'platform=macOS' \
-            -derivedDataPath "$DERIVED" \
+            -derivedDataPath "$RUNNER_TEMP/engram-codeql-derived" \
             -clonedSourcePackagesDirPath "$HOME/.cache/engram-codeql-spm" \
             -disableAutomaticPackageResolution \
+            ARCHS=arm64 \
             ONLY_ACTIVE_ARCH=YES \
+            SWIFT_COMPILATION_MODE=wholemodule \
+            SWIFT_OPTIMIZATION_LEVEL=-Onone \
+            GCC_OPTIMIZATION_LEVEL=0 \
+            DEBUG_INFORMATION_FORMAT=dwarf \
             COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_ALLOWED=NO
 
@@ -141,14 +135,6 @@ jobs:
         uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           category: /language:swift/target:product
-
-      - name: Strip product intermediates before cache save
-        if: always()
-        run: |
-          DERIVED="$HOME/.cache/engram-codeql-spm/derived"
-          rm -rf "$DERIVED/Build/Intermediates.noindex/Engram.build" \
-                 "$DERIVED/Build/Products/Debug/Engram"* \
-                 "$DERIVED/Logs"
 
   swift-remote-server:
     name: CodeQL Swift remote server
@@ -169,8 +155,8 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.cache/engram-codeql-remote-spm
-          key: codeql-remote-spm-${{ runner.os }}-${{ runner.arch }}-xcode26-v2-${{ hashFiles('macos/project.yml', 'macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
-          restore-keys: codeql-remote-spm-${{ runner.os }}-${{ runner.arch }}-xcode26-v2-
+          key: codeql-remote-spm-${{ runner.os }}-${{ runner.arch }}-xcode26-v3-${{ hashFiles('macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: codeql-remote-spm-${{ runner.os }}-${{ runner.arch }}-xcode26-
 
       - name: Install xcodegen
         run: bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
@@ -178,26 +164,15 @@ jobs:
       - name: Generate Xcode project
         run: scripts/check-xcodeproj-drift.sh
 
-      - name: Warm up remote server SPM dependencies before CodeQL tracing
+      - name: Resolve remote server SPM packages before CodeQL tracing
         run: |
-          cd macos
-          DERIVED="$HOME/.cache/engram-codeql-remote-spm/derived"
-          if [ ! -d "$DERIVED/Build/Intermediates.noindex/XCBuildData" ]; then
-            xcodebuild build \
-              -project Engram.xcodeproj \
+          rm -rf "$HOME/.cache/engram-codeql-remote-spm/derived"
+          if [ ! -d "$HOME/.cache/engram-codeql-remote-spm/checkouts" ]; then
+            xcodebuild -resolvePackageDependencies \
+              -project macos/Engram.xcodeproj \
               -scheme EngramRemoteServer \
-              -configuration Release \
-              -destination 'generic/platform=macOS' \
-              -derivedDataPath "$DERIVED" \
-              -clonedSourcePackagesDirPath "$HOME/.cache/engram-codeql-remote-spm" \
-              ARCHS=arm64 \
-              ONLY_ACTIVE_ARCH=NO \
-              COMPILER_INDEX_STORE_ENABLE=NO \
-              CODE_SIGNING_ALLOWED=NO
+              -clonedSourcePackagesDirPath "$HOME/.cache/engram-codeql-remote-spm"
           fi
-          rm -rf "$DERIVED/Build/Intermediates.noindex/Engram.build" \
-                 "$DERIVED/Build/Products/Release/Engram"* \
-                 "$DERIVED/Logs"
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
@@ -208,17 +183,19 @@ jobs:
       - name: Build Swift remote server
         run: |
           cd macos
-          DERIVED="$HOME/.cache/engram-codeql-remote-spm/derived"
           xcodebuild build \
             -project Engram.xcodeproj \
             -scheme EngramRemoteServer \
-            -configuration Release \
             -destination 'generic/platform=macOS' \
-            -derivedDataPath "$DERIVED" \
+            -derivedDataPath "$RUNNER_TEMP/engram-codeql-remote-derived" \
             -clonedSourcePackagesDirPath "$HOME/.cache/engram-codeql-remote-spm" \
             -disableAutomaticPackageResolution \
             ARCHS=arm64 \
-            ONLY_ACTIVE_ARCH=NO \
+            ONLY_ACTIVE_ARCH=YES \
+            SWIFT_COMPILATION_MODE=wholemodule \
+            SWIFT_OPTIMIZATION_LEVEL=-Onone \
+            GCC_OPTIMIZATION_LEVEL=0 \
+            DEBUG_INFORMATION_FORMAT=dwarf \
             COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_ALLOWED=NO
 
@@ -226,14 +203,6 @@ jobs:
         uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           category: /language:swift/target:remote-server
-
-      - name: Strip remote server intermediates before cache save
-        if: always()
-        run: |
-          DERIVED="$HOME/.cache/engram-codeql-remote-spm/derived"
-          rm -rf "$DERIVED/Build/Intermediates.noindex/Engram.build" \
-                 "$DERIVED/Build/Products/Release/Engram"* \
-                 "$DERIVED/Logs"
 
   codeql-gate:
     name: CodeQL Gate
