@@ -29,8 +29,7 @@ jobs:
           node-version: 24
           cache: 'npm'
 
-      - run: npm ci
-      - run: npm run build
+      - run: ONNXRUNTIME_NODE_INSTALL=skip npm ci --no-audit --no-fund
 
       - name: Install xcodegen
         run: bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
@@ -59,6 +58,7 @@ jobs:
             -destination 'platform=macOS' \
             -derivedDataPath "$RUNNER_TEMP/engram-perf-derived-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             -clonedSourcePackagesDirPath "$HOME/Library/Caches/EngramSourcePackages" \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee perf-build.log
           status=${PIPESTATUS[0]}

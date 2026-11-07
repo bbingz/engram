@@ -15,8 +15,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || 'pr' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   ACTIONLINT_LINUX_AMD64_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
@@ -84,7 +84,7 @@ jobs:
           node-version: 24
           cache: npm
       - if: steps.classify.outputs.heavy == 'true'
-        run: ONNXRUNTIME_NODE_INSTALL=skip npm ci
+        run: ONNXRUNTIME_NODE_INSTALL=skip npm ci --ignore-scripts --no-audit --no-fund
       - if: steps.classify.outputs.heavy == 'true'
         name: Verify workflow pin contract
         run: npm test -- tests/scripts/ci-workflow.test.ts
@@ -97,23 +97,38 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Cache Linux CLI tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.local/bin
+          key: linux-cli-tools-${{ runner.os }}-${{ runner.arch }}-${{ env.ACTIONLINT_VERSION }}-rg1
       - name: Validate GitHub Actions workflows
         run: |
-          archive="$RUNNER_TEMP/actionlint.tar.gz"
-          curl -fsSLo "$archive" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
-          echo "$ACTIONLINT_LINUX_AMD64_SHA256  $archive" | sha256sum --check -
-          tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
+          mkdir -p "$HOME/.local/bin"
+          if [ -x "$HOME/.local/bin/actionlint" ]; then
+            cp "$HOME/.local/bin/actionlint" "$RUNNER_TEMP/actionlint"
+          else
+            archive="$RUNNER_TEMP/actionlint.tar.gz"
+            curl -fsSLo "$archive" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+            echo "$ACTIONLINT_LINUX_AMD64_SHA256  $archive" | sha256sum --check -
+            tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
+            cp "$RUNNER_TEMP/actionlint" "$HOME/.local/bin/actionlint"
+          fi
           "$RUNNER_TEMP/actionlint"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
-      - run: ONNXRUNTIME_NODE_INSTALL=skip npm ci
+      - run: ONNXRUNTIME_NODE_INSTALL=skip npm ci --no-audit --no-fund
       - name: Install archive safety gate tools
         run: |
+          mkdir -p "$HOME/.local/bin"
+          export PATH="$HOME/.local/bin:$PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           if ! command -v rg >/dev/null 2>&1; then
             sudo apt-get update
             sudo apt-get install -y ripgrep
+            cp "$(command -v rg)" "$HOME/.local/bin/rg"
           fi
       - name: Install TLS listener inspection tool
         run: |
@@ -129,6 +144,14 @@ jobs:
         run: npm run lint
       - name: Dead-code check
         run: npm run knip
+      - name: Check archive v2 no-delete boundary
+        run: bash scripts/check-archive-v2-safety.sh
+      - name: Check test fixture schema and freshness
+        run: npm run check:fixtures
+      - name: Check MCP contract fixture freshness
+        run: npm run check:mcp-contract-fixtures
+      - name: Check adapter parity fixture freshness
+        run: npm run check:adapter-parity-fixtures
       - name: Test with coverage
         run: npm run test:coverage
       - name: Dependency audit
@@ -153,38 +176,39 @@ jobs:
         with:
           node-version: 24
           cache: 'npm'
-      - run: npm ci
-      - run: npm run build
+      - run: ONNXRUNTIME_NODE_INSTALL=skip npm ci --no-audit --no-fund
+      - name: Cache macOS CLI tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.local/bin
+          key: macos-cli-tools-${{ runner.os }}-${{ runner.arch }}-rg1
       - name: Install xcodegen and archive safety tools
         run: |
-          brew install ripgrep
+          mkdir -p "$HOME/.local/bin"
+          export PATH="$HOME/.local/bin:$PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          if ! command -v rg >/dev/null 2>&1; then
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install ripgrep
+            cp "$(command -v rg)" "$HOME/.local/bin/rg"
+          fi
           bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
-      - name: Check archive v2 no-delete boundary
-        run: bash scripts/check-archive-v2-safety.sh
-      # Pure-rg text gates (swift-conventions, product-boundary-scripts) already run on
-      # ubuntu via `npm run test:coverage`; keep macos-vitest for macOS-only scripts.
-      - run: npm test -- tests/scripts/build-release-script.test.ts tests/scripts/remote-server-package.test.ts tests/scripts/collector-package.test.ts tests/scripts/service-package.test.ts tests/scripts/headless-install-plan.test.ts tests/scripts/swift-boundary-scripts.test.ts tests/scripts/archive-v2-safety-gate.test.ts tests/scripts/plist-gate.test.ts tests/scripts/invariants-ledger.test.ts tests/scripts/version-guard.test.ts tests/scripts/hq-live-hardening.test.ts
-      - name: Check test fixture schema and freshness
-        run: npm run check:fixtures
-      - name: Check MCP contract fixture freshness
-        run: npm run check:mcp-contract-fixtures
-      - name: Check adapter parity fixture freshness
-        run: npm run check:adapter-parity-fixtures
+      # Pure-rg text gates and OS-independent fixture checks run on ubuntu (`typescript`);
+      # keep macos-vitest focused on macOS-specific script suites.
+      - run: npm test -- tests/scripts/build-release-script.test.ts tests/scripts/remote-server-package.test.ts tests/scripts/collector-package.test.ts tests/scripts/service-package.test.ts tests/scripts/headless-install-plan.test.ts tests/scripts/swift-boundary-scripts.test.ts tests/scripts/plist-gate.test.ts tests/scripts/invariants-ledger.test.ts tests/scripts/version-guard.test.ts tests/scripts/hq-live-hardening.test.ts
 
   swift-unit:
     needs: changes
     if: needs.changes.outputs.heavy == 'true'
     runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [app, service]
     # Full Engram + CoreTests (incl. multi-100MB JsonlPatch streaming) needs >25m on
     # some runners; 2026-07-18 cancelled at the 25m ceiling mid-suite.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: 'npm'
 
       - name: Install xcodegen
         run: bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
@@ -192,22 +216,21 @@ jobs:
       - name: Cache SPM packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
-          path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
-          key: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-${{ hashFiles('macos/project.yml', 'macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
-          restore-keys: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-
+          path: ~/Library/Developer/Xcode/DerivedData/Engram-CI
+          key: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-v2-${{ matrix.shard }}-${{ hashFiles('macos/project.yml', 'macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-v2-${{ matrix.shard }}-
 
       - name: Generate Xcode project
         run: scripts/check-xcodeproj-drift.sh
 
-      - name: Generate test fixtures
-        run: |
-          npm ci
-          npm run build
-          npm run generate:fixtures
-
       - name: Run Swift unit tests
         run: |
           cd macos
+          DERIVED_DATA="$HOME/Library/Developer/Xcode/DerivedData/Engram-CI"
+          rm -rf "$DERIVED_DATA/Build/Intermediates.noindex/Engram.build" \
+                 "$DERIVED_DATA/Build/Products/Debug/Engram"* \
+                 "$DERIVED_DATA/Logs"
+          trap 'rm -rf "$DERIVED_DATA/Build/Intermediates.noindex/Engram.build" "$DERIVED_DATA/Build/Products/Debug/Engram"* "$DERIVED_DATA/Logs"' EXIT
 
           run_xcode_tests() {
             local scheme="$1"
@@ -219,39 +242,45 @@ jobs:
               -project Engram.xcodeproj \
               -scheme "$scheme" \
               -destination 'platform=macOS' \
+              -derivedDataPath "$DERIVED_DATA" \
+              -clonedSourcePackagesDirPath "$DERIVED_DATA/SourcePackages" \
               -enableCodeCoverage "${ENGRAM_CODE_COVERAGE:-NO}" \
+              COMPILER_INDEX_STORE_ENABLE=NO \
               CODE_SIGNING_ALLOWED=NO \
               "$@" \
               2>&1 | tee "$log"
             grep -Fq '** TEST SUCCEEDED **' "$log"
           }
 
-          run_xcode_tests Engram -skip-testing:EngramUITests
-          ENGRAM_APP="$(
-            find "$HOME/Library/Developer/Xcode/DerivedData" -path '*/Build/Products/Debug/Engram.app' -type d -print0 |
-              while IFS= read -r -d '' app; do
-                stat -f '%m %N' "$app"
-              done |
-              sort -rn |
-              head -n 1 |
-              cut -d' ' -f2-
-          )"
-          if [ -z "$ENGRAM_APP" ] || [ ! -d "$ENGRAM_APP" ]; then
-            echo "Debug Engram.app not found under Xcode DerivedData" >&2
-            exit 1
+          if [ "${{ matrix.shard }}" = "app" ]; then
+            run_xcode_tests Engram -skip-testing:EngramUITests
+            ENGRAM_APP="$(
+              find "$HOME/Library/Developer/Xcode/DerivedData" -path '*/Build/Products/Debug/Engram.app' -type d -print0 |
+                while IFS= read -r -d '' app; do
+                  stat -f '%m %N' "$app"
+                done |
+                sort -rn |
+                head -n 1 |
+                cut -d' ' -f2-
+            )"
+            if [ -z "$ENGRAM_APP" ] || [ ! -d "$ENGRAM_APP" ]; then
+              echo "Debug Engram.app not found under Xcode DerivedData" >&2
+              exit 1
+            fi
+            bash scripts/release-verify.sh "$ENGRAM_APP" --hygiene-only
+          else
+            (
+              SERVICE_TEST_HOME="$(mktemp -d "$GITHUB_WORKSPACE/.engram-demo-test-home.XXXXXX")"
+              chmod 700 "$SERVICE_TEST_HOME"
+              CFFIXED_USER_HOME="$SERVICE_TEST_HOME" \
+              TEST_RUNNER_CFFIXED_USER_HOME="$SERVICE_TEST_HOME" \
+              ENGRAM_DEMO_EXPECTED_HOME="$SERVICE_TEST_HOME" \
+              TEST_RUNNER_ENGRAM_DEMO_EXPECTED_HOME="$SERVICE_TEST_HOME" \
+                run_xcode_tests EngramServiceCore
+            )
+            run_xcode_tests EngramMCPTests
+            run_xcode_tests EngramCollectorCore
           fi
-          bash scripts/release-verify.sh "$ENGRAM_APP" --hygiene-only
-          (
-            SERVICE_TEST_HOME="$(mktemp -d "$GITHUB_WORKSPACE/.engram-demo-test-home.XXXXXX")"
-            chmod 700 "$SERVICE_TEST_HOME"
-            CFFIXED_USER_HOME="$SERVICE_TEST_HOME" \
-            TEST_RUNNER_CFFIXED_USER_HOME="$SERVICE_TEST_HOME" \
-            ENGRAM_DEMO_EXPECTED_HOME="$SERVICE_TEST_HOME" \
-            TEST_RUNNER_ENGRAM_DEMO_EXPECTED_HOME="$SERVICE_TEST_HOME" \
-              run_xcode_tests EngramServiceCore
-          )
-          run_xcode_tests EngramMCPTests
-          run_xcode_tests EngramCollectorCore
 
   remote-server-swift:
     needs: changes
@@ -267,18 +296,34 @@ jobs:
       - name: Install xcodegen
         run: bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
 
+      - name: Cache remote server SPM and prebuilt dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.cache/engram-remote-ci
+          key: spm-${{ runner.os }}-${{ runner.arch }}-xcode26-remote-v2-${{ hashFiles('macos/project.yml', 'macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-${{ runner.arch }}-xcode26-remote-v2-
+
       - name: Generate Xcode project
         run: scripts/check-xcodeproj-drift.sh
 
       - name: Run remote server unit tests
         run: |
           cd macos
+          mkdir -p "$HOME/.cache/engram-remote-ci/SourcePackages"
+          if [ -d "$HOME/.cache/engram-remote-ci/tests-derived" ]; then
+            mv "$HOME/.cache/engram-remote-ci/tests-derived" "$RUNNER_TEMP/engram-remote-tests-derived"
+            rm -rf "$RUNNER_TEMP/engram-remote-tests-derived/Build/Intermediates.noindex/Engram.build" \
+                   "$RUNNER_TEMP/engram-remote-tests-derived/Build/Products/Debug/Engram"* \
+                   "$RUNNER_TEMP/engram-remote-tests-derived/Logs"
+          fi
           xcodebuild test \
             -project Engram.xcodeproj \
             -scheme EngramRemoteServerCore \
             -destination 'platform=macOS' \
             -derivedDataPath "$RUNNER_TEMP/engram-remote-tests-derived" \
+            -clonedSourcePackagesDirPath "$HOME/.cache/engram-remote-ci/SourcePackages" \
             -enableCodeCoverage NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_ALLOWED=NO
 
       - name: Build Release remote server package
@@ -293,14 +338,23 @@ jobs:
           KEYGEN_OUTPUT="$RUNNER_TEMP/engram-remote-keygen.txt"
           test ! -e "$REMOTE_PACKAGE"
 
+          if [ -d "$HOME/.cache/engram-remote-ci/release-derived" ]; then
+            mv "$HOME/.cache/engram-remote-ci/release-derived" "$REMOTE_DERIVED_DATA"
+            rm -rf "$REMOTE_DERIVED_DATA/Build/Intermediates.noindex/Engram.build" \
+                   "$REMOTE_DERIVED_DATA/Build/Products/Release/Engram"* \
+                   "$REMOTE_DERIVED_DATA/Logs"
+          fi
+
           xcodebuild build \
             -project Engram.xcodeproj \
             -scheme EngramRemoteServer \
             -configuration Release \
             -destination 'generic/platform=macOS' \
             -derivedDataPath "$REMOTE_DERIVED_DATA" \
+            -clonedSourcePackagesDirPath "$HOME/.cache/engram-remote-ci/SourcePackages" \
             ARCHS=arm64 \
             ONLY_ACTIVE_ARCH=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_ALLOWED=NO
 
           bash scripts/package-remote-server.sh \
@@ -327,6 +381,17 @@ jobs:
               /usr/bin/tr -d '[:space:]'
           )" = 32
 
+          rm -rf "$RUNNER_TEMP/engram-remote-tests-derived/Build/Intermediates.noindex/Engram.build" \
+                 "$RUNNER_TEMP/engram-remote-tests-derived/Build/Products/Debug/Engram"* \
+                 "$RUNNER_TEMP/engram-remote-tests-derived/Logs" \
+                 "$REMOTE_DERIVED_DATA/Build/Intermediates.noindex/Engram.build" \
+                 "$REMOTE_DERIVED_DATA/Build/Products/Release/Engram"* \
+                 "$REMOTE_DERIVED_DATA/Logs" \
+                 "$HOME/.cache/engram-remote-ci/tests-derived" \
+                 "$HOME/.cache/engram-remote-ci/release-derived"
+          mv "$RUNNER_TEMP/engram-remote-tests-derived" "$HOME/.cache/engram-remote-ci/tests-derived"
+          mv "$REMOTE_DERIVED_DATA" "$HOME/.cache/engram-remote-ci/release-derived"
+
   ui-test-smoke:
     runs-on: macos-15
     needs: changes
@@ -337,7 +402,9 @@ jobs:
         run: echo "SCREENSHOTS_DIR=$RUNNER_TEMP/screenshots" >> "$GITHUB_ENV"
       - name: Install Git LFS
         run: |
-          HOMEBREW_NO_AUTO_UPDATE=1 brew install git-lfs
+          if ! command -v git-lfs >/dev/null 2>&1; then
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install git-lfs
+          fi
           git lfs version
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -346,26 +413,29 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
-      - run: npm run build
+      - run: ONNXRUNTIME_NODE_INSTALL=skip npm ci --no-audit --no-fund
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
-          path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
-          key: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-${{ hashFiles('macos/project.yml', 'macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
-          restore-keys: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-
+          path: ~/Library/Developer/Xcode/DerivedData/Engram-CI
+          key: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-v2-app-${{ hashFiles('macos/project.yml', 'macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-v2-app-
       - name: Install xcodegen
         run: bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
       - run: scripts/check-xcodeproj-drift.sh
-      - run: npm run generate:fixtures
       - name: Dismiss macOS setup assistant
         run: |
           osascript -e 'tell application id "com.apple.SetupAssistant" to quit' || true
           pkill -x "Setup Assistant" || true
       - name: Run UI smoke tests
         run: |
+          DERIVED_DATA="$HOME/Library/Developer/Xcode/DerivedData/Engram-CI"
+          rm -rf "$DERIVED_DATA/Build/Intermediates.noindex/Engram.build" \
+                 "$DERIVED_DATA/Build/Products/Debug/Engram"* \
+                 "$DERIVED_DATA/Logs"
+          trap 'rm -rf "$DERIVED_DATA/Build/Intermediates.noindex/Engram.build" "$DERIVED_DATA/Build/Products/Debug/Engram"* "$DERIVED_DATA/Logs"' EXIT
           xcodebuild test \
             -project macos/Engram.xcodeproj \
-            -scheme Engram \
+            -scheme EngramUITests \
             -only-testing:EngramUITests/HomeSmokeTests \
             -only-testing:EngramUITests/SessionsSmokeTests \
             -only-testing:EngramUITests/SessionDetailSmokeTests \
@@ -374,7 +444,10 @@ jobs:
             -only-testing:EngramUITests/PopoverSmokeTests \
             -only-testing:EngramUITests/ActivitySmokeTests \
             -destination 'platform=macOS' \
+            -derivedDataPath "$DERIVED_DATA" \
+            -clonedSourcePackagesDirPath "$DERIVED_DATA/SourcePackages" \
             -resultBundlePath ${{ runner.temp }}/ui-test-results \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGN_IDENTITY="-" \
             DEVELOPMENT_TEAM=""
       - name: Collect screenshots from sandbox
@@ -413,7 +486,9 @@ jobs:
         run: echo "SCREENSHOTS_DIR=$RUNNER_TEMP/screenshots" >> "$GITHUB_ENV"
       - name: Install Git LFS
         run: |
-          HOMEBREW_NO_AUTO_UPDATE=1 brew install git-lfs
+          if ! command -v git-lfs >/dev/null 2>&1; then
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install git-lfs
+          fi
           git lfs version
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -422,29 +497,35 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
-      - run: npm run build
+      - run: ONNXRUNTIME_NODE_INSTALL=skip npm ci --no-audit --no-fund
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
-          path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
-          key: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-${{ hashFiles('macos/project.yml', 'macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
-          restore-keys: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-
+          path: ~/Library/Developer/Xcode/DerivedData/Engram-CI
+          key: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-v2-app-${{ hashFiles('macos/project.yml', 'macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-v2-app-
       - name: Install xcodegen
         run: bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
       - run: scripts/check-xcodeproj-drift.sh
-      - run: npm run generate:fixtures
       - name: Dismiss macOS setup assistant
         run: |
           osascript -e 'tell application id "com.apple.SetupAssistant" to quit' || true
           pkill -x "Setup Assistant" || true
       - name: Run full UI test suite
         run: |
+          DERIVED_DATA="$HOME/Library/Developer/Xcode/DerivedData/Engram-CI"
+          rm -rf "$DERIVED_DATA/Build/Intermediates.noindex/Engram.build" \
+                 "$DERIVED_DATA/Build/Products/Debug/Engram"* \
+                 "$DERIVED_DATA/Logs"
+          trap 'rm -rf "$DERIVED_DATA/Build/Intermediates.noindex/Engram.build" "$DERIVED_DATA/Build/Products/Debug/Engram"* "$DERIVED_DATA/Logs"' EXIT
           xcodebuild test \
             -project macos/Engram.xcodeproj \
-            -scheme Engram \
+            -scheme EngramUITests \
             -only-testing:EngramUITests \
             -destination 'platform=macOS' \
+            -derivedDataPath "$DERIVED_DATA" \
+            -clonedSourcePackagesDirPath "$DERIVED_DATA/SourcePackages" \
             -resultBundlePath ${{ runner.temp }}/ui-test-results \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGN_IDENTITY="-" \
             DEVELOPMENT_TEAM=""
       - name: Collect screenshots from sandbox

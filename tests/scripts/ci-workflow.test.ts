@@ -547,7 +547,9 @@ describe('CI workflow hardening', () => {
       expect(workflow).toContain(
         'group: $' + '{{ github.workflow }}-$' + '{{ github.ref }}',
       );
-      expect(workflow).toContain('cancel-in-progress: true');
+      expect(workflow).toContain(
+        'cancel-in-progress: $' + "{{ github.ref != 'refs/heads/main' }}",
+      );
     }
     expect(testWorkflow).toContain('name: CI Gate');
     expect(testWorkflow).toContain('if: always()');
