@@ -547,7 +547,9 @@ describe('CI workflow hardening', () => {
       expect(workflow).toContain(
         'group: $' + '{{ github.workflow }}-$' + '{{ github.ref }}',
       );
-      expect(workflow).toContain('cancel-in-progress: true');
+      expect(workflow).toContain(
+        'cancel-in-progress: $' + "{{ github.ref != 'refs/heads/main' }}",
+      );
     }
     expect(testWorkflow).toContain('name: CI Gate');
     expect(testWorkflow).toContain('if: always()');
@@ -804,6 +806,7 @@ describe('CI workflow hardening', () => {
     expect(swiftProduct).toContain(
       '-clonedSourcePackagesDirPath "$HOME/.cache/engram-codeql-spm"',
     );
+    expect(swiftProduct).toContain('SDK_STAT_CACHE_ENABLE=NO');
   });
 
   it('routes CodeQL targets through the tested path classifier', () => {
