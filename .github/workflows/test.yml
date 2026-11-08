@@ -229,40 +229,15 @@ jobs:
 
       - name: Run Swift unit tests
         run: |
+          if [ "${{ matrix.shard }}" = "app" ]; then
+            python3 scripts/ci/prepare-xcode-ci.py --strip-hummingbird --mcp-in-engram-scheme --normalize-mtimes
+          else
+            python3 scripts/ci/prepare-xcode-ci.py --normalize-mtimes
+          fi
           cd macos
           DERIVED_DATA="$HOME/Library/Developer/Xcode/DerivedData/Engram-CI"
           rm -rf "$DERIVED_DATA/Logs"
           trap 'rm -rf "$DERIVED_DATA/Logs"; git checkout -- Engram.xcodeproj' EXIT
-
-          python3 - << 'PY'
-          import hashlib, json, os, subprocess
-          p = "Engram.xcodeproj/project.pbxproj"
-          s = open(p).read()
-          s = s.replace('\t\t\t\t383B925A13DC7D7D8938F316 /* XCRemoteSwiftPackageReference "hummingbird" */,\n', '')
-          open(p, "w").write(s)
-          r = "Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
-          d = json.load(open(r))
-          d["pins"] = [x for x in d["pins"] if x["identity"] in ("grdb.swift", "swift-argument-parser")]
-          json.dump(d, open(r, "w"), indent=2)
-          sc = "Engram.xcodeproj/xcshareddata/xcschemes/Engram.xcscheme"
-          st = open(sc).read()
-          st = st.replace("3E8B4E524AA151B373A0BC91", "4BEDF7101A8E6E1E3BE7587E").replace("EngramUITests", "EngramMCPTests")
-          open(sc, "w").write(st)
-          dirs = set()
-          for f in subprocess.check_output(["git", "ls-files", "-z", ".."]).split(b"\0"):
-              if f and os.path.isfile(f) and not os.path.islink(f):
-                  ts = 1700000000 + (int.from_bytes(hashlib.sha256(open(f, "rb").read()).digest()[:4], "big") % 50000000)
-                  os.utime(f, (ts, ts))
-                  dr = os.path.dirname(f)
-                  while dr and dr not in dirs:
-                      dirs.add(dr)
-                      dr = os.path.dirname(dr)
-          for dr in sorted(dirs, key=len, reverse=True):
-              if os.path.isdir(dr) and not os.path.islink(dr):
-                  h = hashlib.sha256(b"\0".join(sorted(os.listdir(dr)))).digest()[:4]
-                  ts = 1700000000 + (int.from_bytes(h, "big") % 50000000)
-                  os.utime(dr, (ts, ts))
-          PY
 
           run_xcode_tests() {
             local scheme="$1"
@@ -346,24 +321,8 @@ jobs:
 
       - name: Run remote server unit tests
         run: |
+          python3 scripts/ci/prepare-xcode-ci.py --normalize-mtimes
           cd macos
-          python3 - << 'PY'
-          import hashlib, os, subprocess
-          dirs = set()
-          for f in subprocess.check_output(["git", "ls-files", "-z", ".."]).split(b"\0"):
-              if f and os.path.isfile(f) and not os.path.islink(f):
-                  ts = 1700000000 + (int.from_bytes(hashlib.sha256(open(f, "rb").read()).digest()[:4], "big") % 50000000)
-                  os.utime(f, (ts, ts))
-                  dr = os.path.dirname(f)
-                  while dr and dr not in dirs:
-                      dirs.add(dr)
-                      dr = os.path.dirname(dr)
-          for dr in sorted(dirs, key=len, reverse=True):
-              if os.path.isdir(dr) and not os.path.islink(dr):
-                  h = hashlib.sha256(b"\0".join(sorted(os.listdir(dr)))).digest()[:4]
-                  ts = 1700000000 + (int.from_bytes(h, "big") % 50000000)
-                  os.utime(dr, (ts, ts))
-          PY
           mkdir -p "$HOME/.cache/engram-remote-ci/SourcePackages"
           if [ -d "$HOME/.cache/engram-remote-ci/tests-derived" ]; then
             mv "$HOME/.cache/engram-remote-ci/tests-derived" "$RUNNER_TEMP/engram-remote-tests-derived"
@@ -488,31 +447,7 @@ jobs:
           DERIVED_DATA="$HOME/Library/Developer/Xcode/DerivedData/Engram-CI"
           rm -rf "$DERIVED_DATA/Logs"
           trap 'rm -rf "$DERIVED_DATA/Logs"; git checkout -- macos/Engram.xcodeproj' EXIT
-          python3 - << 'PY'
-          import hashlib, json, os, subprocess
-          p = "macos/Engram.xcodeproj/project.pbxproj"
-          s = open(p).read()
-          s = s.replace('\t\t\t\t383B925A13DC7D7D8938F316 /* XCRemoteSwiftPackageReference "hummingbird" */,\n', '')
-          open(p, "w").write(s)
-          r = "macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
-          d = json.load(open(r))
-          d["pins"] = [x for x in d["pins"] if x["identity"] in ("grdb.swift", "swift-argument-parser")]
-          json.dump(d, open(r, "w"), indent=2)
-          dirs = set()
-          for f in subprocess.check_output(["git", "ls-files", "-z"]).split(b"\0"):
-              if f and os.path.isfile(f) and not os.path.islink(f):
-                  ts = 1700000000 + (int.from_bytes(hashlib.sha256(open(f, "rb").read()).digest()[:4], "big") % 50000000)
-                  os.utime(f, (ts, ts))
-                  dr = os.path.dirname(f)
-                  while dr and dr not in dirs:
-                      dirs.add(dr)
-                      dr = os.path.dirname(dr)
-          for dr in sorted(dirs, key=len, reverse=True):
-              if os.path.isdir(dr) and not os.path.islink(dr):
-                  h = hashlib.sha256(b"\0".join(sorted(os.listdir(dr)))).digest()[:4]
-                  ts = 1700000000 + (int.from_bytes(h, "big") % 50000000)
-                  os.utime(dr, (ts, ts))
-          PY
+          python3 scripts/ci/prepare-xcode-ci.py --strip-hummingbird --normalize-mtimes
           pkg_flags=()
           if [ -d "$DERIVED_DATA/SourcePackages/checkouts" ]; then
             pkg_flags=(-disableAutomaticPackageResolution)
@@ -602,31 +537,7 @@ jobs:
           DERIVED_DATA="$HOME/Library/Developer/Xcode/DerivedData/Engram-CI"
           rm -rf "$DERIVED_DATA/Logs"
           trap 'rm -rf "$DERIVED_DATA/Logs"; git checkout -- macos/Engram.xcodeproj' EXIT
-          python3 - << 'PY'
-          import hashlib, json, os, subprocess
-          p = "macos/Engram.xcodeproj/project.pbxproj"
-          s = open(p).read()
-          s = s.replace('\t\t\t\t383B925A13DC7D7D8938F316 /* XCRemoteSwiftPackageReference "hummingbird" */,\n', '')
-          open(p, "w").write(s)
-          r = "macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
-          d = json.load(open(r))
-          d["pins"] = [x for x in d["pins"] if x["identity"] in ("grdb.swift", "swift-argument-parser")]
-          json.dump(d, open(r, "w"), indent=2)
-          dirs = set()
-          for f in subprocess.check_output(["git", "ls-files", "-z"]).split(b"\0"):
-              if f and os.path.isfile(f) and not os.path.islink(f):
-                  ts = 1700000000 + (int.from_bytes(hashlib.sha256(open(f, "rb").read()).digest()[:4], "big") % 50000000)
-                  os.utime(f, (ts, ts))
-                  dr = os.path.dirname(f)
-                  while dr and dr not in dirs:
-                      dirs.add(dr)
-                      dr = os.path.dirname(dr)
-          for dr in sorted(dirs, key=len, reverse=True):
-              if os.path.isdir(dr) and not os.path.islink(dr):
-                  h = hashlib.sha256(b"\0".join(sorted(os.listdir(dr)))).digest()[:4]
-                  ts = 1700000000 + (int.from_bytes(h, "big") % 50000000)
-                  os.utime(dr, (ts, ts))
-          PY
+          python3 scripts/ci/prepare-xcode-ci.py --strip-hummingbird --normalize-mtimes
           pkg_flags=()
           if [ -d "$DERIVED_DATA/SourcePackages/checkouts" ]; then
             pkg_flags=(-disableAutomaticPackageResolution)

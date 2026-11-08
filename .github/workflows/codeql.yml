@@ -88,8 +88,8 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.cache/engram-codeql-spm
-          key: codeql-spm-${{ runner.os }}-${{ runner.arch }}-xcode16-v4-${{ hashFiles('macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
-          restore-keys: codeql-spm-${{ runner.os }}-${{ runner.arch }}-xcode16-v4-
+          key: codeql-spm-${{ runner.os }}-${{ runner.arch }}-xcode16-v5-${{ hashFiles('macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: codeql-spm-${{ runner.os }}-${{ runner.arch }}-xcode16-v5-
 
       - name: Install xcodegen
         run: bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
@@ -99,17 +99,7 @@ jobs:
 
       - name: Prebuild SPM dependencies before CodeQL tracing
         run: |
-          python3 - << 'PY'
-          import json
-          p = "macos/Engram.xcodeproj/project.pbxproj"
-          s = open(p).read()
-          s = s.replace('\t\t\t\t383B925A13DC7D7D8938F316 /* XCRemoteSwiftPackageReference "hummingbird" */,\n', '')
-          open(p, "w").write(s)
-          r = "macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
-          d = json.load(open(r))
-          d["pins"] = [x for x in d["pins"] if x["identity"] in ("grdb.swift", "swift-argument-parser")]
-          json.dump(d, open(r, "w"), indent=2)
-          PY
+          python3 scripts/ci/prepare-xcode-ci.py --strip-hummingbird --normalize-mtimes
           DERIVED="$HOME/.cache/engram-codeql-spm/derived"
           if [ ! -d "$HOME/.cache/engram-codeql-spm/checkouts" ]; then
             xcodebuild -resolvePackageDependencies \
