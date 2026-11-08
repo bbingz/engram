@@ -521,6 +521,57 @@ describe('CI workflow hardening', () => {
     );
   });
 
+  it('saves large Xcode build caches from main pushes only to protect the 10 GB budget', () => {
+    const testJobs = parseDocument(testWorkflow).toJS().jobs as Record<
+      string,
+      { steps?: Array<{ uses?: string; if?: string }> }
+    >;
+    const testSaves = Object.values(testJobs)
+      .flatMap((job) => job.steps ?? [])
+      .filter((step) => step.uses?.startsWith('actions/cache/save@'));
+    expect(testSaves.length).toBeGreaterThan(0);
+    for (const step of testSaves) {
+      expect(step.if).toContain(
+        "github.event_name == 'push' && github.ref == 'refs/heads/main'",
+      );
+    }
+
+    const codeqlJobs = parseDocument(codeqlWorkflow).toJS().jobs as Record<
+      string,
+      { steps?: Array<{ uses?: string; if?: string }> }
+    >;
+    const codeqlSaves = Object.values(codeqlJobs)
+      .flatMap((job) => job.steps ?? [])
+      .filter((step) => step.uses?.startsWith('actions/cache/save@'));
+    expect(codeqlSaves.length).toBeGreaterThan(0);
+    for (const step of codeqlSaves) {
+      expect(step.if).toContain(
+        "(github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main'",
+      );
+    }
+
+    // Plain actions/cache saves on every ref; keep it for small tool caches only.
+    const derivedDataCaches = testWorkflow
+      .split('\n')
+      .filter((line) => line.includes('path: ~/Library/Developer/Xcode'));
+    expect(derivedDataCaches.length).toBeGreaterThan(0);
+    expect(testWorkflow).not.toMatch(
+      /uses: actions\/cache@[0-9a-f]{40}[^\n]*\n\s+with:\n\s+path: ~\/(Library\/Developer|\.cache\/engram-remote-ci)/,
+    );
+    expect(codeqlWorkflow).not.toContain(
+      `uses: actions/cache@${actionPins['actions/cache']}`,
+    );
+    for (const workflow of allWorkflows) {
+      expect(workflow).not.toContain('save-always');
+    }
+    // Self-hosted runners keep caches on their persistent disk.
+    expect(perfWorkflow).not.toContain('actions/cache');
+    expect(perfWorkflow).not.toContain("cache: 'npm'");
+    // Keep app shard un-whitelisted so newly added scheme test targets are not silently skipped.
+    expect(testWorkflow).toContain('run_xcode_tests Engram\n');
+    expect(testWorkflow).not.toContain('-only-testing:EngramCoreTests');
+  });
+
   it('keys SPM cache on the real Package.resolved and scopes restore keys by runner lane', () => {
     expect(testWorkflow).toContain(
       'macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved',
@@ -547,7 +598,9 @@ describe('CI workflow hardening', () => {
       expect(workflow).toContain(
         'group: $' + '{{ github.workflow }}-$' + '{{ github.ref }}',
       );
-      expect(workflow).toContain('cancel-in-progress: true');
+      expect(workflow).toContain(
+        'cancel-in-progress: $' + "{{ github.ref != 'refs/heads/main' }}",
+      );
     }
     expect(testWorkflow).toContain('name: CI Gate');
     expect(testWorkflow).toContain('if: always()');
@@ -795,7 +848,10 @@ describe('CI workflow hardening', () => {
 
     expect(swiftProduct).toContain('timeout-minutes: 75');
     expect(swiftProduct).toContain(
-      `uses: actions/cache@${actionPins['actions/cache']}`,
+      `uses: actions/cache/restore@${actionPins['actions/cache']}`,
+    );
+    expect(swiftProduct).toContain(
+      `uses: actions/cache/save@${actionPins['actions/cache']}`,
     );
     expect(swiftProduct).toContain('path: ~/.cache/engram-codeql-spm');
     expect(swiftProduct).toContain(
@@ -804,6 +860,7 @@ describe('CI workflow hardening', () => {
     expect(swiftProduct).toContain(
       '-clonedSourcePackagesDirPath "$HOME/.cache/engram-codeql-spm"',
     );
+    expect(swiftProduct).toContain('SDK_STAT_CACHE_ENABLE=NO');
   });
 
   it('routes CodeQL targets through the tested path classifier', () => {
@@ -1008,52 +1065,79 @@ describe('local build metadata and script coverage', () => {
 
 describe('Swift Service runner process-home isolation', () => {
   it('launches the full Service suite with one private checkout-local process home and no global HOME override', () => {
-    const job = parsedTestWorkflow.jobs?.['swift-unit'];
-    const step = job?.steps?.find(
-      (candidate) => candidate.name === 'Run Swift unit tests',
-    );
-    const run = step?.run ?? '';
-    const serviceBlocks = [
-      ...run.matchAll(/^[ \t]*\(\n([\s\S]*?)^[ \t]*\)[ \t]*$/gm),
-    ].filter((match) => match[1].includes('run_xcode_tests EngramServiceCore'));
-
-    expect(serviceBlocks).toHaveLength(1);
-    expect(
-      (serviceBlocks[0]?.[1] ?? '')
-        .split('\n')
-        .map((line) => line.trim())
-        .filter(Boolean),
-    ).toEqual([
-      'SERVICE_TEST_HOME="$(mktemp -d "$GITHUB_WORKSPACE/.engram-demo-test-home.XXXXXX")"',
-      'chmod 700 "$SERVICE_TEST_HOME"',
-      'CFFIXED_USER_HOME="$SERVICE_TEST_HOME" \\',
-      'TEST_RUNNER_CFFIXED_USER_HOME="$SERVICE_TEST_HOME" \\',
-      'ENGRAM_DEMO_EXPECTED_HOME="$SERVICE_TEST_HOME" \\',
-      'TEST_RUNNER_ENGRAM_DEMO_EXPECTED_HOME="$SERVICE_TEST_HOME" \\',
-      'run_xcode_tests EngramServiceCore',
-    ]);
-    expect(
-      run.match(/^[ \t]*run_xcode_tests EngramServiceCore\b.*$/gm),
-    ).toHaveLength(1);
-    expect(step?.['continue-on-error']).not.toBe(true);
-    expect(run).not.toMatch(/\bHOME[ \t]*=/);
-
-    const isolatedKeys = [
-      'CFFIXED_USER_HOME',
-      'TEST_RUNNER_CFFIXED_USER_HOME',
-      'ENGRAM_DEMO_EXPECTED_HOME',
-      'TEST_RUNNER_ENGRAM_DEMO_EXPECTED_HOME',
+    const parsedReleaseWorkflow = parseDocument(releaseWorkflow).toJS() as {
+      jobs?: Record<
+        string,
+        {
+          steps?: Array<{
+            name?: string;
+            run?: string;
+            'continue-on-error'?: boolean;
+          }>;
+        }
+      >;
+    };
+    const targets = [
+      {
+        workflow: parsedTestWorkflow,
+        jobName: 'swift-unit',
+        stepName: 'Run Swift unit tests',
+      },
+      {
+        workflow: parsedReleaseWorkflow,
+        jobName: 'release-tests',
+        stepName: 'Run Swift release unit tests',
+      },
     ];
-    for (const scope of [parsedTestWorkflow, job, step]) {
-      const environment =
-        (scope as { env?: Record<string, unknown> } | undefined)?.env ?? {};
-      for (const key of ['HOME', ...isolatedKeys]) {
-        expect(environment).not.toHaveProperty(key);
+
+    for (const { workflow, jobName, stepName } of targets) {
+      const job = workflow.jobs?.[jobName];
+      const step = job?.steps?.find((candidate) => candidate.name === stepName);
+      const run = step?.run ?? '';
+      const serviceBlocks = [
+        ...run.matchAll(/^[ \t]*\(\n([\s\S]*?)^[ \t]*\)[ \t]*$/gm),
+      ].filter((match) =>
+        match[1].includes('run_xcode_tests EngramServiceCore'),
+      );
+
+      expect(serviceBlocks).toHaveLength(1);
+      expect(
+        (serviceBlocks[0]?.[1] ?? '')
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean),
+      ).toEqual([
+        'SERVICE_TEST_HOME="$(mktemp -d "$GITHUB_WORKSPACE/.engram-demo-test-home.XXXXXX")"',
+        'chmod 700 "$SERVICE_TEST_HOME"',
+        'CFFIXED_USER_HOME="$SERVICE_TEST_HOME" \\',
+        'TEST_RUNNER_CFFIXED_USER_HOME="$SERVICE_TEST_HOME" \\',
+        'ENGRAM_DEMO_EXPECTED_HOME="$SERVICE_TEST_HOME" \\',
+        'TEST_RUNNER_ENGRAM_DEMO_EXPECTED_HOME="$SERVICE_TEST_HOME" \\',
+        'run_xcode_tests EngramServiceCore',
+      ]);
+      expect(
+        run.match(/^[ \t]*run_xcode_tests EngramServiceCore\b.*$/gm),
+      ).toHaveLength(1);
+      expect(step?.['continue-on-error']).not.toBe(true);
+      expect(run).not.toMatch(/\bHOME[ \t]*=/);
+
+      const isolatedKeys = [
+        'CFFIXED_USER_HOME',
+        'TEST_RUNNER_CFFIXED_USER_HOME',
+        'ENGRAM_DEMO_EXPECTED_HOME',
+        'TEST_RUNNER_ENGRAM_DEMO_EXPECTED_HOME',
+      ];
+      for (const scope of [workflow, job, step]) {
+        const environment =
+          (scope as { env?: Record<string, unknown> } | undefined)?.env ?? {};
+        for (const key of ['HOME', ...isolatedKeys]) {
+          expect(environment).not.toHaveProperty(key);
+        }
       }
-    }
-    const outsideService = run.replace(serviceBlocks[0]?.[0] ?? '', '');
-    for (const key of isolatedKeys) {
-      expect(outsideService).not.toContain(key);
+      const outsideService = run.replace(serviceBlocks[0]?.[0] ?? '', '');
+      for (const key of isolatedKeys) {
+        expect(outsideService).not.toContain(key);
+      }
     }
   });
 });

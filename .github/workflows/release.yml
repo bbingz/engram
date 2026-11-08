@@ -58,29 +58,36 @@ jobs:
 
       - name: Install xcodegen and archive safety tools
         run: |
-          brew install ripgrep
+          if ! command -v rg >/dev/null 2>&1; then
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install ripgrep
+          fi
           bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      # Restore-only: tag-scoped caches are never reused, so seed from main's cache.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
-          path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
-          key: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-${{ hashFiles('macos/project.yml', 'macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
-          restore-keys: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-
+          path: ~/Library/Developer/Xcode/DerivedData/Engram-CI
+          key: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-v4-service-${{ hashFiles('macos/**/*.swift', 'macos/project.yml', 'macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-v4-service-
 
       - name: Generate Xcode project
         run: scripts/check-xcodeproj-drift.sh
 
       - name: Build fixtures and run TypeScript tests
         run: |
-          npm ci
+          ONNXRUNTIME_NODE_INSTALL=skip npm ci --no-audit --no-fund
           npm run build
           npm run typecheck:test
-          npm run generate:fixtures
           npm run test:coverage
 
       - name: Run Swift release unit tests
         run: |
           cd macos
+          DERIVED_DATA="$HOME/Library/Developer/Xcode/DerivedData/Engram-CI"
+          rm -rf "$DERIVED_DATA/Build/Intermediates.noindex/Engram.build" \
+                 "$DERIVED_DATA/Build/Products/Debug/Engram"* \
+                 "$DERIVED_DATA/Logs"
+          trap 'rm -rf "$DERIVED_DATA/Build/Intermediates.noindex/Engram.build" "$DERIVED_DATA/Build/Products/Debug/Engram"* "$DERIVED_DATA/Logs"' EXIT
 
           run_xcode_tests() {
             local scheme="$1"
@@ -90,6 +97,9 @@ jobs:
               -project Engram.xcodeproj \
               -scheme "$scheme" \
               -destination 'platform=macOS' \
+              -derivedDataPath "$DERIVED_DATA" \
+              -clonedSourcePackagesDirPath "$DERIVED_DATA/SourcePackages" \
+              COMPILER_INDEX_STORE_ENABLE=NO \
               CODE_SIGNING_ALLOWED=NO \
               "$@" \
               2>&1 | tee "$log"
@@ -97,8 +107,17 @@ jobs:
           }
 
           run_xcode_tests Engram -skip-testing:EngramUITests
-          run_xcode_tests EngramServiceCore
+          (
+            SERVICE_TEST_HOME="$(mktemp -d "$GITHUB_WORKSPACE/.engram-demo-test-home.XXXXXX")"
+            chmod 700 "$SERVICE_TEST_HOME"
+            CFFIXED_USER_HOME="$SERVICE_TEST_HOME" \
+            TEST_RUNNER_CFFIXED_USER_HOME="$SERVICE_TEST_HOME" \
+            ENGRAM_DEMO_EXPECTED_HOME="$SERVICE_TEST_HOME" \
+            TEST_RUNNER_ENGRAM_DEMO_EXPECTED_HOME="$SERVICE_TEST_HOME" \
+              run_xcode_tests EngramServiceCore
+          )
           run_xcode_tests EngramMCPTests
+          run_xcode_tests EngramCollectorCore
 
   release-remote-server-tests:
     needs: validate-release-tag
@@ -113,17 +132,33 @@ jobs:
       - name: Install xcodegen
         run: bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
 
+      - name: Cache remote server SPM and prebuilt dependencies
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.cache/engram-remote-ci
+          key: spm-${{ runner.os }}-${{ runner.arch }}-xcode26-remote-v4-${{ hashFiles('macos/**/*.swift', 'macos/project.yml', 'macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-${{ runner.arch }}-xcode26-remote-v4-
+
       - name: Generate Xcode project
         run: scripts/check-xcodeproj-drift.sh
 
       - name: Run remote server unit tests
         run: |
           cd macos
+          mkdir -p "$HOME/.cache/engram-remote-ci/SourcePackages"
+          if [ -d "$HOME/.cache/engram-remote-ci/tests-derived" ]; then
+            mv "$HOME/.cache/engram-remote-ci/tests-derived" "$RUNNER_TEMP/engram-remote-tests-derived"
+            rm -rf "$RUNNER_TEMP/engram-remote-tests-derived/Build/Intermediates.noindex/Engram.build" \
+                   "$RUNNER_TEMP/engram-remote-tests-derived/Build/Products/Debug/Engram"* \
+                   "$RUNNER_TEMP/engram-remote-tests-derived/Logs"
+          fi
           xcodebuild test \
             -project Engram.xcodeproj \
             -scheme EngramRemoteServerCore \
             -destination 'platform=macOS' \
             -derivedDataPath "$RUNNER_TEMP/engram-remote-tests-derived" \
+            -clonedSourcePackagesDirPath "$HOME/.cache/engram-remote-ci/SourcePackages" \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_ALLOWED=NO
 
   release-bundle-gate:
@@ -149,18 +184,8 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: 'npm'
-
       - name: Install xcodegen
         run: bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
-
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: ${{ runner.temp }}/engram-release-derived/**/SourcePackages
-          key: spm-${{ runner.os }}-${{ runner.arch }}-release-${{ hashFiles('macos/project.yml', 'macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
 
       - name: Select Xcode 26.6 when installed
         run: |
@@ -173,12 +198,6 @@ jobs:
       - name: Generate Xcode project
         run: scripts/check-xcodeproj-drift.sh
 
-      - name: Build test fixtures (needed by the project's resource phases)
-        run: |
-          npm ci
-          npm run build
-          npm run generate:fixtures
-
       - name: Archive (ad-hoc identity)
         run: |
           cd macos
@@ -187,7 +206,9 @@ jobs:
             -scheme Engram \
             -configuration Release \
             -derivedDataPath "$RUNNER_TEMP/engram-release-derived" \
+            -clonedSourcePackagesDirPath "$HOME/Library/Caches/EngramSourcePackages" \
             -archivePath build/Engram.xcarchive \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=YES \
