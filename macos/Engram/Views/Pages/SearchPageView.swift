@@ -91,7 +91,39 @@ enum SearchOutcome: Equatable {
     }
 }
 
+enum SearchValueFilter: String, CaseIterable {
+    case all, high, medium, low, unknown
+
+    var requestValueBand: String? { self == .all ? nil : rawValue }
+
+    var label: String {
+        switch self {
+        case .all: return "Any value"
+        case .high: return "High value"
+        case .medium: return "Medium value"
+        case .low: return "Low value"
+        case .unknown: return "Not scored"
+        }
+    }
+}
+
+struct SearchValueFilterPicker: View {
+    @Binding var selection: SearchValueFilter
+
+    var body: some View {
+        Picker("Value", selection: $selection) {
+            ForEach(SearchValueFilter.allCases, id: \.self) { filter in
+                Text(LocalizedStringKey(filter.label)).tag(filter)
+            }
+        }
+        .pickerStyle(.menu)
+        .fixedSize()
+        .accessibilityIdentifier("search_valueFilter")
+    }
+}
+
 struct SearchPageView: View {
+    @Environment(\.locale) private var locale
     @Environment(DatabaseManager.self) var db
     @Environment(\.engramServiceClient) var serviceClient
     @Environment(\.engramFixedDate) var fixedDate
@@ -105,6 +137,7 @@ struct SearchPageView: View {
     @State private var selectedSourceFilter: String?
     @State private var selectedTimeFilter: SearchTimeFilter = .all
     @State private var selectedOriginFilter: SearchOriginFilter = .all
+    @State private var selectedValueFilter: SearchValueFilter = .all
     /// Keyboard focus on result rows: `.plain` card buttons draw no focus ring,
     /// so the row overlay below renders one explicitly (accent, 2pt).
     @FocusState private var focusedResultId: String?
@@ -132,6 +165,7 @@ struct SearchPageView: View {
 
     private var hasClearableFilters: Bool {
         selectedSourceFilter != nil || selectedTimeFilter != .all || selectedOriginFilter != .all
+            || selectedValueFilter != .all
             || (lockedProject == nil && selectedProjectFilter != nil)
     }
 
@@ -182,6 +216,7 @@ struct SearchPageView: View {
         .onChange(of: selectedSourceFilter) { _, _ in triggerSearchIfReady() }
         .onChange(of: selectedTimeFilter) { _, _ in triggerSearchIfReady() }
         .onChange(of: selectedOriginFilter) { _, _ in triggerSearchIfReady() }
+        .onChange(of: selectedValueFilter) { _, _ in triggerSearchIfReady() }
         .onDisappear { searchTask?.cancel(); searchTask = nil }
     }
 
@@ -342,12 +377,15 @@ struct SearchPageView: View {
     }
 
     private var filterBar: some View {
-        HStack(spacing: 8) {
-            projectFilterControl
-            sourceFilterControl
-            timeFilterControl
-            originFilterControl
-            Spacer()
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                projectFilterControl
+                sourceFilterControl
+                timeFilterControl
+                originFilterControl
+                Spacer()
+            }
+            SearchValueFilterPicker(selection: $selectedValueFilter)
         }
         .controlSize(.small)
         .accessibilityIdentifier("search_filters")
@@ -367,6 +405,9 @@ struct SearchPageView: View {
         if selectedOriginFilter != .all {
             parts.append(selectedOriginFilter.label)
         }
+        if selectedValueFilter != .all {
+            parts.append(String(localized: String.LocalizationValue(selectedValueFilter.label), locale: locale))
+        }
         return parts.joined(separator: " · ")
     }
 
@@ -377,6 +418,7 @@ struct SearchPageView: View {
         selectedSourceFilter = nil
         selectedTimeFilter = .all
         selectedOriginFilter = .all
+        selectedValueFilter = .all
     }
 
     /// The navigation notification shared by result tap and keyboard Enter/Space.
@@ -503,6 +545,7 @@ struct SearchPageView: View {
         let requestedSource = selectedSourceFilter
         let requestedTime = selectedTimeFilter
         let requestedOrigin = selectedOriginFilter
+        let requestedValueBand = selectedValueFilter.requestValueBand
         guard SearchQueryReadiness.classify(query: requestedQuery) == .ready else {
             results = []
             searchModes = []
@@ -524,7 +567,8 @@ struct SearchPageView: View {
                     project: requestedProject,
                     source: requestedSource,
                     since: since,
-                    origin: requestedOrigin.requestOrigin
+                    origin: requestedOrigin.requestOrigin,
+                    valueBand: requestedValueBand
                 )
             )
 
@@ -552,7 +596,8 @@ struct SearchPageView: View {
                         sources: fallbackSources,
                         projects: fallbackProjects,
                         since: fallbackSince,
-                        origin: requestedOrigin.requestOrigin
+                        origin: requestedOrigin.requestOrigin,
+                        valueBand: requestedValueBand
                     )
                 }.value
                 guard !Task.isCancelled else { return }

@@ -2,10 +2,16 @@ import CryptoKit
 import Foundation
 
 public enum ArchiveV2Hash {
+    private static let hexDigits = Array("0123456789abcdef".utf8)
+
     public static func sha256(_ data: Data) -> String {
-        SHA256.hash(data: data)
-            .map { String(format: "%02x", $0) }
-            .joined()
+        var bytes = [UInt8]()
+        bytes.reserveCapacity(64)
+        for byte in SHA256.hash(data: data) {
+            bytes.append(hexDigits[Int(byte >> 4)])
+            bytes.append(hexDigits[Int(byte & 0x0f)])
+        }
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     public static func isValidSHA256(_ value: String) -> Bool {

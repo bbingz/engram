@@ -8,6 +8,7 @@ enum EngramServiceWebWriteClientError: Error, Equatable, LocalizedError, Sendabl
     case unavailable
     case notFound
     case malformed
+    case aiEndpointRequiresLocalUpdate
     case project(EngramServiceWebProjectFailure)
 
     var errorDescription: String? {
@@ -18,6 +19,7 @@ enum EngramServiceWebWriteClientError: Error, Equatable, LocalizedError, Sendabl
         case .unavailable: return "Web alias service is unavailable."
         case .notFound: return "Web write target was not found."
         case .malformed: return "Web alias response is invalid."
+        case .aiEndpointRequiresLocalUpdate: return "Change AI endpoints and credentials in the server's local settings."
         case .project(let failure): return failure.message
         }
     }
@@ -27,14 +29,16 @@ enum EngramServiceWebWriteClientError: Error, Equatable, LocalizedError, Sendabl
 struct EngramServiceWebAddAliasRequest: Codable, Equatable, Sendable {
     let canonical: String
     let alias: String
+    let actor: String?
 
-    init(canonical: String, alias: String) throws {
+    init(canonical: String, alias: String, actor: String? = nil) throws {
         try EngramServiceWebMetadataValidation.projectIdentity(canonical)
         let alias = try EngramServiceWebWriteValidation.aliasText(alias)
         let published = try EngramServiceWebWriteValidation.requirePublished(alias)
         try EngramServiceWebMetadataValidation.require(!published.utf8.elementsEqual(canonical.utf8))
         self.canonical = canonical
         self.alias = alias
+        self.actor = try actor.map(EngramServiceWebProjectValidation.auditActor)
     }
 
     init(from decoder: Decoder) throws {
@@ -42,7 +46,8 @@ struct EngramServiceWebAddAliasRequest: Codable, Equatable, Sendable {
         do {
             self = try Self(
                 canonical: try container.decode(String.self, forKey: .canonical),
-                alias: try container.decode(String.self, forKey: .alias)
+                alias: try container.decode(String.self, forKey: .alias),
+                actor: try container.decodeIfPresent(String.self, forKey: .actor)
             )
         } catch {
             throw DecodingError.dataCorruptedError(forKey: .alias, in: container, debugDescription: "invalid")
@@ -54,13 +59,15 @@ struct EngramServiceWebAddAliasRequest: Codable, Equatable, Sendable {
 struct EngramServiceWebRemoveAliasRequest: Codable, Equatable, Sendable {
     let alias: String
     let canonical: String
+    let actor: String?
 
-    init(alias: String, canonical: String) throws {
+    init(alias: String, canonical: String, actor: String? = nil) throws {
         try EngramServiceWebMetadataValidation.projectIdentity(alias)
         try EngramServiceWebMetadataValidation.projectIdentity(canonical)
         try EngramServiceWebMetadataValidation.require(!alias.utf8.elementsEqual(canonical.utf8))
         self.alias = alias
         self.canonical = canonical
+        self.actor = try actor.map(EngramServiceWebProjectValidation.auditActor)
     }
 
     init(from decoder: Decoder) throws {
@@ -68,7 +75,8 @@ struct EngramServiceWebRemoveAliasRequest: Codable, Equatable, Sendable {
         do {
             self = try Self(
                 alias: try container.decode(String.self, forKey: .alias),
-                canonical: try container.decode(String.self, forKey: .canonical)
+                canonical: try container.decode(String.self, forKey: .canonical),
+                actor: try container.decodeIfPresent(String.self, forKey: .actor)
             )
         } catch {
             throw DecodingError.dataCorruptedError(forKey: .alias, in: container, debugDescription: "invalid")

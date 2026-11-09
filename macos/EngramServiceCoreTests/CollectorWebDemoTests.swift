@@ -484,6 +484,13 @@ final class CollectorWebDemoTests: XCTestCase {
                 try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM project_aliases WHERE alias = ?", arguments: [rawAlias])
             }
             XCTAssertEqual(remaining, 0)
+            let aliasAudit = try await database.read { db in
+                try Row.fetchAll(db, sql: "SELECT actor, action, alias, canonical FROM web_alias_audit_log ORDER BY id")
+            }
+            XCTAssertEqual(aliasAudit.map { $0["actor"] as String }, ["web-editor", "web-editor"])
+            XCTAssertEqual(aliasAudit.map { $0["action"] as String }, ["add", "remove"])
+            XCTAssertEqual(aliasAudit.map { $0["alias"] as String }, [result.alias, result.alias])
+            XCTAssertEqual(aliasAudit.map { $0["canonical"] as String }, [canonical, canonical])
             let note = "ContinuitySaved " + String(repeating: "🙂中", count: 6_000)
             let deniedInsight = try await request("/web/api/insights", method: "POST", cookie: viewerCookie,
                 body: ["content": note, "sourceSessionId": "alias-session"])

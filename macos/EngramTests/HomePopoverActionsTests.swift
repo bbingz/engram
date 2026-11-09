@@ -8,6 +8,55 @@ import XCTest
 /// embedding bindings, the indexing vs empty states, and the popover Live
 /// section that must reuse the badge's exact active-session predicate.
 final class HomePopoverActionsTests: XCTestCase {
+    @MainActor
+    func testPopoverDateGroupsKeepDistinctIdentityForResumedSessions_repro() throws {
+        // Recent activity order can interleave sessions started on the same day.
+        let sessions = try [
+            timelineSession(id: "recent", day: "2020-01-02"),
+            timelineSession(id: "resumed", day: "2020-01-01"),
+            timelineSession(id: "earlier", day: "2020-01-02"),
+        ]
+        let groups = PopoverView.groupedByDate(sessions)
+
+        XCTAssertEqual(groups.map(\.key), ["2020-01-02", "2020-01-01", "2020-01-02"])
+        XCTAssertEqual(groups.flatMap(\.sessions).map(\.id), sessions.map(\.id))
+        XCTAssertEqual(Set(groups.map(\.id)).count, groups.count,
+                       "Repeated date labels must not produce duplicate SwiftUI identities")
+    }
+
+    @MainActor
+    func testPopoverDateGroupsKeepAdjacentSessionsAndStableIdentity() throws {
+        let sessions = try [
+            timelineSession(id: "first", day: "2020-01-02"),
+            timelineSession(id: "second", day: "2020-01-02"),
+        ]
+        let groups = PopoverView.groupedByDate(sessions)
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(groups.first?.sessions.map(\.id), ["first", "second"])
+        XCTAssertEqual(PopoverView.groupedByDate(sessions).map(\.id), groups.map(\.id))
+
+        let newest = try timelineSession(id: "newest", day: "2020-01-03")
+        let refreshed = PopoverView.groupedByDate([newest] + sessions)
+        XCTAssertEqual(refreshed.dropFirst().map(\.id), groups.map(\.id),
+                       "Inserting another date group must not renumber existing groups")
+    }
+
+    @MainActor
+    func testPopoverDateGroupsAcceptEmptyTimeline() {
+        XCTAssertTrue(PopoverView.groupedByDate([]).isEmpty)
+    }
+
+    private func timelineSession(id: String, day: String) throws -> Session {
+        let fields: [String: Any] = [
+            "id": id, "source": "claude-code", "start_time": "\(day)T12:00:00Z",
+            "cwd": "/tmp", "message_count": 2, "user_message_count": 1,
+            "assistant_message_count": 1, "system_message_count": 0,
+            "tool_message_count": 0, "file_path": "/tmp/\(id).jsonl",
+            "size_bytes": 0, "indexed_at": "\(day)T12:00:00Z",
+        ]
+        return try JSONDecoder().decode(Session.self, from: JSONSerialization.data(withJSONObject: fields))
+    }
+
     func testOpenCodeLiveProbeUsesShortBusyTimeout_repro() throws {
         let provider = try source("macos/EngramService/Core/EngramServiceReadProvider.swift")
         XCTAssertTrue(provider.contains("configuration.busyMode = .timeout(0.1)"))

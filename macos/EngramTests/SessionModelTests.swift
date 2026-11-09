@@ -1,6 +1,7 @@
 // macos/EngramTests/SessionModelTests.swift
 import XCTest
 import GRDB
+import SwiftUI
 @testable import Engram
 
 final class SessionModelTests: XCTestCase {
@@ -81,6 +82,51 @@ final class SessionModelTests: XCTestCase {
     }
 
     // MARK: - displayTitle tests
+
+    func testValueBandBoundariesPreserveUnknownScores() {
+        for (score, expected): (Int?, Session.ValueBand) in [
+            (nil, .unknown), (0, .low), (35, .low), (36, .medium),
+            (59, .medium), (60, .high), (100, .high),
+        ] {
+            var session = makeSession()
+            session.qualityScore = score
+            XCTAssertEqual(session.valueBand, expected, "score=\(String(describing: score))")
+        }
+    }
+
+    @MainActor
+    func testValueBandsRenderInSessionCardsAndTableCells() throws {
+        let sessions = [nil, 20, 45, 65].enumerated().map { index, score in
+            var session = makeSession(id: "value-\(index)", summary: "Session with \(score.map(String.init) ?? "no") score")
+            session.qualityScore = score
+            return session
+        }
+        for locale in ["en", "zh-Hans"] {
+            for scheme in [ColorScheme.light, .dark] {
+                let content = VStack(alignment: .leading, spacing: 12) {
+                    ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
+                        SessionCard(session: session)
+                        SessionTableCell(row: SessionTableRow(
+                            id: session.id, session: session, kind: .parent, depth: 0, index: index
+                        ))
+                        .frame(width: 420)
+                    }
+                }
+                .padding(16)
+                .frame(width: 800)
+                .background(Theme.background)
+                .environment(\.locale, Locale(identifier: locale))
+                .environment(\.colorScheme, scheme)
+                let renderer = ImageRenderer(content: content)
+                renderer.scale = 2
+                let image = try XCTUnwrap(renderer.nsImage)
+                let attachment = XCTAttachment(image: image)
+                attachment.name = "value-bands-\(locale)-\(scheme)"
+                attachment.lifetime = .keepAlways
+                add(attachment)
+            }
+        }
+    }
 
     /// 1. displayTitle returns customName when set
     func testDisplayTitleCustomName() throws {

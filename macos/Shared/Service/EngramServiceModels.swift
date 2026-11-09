@@ -182,6 +182,7 @@ struct EngramServiceSearchRequest: Codable, Equatable, Sendable {
     let source: String?
     let since: String?
     let origin: String?
+    let valueBand: String?
 
     init(
         query: String,
@@ -190,7 +191,8 @@ struct EngramServiceSearchRequest: Codable, Equatable, Sendable {
         project: String? = nil,
         source: String? = nil,
         since: String? = nil,
-        origin: String? = nil
+        origin: String? = nil,
+        valueBand: String? = nil
     ) {
         self.query = query
         self.mode = mode
@@ -199,6 +201,7 @@ struct EngramServiceSearchRequest: Codable, Equatable, Sendable {
         self.source = source
         self.since = since
         self.origin = origin
+        self.valueBand = valueBand
     }
 }
 

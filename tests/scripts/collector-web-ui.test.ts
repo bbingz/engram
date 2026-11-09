@@ -4928,6 +4928,28 @@ describe('native AI settings editing', () => {
     expect(ui.node('ai-config-status').textContent).toContain('Reload');
     expect(ui.node('ai-config-save').disabled).toBe(true);
   });
+  it('explains an atomic endpoint rejection and permits correcting the draft', async () => {
+    const ui = await ready();
+    ui.node('ai-config-aiBaseURL').value = 'https://other.example/v1';
+    const pending = ui.call('saveAISettings()');
+    ui.requests[1].resolve(undefined, 409);
+    await pending;
+    expect(ui.node('ai-config-status').textContent).toContain('not saved');
+    expect(ui.node('ai-config-status').textContent).toContain('server');
+    expect(ui.node('ai-config-save').disabled).toBe(false);
+    expect(ui.node('ai-config-aiBaseURL').value).toBe(
+      'https://other.example/v1',
+    );
+    ui.node('ai-config-aiBaseURL').value = settings.aiBaseURL;
+    ui.node('ai-config-aiModel').value = 'new-model';
+    const corrected = ui.call('saveAISettings()');
+    expect(JSON.parse(ui.requests[2].body || '{}')).toEqual({
+      aiModel: 'new-model',
+    });
+    ui.requests[2].resolve({ settings: { ...settings, aiModel: 'new-model' } });
+    await corrected;
+    expect(ui.node('ai-config-status').textContent).toContain('Saved');
+  });
   it('clears private prompt text on logout and ignores late responses', async () => {
     const ui = await ready();
     ui.node('ai-config-summaryPrompt').value = 'Private drafting instruction';

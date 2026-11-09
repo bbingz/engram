@@ -17,6 +17,19 @@ final class ArchiveModelTests: XCTestCase {
             ArchiveV2Hash.sha256(Data("abc".utf8)),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         )
+        XCTAssertEqual(
+            ArchiveV2Hash.sha256(Data("286".utf8)),
+            "00328ce57bbc14b33bd6695bc8eb32cdf2fb5f3a7d89ec14a42825e15d39df60",
+            "Hex encoding must preserve leading zero bytes"
+        )
+        XCTAssertEqual(
+            ArchiveV2Hash.sha256(Data((0...255).map(UInt8.init))),
+            "40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880"
+        )
+        XCTAssertEqual(
+            ArchiveV2Hash.sha256(Data(repeating: 0xff, count: 65)),
+            "855c9a28fff2bbbd71327165554a00c6fdd44d5d58c1f12b8fdff29b5d67f001"
+        )
         XCTAssertTrue(ArchiveV2Hash.isValidSHA256(sourceDigest))
         XCTAssertFalse(ArchiveV2Hash.isValidSHA256(String(repeating: "A", count: 64)))
         XCTAssertFalse(ArchiveV2Hash.isValidSHA256(String(repeating: "a", count: 63)))

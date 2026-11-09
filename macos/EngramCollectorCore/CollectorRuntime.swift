@@ -92,6 +92,7 @@ public actor CollectorRuntime {
     private var closed = false
     private let diagnostics: @Sendable (String) -> Void
     private let eventStreamFactory: EventStreamFactory
+    private let retryClock: @Sendable () -> ContinuousClock.Instant
     private var identitySuspendedRoots = Set<Int>()
     private var reportedIdentitySuspendedRoots = Set<Int>()
     /// Roots whose stored FSEvents checkpoint belongs to another native epoch. Kept for
@@ -105,6 +106,11 @@ public actor CollectorRuntime {
     private var blockedStreaks: [Int: Int] = [:]
     private var blockedRoots = Set<Int>()
     private var reportedBlockedRoots = Set<Int>()
+    private struct BlockedRootRetry {
+        let delaySeconds: Int
+        let deadline: ContinuousClock.Instant
+    }
+    private var blockedRetries: [Int: BlockedRootRetry] = [:]
     /// Awaited immediately before a background capture turn checks `stopping`.
     /// Tests hold this until `stop` has entered; production leaves it nil.
     private var testCaptureTurnBarrier: (@Sendable () async -> Void)?
@@ -128,7 +134,8 @@ public actor CollectorRuntime {
                  owner: CollectorInventoryOwner, catalog: ArchiveCatalog,
                  worker: CollectorPublicationWorker, uploader: CollectorPublicationWorker,
                  diagnostics: @escaping @Sendable (String) -> Void,
-                 eventStreamFactory: @escaping EventStreamFactory) {
+                 eventStreamFactory: @escaping EventStreamFactory,
+                 retryClock: @escaping @Sendable () -> ContinuousClock.Instant) {
         self.settingsURL = settingsURL
         self.configuration = configuration
         self.owner = owner
@@ -137,6 +144,7 @@ public actor CollectorRuntime {
         self.uploader = uploader
         self.diagnostics = diagnostics
         self.eventStreamFactory = eventStreamFactory
+        self.retryClock = retryClock
     }
 
     public static func open(
@@ -156,7 +164,8 @@ public actor CollectorRuntime {
         diagnostics: @escaping @Sendable (String) -> Void,
         eventStreamFactory: @escaping EventStreamFactory = { request, budget in
             CollectorNativeEventStream(request: request, budget: budget)
-        }
+        },
+        retryClock: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now }
     ) throws -> CollectorRuntime? {
         try Task.checkCancellation()
         guard let configuration = try CollectorRuntimeConfiguration.load(at: settingsURL) else { return nil }
@@ -184,7 +193,7 @@ public actor CollectorRuntime {
                     configuration: configuration, replicas: replicas, settingsURL: settingsURL)
                 return CollectorRuntime(settingsURL: settingsURL, configuration: configuration,
                     owner: owner, catalog: catalog, worker: worker, uploader: uploader, diagnostics: diagnostics,
-                    eventStreamFactory: eventStreamFactory)
+                    eventStreamFactory: eventStreamFactory, retryClock: retryClock)
             } catch {
                 try catalog.close()
                 throw error
@@ -252,6 +261,7 @@ public actor CollectorRuntime {
         var steps: [(Int, CollectorEventCoordinatorStep)] = []
         for index in coordinators.keys.sorted() {
             try Task.checkCancellation()
+            guard !isBackingOff(index) else { continue }
             guard let coordinator = coordinators[index] else { continue }
             do {
                 let observed = started.observations[Data(configuration.rootConfigurations[index].rootID.utf8)]
@@ -260,12 +270,20 @@ public actor CollectorRuntime {
                 steps.append((index, step))
                 if let bootstrap = step.bootstrap {
                     if case .blocked = bootstrap.outcome {
+                        let delay = min((blockedRetries[index]?.delaySeconds ?? 0) * 2, 60)
+                        let seconds = max(delay, 1)
+                        blockedRetries[index] = .init(delaySeconds: seconds,
+                            deadline: retryClock().advanced(by: .seconds(seconds)))
+                        captureRootIDs.remove(Data(configuration.rootConfigurations[index].rootID.utf8))
                         let streak = min((blockedStreaks[index] ?? 0) + 1, Self.blockedReportThreshold)
                         blockedStreaks[index] = streak
                         if streak == Self.blockedReportThreshold { blockedRoots.insert(index) }
                     } else {
                         blockedStreaks[index] = nil
                         blockedRoots.remove(index)
+                        // Reopening the first directory is not recovery: a later
+                        // directory can block again in this same multi-turn scan.
+                        if bootstrap.outcome == .finished { blockedRetries[index] = nil }
                     }
                 }
             } catch where Self.isUnavailableSource(error) {
@@ -279,6 +297,8 @@ public actor CollectorRuntime {
 
     private func mailboxSamples(historyWaiting: [Int: Bool]) throws -> [CollectorCaptureScheduleSample] {
         try coordinators.keys.sorted().compactMap { index in
+            // A pending loss on a cooling root must not force extra capture turns.
+            guard !isBackingOff(index) else { return nil }
             guard let coordinator = coordinators[index] else { return nil }
             let snap = try coordinator.snapshot()
             return CollectorCaptureScheduleSample(
@@ -480,6 +500,7 @@ public actor CollectorRuntime {
         _ = try owner.activateStoredRootForPublication(configuration.rootConfigurations[index])
         blockedStreaks[index] = nil
         blockedRoots.remove(index)
+        blockedRetries[index] = nil
         if let coordinator = coordinators[index] {
             do { try coordinator.stop() }
             catch where Self.isUnavailableSource(error) {
@@ -499,6 +520,7 @@ public actor CollectorRuntime {
         var live: [(Int, CollectorRootConfiguration)] = []
         for (index, root) in configuration.rootConfigurations.enumerated() {
             try Task.checkCancellation()
+            guard !isBackingOff(index) else { continue }
             if let coordinator = coordinators[index],
                try coordinator.snapshot().phase != .recoveryRequired {
                 live.append((index, root))
@@ -519,6 +541,7 @@ public actor CollectorRuntime {
         }
         for (index, root) in configuration.rootConfigurations.enumerated() {
             try Task.checkCancellation()
+            guard !isBackingOff(index) else { continue }
             if live.contains(where: { $0.0 == index }) || epochSuspendedRoots.contains(index) { continue }
             do {
                 // Missing or recovery-required coordinators still enroll and start.
@@ -598,8 +621,13 @@ public actor CollectorRuntime {
         diagnostics(line)
     }
 
+    private func isBackingOff(_ index: Int) -> Bool {
+        guard let retry = blockedRetries[index] else { return false }
+        return retryClock() < retry.deadline
+    }
+
     /// docs/invariants.md "Collector Bootstrap Scan Finishes Past Vanished Directories": a root whose bootstrap walk is blocked
-    /// (enumerationUnavailable or unsafeEntry) is retried every turn. Report one line,
+    /// (enumerationUnavailable or unsafeEntry) retries after bounded backoff. Report one line,
     /// root IDs only, each time the set of persistently blocked roots changes.
     private func reportBlockedRootsIfChanged() {
         guard blockedRoots != reportedBlockedRoots else { return }

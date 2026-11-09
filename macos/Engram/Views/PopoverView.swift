@@ -181,7 +181,7 @@ struct PopoverView: View {
         } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
-                    let groups = groupedByDate(data.recentSessions)
+                    let groups = Self.groupedByDate(data.recentSessions)
                     ForEach(groups) { group in
                         Text(group.key)
                             .font(.caption2).fontWeight(.semibold)
@@ -385,13 +385,14 @@ struct PopoverView: View {
         return f
     }()
 
-    private struct DateGroup: Identifiable {
+    struct DateGroup: Identifiable {
         let key: String
         let sessions: [Session]
-        var id: String { key }
+        // Activity ordering can split one date into multiple nonempty groups.
+        var id: String { sessions[0].id }
     }
 
-    private func groupedByDate(_ sessions: [Session]) -> [DateGroup] {
+    static func groupedByDate(_ sessions: [Session]) -> [DateGroup] {
         let cal = Calendar.current
         var groups: [(String, [Session])] = []
         var currentKey = ""

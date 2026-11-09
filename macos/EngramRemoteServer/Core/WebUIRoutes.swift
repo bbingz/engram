@@ -1363,6 +1363,10 @@ enum WebUIRoutes {
           } catch (error) {
             if (version !== aiConfigVersion || activePage !== "settings") return;
             if (error.status === 401) { expireSession(); return; }
+            if (error.status === 409) {
+              setText(status, "Changes were not saved. Change AI endpoints and credentials in the server's local settings, or restore the previous endpoint before saving other edits.");
+              return;
+            }
             if (error.status === 403) settingsCanWrite = false;
             aiConfigUncertain = true;
             setText(status, "Could not confirm saving. Your draft is retained. Reload saved settings before retrying.");

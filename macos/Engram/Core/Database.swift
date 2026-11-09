@@ -593,13 +593,15 @@ final class DatabaseManager: @unchecked Sendable {
         sources: Set<String>,
         projects: Set<String>,
         origin: String?,
-        since: String?
+        since: String?,
+        valueBand: String?
     ) {
         let clauses = SearchFilterPredicates.clauses(
             sources: Array(sources),
             projects: Array(projects),
             origin: origin,
-            since: since
+            since: since,
+            valueBand: valueBand
         )
         for clause in clauses {
             parts.append("AND \(clause.sql)")
@@ -617,8 +619,8 @@ final class DatabaseManager: @unchecked Sendable {
     /// somewhere in the session. This replaces the old correlated shape that
     /// probed MATCH once per `sessions` row (audit #25: 80-100s vs 81ms for the
     /// identical query). `withSnippet` adds the FTS5 `<mark>` snippet used by the
-    /// offline-fallback GUI path. Ordering (`m0.rank, s.start_time DESC`) and the
-    /// hidden/tier/source/project/since filters are preserved exactly.
+    /// offline-fallback GUI path. All terms contribute to rank, with recency and
+    /// session ID as tie-breakers; hidden/tier/source/project/since filters stay.
     static func keywordSearchSQL(
         rawTokens: [String],
         termMatches: [String],
@@ -627,7 +629,8 @@ final class DatabaseManager: @unchecked Sendable {
         since: String?,
         limit: Int,
         withSnippet: Bool,
-        origin: String? = nil
+        origin: String? = nil,
+        valueBand: String? = nil
     ) -> (sql: String, args: [DatabaseValueConvertible]) {
         var ctes: [String] = []
         var joins: [String] = []
@@ -638,7 +641,7 @@ final class DatabaseManager: @unchecked Sendable {
             // mixed-token-1: classify the original whitespace token. Peeling
             // the escaped MATCH phrase first turns quoted `"I"` into `%I%` and
             // empty quotes into a broad `%%` LIKE.
-            if CJKText.containsCJK(rawTerm) || rawTerm.count < 3 {
+            if !CJKText.usesTrigramMatch(rawTerm) {
                 if withSnippet {
                     ctes.append("""
                         \(alias)_hits AS (
@@ -724,7 +727,8 @@ final class DatabaseManager: @unchecked Sendable {
                 sources: sources,
                 projects: projects,
                 origin: origin,
-                since: since
+                since: since,
+                valueBand: valueBand
             )
             parts.append("""
                 ORDER BY s.start_time DESC
@@ -752,10 +756,14 @@ final class DatabaseManager: @unchecked Sendable {
             sources: sources,
             projects: projects,
             origin: origin,
-            since: since
+            since: since,
+            valueBand: valueBand
         )
+        // Match Service's canonical addition order without reordering snippets.
+        let rankExpression = rawTokens.indices.sorted { rawTokens[$0] < rawTokens[$1] }
+            .map { "m\($0).rank" }.joined(separator: " + ")
         parts.append("""
-            ORDER BY m0.rank, s.start_time DESC
+            ORDER BY \(rankExpression), s.start_time DESC, s.id
             LIMIT ?
         """)
         args.append(limit)
@@ -768,7 +776,8 @@ final class DatabaseManager: @unchecked Sendable {
         sources: Set<String> = [],
         projects: Set<String> = [],
         since: String? = nil,
-        origin: String? = nil
+        origin: String? = nil,
+        valueBand: String? = nil
     ) throws -> [Session] {
         let rawTokens = CJKText.searchableTerms(query)
         guard !rawTokens.isEmpty || query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -785,7 +794,8 @@ final class DatabaseManager: @unchecked Sendable {
                 since: since,
                 limit: limit,
                 withSnippet: false,
-                origin: origin
+                origin: origin,
+                valueBand: valueBand
             )
             return try Session.fetchAll(
                 db,
@@ -805,7 +815,8 @@ final class DatabaseManager: @unchecked Sendable {
         sources: Set<String> = [],
         projects: Set<String> = [],
         since: String? = nil,
-        origin: String? = nil
+        origin: String? = nil,
+        valueBand: String? = nil
     ) throws -> [(session: Session, snippet: String)] {
         let rawTokens = CJKText.searchableTerms(query)
         guard !rawTokens.isEmpty || query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -827,7 +838,8 @@ final class DatabaseManager: @unchecked Sendable {
                 since: since,
                 limit: limit,
                 withSnippet: true,
-                origin: origin
+                origin: origin,
+                valueBand: valueBand
             )
             let rows = try Row.fetchAll(db, sql: built.sql, arguments: StatementArguments(built.args))
             return try rows.map { row in

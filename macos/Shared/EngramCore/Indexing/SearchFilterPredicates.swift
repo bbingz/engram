@@ -6,6 +6,9 @@ import Foundation
 /// `projects` therefore accepts canonical and caller-expanded alias values, but
 /// always matches those values exactly; this helper never introduces `LIKE`.
 public enum SearchFilterPredicates {
+    public static let valueBandLowMax = 35
+    public static let valueBandHighMin = 60
+
     public struct Clause: Equatable, Sendable {
         public let sql: String
         public let bindings: [String]
@@ -19,6 +22,7 @@ public enum SearchFilterPredicates {
         projects: [String] = [],
         origin: String? = nil,
         since: String? = nil,
+        valueBand: String? = nil,
         alias: String = "s"
     ) -> [Clause] {
         var clauses: [Clause] = []
@@ -55,6 +59,18 @@ public enum SearchFilterPredicates {
             )
         }
 
+        if let valueBand = normalized(valueBand) {
+            let score = column("quality_score", alias: alias)
+            let sql: String
+            switch valueBand {
+            case "high": sql = "\(score) >= \(valueBandHighMin)"
+            case "medium": sql = "\(score) > \(valueBandLowMax) AND \(score) < \(valueBandHighMin)"
+            case "low": sql = "\(score) <= \(valueBandLowMax)"
+            case "unknown": sql = "\(score) IS NULL"
+            default: sql = "0 = 1" // Unsupported filters must not broaden results.
+            }
+            clauses.append(Clause(sql: sql, bindings: []))
+        }
         return clauses
     }
 

@@ -3059,6 +3059,90 @@ final class EngramServiceIPCTests: XCTestCase {
         ])
     }
 
+    func testSearchFiltersValueBandThroughRealDispatcherBeforeLimit() async throws {
+        let paths = try makeServiceIPCPaths()
+        defer { try? FileManager.default.removeItem(at: paths.runtime.deletingLastPathComponent()) }
+        try seedSearchFixture(at: paths.database.path)
+        try await DatabaseQueue(path: paths.database.path).write { db in
+            try db.execute(sql: "UPDATE sessions SET quality_score = CASE id WHEN 's1' THEN 60 ELSE 35 END")
+            try db.execute(sql: "UPDATE sessions_fts SET content = 'bandneedle'")
+        }
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { await handler.handle($0) }
+        try server.start()
+        defer { server.stop() }
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        for (band, expected) in [("high", ["s1"]), ("low", ["s2"]),
+                                 ("medium", []), ("unknown", []), ("invalid", [])] {
+            let data = try JSONSerialization.data(withJSONObject: [
+                "query": "bandneedle", "mode": "keyword", "limit": 1, "valueBand": band,
+            ])
+            let request = try JSONDecoder().decode(EngramServiceSearchRequest.self, from: data)
+            let response = try await client.search(request)
+            XCTAssertEqual(response.items.map(\.id), expected, "band=\(band)")
+        }
+        let legacy = try await client.search(.init(query: "bandneedle", mode: "keyword", limit: 1))
+        XCTAssertEqual(legacy.items.map(\.id), ["s2"], "omission preserves existing ranking")
+    }
+
+    func testShortSearchValueFilterPrecedesCandidateCapInBothLayouts() async throws {
+        let fixture = try MetadataSQLFixture()
+        defer { fixture.remove() }
+        try fixture.migrate()
+        try fixture.seedRegistry()
+        for index in 0..<270 {
+            try fixture.seedBoundSession(id: "low-\(index)", start: "2026-09-03 12:00:00",
+                                         nativeID: "low-\(index)", title: "AI filler", indexReady: true)
+        }
+        try fixture.seedBoundSession(id: "high-old", start: "2020-01-01 12:00:00",
+                                     nativeID: "high-old", title: "AI target", indexReady: true)
+        try fixture.write { db in
+            try db.execute(sql: "UPDATE sessions SET quality_score = CASE id WHEN 'high-old' THEN 60 ELSE 20 END")
+            try db.execute(sql: "DELETE FROM fts_map")
+            try db.execute(sql: """
+                INSERT INTO fts_map(session_id, msg_seq, fts_rowid, content_hash)
+                SELECT session_id, 0, rowid, '' FROM sessions_fts
+                """)
+        }
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: fixture.path)
+        for mapped in [true, false] {
+            if !mapped {
+                try fixture.write { db in try db.execute(sql: "DROP TABLE fts_map") }
+            }
+            let response = try await provider.search(.init(
+                query: "AI", mode: "keyword", limit: 1, valueBand: "high"
+            ))
+            XCTAssertEqual(response.items.map(\.id), ["high-old"], "mapped=\(mapped)")
+        }
+    }
+
+    func testSemanticAndHybridValueFilterPrecedesCandidateRanking() async throws {
+        let paths = try makeServiceIPCPaths()
+        defer { try? FileManager.default.removeItem(at: paths.runtime.deletingLastPathComponent()) }
+        try seedOriginFilteredSemanticSearchFixture(at: paths.database.path, targetOrigin: "hq",
+                                                   interferenceOrigin: "local", interferenceCount: 40)
+        try await DatabaseQueue(path: paths.database.path).write { db in
+            try db.execute(sql: "UPDATE sessions SET quality_score = CASE id WHEN 's2' THEN 60 ELSE 20 END")
+        }
+        let provider = try SQLiteEngramServiceReadProvider(
+            databasePath: paths.database.path,
+            embeddingEnvironment: ["ENGRAM_EMBEDDING_API_KEY": "test", "ENGRAM_EMBEDDING_MODEL": "probe",
+                                   "ENGRAM_EMBEDDING_DIM": "3"],
+            embeddingProviderFactory: { _ in StaticEmbeddingProvider { _ in [1, 0, 0] } }
+        )
+        for mode in ["semantic", "hybrid"] {
+            let response = try await provider.search(.init(
+                query: "originneedle", mode: mode, limit: 1, valueBand: "high"
+            ))
+            XCTAssertEqual(response.items.map(\.id), ["s2"], mode)
+            XCTAssertNil(response.warning)
+        }
+    }
+
     func testSQLiteReadProviderSourcesExposeArchiveHealthFacts() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
@@ -4238,6 +4322,10 @@ final class EngramServiceIPCTests: XCTestCase {
             EngramServiceSearchRequest(query: "需要修复 测试", mode: "keyword", limit: 10)
         )
         XCTAssertEqual(mixed.items.map(\.id), ["s1", "s2"])
+        let shortFirst = try await provider.search(
+            EngramServiceSearchRequest(query: "测试 需要修复", mode: "keyword", limit: 1)
+        )
+        XCTAssertEqual(shortFirst.items.map(\.id), ["s1"], "short terms must not erase later MATCH ranks")
     }
 
     func testKeywordSearchSubTrigramHitsAreRecencyBounded_repro() async throws {
@@ -4310,7 +4398,7 @@ final class EngramServiceIPCTests: XCTestCase {
                   ('lite', 'usage monitor go');
                 """)
         }
-        let queries = ["monitor", "usage monitor", "monitor go", "go", "parser fix"]
+        let queries = ["monitor", "usage monitor", "monitor usage", "monitor go", "go monitor", "go", "parser fix"]
 
         func run() async throws -> [String: [(String, String?)]] {
             let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
@@ -4344,7 +4432,9 @@ final class EngramServiceIPCTests: XCTestCase {
         // Ranking, filters and conjunction semantics on the indexed layout.
         XCTAssertEqual(indexed["monitor"]?.map(\.0), ["s3", "s1", "s2"])
         XCTAssertEqual(indexed["usage monitor"]?.map(\.0), ["s3", "s1"])
+        XCTAssertEqual(indexed["monitor usage"]?.map(\.0), ["s3", "s1"])
         XCTAssertEqual(indexed["monitor go"]?.map(\.0), ["s3", "s2"])
+        XCTAssertEqual(indexed["go monitor"]?.map(\.0), ["s3", "s2"])
         XCTAssertEqual(Set(indexed["go"]?.map(\.0) ?? []), ["s2", "s3"])
         XCTAssertEqual(indexed["parser fix"]?.map(\.0), ["s1"])
         let parserSnippet = try XCTUnwrap(indexed["parser fix"]?.first?.1)

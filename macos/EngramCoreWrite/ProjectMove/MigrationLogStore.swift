@@ -15,11 +15,19 @@ import Foundation
 import EngramCoreRead
 import GRDB
 
-public enum MigrationLogActor: String, Sendable {
-    case cli
-    case mcp
-    case swiftUI = "swift-ui"
-    case batch
+public struct MigrationLogActor: RawRepresentable, Hashable, Sendable {
+    public let rawValue: String
+    public static let cli = Self(rawValue: "cli")!
+    public static let mcp = Self(rawValue: "mcp")!
+    public static let swiftUI = Self(rawValue: "swift-ui")!
+    public static let batch = Self(rawValue: "batch")!
+
+    /// Web attribution is a bounded identity value, never filesystem authority.
+    public init?(rawValue: String) {
+        guard !rawValue.isEmpty, rawValue.utf8.count <= 254,
+              rawValue.utf8.allSatisfy({ (33...126).contains($0) && $0 != 34 && $0 != 92 }) else { return nil }
+        self.rawValue = rawValue
+    }
 }
 
 public struct StartMigrationInput: Sendable {

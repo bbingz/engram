@@ -40,16 +40,17 @@ extension EngramServiceCommandHandler {
     static func projectMove(
         _ request: EngramServiceProjectMoveRequest,
         writerGate: ServiceWriterGate,
+        auditActor: MigrationLogActor? = nil,
         hooks: ProjectMoveLongOpHooks = .none
     ) async throws -> ServiceWriterGateResult<EngramServiceProjectMoveResult> {
         let trimmedSrc = request.src.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedDst = request.dst.trimmingCharacters(in: .whitespacesAndNewlines)
         ServiceLogger.notice(
-            "projectMove requested actor=\(request.actor ?? "mcp") dryRun=\(request.dryRun) force=\(request.force) src=\(trimmedSrc) dst=\(trimmedDst) operationId=\(request.operationId ?? "")",
+            "projectMove requested actor=\(auditActor?.rawValue ?? request.actor ?? "mcp") dryRun=\(request.dryRun) force=\(request.force) src=\(trimmedSrc) dst=\(trimmedDst) operationId=\(request.operationId ?? "")",
             category: .writer
         )
         let operationId = normalizeOperationId(request.operationId)
-        let actor = parseActor(request.actor) ?? .mcp
+        let actor = auditActor ?? parseActor(request.actor) ?? .mcp
         let fingerprint = ProjectMoveOperationFingerprint.encode([
             "kind": "move",
             "src": trimmedSrc,
@@ -114,14 +115,15 @@ extension EngramServiceCommandHandler {
     static func projectArchive(
         _ request: EngramServiceProjectArchiveRequest,
         writerGate: ServiceWriterGate,
+        auditActor: MigrationLogActor? = nil,
         hooks: ProjectMoveLongOpHooks = .none
     ) async throws -> ServiceWriterGateResult<EngramServiceProjectMoveResult> {
         ServiceLogger.notice(
-            "projectArchive requested actor=\(request.actor ?? "mcp") dryRun=\(request.dryRun) force=\(request.force) src=\(request.src) archiveTo=\(request.archiveTo ?? "") operationId=\(request.operationId ?? "")",
+            "projectArchive requested actor=\(auditActor?.rawValue ?? request.actor ?? "mcp") dryRun=\(request.dryRun) force=\(request.force) src=\(request.src) archiveTo=\(request.archiveTo ?? "") operationId=\(request.operationId ?? "")",
             category: .writer
         )
         let operationId = normalizeOperationId(request.operationId)
-        let actor = parseActor(request.actor) ?? .mcp
+        let actor = auditActor ?? parseActor(request.actor) ?? .mcp
         // Fingerprint uses src + archive category; dst resolved after reservation.
         let fingerprint = ProjectMoveOperationFingerprint.encode([
             "kind": "archive",
@@ -198,14 +200,15 @@ extension EngramServiceCommandHandler {
     static func projectUndo(
         _ request: EngramServiceProjectUndoRequest,
         writerGate: ServiceWriterGate,
+        auditActor: MigrationLogActor? = nil,
         hooks: ProjectMoveLongOpHooks = .none
     ) async throws -> ServiceWriterGateResult<EngramServiceProjectMoveResult> {
         ServiceLogger.notice(
-            "projectUndo requested actor=\(request.actor ?? "mcp") force=\(request.force) migrationId=\(request.migrationId) operationId=\(request.operationId ?? "")",
+            "projectUndo requested actor=\(auditActor?.rawValue ?? request.actor ?? "mcp") force=\(request.force) migrationId=\(request.migrationId) operationId=\(request.operationId ?? "")",
             category: .writer
         )
         let operationId = normalizeOperationId(request.operationId)
-        let actor = parseActor(request.actor) ?? .mcp
+        let actor = auditActor ?? parseActor(request.actor) ?? .mcp
         let fingerprint = ProjectMoveOperationFingerprint.encode([
             "kind": "undo",
             "migrationId": request.migrationId,
@@ -248,6 +251,7 @@ extension EngramServiceCommandHandler {
     static func projectMoveBatch(
         _ request: EngramServiceProjectMoveBatchRequest,
         writerGate: ServiceWriterGate,
+        auditActor: MigrationLogActor? = nil,
         hooks: ProjectMoveLongOpHooks = .none
     ) async throws -> ServiceWriterGateResult<EngramServiceJSONValue> {
         ServiceLogger.notice(
@@ -260,7 +264,7 @@ extension EngramServiceCommandHandler {
             "yaml": request.yaml,
             "dryRun": String(request.dryRun),
             "force": String(request.force),
-            "actor": request.actor ?? "",
+            "actor": auditActor?.rawValue ?? request.actor ?? "",
         ])
 
         if let cached = try await resolveExistingOperation(
@@ -299,7 +303,8 @@ extension EngramServiceCommandHandler {
                         writer: writer,
                         overrides: BatchOverrides(
                             homeDirectory: homeDirectoryURL(),
-                            force: request.force
+                            force: request.force,
+                            actor: auditActor ?? .batch
                         ),
                         shouldCancel: { Task.isCancelled }
                     )
@@ -323,7 +328,8 @@ extension EngramServiceCommandHandler {
                     }
                     let overrides = BatchOverrides(
                         homeDirectory: homeDirectoryURL(),
-                        force: request.force
+                        force: request.force,
+                        actor: auditActor ?? .batch
                     )
                     if let batchOverride = hooks.batchRunOverride {
                         return await batchOverride(document, writer, overrides)

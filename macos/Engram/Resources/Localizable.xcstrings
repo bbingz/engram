@@ -1,6 +1,54 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Any value" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Any value" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "所有价值" } }
+      }
+    },
+    "Not scored" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Not scored" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "未评分" } }
+      }
+    },
+    "Value" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Value" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "价值" } }
+      }
+    },
+    "High value" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "High value" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "高价值" } }
+      }
+    },
+    "Medium value" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Medium value" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "中价值" } }
+      }
+    },
+    "Low value" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Low value" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "低价值" } }
+      }
+    },
+    "Estimated from session activity. Score: %lld." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Estimated from session activity. Score: %lld." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "根据会话活动估算，评分：%lld。" } }
+      }
+    },
+    ", score %lld" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : ", score %lld" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "，评分 %lld" } }
+      }
+    },
     "%lld files · %@ · %lld indexed · %lld archived · %lld empty ignored" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "%1$lld files · %2$@ · %3$lld indexed · %4$lld archived · %5$lld empty ignored" } },

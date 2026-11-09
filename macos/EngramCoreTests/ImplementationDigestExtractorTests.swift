@@ -1,10 +1,12 @@
+import Darwin
 import EngramCoreRead
 import XCTest
 
 final class ImplementationDigestExtractorTests: XCTestCase {
     func testLongAssistantKeepsTailCompletionMarkersWithoutSlowCharacterScanning() {
         let content = String(repeating: "x", count: 26 * 1024 * 1024) + "\nchecks run: success"
-        let start = Date()
+        // Measure CPU work rather than time descheduled on a shared CI runner.
+        let start = clock()
         let beats = ImplementationDigestExtractor.extract(messages: [
             NormalizedMessage(role: .user, content: "Implement the complete history reader", timestamp: "2026-09-07T00:00:00Z"),
             NormalizedMessage(role: .assistant, content: content, timestamp: "2026-09-07T00:00:01Z"),
@@ -12,7 +14,8 @@ final class ImplementationDigestExtractorTests: XCTestCase {
         XCTAssertEqual(beats.count, 1)
         XCTAssertEqual(beats.first?.status, .completed)
         XCTAssertEqual(beats.first?.kind, .implementation)
-        XCTAssertLessThan(Date().timeIntervalSince(start), 10)
+        let cpuSeconds = Double(clock() - start) / Double(CLOCKS_PER_SEC)
+        XCTAssertLessThan(cpuSeconds, 10)
     }
 
     func testExtractsCompletionReportAndFiltersMachineTurns() {

@@ -3,7 +3,51 @@
 Confirmed engineering tasks. Product-level work belongs in `docs/roadmap.md`;
 verification and low-priority follow-ups belong in `docs/followups.md`.
 
-## Open
+Deployment update (2026-10-25): PR #496 runtime source `fb9538a` passed CI and
+is running on HQ index/Web, Daily Collector and the local paired Service (build
+1779). App-only follow-up `a9e59d50` passed all 14 executed CI checks and is now
+installed as Developer ID build 1782, fixing duplicate popover date-group IDs.
+Local IPC and HQ health passed; hosted UI smoke passed 14 tests and screenshot
+comparison. Full App UI remains unverified.
+The dated local-only receipts below are historical; real-host acceptance is
+limited to the checks recorded in CHANGELOG. Collector quiet-source acceptance
+passed on 2026-10-25: 61 samples/30 minutes, CPU 1.921%, RSS 58.5 MiB, 16/16 roots
+converged throughout. Active-write/startup performance and full App UI remain open.
+
+## Current execution status (2026-10-23)
+
+Fresh routing: [development reconciliation](reviews/2026-10-23-development-reconciliation.md).
+The detailed dated entries below preserve history; their presence does not
+make a closed item open again. Local baseline and live remote main were both
+`5216ff3a`. Current development is in `codex/leader-loop-20261023`.
+
+| Item | Current status | Remaining verifier |
+|---|---|---|
+| Collector CPU | Quiet-source 30-minute window passed on deployed `fb9538a`; active-write/startup acceptance remains open | 61 samples over 1800 s: mean CPU 1.921%, max RSS 58.5 MiB, all 16 roots converged and no new publications. Small CPU margin; next measure a representative active-source workload. Details in CHANGELOG and `collector-idle-turn-cost-1`. |
+| W4.1 alias reconciliation | Closed, superseded by D7(c)/D9 | Reopen only as a separately scoped old-DB user-state import. |
+| W4.5 old-receipt bootstrap | Closed, owner won't-do | Preserve retained old DB/archive; no automatic reimplementation. |
+| W4.7 epoch operator command | Implemented | Authorized HQ binary/CLI readback and real recovery; authority-file runbook remains. |
+| W6.2 real-binary gate | Closed, recorded gate exists | Hosted [39098816343](https://github.com/bbingz/engram/actions/runs/39098816343) rechecked success; not a real-host acceptance receipt. |
+| App Open Web Reader | Implemented | Set/verify each intended host's URL under host-change authorization. |
+| P2 duplicate quarantine | Implemented, deployment recorded | Real cross-machine duplicate remains unexercised. |
+| P3 install tooling | Implemented | First real-host installation/upgrade/rollback receipt. |
+| D7 legacy local rows | Closed, purge recorded | Do not rerun destructive action. |
+| `cutover-role-surface-1` | Fixed locally | RED: 8 expected catalog assertions failed. GREEN: 215 MCP executable tests passed; not pushed/deployed. |
+| Collector fixture race/leak | Fixed locally | 85 CollectorRuntime tests plus the affected publication test passed; hosted flake recurrence not measured. |
+| `collector-blocked-root-backoff-1` | Fixed locally | Final 87 runtime tests passed after behavioral RED and scheduler negative control. Per-root 1–60 second monotonic retry preserves healthy-root progress and recovery/reset/restart; no real-host CPU claim. |
+| Round-12 secrets / live navigation / favorites | Existing fixes verified locally | 210 selected App tests passed with an isolated home; source and exact coverage in the reconciliation. Transcript apply concurrency remains a narrower verification item. |
+| Web project audit actor | Fixed locally for four project commands | HTTP/auth/IPC 60, service/registry 29 and native batch/store 34 tests passed after RED. Follow-up real socket/dispatcher regression caught a missing IPC allowlist; fixed and 18 service tests passed. The separate alias audit batch below closes storage; credential throttling remains an accepted design residual. Not deployed. |
+| Web alias audit | Implemented locally | 13 Service, 46 HTTP/client/auth and 20 migration tests passed after RED. Audit and exact-pair mutation share one transaction; bounded last-10,000 history stores published identities. Upgrade Service before RemoteServer; host acceptance remains. |
+| Human keyword ranking | Fixed locally; broader Lifecycle 3.4 remains partial | All terms contribute before LIMIT; App/Service CJK routing aligned. 72 behavioral RED assertions, then 163 App and 63 Service tests passed. Source/project/time/origin/value-band facets now exist; lifecycle facets and weighting remain roadmap decisions. See the ranking contract and reconciliation. |
+| Web AI endpoint/key reuse | Fixed locally | Atomic rejection protects existing/dormant credentials across settings, env, sidecar and Keychain sources, including shared embedding fallback. 26 service, 24 HTTP/IPC/UI-route and 181 JS behavior tests passed after RED. No live Keychain or deployment acceptance. |
+| `session-detail-id-3` | Fixed/verified locally for reproduced scope | Mounted view exposed stale paging cleanup and duplicate scheduling; per-load ownership and synchronous busy state fix both. Five mounted tests passed five iterations; final-harness negative control failed 17 expected assertions; restored final 72 transcript tests passed. Initial success/error and delayed indexing cancellation also verified. No full UI/production acceptance. |
+
+Remaining historical residuals require current repro before promotion;
+remaining Web hardening and measured performance follow the bounded queue
+in the reconciliation. Product choices stay in `roadmap.md`. Production changes,
+push/merge and releases require separate authorization.
+
+## Dated engineering ledger
 
 ### Collector / central index cutover gaps (added 2026-10-02)
 
@@ -62,6 +106,11 @@ authorizes host changes.
   The comparable quiet-host 30-minute window (CPU <= 2%, RSS <= 150 MiB) still
   needs to be taken once that workload ends; record it here and in
   `CHANGELOG.md`.
+  2026-10-25: the missing quiet-source window now passed on deployed `fb9538a`,
+  PID 98680, unchanged 10 s poll: 07:16-07:46Z, 61 samples/1800 s, CPU 1.921%,
+  max RSS 58.5 MiB, all 16 roots converged throughout, no root revision changes
+  or new ACKs. This closes the quiet-source verifier only; active-write/startup
+  acceptance remains open. Evidence in CHANGELOG and the retirement checklist.
 - **Alias reconciliation (plan W4 item 1, design section 4).** Not started. The
   committer refuses any occupied proposed ID, so pre-cutover local rows, their
   insights and parent links stay in the local-ID namespace and are not visible

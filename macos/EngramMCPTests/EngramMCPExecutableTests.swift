@@ -72,8 +72,8 @@ func makeHermeticRPCEnvironment(
 }
 
 final class EngramMCPExecutableTests: XCTestCase {
-    func testRuntimeRoleDiscoveryKeepsStaticKeywordToolsWithoutLocalCapabilities_repro() throws {
-        for document in [#"{"runtimeRole":"collector"}"#, #"{"runtimeRole":"replica"}"#, #"{"runtimeRole":null}"#] {
+    func testRuntimeRoleDiscoveryOmitsUnavailableTools_repro() throws {
+        for document in [#"{"runtimeRole":"collector"}"#, #"{"runtimeRole":"replica"}"#, #"{"runtimeRole":null}"#, "not-json"] {
             let requests = [
                 #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#,
                 #"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
@@ -94,9 +94,7 @@ final class EngramMCPExecutableTests: XCTestCase {
                 XCTAssertNil(response["error"])
                 XCTAssertNil(response["result"]?["isError"])
                 let tools = try XCTUnwrap(response["result"]?["tools"]?.arrayValue)
-                XCTAssertEqual(tools.count, 27)
-                let search = try XCTUnwrap(tools.first { $0["name"]?.stringValue == "search" })
-                XCTAssertEqual(search["inputSchema"]?["properties"]?["mode"]?["enum"]?.arrayValue?.compactMap(\.stringValue), ["keyword"])
+                XCTAssertTrue(tools.isEmpty, "Unavailable roles must not advertise callable tools: \(document)")
                 if id == 3 {
                     XCTAssertEqual(response["result"]?["resultType"]?.stringValue, "complete")
                     XCTAssertNotNil(response["result"]?["ttlMs"])
@@ -164,6 +162,22 @@ final class EngramMCPExecutableTests: XCTestCase {
             ], prepare: { try self.prepareRuntimeRole(document, in: $0) })
             XCTAssertNil(responses.first?["error"])
             XCTAssertNotEqual(responses.first?["result"]?["isError"]?.boolValue, true)
+        }
+    }
+
+    func testRuntimeRoleLocalIndexAndMissingKeyRetainToolCatalog_repro() throws {
+        for document in [#"{"runtimeRole":"local"}"#, #"{"runtimeRole":"index"}"#, #"{"unrelated":true}"#] {
+            let responses = try rpcSession([
+                #"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+            ], prepare: { sandbox in
+                try self.prepareRuntimeRole(document, in: sandbox)
+                try self.seedUsableSessionEmbeddings(at: XCTUnwrap(sandbox.environment["ENGRAM_MCP_DB_PATH"]))
+            })
+            let tools = try XCTUnwrap(responses.first?["result"]?["tools"]?.arrayValue)
+            XCTAssertEqual(tools.count, 27)
+            let search = try XCTUnwrap(tools.first { $0["name"]?.stringValue == "search" })
+            XCTAssertEqual(search["inputSchema"]?["properties"]?["mode"]?["enum"]?.arrayValue?.compactMap(\.stringValue),
+                           ["keyword", "semantic", "hybrid"])
         }
     }
 

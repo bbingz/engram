@@ -19,6 +19,51 @@ struct SessionDetailView: View {
     /// Prime the find bar with this query when the session opens from keyword
     /// search (nil for every other entry point — find bar stays closed/empty).
     var searchTerm: String? = nil
+    #if DEBUG
+    // Instance-scoped hooks let mounted-view tests hold uncancellable work and
+    // observe the real SwiftUI state without touching live transcripts or IPC.
+    var transcriptTestHooks: TranscriptTestHooks? = nil
+    struct TranscriptTestHooks {
+        var parse: (String, Int, Int?) async throws -> (
+            messages: [ChatMessage], producedCount: Int, truncated: Bool, parseFailed: Bool
+        )
+        var attach: (String, @escaping () -> TranscriptTestState, @escaping (TranscriptTestAction) -> Void) -> Void
+        var beforeIndexedApply: (() async -> Void)? = nil
+        var copy: ((String) -> Void)? = nil
+    }
+    enum TranscriptTestAction { case page, all, copy }
+    struct TranscriptTestState: Equatable {
+        let sessionID: String?
+        let messages: [String]
+        let indexed: [String]
+        let loading: Bool
+        let paging: Bool
+        let hasMore: Bool
+        let failed: Bool
+    }
+    private var transcriptTestState: TranscriptTestState {
+        TranscriptTestState(sessionID: displayedSessionId, messages: messages.map(\.content),
+            indexed: indexedMessages.map { $0.message.content }, loading: isLoadingMessages,
+            paging: isLoadingMore, hasMore: hasMoreToLoad, failed: transcriptParseFailed)
+    }
+    @ViewBuilder private var transcriptTestProbe: some View {
+        if transcriptTestHooks != nil {
+            Color.clear.onAppear { attachTranscriptTestHooks() }
+                .onChange(of: session.id) { _, _ in attachTranscriptTestHooks() }
+        }
+    }
+    private func attachTranscriptTestHooks() {
+        // Read the mounted State locations on demand. Publishing snapshots via
+        // onChange/task can lag coalesced render passes in an offscreen window.
+        transcriptTestHooks?.attach(session.id, { transcriptTestState }) { action in
+            switch action {
+            case .page: loadMoreMessages(all: false)
+            case .all: loadMoreMessages(all: true)
+            case .copy: copyAllTranscript()
+            }
+        }
+    }
+    #endif
     @Environment(DatabaseManager.self) var db
     @Environment(\.engramServiceClient) var serviceClient
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -99,6 +144,7 @@ struct SessionDetailView: View {
     @State private var isLoadingMore = false
     @State private var loadedProducedCount = 0
     @State private var transcriptLoadTask: Task<Void, Never>? = nil
+    @State private var transcriptLoadToken: UUID?
     @State private var displayFilterTask: Task<Void, Never>? = nil
     @State private var displayFilterSessionId: String? = nil
     // Bumped whenever `displayIndexed` is recomputed; the match-scan task is keyed
@@ -969,6 +1015,7 @@ struct SessionDetailView: View {
             loadedProducedCount = 0
             transcriptLoadTask?.cancel()
             transcriptLoadTask = nil
+            transcriptLoadToken = nil
             // Clear transcript-derived + nav state too, or a stale per-type position
             // from the previous session can index out of the new (shorter) one.
             displayIndexed = []
@@ -1051,9 +1098,13 @@ struct SessionDetailView: View {
             parentMutationTask = nil
             relatedTask?.cancel(); relatedTask = nil
             transcriptLoadTask?.cancel(); transcriptLoadTask = nil
+            transcriptLoadToken = nil
             favoriteLoadGeneration = nil
             displayedSessionId = nil
         }
+        #if DEBUG
+        .background { transcriptTestProbe }
+        #endif
     }
 
     // MARK: - Related Sessions
@@ -1643,9 +1694,11 @@ struct SessionDetailView: View {
             return
         }
         transcriptLoadTask?.cancel()
+        let loadToken = UUID()
+        transcriptLoadToken = loadToken
+        isLoadingMore = true
         transcriptLoadTask = Task {
-            isLoadingMore = true
-            defer { isLoadingMore = false }
+            defer { finishTranscriptLoad(loadToken) }
             await appendMessages(all: true)
             if Task.isCancelled { return }
             guard !transcriptParseFailed else {
@@ -1662,6 +1715,9 @@ struct SessionDetailView: View {
 
     private func copyLoadedTranscript() {
         let text = TranscriptText.conversationText(indexedMessages)
+        #if DEBUG
+        if let copy = transcriptTestHooks?.copy { copy(text); return }
+        #endif
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }
@@ -1700,6 +1756,11 @@ struct SessionDetailView: View {
         offset: Int,
         limit: Int?
     ) async throws -> (messages: [ChatMessage], producedCount: Int, truncated: Bool, parseFailed: Bool) {
+        #if DEBUG
+        if let hooks = transcriptTestHooks {
+            return try await hooks.parse(session.id, offset, limit)
+        }
+        #endif
         let path = resolvedTranscriptPath()
         let source = session.source
         let sessionId = session.id
@@ -1746,6 +1807,9 @@ struct SessionDetailView: View {
             }
             return IndexedMessage.build(from: fullSnapshot)
         }.value
+        #if DEBUG
+        if let beforeApply = transcriptTestHooks?.beforeIndexedApply { await beforeApply() }
+        #endif
         // The detached build can outlive a session switch; don't clobber the reset.
         if Task.isCancelled { return }
         indexedMessages = built.messages
@@ -1841,11 +1905,22 @@ struct SessionDetailView: View {
     private func loadMoreMessages(all: Bool) {
         guard !isLoadingMore else { return }
         transcriptLoadTask?.cancel()
+        let loadToken = UUID()
+        transcriptLoadToken = loadToken
+        isLoadingMore = true
         transcriptLoadTask = Task {
-            isLoadingMore = true
-            defer { isLoadingMore = false }
+            defer { finishTranscriptLoad(loadToken) }
             await appendMessages(all: all)
         }
+    }
+
+    private func finishTranscriptLoad(_ loadToken: UUID) {
+        // Cancelled parse/build work may finish after switching away and back.
+        // Only the task that owns the current page may release its busy state.
+        guard transcriptLoadToken == loadToken else { return }
+        isLoadingMore = false
+        transcriptLoadToken = nil
+        transcriptLoadTask = nil
     }
 
     @ViewBuilder

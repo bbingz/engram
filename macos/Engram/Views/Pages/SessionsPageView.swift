@@ -904,7 +904,7 @@ struct SessionsPageView: View {
 /// The "Session" column cell: disclosure chevron + badges + title, plus the
 /// full row context menu. Suggested-child rows also carry inline
 /// Confirm/Dismiss buttons.
-private struct SessionTableCell: View {
+struct SessionTableCell: View {
     let row: SessionTableRow
     var onToggleExpand: (() -> Void)? = nil
     var onResume: ((Session) -> Void)? = nil
@@ -971,6 +971,8 @@ private struct SessionTableCell: View {
                 .truncationMode(.tail)
                 .foregroundStyle(row.isSuggestedChild ? Theme.tertiaryText : Theme.primaryText)
                 .accessibilityIdentifier("sessions_row_\(row.index)")
+
+            SessionValueBadge(session: session)
 
             if row.isSuggestedChild {
                 Button("Confirm") { onConfirmSuggestion?(session) }

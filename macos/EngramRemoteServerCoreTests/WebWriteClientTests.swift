@@ -72,6 +72,47 @@ final class WebWriteClientTests: XCTestCase {
         XCTAssertFalse(String(decoding: http, as: UTF8.self).contains(token))
     }
 
+    func testProjectAuditActorCrossesCapabilityProtectedIPC_repro() async throws {
+        for (index, command) in ["webProjectMove", "webProjectArchive", "webProjectUndo", "webProjectMoveBatch"].enumerated() {
+            XCTAssertTrue(ServiceCapabilityToken.requiresToken(command))
+            let path = directory.appendingPathComponent("actor-\(index).sock").path
+            try writeToken("actor-capability-fixture", socketPath: path)
+            let server = try WriteSocketFixture(path: path) { fd, bytes in
+                let incoming = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: bytes)
+                XCTAssertEqual(incoming.command, command)
+                XCTAssertEqual(incoming.capabilityToken, "actor-capability-fixture")
+                let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(incoming.payload)) as? [String: Any])
+                XCTAssertEqual(payload["actor"] as? String, "editor@example.com")
+                let response = EngramServiceResponseEnvelope.failure(requestId: incoming.requestId,
+                    error: EngramServiceErrorEnvelope(name: "ServiceUnavailable", message: "fixture", retryPolicy: "later"))
+                try EngramServiceSocketIO.writeFrame(JSONEncoder().encode(response), to: fd, requestTimeout: 1)
+            }
+            defer { server.stop() }
+            let client = try EngramServiceWebWriteClient(socketPath: path)
+            let id = UUID().uuidString
+            do {
+                switch command {
+                case "webProjectMove":
+                    _ = try await client.projectMove(EngramServiceWebProjectMoveRequest(
+                        src: "/tmp/a", dst: "/tmp/b", dryRun: true, operationId: id, actor: "editor@example.com"))
+                case "webProjectArchive":
+                    _ = try await client.projectArchive(EngramServiceWebProjectArchiveRequest(
+                        src: "/tmp/a", dryRun: true, operationId: id, actor: "editor@example.com"))
+                case "webProjectUndo":
+                    _ = try await client.projectUndo(EngramServiceWebProjectUndoRequest(
+                        migrationId: "fixture", operationId: id, actor: "editor@example.com"))
+                default:
+                    _ = try await client.projectMoveBatch(EngramServiceWebProjectMoveBatchRequest(
+                        yaml: "{}", dryRun: true, operationId: id, actor: "editor@example.com"))
+                }
+                XCTFail("fixture must return unavailable after inspecting IPC")
+            } catch {
+                XCTAssertEqual(error as? EngramServiceWebWriteClientError, .unavailable)
+            }
+            XCTAssertEqual(server.requestCount, 1)
+        }
+    }
+
     func testMissingTokenDoesNotOpenIPC() async throws {
         let path = directory.appendingPathComponent("missing.sock").path
         let server = try WriteSocketFixture(path: path) { _, _ in

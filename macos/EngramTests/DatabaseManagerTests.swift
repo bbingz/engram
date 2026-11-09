@@ -1310,6 +1310,134 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(results.map(\.id), ["s1"])
     }
 
+    @MainActor
+    func testSearchValueBandsMatchBadgesAndApplyBeforeLimitAcrossReaders() async throws {
+        let scores: [(String, Int?)] = [
+            ("top", 100), ("high", 60), ("mid-high", 59), ("mid-low", 36),
+            ("low", 35), ("zero", 0), ("unknown", nil),
+        ]
+        let queue = try DatabaseQueue(path: dbPath)
+        for (index, entry) in scores.enumerated() {
+            try insertTestSession(at: dbPath, id: entry.0, startTime: "2026-05-0\(index + 1)T00:00:00Z")
+            try insertFTSContent(at: dbPath, sessionId: entry.0, content: "bandneedle AI")
+            try await queue.write { db in
+                try db.execute(sql: "UPDATE sessions SET quality_score = ? WHERE id = ?",
+                               arguments: [entry.1, entry.0])
+            }
+        }
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: dbPath)
+        let cases: [(String?, [String])] = [
+            (nil, scores.reversed().map(\.0)), ("high", ["high", "top"]),
+            ("medium", ["mid-low", "mid-high"]), ("low", ["zero", "low"]),
+            ("unknown", ["unknown"]), ("invalid", []),
+        ]
+        for (band, expected) in cases {
+            for query in ["bandneedle", "AI"] {
+                for limit in [1, 10] {
+                    let ids = Array(expected.prefix(limit))
+                    let local = try db.search(query: query, limit: limit, valueBand: band)
+                    XCTAssertEqual(local.map(\.id), ids, "plain \(query), \(String(describing: band))")
+                    if let band, band != "invalid" {
+                        XCTAssertTrue(local.allSatisfy { $0.valueBand.rawValue == band })
+                    }
+                    let snippets = try db.searchWithSnippets(query: query, limit: limit, valueBand: band)
+                    XCTAssertEqual(snippets.map(\.session.id), ids)
+                    let response = try await provider.search(.init(
+                        query: query, mode: "keyword", limit: limit, valueBand: band
+                    ))
+                    XCTAssertEqual(response.items.map(\.id), ids, "service \(query), \(String(describing: band))")
+                }
+            }
+        }
+        let combined = try db.search(query: "bandneedle", sources: ["codex"], valueBand: "high")
+        XCTAssertTrue(combined.isEmpty, "value filter must intersect existing filters")
+        let browse = try db.search(query: " ", valueBand: "high")
+        XCTAssertEqual(browse.map(\.id), ["high", "top"])
+    }
+
+    @MainActor
+    func testKeywordRankingUsesEveryTermBeforeLimitAcrossReaders_repro() async throws {
+        try insertTestSession(at: dbPath, id: "relevant", startTime: "2026-05-01T00:00:00Z")
+        try insertTestSession(at: dbPath, id: "recent", startTime: "2026-05-02T00:00:00Z")
+        try insertTestSession(at: dbPath, id: "partial", startTime: "2026-05-03T00:00:00Z")
+        for id in ["relevant", "recent", "partial"] {
+            try insertFTSContent(at: dbPath, sessionId: id, content: "alpha planning")
+            try insertFTSContent(at: dbPath, sessionId: id, content: "gamma verification")
+        }
+        try insertFTSContent(at: dbPath, sessionId: "relevant", content: "beta beta beta beta beta")
+        try insertFTSContent(at: dbPath, sessionId: "recent",
+                             content: "beta " + String(repeating: "unrelated material ", count: 50))
+
+        // Alpha and gamma have identical rank in both complete sessions. Beta
+        // must contribute even when it is not first, across separate messages.
+        for query in ["alpha beta gamma", "alpha gamma beta", "beta alpha gamma",
+                      "beta gamma alpha", "gamma alpha beta", "gamma beta alpha"] {
+            try await assertHumanKeywordRanking(query, expected: ["relevant", "recent"])
+            try await assertHumanKeywordRanking(query, limit: 1, expected: ["relevant"])
+        }
+    }
+
+    @MainActor
+    func testKeywordRankingShortFirstKeepsLongTermRelevanceAcrossReaders_repro() async throws {
+        try insertTestSession(at: dbPath, id: "relevant", startTime: "2026-05-01T00:00:00Z")
+        try insertTestSession(at: dbPath, id: "recent", startTime: "2026-05-02T00:00:00Z")
+        let queue = try DatabaseQueue(path: dbPath)
+        for (short, long) in [("AI", "needle"), ("测试", "需要修复"),
+                              ("AI", "데이터베이스"), ("AI", "データベース")] {
+            try await queue.write { sqlDB in try sqlDB.execute(sql: "DELETE FROM sessions_fts") }
+            try insertFTSContent(at: dbPath, sessionId: "relevant",
+                                 content: String(repeating: "\(long) ", count: 5) + short)
+            try insertFTSContent(at: dbPath, sessionId: "recent",
+                                 content: "\(short) \(long) " + String(repeating: "unrelated material ", count: 50))
+            for query in [long, "\(short) \(long)", "\(long) \(short)"] {
+                try await assertHumanKeywordRanking(query, expected: ["relevant", "recent"])
+                try await assertHumanKeywordRanking(query, limit: 1, expected: ["relevant"])
+            }
+            // A short-only search retains the recency fallback.
+            try await assertHumanKeywordRanking(short, expected: ["recent", "relevant"])
+        }
+    }
+
+    @MainActor
+    func testKeywordRankingBreaksTiesByRecencyThenIdentityAcrossReaders() async throws {
+        for id in ["z-tie", "a-tie", "newest"] {
+            try insertTestSession(at: dbPath, id: id,
+                                  startTime: id == "newest" ? "2026-05-02T00:00:00Z" : "2026-05-01T00:00:00Z")
+            try insertFTSContent(at: dbPath, sessionId: id, content: "alpha beta AI")
+        }
+        for query in ["alpha beta", "beta alpha", "AI"] {
+            try await assertHumanKeywordRanking(query, expected: ["newest", "a-tie", "z-tie"])
+            try await assertHumanKeywordRanking(query, limit: 2, expected: ["newest", "a-tie"])
+        }
+    }
+
+    @MainActor
+    private func assertHumanKeywordRanking(
+        _ query: String,
+        limit: Int = 10,
+        expected: [String],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        XCTAssertEqual(try db.search(query: query, limit: limit).map(\.id), expected,
+                       "App query=\(query), limit=\(limit)", file: file, line: line)
+        let snippets = try db.searchWithSnippets(query: query, limit: limit)
+        XCTAssertEqual(snippets.map(\.session.id), expected,
+                       "App snippets query=\(query), limit=\(limit)", file: file, line: line)
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: dbPath)
+        let response = try await provider.search(
+            EngramServiceSearchRequest(query: query, mode: "keyword", limit: limit)
+        )
+        XCTAssertEqual(response.items.map(\.id), expected,
+                       "Service query=\(query), limit=\(limit)", file: file, line: line)
+        for snippet in snippets.map(\.snippet) + response.items.compactMap(\.snippet) {
+            for token in query.split(separator: " ") {
+                XCTAssertTrue(snippet.contains(token), "missing \(token): \(snippet)", file: file, line: line)
+            }
+            XCTAssertTrue(snippet.contains("<mark>"), snippet, file: file, line: line)
+        }
+    }
+
     // quality_score (already computed at index time) must decode into the GUI
     // read model. Session uses an explicit CodingKeys enum, so qualityScore must
     // be a listed key or it silently stays nil.
@@ -1575,7 +1703,7 @@ final class DatabaseManagerTests: XCTestCase {
         try insertTestSession(at: dbPath, id: "s-cjk", source: "claude-code")
         try insertFTSContent(at: dbPath, sessionId: "s-cjk", content: "重构了数据库连接池逻辑")
 
-        // CJK path requires query.count >= 2 and uses LIKE fallback
+        // Three-scalar CJK uses the same trigram MATCH route as Service.
         let results = try db.search(query: "数据库")
         XCTAssertEqual(results.count, 1)
         XCTAssertEqual(results.first?.id, "s-cjk")
@@ -1595,9 +1723,7 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertNoThrow(try db.searchWithSnippets(query: "handleRequest(payload)", limit: 5))
     }
 
-    // Hangul must route through the CJK LIKE fallback (trigram MATCH is broken for
-    // Korean). Before the containsCJK fix, Hangul Syllables (>= U+AC00) were not
-    // detected, so this took the MATCH path and returned nothing.
+    // Long Hangul terms must remain searchable through the Unicode trigram path.
     @MainActor
     func testSearchWithKoreanContent() throws {
         try insertTestSession(at: dbPath, id: "s-ko", source: "claude-code")
@@ -1892,7 +2018,7 @@ final class DatabaseManagerTests: XCTestCase {
         let local = try db.search(query: "alpha beta", limit: 10).map(\.id)
 
         // (a) Parity with the service-side CTE query shape (drive from FTS,
-        // inner-join per term, order by first term's rank then start_time).
+        // inner-join per term, order by combined rank then start_time and id).
         let terms = CJKText.ftsMatchTerms("alpha beta")
         let reference = try DatabaseQueue(path: dbPath).read { db -> [String] in
             try String.fetchAll(db, sql: """
@@ -1905,7 +2031,7 @@ final class DatabaseManagerTests: XCTestCase {
                 JOIN m1 ON m1.session_id = m0.session_id
                 JOIN sessions s ON s.id = m0.session_id
                 WHERE s.hidden_at IS NULL AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
-                ORDER BY m0.rank, s.start_time DESC
+                ORDER BY m0.rank + m1.rank, s.start_time DESC, s.id
                 LIMIT 10
             """, arguments: StatementArguments(terms))
         }

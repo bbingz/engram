@@ -282,6 +282,7 @@ struct EngramServiceWebWriteClient: Sendable {
 
     private static func failure(_ name: String) -> EngramServiceWebWriteClientError {
         switch name {
+        case "WebAiEndpointRequiresLocalUpdate": return .aiEndpointRequiresLocalUpdate
         case "InvalidRequest", "invalidRequest": return .invalid
         case "StaleCursor", "staleCursor": return .stale
         case "UnsupportedCommand", "unsupportedCommand": return .unsupported

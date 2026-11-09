@@ -1071,7 +1071,13 @@ final class EngramServiceLauncherTests: XCTestCase {
         // Thread.sleep on the main actor, blocking the run loop for up to the
         // full 2s timeout. The bounded wait now suspends instead of blocking,
         // so the call must return promptly even while the child is alive.
-        let executable = try makeSleeperExecutable()
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-stop-ready-\(UUID().uuidString)")
+        let executable = try makeDelayedTerminationExecutable(marker: marker)
+        defer {
+            try? FileManager.default.removeItem(at: marker)
+            try? FileManager.default.removeItem(at: executable.deletingLastPathComponent())
+        }
         let launcher = EngramServiceLauncher()
         let config = EngramServiceLaunchConfiguration(
             executablePath: executable.path,
@@ -1081,6 +1087,10 @@ final class EngramServiceLauncherTests: XCTestCase {
         )
 
         try launcher.start(configuration: config)
+        // Wait until SIGTERM is ignored; an ordinary sleeper may exit before
+        // the assertion below even when stopIfOwned correctly returns at once.
+        let ready = await waitForMarkerLineCount(marker, count: 1, timeoutNanoseconds: 5_000_000_000)
+        XCTAssertTrue(ready, "helper must install its termination handler before stop")
         XCTAssertTrue(launcher.isRunning)
 
         let start = Date()
@@ -1183,7 +1193,7 @@ final class EngramServiceLauncherTests: XCTestCase {
         let initialSpawned = await waitForMarkerLineCount(
             marker,
             count: 1,
-            timeoutNanoseconds: 500_000_000
+            timeoutNanoseconds: 5_000_000_000
         )
         XCTAssertTrue(initialSpawned)
 
@@ -1197,7 +1207,7 @@ final class EngramServiceLauncherTests: XCTestCase {
         let spawnedReplacement = await waitForMarkerLineCount(
             marker,
             count: 2,
-            timeoutNanoseconds: 250_000_000
+            timeoutNanoseconds: 5_000_000_000
         )
 
         // docs/invariants.md #1: a replacement must not race the still-live
@@ -1234,7 +1244,7 @@ final class EngramServiceLauncherTests: XCTestCase {
         let initialStarted = await waitForMarkerLineCount(
             marker,
             count: 1,
-            timeoutNanoseconds: 500_000_000
+            timeoutNanoseconds: 5_000_000_000
         )
         XCTAssertTrue(initialStarted)
         await launcher.restart(
@@ -1245,7 +1255,7 @@ final class EngramServiceLauncherTests: XCTestCase {
         let replacementStarted = await waitForMarkerLineCount(
             marker,
             count: 2,
-            timeoutNanoseconds: 500_000_000
+            timeoutNanoseconds: 5_000_000_000
         )
         launcher.stopIfOwned()
 

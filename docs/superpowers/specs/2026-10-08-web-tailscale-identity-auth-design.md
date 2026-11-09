@@ -2,7 +2,7 @@
 
 - **Status**: Accepted. Phase 1 merged in PR #457 (`1e3b5c34`) and deployed
   to the HQ receiver on 2026-10-08 (package
-  `remote-server-main-1e3b5c34-20261008`); phase 2 (§6) not started.
+  `remote-server-main-1e3b5c34-20261008`); phase 2 project-operation attribution and alias audit storage implemented locally on 2026-10-23 (see the [project addendum](2026-10-23-web-project-audit-actor-addendum.md) and [alias audit design](2026-10-23-web-alias-audit-design.md)); host acceptance remains separate.
 - **Owner**: RemoteServer / Web maintainers
 - **Date**: 2026-10-08
 - **Related**: `docs/superpowers/specs/2026-09-05-collector-server-web-design.md`

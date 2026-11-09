@@ -24,8 +24,14 @@ const webLogoutRoute = [
 ].join('\n');
 const webAliasDeleteRoute = [
   'router.delete("/web/api/settings/aliases") { request, _ in',
-  '  try await mutate(request, keys: removeKeys) { data in',
-  '    try await surface.removeAlias(try JSONDecoder().decode(EngramServiceWebRemoveAliasRequest.self, from: data))',
+  '  guard let token = boundary.sessionToken(in: request),',
+  '        let actor = await sessions.writeActor(sessionToken: token) else {',
+  '    return Response(status: .unauthorized)',
+  '  }',
+  '  return try await mutate(request, keys: removeKeys) { data in',
+  '    try await surface.removeAlias(',
+  '      try JSONDecoder().decode(EngramServiceWebRemoveAliasRequest.self, from: attributed(data, actor: actor))',
+  '    )',
   '  }',
   '}',
 ].join('\n');
@@ -517,6 +523,36 @@ describe('archive v2 release safety gate', () => {
     const root = makeSafeFixture();
     write(root, webWritePath, webAliasDeleteRoute);
     expect(runGate(root).status).toBe(0);
+  });
+
+  it.each([
+    [
+      'an unverified actor',
+      'await sessions.writeActor(sessionToken: token)',
+      '"web-editor"',
+    ],
+    [
+      'unattributed request data',
+      'from: attributed(data, actor: actor)',
+      'from: data',
+    ],
+    [
+      'an extra archive deletion',
+      'return try await mutate(request, keys: removeKeys)',
+      'await deleteArchive()\n  return try await mutate(request, keys: removeKeys)',
+    ],
+  ])('rejects Web alias DELETE with %s', (_name, original, replacement) => {
+    const root = makeSafeFixture();
+    write(
+      root,
+      webWritePath,
+      webAliasDeleteRoute.replace(original, replacement),
+    );
+    const result = runGate(root);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      'Web alias DELETE must be one exact settings wrapper',
+    );
   });
 
   it('rejects a Web alias DELETE at the wrong file', () => {

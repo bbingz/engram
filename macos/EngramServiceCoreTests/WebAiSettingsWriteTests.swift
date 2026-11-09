@@ -1,5 +1,8 @@
 import Darwin
 import Foundation
+import EngramCoreWrite
+import LocalAuthentication
+import Security
 import XCTest
 @testable import EngramServiceCore
 
@@ -211,6 +214,189 @@ final class WebAiSettingsWriteTests: XCTestCase {
             XCTAssertEqual($0 as? EngramServiceError, Self.unavailable)
         }
         XCTAssertEqual(try currentObject(url: target)["aiModel"] as? String, "keep-me")
+    }
+
+    func testEndpointChangeCannotRedirectStoredCredential_repro() throws {
+        try writeSettings([
+            "aiBaseURL": "https://trusted.example/v1",
+            "aiApiKey": "fixture-only-key",
+            "aiModel": "keep-me",
+        ])
+        let original = try Data(contentsOf: settingsURL)
+        XCTAssertThrowsError(try EngramServiceCommandHandler.webPatchAiSettings(
+            EngramServiceWebPatchAiSettingsRequest(
+                aiBaseURL: "https://other.example/v1", aiModel: "must-not-save"
+            ), settingsURL: settingsURL
+        )) { error in
+            guard case .commandFailed(let name, _, let retry, _) = error as? EngramServiceError else {
+                return XCTFail("Expected a structured endpoint rejection")
+            }
+            XCTAssertEqual(name, "WebAiEndpointRequiresLocalUpdate")
+            XCTAssertEqual(retry, "never")
+            XCTAssertFalse(String(describing: error).contains("fixture-only-key"))
+        }
+        XCTAssertEqual(try Data(contentsOf: settingsURL), original, "Reject the entire patch atomically")
+        let config = EngramServiceCommandHandler.ServiceAISettings.read(
+            settingsPath: settingsURL, environment: [:], keychainReader: { _ in nil }
+        )
+        XCTAssertEqual(config.summaryConfig?.baseURL, "https://trusted.example/v1")
+        XCTAssertEqual(config.summaryConfig?.apiKey, "fixture-only-key")
+    }
+
+    func testProtectsSharedFallbackLegacyDefaultsAndDormantCredentials() throws {
+        let cases: [([String: Any], EngramServiceWebPatchAiSettingsRequest)] = try [
+            (["aiProtocol": "disabled", "aiApiKey": "@keychain"],
+             .init(aiBaseURL: "https://other.example/v1")),
+            (["embeddingApiKey": "fixture-embedding"],
+             .init(aiBaseURL: "https://other.example/v1")),
+            (["aiApiKey": "fixture-shared"],
+             .init(embeddingBaseURL: "https://other.example/v1")),
+            (["aiApiKey": "fixture-shared", "embeddingBaseURL": "https://trusted.example/v1"],
+             .init(embeddingBaseURL: "")),
+            (["titleApiKey": "@keychain", "titleBaseURL": "https://legacy.example/v1"],
+             .init(titleBaseUrl: "https://other.example/v1")),
+            (["titleApiKey": "fixture-title", "titleProvider": "ollama"],
+             .init(titleBaseUrl: "https://other.example/v1")),
+            (["titleApiKey": "fixture-title", "titleProvider": "ollama",
+              "titleBaseUrl": "https://same.example/v1"], .init(titleProvider: "custom")),
+            (["titleApiKey": "fixture-title", "titleProvider": "custom"], .init(titleProvider: "ollama")),
+            (["aiApiKey": "@keychain", "aiBaseURL": "https://trusted.example/old"],
+             .init(aiBaseURL: "https://trusted.example/new")),
+        ]
+        for (object, patch) in cases {
+            try writeSettings(object)
+            let original = try Data(contentsOf: settingsURL)
+            XCTAssertThrowsError(try isolatedPatch(patch))
+            XCTAssertEqual(try Data(contentsOf: settingsURL), original)
+        }
+        // A successful disable is not permission to retarget the dormant key.
+        try writeSettings(["aiApiKey": "fixture-key"])
+        _ = try isolatedPatch(.init(aiProtocol: "disabled"))
+        XCTAssertThrowsError(try isolatedPatch(.init(aiBaseURL: "https://other.example")))
+        XCTAssertEqual(try currentObject()["aiProtocol"] as? String, "disabled")
+    }
+
+    func testAllowsCredentialFreeAndUnrelatedEditsWithoutSecretReads() throws {
+        try writeSettings([:])
+        let changed = try isolatedPatch(.init(
+            aiBaseURL: "https://new.example/v1", titleProvider: "custom",
+            titleBaseUrl: "https://title.example/v1", embeddingBaseURL: "https://embed.example/v1"
+        ))
+        XCTAssertEqual(changed.settings.aiBaseURL, "https://new.example/v1")
+        try writeSettings([
+            "aiApiKey": "@keychain", "titleApiKey": "@keychain", "embeddingApiKey": "@keychain",
+            "titleBaseURL": "http://localhost:11434",
+        ])
+        let edited = try EngramServiceCommandHandler.webPatchAiSettings(
+            .init(aiBaseURL: "https://api.openai.com", aiModel: "new-model",
+                  titleBaseUrl: "http://localhost:11434", embeddingBaseURL: "https://api.openai.com/v1"),
+            settingsURL: settingsURL, environment: [:], keychainMayContain: { _ in
+                XCTFail("Unchanged effective endpoints must not probe credentials")
+                return true
+            }
+        )
+        XCTAssertEqual(edited.settings.aiModel, "new-model")
+        XCTAssertNil(try currentObject()["titleBaseURL"])
+        // An independent embedding key must not lock a credential-free summary endpoint.
+        try writeSettings(["embeddingApiKey": "@keychain", "embeddingBaseURL": "https://embed.example/v1"])
+        XCTAssertNoThrow(try isolatedPatch(.init(aiBaseURL: "https://summary.example/v1")))
+    }
+
+    func testProtectsEnvironmentSidecarAndMarkerlessKeychainCredentials() throws {
+        let patch = try EngramServiceWebPatchAiSettingsRequest(embeddingBaseURL: "https://other.example/v1")
+        try writeSettings([:])
+        XCTAssertThrowsError(try isolatedPatch(patch, environment: [
+            "ENGRAM_EMBEDDING_API_KEY": "fixture-env",
+            "ENGRAM_EMBEDDING_BASE_URL": "https://env.example/v1",
+        ]))
+        for account in ["aiApiKey", "embeddingApiKey", "titleApiKey"] {
+            let request = try EngramServiceWebPatchAiSettingsRequest(
+                aiBaseURL: "https://other.example/v1", titleBaseUrl: "https://other.example/v1",
+                embeddingBaseURL: "https://other.example/v1"
+            )
+            XCTAssertThrowsError(try EngramServiceCommandHandler.webPatchAiSettings(
+                request, settingsURL: settingsURL, environment: [:], keychainMayContain: { $0 == account }
+            ))
+            for explicit in [false, true] {
+                let path = root.appendingPathComponent(explicit ? "custom-secrets.json" : "run/ai-secrets.json")
+                try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try writeSettings([account: "fixture-sidecar"], url: path)
+                let environment = explicit ? ["ENGRAM_RUNTIME_AI_SECRETS_PATH": path.path] : [:]
+                XCTAssertThrowsError(try isolatedPatch(request, environment: environment))
+                try FileManager.default.removeItem(at: path)
+            }
+        }
+        XCTAssertTrue(try currentObject().isEmpty)
+    }
+
+    func testUnreadableRuntimeSecretStateFailsClosedAndDoesNotFollowSymlink() throws {
+        try writeSettings([:])
+        let outside = root.appendingPathComponent("outside.json")
+        try writeSettings(["aiApiKey": "fixture-outside"], url: outside)
+        let sidecar = root.appendingPathComponent("secrets.json")
+        let environment = ["ENGRAM_RUNTIME_AI_SECRETS_PATH": sidecar.path]
+        let patch = try EngramServiceWebPatchAiSettingsRequest(aiBaseURL: "https://other.example/v1")
+        try FileManager.default.createSymbolicLink(at: sidecar, withDestinationURL: outside)
+        XCTAssertThrowsError(try isolatedPatch(patch, environment: environment))
+        XCTAssertEqual(try currentObject(url: outside)["aiApiKey"] as? String, "fixture-outside")
+        try FileManager.default.removeItem(at: sidecar)
+        try Data("invalid json".utf8).write(to: sidecar)
+        XCTAssertThrowsError(try isolatedPatch(patch, environment: environment))
+        try writeSettings([:], url: sidecar)
+        XCTAssertNoThrow(try isolatedPatch(patch, environment: environment))
+    }
+
+    func testKeychainPresenceProbeNeverRequestsSecretDataOrInteraction() {
+        for status in [errSecSuccess, errSecItemNotFound, errSecInteractionNotAllowed, errSecAuthFailed, errSecNotAvailable] {
+            let possible = EngramServiceCommandHandler.webAiKeychainMayContain("aiApiKey") { raw in
+                let query = raw as NSDictionary
+                XCTAssertEqual(query[kSecAttrService] as? String, "com.engram.app")
+                XCTAssertEqual(query[kSecAttrAccount] as? String, "aiApiKey")
+                XCTAssertEqual(query[kSecReturnAttributes] as? Bool, true)
+                XCTAssertNil(query[kSecReturnData])
+                XCTAssertEqual((query[kSecUseAuthenticationContext] as? LAContext)?.interactionNotAllowed, true)
+                return status
+            }
+            XCTAssertEqual(possible, status != errSecItemNotFound)
+        }
+    }
+
+    func testEndpointRejectionSurvivesRealServiceIPCAndLeavesSettingsIntact() async throws {
+        let previous = getenv("ENGRAM_SETTINGS_PATH").map { String(cString: $0) }
+        setenv("ENGRAM_SETTINGS_PATH", settingsURL.path, 1)
+        defer {
+            if let previous { setenv("ENGRAM_SETTINGS_PATH", previous, 1) }
+            else { unsetenv("ENGRAM_SETTINGS_PATH") }
+        }
+        try writeSettings(["aiApiKey": "fixture-ipc", "aiModel": "keep-me"])
+        let original = try Data(contentsOf: settingsURL)
+        let database = root.appendingPathComponent("index.sqlite")
+        try EngramDatabaseWriter(path: database.path).migrate()
+        let gate = try ServiceWriterGate(databasePath: database.path, runtimeDirectory: root)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let socket = root.appendingPathComponent("service.sock").path
+        let server = UnixSocketServiceServer(socketPath: socket) { request in await handler.handle(request) }
+        try server.start()
+        defer { server.stop() }
+        let client = try EngramServiceWebWriteClient(socketPath: socket)
+        do {
+            _ = try await client.patchAiSettings(.init(aiBaseURL: "https://other.example/v1", aiModel: "must-not-save"))
+            XCTFail("Endpoint changes with saved credentials must be rejected through real IPC")
+        } catch {
+            XCTAssertEqual(error as? EngramServiceWebWriteClientError, .aiEndpointRequiresLocalUpdate)
+        }
+        XCTAssertEqual(try Data(contentsOf: settingsURL), original)
+        let accepted = try await client.patchAiSettings(.init(aiModel: "safe-edit"))
+        XCTAssertEqual(accepted.settings.aiModel, "safe-edit")
+        XCTAssertEqual(try currentObject()["aiApiKey"] as? String, "fixture-ipc")
+    }
+
+    private func isolatedPatch(
+        _ patch: EngramServiceWebPatchAiSettingsRequest, environment: [String: String] = [:]
+    ) throws -> EngramServiceWebAiSettingsResponse {
+        try EngramServiceCommandHandler.webPatchAiSettings(
+            patch, settingsURL: settingsURL, environment: environment, keychainMayContain: { _ in false }
+        )
     }
 
     private func writeSettings(_ object: [String: Any], mode: Int = 0o600, url: URL? = nil) throws {

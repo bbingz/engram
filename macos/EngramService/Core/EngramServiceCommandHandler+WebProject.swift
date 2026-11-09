@@ -28,10 +28,11 @@ extension EngramServiceCommandHandler {
                     dryRun: request.dryRun,
                     force: request.force,
                     auditNote: request.auditNote,
-                    actor: "mcp",
+                    actor: request.actor ?? "web-editor",
                     operationId: try EngramServiceWebProjectValidation.namespacedOperationId(request.operationId)
                 ),
-                writerGate: writerGate
+                writerGate: writerGate,
+                auditActor: try webProjectAuditActor(request.actor)
             )
         }
     }
@@ -48,10 +49,11 @@ extension EngramServiceCommandHandler {
                     dryRun: request.dryRun,
                     force: request.force,
                     auditNote: request.auditNote,
-                    actor: "mcp",
+                    actor: request.actor ?? "web-editor",
                     operationId: try EngramServiceWebProjectValidation.namespacedOperationId(request.operationId)
                 ),
-                writerGate: writerGate
+                writerGate: writerGate,
+                auditActor: try webProjectAuditActor(request.actor)
             )
         }
     }
@@ -65,10 +67,11 @@ extension EngramServiceCommandHandler {
                 EngramServiceProjectUndoRequest(
                     migrationId: request.migrationId,
                     force: request.force,
-                    actor: "mcp",
+                    actor: request.actor ?? "web-editor",
                     operationId: try EngramServiceWebProjectValidation.namespacedOperationId(request.operationId)
                 ),
-                writerGate: writerGate
+                writerGate: writerGate,
+                auditActor: try webProjectAuditActor(request.actor)
             )
         }
     }
@@ -96,10 +99,11 @@ extension EngramServiceCommandHandler {
                     yaml: request.yaml,
                     dryRun: request.dryRun,
                     force: request.force,
-                    actor: "mcp",
+                    actor: request.actor ?? "web-editor",
                     operationId: try EngramServiceWebProjectValidation.namespacedOperationId(request.operationId)
                 ),
-                writerGate: writerGate
+                writerGate: writerGate,
+                auditActor: try webProjectAuditActor(request.actor)
             )
             let wrapped = try EngramServiceWebProjectMoveBatchResponse(
                 operationId: request.operationId,
@@ -109,6 +113,13 @@ extension EngramServiceCommandHandler {
         } catch {
             throw mapWebProjectError(error)
         }
+    }
+
+    private static func webProjectAuditActor(_ value: String?) throws -> MigrationLogActor {
+        guard let actor = MigrationLogActor(rawValue: value ?? "web-editor") else {
+            throw EngramServiceError.invalidRequest(message: "Invalid Web audit actor.")
+        }
+        return actor
     }
 
     static func webCancelProjectMoveBatch(
