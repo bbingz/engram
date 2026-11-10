@@ -8744,3 +8744,158 @@ it('keeps selected command scope text on the high-contrast foreground token', ()
     '.command-option[aria-selected="true"] .meta { color: var(--text); }',
   );
 });
+
+describe('iteration 7 coordinated session action access', () => {
+  async function flush() {
+    for (let i = 0; i < 24; i += 1) await Promise.resolve();
+  }
+  async function ready() {
+    const ui = harness();
+    await ui.call(
+      'setSignedIn(true);workspaceNode.className="showing-detail";detailContextSession="s";detailContextGeneration="g"',
+    );
+    return ui;
+  }
+  const outcomes = [
+    'denied',
+    'unknown',
+    'null',
+    'nonboolean',
+    'malformed',
+    'unavailable',
+  ] as const;
+  function resolveAccess(
+    ui: ReturnType<typeof harness>,
+    outcome: (typeof outcomes)[number],
+  ) {
+    const request = ui.requestFor('/web/api/auth');
+    if (outcome === 'malformed') request.resolveMalformed();
+    else if (outcome === 'unavailable') request.resolve({}, 503);
+    else
+      request.resolve(
+        outcome === 'null'
+          ? null
+          : outcome === 'unknown'
+            ? {}
+            : { canWrite: outcome === 'nonboolean' ? 'true' : false },
+      );
+  }
+  function expectReadOnly(ui: ReturnType<typeof harness>) {
+    expect(ui.node('session-generate-summary').disabled).toBe(true);
+    expect(ui.node('session-generate-title').disabled).toBe(true);
+    ui.node('command-trigger').click();
+    ui.node('command-query').value = 'Review summary';
+    ui.node('command-query').dispatch('input');
+    expect(ui.node('command-results').children).toHaveLength(0);
+  }
+
+  it.each(outcomes)(
+    'coalesces explicit palette review with the asynchronous disclosure toggle and fails closed for %s',
+    async (outcome) => {
+      const ui = await ready();
+      ui.node('command-trigger').click();
+      ui.node('command-query').value = 'Session actions & edit access';
+      ui.node('command-query').dispatch('input');
+      ui.node('command-results').children[0].click();
+      expect(ui.node('session-actions').open).toBe(true);
+      // The fake DOM does not auto-queue native details toggle; deliver the real
+      // listener explicitly after the palette's synchronous review has started.
+      await flush();
+      ui.node('session-actions').dispatch('toggle');
+      expect(ui.requestsFor('/web/api/auth')).toHaveLength(1);
+      resolveAccess(ui, outcome);
+      await flush();
+      expectReadOnly(ui);
+      expect(ui.requests.some((r) => r.method === 'POST')).toBe(false);
+      await ui.call('closeCommandPalette()');
+      const retry = ui.call('loadSessionActionAccess()');
+      expect(ui.requestsFor('/web/api/auth')).toHaveLength(2);
+      ui.requestFor('/web/api/auth').resolve({ canWrite: true });
+      await retry;
+      expect(ui.node('session-generate-summary').disabled).toBe(false);
+    },
+  );
+
+  it.each(outcomes)(
+    'ignores an older granted read after a new epoch returns %s',
+    async (outcome) => {
+      const ui = await ready();
+      const older = ui.call('loadSessionActionAccess()');
+      const oldRequest = ui.requestFor('/web/api/auth');
+      await ui.call('bumpEpoch()');
+      const newer = ui.call('loadSessionActionAccess()');
+      resolveAccess(ui, outcome);
+      await newer;
+      const status = ui.node('session-action-status').textContent;
+      oldRequest.resolve({ canWrite: true });
+      await older;
+      expect(ui.node('session-action-status').textContent).toBe(status);
+      expectReadOnly(ui);
+      await ui.call('generateSessionText("summary")');
+      expect(ui.requests.some((r) => r.method === 'POST')).toBe(false);
+    },
+  );
+
+  it('does not let an obsolete completion clear a newer coalesced operation', async () => {
+    const ui = await ready();
+    const older = ui.call('loadSessionActionAccess()');
+    const oldRequest = ui.requestFor('/web/api/auth');
+    await ui.call('bumpEpoch()');
+    const newer = ui.call('loadSessionActionAccess()');
+    oldRequest.resolve({ canWrite: true });
+    await older;
+    expect(ui.node('session-generate-summary').disabled).toBe(true);
+    expect(ui.node('session-action-status').textContent).toContain('Checking');
+    const shared = ui.call('loadSessionActionAccess()');
+    expect(ui.requestsFor('/web/api/auth')).toHaveLength(2);
+    ui.requestFor('/web/api/auth').resolve({ canWrite: false });
+    await Promise.all([newer, shared]);
+    expectReadOnly(ui);
+  });
+
+  it.each(['session', 'generation'])(
+    'keys pending access on the actual %s as well as the epoch',
+    async (change) => {
+      const ui = await ready();
+      const older = ui.call('loadSessionActionAccess()');
+      const oldRequest = ui.requestFor('/web/api/auth');
+      await ui.call(
+        change === 'session'
+          ? 'detailContextSession="other"'
+          : 'detailContextGeneration="next"',
+      );
+      const newer = ui.call('loadSessionActionAccess()');
+      expect(ui.requestsFor('/web/api/auth')).toHaveLength(2);
+      ui.requestFor('/web/api/auth').resolve({ canWrite: false });
+      await newer;
+      oldRequest.resolve({ canWrite: true });
+      await older;
+      expectReadOnly(ui);
+    },
+  );
+
+  it('ignores an old error after a newer grant and clears pending access on logout', async () => {
+    const ui = await ready();
+    const older = ui.call('loadSessionActionAccess()');
+    const oldRequest = ui.requestFor('/web/api/auth');
+    await ui.call('bumpEpoch()');
+    const newer = ui.call('loadSessionActionAccess()');
+    ui.requestFor('/web/api/auth').resolve({ canWrite: true });
+    await newer;
+    const status = ui.node('session-action-status').textContent;
+    oldRequest.reject();
+    await older;
+    expect(ui.node('session-generate-summary').disabled).toBe(false);
+    expect(ui.node('session-action-status').textContent).toBe(status);
+    const pending = ui.call('loadSessionActionAccess()');
+    const stale = ui.requestFor('/web/api/auth');
+    const signout = ui.call('logout()');
+    ui.requestFor('/web/api/auth').resolve(undefined, 204);
+    await signout;
+    stale.resolve({ canWrite: true });
+    await pending;
+    expect(ui.node('session-generate-summary').disabled).toBe(true);
+    expect(ui.node('session-action-status').textContent).toBe('');
+    expect(ui.node('command-dialog').open).toBe(false);
+  });
+});

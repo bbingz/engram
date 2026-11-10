@@ -216,7 +216,9 @@ final class WebUIRoutesTests: XCTestCase {
         }
         for contract in ["function commandScore(", "function availableCommands(", "commandContext !== commandState()",
                          "revision !== commandRevision", "command-option-", "not global search", "matches.slice(0, 60)",
-                         "typeof dialog.showModal === \"function\"", "sessionActionCanWrite === true", "await loadSessionActionAccess()"] {
+                         "typeof dialog.showModal === \"function\"", "sessionActionCanWrite === true", "await loadSessionActionAccess()",
+                         "sessionActionAccessRequest.key === key", "sessionActionAccessRequest === pending",
+                         "JSON.stringify([token, version, id, generation])"] {
             XCTAssertTrue(js.contains(contract), contract)
         }
         XCTAssertTrue(css.contains("#command-dialog"))

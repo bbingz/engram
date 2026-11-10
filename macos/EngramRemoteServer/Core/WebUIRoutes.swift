@@ -984,6 +984,7 @@ enum WebUIRoutes {
         let detailExtrasVersion = 0;
         let detailChildren = { loaded: false, busy: false, snapshot: "", cursor: "", seen: new Set(), items: [] };
         let sessionActionCanWrite = false, sessionActionPending = false, batchTitlePending = false;
+        let sessionActionAccessRequest = null;
         let detailRelationship = { canWrite: false, checking: false };
         let relationshipWritePending = false;
         let relationshipButtons = [];
@@ -2974,6 +2975,7 @@ enum WebUIRoutes {
         }
         function clearDetailExtras() {
           closeCommandPalette();
+          sessionActionAccessRequest = null;
           sessionActionCanWrite = false;
           document.getElementById("session-actions").hidden = true;
           document.getElementById("session-actions").open = false;
@@ -3015,21 +3017,36 @@ enum WebUIRoutes {
         }
         async function loadSessionActionAccess() {
           if (!detailContextSession || !detailContextGeneration) return;
-          const version = detailExtrasVersion;
+          const token = requestEpoch, version = detailExtrasVersion, id = detailContextSession, generation = detailContextGeneration;
+          const key = JSON.stringify([token, version, id, generation]);
+          // Palette review and the native disclosure toggle share one in-flight check.
+          if (sessionActionAccessRequest && sessionActionAccessRequest.key === key) return sessionActionAccessRequest.promise;
+          const pending = {key:key, promise:null}; sessionActionAccessRequest = pending;
+          function current() {
+            return sessionActionAccessRequest === pending && token === requestEpoch && version === detailExtrasVersion
+              && id === detailContextSession && generation === detailContextGeneration;
+          }
           const status = document.getElementById("session-action-status");
           sessionActionCanWrite = false;
           updateSessionActionControls();
           setText(status, "Checking edit access…");
-          try {
-            const access = await api("GET", "/web/api/auth");
-            if (version !== detailExtrasVersion) return;
-            sessionActionCanWrite = access && access.canWrite === true;
-            setText(status, sessionActionCanWrite ? "Uses the configured AI provider and saves the result to this session." : "Read only. Sign in with an editor key to generate content.");
-          } catch (error) {
-            if (version !== detailExtrasVersion) return;
-            setText(status, "Edit access unavailable. Reopen this section to retry.");
-          }
-          updateSessionActionControls();
+          pending.promise = (async function () {
+            try {
+              const access = await api("GET", "/web/api/auth");
+              if (!current()) return;
+              sessionActionCanWrite = !!(access && access.canWrite === true);
+              setText(status, sessionActionCanWrite ? "Uses the configured AI provider and saves the result to this session." : "Read only. Sign in with an editor key to generate content.");
+            } catch (error) {
+              if (!current()) return;
+              sessionActionCanWrite = false;
+              setText(status, "Edit access unavailable. Reopen this section to retry.");
+            } finally {
+              if (current()) updateSessionActionControls();
+              // An obsolete response must not clear a replacement check or restore its authority.
+              if (sessionActionAccessRequest === pending) sessionActionAccessRequest = null;
+            }
+          })();
+          return pending.promise;
         }
         async function generateSessionText(action) {
           if (!sessionActionCanWrite || sessionActionPending || !detailContextSession || !detailContextGeneration || !["summary", "title"].includes(action)) return;
