@@ -4,6 +4,7 @@
 
 ### 2026-11-10
 
+- [修复] Capture FTS readiness now checks its 5 s deadline only at job admission. An oversized session (82,982 messages, 929 MB) had livelocked the hq central index. A `_repro` test was added. See CHANGELOG.
 - [修复] Took over remediation of the 0.9 cutover. Disabled the two unsafe daily jobs and the old hq receiver. On macbookpro, restored 1,067 spool objects from Time Machine 11-08, re-queued the 1,437 stuck publications and re-dirtied 55 wrongly acknowledged locators. Reverted the plaintext token mirror. Rewrote the x86 cache to be encrypted and fingerprint-checked, and added a repro. Deployed the 0.9 binary and the Developer ID-signed hq service, then deleted the plaintext token file. See CHANGELOG.md.
 - [验证] remote-server suite passes 521/521 on x86_64 and arm64. The repro fails against Gemini's code and passes after the fix. Isolated service tests pass 46/46. Core has 6 pre-existing failures, none from this batch. After the restart, hq and m1 receipts kept arriving, and hq index ingestion from 0.9 is normal.
 - [验证] The escrow of the retired macbookpro `~/.engram` on 0.9 is complete: 319,384 files / 54.3 GB; manifest identical; SHA-256 of both DBs and a 400-file sample match. The Time Machine deny-ACL and 620 stray AppleDouble temp files were removed from the copy. The macbookpro snapshot mount and temp files are cleaned up. See CHANGELOG.md.

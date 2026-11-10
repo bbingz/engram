@@ -228,6 +228,47 @@ final class CaptureIngestIndexJobRunnerTests: XCTestCase {
         XCTAssertEqual(try state(), before)
     }
 
+    // Central FTS readiness livelock (2026-11-10): the deadline must bound job
+    // admission, not an admitted job. A 929 MB session's FTS insert outlasted the
+    // 5 s readiness budget, the post-commit checkpoint rolled it back on every
+    // cycle, and the job stayed at the head of the queue, blocking every later
+    // capture FTS job.
+    func testAdmittedJobOutlastingDeadlineStillCompletes_repro() async throws {
+        let first = try parsed(nativeID: "oversized-head")
+        let second = try parsed(nativeID: "queued-behind")
+        let runner = makeExpiringRunner()
+        do {
+            _ = try await runner.runRecoverableJobsOnce()
+            XCTFail("The expired deadline must still refuse to admit the next job")
+        } catch {
+            XCTAssertEqual(error as? CaptureIngestReadinessError, .deadlineExceeded)
+        }
+        let statuses = try [first, second].map { try job($0)["status"] as String }
+        XCTAssertEqual(statuses.sorted(), ["completed", "pending"])
+        let (done, waiting) = statuses[0] == "completed" ? (first, second) : (second, first)
+        try assertReady(done)
+        XCTAssertEqual(try fts(done), try expectedFTS(done))
+        XCTAssertEqual(try job(waiting)["retry_count"] as Int, 0)
+        XCTAssertEqual(try ledgerStatus(waiting), "parsed")
+    }
+
+    // Same incident, single-job batch: the admitted job commits, and the expired
+    // deadline still stops post-batch finalization instead of running it with
+    // capture eligibility hidden.
+    func testOnlyAdmittedJobOutlastingDeadlineCommitsAndSkipsFinalization_repro() async throws {
+        let fixture = try parsed()
+        let runner = makeExpiringRunner()
+        do {
+            _ = try await runner.runRecoverableJobsOnce()
+            XCTFail("Post-batch work must still honor the expired deadline")
+        } catch {
+            XCTAssertEqual(error as? CaptureIngestReadinessError, .deadlineExceeded)
+        }
+        XCTAssertEqual(try job(fixture)["status"] as String, "completed")
+        try assertReady(fixture)
+        XCTAssertEqual(try fts(fixture), try expectedFTS(fixture))
+    }
+
     func testSkipWithExistingRequiredJobPurgesFTSAndCommitsSkipReadiness() async throws {
         let fixture = try parsed()
         try writer.write { db in
@@ -878,6 +919,20 @@ final class CaptureIngestIndexJobRunnerTests: XCTestCase {
     private func makeRunner(policy: CaptureFTSReadinessPolicy? = nil, adapters: [any SessionAdapter] = []) -> IndexJobRunner {
         let current = policy ?? enabledPolicy
         return IndexJobRunner(writer: writer, adapters: adapters, capturePolicy: { current })
+    }
+
+    /// A runner whose deadline is far in the future until the first job's load
+    /// finishes, then already expired: an admitted job outlasting its budget,
+    /// with no wall-clock race.
+    private func makeExpiringRunner() -> IndexJobRunner {
+        let expired = CaptureRunnerFlag()
+        let revision = self.revision
+        let runner = IndexJobRunner(writer: writer, adapters: [], capturePolicy: {
+            .init(parserRevision: revision, enabledSources: [.claudeCode],
+                  deadline: ContinuousClock.now.advanced(by: expired.value ? .seconds(-1) : .seconds(3600)))
+        })
+        runner.afterCaptureLoadForTesting = { expired.set() }
+        return runner
     }
 
     private func assertDeferred(_ runner: IndexJobRunner, file: StaticString = #filePath, line: UInt = #line) async throws {

@@ -2,6 +2,21 @@
 All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## Fix: capture FTS readiness deadline bounds admission, not an admitted job (2026-11-10)
+
+- **Incident.** The hq central `service-index` stopped promoting capture sessions to `index_ready`, and ledger throughput fell from ~90/min to ~1/min.
+  - The head `fts` job was an m1 claude-code session with 82,982 messages and 929 MB, inside the storage caps. Its trigram FTS insert takes far longer than 5 s; about 60 s is inferred from roughly one completion per minute and was not measured.
+  - `ServiceCaptureIngestRuntime` gives each `captureIngestFTSReadiness` cycle a 5 s deadline. `CaptureIngestReadiness.commit` checks it only around the uninterruptible `replaceFtsContent`. The post-insert checkpoint threw `deadlineExceeded` and rolled the job back without a retry count, so the next cycle picked the same job: a livelock holding the writer gate.
+  - Evidence: `sample` put the writer thread 100% in `insertFtsRow` / `sqlite3Fts5HashWrite`. No `fts` job completed after the session arrived. Network time to the storage host was 1–9 s per minute.
+- **Fix** (`IndexJobRunner`).
+  - `processCapture` checks the deadline once, when it admits a job. An admitted job then loads, commits and finalizes under the same policy minus the deadline (`inFlightCapturePolicy`), so only cancellation and the parser/source fences can stop it.
+  - `runRecoverableJobsOnce` checks the deadline again before post-batch finalization. Past the deadline, capture eligibility is nil and would hide still-pending capture jobs from `finalizeRebuildIfReady`.
+  - The next job is still refused once the deadline has passed, and an already-expired deadline still changes nothing (`testExpiredDeadlineNeverRecordsRetryOrReadiness`).
+  - Cost: one oversized session can hold the writer for its full insert, once, instead of forever.
+- **Tests.** Both drive a policy whose deadline expires after the first load, with no wall-clock race. Both fail before the fix and pass after.
+  - `testAdmittedJobOutlastingDeadlineStillCompletes_repro`: the head job ends `completed` and the next job is untouched.
+  - `testOnlyAdmittedJobOutlastingDeadlineCommitsAndSkipsFinalization_repro`: a single-job batch commits, and finalization is skipped.
+
 
 ## Remediation of the 10.0.0.9 cutover: restore, disable unsafe jobs, encrypted x86 cache, signed hq service (2026-11-10)
 
