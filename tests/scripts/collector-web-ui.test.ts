@@ -18,8 +18,63 @@ const scriptMatch = source.match(
 if (!scriptMatch) throw new Error('Missing shipped Web viewer script');
 const script = scriptMatch;
 
+type Listener = (event: FakeEvent) => void;
+
+interface FakeEvent {
+  type: string;
+  target: Element | null;
+  currentTarget: Element | null;
+  defaultPrevented: boolean;
+  key?: string;
+  preventDefault(): void;
+  stopPropagation(): void;
+  [extra: string]: unknown;
+}
+
+function fakeEvent(
+  type: string,
+  target: Element | null,
+  init: Record<string, unknown> = {},
+): FakeEvent {
+  const event: FakeEvent = {
+    target,
+    currentTarget: target,
+    defaultPrevented: false,
+    preventDefault() {
+      event.defaultPrevented = true;
+    },
+    stopPropagation() {},
+    ...init,
+    type,
+  };
+  return event;
+}
+
+// Minimal CSSOM style declaration: custom properties and regular properties
+// both land in one bag; inline style is only ever set through setProperty.
+class StyleDeclaration {
+  readonly props = new Map<string, string>();
+
+  setProperty(name: string, value: string): void {
+    this.props.set(name, String(value));
+  }
+
+  getPropertyValue(name: string): string {
+    return this.props.get(name) ?? '';
+  }
+
+  removeProperty(name: string): string {
+    const value = this.props.get(name) ?? '';
+    this.props.delete(name);
+    return value;
+  }
+}
+
+let activeElement: Element | null = null;
+
 class Element {
   tagName = 'DIV';
+  namespaceURI: string | null = null;
   className = '';
   hidden = false;
   value = '';
@@ -29,11 +84,14 @@ class Element {
   title = '';
   dateTime = '';
   type = '';
+  href = '';
   parent: Element | null = null;
   children: Element[] = [];
+  readonly style = new StyleDeclaration();
+  readonly dataset: Record<string, string> = {};
   private text = '';
   private attrs = new Map<string, string>();
-  private listeners: { type: string; fn: () => void }[] = [];
+  private listeners: { type: string; fn: Listener }[] = [];
 
   get textContent(): string {
     return this.text + this.children.map((child) => child.textContent).join('');
@@ -41,32 +99,138 @@ class Element {
 
   set textContent(value: string) {
     this.text = value;
+    for (const child of this.children) child.parent = null;
     this.children = [];
   }
 
-  appendChild(child: Element): void {
+  get parentNode(): Element | null {
+    return this.parent;
+  }
+
+  get firstChild(): Element | null {
+    return this.children[0] ?? null;
+  }
+
+  get lastChild(): Element | null {
+    return this.children[this.children.length - 1] ?? null;
+  }
+
+  get classList() {
+    const tokens = () => this.className.split(/\s+/).filter(Boolean);
+    const write = (list: string[]) => {
+      this.className = list.join(' ');
+    };
+    return {
+      contains: (name: string) => tokens().includes(name),
+      add: (...names: string[]) =>
+        write([...tokens(), ...names.filter((n) => !tokens().includes(n))]),
+      remove: (...names: string[]) =>
+        write(tokens().filter((n) => !names.includes(n))),
+      toggle: (name: string, force?: boolean) => {
+        const has = tokens().includes(name);
+        const want = force === undefined ? !has : force;
+        if (want && !has) write([...tokens(), name]);
+        if (!want && has) write(tokens().filter((n) => n !== name));
+        return want;
+      },
+    };
+  }
+
+  private detach(child: Element): void {
+    if (child.parent) {
+      const siblings = child.parent.children;
+      const at = siblings.indexOf(child);
+      if (at >= 0) siblings.splice(at, 1);
+    }
+    child.parent = null;
+  }
+
+  appendChild(child: Element): Element {
+    this.detach(child);
     child.parent = this;
     this.children.push(child);
+    return child;
+  }
+
+  insertBefore(child: Element, reference: Element | null): Element {
+    if (!reference) return this.appendChild(child);
+    this.detach(child);
+    const at = this.children.indexOf(reference);
+    if (at < 0) throw new Error('insertBefore reference is not a child');
+    child.parent = this;
+    this.children.splice(at, 0, child);
+    return child;
+  }
+
+  removeChild(child: Element): Element {
+    if (child.parent !== this) throw new Error('removeChild: not a child');
+    this.detach(child);
+    return child;
+  }
+
+  remove(): void {
+    this.detach(this);
+  }
+
+  contains(other: Element | null): boolean {
+    let node = other;
+    while (node) {
+      if (node === this) return true;
+      node = node.parent;
+    }
+    return false;
   }
 
   setAttribute(name: string, value: string): void {
-    this.attrs.set(name, value);
+    this.attrs.set(name, String(value));
   }
 
   getAttribute(name: string): string | null {
     return this.attrs.get(name) ?? null;
   }
 
-  addEventListener(type: string, fn: () => void): void {
+  hasAttribute(name: string): boolean {
+    return this.attrs.has(name);
+  }
+
+  removeAttribute(name: string): void {
+    this.attrs.delete(name);
+  }
+
+  addEventListener(type: string, fn: Listener): void {
     this.listeners.push({ type, fn });
   }
 
-  click(): void {
-    if (this.type === 'checkbox') this.checked = !this.checked;
-    for (const listener of this.listeners) {
-      if (listener.type === 'click') listener.fn();
-      if (this.type === 'checkbox' && listener.type === 'change') listener.fn();
+  removeEventListener(type: string, fn: Listener): void {
+    this.listeners = this.listeners.filter(
+      (entry) => entry.type !== type || entry.fn !== fn,
+    );
+  }
+
+  dispatch(type: string, init: Record<string, unknown> = {}): FakeEvent {
+    const event = fakeEvent(type, this, init);
+    for (const listener of [...this.listeners]) {
+      if (listener.type === type) listener.fn.call(this, event);
     }
+    return event;
+  }
+
+  click(init: Record<string, unknown> = {}): void {
+    if (this.type === 'checkbox') this.checked = !this.checked;
+    const event = fakeEvent('click', this, init);
+    for (const listener of [...this.listeners]) {
+      if (listener.type === 'click') listener.fn.call(this, event);
+      if (this.type === 'checkbox' && listener.type === 'change')
+        listener.fn.call(this, fakeEvent('change', this, init));
+    }
+  }
+
+  focus(): void {
+    activeElement = this;
+  }
+
+  blur(): void {
+    if (activeElement === this) activeElement = null;
   }
 
   matches(selector: string): boolean {
@@ -74,7 +238,7 @@ class Element {
       return this.className.split(/\s+/).includes(selector.slice(1));
     }
     const [tag, cls] = selector.split('.');
-    if (tag && this.tagName !== tag.toUpperCase()) return false;
+    if (tag && this.tagName.toUpperCase() !== tag.toUpperCase()) return false;
     return !cls || this.className.split(/\s+/).includes(cls);
   }
 
@@ -94,6 +258,15 @@ class Element {
       if (nested) return nested;
     }
     return null;
+  }
+
+  querySelectorAll(selector: string): Element[] {
+    const found: Element[] = [];
+    for (const child of this.children) {
+      if (child.matches(selector)) found.push(child);
+      found.push(...child.querySelectorAll(selector));
+    }
+    return found;
   }
 }
 
@@ -135,12 +308,16 @@ function harness(
   const revokedCookies: (string | null)[] = [];
   let maximumInflightAuth = 0;
   const copied: string[] = [];
-  const documentListeners: { type: string; fn: () => void }[] = [];
-  const windowListeners: { type: string; fn: () => void }[] = [];
+  const documentListeners: { type: string; fn: Listener }[] = [];
+  const windowListeners: { type: string; fn: Listener }[] = [];
+  // Fake timers: queued, never run on their own; tests flush them explicitly.
+  const timers = new Map<number, () => void>();
+  let nextTimer = 1;
+  activeElement = null;
   const context = createContext({
     window: {
       location: { hash: '', origin: 'https://viewer.example' },
-      addEventListener: (type: string, fn: () => void) =>
+      addEventListener: (type: string, fn: Listener) =>
         windowListeners.push({ type, fn }),
       scrollY: 0,
       scrollTo(options: { top: number }) {
@@ -158,7 +335,17 @@ function harness(
         element.tagName = String(tag || 'div').toUpperCase();
         return element;
       },
-      addEventListener: (type: string, fn: () => void) => {
+      // SVG elements keep their lower-case qualified name, as in a browser.
+      createElementNS: (namespace: string, tag: string) => {
+        const element = new Element();
+        element.namespaceURI = namespace;
+        element.tagName = String(tag);
+        return element;
+      },
+      get activeElement() {
+        return activeElement;
+      },
+      addEventListener: (type: string, fn: Listener) => {
         documentListeners.push({ type, fn });
       },
     },
@@ -173,6 +360,15 @@ function harness(
     TextEncoder,
     TextDecoder,
     URLSearchParams,
+    setTimeout: (fn: () => void) => {
+      const id = nextTimer;
+      nextTimer += 1;
+      timers.set(id, fn);
+      return id;
+    },
+    clearTimeout: (id: number) => {
+      timers.delete(id);
+    },
     fetch: (path: string, options?: { method?: string; body?: string }) =>
       new Promise((fulfill, reject) => {
         const request: (typeof requests)[number] = {
@@ -251,17 +447,79 @@ function harness(
     },
     call: (expression: string) =>
       runInContext(expression, context) as Promise<void>,
-    dispatchDocument: (type: string) => {
-      for (const listener of documentListeners) {
-        if (listener.type === type) listener.fn();
+    // The newest request whose path starts with the prefix. New lazy fetches
+    // must not shift positional requests[N] indexes in existing sequences.
+    requestFor: (pathPrefix: string) => {
+      for (let i = requests.length - 1; i >= 0; i -= 1) {
+        if (requests[i].path.startsWith(pathPrefix)) return requests[i];
       }
+      throw new Error(`No request for ${pathPrefix}`);
     },
-    dispatchWindow: (type: string) => {
+    requestsFor: (pathPrefix: string) =>
+      requests.filter((request) => request.path.startsWith(pathPrefix)),
+    pendingTimers: () => timers.size,
+    runTimers: () => {
+      const queued = [...timers.values()];
+      timers.clear();
+      for (const fn of queued) fn();
+    },
+    activeElement: () => activeElement,
+    dispatchDocument: (type: string, init: Record<string, unknown> = {}) => {
+      const event = fakeEvent(type, null, init);
+      for (const listener of documentListeners) {
+        if (listener.type === type) listener.fn(event);
+      }
+      return event;
+    },
+    dispatchWindow: (type: string, init: Record<string, unknown> = {}) => {
+      const event = fakeEvent(type, null, init);
       for (const listener of windowListeners)
-        if (listener.type === type) listener.fn();
+        if (listener.type === type) listener.fn(event);
+      return event;
     },
   };
 }
+
+describe('fake DOM harness', () => {
+  it('supports SVG, CSSOM, tree edits, events, timers and request lookup', async () => {
+    const ui = harness();
+    const svg = await ui.call(
+      'document.createElementNS("http://www.w3.org/2000/svg", "svg")',
+    );
+    const el = svg as unknown as Element;
+    expect(el.tagName).toBe('svg');
+    expect(el.namespaceURI).toBe('http://www.w3.org/2000/svg');
+    el.style.setProperty('--pct', '42%');
+    expect(el.style.getPropertyValue('--pct')).toBe('42%');
+    el.classList.add('a', 'b');
+    el.classList.toggle('a');
+    expect(el.className).toBe('b');
+    const parent = ui.node('fake-parent');
+    const first = ui.node('fake-first');
+    const second = ui.node('fake-second');
+    parent.appendChild(second);
+    parent.insertBefore(first, second);
+    expect(parent.children).toEqual([first, second]);
+    expect(parent.contains(second)).toBe(true);
+    parent.removeChild(first);
+    expect(parent.children).toEqual([second]);
+    let seen: { key?: string; target: unknown } | null = null;
+    second.addEventListener('click', (event) => {
+      seen = event;
+    });
+    second.click({ key: 'x' });
+    expect(seen).toMatchObject({ key: 'x', target: second });
+    await ui.call('setTimeout(function () { window.fired = true; }, 10)');
+    expect(ui.pendingTimers()).toBe(1);
+    ui.runTimers();
+    expect(await ui.call('window.fired')).toBe(true);
+    ui.call('loadSessions(false)').catch(() => undefined);
+    expect(ui.requestFor('/web/api/sessions').path).toContain(
+      '/web/api/sessions',
+    );
+    expect(() => ui.requestFor('/web/api/nope')).toThrow();
+  });
+});
 
 describe('legacy session ID navigation', () => {
   it('resolves a native ID before opening its canonical session', async () => {
