@@ -52,6 +52,7 @@ enum WebUIRoutes {
         <button type="submit">Log in</button>
         </form>
         <button id="logout" type="button" hidden>Log out</button>
+        <button id="command-trigger" type="button" aria-haspopup="dialog" aria-controls="command-dialog" title="Commands (Cmd/Ctrl+K)" hidden>Commands <kbd>⌘/Ctrl K</kbd></button>
         <button id="shortcuts-help" type="button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)" hidden>?</button>
         <p id="identity-status" class="meta" role="status"></p>
         <p id="status" role="status"></p>
@@ -61,10 +62,20 @@ enum WebUIRoutes {
         <p>Sign in to browse your session library.</p><p class="meta">Read captured conversations, search your work and review source activity.</p></section>
         <dialog id="shortcuts-dialog" hidden role="dialog" aria-modal="true" aria-labelledby="shortcuts-title" tabindex="-1">
         <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+        <p>Cmd/Ctrl+K — commands (or use the Commands button). Pages and loaded sessions only; no global search.</p>
         <p>/ — focus search (find in a transcript) · j/k — select session · Enter — open selected session</p>
         <p>Esc — close help, find or filters, then return to list · ? — show this help</p>
         <p>In transcript find: Enter / Shift+Enter — next / previous. Searches only the loaded message model; Search further loads up to 5 pages.</p>
         <button id="shortcuts-close" type="button">Close help</button></dialog>
+        <dialog id="command-dialog" hidden role="dialog" aria-modal="true" aria-labelledby="command-title" tabindex="-1">
+        <h2 id="command-title">Commands</h2>
+        <label for="command-query" class="visually-hidden">Find a command or loaded session</label>
+        <input id="command-query" type="text" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls="command-results" aria-describedby="command-scope command-status" autocomplete="off" maxlength="120" placeholder="Page, loaded session or action…">
+        <p id="command-scope" class="meta"></p>
+        <div id="command-results" role="listbox" aria-label="Commands"></div>
+        <p id="command-status" class="meta" role="status" aria-live="polite"></p>
+        <div class="command-footer"><span class="meta">↑ ↓ select · Enter run · Esc close</span><button id="command-close" type="button">Close commands</button></div>
+        </dialog>
         <main id="workspace" hidden>
         <section id="library-page">
         <aside class="list-pane">
@@ -850,6 +861,19 @@ enum WebUIRoutes {
           #files-rows td[data-label]::before, #usage-rows td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 4px; color: var(--muted); font-size: 11px; }
         }
         @media (prefers-color-scheme: light) { .page-nav a[aria-current="page"] { color: #166534; } }
+        #command-trigger { order: 6; min-height: 44px; }
+        #command-trigger kbd { font: 11px var(--mono); color: var(--muted); margin-left: 5px; }
+        #command-dialog { width: min(640px, calc(100vw - 32px)); box-sizing: border-box; max-height: 85vh; max-height: 85dvh; overflow-y: auto; padding: 20px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); color: var(--text); }
+        #command-dialog::backdrop { background: rgba(0,0,0,.65); }
+        #command-dialog h2 { margin-top: 0; }
+        #command-query { width: 100%; box-sizing: border-box; min-height: 44px; }
+        #command-results { max-height: 42vh; overflow-y: auto; margin: 12px 0; }
+        .command-option { display: flex; flex-direction: column; gap: 3px; min-height: 44px; box-sizing: border-box; padding: 10px 12px; border: 1px solid transparent; border-radius: var(--r-sm); cursor: pointer; overflow-wrap: anywhere; }
+        .command-option[aria-selected="true"] { background: var(--panel-3); border-color: var(--accent); }
+        .command-option[aria-selected="true"] .meta { color: var(--text); }
+        .command-option:hover { border-color: var(--accent); }
+        .command-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+        #command-close { min-height: 44px; }
         #shortcuts-dialog { max-width: min(620px, calc(100vw - 32px)); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); color: var(--text); }
         #shortcuts-dialog::backdrop { background: rgba(0,0,0,.65); }
         #transcript-find { padding: 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--panel); }
@@ -994,6 +1018,7 @@ enum WebUIRoutes {
         let listRouteKey = "", cachedListScroll = 0, detailReturnRoute = null, selectedSessionIndex = -1;
         let findMatches = [], findIndex = -1, findVersion = 0;
         const routeFilterKeys = ["q", "sources", "projects", "agents", "since", "until", "tools", "machine", "mode", "limit"];
+        let commandSessions = [], commandResults = [], commandIndex = -1, commandRevision = 0, commandContext = null;
         const statsTabs = ["sessions", "costs", "tools", "files", "usage", "repos", "ai"];
         function cancelSearchTimer() {
           searchInputVersion += 1;
@@ -1002,6 +1027,7 @@ enum WebUIRoutes {
         }
         function bumpEpoch() {
           cancelSearchTimer();
+          closeCommandPalette();
           requestEpoch += 1;
           return requestEpoch;
         }
@@ -1139,6 +1165,8 @@ enum WebUIRoutes {
         }
         function setSignedIn(signedIn) {
           document.getElementById("shortcuts-help").hidden = !signedIn;
+          document.getElementById("command-trigger").hidden = !signedIn;
+          if (!signedIn) { closeCommandPalette(); commandSessions = []; }
           if (!signedIn) {
             identityDisplayVersion += 1;
             setText(document.getElementById("identity-status"), "");
@@ -2933,6 +2961,7 @@ enum WebUIRoutes {
           return fields;
         }
         function clearSessionPaging() {
+          closeCommandPalette(); commandSessions = [];
           sessionsNode.setAttribute("aria-busy", "false");
           sessionSnapshotId = "";
           sessionCursor = "";
@@ -2944,6 +2973,7 @@ enum WebUIRoutes {
           updateSessionMore();
         }
         function clearDetailExtras() {
+          closeCommandPalette();
           sessionActionCanWrite = false;
           document.getElementById("session-actions").hidden = true;
           document.getElementById("session-actions").open = false;
@@ -3952,6 +3982,10 @@ enum WebUIRoutes {
           return date.toLocaleDateString("en-US", { year: "numeric", month: "long" });
         }
         function acceptSessionsPage(more, page) {
+          closeCommandPalette();
+          const loaded = new Map(more ? commandSessions.map(function (item) { return [item.id, item]; }) : []);
+          (page.items || []).forEach(function (item) { if (typeof item.sessionId === "string" && item.sessionId) loaded.set(item.sessionId, {id:item.sessionId, label:sessionTitle(item)}); });
+          commandSessions = Array.from(loaded.values());
           if (!more) { listRouteKey = routeHref(libraryRoute()); selectedSessionIndex = -1; }
           sessionsNode.setAttribute("aria-busy", "false");
           sessionSnapshotId = page.snapshotId || "";
@@ -5109,6 +5143,135 @@ enum WebUIRoutes {
             if (picker.open && typeof picker.contains === "function" && !picker.contains(target)) picker.open = false;
           });
         });
+        // Commands are fixed enums plus opaque session IDs, never executable content.
+        function commandState() {
+          return JSON.stringify([requestEpoch, routeVersion, detailExtrasVersion, detailContextSession, detailContextGeneration]);
+        }
+        function commandPaletteVisible() {
+          const dialog = document.getElementById("command-dialog");
+          return !workspaceNode.hidden && activeModal === dialog && dialog.open && !dialog.hidden;
+        }
+        function closeCommandPalette(restoreFocus) {
+          closeModal(document.getElementById("command-dialog"), restoreFocus === true);
+          commandRevision += 1; commandResults = []; commandIndex = -1; commandContext = null;
+          document.getElementById("command-query").value = "";
+          document.getElementById("command-query").removeAttribute("aria-activedescendant");
+          setText(document.getElementById("command-results"), "");
+          setText(document.getElementById("command-status"), "");
+          setText(document.getElementById("command-scope"), "");
+        }
+        function availableCommands() {
+          if (workspaceNode.hidden) return [];
+          const result = ["sessions", "search", "dashboard", "stats", "health", "settings"].map(function (page) {
+            return {kind:"page", value:page, label:page[0].toUpperCase() + page.slice(1), scope:"Page"};
+          });
+          commandSessions.forEach(function (item) { result.push({kind:"session", value:item.id, label:item.label, scope:"Loaded session"}); });
+          if (workspaceNode.classList.contains("showing-detail") && detailContextSession) {
+            const add = function (value, label) { result.push({kind:"action", value:value, label:label, scope:"Current session"}); };
+            add("info", "Session info");
+            if (detailContextGeneration) {
+              add("find", "Find in loaded messages");
+              add("minimap", "Toggle transcript minimap");
+              add("access", "Session actions & edit access");
+              // Writes stay in their existing UI. Unknown/viewer authority never advertises them.
+              if (sessionActionCanWrite === true && !sessionActionPending) {
+                add("summary", "Review summary generation…"); add("title", "Review title generation…");
+              }
+            }
+            if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") add("copy", "Copy session ID");
+          }
+          return result;
+        }
+        function commandScore(label, query) {
+          const text = label.slice(0, 512).toLowerCase(), q = query.trim().toLowerCase().slice(0, 120);
+          if (!q) return 0;
+          if (text === q) return 0;
+          if (text.startsWith(q)) return 100 + Math.min(99, text.length - q.length);
+          const at = text.indexOf(q);
+          if (at >= 0) return 200 + Math.min(99, at);
+          let pos = -1, first = -1, gaps = 0;
+          for (let i = 0; i < q.length; i += 1) {
+            const next = text.indexOf(q[i], pos + 1);
+            if (next < 0) return -1;
+            if (first < 0) first = next; else gaps += next - pos - 1;
+            pos = next;
+          }
+          return 300 + gaps + first;
+        }
+        function selectCommand(index) {
+          commandIndex = commandResults.length ? (index + commandResults.length) % commandResults.length : -1;
+          const input = document.getElementById("command-query"), rows = document.getElementById("command-results").children;
+          Array.from(rows).forEach(function (row, i) { row.setAttribute("aria-selected", String(i === commandIndex)); });
+          if (commandIndex < 0) input.removeAttribute("aria-activedescendant");
+          else {
+            input.setAttribute("aria-activedescendant", "command-option-" + commandIndex);
+            if (rows[commandIndex] && typeof rows[commandIndex].scrollIntoView === "function") rows[commandIndex].scrollIntoView({block:"nearest"});
+          }
+        }
+        function renderCommands() {
+          if (!commandPaletteVisible()) return;
+          commandRevision += 1;
+          const revision = commandRevision, query = document.getElementById("command-query").value;
+          const matches = availableCommands().map(function (item, order) { return {item:item, order:order, score:commandScore(item.label, query)}; })
+            .filter(function (match) { return match.score >= 0; }).sort(function (a,b) { return a.score - b.score || a.order - b.order; });
+          commandResults = matches.slice(0, 60).map(function (match) { return match.item; });
+          const root = document.getElementById("command-results"); setText(root, "");
+          commandResults.forEach(function (item, index) {
+            const row = document.createElement("div"), title = document.createElement("span"), scope = document.createElement("span");
+            row.setAttribute("id", "command-option-" + index); row.setAttribute("role", "option"); row.className = "command-option";
+            setText(title, item.label); scope.className = "meta"; setText(scope, item.scope); row.appendChild(title); row.appendChild(scope);
+            row.addEventListener("click", function () { dispatchCommand(index, revision); }); root.appendChild(row);
+          });
+          setText(document.getElementById("command-scope"), "Pages, current-session actions and " + plural(commandSessions.length, "loaded session") + "; not global search. Open Search for the full library.");
+          setText(document.getElementById("command-status"), matches.length ? plural(matches.length, "command") + (matches.length > 60 ? " · showing first 60; refine your query" : "") : "No commands match. Try a page or loaded session title.");
+          selectCommand(0);
+        }
+        function openCommandPalette() {
+          if (workspaceNode.hidden || activeModal || (typeof document.querySelector === "function" && document.querySelector("dialog[open]"))) return;
+          closeCommandPalette();
+          commandContext = commandState();
+          openModal(document.getElementById("command-dialog"), document.getElementById("command-query"));
+          renderCommands();
+        }
+        async function reviewCommandAction(action, id, generation, version) {
+          // Reuse the route/tab and lazy cookie-access checks; generating still needs its normal button.
+          document.getElementById("detail-view-info").click();
+          const box = document.getElementById("session-actions"); box.open = true;
+          const token = requestEpoch, route = routeVersion;
+          await loadSessionActionAccess();
+          if (activeModal || token !== requestEpoch || route !== routeVersion || workspaceNode.hidden || id !== detailContextSession || generation !== detailContextGeneration || version !== detailExtrasVersion) return;
+          if (sessionActionCanWrite === true && ["summary", "title"].includes(action)) focusVisible(document.getElementById("session-generate-" + action));
+          else { const status = document.getElementById("session-action-status"); status.setAttribute("tabindex", "-1"); focusVisible(status); }
+        }
+        function dispatchCommand(index, revision) {
+          if (!commandPaletteVisible() || revision !== commandRevision) return;
+          const item = commandResults[index];
+          if (!item) return;
+          if (commandContext !== commandState() || !availableCommands().some(function (current) { return current.kind === item.kind && current.value === item.value; })) { closeCommandPalette(true); return; }
+          const id = detailContextSession, generation = detailContextGeneration, version = detailExtrasVersion;
+          closeCommandPalette(true);
+          if (item.kind === "page") navigate(item.value).catch(function () {});
+          else if (item.kind === "session") openDetail(item.value).catch(function () {});
+          else if (item.kind === "action") {
+            if (item.value === "info") document.getElementById("detail-view-info").click();
+            else if (item.value === "copy") document.getElementById("transcript-copy-id").click();
+            else if (["access", "summary", "title"].includes(item.value)) reviewCommandAction(item.value, id, generation, version).catch(function () {});
+            else if (["find", "minimap"].includes(item.value)) {
+              document.getElementById("detail-view-transcript").click();
+              if (item.value === "find") openTranscriptFind();
+              else { document.getElementById("transcript-minimap-toggle").click(); focusVisible(document.getElementById("transcript-minimap-toggle")); }
+            }
+          }
+        }
+        document.getElementById("command-trigger").addEventListener("click", openCommandPalette);
+        document.getElementById("command-close").addEventListener("click", function () { closeCommandPalette(true); });
+        document.getElementById("command-dialog").addEventListener("cancel", function (event) { event.preventDefault(); closeCommandPalette(true); });
+        document.getElementById("command-query").addEventListener("input", function (event) { if (!event.isComposing) renderCommands(); });
+        document.getElementById("command-query").addEventListener("compositionstart", function () {
+          commandRevision += 1; commandResults = []; commandIndex = -1;
+          setText(document.getElementById("command-results"), ""); document.getElementById("command-query").removeAttribute("aria-activedescendant");
+        });
+        document.getElementById("command-query").addEventListener("compositionend", renderCommands);
         function editableTarget(target) {
           let node = target;
           while (node) {
@@ -5121,7 +5284,7 @@ enum WebUIRoutes {
         function openShortcuts() { if (!workspaceNode.hidden) openModal(document.getElementById("shortcuts-dialog"), document.getElementById("shortcuts-close")); }
         document.addEventListener("focusin", function (event) {
           if (activeModal && activeModal.open && !activeModal.hidden && !activeModal.contains(event.target)) {
-            if (!focusVisible(activeModal.querySelector("button"))) focusVisible(activeModal);
+            if (!focusVisible(activeModal === document.getElementById("command-dialog") ? document.getElementById("command-query") : activeModal.querySelector("button"))) focusVisible(activeModal);
           }
         });
         document.getElementById("shortcuts-help").addEventListener("click", openShortcuts);
@@ -5130,7 +5293,11 @@ enum WebUIRoutes {
         document.addEventListener("keydown", function (event) {
           if (!event || event.isComposing || event.keyCode === 229) return;
           if (activeModal && activeModal.open && !activeModal.hidden) {
-            if (event.key === "Escape") { event.preventDefault(); if (activeModal === document.getElementById("insight-dialog")) closeInsight(true); else closeShortcuts(true); }
+            if (event.key === "Escape") { event.preventDefault(); if (activeModal === document.getElementById("insight-dialog")) closeInsight(true); else if (activeModal === document.getElementById("command-dialog")) closeCommandPalette(true); else closeShortcuts(true); }
+            if (commandPaletteVisible() && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+              if (["ArrowDown", "ArrowUp"].includes(event.key)) { event.preventDefault(); selectCommand(commandIndex + (event.key === "ArrowDown" ? 1 : -1)); }
+              if (event.key === "Enter" && event.target !== document.getElementById("command-close")) { event.preventDefault(); dispatchCommand(commandIndex, commandRevision); }
+            }
             if (event.key === "Tab") {
               const nodes = Array.from(activeModal.querySelectorAll("button, input, select, textarea, a[href], [tabindex]"))
                 .filter(function (node) { return !node.disabled && !node.hidden && node.getAttribute("tabindex") !== "-1" && (typeof node.checkVisibility !== "function" || node.checkVisibility()); });
@@ -5139,6 +5306,10 @@ enum WebUIRoutes {
                 event.preventDefault(); focusVisible(nodes.length ? nodes[event.shiftKey ? nodes.length - 1 : 0] : activeModal);
               }
             }
+            return;
+          }
+          if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && String(event.key).toLowerCase() === "k") {
+            if (!workspaceNode.hidden && !editableTarget(event.target) && !(typeof document.querySelector === "function" && document.querySelector("dialog[open]"))) { event.preventDefault(); openCommandPalette(); }
             return;
           }
           if (event.metaKey || event.ctrlKey || event.altKey) return;

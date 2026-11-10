@@ -8426,3 +8426,321 @@ describe('iteration 6 minimap interactions and lexical boundaries', () => {
     expect(ui.node('bad-diff').querySelector('.syntax-comment')).toBeNull();
   });
 });
+
+describe('iteration 7 command palette', () => {
+  async function flush() {
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+  }
+  async function ready() {
+    const ui = harness();
+    await ui.call('setSignedIn(true)');
+    return ui;
+  }
+  function query(ui: ReturnType<typeof harness>, value: string) {
+    ui.node('command-query').value = value;
+    ui.node('command-query').dispatch('input');
+  }
+  const options = (ui: ReturnType<typeof harness>) =>
+    ui.node('command-results').children;
+
+  it('opens via touch or Cmd/Ctrl+K without eager reads and returns fallback focus', async () => {
+    const ui = await ready();
+    ui.node('command-trigger').focus();
+    ui.node('command-trigger').click();
+    expect(ui.node('command-dialog').open).toBe(true);
+    expect(ui.activeElement()).toBe(ui.node('command-query'));
+    expect(ui.requests).toHaveLength(0);
+    ui.dispatchDocument('keydown', { key: 'Escape' });
+    expect(ui.activeElement()).toBe(ui.node('command-trigger'));
+    expect(ui.node('command-dialog').hidden).toBe(true);
+    for (const modifier of ['ctrlKey', 'metaKey']) {
+      expect(
+        ui.dispatchDocument('keydown', { key: 'k', [modifier]: true })
+          .defaultPrevented,
+      ).toBe(true);
+      expect(ui.node('command-dialog').open).toBe(true);
+      ui.node('command-dialog').dispatch('cancel');
+    }
+  });
+
+  it('ranks exact, prefix, substring then fuzzy matches stably with inert labels and loaded scope', async () => {
+    const ui = await ready();
+    await ui.call(`acceptSessionsPage(false, {items:[
+      {sessionId:'a',title:'Dashboard'}, {sessionId:'b',title:'Dashboard notes'},
+      {sessionId:'c',title:'My Dashboard'}, {sessionId:'d',title:'Danger board'},
+      {sessionId:'e',title:'<img onerror=alert(1)>'}
+    ]})`);
+    ui.node('command-trigger').click();
+    query(ui, 'dashboard');
+    expect(options(ui).map((n) => n.textContent)).toEqual([
+      'DashboardPage',
+      'DashboardLoaded session',
+      'Dashboard notesLoaded session',
+      'My DashboardLoaded session',
+    ]);
+    query(ui, 'dbrd');
+    expect(options(ui)[0].textContent).toBe('DashboardPage');
+    query(ui, '<img');
+    expect(options(ui)[0].textContent).toContain('<img onerror=alert(1)>');
+    expect(options(ui)[0].querySelector('img')).toBeNull();
+    expect(options(ui)[0].getAttribute('id')).toMatch(/^command-option-\d+$/);
+    expect(ui.node('command-scope').textContent).toContain('5 loaded sessions');
+    expect(ui.node('command-scope').textContent).toContain('not global search');
+    query(ui, 'nonexistent-command');
+    expect(options(ui)).toHaveLength(0);
+    expect(ui.node('command-status').textContent).toContain('No commands');
+    expect(
+      ui.node('command-query').getAttribute('aria-activedescendant'),
+    ).toBeNull();
+    ui.dispatchDocument('keydown', {
+      key: 'Enter',
+      target: ui.node('command-query'),
+    });
+    expect(ui.node('command-dialog').open).toBe(true);
+  });
+
+  it('uses keyboard selection, Enter and lazy real page/session routes', async () => {
+    const ui = await ready();
+    await ui.call(
+      'acceptSessionsPage(false,{items:[{sessionId:"session /雪",title:"Unique session"}]})',
+    );
+    ui.node('command-trigger').click();
+    query(ui, 'Unique');
+    ui.dispatchDocument('keydown', {
+      key: 'ArrowDown',
+      target: ui.node('command-query'),
+    });
+    expect(options(ui)[0].getAttribute('aria-selected')).toBe('true');
+    ui.dispatchDocument('keydown', {
+      key: 'Enter',
+      target: ui.node('command-query'),
+    });
+    expect(ui.node('command-dialog').hidden).toBe(true);
+    expect(
+      ui.requestFor('/web/api/sessions/session%20%2F%E9%9B%AA').method,
+    ).toBe('GET');
+    ui.requestFor('/web/api/sessions/').resolve({ detail: null });
+    await flush();
+    ui.node('command-trigger').click();
+    query(ui, 'Health');
+    ui.dispatchDocument('keydown', { key: 'ArrowUp' });
+    ui.dispatchDocument('keydown', { key: 'Enter' });
+    expect(ui.node('health-page').hidden).toBe(false);
+    expect(ui.requestFor('/web/api/overview').method).toBe('GET');
+  });
+
+  it('respects IME, password/editable ancestors, modifiers, signed-out and other modals', async () => {
+    const ui = await ready();
+    ui.node('credential').tagName = 'INPUT';
+    const editor = new Element(),
+      child = new Element();
+    editor.setAttribute('contenteditable', 'true');
+    editor.appendChild(child);
+    for (const init of [
+      { isComposing: true },
+      { keyCode: 229 },
+      { target: ui.node('credential') },
+      { target: child },
+      { altKey: true },
+      { shiftKey: true },
+    ]) {
+      expect(
+        ui.dispatchDocument('keydown', { key: 'k', ctrlKey: true, ...init })
+          .defaultPrevented,
+      ).toBe(false);
+      expect(ui.node('command-dialog').open).toBe(false);
+    }
+    ui.node('shortcuts-help').click();
+    ui.node('command-trigger').click();
+    expect(ui.node('command-dialog').open).toBe(false);
+    ui.dispatchDocument('keydown', { key: 'Escape' });
+    await ui.call('setSignedIn(false)');
+    ui.node('command-trigger').click();
+    expect(ui.node('command-trigger').hidden).toBe(true);
+    expect(ui.node('command-dialog').open).toBe(false);
+    ui.dispatchDocument('keydown', { key: 'k', ctrlKey: true });
+    expect(ui.node('command-dialog').open).toBe(false);
+  });
+
+  it('traps fallback focus and keeps composing Enter inert', async () => {
+    const ui = await ready();
+    const dialog = ui.node('command-dialog'),
+      input = ui.node('command-query'),
+      close = ui.node('command-close');
+    input.tagName = 'INPUT';
+    close.tagName = 'BUTTON';
+    dialog.appendChild(input);
+    dialog.appendChild(close);
+    ui.node('command-trigger').click();
+    expect(
+      ui.dispatchDocument('keydown', {
+        key: 'Tab',
+        shiftKey: true,
+        target: input,
+      }).defaultPrevented,
+    ).toBe(true);
+    expect(ui.activeElement()).toBe(close);
+    ui.dispatchDocument('keydown', { key: 'Tab', target: close });
+    expect(ui.activeElement()).toBe(input);
+    ui.dispatchDocument('keydown', {
+      key: 'Enter',
+      isComposing: true,
+      target: input,
+    });
+    expect(dialog.open).toBe(true);
+    expect(ui.requests).toHaveLength(0);
+  });
+
+  it('offers only current authorized context actions, reviewing writes in the existing UI', async () => {
+    const ui = await ready();
+    await ui.call(
+      'workspaceNode.className="showing-detail";detailContextSession="s";detailContextGeneration="g"',
+    );
+    ui.node('command-trigger').click();
+    query(ui, 'Review summary');
+    expect(options(ui)).toHaveLength(0);
+    await ui.call('closeCommandPalette(); sessionActionCanWrite=true');
+    ui.node('command-trigger').click();
+    query(ui, 'Review summary');
+    expect(options(ui)).toHaveLength(1);
+    options(ui)[0].click();
+    await flush();
+    expect(ui.requests.some((r) => r.method === 'POST')).toBe(false);
+    expect(ui.node('session-actions').open).toBe(true);
+    ui.requestFor('/web/api/auth').resolve({ canWrite: false });
+    await flush();
+    expect(ui.node('session-generate-summary').disabled).toBe(true);
+    ui.node('command-trigger').click();
+    query(ui, 'Review summary');
+    expect(options(ui)).toHaveLength(0);
+  });
+
+  it.each(['logout', 'switch', 'generation', 'capability', 'hidden', 'query'])(
+    'rejects stale option dispatch after %s',
+    async (change) => {
+      const ui = await ready();
+      await ui.call(
+        'workspaceNode.className="showing-detail";detailContextSession="s";detailContextGeneration="g";sessionActionCanWrite=true',
+      );
+      ui.node('command-trigger').click();
+      query(ui, 'Review summary');
+      const stale = options(ui)[0];
+      expect(stale).toBeDefined();
+      if (change === 'logout') await ui.call('setSignedIn(false)');
+      if (change === 'switch')
+        await ui.call('bumpEpoch();detailContextSession="other"');
+      if (change === 'generation')
+        await ui.call('detailContextGeneration="new"');
+      if (change === 'capability') await ui.call('sessionActionCanWrite=false');
+      if (change === 'hidden') ui.node('command-dialog').hidden = true;
+      if (change === 'query') query(ui, 'Health');
+      stale.click();
+      await flush();
+      expect(ui.requests).toHaveLength(0);
+      if (['logout', 'switch'].includes(change)) {
+        expect(ui.node('command-dialog').open).toBe(false);
+        expect(ui.node('command-query').value).toBe('');
+        expect(options(ui)).toHaveLength(0);
+      }
+    },
+  );
+
+  it('does not steal focus after a delayed access review and explicit tab navigation', async () => {
+    const ui = await ready();
+    await ui.call(
+      'workspaceNode.className="showing-detail";detailContextSession="s";detailContextGeneration="g";sessionActionCanWrite=true',
+    );
+    ui.node('command-trigger').click();
+    query(ui, 'Review summary');
+    options(ui)[0].click();
+    ui.node('detail-view-transcript').click();
+    ui.node('detail-view-transcript').focus();
+    ui.requestFor('/web/api/auth').resolve({ canWrite: true });
+    await flush();
+    expect(ui.activeElement()).toBe(ui.node('detail-view-transcript'));
+  });
+
+  it('wraps active selection and executes safe Find, minimap and copy actions without fetching', async () => {
+    const ui = await ready();
+    await ui.call(
+      'workspaceNode.className="showing-detail";detailContextSession="s /雪";detailContextGeneration="g"',
+    );
+    ui.node('command-trigger').click();
+    const first = ui
+      .node('command-query')
+      .getAttribute('aria-activedescendant');
+    ui.dispatchDocument('keydown', { key: 'ArrowDown' });
+    expect(
+      ui.node('command-query').getAttribute('aria-activedescendant'),
+    ).not.toBe(first);
+    ui.dispatchDocument('keydown', { key: 'ArrowUp' });
+    expect(ui.node('command-query').getAttribute('aria-activedescendant')).toBe(
+      first,
+    );
+    ui.dispatchDocument('keydown', { key: 'ArrowUp' });
+    expect(options(ui).at(-1)?.getAttribute('aria-selected')).toBe('true');
+    query(ui, 'Find in loaded');
+    options(ui)[0].click();
+    expect(ui.node('transcript-find').hidden).toBe(false);
+    ui.node('command-trigger').click();
+    query(ui, 'minimap');
+    options(ui)[0].click();
+    expect(ui.node('transcript-minimap-box').hidden).toBe(false);
+    ui.node('command-trigger').click();
+    query(ui, 'Copy session');
+    options(ui)[0].click();
+    await flush();
+    expect(ui.copied).toEqual(['s /雪']);
+    expect(ui.requests).toHaveLength(0);
+  });
+
+  it('caps result DOM, refreshes composition safely and drops all context on expiry', async () => {
+    const ui = await ready();
+    await ui.call(
+      'acceptSessionsPage(false,{items:Array.from({length:200},(_,i)=>({sessionId:String(i),title:"Session "+i}))})',
+    );
+    ui.node('command-trigger').click();
+    expect(options(ui)).toHaveLength(60);
+    expect(ui.node('command-status').textContent).toContain('showing first 60');
+    const stale = options(ui)[0];
+    ui.node('command-query').dispatch('compositionstart');
+    stale.click();
+    expect(ui.requests).toHaveLength(0);
+    ui.node('command-query').value = 'Session 199';
+    ui.node('command-query').dispatch('compositionend');
+    expect(options(ui)[0].textContent).toBe('Session 199Loaded session');
+    await ui.call('expireSession()');
+    stale.click();
+    expect(ui.node('command-dialog').open).toBe(false);
+    expect(options(ui)).toHaveLength(0);
+    expect(ui.node('command-scope').textContent).toBe('');
+    expect(ui.node('command-trigger').hidden).toBe(true);
+    expect(ui.requests).toHaveLength(0);
+  });
+
+  it('drops old loaded sessions on replacement and logout, deduplicating paged IDs', async () => {
+    const ui = await ready();
+    await ui.call(
+      'acceptSessionsPage(false,{items:[{sessionId:"a",title:"Old private"}]});acceptSessionsPage(true,{items:[{sessionId:"a",title:"New title"}]})',
+    );
+    ui.node('command-trigger').click();
+    query(ui, 'New title');
+    expect(options(ui)).toHaveLength(1);
+    await ui.call('acceptSessionsPage(false,{items:[]})');
+    expect(ui.node('command-dialog').open).toBe(false);
+    ui.node('command-trigger').click();
+    query(ui, 'New title');
+    expect(options(ui)).toHaveLength(0);
+    await ui.call('setSignedIn(false);setSignedIn(true)');
+    ui.node('command-trigger').click();
+    query(ui, 'New title');
+    expect(options(ui)).toHaveLength(0);
+  });
+});
+
+it('keeps selected command scope text on the high-contrast foreground token', () => {
+  // Browser measured muted/panel-3 at 4.335:1 in dark mode; scope is normal text too.
+  expect(shipped('css')).toContain(
+    '.command-option[aria-selected="true"] .meta { color: var(--text); }',
+  );
+});
