@@ -160,6 +160,28 @@ final class WebUIRoutesTests: XCTestCase {
         XCTAssertLessThanOrEqual(js.utf8.count, 360_000)
     }
 
+    func testPolishKeepsAccessibleDialogsScopeProvenanceAndSignedOutCopy() async throws {
+        let harness = try UIHarness(configuration: configuration())
+        let html = try await bodyText(try await harness.respond(request(path: "/web", headers: [("Host", "viewer.example")])))
+        let js = try await bodyText(try await harness.respond(request(path: "/web/app.js", headers: [("Host", "viewer.example")])))
+        let css = try await bodyText(try await harness.respond(request(path: "/web/app.css", headers: [("Host", "viewer.example")])))
+        for contract in ["Sign in to browse your session library.", "Browse your session library.", "identity-status",
+                         "aria-modal=\"true\"", "role=\"dialog\"", "aria-controls=\"transcript-find\"",
+                         "Message types in loaded messages", "Search availability &amp; index",
+                         "Heartbeat shows collector liveness, not capture activity.", "Server configuration and captured-library metadata."] {
+            XCTAssertTrue(html.contains(contract), contract)
+        }
+        for contract in ["function focusVisible(", "function openModal(", "function closeModal(", "addEventListener(\"focusin\"",
+                         "Capture & sync provenance", "Clock ahead", "health-timestamp", "createElement(\"time\")", "focusedType"] {
+            XCTAssertTrue(js.contains(contract), contract)
+        }
+        XCTAssertTrue(css.contains(".sign-in-card"))
+        XCTAssertTrue(css.contains("@media (prefers-reduced-motion: reduce)"))
+        XCTAssertTrue(css.contains("max-width: 960px"))
+        XCTAssertLessThanOrEqual(js.utf8.count, 360_000)
+        XCTAssertLessThanOrEqual(css.utf8.count, 80_000)
+    }
+
     func testJavaScriptUsesTextContentAndExistingAPIsForLoginLogoutAndPaging() async throws {
         let harness = try UIHarness(configuration: configuration())
         let js = try await bodyText(try await harness.respond(request(path: "/web/app.js", headers: [("Host", "viewer.example")])))

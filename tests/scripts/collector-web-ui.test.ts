@@ -234,6 +234,8 @@ class Element {
   }
 
   matches(selector: string): boolean {
+    if (selector.includes(','))
+      return selector.split(',').some((part) => this.matches(part.trim()));
     if (selector.startsWith('.')) {
       return this.className.split(/\s+/).includes(selector.slice(1));
     }
@@ -930,7 +932,7 @@ describe('native Settings page', () => {
     for (const text of [
       'Database',
       'Active Sources',
-      'Sync',
+      'Capture & sync provenance',
       'Project Aliases',
       '120',
       'Codex',
@@ -5706,12 +5708,12 @@ describe('iteration 1 foundation: rows, chips, feedback and states', () => {
     ).toEqual([
       ['ok', '1 live'],
       ['danger', '1 offline'],
-      ['neutral', '1 without heartbeat'],
+      ['neutral', '1 unknown liveness'],
       ['warn', '1 needs attention'],
     ]);
     const heartbeat = cards[0]
       .querySelectorAll('dd')
-      .find((dd) => dd.textContent === '1m ago');
+      .find((dd) => dd.textContent.startsWith('1m ago'));
     expect(heartbeat?.title).toBe(
       new Date((1789214400 - 60) * 1000).toLocaleString(),
     );
@@ -6543,9 +6545,7 @@ describe('iteration 3 transcript reading', () => {
       renderMessage('tool', {content:'result'}, 4);`);
     expect(ui.node('messages').querySelectorAll('.thinking')).toHaveLength(1);
     expect(ui.node('messages').querySelector('.thinking')?.open).toBe(false);
-    expect(ui.node('transcript-filters').textContent).toContain(
-      'Tools 2 in loaded',
-    );
+    expect(ui.node('transcript-filters').textContent).toContain('Tools 2');
     ui.node('transcript-filters')
       .children.find((n) => n.dataset.type === 'tools')
       ?.click();
@@ -7718,5 +7718,269 @@ it('retains known facet labels while restoring route filter keys instead of repl
   );
   expect(ui.node('active-filters').textContent).toContain(
     'Known project label',
+  );
+});
+
+describe('iteration 5 polish and accessibility', () => {
+  const ticks = async () => {
+    for (let i = 0; i < 24; i++) await Promise.resolve();
+  };
+
+  it('restores identity display on an existing cookie without minting and clears it on expiry', async () => {
+    const ui = harness(undefined, { authMode: 'tailscale-serve' });
+    const pending = ui.call('restoreSession()');
+    ui.requestFor('/web/api/sessions').resolve({ snapshotId: 's', items: [] });
+    await ticks();
+    ui.requestFor('/web/api/overview').resolve({
+      snapshotId: 'o',
+      streams: [],
+    });
+    await ticks();
+    ui.requestFor('/web/api/auth').resolve({
+      canWrite: false,
+      login: 'Reader <safe>@example.com',
+    });
+    await pending;
+    expect(ui.node('identity-status').textContent).toBe(
+      'Signed in as Reader <safe>@example.com',
+    );
+    expect(ui.node('identity-status').querySelector('safe')).toBeNull();
+    await ui.call('activatePage("settings"); setStatus("signed in")');
+    expect(ui.node('identity-status').textContent).toContain('Reader <safe>');
+    expect(ui.requests.filter((r) => r.method === 'POST')).toHaveLength(0);
+    await ui.call('identitySignInAt=Date.now(); expireSession()');
+    expect(ui.node('identity-status').textContent).toBe('');
+  });
+
+  it('fences a late identity display response after expiry', async () => {
+    const ui = harness(undefined, { authMode: 'tailscale-serve' });
+    const pending = ui.call('restoreSession()');
+    ui.requestFor('/web/api/sessions').resolve({ snapshotId: 's', items: [] });
+    await ticks();
+    ui.requestFor('/web/api/overview').resolve({
+      snapshotId: 'o',
+      streams: [],
+    });
+    await ticks();
+    await ui.call('identitySignInAt=Date.now(); expireSession()');
+    ui.requestFor('/web/api/auth').resolve({ canWrite: false, login: 'STALE' });
+    await pending;
+    expect(ui.node('identity-status').textContent).not.toContain('STALE');
+  });
+
+  it('keeps mixed nested list kinds under their actual parent at each indentation', async () => {
+    const ui = harness();
+    await ui.call(
+      `renderMessage('assistant',{content:${JSON.stringify('- parent\n  - child bullet\n  1. child ordered\n    - grandchild\n  - second bullet\n- sibling')}},0)`,
+    );
+    const body = ui.node('messages').querySelector('.body');
+    expect(body?.children).toHaveLength(1);
+    const list = body?.children[0];
+    expect(list?.children).toHaveLength(2);
+    const parent = list?.children[0];
+    expect(
+      parent?.children
+        .filter((n) => ['OL', 'UL'].includes(n.tagName))
+        .map((n) => n.tagName),
+    ).toEqual(['UL', 'OL', 'UL']);
+    expect(
+      parent?.querySelector('ol')?.children[0].querySelector('ul')?.textContent,
+    ).toBe('grandchild');
+    expect(list?.children[1].textContent).toBe('sibling');
+  });
+
+  it('badges standalone tool errors while preserving raw text and error/tools filtering', async () => {
+    const ui = harness();
+    const content = 'Error: exit code 1 <script>not markup</script>';
+    await ui.call(
+      `renderMessage('tool',{content:${JSON.stringify(content)}},17); renderMessage('tool',{content:'ok'},18)`,
+    );
+    const failed = ui.node('messages').children[0];
+    expect(failed.querySelector('.error-label')?.textContent).toBe(
+      'Error (detected)',
+    );
+    expect(failed.querySelector('pre')?.textContent).toBe(content);
+    expect(failed.querySelector('script')).toBeNull();
+    ui.node('transcript-filters')
+      .children.find((n) => n.dataset.type === 'errors')
+      ?.click();
+    expect(failed.hidden).toBe(false);
+    expect(ui.node('messages').children[1].hidden).toBe(true);
+    expect(ui.node('transcript-filters').textContent).not.toContain(
+      'in loaded',
+    );
+    expect(ui.node('transcript-filters').getAttribute('aria-label')).toContain(
+      'loaded',
+    );
+  });
+
+  it('focuses, traps and returns help fallback focus without dispatching background shortcuts', async () => {
+    const ui = harness();
+    await ui.call('setSignedIn(true)');
+    const dialog = ui.node('shortcuts-dialog');
+    const close = ui.node('shortcuts-close');
+    close.tagName = 'BUTTON';
+    dialog.appendChild(close);
+    ui.node('shortcuts-help').focus();
+    ui.node('shortcuts-help').click();
+    expect(ui.activeElement()).toBe(close);
+    expect(dialog.getAttribute('aria-modal')).toBe('true');
+    expect(
+      ui.dispatchDocument('keydown', {
+        key: 'Tab',
+        shiftKey: true,
+        target: close,
+      }).defaultPrevented,
+    ).toBe(true);
+    expect(ui.activeElement()).toBe(close);
+    ui.dispatchDocument('keydown', { key: '/', target: close });
+    expect(ui.activeElement()).toBe(close);
+    ui.dispatchDocument('keydown', { key: 'Escape', target: close });
+    expect(dialog.open).toBe(false);
+    expect(ui.activeElement()).toBe(ui.node('shortcuts-help'));
+  });
+
+  it('returns insight focus on explicit close, not to a hidden opener after sign-out', async () => {
+    const ui = harness();
+    await ui.call('setSignedIn(true)');
+    const close = ui.node('insight-close');
+    close.tagName = 'BUTTON';
+    ui.node('insight-dialog').appendChild(close);
+    const opener = ui.node('insight-opener');
+    opener.focus();
+    const pending = ui.call('loadInsight("i",false)');
+    expect(ui.activeElement()).toBe(close);
+    ui.requestFor('/web/api/insights/i').resolve({
+      id: 'i',
+      revision: 'r',
+      offset: 0,
+      content: 'note',
+      totalLength: 4,
+    });
+    await pending;
+    close.click();
+    expect(ui.activeElement()).toBe(opener);
+    opener.focus();
+    const late = ui.call('loadInsight("i",false)');
+    opener.hidden = true;
+    await ui.call('setSignedIn(false)');
+    ui.requestFor('/web/api/insights/i').resolve({
+      id: 'i',
+      revision: 'r',
+      offset: 0,
+      content: 'late',
+      totalLength: 4,
+    });
+    await late;
+    expect(ui.activeElement()).not.toBe(opener);
+    expect(ui.node('insight-dialog').hidden).toBe(true);
+    expect(ui.node('insight-body').textContent).toBe('');
+  });
+
+  it('returns explicit Find close focus and exposes expanded state', async () => {
+    const ui = harness();
+    await ui.call('openTranscriptFind()');
+    expect(
+      ui.node('transcript-find-toggle').getAttribute('aria-expanded'),
+    ).toBe('true');
+    ui.node('transcript-find-close').click();
+    expect(ui.activeElement()).toBe(ui.node('transcript-find-toggle'));
+    expect(
+      ui.node('transcript-find-toggle').getAttribute('aria-expanded'),
+    ).toBe('false');
+  });
+
+  it('never calls a future heartbeat live or treats absent task counters as zero', async () => {
+    const ui = harness();
+    await ui.call(
+      'Date.now=()=>1800000000000; renderHealth([{registry:{source:"pi"},heartbeatAt:1800003600,lastCapture:{observedAt:1799000000}}],1800000000)',
+    );
+    const card = ui.node('health-content').querySelector('.health-card');
+    expect(card?.querySelector('.pill')?.dataset.tone).toBe('neutral');
+    expect(card?.textContent).toContain('Clock ahead');
+    expect(card?.textContent).toContain('PendingNot reported');
+    expect(card?.querySelectorAll('time').length).toBe(2);
+    expect(card?.textContent).toContain('Capture activity');
+  });
+});
+
+it('retains keyboard focus when message filter chips are rebuilt', async () => {
+  const ui = harness();
+  await ui.call('renderMessage("user",{content:"one"},0)');
+  const chip = ui
+    .node('transcript-filters')
+    .children.find((n) => n.dataset.type === 'user');
+  chip?.focus();
+  chip?.click();
+  expect(ui.activeElement()).toBe(
+    ui
+      .node('transcript-filters')
+      .children.find((n) => n.dataset.type === 'user'),
+  );
+});
+
+it('keeps Settings provenance/retired features and loading/error semantics without new eager calls', async () => {
+  const ui = harness();
+  const pending = ui.call('navigate("settings")');
+  expect(ui.activeElement()).toBe(ui.node('settings-page'));
+  expect(ui.node('settings-content').getAttribute('aria-busy')).toBe('true');
+  ui.requestFor('/web/api/settings').resolve({}, 503);
+  await pending;
+  expect(ui.node('settings-content').getAttribute('aria-busy')).toBe('false');
+  expect(ui.node('settings-status').textContent).toBe(
+    'Settings unavailable. Refresh to retry.',
+  );
+  await ui.call('renderSettings({totalSessions:0,sources:[],aliases:[]})');
+  expect(
+    ui
+      .node('settings-content')
+      .querySelectorAll('details')
+      .map((n) => n.children[0].textContent),
+  ).toEqual(['Capture & sync provenance', 'Not available in this deployment']);
+  expect(ui.node('settings-content').textContent).toContain(
+    'No sources enabled.',
+  );
+  expect(ui.node('settings-content').textContent).toContain(
+    'No visible project aliases.',
+  );
+});
+
+it('keeps Search capability readiness visible while index detail is collapsed', async () => {
+  const ui = harness();
+  const pending = ui.call('loadSearchStatus()');
+  ui.requestFor('/web/api/search/status').resolve({
+    keyword: 'available',
+    semantic: 'unavailable',
+    hybrid: 'unavailable',
+  });
+  await pending;
+  expect(ui.node('search-capability-summary').textContent).toBe(
+    'Search availability · Keyword only',
+  );
+});
+
+it('does not remove the Search input from normal keyboard Tab order on page navigation', async () => {
+  const ui = harness();
+  const pending = ui.call('navigate("sessions")');
+  ui.requestFor('/web/api/sessions').resolve({ snapshotId: 's', items: [] });
+  await pending;
+  expect(ui.node('query').getAttribute('tabindex')).not.toBe('-1');
+});
+
+it('returns detail focus to its opener and keeps mobile nav fully visible by layout contract', async () => {
+  const ui = harness();
+  await ui.call('setSignedIn(true)');
+  const opener = ui.node('session-opener');
+  opener.focus();
+  const pending = ui.call('openDetail("s")');
+  expect(ui.activeElement()).toBe(ui.node('back'));
+  ui.requestFor('/web/api/sessions/s').resolve({
+    detail: { session: { sessionId: 's', title: 'Focus return' } },
+  });
+  await pending;
+  await ui.call('showSessionList()');
+  expect(ui.activeElement()).toBe(opener);
+  expect(shipped('css')).toContain(
+    'grid-template-columns: repeat(3, minmax(0, 1fr))',
   );
 });

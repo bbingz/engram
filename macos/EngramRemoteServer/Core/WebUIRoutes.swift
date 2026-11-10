@@ -53,10 +53,13 @@ enum WebUIRoutes {
         </form>
         <button id="logout" type="button" hidden>Log out</button>
         <button id="shortcuts-help" type="button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)" hidden>?</button>
+        <p id="identity-status" class="meta" role="status"></p>
         <p id="status" role="status"></p>
         </header>
-        <p id="signed-out" class="empty">Sign in to browse your session library.</p>
-        <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title">
+        <section id="signed-out" class="sign-in-card" aria-labelledby="sign-in-heading">
+        <h2 id="sign-in-heading">Your session library, in one place</h2>
+        <p>Sign in to browse your session library.</p><p class="meta">Read captured conversations, search your work and review source activity.</p></section>
+        <dialog id="shortcuts-dialog" hidden role="dialog" aria-modal="true" aria-labelledby="shortcuts-title" tabindex="-1">
         <h2 id="shortcuts-title">Keyboard shortcuts</h2>
         <p>/ — focus search (find in a transcript) · j/k — select session · Enter — open selected session</p>
         <p>Esc — close help, find or filters, then return to list · ? — show this help</p>
@@ -105,9 +108,9 @@ enum WebUIRoutes {
         <label>Search mode <select id="search-mode"><option id="mode-keyword" value="keyword">Keyword</option><option id="mode-semantic" value="semantic" disabled>Semantic</option><option id="mode-hybrid" value="hybrid" disabled>Hybrid</option></select></label>
         <label>Results <select id="search-limit"><option value="10">10</option><option value="25" selected>25</option><option value="50">50</option></select></label>
         </div>
-        <p id="search-capabilities" role="status"></p>
+        <details id="search-capability-details" class="search-secondary"><summary id="search-capability-summary">Search availability &amp; index</summary><p id="search-capabilities" role="status"></p></details>
         <p id="search-result-status" role="status"></p>
-        <details id="insight-compose" class="advanced-filters">
+        <details id="insight-compose" class="search-secondary">
         <summary>Save an insight</summary>
         <p id="insight-write-status" role="status"></p>
         <form id="insight-save-form" hidden>
@@ -171,11 +174,11 @@ enum WebUIRoutes {
         </section>
         <section id="transcript-panel">
         <div id="transcript-toolbar">
-        <div id="transcript-filters" class="agent-filters" aria-label="Message types"></div>
+        <div id="transcript-filters" class="agent-filters" role="group" aria-label="Message types in loaded messages"></div>
         <p class="meta">Counts cover loaded messages; Tools counts call/result cards. Categories can overlap.</p>
         <div class="agent-filters"><span id="transcript-loaded" role="status"></span>
-        <button id="transcript-find-toggle" type="button">Find in loaded</button>
-        <button id="transcript-outline-toggle" type="button" aria-expanded="false">Outline</button>
+        <button id="transcript-find-toggle" type="button" aria-controls="transcript-find" aria-expanded="false">Find in loaded</button>
+        <button id="transcript-outline-toggle" type="button" aria-controls="transcript-outline-box" aria-expanded="false">Outline</button>
         <button id="transcript-load-all" type="button">Load all</button>
         <button id="transcript-end" type="button">Jump to end</button>
         <button id="transcript-copy-id" type="button">Copy session ID</button>
@@ -209,17 +212,19 @@ enum WebUIRoutes {
         </section>
         <section id="health-page" hidden>
         <div class="page-heading"><h2>Health</h2><button id="health-refresh" type="button">Refresh</button></div>
-        <p>Capture and indexing observations from the service.</p>
+        <p>Heartbeat shows collector liveness, not capture activity. A live collector may have no new conversations to capture.</p>
         <p id="health-status" role="status"></p>
         <p id="health-summary" class="health-summary"></p>
         <div id="health-content" class="health-grid"></div>
         </section>
         <section id="settings-page" hidden>
         <div class="page-heading"><h2>Settings</h2><button id="settings-refresh" type="button">Refresh</button></div>
+        <p class="meta">Server configuration and captured-library metadata. Values come from this deployment, not the device running your browser.</p>
+        <p id="settings-access" role="status"></p>
         <p id="settings-status" role="status"></p>
         <div id="settings-content"></div>
         <button id="settings-more" type="button" hidden>More project aliases</button>
-        <p id="settings-access" role="status"></p>
+        <h3 class="settings-heading">Configuration &amp; actions</h3>
         <details id="ai-config" class="settings-section">
         <summary>AI settings</summary>
         <p>Configure summaries, titles, semantic search and call history. API keys are managed on the server.</p>
@@ -393,7 +398,7 @@ enum WebUIRoutes {
         </div>
         </section>
         </main>
-        <dialog id="insight-dialog" hidden aria-labelledby="insight-heading">
+        <dialog id="insight-dialog" hidden role="dialog" aria-modal="true" aria-labelledby="insight-heading" tabindex="-1">
         <div class="insight-heading"><h2 id="insight-heading">Insight</h2><button id="insight-close" type="button">Close</button></div>
         <p id="insight-detail-status" role="status"></p>
         <div id="insight-body"></div><button id="insight-more" type="button" hidden>Read more</button>
@@ -576,6 +581,32 @@ enum WebUIRoutes {
         .stats-table th:first-child, .stats-table td:first-child { text-align: left; }
         #stats-more, #settings-more { margin-top: 12px; }
         #settings-status { color: var(--muted); }
+        .sign-in-card { max-width: 620px; margin: 48px auto; padding: 28px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); box-shadow: var(--shadow-1); }
+        .sign-in-card h2 { margin-top: 0; font-size: 24px; line-height: 1.3; }
+        #identity-status:empty { display: none; }
+        #identity-status { overflow-wrap: anywhere; min-width: 0; }
+        .search-secondary { margin: 6px 0; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+        .search-secondary > summary { cursor: pointer; color: var(--muted); }
+        .settings-heading { margin: 28px 0 0; font-size: 18px; }
+        #settings-content { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+        #settings-content > .settings-section { margin-top: 0; }
+        #settings-content > .settings-section:nth-child(n+3) { grid-column: 1 / -1; }
+        .settings-section > summary { cursor: pointer; font-weight: 600; }
+        .health-timestamp { display: block; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+        .health-card dd { min-width: 0; overflow-wrap: anywhere; }
+        .health-card details { overflow-wrap: anywhere; }
+        .message details.tool-error { border-color: var(--danger); }
+        dialog:not(:modal)[open] { position: fixed; inset: 10vh 0 auto; z-index: 50; max-height: 80vh; overflow-y: auto; box-shadow: var(--shadow-1); }
+        @media (max-width: 600px) {
+          .page-nav { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); overflow-x: visible; margin: 0; gap: 3px; }
+          .page-nav a { justify-content: center; min-height: 36px; }
+          #settings-content { grid-template-columns: minmax(0, 1fr); }
+          .sign-in-card { margin: 24px 16px; padding: 20px; }
+          .health-card dl { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); }
+          .agent-filters > button { min-height: 36px; }
+          #transcript-toolbar .agent-filters { gap: 6px; }
+          .code-header { flex-wrap: wrap; } .code-header > span { min-width: 0; overflow-wrap: anywhere; }
+        }
         .settings-section { padding: 18px; margin-top: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: var(--shadow-1); }
         #ai-config > summary { color: var(--text); font-size: 16px; font-weight: 600; cursor: pointer; }
         .ai-config-group { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 14px; border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin: 16px 0; min-width: 0; }
@@ -1086,6 +1117,7 @@ enum WebUIRoutes {
         function setSignedIn(signedIn) {
           document.getElementById("shortcuts-help").hidden = !signedIn;
           if (!signedIn) {
+            setText(document.getElementById("identity-status"), "");
             routeVersion += 1; listRouteKey = ""; detailReturnRoute = null; cancelSearchTimer(); closeShortcuts();
             clearFacets();
             setText(healthContent, "");
@@ -1110,6 +1142,7 @@ enum WebUIRoutes {
           document.getElementById("logout").hidden = !signedIn || identityMode;
           document.getElementById("lede").hidden = signedIn;
           document.getElementById("page-nav").hidden = !signedIn;
+          if (!signedIn && !identityMode) focusVisible(document.getElementById("credential"));
         }
         function expireSession() {
           setSignedIn(false);
@@ -1144,10 +1177,6 @@ enum WebUIRoutes {
             identitySignInPending = false;
           }
           if (token !== requestEpoch) return false;
-          try {
-            const access = await api("GET", "/web/api/auth");
-            if (token === requestEpoch && access && access.login) setStatus("Signed in as " + access.login);
-          } catch (error) {}
           if (restorePage && token === requestEpoch) await restoreRequestedPage();
           return true;
         }
@@ -1157,7 +1186,11 @@ enum WebUIRoutes {
           detailReturnPage = null;
           workspaceNode.className = ["dashboard", "stats"].includes(activePage) ? "data-page" : "";
           backNode.hidden = true;
-          if (wasDetail) window.scrollTo({ top: sessionListScrollTop, behavior: "instant" });
+          if (wasDetail) {
+            window.scrollTo({ top: sessionListScrollTop, behavior: "instant" });
+            if (!workspaceNode.hidden && !focusVisible(detailReturnFocus)) focusVisible(document.getElementById("nav-" + activePage));
+          }
+          detailReturnFocus = null;
         }
         function showSessionDetailPane() {
           activatePage(activePage === "search" ? "search" : "sessions");
@@ -1196,6 +1229,10 @@ enum WebUIRoutes {
           bumpEpoch();
           clearMessages();
           activatePage(page);
+          const targetPage = document.getElementById(["sessions", "search"].includes(activePage) ? "query" : activePage + "-page");
+          const pageHeading = targetPage.querySelector("h2") || targetPage;
+          if (pageHeading !== document.getElementById("query")) pageHeading.setAttribute("tabindex", "-1");
+          focusVisible(pageHeading);
           window.scrollTo({ top: 0, behavior: "instant" });
           if (activePage === "dashboard") {
             await loadDashboard();
@@ -1348,6 +1385,7 @@ enum WebUIRoutes {
           const params = new URLSearchParams(sessionQuery(false).slice(1));
           ["query", "mode", "limit", "snapshotId", "cursor"].forEach(function (key) { params.delete(key); });
           setText(status, "Checking search availability…");
+          setText(document.getElementById("search-capability-summary"), "Checking search availability…");
           try {
             const suffix = params.toString().replaceAll("+", "%20");
             const page = await api("GET", "/web/api/search/status" + (suffix ? "?" + suffix : ""));
@@ -1362,11 +1400,13 @@ enum WebUIRoutes {
             if (page.model) notes.push(page.model);
             if (page.warning) notes.push(page.warning);
             setText(status, notes.join(" · "));
+            setText(document.getElementById("search-capability-summary"), "Search availability · " + (page.semantic === "available" ? "Semantic ready" : page.hybrid === "available" ? "Hybrid ready" : "Keyword only") + (page.warning ? " · warning" : ""));
           } catch (error) {
             if (version === searchStatusVersion) {
               document.getElementById("mode-semantic").disabled = true;
               document.getElementById("mode-hybrid").disabled = true;
               setText(status, "Search status unavailable. Submit a search to retry.");
+              setText(document.getElementById("search-capability-summary"), "Search availability unknown · submit to retry");
             }
           }
         }
@@ -1570,13 +1610,35 @@ enum WebUIRoutes {
         document.getElementById("insight-saved-read").addEventListener("click", function () {
           if (savedInsightId) loadInsight(savedInsightId, false);
         });
-        function closeInsight() {
+        let modalReturnFocus = null, activeModal = null, detailReturnFocus = null;
+        function focusVisible(node) {
+          if (!node || node.disabled || node.isConnected === false || typeof node.focus !== "function") return false;
+          let parent = node;
+          while (parent) { if (parent.hidden) return false; parent = parent.parentNode; }
+          if (typeof node.checkVisibility === "function" && !node.checkVisibility()) return false;
+          node.focus({ preventScroll: true }); return true;
+        }
+        function openModal(dialog, first) {
+          if (dialog.open) return;
+          if (activeModal) return;
+          modalReturnFocus = document.activeElement; activeModal = dialog;
+          dialog.hidden = false; dialog.setAttribute("aria-modal", "true");
+          if (typeof dialog.showModal === "function") dialog.showModal(); else dialog.open = true;
+          if (!focusVisible(first)) focusVisible(dialog);
+        }
+        function closeModal(dialog, restoreFocus) {
+          if (activeModal !== dialog) { dialog.hidden = true; return; }
+          const target = modalReturnFocus; activeModal = null; modalReturnFocus = null;
+          if (typeof dialog.close === "function" && dialog.open) dialog.close(); else dialog.open = false;
+          dialog.hidden = true;
+          if (restoreFocus) focusVisible(target);
+        }
+        function closeInsight(restoreFocus) {
           insightVersion += 1;
           insightPage = null;
           insightBusy = false;
           const dialog = document.getElementById("insight-dialog");
-          if (typeof dialog.close === "function") dialog.close();
-          dialog.hidden = true;
+          closeModal(dialog, restoreFocus === true);
           setText(document.getElementById("insight-body"), "");
           setText(document.getElementById("insight-detail-status"), "");
           document.getElementById("insight-more").hidden = true;
@@ -1619,8 +1681,7 @@ enum WebUIRoutes {
           const body = document.getElementById("insight-body");
           const status = document.getElementById("insight-detail-status");
           const button = document.getElementById("insight-more");
-          dialog.hidden = false;
-          if (typeof dialog.showModal === "function" && !dialog.open) dialog.showModal();
+          openModal(dialog, document.getElementById("insight-close"));
           insightBusy = true;
           button.disabled = true;
           setText(status, "Loading insight…");
@@ -1646,8 +1707,8 @@ enum WebUIRoutes {
             if (version === insightVersion) { insightBusy = false; button.disabled = false; }
           }
         }
-        document.getElementById("insight-close").addEventListener("click", closeInsight);
-        document.getElementById("insight-dialog").addEventListener("cancel", closeInsight);
+        document.getElementById("insight-close").addEventListener("click", function () { closeInsight(true); });
+        document.getElementById("insight-dialog").addEventListener("cancel", function (event) { event.preventDefault(); closeInsight(true); });
         document.getElementById("insight-more").addEventListener("click", function () {
           if (insightPage) loadInsight(insightPage.id, true);
         });
@@ -1683,15 +1744,16 @@ enum WebUIRoutes {
           settingsCursor = "";
           settingsAliasRows = null;
           setText(document.getElementById("settings-content"), "");
+          document.getElementById("settings-content").setAttribute("aria-busy", "false");
           setText(document.getElementById("settings-status"), "");
           document.getElementById("settings-more").hidden = true;
         }
         function renderSettings(summary) {
           const content = document.getElementById("settings-content");
-          function section(title) {
-            const element = document.createElement("section");
+          function section(title, collapsed) {
+            const element = document.createElement(collapsed ? "details" : "section");
             element.className = "settings-section";
-            const heading = document.createElement("h3");
+            const heading = document.createElement(collapsed ? "summary" : "h3");
             setText(heading, title);
             element.appendChild(heading);
             content.appendChild(element);
@@ -1723,8 +1785,7 @@ enum WebUIRoutes {
           });
           if (!summary.sources.length) setText(badges, "No sources enabled.");
           sources.appendChild(badges);
-          const sync = section("Sync");
-          fields(sync, [["Node name", "Unavailable"], ["Peers", "Unavailable"]]);
+          const sync = section("Capture & sync provenance", true);
           const retired = document.createElement("p");
           setText(retired, "Legacy peer-sync settings are retired in this runtime. Collectors publish captures to this server and its replicas; per-source heartbeats, last captures and replica acknowledgements are shown on the Health page.");
           sync.appendChild(retired);
@@ -1732,7 +1793,7 @@ enum WebUIRoutes {
           healthLink.href = "#health";
           setText(healthLink, "Open Health");
           sync.appendChild(healthLink);
-          const unavailable = section("Not available in this deployment");
+          const unavailable = section("Not available in this deployment", true);
           const unavailableNote = document.createElement("p");
           setText(unavailableNote, "This Web runs on the central server and reads captured sessions only. The following legacy Web features read or acted on the machine that hosted the old Web and are intentionally not offered here:");
           unavailable.appendChild(unavailableNote);
@@ -1780,6 +1841,7 @@ enum WebUIRoutes {
           const query = more ? "?" + new URLSearchParams({ snapshotId: settingsSnapshot, cursor: settingsCursor }).toString() : "";
           if (!more) clearSettings();
           setText(status, "Loading…");
+          document.getElementById("settings-content").setAttribute("aria-busy", "true");
           moreButton.disabled = true;
           try {
             const pendingPage = api("GET", "/web/api/settings" + query);
@@ -1816,7 +1878,7 @@ enum WebUIRoutes {
           } catch (error) {
             if (token === requestEpoch) setText(status, "Settings unavailable. Refresh to retry.");
           } finally {
-            if (token === requestEpoch) moreButton.disabled = false;
+            if (token === requestEpoch) { moreButton.disabled = false; document.getElementById("settings-content").setAttribute("aria-busy", "false"); }
           }
         }
         function updateAliasControls() {
@@ -3183,9 +3245,11 @@ enum WebUIRoutes {
         }
         // Find indexes decoded payload fields, not rendered DOM text. Original rich/code/raw/copy nodes stay untouched.
         let findOpened = [];
-        function closeTranscriptFind() {
+        function closeTranscriptFind(restoreFocus) {
           findVersion += 1; findMatches = []; findIndex = -1;
           document.getElementById("transcript-find").hidden = true;
+          document.getElementById("transcript-find-toggle").setAttribute("aria-expanded", "false");
+          if (restoreFocus === true) focusVisible(document.getElementById("transcript-find-toggle"));
           document.getElementById("transcript-find-query").value = "";
           transcriptMessages.forEach(function (item) { item.article.classList.remove("find-target"); });
           findOpened.forEach(function (node) { node.open = false; }); findOpened = [];
@@ -3194,6 +3258,7 @@ enum WebUIRoutes {
         }
         function openTranscriptFind(value) {
           document.getElementById("transcript-find").hidden = false;
+          document.getElementById("transcript-find-toggle").setAttribute("aria-expanded", "true");
           const input = document.getElementById("transcript-find-query");
           if (value != null) input.value = value;
           if (typeof input.focus === "function") input.focus();
@@ -3262,7 +3327,7 @@ enum WebUIRoutes {
         document.getElementById("transcript-find").addEventListener("submit", function (event) { event.preventDefault(); moveFind(1); });
         document.getElementById("transcript-find-query").addEventListener("keydown", function (event) { if (event.key === "Enter" && event.shiftKey && !event.isComposing) { event.preventDefault(); moveFind(-1); } });
         document.getElementById("transcript-find-prev").addEventListener("click", function () { moveFind(-1); });
-        document.getElementById("transcript-find-close").addEventListener("click", closeTranscriptFind);
+        document.getElementById("transcript-find-close").addEventListener("click", function () { closeTranscriptFind(true); });
         document.getElementById("transcript-find-more").addEventListener("click", function () { searchFurther(true).catch(function () { toast("Find could not load more messages.","danger"); }); });
         function clearMessages() {
           closeTranscriptFind();
@@ -3546,6 +3611,7 @@ enum WebUIRoutes {
           setText(healthContent, "");
           setText(document.getElementById("health-summary"), "");
           setText(healthStatus, "Health is temporarily unavailable.");
+          healthContent.setAttribute("aria-busy", "false");
           setText(overviewNode, "");
           const note = document.createElement("p");
           note.className = "empty";
@@ -3553,6 +3619,7 @@ enum WebUIRoutes {
           overviewNode.appendChild(note);
         }
         async function loadOverview() {
+          healthContent.setAttribute("aria-busy", "true");
           const token = requestEpoch;
           const streams = [];
           let observedAt = null;
@@ -3636,7 +3703,7 @@ enum WebUIRoutes {
           }
           return token;
         }
-        // Relative age for Health rows; the exact local time stays in the title.
+        // Relative age for Health rows; exact times remain visible and machine-readable.
         function healthAgo(value) {
           if (!(Number.isSafeInteger(value) && value >= 0 && value <= 253402300799)) return "Not reported";
           const seconds = Math.floor(Date.now() / 1000 - value);
@@ -3655,6 +3722,7 @@ enum WebUIRoutes {
         function healthLiveness(heartbeatAt) {
           if (!Number.isSafeInteger(heartbeatAt) || heartbeatAt < 0 || heartbeatAt > 253402300799) return ["neutral", "No heartbeat"];
           const age = Date.now() / 1000 - heartbeatAt;
+          if (age < 0) return ["neutral", "Clock ahead"];
           if (age < 15 * 60) return ["ok", "Live"];
           if (age < 24 * 3600) return ["warn", "Quiet"];
           return ["danger", "Offline"];
@@ -3668,6 +3736,7 @@ enum WebUIRoutes {
         }
         function renderHealth(streams, observedAt) {
           setText(healthContent, "");
+          healthContent.setAttribute("aria-busy", "false");
           setText(healthStatus, streams.length ? "Observed: " + healthTime(observedAt) : "No registered sources reported.");
           const fleet = { ok: 0, warn: 0, danger: 0, neutral: 0, attention: 0 };
           streams.forEach(function (stream) {
@@ -3711,11 +3780,18 @@ enum WebUIRoutes {
               metrics.appendChild(detail);
             }
             function timeRow(label, value) {
-              row(label, healthAgo(value), healthTime(value));
+              row(label, "", healthTime(value));
+              const cell = metrics.lastChild;
+              const valid = Number.isSafeInteger(value) && value >= 0 && value <= 253402300799;
+              if (!valid) { setText(cell, "Not reported"); return; }
+              const time = document.createElement("time"); time.dateTime = new Date(value * 1000).toISOString(); setText(time, healthAgo(value)); cell.appendChild(time);
+              const exact = textSpan(healthTime(value)); exact.className = "health-timestamp"; cell.appendChild(exact);
             }
             function count(label, value) {
               row(label, Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString("en-US") : "Not reported");
             }
+            const capture = document.createElement("p"); capture.className = "meta";
+            setText(capture, "Capture activity · latest observations, not history"); card.appendChild(capture);
             count("Captured files", stream.ingest && stream.ingest.publicationCount);
             [["Pending", "pending"], ["Processing", "processing"],
               ["Parsed (includes skip)", "parsed"], ["Indexed for search", "indexReady"],
@@ -3746,7 +3822,7 @@ enum WebUIRoutes {
           const summaryNode = document.getElementById("health-summary");
           setText(summaryNode, "");
           [["ok", fleet.ok, " live"], ["warn", fleet.warn, " quiet"], ["danger", fleet.danger, " offline"],
-            ["neutral", fleet.neutral, " without heartbeat"]].forEach(function (entry) {
+            ["neutral", fleet.neutral, " unknown liveness"]].forEach(function (entry) {
             if (entry[1]) summaryNode.appendChild(pill(entry[0], entry[1].toLocaleString("en-US") + entry[2]));
           });
           if (fleet.attention) summaryNode.appendChild(pill("warn", plural(fleet.attention, "needs attention", "need attention")));
@@ -3983,6 +4059,15 @@ enum WebUIRoutes {
           acceptSessionsPage(false, page);
           if (token !== requestEpoch) return;
           await loadOverview();
+          if (identityMode && token === requestEpoch) {
+            try {
+              const access = await api("GET", "/web/api/auth");
+              if (token === requestEpoch && !workspaceNode.hidden && access && typeof access.login === "string") {
+                const label = "Signed in as " + access.login;
+                setText(document.getElementById("identity-status"), label); setStatus(label);
+              }
+            } catch (error) {} // Auth display is optional; authorization remains server-owned.
+          }
         }
         async function openDetail(sessionId, returnPage, routed) {
           if (!workspaceNode.classList.contains("showing-detail") || returnPage === "stats") detailReturnRoute = (returnPage === "stats" || activePage === "stats") ? {page:"stats",tab:statsView} : libraryRoute();
@@ -3994,7 +4079,8 @@ enum WebUIRoutes {
           const version = routeVersion, token = bumpEpoch();
           sessionPagingBusy = false;
           updateSessionMore();
-          showSessionDetailPane();
+          if (!workspaceNode.classList.contains("showing-detail")) detailReturnFocus = document.activeElement;
+          showSessionDetailPane(); focusVisible(backNode);
           setText(detailNode, "");
           clearMessages();
           try {
@@ -4339,6 +4425,7 @@ enum WebUIRoutes {
                 const indent = Math.min(40, lines[i].length - clean.length), tag = item.kind === "ol" ? "ol" : "ul";
                 while (stack.length && indent < stack[stack.length - 1].indent) stack.pop();
                 let level = stack[stack.length - 1];
+                if (level && indent === level.indent && tag !== level.tag) { stack.pop(); level = stack[stack.length - 1]; }
                 if (!level || indent > level.indent || tag !== level.tag) {
                   const list = document.createElement(tag);
                   if (level && indent > level.indent && level.last) level.last.appendChild(list); else root.appendChild(list);
@@ -4493,6 +4580,9 @@ enum WebUIRoutes {
             if (thinking) body.className = "thinking";
             const summary = document.createElement("summary");
             fillDisclosure(summary, thinking ? "Thinking (detected)" : kind === "tool" ? (related ? "Result · " + (priorCall.name || "Tool") + " (proximity)" : "Result") : content.indexOf("<teammate-message") === 0 ? "System · Agent communication (detected)" : content.indexOf("<") === 0 ? "System · Hook / meta (detected)" : "System prompt", content);
+            if (kind === "tool" && toolError(content)) {
+              body.classList.add("tool-error"); const badge = textSpan("Error (detected)"); badge.className = "error-label"; summary.appendChild(badge);
+            }
             body.appendChild(summary); const pre = document.createElement("pre"); setText(pre, content); body.appendChild(pre); article.appendChild(body);
           } else if (content.trim() || calls.length === 0) {
             body = document.createElement("div"); body.className = "body"; renderRichText(body, content); article.appendChild(body);
@@ -4516,12 +4606,16 @@ enum WebUIRoutes {
           return item.kind === type && !item.thinking;
         }
         function updateTranscript() {
-          const filters = document.getElementById("transcript-filters"); setText(filters, "");
+          const filters = document.getElementById("transcript-filters");
+          const focusedType = filters.contains(document.activeElement) && document.activeElement.dataset.type;
+          setText(filters, "");
           transcriptTypes.forEach(function (type) {
             const count = type[0] === "tools" ? transcriptMessages.reduce(function (n, item) { return n + item.tools.length + (item.kind === "tool" ? 1 : 0); }, 0) : transcriptMessages.filter(function (item) { return transcriptMatches(item, type[0]); }).length;
-            const button = document.createElement("button"); button.type = "button"; button.dataset.type = type[0]; setText(button, type[1] + " " + count + " in loaded");
+            const button = document.createElement("button"); button.type = "button"; button.dataset.type = type[0]; setText(button, type[1] + " " + count);
+            filters.setAttribute("aria-label", "Message types in loaded messages");
             button.setAttribute("aria-pressed", String(transcriptFilter === type[0]));
             button.addEventListener("click", function () { transcriptFilter = type[0]; transcriptStep = -1; updateTranscript(); }); filters.appendChild(button);
+            if (focusedType === type[0]) focusVisible(button);
           });
           transcriptMessages.forEach(function (item) {
             item.article.hidden = !transcriptMatches(item, transcriptFilter);
@@ -4807,14 +4901,33 @@ enum WebUIRoutes {
           }
           return false;
         }
-        function closeShortcuts() { const dialog = document.getElementById("shortcuts-dialog"); if (typeof dialog.close === "function" && dialog.open) dialog.close(); else dialog.open = false; }
-        function openShortcuts() { const dialog = document.getElementById("shortcuts-dialog"); if (typeof dialog.showModal === "function") dialog.showModal(); else dialog.open = true; }
+        function closeShortcuts(restoreFocus) { closeModal(document.getElementById("shortcuts-dialog"), restoreFocus === true); }
+        function openShortcuts() { if (!workspaceNode.hidden) openModal(document.getElementById("shortcuts-dialog"), document.getElementById("shortcuts-close")); }
+        document.addEventListener("focusin", function (event) {
+          if (activeModal && activeModal.open && !activeModal.hidden && !activeModal.contains(event.target)) {
+            if (!focusVisible(activeModal.querySelector("button"))) focusVisible(activeModal);
+          }
+        });
         document.getElementById("shortcuts-help").addEventListener("click", openShortcuts);
-        document.getElementById("shortcuts-close").addEventListener("click", closeShortcuts);
+        document.getElementById("shortcuts-close").addEventListener("click", function () { closeShortcuts(true); });
+        document.getElementById("shortcuts-dialog").addEventListener("cancel", function (event) { event.preventDefault(); closeShortcuts(true); });
         document.addEventListener("keydown", function (event) {
-          if (!event || event.isComposing || event.keyCode === 229 || event.metaKey || event.ctrlKey || event.altKey) return;
+          if (!event || event.isComposing || event.keyCode === 229) return;
+          if (activeModal && activeModal.open && !activeModal.hidden) {
+            if (event.key === "Escape") { event.preventDefault(); if (activeModal === document.getElementById("insight-dialog")) closeInsight(true); else closeShortcuts(true); }
+            if (event.key === "Tab") {
+              const nodes = Array.from(activeModal.querySelectorAll("button, input, select, textarea, a[href], [tabindex]"))
+                .filter(function (node) { return !node.disabled && !node.hidden && node.getAttribute("tabindex") !== "-1" && (typeof node.checkVisibility !== "function" || node.checkVisibility()); });
+              const index = nodes.indexOf(document.activeElement);
+              if (!nodes.length || index < 0 || (event.shiftKey ? index === 0 : index === nodes.length - 1)) {
+                event.preventDefault(); focusVisible(nodes.length ? nodes[event.shiftKey ? nodes.length - 1 : 0] : activeModal);
+              }
+            }
+            return;
+          }
+          if (event.metaKey || event.ctrlKey || event.altKey) return;
           const help = document.getElementById("shortcuts-dialog"), insight = document.getElementById("insight-dialog");
-          if (help.open) { if (event.key === "Escape") { event.preventDefault(); closeShortcuts(); } return; }
+          if (help.open) { if (event.key === "Escape") { event.preventDefault(); closeShortcuts(true); } return; }
           if (insight.open || (typeof document.querySelector === "function" && document.querySelector("dialog[open]"))) return;
           const typing = editableTarget(event.target);
           if (event.key === "Escape") {
@@ -4826,7 +4939,7 @@ enum WebUIRoutes {
               const summary = document.getElementById(kind + "-summary");
               if (typeof summary.focus === "function") summary.focus();
             });
-            if (!closed && !document.getElementById("transcript-find").hidden) { closeTranscriptFind(); closed = true; }
+            if (!closed && !document.getElementById("transcript-find").hidden) { closeTranscriptFind(true); closed = true; }
             if (typing && !closed) return;
             if (!closed && workspaceNode.classList.contains("showing-detail")) { backNode.click(); closed = true; }
             if (closed) event.preventDefault();
