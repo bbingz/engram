@@ -596,12 +596,18 @@ struct EngramServiceWebSessionSummary: Codable, Equatable, Sendable {
     let assistantMessageCount: Int?
     let systemMessageCount: Int?
     let nativeId: String?
+    let toolMessageCount: Int?
+    let model: String?
+    let costUsd: Double?
+    let parentSessionId: String?
+    let childCount: Int?
 
     init(sessionId: String, source: String, captureIdentity: EngramServiceWebCaptureIdentity?,
          metadataGeneration: String?, title: String?, projectKey: String?, projectLabel: String?,
          startedAt: Int64?, lastActivityAt: Int64? = nil, isAgent: Bool? = nil, userMessageCount: Int? = nil,
          assistantMessageCount: Int? = nil, systemMessageCount: Int? = nil,
-         nativeId: String? = nil) {
+         nativeId: String? = nil, toolMessageCount: Int? = nil, model: String? = nil,
+         costUsd: Double? = nil, parentSessionId: String? = nil, childCount: Int? = nil) {
         self.sessionId = sessionId
         self.source = source
         self.captureIdentity = captureIdentity
@@ -616,6 +622,11 @@ struct EngramServiceWebSessionSummary: Codable, Equatable, Sendable {
         self.assistantMessageCount = assistantMessageCount
         self.systemMessageCount = systemMessageCount
         self.nativeId = nativeId
+        self.toolMessageCount = toolMessageCount
+        self.model = model
+        self.costUsd = costUsd
+        self.parentSessionId = parentSessionId
+        self.childCount = childCount
     }
 }
 
@@ -2220,7 +2231,12 @@ extension EngramServiceWebSessionSummary {
             userMessageCount: try c.decodeIfPresent(Int.self, forKey: .userMessageCount),
             assistantMessageCount: try c.decodeIfPresent(Int.self, forKey: .assistantMessageCount),
             systemMessageCount: try c.decodeIfPresent(Int.self, forKey: .systemMessageCount),
-            nativeId: try c.decodeIfPresent(String.self, forKey: .nativeId)
+            nativeId: try c.decodeIfPresent(String.self, forKey: .nativeId),
+            toolMessageCount: try c.decodeIfPresent(Int.self, forKey: .toolMessageCount),
+            model: try c.decodeIfPresent(String.self, forKey: .model),
+            costUsd: try c.decodeIfPresent(Double.self, forKey: .costUsd),
+            parentSessionId: try c.decodeIfPresent(String.self, forKey: .parentSessionId),
+            childCount: try c.decodeIfPresent(Int.self, forKey: .childCount)
         )
         try V.sessionID(sessionId)
         try V.source(source)
@@ -2230,10 +2246,14 @@ extension EngramServiceWebSessionSummary {
         if let projectLabel { try V.text(projectLabel, maximumBytes: 256) }
         if let startedAt { try V.time(startedAt) }
         if let lastActivityAt { try V.time(lastActivityAt) }
-        for count in [userMessageCount, assistantMessageCount, systemMessageCount] {
+        for count in [userMessageCount, assistantMessageCount, systemMessageCount, toolMessageCount] {
             if let count { try V.require((0...EngramServiceWebReadLimits.maximumMessages).contains(count)) }
         }
         if let nativeId { try V.sessionID(nativeId) }
+        if let model { try V.text(model, maximumBytes: 1024, allowEmpty: false) }
+        if let costUsd { try V.money(costUsd) }
+        if let parentSessionId { try V.sessionID(parentSessionId) }
+        if let childCount { try V.count(Int64(childCount)) }
     }
 }
 

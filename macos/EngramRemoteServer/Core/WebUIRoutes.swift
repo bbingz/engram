@@ -687,6 +687,14 @@ enum WebUIRoutes {
         .session:hover, .session:focus-visible { border-color: var(--line); background: var(--panel); color: var(--text); }
         .session:hover::before, .session:focus-visible::before { opacity: 1; }
         .session:active { background: var(--panel-2); }
+        .session-row { min-width: 0; }
+        .session-nesting { margin: 0 12px 8px 16px; }
+        .session-nesting > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+        .nested-rows { border-left: 2px solid var(--line); margin-top: 8px; padding-left: 12px; }
+        .nested-session { display: block; width: 100%; text-align: left; margin: 4px 0; overflow-wrap: anywhere; }
+        .nested-session .meta { display: flex; flex-wrap: wrap; }
+        .parent-link { margin: 0 12px 8px 16px; font-size: 13px; }
+        .nesting-status { font-size: 13px; color: var(--muted); }
         .session.group-start { margin-top: 30px; }
         .group-head { position: absolute; left: 12px; top: -25px; color: var(--muted); font-size: 11px; font-weight: 650; letter-spacing: 0.07em; line-height: 16px; text-transform: uppercase; white-space: nowrap; pointer-events: none; }
         #sessions > .group-start:first-child { margin-top: 24px; }
@@ -4104,11 +4112,18 @@ enum WebUIRoutes {
             setText(time, relative || date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }));
             appendMetaPart(meta, time);
           }
-          if (activePage === "sessions" && document.getElementById("session-sort").value === "lastActivity") {
+          if (Number.isSafeInteger(item.lastActivityAt)) {
             const activity = document.createElement("span");
             setText(activity, "Activity: " + (Number.isSafeInteger(item.lastActivityAt) ? healthTime(item.lastActivityAt) : "Unknown"));
             appendMetaPart(meta, activity);
           }
+          [["model", item.model], ["cost", item.costUsd], ["tool", item.toolMessageCount]].forEach(function (entry) {
+            const value = entry[1];
+            if (entry[0] === "model" ? typeof value !== "string" || !value : entry[0] === "tool" ? !Number.isSafeInteger(value) || value < 0 : typeof value !== "number" || !Number.isFinite(value) || value < 0) return;
+            const label = document.createElement("span");
+            setText(label, entry[0] === "model" ? value : entry[0] === "cost" ? costValue(value,"costUsd") : value.toLocaleString("en-US") + " tool");
+            appendMetaPart(meta,label);
+          });
           if (showCounts) {
             const counts = [["user", item.userMessageCount], ["assistant", item.assistantMessageCount], ["system", item.systemMessageCount]]
               .filter(function (entry) { return Number.isSafeInteger(entry[1]) && entry[1] > 0; })
@@ -4120,6 +4135,65 @@ enum WebUIRoutes {
               appendMetaPart(meta, label);
             }
           }
+        }
+        function appendParentLink(host, item) {
+          if (typeof item.parentSessionId !== "string" || !item.parentSessionId) return;
+          const link = document.createElement("button"); link.type = "button"; link.className = "parent-link";
+          setText(link,"Parent session");
+          link.addEventListener("click",function () { openDetail(item.parentSessionId).catch(function () {}); });
+          host.appendChild(link);
+        }
+        function appendSessionNesting(host, item) {
+          appendParentLink(host,item);
+          if (!Number.isSafeInteger(item.childCount) || item.childCount <= 0) return;
+          const disclosure = document.createElement("details"); disclosure.className = "session-nesting";
+          const summary = document.createElement("summary"); setText(summary,"(" + item.childCount + ") child sessions");
+          disclosure.appendChild(summary);
+          const status = document.createElement("p"); status.className = "nesting-status"; status.setAttribute("role","status");
+          const rows = document.createElement("div"); rows.className = "nested-rows";
+          const more = document.createElement("button"); more.type = "button"; more.className = "nested-more"; more.hidden = true;
+          setText(more,"Load more child sessions");
+          disclosure.appendChild(status); disclosure.appendChild(rows); disclosure.appendChild(more); host.appendChild(disclosure);
+          let loaded = false, busy = false, cursor = "", snapshot = "", total = 0;
+          const seen = new Set();
+          async function load(continuation) {
+            if (busy || (continuation && !cursor)) return;
+            busy = true; more.disabled = true;
+            const token = requestEpoch;
+            const current = function () { return token === requestEpoch && sessionsNode.contains(host); };
+            const params = new URLSearchParams(); params.set("limit","50");
+            if (continuation) { params.set("snapshotId",snapshot); params.set("cursor",cursor); }
+            setText(status,"Loading child sessions…");
+            try {
+              const page = await api("GET","/web/api/sessions/" + encodeURIComponent(item.sessionId) + "/children?" + params);
+              if (!current()) return;
+              if (!page || page.sessionId !== item.sessionId || !page.snapshotId || (continuation && page.snapshotId !== snapshot) || !Array.isArray(page.items) || page.items.some(function (child) { return !child.session || typeof child.session.sessionId !== "string" || !["confirmed","suggested"].includes(child.relationship); })) throw new Error("Invalid children page");
+              if (!continuation) { setText(rows,""); seen.clear(); total = 0; }
+              page.items.forEach(function (child) {
+                if (seen.has(child.session.sessionId)) return;
+                seen.add(child.session.sessionId); total += 1;
+                const row = document.createElement("div");
+                const button = document.createElement("button"); button.type = "button"; button.className = "nested-session";
+                const title = document.createElement("strong"); setText(title,sessionTitle(child.session)); button.appendChild(title);
+                const meta = document.createElement("span"); meta.className = "meta";
+                appendSessionMetadata(meta,child.session,true);
+                const relationship = document.createElement("span"); setText(relationship,child.relationship === "confirmed" ? "Confirmed" : "Suggested"); appendMetaPart(meta,relationship);
+                button.appendChild(meta); button.addEventListener("click",function () { openDetail(child.session.sessionId).catch(function () {}); });
+                row.appendChild(button); appendParentLink(row,child.session); rows.appendChild(row);
+              });
+              snapshot = page.snapshotId; cursor = page.nextCursor || ""; loaded = true;
+              more.hidden = !cursor; setText(more,"Load more child sessions");
+              setText(status,total + " child sessions loaded" + (cursor ? " · More available" : "") + " · Current children snapshot; (N) is from the list snapshot.");
+            } catch (error) {
+              if (!current()) return;
+              loaded = false; cursor = ""; snapshot = "";
+              setText(rows,""); seen.clear(); total = 0;
+              setText(status,"Child sessions unavailable or unsupported by this older server. Retry or refresh the list; no relationships were inferred.");
+              more.hidden = false; setText(more,"Retry child sessions");
+            } finally { busy = false; if (current()) more.disabled = false; }
+          }
+          disclosure.addEventListener("toggle",function () { if (disclosure.open && !loaded) load(false); });
+          more.addEventListener("click",function () { load(loaded); });
         }
         function sessionDateGroup(startedAt) {
           if (!Number.isSafeInteger(startedAt) || startedAt < 0 || startedAt > 253402300799) return "Undated";
@@ -4205,7 +4279,10 @@ enum WebUIRoutes {
             button.addEventListener("click", function () {
               openDetail(item.sessionId).catch(function () {});
             });
-            sessionsNode.appendChild(button);
+            if ((Number.isSafeInteger(item.childCount) && item.childCount > 0) || item.parentSessionId) {
+              const row = document.createElement("div"); row.className = "session-row";
+              row.appendChild(button); appendSessionNesting(row,item); sessionsNode.appendChild(row);
+            } else sessionsNode.appendChild(button);
           });
           updateSessionMore();
         }
@@ -5494,7 +5571,7 @@ enum WebUIRoutes {
             return;
           }
           if (!["sessions","search"].includes(activePage) || workspaceNode.classList.contains("showing-detail")) return;
-          const rows = Array.from(sessionsNode.querySelectorAll("button.session")).filter(function (row) { return !row.hidden; });
+          const rows = Array.from(sessionsNode.querySelectorAll("button.session")).filter(function (row) { return !row.hidden && !row.parentNode.hidden; });
           if (!rows.length) return;
           if (event.key === "j" || event.key === "k") {
             event.preventDefault(); selectedSessionIndex = Math.max(0, Math.min(rows.length - 1, selectedSessionIndex + (event.key === "j" ? 1 : -1)));

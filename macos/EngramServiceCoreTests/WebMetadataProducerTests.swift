@@ -18,6 +18,164 @@ final class WebMetadataProducerTests: XCTestCase {
     private let secondInstance = "EEEEEEEE-0000-4000-8000-000000000002"
     private let epoch = "CCCCCCCC-0000-4000-8000-000000000003"
 
+    // B2 asserts the wire fields so RED runs before the DTO exists.
+    func testIt9B2SharedSummaryAdmissionAndUnknownCosts() async throws {
+        let fixture = try MetadataSQLFixture(); defer { fixture.remove() }
+        try fixture.migrate(); try fixture.seedRegistry()
+        for (id, parent, hidden, tier) in [
+            ("parent", nil as String?, false, "normal"), ("confirmed", "parent", false, "normal"),
+            ("suggested", nil, false, "normal"), ("dual", "parent", false, "normal"),
+            ("hidden", "parent", true, "normal"), ("skip", "parent", false, "skip"),
+            ("hidden-parent", nil, true, "normal"), ("orphan", "hidden-parent", false, "normal"),
+            ("unbound-parent-child", "missing", false, "normal"), ("unknown", nil, false, "normal")
+        ] {
+            try fixture.seedBoundSession(id: id, start: "2026-09-03 12:00:00", nativeID: id, tier: tier, hidden: hidden, parent: parent)
+        }
+        try fixture.write { db in
+            try db.execute(sql: "UPDATE sessions SET suggested_parent_id = 'parent' WHERE id IN ('suggested','dual')")
+            try db.execute(sql: "UPDATE sessions SET tool_message_count = 7 WHERE id = 'parent'")
+        }
+        // Existing but unbound and disabled-source relationships must not leak.
+        try fixture.write { db in
+            try db.execute(sql: "INSERT INTO sessions(id, source, start_time, tier, file_path, parent_session_id) VALUES ('unbound-child', 'claude-code', '', 'normal', '/fixture/unbound', 'parent')")
+            try db.execute(sql: "INSERT INTO sessions(id, source, start_time, tier, file_path) VALUES ('missing', 'claude-code', '', 'normal', '/fixture/missing')")
+        }
+        try fixture.seedRegistry(machine: secondMachine, instance: secondInstance, source: .codex)
+        try fixture.seedBoundSession(id: "disabled-parent", start: nil, nativeID: "disabled-parent", machine: secondMachine, instance: secondInstance, source: .codex)
+        try fixture.seedBoundSession(id: "disabled-child", start: nil, nativeID: "disabled-child", machine: secondMachine, instance: secondInstance, source: .codex, parent: "parent")
+        try fixture.seedBoundSession(id: "disabled-orphan", start: nil, nativeID: "disabled-orphan", parent: "disabled-parent")
+        try fixture.seedSessionCost(id: "parent", model: "model-proven", cost: 0.42, input: 3)
+        try fixture.seedSessionCost(id: "unknown", model: "", cost: 0)
+        try fixture.seedSessionCost(id: "confirmed", model: "child-model", cost: 0, cacheRead: 1)
+        let producer = try fixture.producer(policy: { .init(parserRevision: "parser-v1", enabledSources: [.claudeCode]) })
+        defer { try? producer.stop() }
+        func wire(_ item: EngramServiceWebSessionSummary) throws -> [String: Any] {
+            try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(item)) as? [String: Any])
+        }
+        let all = try await producer.sessions(.init(agents: .all, limit: 50), requestId: requestId, deadline: fixture.deadline())
+        let parent = try XCTUnwrap(all.items.first { $0.sessionId == "parent" })
+        let json = try wire(parent)
+        XCTAssertEqual(json["toolMessageCount"] as? Int, 7)
+        XCTAssertEqual(json["model"] as? String, "model-proven")
+        XCTAssertEqual(json["costUsd"] as? Double, 0.42)
+        let children = try await producer.children(.init(sessionId: "parent", limit: 50), requestId: requestId, deadline: fixture.deadline())
+        XCTAssertEqual(json["childCount"] as? Int, children.items.count)
+        XCTAssertEqual(children.items.count, 3)
+        for child in children.items {
+            XCTAssertEqual(child.session, all.items.first { $0.sessionId == child.session.sessionId })
+            let c = try wire(child.session)
+            XCTAssertEqual(c["parentSessionId"] as? String, child.relationship == .confirmed ? "parent" : nil)
+        }
+        for id in ["orphan", "unbound-parent-child", "disabled-orphan", "suggested"] {
+            XCTAssertNil(try wire(XCTUnwrap(all.items.first { $0.sessionId == id }))["parentSessionId"])
+        }
+        let unknown = try wire(XCTUnwrap(all.items.first { $0.sessionId == "unknown" }))
+        for key in ["model", "costUsd", "parentSessionId"] { XCTAssertNil(unknown[key], key) }
+        XCTAssertEqual(unknown["childCount"] as? Int, 0)
+        let confirmed = try wire(XCTUnwrap(all.items.first { $0.sessionId == "confirmed" }))
+        XCTAssertEqual(confirmed["costUsd"] as? Double, 0, "known zero cost remains zero")
+        let noCost = try wire(XCTUnwrap(all.items.first { $0.sessionId == "suggested" }))
+        XCTAssertNil(noCost["costUsd"]); XCTAssertNil(noCost["model"])
+        XCTAssertFalse(all.items.contains { $0.sessionId == "disabled-parent" || $0.sessionId == "disabled-child" })
+        let costs = try await producer.costSessions(.init(agents: .all, limit: 50), requestId: requestId, deadline: fixture.deadline())
+        for item in costs.items { XCTAssertEqual(item.session, all.items.first { $0.sessionId == item.session.sessionId }) }
+        for agents in [EngramServiceWebAgentFilter.hide, .only] {
+            let page = try await producer.sessions(.init(agents: agents, limit: 50), requestId: requestId, deadline: fixture.deadline())
+            if let item = page.items.first(where: { $0.sessionId == "parent" }) { XCTAssertEqual(try wire(item)["childCount"] as? Int, 3) }
+            if let item = page.items.first(where: { $0.sessionId == "confirmed" }) { XCTAssertNil(try wire(item)["parentSessionId"]) }
+        }
+    }
+
+    func testIt9B2SummaryChangesFailPublishTimeRevalidation() async throws {
+        for operation in [ServiceWebMetadataOperation.sessions, .children, .costSessions] {
+            for sql in ["UPDATE session_costs SET model = 'changed' WHERE session_id = 'child'",
+                        "UPDATE sessions SET tool_message_count = 9 WHERE id = 'child'",
+                        "UPDATE sessions SET hidden_at = 'now' WHERE id = 'grandchild'"] {
+                let fixture = try MetadataSQLFixture(); defer { fixture.remove() }
+                try fixture.migrate(); try fixture.seedRegistry()
+                try fixture.seedBoundSession(id: "parent", start: nil)
+                try fixture.seedBoundSession(id: "child", start: nil, nativeID: "child", parent: "parent")
+                try fixture.seedBoundSession(id: "grandchild", start: nil, nativeID: "grandchild", parent: "child")
+                try fixture.seedSessionCost(id: "child", model: "before", cost: 1, input: 1)
+                let mutation = MetadataPreparationMutation(operation: operation) { try fixture.write { try $0.execute(sql: sql) } }
+                mutation.arm()
+                let producer = try fixture.producer(hooks: .init(afterPreparation: { try mutation.run($0) }))
+                defer { try? producer.stop() }
+                await assertStale(deadline: fixture.deadline()) {
+                    switch operation {
+                    case .sessions: _ = try await producer.sessions(.init(agents: .all), requestId: self.requestId, deadline: fixture.deadline())
+                    case .children: _ = try await producer.children(.init(sessionId: "parent"), requestId: self.requestId, deadline: fixture.deadline())
+                    default: _ = try await producer.costSessions(.init(agents: .all), requestId: self.requestId, deadline: fixture.deadline())
+                    }
+                }
+            }
+        }
+    }
+
+    func testIt9B2PageBatchQueryCountIncludingDirectSearchCaller() async throws {
+        let fixture = try MetadataSQLFixture(); defer { fixture.remove() }
+        try fixture.migrate(); try fixture.seedRegistry()
+        try fixture.seedBoundSession(id: "parent", start: nil)
+        let ids = (0..<12).map { "child-\($0)" }
+        for id in ids {
+            try fixture.seedBoundSession(id: id, start: nil, nativeID: id, parent: "parent")
+            try fixture.seedSessionCost(id: id, model: "model", cost: 1, input: 1)
+        }
+        let statements = MetadataShortQueryStatements()
+        let producer = try fixture.producer(hooks: .init(prepareDatabase: { db in
+            db.trace(options: .statement) { if case .statement(let statement) = $0 { statements.record(statement.sql) } }
+        })); defer { try? producer.stop() }
+        func counts() -> (Int, Int) {
+            (statements.values.filter { $0.contains("FROM session_costs WHERE") }.count,
+             statements.values.filter { $0.contains("WITH page(id) AS") }.count)
+        }
+        var before = counts()
+        _ = try await producer.sessions(.init(agents: .all, limit: 50), requestId: requestId, deadline: fixture.deadline())
+        XCTAssertEqual(counts().0 - before.0, 2); XCTAssertEqual(counts().1 - before.1, 2)
+        before = counts()
+        _ = try await producer.children(.init(sessionId: "parent", limit: 50), requestId: requestId, deadline: fixture.deadline())
+        XCTAssertEqual(counts().0 - before.0, 4); XCTAssertEqual(counts().1 - before.1, 4)
+        before = counts()
+        _ = try await producer.costSessions(.init(agents: .all, limit: 50), requestId: requestId, deadline: fixture.deadline())
+        XCTAssertEqual(counts().0 - before.0, 2); XCTAssertEqual(counts().1 - before.1, 2)
+        before = counts()
+        let ranked = EngramServiceSearchResponse(items: ids.map { .init(id: $0) })
+        _ = try await producer.admitSearch(.init(query: "fixture", agents: .all), ranked: ranked, requestId: requestId, deadline: fixture.deadline())
+        XCTAssertEqual(counts().0 - before.0, 2); XCTAssertEqual(counts().1 - before.1, 2)
+    }
+
+    func testIt9B2SearchSummaryMetadataIsLiveRevalidated() async throws {
+        let fixture = try MetadataSQLFixture(); defer { fixture.remove() }
+        try fixture.migrate(); try fixture.seedRegistry()
+        try fixture.seedBoundSession(id: "one", start: nil)
+        try fixture.seedSessionCost(id: "one", model: "model", cost: 1, input: 1)
+        let mutation = MetadataPreparationMutation(operation: .search) {
+            try fixture.write { try $0.execute(sql: "UPDATE session_costs SET model = 'changed'") }
+        }
+        mutation.arm()
+        let producer = try fixture.producer(hooks: .init(afterPreparation: { try mutation.run($0) })); defer { try? producer.stop() }
+        await assertStale(deadline: fixture.deadline()) {
+            try await producer.admitSearch(.init(query: "fixture", agents: .all), ranked: .init(items: [.init(id: "one")]), requestId: self.requestId, deadline: fixture.deadline())
+        }
+    }
+
+    func testIt9B2ModelPreservesProviderNamesAndNeverTruncatesNUL() async throws {
+        let fixture = try MetadataSQLFixture(); defer { fixture.remove() }
+        try fixture.migrate(); try fixture.seedRegistry()
+        try fixture.seedBoundSession(id: "provider", start: nil)
+        try fixture.seedBoundSession(id: "nul", start: nil, nativeID: "nul")
+        try fixture.seedSessionCost(id: "provider", model: "provider/model-v1", cost: 0, input: 1)
+        try fixture.seedSessionCost(id: "nul", model: "prefix\0suffix", cost: 0, input: 1)
+        try fixture.write { db in
+            try db.execute(sql: "UPDATE session_costs SET model = CAST(X'70726566697800737566666978' AS TEXT) WHERE session_id = 'nul'")
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT hex(CAST(model AS BLOB)) FROM session_costs WHERE session_id = 'nul'"), "70726566697800737566666978")
+        }
+        let producer = try fixture.producer(); defer { try? producer.stop() }
+        let page = try await producer.sessions(.init(), requestId: requestId, deadline: fixture.deadline())
+        XCTAssertEqual(page.items.first { $0.sessionId == "provider" }?.model, "provider/model-v1")
+        XCTAssertNil(page.items.first { $0.sessionId == "nul" }?.model)
+    }
+
     // It8: JSON inputs exercise the old wire contract before implementation.
     func testIt8HourOfWeekPagesAndOpaqueIntersection() async throws {
         let fixture = try MetadataSQLFixture()

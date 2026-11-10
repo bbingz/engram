@@ -1600,6 +1600,21 @@ final class WebMetadataClientTests: XCTestCase {
         }
     }
 
+    func testIt9B2OptionalSummaryWireValidationAndLegacyDefaults() throws {
+        let old = try JSONDecoder().decode(EngramServiceWebSessionSummary.self, from: JSONSerialization.data(withJSONObject: Self.summary()))
+        XCTAssertNil(old.toolMessageCount); XCTAssertNil(old.model); XCTAssertNil(old.costUsd)
+        XCTAssertNil(old.parentSessionId); XCTAssertNil(old.childCount)
+        let fields: [String: Any] = ["toolMessageCount": 0, "model": "model", "costUsd": 0, "parentSessionId": "parent", "childCount": 2]
+        var valid = Self.summary(); fields.forEach { valid[$0.key] = $0.value }
+        let decoded = try JSONDecoder().decode(EngramServiceWebSessionSummary.self, from: JSONSerialization.data(withJSONObject: valid))
+        XCTAssertEqual(decoded.toolMessageCount, 0); XCTAssertEqual(decoded.model, "model"); XCTAssertEqual(decoded.costUsd, 0)
+        XCTAssertEqual(decoded.parentSessionId, "parent"); XCTAssertEqual(decoded.childCount, 2)
+        for (field, bad) in [("toolMessageCount", -1 as Any), ("childCount", -1), ("costUsd", -0.1), ("parentSessionId", ""), ("model", "")] {
+            var input = valid; input[field] = bad
+            XCTAssertThrowsError(try JSONDecoder().decode(EngramServiceWebSessionSummary.self, from: JSONSerialization.data(withJSONObject: input)), field)
+        }
+    }
+
     func testIt8LastActivityClientOrderAndLegacyDecode() async throws {
         let old = try JSONDecoder().decode(EngramServiceWebSessionSummary.self, from: JSONSerialization.data(withJSONObject: Self.summary()))
         XCTAssertNil(old.lastActivityAt)

@@ -9175,3 +9175,103 @@ describe('It8 restored opaque stats selector layout', () => {
     expect(controls).toContain('max-width: 100%');
   });
 });
+
+describe('It9 B2 summary metadata and lazy nesting', () => {
+  it('shows only proven optional metadata and fetches children only on disclosure', async () => {
+    const ui = harness();
+    ui.call(
+      'acceptSessionsPage(false,{items:[{sessionId:"parent",title:"Parent",model:"<model>",costUsd:0,toolMessageCount:7,lastActivityAt:1789214400,childCount:2},{sessionId:"old",title:"Old"}]})',
+    );
+    const row = ui.node('sessions').children[0];
+    expect(row.textContent).toContain('<model>');
+    expect(row.textContent).toContain('$0.00');
+    expect(row.textContent).toContain('7 tool');
+    expect(row.textContent).toContain('Activity:');
+    expect(ui.node('sessions').children[1].textContent).not.toMatch(
+      /Activity:|\$|tool|children/i,
+    );
+    expect(ui.requests).toHaveLength(0);
+    const disclosure = row.querySelector('details')!;
+    expect(disclosure).not.toBeNull();
+    expect(disclosure.textContent).toContain('(2)');
+    disclosure.open = true;
+    disclosure.dispatch('toggle');
+    expect(ui.requests[0].path).toBe(
+      '/web/api/sessions/parent/children?limit=50',
+    );
+    ui.requests[0].resolve({
+      sessionId: 'parent',
+      snapshotId: 'snap',
+      nextCursor: 'cursor',
+      items: [
+        {
+          relationship: 'confirmed',
+          session: {
+            sessionId: 'child',
+            title: 'Child',
+            parentSessionId: 'parent',
+            toolMessageCount: 0,
+          },
+        },
+      ],
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(disclosure.textContent).toContain('Child');
+    expect(disclosure.textContent).toContain('0 tool');
+    expect(disclosure.textContent).toContain('Parent session');
+    disclosure.open = false;
+    disclosure.dispatch('toggle');
+    disclosure.open = true;
+    disclosure.dispatch('toggle');
+    expect(ui.requests).toHaveLength(1);
+    disclosure.querySelector('.nested-more')!.click();
+    const next = new URLSearchParams(ui.requests[1].path.split('?')[1]);
+    expect(next.get('cursor')).toBe('cursor');
+    expect(next.get('snapshotId')).toBe('snap');
+    ui.requests[1].resolve({
+      sessionId: 'parent',
+      snapshotId: 'snap',
+      items: [
+        {
+          relationship: 'suggested',
+          session: { sessionId: 'maybe', title: 'Maybe' },
+        },
+      ],
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(disclosure.textContent).toContain('Suggested');
+    expect(disclosure.querySelectorAll('.parent-link')).toHaveLength(1);
+    expect(disclosure.querySelectorAll('.nested-session')).toHaveLength(2);
+  });
+  it('does not publish stale nesting after replacement and reports unsupported old servers', async () => {
+    const ui = harness();
+    ui.call(
+      'acceptSessionsPage(false,{items:[{sessionId:"parent",childCount:1}]})',
+    );
+    const old = ui.node('sessions').querySelector('details')!;
+    old.open = true;
+    old.dispatch('toggle');
+    ui.call(
+      'acceptSessionsPage(false,{items:[{sessionId:"new",childCount:1}]})',
+    );
+    ui.requests[0].resolve({
+      sessionId: 'parent',
+      snapshotId: 's',
+      items: [
+        {
+          relationship: 'confirmed',
+          session: { sessionId: 'secret', title: 'STALE' },
+        },
+      ],
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(old.textContent).not.toContain('STALE');
+    const current = ui.node('sessions').querySelector('details')!;
+    current.open = true;
+    current.dispatch('toggle');
+    ui.requests[1].resolve({}, 404);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(current.textContent).toContain('older server');
+    expect(current.textContent).toContain('Retry');
+  });
+});
