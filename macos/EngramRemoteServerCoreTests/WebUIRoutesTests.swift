@@ -93,6 +93,18 @@ final class WebUIRoutesTests: XCTestCase {
         XCTAssertLessThanOrEqual(css.utf8.count, 80_000)
     }
 
+    func testIt8StatsHeatmapAndSortAssetsUseSafeOptionalContracts() async throws {
+        let harness = try UIHarness(configuration: configuration())
+        let html = try await bodyText(try await harness.respond(request(path: "/web", headers: [("Host", "viewer.example")])))
+        for hook in ["session-sort", "stats-source", "stats-project", "stats-choices", "dashboard-hours", "dashboard-hours-load"] {
+            XCTAssertTrue(html.contains("id=\"\(hook)\""), hook)
+        }
+        XCTAssertTrue(WebUIRoutes.javascript.contains("function renderHourOfWeek("))
+        XCTAssertTrue(WebUIRoutes.javascript.contains("missing bins unknown"))
+        XCTAssertTrue(WebUIRoutes.javascript.contains("params.set(\"sort\", \"lastActivity\")"))
+        XCTAssertTrue(WebUIRoutes.javascript.contains("No filters were silently dropped"))
+    }
+
     func testDashboardAndStatsChartsKeepLazySafeAccessibleAssetContract() async throws {
         let harness = try UIHarness(configuration: configuration())
         let html = try await bodyText(try await harness.respond(request(path: "/web", headers: [("Host", "viewer.example")])))
@@ -103,7 +115,7 @@ final class WebUIRoutesTests: XCTestCase {
                      "files-chart", "usage-chart", "repos-chart", "ai-chart"] {
             XCTAssertTrue(html.contains("id=\"\(hook)\""), hook)
         }
-        XCTAssertTrue(html.contains("deferred It8"))
+        XCTAssertTrue(html.contains("Heatmap counts session starts, not work duration"))
         XCTAssertTrue(html.contains("id=\"nav-sessions\" href=\"#sessions\" aria-current=\"page\""))
         XCTAssertTrue(js.contains("function dailySeries("))
         XCTAssertTrue(js.contains("function renderChart("))

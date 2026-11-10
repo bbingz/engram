@@ -408,6 +408,36 @@ final class WebMetadataHTTPTests: XCTestCase {
         XCTAssertNil(request.cursor)
     }
 
+    func testIt8StatsAndSortHTTPStrictCanonicalWire() async throws {
+        let fixture = try fixture()
+        defer { fixture.stop() }
+        let recorders = A5bRouteRecorders()
+        try await withServer(surface: recordingSurface(recorders: recorders)) { server in
+            let cookie = try await Self.login(server)
+            let headers = Self.originHeaders + [("Cookie", cookie)]
+            for query in ["sources=", "sources=codex,codex", "sources=INVALID", "projectKeys=", "projectKeys=x,x", "projectKeys=x&projectKeys=y"] {
+                let response = try await server.request("GET", "/web/api/stats?" + query, headers: headers)
+                XCTAssertEqual(response.status, 400, query)
+                Self.assertSecurityHeaders(response)
+            }
+            let response = try await server.request("GET", "/web/api/stats?groupBy=hourOfWeek&sources=codex,claude-code&projectKeys=project_2,project_1&limit=100", headers: headers)
+            XCTAssertEqual(response.status, 200)
+            for sort in ["lastActivity", "started"] {
+                let sorted = try await server.request("GET", "/web/api/sessions?sort=" + sort, headers: headers)
+                XCTAssertEqual(sorted.status, 200)
+            }
+            for query in ["sort=recent", "sort=started&sort=lastActivity"] {
+                let invalid = try await server.request("GET", "/web/api/sessions?" + query, headers: headers)
+                XCTAssertEqual(invalid.status, 400)
+            }
+        }
+        XCTAssertEqual(recorders.stats.values.count, 1)
+        XCTAssertEqual(recorders.stats.values.first?.sources, ["claude-code", "codex"])
+        XCTAssertEqual(recorders.stats.values.first?.projectKeys, ["project_1", "project_2"])
+        XCTAssertEqual(recorders.stats.values.first?.groupBy, .hourOfWeek)
+        XCTAssertEqual(recorders.sessions.values.map(\.sort), [.lastActivity, .started])
+    }
+
     func testStatsRejectsInvalidQueryBeforeReaderAndAcceptsExactContract_repro() async throws {
         let fixture = try fixture()
         defer { fixture.stop() }
@@ -476,6 +506,35 @@ final class WebMetadataHTTPTests: XCTestCase {
         XCTAssertEqual(fixture.requests.map(\.command), ["webStats"])
         let request = try JSONDecoder().decode(EngramServiceWebStatsRequest.self, from: try XCTUnwrap(fixture.requests.first?.payload))
         XCTAssertEqual(request.groupBy, .project)
+        XCTAssertEqual(request.excludeNoise, true)
+        XCTAssertEqual(request.limit, 2)
+        XCTAssertNil(request.snapshotId)
+        XCTAssertNil(request.cursor)
+    }
+
+    func testIt8MakeSurfaceSocketRoundTripForHourAndPluralDTO() async throws {
+        let fixture = try metadataFixture()
+        defer { fixture.stop() }
+        try await withServer(factory: { path in
+            try WebReadRoutes.makeSurface(socketPath: path)
+        }) { server in
+            let cookie = try await Self.login(server)
+            let response = try await server.request(
+                "GET", "/web/api/stats?groupBy=hourOfWeek&sources=claude-code,codex&projectKeys=project_1&excludeNoise=true&limit=2",
+                headers: Self.originHeaders + [("Cookie", cookie)])
+            XCTAssertEqual(response.status, 200)
+            let body: EngramServiceWebStatsResponse = try JSONDecoder().decode(
+                EngramServiceWebStatsResponse.self, from: response.body)
+            XCTAssertEqual(body.snapshotId, Self.snapshot)
+            XCTAssertEqual(body.groupBy, .hourOfWeek)
+            XCTAssertEqual(body.items.first?.key, "h.0.00")
+            XCTAssertEqual(body.totals.sessionCount, 1)
+        }
+        XCTAssertEqual(fixture.requests.map(\.command), ["webStats"])
+        let request = try JSONDecoder().decode(EngramServiceWebStatsRequest.self, from: try XCTUnwrap(fixture.requests.first?.payload))
+        XCTAssertEqual(request.groupBy, .hourOfWeek)
+        XCTAssertEqual(request.sources, ["claude-code", "codex"])
+        XCTAssertEqual(request.projectKeys, ["project_1"])
         XCTAssertEqual(request.excludeNoise, true)
         XCTAssertEqual(request.limit, 2)
         XCTAssertNil(request.snapshotId)
@@ -1270,6 +1329,7 @@ final class WebMetadataHTTPTests: XCTestCase {
         switch request.groupBy {
         case .source: key = "claude-code"
         case .project: key = "project_1"
+        case .hourOfWeek: key = "h.0.00"
         case .day, .week: key = request.since ?? "2026-09-07"
         }
         let item = EngramServiceWebStatsItem(key: key, label: key, sessionCount: 1, messageCount: 2,

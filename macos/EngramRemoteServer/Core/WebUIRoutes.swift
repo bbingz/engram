@@ -107,6 +107,7 @@ enum WebUIRoutes {
         </details>
         <details class="advanced-filters">
         <summary>Advanced filters</summary>
+        <label>Session order <select id="session-sort"><option value="started">Started (newest first)</option><option value="lastActivity">Last activity (newest first)</option></select></label>
         <label>Since <input id="since" name="since" type="date"></label>
         <label>Until <input id="until" name="until" type="date"></label>
         <label class="tool-filter"><input id="hide-tools" type="checkbox"> Hide tool-only sessions</label>
@@ -314,16 +315,20 @@ enum WebUIRoutes {
         <p class="meta">Last 30 calendar dates · agents hidden · server-local day buckets. Costs include priced usage only, not a billing statement.</p>
         <div id="dashboard-kpis" class="dashboard-kpis"></div>
         <div id="dashboard-activity"></div>
+        <button id="dashboard-hours-load" type="button">Load session-start heatmap</button><div id="dashboard-hours"></div>
         <div class="dashboard-grid"><div id="dashboard-cost"></div><div id="dashboard-sources"></div><div id="dashboard-projects"></div></div>
         <p id="dashboard-health" class="meta"></p>
-        <p id="dashboard-dependencies" class="meta">Work-time heatmap and per-source health history unavailable: no hourly/history API yet (deferred It8). No activity is inferred from heartbeats.</p>
+        <p id="dashboard-dependencies" class="meta">Heatmap counts session starts, not work duration. Per-source health history is unavailable. No activity is inferred from heartbeats.</p>
         </section>
         <section id="stats-page" hidden>
         <div class="page-heading"><h2>Stats</h2></div>
         <div class="agent-filters" role="group" aria-label="Statistics view"><button id="stats-view-sessions" type="button" aria-pressed="true">Sessions</button><button id="stats-view-costs" type="button" aria-pressed="false">Costs</button><button id="stats-view-tools" type="button" aria-pressed="false">Tools</button><button id="stats-view-files" type="button" aria-pressed="false">Files</button><button id="stats-view-usage" type="button" aria-pressed="false">Usage</button><button id="stats-view-repos" type="button" aria-pressed="false">Repositories</button><button id="stats-view-ai" type="button" aria-pressed="false">AI calls</button></div>
         <div id="stats-content">
         <form id="stats-form" class="stats-filters">
-        <label>Group by <select id="stats-group"><option value="source">Source</option><option value="project">Project</option><option value="day">Day</option><option value="week">Week</option></select></label>
+        <label>Group by <select id="stats-group"><option value="source">Source</option><option value="project">Project</option><option value="day">Day</option><option value="week">Week</option><option value="hourOfWeek">Weekday / hour (session starts)</option></select></label>
+        <label>Source <select id="stats-source"><option value="">All sources</option></select></label>
+        <label>Project <select id="stats-project"><option value="">All projects</option></select></label>
+        <button id="stats-choices" type="button">Load filter choices</button><span id="stats-choices-status" class="meta" role="status"></span>
         <label>Since <input id="stats-since" type="date"></label>
         <label>Until <input id="stats-until" type="date"></label>
         <label>Agents <select id="stats-agents"><option value="hide">Hide agents</option><option value="all">All</option><option value="only">Agents only</option></select></label>
@@ -937,13 +942,13 @@ enum WebUIRoutes {
         let statsSnapshot = "";
         let statsCursor = "";
         let statsFilters = "";
-        let statsTotals = null;
+        let statsTotals = null, statsTimeZone = "", statsChoicesVersion = 0;
         const costFields = [["costUsd", "Cost (USD)"], ["sessionCount", "Sessions"], ["inputTokens", "Input tokens"], ["outputTokens", "Output tokens"], ["cacheReadTokens", "Cache read"], ["cacheCreationTokens", "Cache write"]];
         let statsView = "sessions";
         const chartRows = { stats: [], costs: [], tools: [], files: [], repos: [], ai: [] };
         let overviewStreams = null;
         let overviewObservedAt = null;
-        let dashboardVersion = 0;
+        let dashboardVersion = 0, dashboardHoursVersion = 0;
         let aiSnapshot = "", aiCursor = "", aiFilters = "", aiTotal = null;
         let aiDetailVersion = 0, aiStatsVersion = 0;
         let reposSnapshot = "", reposCursor = "", reposTotal = null;
@@ -1018,7 +1023,7 @@ enum WebUIRoutes {
         let searchTimer = null, searchInputVersion = 0, routeVersion = 0, handledRoute = null;
         let listRouteKey = "", cachedListScroll = 0, detailReturnRoute = null, selectedSessionIndex = -1;
         let findMatches = [], findIndex = -1, findVersion = 0;
-        const routeFilterKeys = ["q", "sources", "projects", "agents", "since", "until", "tools", "machine", "mode", "limit"];
+        const routeFilterKeys = ["q", "sources", "projects", "agents", "since", "until", "tools", "machine", "mode", "limit", "sort", "group", "noise"];
         let commandSessions = [], commandResults = [], commandIndex = -1, commandRevision = 0, commandContext = null;
         const statsTabs = ["sessions", "costs", "tools", "files", "usage", "repos", "ai"];
         function cancelSearchTimer() {
@@ -1178,6 +1183,12 @@ enum WebUIRoutes {
             setText(document.getElementById("health-summary"), "");
             clearDashboard();
             overviewStreams = null; overviewObservedAt = null;
+            statsChoicesVersion += 1;
+            ["source","project"].forEach(function (kind) {
+              const node = document.getElementById("stats-" + kind); setText(node,"");
+              const option = document.createElement("option"); option.value = ""; setText(option,kind === "source" ? "All sources" : "All projects"); node.appendChild(option); node.value = "";
+            });
+            setText(document.getElementById("stats-choices-status"),"");
             clearStats();
             clearCosts();
             clearTools();
@@ -1276,7 +1287,7 @@ enum WebUIRoutes {
         }
         async function navigate(page, routed, tab) {
           routeVersion += routed ? 0 : 1;
-          if (!routed) writeRoute(page === "stats" ? {page:"stats",tab:tab || "sessions"} : ["sessions","search"].includes(page) ? Object.assign(libraryRoute(), {page:page}) : {page:page});
+          if (!routed) writeRoute(page === "stats" ? statsRoute(tab || "sessions") : ["sessions","search"].includes(page) ? Object.assign(libraryRoute(), {page:page}) : {page:page});
           workspaceNode.classList.remove("showing-detail"); backNode.hidden = true;
           detailReturnPage = null;
           bumpEpoch();
@@ -1321,6 +1332,9 @@ enum WebUIRoutes {
             if (!["all", "only"].includes(filters.agents)) delete filters.agents;
             if (!["keyword", "semantic", "hybrid"].includes(filters.mode)) delete filters.mode;
             if (!["10", "25", "50"].includes(filters.limit)) delete filters.limit;
+            if (filters.sort !== "lastActivity") delete filters.sort;
+            if (!["source","project","day","week","hourOfWeek"].includes(filters.group)) delete filters.group;
+            if (filters.noise !== "true") delete filters.noise;
             if (filters.tools !== "hide") delete filters.tools;
             ["since", "until"].forEach(function (key) { if (filters[key] && !/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(filters[key])) delete filters[key]; });
             if (parts[0] === "s" && parts[1]) {
@@ -1333,14 +1347,18 @@ enum WebUIRoutes {
               if (params.get("find")) route.find = params.get("find").slice(0,500);
               return route;
             }
-            if (parts[0] === "stats" && parts.length <= 2 && (!parts[1] || statsTabs.includes(parts[1]))) return {page:"stats", tab:parts[1] || "sessions"};
+            if (parts[0] === "stats" && parts.length <= 2 && (!parts[1] || statsTabs.includes(parts[1]))) return {page:"stats", tab:parts[1] || "sessions", filters:filters};
             if (["sessions", "search", "dashboard", "health", "settings"].includes(parts[0]) && parts.length === 1) return {page:parts[0], filters:filters};
           } catch (error) {}
           return fallback;
         }
         function routeHref(route) {
           if (route.page === "detail") return "#/s/" + encodeURIComponent(route.id) + (route.ordinal != null ? "/m/" + route.ordinal : route.view ? "/" + route.view : "") + (route.find ? "?" + new URLSearchParams({find:route.find}).toString() : "");
-          if (route.page === "stats") return "#/stats/" + (statsTabs.includes(route.tab) ? route.tab : "sessions");
+          if (route.page === "stats") {
+            const params = new URLSearchParams();
+            ["group","sources","projects","agents","since","until","noise"].forEach(function (key) { if (route.filters && route.filters[key]) params.set(key,route.filters[key]); });
+            return "#/stats/" + (statsTabs.includes(route.tab) ? route.tab : "sessions") + (params.toString() ? "?" + params.toString() : "");
+          }
           const page = ["sessions", "search", "dashboard", "health", "settings"].includes(route.page) ? route.page : "sessions";
           const params = new URLSearchParams();
           if (["sessions", "search"].includes(page)) routeFilterKeys.forEach(function (key) { if (route.filters && route.filters[key]) params.set(key, route.filters[key]); });
@@ -1350,7 +1368,7 @@ enum WebUIRoutes {
           const savedFilters = sessionFilters;
           const query = new URLSearchParams(sessionQuery(false).slice(1)), filters = {};
           sessionFilters = savedFilters;
-          [["q","query"],["sources","sources"],["projects","projectKeys"],["agents","agents"],["since","since"],["until","until"],["tools","tools"],["machine","machineId"]].forEach(function (pair) { if (query.get(pair[1])) filters[pair[0]] = query.get(pair[1]); });
+          [["q","query"],["sources","sources"],["projects","projectKeys"],["agents","agents"],["since","since"],["until","until"],["tools","tools"],["machine","machineId"],["sort","sort"]].forEach(function (pair) { if (query.get(pair[1])) filters[pair[0]] = query.get(pair[1]); });
           if (activePage === "search") { filters.mode = document.getElementById("search-mode").value || "keyword"; filters.limit = document.getElementById("search-limit").value || "25"; }
           return {page:activePage === "search" ? "search" : "sessions", filters:filters};
         }
@@ -1366,6 +1384,7 @@ enum WebUIRoutes {
           const f = filters || {};
           [["query","q"],["machineId","machine"],["since","since"],["until","until"]].forEach(function (pair) { document.getElementById(pair[0]).value = f[pair[1]] || ""; });
           document.getElementById("hide-tools").checked = f.tools === "hide";
+          document.getElementById("session-sort").value = f.sort || "started";
           setAgentFilter(f.agents || "hide");
           [["source","sources"],["project","projects"]].forEach(function (pair) {
             const state = facets[pair[0]], known = new Map(state.selected);
@@ -1407,7 +1426,8 @@ enum WebUIRoutes {
             await refreshLibrary(true); return;
           }
           if (route.page === "health" && initial) { activatePage("health"); return; }
-          if (route.page === "stats" && (activePage === "stats" || returningStats) && statsView === route.tab) { activatePage("stats"); window.scrollTo({top:sessionListScrollTop,behavior:"instant"}); return; }
+          if (route.page === "stats" && (activePage === "stats" || returningStats) && statsView === route.tab && routeHref(statsRoute()) === key) { activatePage("stats"); window.scrollTo({top:sessionListScrollTop,behavior:"instant"}); return; }
+          if (route.page === "stats") applyStatsRoute(route.filters);
           await navigate(route.page, true, route.tab);
         }
         function restoreRequestedPage() { return applyRoute(true); }
@@ -1436,7 +1456,7 @@ enum WebUIRoutes {
           const version = ++searchStatusVersion;
           const status = document.getElementById("search-capabilities");
           const params = new URLSearchParams(sessionQuery(false).slice(1));
-          ["query", "mode", "limit", "snapshotId", "cursor"].forEach(function (key) { params.delete(key); });
+          ["query", "mode", "limit", "sort", "snapshotId", "cursor"].forEach(function (key) { params.delete(key); });
           setText(status, "Checking search availability…");
           setText(document.getElementById("search-capability-summary"), "Checking search availability…");
           try {
@@ -2307,8 +2327,8 @@ enum WebUIRoutes {
           });
         }
         function clearDashboard() {
-          dashboardVersion += 1;
-          ["kpis", "activity", "cost", "sources", "projects", "health"].forEach(function (name) { setText(document.getElementById("dashboard-" + name), ""); });
+          dashboardVersion += 1; dashboardHoursVersion += 1;
+          ["kpis", "activity", "hours", "cost", "sources", "projects", "health"].forEach(function (name) { setText(document.getElementById("dashboard-" + name), ""); });
         }
         // Each endpoint walks one cursor at a time; the four independent widgets may run concurrently.
         // Cap both pages and rows, keep partial coverage explicit, and stop chaining on navigation/expiry.
@@ -2386,12 +2406,99 @@ enum WebUIRoutes {
             }
           }));
         }
+        function statsRoute(tab) {
+          const filters = {};
+          [["group","stats-group"],["sources","stats-source"],["projects","stats-project"],["since","stats-since"],["until","stats-until"],["agents","stats-agents"]].forEach(function (pair) {
+            const value = document.getElementById(pair[1]).value;
+            if (value && !(pair[0] === "group" && value === "source") && !(pair[0] === "agents" && value === "hide")) filters[pair[0]] = value;
+          });
+          if (document.getElementById("stats-noise").checked) filters.noise = "true";
+          return {page:"stats",tab:tab || statsView,filters:filters};
+        }
+        function applyStatsRoute(filters) {
+          const f = filters || {};
+          [["group","stats-group","source"],["sources","stats-source",""],["projects","stats-project",""],["since","stats-since",""],["until","stats-until",""],["agents","stats-agents","hide"]].forEach(function (pair) {
+            const node = document.getElementById(pair[1]), value = f[pair[0]] || pair[2];
+            // Preserve opaque cold-route selections until authorized facet labels are loaded.
+            if (["sources","projects"].includes(pair[0]) && value && !Array.from(node.children).some(function (option) { return option.value === value; })) {
+              const option = document.createElement("option"); option.value = value; setText(option,value); node.appendChild(option);
+            }
+            node.value = value;
+          });
+          document.getElementById("stats-noise").checked = f.noise === "true";
+        }
+        async function loadStatsChoices() {
+          const version = ++statsChoicesVersion, epoch = requestEpoch, status = document.getElementById("stats-choices-status");
+          setText(status,"Loading authorized choices…");
+          try {
+            let complete = true;
+            for (const kind of ["source","project"]) {
+              const node = document.getElementById("stats-" + kind), params = new URLSearchParams({kind:kind,agents:"all",limit:"100"}), items = new Map(), cursors = new Set();
+              let snapshot = "";
+              for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
+                const page = await api("GET","/web/api/facets?" + params.toString());
+                if (version !== statsChoicesVersion || epoch !== requestEpoch || activePage !== "stats") return;
+                if (!page || !Array.isArray(page.items) || (snapshot && page.snapshotId !== snapshot)) throw new Error("Changed facets");
+                snapshot = page.snapshotId;
+                page.items.forEach(function (item) { items.set(item.key,item.label); });
+                if (!page.nextCursor) break;
+                if (cursors.has(page.nextCursor)) throw new Error("Repeated facet cursor");
+                cursors.add(page.nextCursor); params.set("snapshotId",snapshot); params.set("cursor",page.nextCursor);
+                if (pageNumber === 9) complete = false;
+              }
+              const selected = node.value;
+              setText(node,"");
+              const all = document.createElement("option"); all.value = ""; setText(all,"All " + (kind === "source" ? "sources" : "projects")); node.appendChild(all);
+              if (selected && !items.has(selected)) items.set(selected,selected);
+              items.forEach(function (label,key) { const option = document.createElement("option"); option.value = key; setText(option,kind === "source" ? sourceLabel(key) : label); node.appendChild(option); });
+              node.value = selected;
+            }
+            setText(status,complete ? "Authorized choices loaded" : "Partial choices: 1,000-group cap. Existing route selection retained.");
+          } catch (error) { if (version === statsChoicesVersion && epoch === requestEpoch) setText(status,"Choices unavailable. Retry loading choices."); }
+        }
+        function renderHourOfWeek(id, items, timeZone, complete, total, scope) {
+          const node = document.getElementById(id); setText(node,""); node.className = "chart";
+          const days = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"], bins = new Map(), unknown = items.find(function (item) { return item.key === "u.date"; });
+          items.forEach(function (item) { if (/^h[.][0-6][.](0[0-9]|1[0-9]|2[0-3])$/.test(item.key) && Number.isSafeInteger(item.sessionCount) && item.sessionCount >= 0) bins.set(item.key,item.sessionCount); });
+          const full = complete && bins.size === 168, title = document.createElement("h3"), note = document.createElement("p");
+          setText(title,"Session starts by weekday / hour"); node.appendChild(title);
+          setText(note,(full ? "Complete: 168 bins" : "Partial: " + bins.size + "/168 bins loaded; missing bins unknown") + " · " + timeZone + " · " + chartAmount(total,false) + " full sessions · Unknown start dates: " + (unknown ? unknown.sessionCount : complete ? "0" : "not yet known") + ". Counts starts, not work duration or message activity. " + (scope || "All start dates · agents hidden · all sources/projects · includes lightweight sessions")); node.appendChild(note);
+          const image = svg("svg",{viewBox:"0 0 780 260",role:"img","aria-label":"Session starts, Monday first, server timezone " + timeZone + (full ? ", complete" : ", partial")});
+          const maximum = Math.max(1,...Array.from(bins.values()));
+          for (let hour = 0; hour < 24; hour += 3) { const text = svg("text",{x:68+hour*29,y:18,fill:"var(--text)","font-size":13}); setText(text,String(hour).padStart(2,"0")); image.appendChild(text); }
+          days.forEach(function (day,d) {
+            const text = svg("text",{x:0,y:48+d*29,fill:"var(--text)","font-size":14}); setText(text,day); image.appendChild(text);
+            for (let hour = 0; hour < 24; hour += 1) {
+              const key = "h." + d + "." + String(hour).padStart(2,"0");
+              if (!bins.has(key)) continue; // Unloaded is never fabricated as zero.
+              const value = bins.get(key), rect = svg("rect",{x:64+hour*29,y:28+d*29,width:25,height:25,rx:3,fill:value ? "var(--accent)" : "var(--line)","fill-opacity":value ? 0.3+0.7*value/maximum : 1,"data-value":value,"data-key":key});
+              const tip = svg("title"); setText(tip,day + " " + String(hour).padStart(2,"0") + ":00 · " + value + " session starts"); rect.appendChild(tip); image.appendChild(rect);
+            }
+          }); node.appendChild(image);
+          const legend = document.createElement("p"); setText(legend,"Blank: not loaded · Neutral: zero starts · Accent intensity: fewer → more starts. Exact counts are available in the data table."); node.appendChild(legend);
+        }
+        async function loadDashboardHours() {
+          if (activePage !== "dashboard") return;
+          const epoch = requestEpoch, version = dashboardVersion, hoursVersion = ++dashboardHoursVersion, node = document.getElementById("dashboard-hours");
+          setText(node,"Loading session starts…");
+          try {
+            const result = await dashboardRead("/web/api/stats",{groupBy:"hourOfWeek"},epoch,version);
+            if (hoursVersion !== dashboardHoursVersion) return;
+            if (result && epoch === requestEpoch && version === dashboardVersion && activePage === "dashboard") {
+              renderHourOfWeek("dashboard-hours",result.items,result.page.timeZone,result.complete,result.page.totals.sessionCount);
+              const details = document.createElement("details"), summary = document.createElement("summary"), table = document.createElement("table");
+              setText(summary,"Loaded hourly values"); details.appendChild(summary);
+              result.items.forEach(function (item) { const row = document.createElement("tr"); [item.key,String(item.sessionCount)].forEach(function (value) { const cell = document.createElement("td"); setText(cell,value); row.appendChild(cell); }); table.appendChild(row); });
+              details.appendChild(table); node.appendChild(details);
+            }
+          } catch (error) { if (hoursVersion === dashboardHoursVersion && epoch === requestEpoch && version === dashboardVersion && activePage === "dashboard") setText(node,"Session-start heatmap unavailable. Older servers may not support hourOfWeek. Daily charts remain available."); }
+        }
         function clearStats() {
           chartRows.stats = []; setText(document.getElementById("stats-chart"), "");
           statsSnapshot = "";
           statsCursor = "";
           statsFilters = "";
-          statsTotals = null;
+          statsTotals = null; statsTimeZone = "";
           ["stats-rows", "stats-totals", "stats-status"].forEach(function (id) { setText(document.getElementById(id), ""); });
           document.getElementById("stats-more").hidden = true;
         }
@@ -2406,6 +2513,11 @@ enum WebUIRoutes {
             params.set("snapshotId", statsSnapshot);
             params.set("cursor", statsCursor);
           } else {
+            if (activePage === "stats") writeRoute(statsRoute());
+            const source = document.getElementById("stats-source").value, project = document.getElementById("stats-project").value;
+            if (source) params.set("sources",source);
+            if (project) params.set("projectKeys",project);
+            if (params.get("groupBy") === "hourOfWeek") params.set("limit","100");
             const since = document.getElementById("stats-since").value;
             const until = document.getElementById("stats-until").value;
             const agents = document.getElementById("stats-agents").value || "hide";
@@ -2422,12 +2534,16 @@ enum WebUIRoutes {
             if (token !== requestEpoch) return;
             if (!page || !Array.isArray(page.items) || !page.totals || page.groupBy !== params.get("groupBy")
                 || (more && (page.snapshotId !== statsSnapshot || page.nextCursor === statsCursor))
+                || (more && page.timeZone !== statsTimeZone)
                 || (statsTotals && statsFields.some(function (field) { return statsTotals[field[0]] !== page.totals[field[0]]; }))) throw new Error("changed statistics");
+            statsTimeZone = page.timeZone;
             statsSnapshot = page.snapshotId;
             statsCursor = page.nextCursor || "";
             if (chartRows.stats.length + page.items.length > 5000) throw new Error("Chart row limit reached; narrow the filters");
             statsTotals = page.totals;
             updateChartRows("stats", page.items, "Session counts", "sessionCount", page.totals.sessionCount, statsCursor, page.groupBy);
+            if (page.groupBy === "hourOfWeek") renderHourOfWeek("stats-chart",chartRows.stats,page.timeZone,!statsCursor,page.totals.sessionCount,
+              "Start dates: " + (params.get("since") || "unbounded") + " → " + (params.get("until") || "unbounded") + " · agents " + (params.get("agents") || "hide") + " · sources: " + (params.get("sources") || "all") + " · projects: " + (params.get("projectKeys") || "all") + (params.get("excludeNoise") === "true" ? " · excludes lightweight sessions" : " · includes lightweight sessions"));
             const totals = document.getElementById("stats-totals");
             setText(totals, "");
             statsFields.forEach(function (field) {
@@ -2455,13 +2571,13 @@ enum WebUIRoutes {
             setText(status, "Grouped by " + page.groupBy + " · " + page.timeZone + " · Observed: " + healthTime(page.observedAt));
             moreButton.hidden = !statsCursor || chartRows.stats.length >= 5000;
           } catch (error) {
-            if (token === requestEpoch) setText(status, "Statistics unavailable. Apply filters to retry.");
+            if (token === requestEpoch) setText(status, "Statistics unavailable. This server may not support these options. For legacy settings choose Source/Project/Day/Week, All sources and All projects, then Apply. No filters were silently dropped.");
           } finally {
             if (token === requestEpoch) moreButton.disabled = false;
           }
         }
         async function showStatsView(view, routed) {
-          if (!routed && activePage === "stats") { routeVersion += 1; writeRoute({page:"stats",tab:view}); }
+          if (!routed && activePage === "stats") { routeVersion += 1; writeRoute(statsRoute(view)); }
           statsView = view;
           ["sessions", "costs", "tools", "files", "usage", "repos", "ai"].forEach(function (name) {
             document.getElementById(name === "sessions" ? "stats-content" : name + "-content").hidden = view !== name;
@@ -3529,6 +3645,7 @@ enum WebUIRoutes {
             if (since) params.set("since", since);
             if (until) params.set("until", until);
             if (document.getElementById("hide-tools").checked) params.set("tools", "hide");
+            if (activePage !== "search" && document.getElementById("session-sort").value === "lastActivity") params.set("sort", "lastActivity");
             sessionFilters = params.toString();
           }
           if (more && sessionSnapshotId && sessionCursor) {
@@ -3973,6 +4090,11 @@ enum WebUIRoutes {
             setText(time, relative || date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }));
             appendMetaPart(meta, time);
           }
+          if (activePage === "sessions" && document.getElementById("session-sort").value === "lastActivity") {
+            const activity = document.createElement("span");
+            setText(activity, "Activity: " + (Number.isSafeInteger(item.lastActivityAt) ? healthTime(item.lastActivityAt) : "Unknown"));
+            appendMetaPart(meta, activity);
+          }
           if (showCounts) {
             const counts = [["user", item.userMessageCount], ["assistant", item.assistantMessageCount], ["system", item.systemMessageCount]]
               .filter(function (entry) { return Number.isSafeInteger(entry[1]) && entry[1] > 0; })
@@ -4053,7 +4175,7 @@ enum WebUIRoutes {
               button.appendChild(snippet);
             }
             if (grouped) {
-              const group = sessionDateGroup(item.startedAt);
+              const group = sessionDateGroup(document.getElementById("session-sort").value === "lastActivity" && activePage !== "search" ? item.lastActivityAt : item.startedAt);
               if (group !== previousGroup) {
                 // Decorative: the visible header is absolutely positioned above
                 // the row, so #sessions keeps one child per session for paging.
@@ -4099,7 +4221,7 @@ enum WebUIRoutes {
           sessionsNode.setAttribute("aria-busy", "false");
           setText(document.getElementById("session-page-status"), "");
           setText(sessionsNode, "");
-          sessionsNode.appendChild(emptyState("alert", "Sessions could not be loaded", "Check the connection, then retry.", [["Retry", function () { refreshLibrary().catch(function () {}); }]]));
+          sessionsNode.appendChild(emptyState("alert", "Sessions could not be loaded", "Check the connection, then retry. If this server rejects last-activity ordering, select Started (legacy) and retry.", [["Retry", function () { refreshLibrary().catch(function () {}); }]]));
         }
         async function restoreSession() {
           const token = requestEpoch, displayVersion = identityDisplayVersion;
@@ -4163,7 +4285,7 @@ enum WebUIRoutes {
           }
         }
         async function openDetail(sessionId, returnPage, routed) {
-          if (!workspaceNode.classList.contains("showing-detail") || returnPage === "stats") detailReturnRoute = (returnPage === "stats" || activePage === "stats") ? {page:"stats",tab:statsView} : libraryRoute();
+          if (!workspaceNode.classList.contains("showing-detail") || returnPage === "stats") detailReturnRoute = (returnPage === "stats" || activePage === "stats") ? statsRoute() : libraryRoute();
           if (!routed) {
             routeVersion += 1;
             writeRoute({page:"detail",id:sessionId,find:activePage === "search" ? document.getElementById("query").value.trim() : ""});
@@ -5414,6 +5536,9 @@ enum WebUIRoutes {
         document.getElementById("alias-project-more").addEventListener("click", function () { loadAliasProjects(true); });
         document.getElementById("settings-refresh").addEventListener("click", function () { loadSettings(false); });
         document.getElementById("settings-more").addEventListener("click", function () { loadSettings(true); });
+        document.getElementById("session-sort").addEventListener("change", function () { refreshLibrary().catch(function () {}); });
+        document.getElementById("stats-choices").addEventListener("click", loadStatsChoices);
+        document.getElementById("dashboard-hours-load").addEventListener("click", loadDashboardHours);
         document.getElementById("dashboard-refresh").addEventListener("click", function () { loadDashboard(); });
         document.getElementById("stats-form").addEventListener("submit", function (event) { event.preventDefault(); loadStats(false); });
         document.getElementById("stats-more").addEventListener("click", function () { loadStats(true); });

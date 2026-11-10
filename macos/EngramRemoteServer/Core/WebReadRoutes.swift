@@ -64,13 +64,13 @@ enum WebReadRoutes {
     private static let overviewQueryNames: Set<String> = ["limit", "snapshotId", "cursor"]
     private static let sessionsQueryNames: Set<String> = [
         "query", "source", "sources", "machineId", "sourceInstanceId", "projectKey", "projectKeys",
-        "sessionId", "agents", "since", "until", "tools", "limit", "snapshotId", "cursor",
+        "sessionId", "agents", "since", "until", "tools", "sort", "limit", "snapshotId", "cursor",
     ]
     private static let facetsQueryNames: Set<String> = [
         "kind", "query", "agents", "limit", "snapshotId", "cursor",
     ]
     private static let statsQueryNames: Set<String> = [
-        "groupBy", "since", "until", "excludeNoise", "agents", "limit", "snapshotId", "cursor",
+        "groupBy", "sources", "projectKeys", "since", "until", "excludeNoise", "agents", "limit", "snapshotId", "cursor",
     ]
     private static let settingsQueryNames: Set<String> = ["limit", "snapshotId", "cursor"]
     private static let searchQueryNames: Set<String> = [
@@ -382,6 +382,12 @@ enum WebReadRoutes {
                 }
                 return tools
             } ?? .all,
+            sort: try fields["sort"].map {
+                guard let sort = EngramServiceWebSessionSort(rawValue: $0) else {
+                    throw EngramServiceWebReadError.invalidField("sort")
+                }
+                return sort
+            } ?? .started,
             limit: limit, snapshotId: fields["snapshotId"], cursor: fields["cursor"]
         )
     }
@@ -420,7 +426,9 @@ enum WebReadRoutes {
         } ?? false
         let limit = try fields["limit"].map { try integer($0, name: "limit") } ?? 50
         return try EngramServiceWebStatsRequest(
-            groupBy: groupBy, since: fields["since"], until: fields["until"],
+            groupBy: groupBy,
+            sources: try fields["sources"].map { try commaList($0, name: "sources") },
+            projectKeys: try fields["projectKeys"].map { try commaList($0, name: "projectKeys") }, since: fields["since"], until: fields["until"],
             excludeNoise: excludeNoise,
             agents: try fields["agents"].map {
                 guard let agents = EngramServiceWebAgentFilter(rawValue: $0) else {

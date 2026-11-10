@@ -276,7 +276,7 @@ enum EngramServiceWebFacetKind: String, Codable, Equatable, Sendable {
 }
 
 enum EngramServiceWebStatsGroupBy: String, Codable, Equatable, Sendable {
-    case source, project, day, week
+    case source, project, day, week, hourOfWeek
 }
 
 struct EngramServiceWebOverviewRequest: Codable, Equatable, Sendable {
@@ -292,10 +292,14 @@ struct EngramServiceWebOverviewRequest: Codable, Equatable, Sendable {
     }
 }
 
+enum EngramServiceWebSessionSort: String, Codable, Equatable, Sendable {
+    case started, lastActivity
+}
+
 struct EngramServiceWebSessionsRequest: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case query, source, sources, machineId, sourceInstanceId, projectKey, projectKeys
-        case sessionId, agents, since, until, tools, limit, snapshotId, cursor
+        case sessionId, agents, since, until, tools, sort, limit, snapshotId, cursor
     }
 
     let query: String?
@@ -310,6 +314,7 @@ struct EngramServiceWebSessionsRequest: Codable, Equatable, Sendable {
     let since: String?
     let until: String?
     let tools: EngramServiceWebToolFilter
+    let sort: EngramServiceWebSessionSort
     let limit: Int
     let snapshotId: String?
     let cursor: String?
@@ -322,7 +327,7 @@ struct EngramServiceWebSessionsRequest: Codable, Equatable, Sendable {
          projectKey: String? = nil, projectKeys: [String]? = nil,
          sessionId: String? = nil, agents: EngramServiceWebAgentFilter = .hide,
          since: String? = nil, until: String? = nil,
-         tools: EngramServiceWebToolFilter = .all,
+         tools: EngramServiceWebToolFilter = .all, sort: EngramServiceWebSessionSort = .started,
          limit: Int = 50, snapshotId: String? = nil, cursor: String? = nil) throws {
         try EngramServiceWebMetadataValidation.pageRequest(limit: limit, snapshotId: snapshotId, cursor: cursor)
         try EngramServiceWebMetadataValidation.dateRange(since: since, until: until)
@@ -347,6 +352,7 @@ struct EngramServiceWebSessionsRequest: Codable, Equatable, Sendable {
         self.since = since
         self.until = until
         self.tools = tools
+        self.sort = sort
         self.limit = limit
         self.snapshotId = snapshotId
         self.cursor = cursor
@@ -399,6 +405,8 @@ struct EngramServiceWebFacetsResponse: Codable, Equatable, Sendable {
 
 struct EngramServiceWebStatsRequest: Codable, Equatable, Sendable {
     let groupBy: EngramServiceWebStatsGroupBy
+    let sources: [String]?
+    let projectKeys: [String]?
     let since: String?
     let until: String?
     let excludeNoise: Bool
@@ -407,12 +415,14 @@ struct EngramServiceWebStatsRequest: Codable, Equatable, Sendable {
     let snapshotId: String?
     let cursor: String?
 
-    init(groupBy: EngramServiceWebStatsGroupBy = .source, since: String? = nil, until: String? = nil,
+    init(groupBy: EngramServiceWebStatsGroupBy = .source, sources: [String]? = nil, projectKeys: [String]? = nil, since: String? = nil, until: String? = nil,
          excludeNoise: Bool = false, agents: EngramServiceWebAgentFilter = .hide, limit: Int = 50,
          snapshotId: String? = nil, cursor: String? = nil) throws {
         try EngramServiceWebMetadataValidation.pageRequest(limit: limit, snapshotId: snapshotId, cursor: cursor)
         try EngramServiceWebMetadataValidation.dateRange(since: since, until: until)
         self.groupBy = groupBy
+        self.sources = try sources.map { try EngramServiceWebMetadataValidation.sourceList($0) }
+        self.projectKeys = try projectKeys.map { try EngramServiceWebMetadataValidation.projectKeyList($0) }
         self.since = since
         self.until = until
         self.excludeNoise = excludeNoise
@@ -580,6 +590,7 @@ struct EngramServiceWebSessionSummary: Codable, Equatable, Sendable {
     let projectKey: String?
     let projectLabel: String?
     let startedAt: Int64?
+    let lastActivityAt: Int64?
     let isAgent: Bool?
     let userMessageCount: Int?
     let assistantMessageCount: Int?
@@ -588,7 +599,7 @@ struct EngramServiceWebSessionSummary: Codable, Equatable, Sendable {
 
     init(sessionId: String, source: String, captureIdentity: EngramServiceWebCaptureIdentity?,
          metadataGeneration: String?, title: String?, projectKey: String?, projectLabel: String?,
-         startedAt: Int64?, isAgent: Bool? = nil, userMessageCount: Int? = nil,
+         startedAt: Int64?, lastActivityAt: Int64? = nil, isAgent: Bool? = nil, userMessageCount: Int? = nil,
          assistantMessageCount: Int? = nil, systemMessageCount: Int? = nil,
          nativeId: String? = nil) {
         self.sessionId = sessionId
@@ -599,6 +610,7 @@ struct EngramServiceWebSessionSummary: Codable, Equatable, Sendable {
         self.projectKey = projectKey
         self.projectLabel = projectLabel
         self.startedAt = startedAt
+        self.lastActivityAt = lastActivityAt
         self.isAgent = isAgent
         self.userMessageCount = userMessageCount
         self.assistantMessageCount = assistantMessageCount
@@ -1328,6 +1340,15 @@ internal enum EngramServiceWebMetadataValidation {
         case .project:
             if value.utf8.elementsEqual(unknownProjectKey.utf8) { return }
             try projectIdentity(value)
+        case .hourOfWeek:
+            if value.utf8.elementsEqual(unknownDateKey.utf8) { return }
+            let parts = value.split(separator: ".", omittingEmptySubsequences: false)
+            try require(parts.count == 3 && parts[0] == "h")
+            guard let day = Int(parts[1]), let hour = Int(parts[2]) else {
+                throw EngramServiceWebReadError.invalidField("hourOfWeek")
+            }
+            try require((0...6).contains(day) && (0...23).contains(hour)
+                && value == String(format: "h.%d.%02d", day, hour))
         case .day, .week:
             if value.utf8.elementsEqual(unknownDateKey.utf8) { return }
             try calendarDate(value)
@@ -1549,6 +1570,7 @@ extension EngramServiceWebSessionsRequest {
             since: try c.decodeIfPresent(String.self, forKey: .since),
             until: try c.decodeIfPresent(String.self, forKey: .until),
             tools: try c.decodeIfPresent(EngramServiceWebToolFilter.self, forKey: .tools) ?? .all,
+            sort: try c.decodeIfPresent(EngramServiceWebSessionSort.self, forKey: .sort) ?? .started,
             limit: try c.decode(Int.self, forKey: .limit),
             snapshotId: try c.decodeIfPresent(String.self, forKey: .snapshotId),
             cursor: try c.decodeIfPresent(String.self, forKey: .cursor)
@@ -1569,6 +1591,7 @@ extension EngramServiceWebSessionsRequest {
         try c.encodeIfPresent(since, forKey: .since)
         try c.encodeIfPresent(until, forKey: .until)
         if tools != .all { try c.encode(tools, forKey: .tools) }
+        if sort != .started { try c.encode(sort, forKey: .sort) }
         try c.encode(limit, forKey: .limit)
         try c.encodeIfPresent(snapshotId, forKey: .snapshotId)
         try c.encodeIfPresent(cursor, forKey: .cursor)
@@ -1867,6 +1890,8 @@ extension EngramServiceWebStatsRequest {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         try self.init(
             groupBy: try c.decodeIfPresent(EngramServiceWebStatsGroupBy.self, forKey: .groupBy) ?? .source,
+            sources: try c.decodeIfPresent([String].self, forKey: .sources),
+            projectKeys: try c.decodeIfPresent([String].self, forKey: .projectKeys),
             since: try c.decodeIfPresent(String.self, forKey: .since),
             until: try c.decodeIfPresent(String.self, forKey: .until),
             excludeNoise: try c.decodeIfPresent(Bool.self, forKey: .excludeNoise) ?? false,
@@ -2190,6 +2215,7 @@ extension EngramServiceWebSessionSummary {
             projectKey: try c.decodeIfPresent(String.self, forKey: .projectKey),
             projectLabel: try c.decodeIfPresent(String.self, forKey: .projectLabel),
             startedAt: try c.decodeIfPresent(Int64.self, forKey: .startedAt),
+            lastActivityAt: try c.decodeIfPresent(Int64.self, forKey: .lastActivityAt),
             isAgent: try c.decodeIfPresent(Bool.self, forKey: .isAgent),
             userMessageCount: try c.decodeIfPresent(Int.self, forKey: .userMessageCount),
             assistantMessageCount: try c.decodeIfPresent(Int.self, forKey: .assistantMessageCount),
@@ -2203,6 +2229,7 @@ extension EngramServiceWebSessionSummary {
         if let projectKey { try V.projectIdentity(projectKey) }
         if let projectLabel { try V.text(projectLabel, maximumBytes: 256) }
         if let startedAt { try V.time(startedAt) }
+        if let lastActivityAt { try V.time(lastActivityAt) }
         for count in [userMessageCount, assistantMessageCount, systemMessageCount] {
             if let count { try V.require((0...EngramServiceWebReadLimits.maximumMessages).contains(count)) }
         }

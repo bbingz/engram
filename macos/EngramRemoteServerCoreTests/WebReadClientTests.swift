@@ -1573,6 +1573,57 @@ final class WebMetadataClientTests: XCTestCase {
         }
     }
 
+    func testIt8StatsFiltersAndHourKeyClientAdmission() async throws {
+        for key in ["h.0.00", "h.6.23", "u.date"] {
+            let response = try await statsExchange(input: ["groupBy": "hourOfWeek", "sources": ["codex"], "limit": 100]) { incoming in
+                let request = try JSONDecoder().decode(EngramServiceWebStatsRequest.self, from: XCTUnwrap(incoming.payload))
+                XCTAssertEqual(request.sources, ["codex"])
+                return try Self.metadataEnvelope(Self.statsPage(groupBy: "hourOfWeek", key: key), requestId: incoming.requestId)
+            }
+            XCTAssertEqual(response.items.first?.key, key)
+        }
+        for key in ["h.7.00", "h.0.24", "h.0.1", "h.00.00"] {
+            await expectMetadata(.malformed) {
+                _ = try await self.statsExchange(input: ["groupBy": "hourOfWeek"]) { incoming in
+                    try Self.metadataEnvelope(Self.statsPage(groupBy: "hourOfWeek", key: key), requestId: incoming.requestId)
+                }
+                return Data()
+            }
+        }
+        for (group, field, selected, returned) in [("source", "sources", "codex", "claude-code"), ("project", "projectKeys", "project_1", "project_2")] {
+            await expectMetadata(.malformed) {
+                _ = try await self.statsExchange(input: ["groupBy": group, field: [selected]]) { incoming in
+                    try Self.metadataEnvelope(Self.statsPage(groupBy: group, key: returned), requestId: incoming.requestId)
+                }
+                return Data()
+            }
+        }
+    }
+
+    func testIt8LastActivityClientOrderAndLegacyDecode() async throws {
+        let old = try JSONDecoder().decode(EngramServiceWebSessionSummary.self, from: JSONSerialization.data(withJSONObject: Self.summary()))
+        XCTAssertNil(old.lastActivityAt)
+        let legacy = try EngramServiceWebSessionsRequest()
+        XCTAssertEqual(legacy.sort, .started)
+        let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any])
+        XCTAssertNil(encoded["sort"], "Old servers must not receive a new default field")
+        for bad in [false, true] {
+            let operation = {
+                try await self.metadataExchange(.sessions, input: ["sort": "lastActivity", "limit": 50]) { incoming in
+                    let request = try JSONDecoder().decode(EngramServiceWebSessionsRequest.self, from: XCTUnwrap(incoming.payload))
+                    XCTAssertEqual(request.sort, .lastActivity)
+                    var a = Self.summary(id: "a", startedAt: Self.now - 100)
+                    var b = Self.summary(id: "b")
+                    a["lastActivityAt"] = Self.now
+                    b["lastActivityAt"] = Self.now - 1
+                    return try Self.metadataEnvelope(Self.replacing(Self.sessions(), "items", bad ? [b,a] : [a,b]), requestId: incoming.requestId)
+                }
+            }
+            if bad { await expectMetadata(.malformed, operation) }
+            else { _ = try await operation() }
+        }
+    }
+
     func testStatsClientRejectsMismatchedGroupByOrderAndAcceptsTotalsCoveringPage_repro() async throws {
         let accepted = try await statsExchange(input: ["groupBy": "day", "since": "2026-09-07", "limit": 50]) { incoming in
             try Self.metadataEnvelope(Self.statsPage(groupBy: "day", key: "2026-09-07", extra: 1),

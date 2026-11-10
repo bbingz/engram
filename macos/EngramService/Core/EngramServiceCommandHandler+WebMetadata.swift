@@ -23,7 +23,7 @@ extension EngramServiceCommandHandler {
                 let input = try Self.webMetadataInput(EngramServiceWebSessionsRequest.self, from: request,
                     allowedKeys: ["query", "source", "sources", "machineId", "sourceInstanceId",
                                   "projectKey", "projectKeys", "sessionId", "agents", "since", "until",
-                                  "tools", "limit", "snapshotId", "cursor"])
+                                  "tools", "sort", "limit", "snapshotId", "cursor"])
                 try Self.webMetadataCheckpoint(deadline)
                 let value = try await webMetadataProducer.sessions(input, requestId: request.requestId, deadline: deadline)
                 return try Self.webMetadataSuccess(value, requestId: request.requestId, deadline: deadline)
@@ -35,7 +35,7 @@ extension EngramServiceCommandHandler {
                 return try Self.webMetadataSuccess(value, requestId: request.requestId, deadline: deadline)
             case "webStats":
                 let input = try Self.webMetadataInput(EngramServiceWebStatsRequest.self, from: request,
-                    allowedKeys: ["groupBy", "since", "until", "excludeNoise", "agents", "limit",
+                    allowedKeys: ["groupBy", "sources", "projectKeys", "since", "until", "excludeNoise", "agents", "limit",
                                   "snapshotId", "cursor"])
                 try Self.webMetadataCheckpoint(deadline)
                 let value = try await webMetadataProducer.stats(input, requestId: request.requestId, deadline: deadline)

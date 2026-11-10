@@ -6020,7 +6020,9 @@ describe('Dashboard and accessible analytics charts', () => {
       30,
     );
     expect(ui.node('dashboard-cost').textContent).toContain('0');
-    expect(shipped('html')).toContain('deferred It8');
+    expect(shipped('html')).toContain(
+      'Heatmap counts session starts, not work duration',
+    );
     expect(ui.node('dashboard-health').textContent).toContain('0 streams');
   });
 
@@ -8897,5 +8899,150 @@ describe('iteration 7 coordinated session action access', () => {
     expect(ui.node('session-generate-summary').disabled).toBe(true);
     expect(ui.node('session-action-status').textContent).toBe('');
     expect(ui.node('command-dialog').open).toBe(false);
+  });
+});
+
+describe('It8 genuine session-start heatmap and ordering', () => {
+  it('does not invent unloaded bins and reports unknown starts separately', () => {
+    const ui = harness();
+    ui.call(
+      'renderHourOfWeek("stats-chart", [{key:"h.0.09",sessionCount:3},{key:"u.date",sessionCount:2}], "UTC", false, 5)',
+    );
+    expect(ui.node('stats-chart').textContent).toContain('Session starts');
+    expect(ui.node('stats-chart').textContent).toContain('Partial');
+    expect(ui.node('stats-chart').textContent).toContain(
+      'Unknown start dates: 2',
+    );
+    expect(ui.node('stats-chart').querySelectorAll('rect')).toHaveLength(1);
+    expect(
+      ui.node('stats-chart').querySelectorAll('rect')[0].dataset.value,
+    ).toBe('3');
+  });
+  it('pins stats filters and session sort in routes without changing defaults', () => {
+    const ui = harness();
+    expect(ui.call('sessionQuery(false)')).toBe('');
+    ui.node('session-sort').value = 'lastActivity';
+    expect(ui.call('sessionQuery(false)')).toBe('?sort=lastActivity');
+    expect(ui.call('routeHref(libraryRoute())')).toContain('sort=lastActivity');
+    ui.node('stats-group').value = 'hourOfWeek';
+    ui.node('stats-source').value = 'codex';
+    ui.node('stats-project').value = `p.${'a'.repeat(64)}`;
+    const href = ui.call('routeHref(statsRoute())');
+    expect(href).toContain('group=hourOfWeek');
+    expect(href).toContain('sources=codex');
+    expect(href).toContain('projects=p.');
+    ui.call(`applyStatsRoute(parseRoute(${JSON.stringify(href)}).filters)`);
+    expect(ui.node('stats-group').value).toBe('hourOfWeek');
+  });
+  it('sends new stats options only when selected and freezes them during More', async () => {
+    const ui = harness();
+    ui.node('stats-group').value = 'hourOfWeek';
+    ui.node('stats-source').value = 'codex';
+    const pending = ui.call('loadStats(false)');
+    const query = new URLSearchParams(ui.requests[0].path.split('?')[1]);
+    expect(query.get('sources')).toBe('codex');
+    expect(query.get('limit')).toBe('100');
+    ui.requests[0].resolve({
+      snapshotId: 'hours',
+      groupBy: 'hourOfWeek',
+      timeZone: 'UTC',
+      totals: {
+        sessionCount: 1,
+        messageCount: 0,
+        userMessageCount: 0,
+        assistantMessageCount: 0,
+        toolMessageCount: 0,
+      },
+      items: [
+        {
+          key: 'h.0.00',
+          label: 'Monday 00:00',
+          sessionCount: 1,
+          messageCount: 0,
+          userMessageCount: 0,
+          assistantMessageCount: 0,
+          toolMessageCount: 0,
+        },
+      ],
+      nextCursor: 'next',
+    });
+    await pending;
+    expect(ui.node('stats-chart').textContent).toContain('Partial');
+    ui.node('stats-source').value = 'claude-code';
+    const more = ui.call('loadStats(true)');
+    expect(
+      new URLSearchParams(ui.requests[1].path.split('?')[1]).get('sources'),
+    ).toBe('codex');
+    ui.requests[1].reject();
+    await more;
+    expect(ui.node('stats-status').textContent).toContain('legacy');
+  });
+});
+
+describe('It8 activity scope and async fences', () => {
+  it('keeps explicit all-time dashboard scope separate from the 30-day daily charts', () => {
+    expect(shipped('javascript')).toContain('All start dates · agents hidden');
+    expect(shipped('javascript')).toContain(
+      'hoursVersion !== dashboardHoursVersion',
+    );
+  });
+  it('clears authorized stats choice labels on auth loss', () => {
+    const ui = harness();
+    ui.call('applyStatsRoute({sources:"codex",projects:"private-opaque-key"})');
+    expect(ui.node('stats-project').textContent).toContain(
+      'private-opaque-key',
+    );
+    ui.call('expireSession()');
+    expect(ui.node('stats-project').textContent).not.toContain(
+      'private-opaque-key',
+    );
+  });
+});
+
+describe('It8 new request ownership', () => {
+  it('does not publish old dashboard-hour responses after a newer load', async () => {
+    const ui = harness();
+    ui.call('activePage = "dashboard"');
+    const old = ui.call('loadDashboardHours()');
+    const fresh = ui.call('loadDashboardHours()');
+    const page = (n: number) => ({
+      snapshotId: `h${n}`,
+      groupBy: 'hourOfWeek',
+      timeZone: 'UTC',
+      totals: { sessionCount: n },
+      items: [{ key: 'h.0.00', sessionCount: n }],
+      nextCursor: null,
+    });
+    ui.requests[1].resolve(page(2));
+    await fresh;
+    expect(ui.node('dashboard-hours').textContent).toContain('2 full sessions');
+    ui.requests[0].resolve(page(1));
+    await old;
+    expect(ui.node('dashboard-hours').textContent).toContain('2 full sessions');
+    expect(ui.node('dashboard-hours').textContent).not.toContain(
+      '1 full sessions',
+    );
+  });
+  it('does not publish facet labels after expiry and preserves edits during choice loading', async () => {
+    const ui = harness();
+    ui.call('activePage = "stats"');
+    const pending = ui.call('loadStatsChoices()');
+    ui.node('stats-source').value = 'codex';
+    ui.requests[0].resolve({
+      snapshotId: 's',
+      items: [{ key: 'codex', label: 'Codex' }],
+      nextCursor: null,
+    });
+    await flushAuthWork();
+    expect(ui.node('stats-source').value).toBe('codex');
+    ui.call('expireSession()');
+    ui.requests[1].resolve({
+      snapshotId: 'p',
+      items: [{ key: 'p.private', label: 'Private label' }],
+      nextCursor: null,
+    });
+    await pending;
+    expect(ui.node('stats-project').textContent).not.toContain('Private label');
+    expect(ui.node('stats-source').value).toBe('');
   });
 });

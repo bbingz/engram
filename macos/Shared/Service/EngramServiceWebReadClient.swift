@@ -166,8 +166,8 @@ struct EngramServiceWebReadClient: Sendable {
         for (previous, current) in zip(response.items, response.items.dropFirst()) {
             // Valid timestamps are nonnegative; unknown dates sort last. IDs
             // break ties by exact UTF-8 bytes, never Swift canonical equality.
-            let previousTime = previous.startedAt ?? -1
-            let currentTime = current.startedAt ?? -1
+            let previousTime = (request.sort == .started ? previous.startedAt : previous.lastActivityAt) ?? -1
+            let currentTime = (request.sort == .started ? current.startedAt : current.lastActivityAt) ?? -1
             guard previousTime > currentTime || (previousTime == currentTime
                 && previous.sessionId.utf8.lexicographicallyPrecedes(current.sessionId.utf8)) else {
                 throw EngramServiceWebReadClientError.malformed
@@ -218,6 +218,12 @@ struct EngramServiceWebReadClient: Sendable {
             count: response.items.count, limit: request.limit, requestedSnapshot: request.snapshotId, cursor: request.cursor)
         guard response.groupBy == request.groupBy else { throw EngramServiceWebReadClientError.malformed }
         for item in response.items {
+            if request.groupBy == .source, let sources = request.sources, !sources.contains(item.key) {
+                throw EngramServiceWebReadClientError.malformed
+            }
+            if request.groupBy == .project, let keys = request.projectKeys, !keys.contains(item.key) {
+                throw EngramServiceWebReadClientError.malformed
+            }
             guard (try? EngramServiceWebMetadataValidation.statsKey(item.key, groupBy: request.groupBy)) != nil else {
                 throw EngramServiceWebReadClientError.malformed
             }

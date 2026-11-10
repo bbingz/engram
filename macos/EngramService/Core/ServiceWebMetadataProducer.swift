@@ -559,7 +559,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                 try Self.listIdentity(request.sources), request.machineId, request.sourceInstanceId,
                 request.projectKey, try Self.listIdentity(request.projectKeys),
                 request.sessionId, request.agents.rawValue, request.since, request.until,
-                request.tools.rawValue, String(request.limit), ServiceWebMetadataLimits.sortVersion])
+                request.tools.rawValue, request.sort.rawValue, String(request.limit), ServiceWebMetadataLimits.sortVersion])
             let (lease, position) = try self.acquire(snapshotID: request.snapshotId, cursor: request.cursor,
                 key: key, policy: policy, control: control)
             let cachedTotal = lease.sessionsTotal
@@ -612,7 +612,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             try self.requirePolicy(policy)
             try control.check()
             let next = try self.successor(lease, position: position, count: count, hasMore: prepared.rows.count > count,
-                last: page.last.map { .session($0.summary.startedAt, $0.summary.sessionId) }, proposed: token)
+                last: page.last.map { .session(request.sort == .started ? $0.summary.startedAt : $0.summary.lastActivityAt, $0.summary.sessionId) }, proposed: token)
             let result = EngramServiceWebSessionsResponse(snapshotId: lease.id, observedAt: lease.observedAt,
                 items: page.map(\.summary), nextCursor: next, totalCount: prepared.totalCount,
                 warning: shortQuery?.warning, warningCode: shortQuery?.code)
@@ -802,9 +802,10 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
     ) async throws -> EngramServiceWebStatsResponse {
         try await submit(deadline: deadline) { control in
             let policy = try self.currentPolicy()
+            let timeZone = TimeZone.current.identifier
             let key = try Self.bindingKey(["stats", request.groupBy.rawValue, request.since, request.until,
-                request.excludeNoise ? "1" : "0", request.agents.rawValue, String(request.limit),
-                ServiceWebMetadataLimits.sortVersion])
+                request.excludeNoise ? "1" : "0", request.agents.rawValue, String(request.limit), try Self.listIdentity(request.sources),
+                try Self.listIdentity(request.projectKeys), timeZone, ServiceWebMetadataLimits.sortVersion])
             let (lease, position) = try self.acquire(snapshotID: request.snapshotId, cursor: request.cursor,
                 key: key, policy: policy, control: control)
             let prepared = try self.read(lease.snapshot, control: control) { db in
@@ -812,7 +813,6 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                                         limit: request.limit + 1)
             }
             let token = position.successor ?? Self.token()
-            let timeZone = TimeZone.current.identifier
             let count = try Self.fittingCount(prepared.items.count, limit: request.limit, fixed: position.count) { count in
                 try Self.encodedSuccessFrame(requestId: requestId, result: EngramServiceWebStatsResponse(
                     snapshotId: lease.id, observedAt: lease.observedAt, groupBy: request.groupBy, timeZone: timeZone,
@@ -821,6 +821,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             }
             let page = Array(prepared.items.prefix(count))
             try self.hooks.afterPreparation?(.stats)
+            guard TimeZone.current.identifier == timeZone else { throw ServiceWebMetadataError.stale }
             try self.requirePolicy(policy)
             try self.pool.read { db in
                 try self.requireSchema(db, lease: lease)
@@ -839,6 +840,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                     }
                 }
             }
+            guard TimeZone.current.identifier == timeZone else { throw ServiceWebMetadataError.stale }
             try self.requirePolicy(policy)
             try control.check()
             let next = try self.successor(lease, position: position, count: count, hasMore: prepared.items.count > count,
@@ -2380,6 +2382,10 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
         CASE WHEN CAST(strftime('%s', s.start_time) AS INTEGER) BETWEEN 0 AND 253402300799
              THEN CAST(strftime('%s', s.start_time) AS INTEGER) ELSE NULL END
         """
+    private static let lastActivitySQL = """
+        CASE WHEN CAST(strftime('%s', COALESCE(NULLIF(s.end_time, ''), s.start_time)) AS INTEGER) BETWEEN 0 AND 253402300799
+             THEN CAST(strftime('%s', COALESCE(NULLIF(s.end_time, ''), s.start_time)) AS INTEGER) ELSE NULL END
+        """
     /// Legacy `5013bab7` `src/tools/search.ts` 279–282: hide only proven tool-only sessions.
     private static let toolOnlyHideSQL = """
         NOT (
@@ -2771,6 +2777,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
         } else {
             sessionsJoin = Self.sessionsJoinSQL(agents: request.agents, on: "s.id = i.stored_session_id COLLATE BINARY")
         }
+        let sortSQL = request.sort == .started ? Self.startSQL : Self.lastActivitySQL
         var position = after
         var records: [SessionRecord] = []
         repeat {
@@ -2780,12 +2787,12 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             if let position {
                 guard case .session(let time, let id) = position else { throw ServiceWebMetadataError.stale }
                 if let time {
-                    predicates.append("(\(Self.startSQL) IS NULL OR \(Self.startSQL) < ? OR (\(Self.startSQL) = ? AND s.id COLLATE BINARY > ?))")
+                    predicates.append("(\(sortSQL) IS NULL OR \(sortSQL) < ? OR (\(sortSQL) = ? AND s.id COLLATE BINARY > ?))")
                     args.append(time)
                     args.append(time)
                     args.append(id)
                 } else {
-                    predicates.append("(\(Self.startSQL) IS NULL AND s.id COLLATE BINARY > ?)")
+                    predicates.append("(\(sortSQL) IS NULL AND s.id COLLATE BINARY > ?)")
                     args.append(id)
                 }
             }
@@ -2797,19 +2804,20 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                     typeof(s.generated_title) AS generated_title_storage, CAST(s.generated_title AS BLOB) AS generated_title_bytes,
                     typeof(s.custom_name) AS custom_name_storage, CAST(s.custom_name AS BLOB) AS custom_name_bytes,
                     typeof(s.project) AS project_storage, CAST(s.project AS BLOB) AS project_bytes,
-                    \(Self.startSQL) AS started_at,
+                    \(Self.startSQL) AS started_at, \(Self.lastActivitySQL) AS last_activity_at,
                     i.machine_id, i.source_instance_id, i.native_id, i.last_sync_version,
                     i.last_parsed_generation_id, i.last_ready_generation_id
                 FROM capture_ingest_identity_bindings i \(sessionsJoin)
                 \(Self.registryJoinSQL)
                 WHERE \(predicates.joined(separator: " AND "))
-                ORDER BY started_at IS NULL, started_at DESC, s.id COLLATE BINARY LIMIT ?
+                ORDER BY \(sortSQL) IS NULL, \(sortSQL) DESC, s.id COLLATE BINARY LIMIT ?
                 """, arguments: StatementArguments(args))
             for row in rows {
                 try relay.check()
                 let id = try Self.string(row, "id")
                 let start = try Self.optionalInteger(row, "started_at")
-                position = .session(start, id)
+                let activity = try Self.optionalInteger(row, "last_activity_at")
+                position = .session(request.sort == .started ? start : activity, id)
                 let machine = try Self.string(row, "machine_id")
                 let instance = try Self.string(row, "source_instance_id")
                 guard let binding = try binding(db, machineID: machine, instanceID: instance, policy: policy) else { continue }
@@ -2836,7 +2844,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                     projectLabel: {
                         guard let project, !project.isEmpty else { return nil }
                         return Self.facetProjectLabel(project)
-                    }(), startedAt: start,
+                    }(), startedAt: start, lastActivityAt: activity,
                     isAgent: isAgent, userMessageCount: try Self.scalarCount(row, "user_message_count"),
                     assistantMessageCount: try Self.scalarCount(row, "assistant_message_count"),
                     systemMessageCount: try Self.scalarCount(row, "system_message_count"), nativeId: nativeId)
@@ -2848,6 +2856,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                 fields.append(String(try Self.integer(row, "sync_version")))
                 fields.append(String(try Self.integer(row, "last_sync_version")))
                 fields.append(start.map { String($0) })
+                fields.append(activity.map { String($0) })
                 fields.append(contentsOf: ["user_message_count", "assistant_message_count", "system_message_count",
                                            "tool_message_count"].map {
                     String((try? Self.integer(row, $0)) ?? -1)
@@ -2901,7 +2910,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                     typeof(s.generated_title) AS generated_title_storage, CAST(s.generated_title AS BLOB) AS generated_title_bytes,
                     typeof(s.custom_name) AS custom_name_storage, CAST(s.custom_name AS BLOB) AS custom_name_bytes,
                     typeof(s.project) AS project_storage, CAST(s.project AS BLOB) AS project_bytes,
-                    \(Self.startSQL) AS started_at,
+                    \(Self.startSQL) AS started_at, \(Self.lastActivitySQL) AS last_activity_at,
                     i.machine_id, i.source_instance_id, i.native_id, i.last_sync_version,
                     i.last_parsed_generation_id, i.last_ready_generation_id
                 FROM capture_ingest_identity_bindings i
@@ -2928,6 +2937,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                 fields.append(contentsOf: [id, relationship.rawValue, parent,
                                            try Self.optionalString(row, "suggested_parent_id")])
                 fields.append(start.map { String($0) })
+                fields.append(summary.lastActivityAt.map { String($0) })
                 records.append(ChildRecord(
                     item: EngramServiceWebChildItem(relationship: relationship, session: summary),
                     authority: try Self.bindingKey(fields)))
@@ -3300,7 +3310,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             records = try sourceStats(db, request: request, policy: policy)
         case .project:
             records = try projectStats(db, request: request, policy: policy)
-        case .day, .week:
+        case .day, .week, .hourOfWeek:
             records = try dateStats(db, request: request, policy: policy)
         }
         let totals = try Self.sumStats(records.map(\.item))
@@ -3315,7 +3325,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                              policy: ServiceWebMetadataPolicy) throws -> [StatsRecord] {
         let schema = try Self.schema(db)
         guard schema.capture else { return [] }
-        let (predicates, arguments) = try authorizedStatsBase(request: request, policy: policy)
+        let (predicates, arguments) = try authorizedStatsBase(db, request: request, policy: policy)
         let rows = try Row.fetchAll(db, sql: """
             SELECT i.source AS facet_key, i.machine_id, i.source_instance_id,
                 COUNT(*) AS session_count,
@@ -3354,7 +3364,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                               policy: ServiceWebMetadataPolicy) throws -> [StatsRecord] {
         let schema = try Self.schema(db)
         guard schema.capture else { return [] }
-        let (predicates, arguments) = try authorizedStatsBase(request: request, policy: policy)
+        let (predicates, arguments) = try authorizedStatsBase(db, request: request, policy: policy)
         let rows = try Row.fetchAll(db, sql: """
             SELECT typeof(s.project) AS project_storage, CAST(s.project AS BLOB) AS project_bytes,
                 i.machine_id, i.source_instance_id,
@@ -3403,10 +3413,15 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                            policy: ServiceWebMetadataPolicy) throws -> [StatsRecord] {
         let schema = try Self.schema(db)
         guard schema.capture else { return [] }
-        let (predicates, arguments) = try authorizedStatsBase(request: request, policy: policy)
-        let expression = request.groupBy == .day
-            ? "date(s.start_time, 'localtime')"
-            : "date(s.start_time, 'localtime', 'weekday 0', '-6 days')"
+        let (predicates, arguments) = try authorizedStatsBase(db, request: request, policy: policy)
+        let expression: String
+        switch request.groupBy {
+        case .hourOfWeek:
+            // Monday=0. NULL dates remain unknown; printf(NULL) must not create a false Monday.
+            expression = "CASE WHEN strftime('%w', s.start_time, 'localtime') IS NOT NULL THEN printf('h.%d.%02d', (CAST(strftime('%w', s.start_time, 'localtime') AS INTEGER) + 6) % 7, CAST(strftime('%H', s.start_time, 'localtime') AS INTEGER)) END"
+        case .day: expression = "date(s.start_time, 'localtime')"
+        default: expression = "date(s.start_time, 'localtime', 'weekday 0', '-6 days')"
+        }
         let rows = try Row.fetchAll(db, sql: """
             SELECT \(expression) AS facet_key, i.machine_id, i.source_instance_id,
                 COUNT(*) AS session_count,
@@ -3422,18 +3437,28 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             ORDER BY \(expression), i.machine_id COLLATE BINARY, i.source_instance_id COLLATE BINARY
             """, arguments: StatementArguments(arguments))
         var totals: [Data: (key: String, counts: StatsCounts, fields: [String?])] = [:]
+        // One registry validation per stream in this read transaction, not per
+        // occupied bin/session. The publish-time live read builds a fresh cache.
+        var bindings: [StreamKey: CaptureIngestSourceBinding?] = [:]
         for row in rows {
             try relay.check()
             let raw = try Self.optionalString(row, "facet_key")
             let key = raw ?? EngramServiceWebMetadataValidation.unknownDateKey
-            guard let binding = try binding(db, machineID: try Self.string(row, "machine_id"),
-                                           instanceID: try Self.string(row, "source_instance_id"),
-                                           policy: policy) else { continue }
+            guard let binding = try cachedBinding(db, row: row, policy: policy, cache: &bindings) else { continue }
             let added = try Self.rowCounts(row)
             let current = totals[Data(key.utf8)]
             var fields = current?.fields ?? []
             fields.append(contentsOf: Self.bindingFields(binding))
             totals[Data(key.utf8)] = (key, try Self.addCounts(current?.counts, added), fields)
+        }
+        if request.groupBy == .hourOfWeek {
+            for day in 0..<7 { for hour in 0..<24 {
+                let key = String(format: "h.%d.%02d", day, hour)
+                let id = Data(key.utf8)
+                if totals[id] == nil {
+                    totals[id] = (key, StatsCounts(session: 0, message: 0, user: 0, assistant: 0, tool: 0), [])
+                }
+            } }
         }
         return try totals.values.map { entry in
             let label = entry.key == EngramServiceWebMetadataValidation.unknownDateKey ? "Unknown" : entry.key
@@ -3730,7 +3755,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                 typeof(s.generated_title) AS generated_title_storage, CAST(s.generated_title AS BLOB) AS generated_title_bytes,
                 typeof(s.custom_name) AS custom_name_storage, CAST(s.custom_name AS BLOB) AS custom_name_bytes,
                 typeof(s.project) AS project_storage, CAST(s.project AS BLOB) AS project_bytes,
-                \(Self.startSQL) AS started_at,
+                \(Self.startSQL) AS started_at, \(Self.lastActivitySQL) AS last_activity_at,
                 i.machine_id, i.source_instance_id, i.native_id, i.last_sync_version,
                 i.last_parsed_generation_id, i.last_ready_generation_id,
                 c.cost_usd, c.model, c.input_tokens, c.output_tokens,
@@ -3762,7 +3787,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                 cacheReadTokens: try Self.integer(row, "cache_read_tokens"),
                 cacheCreationTokens: try Self.integer(row, "cache_creation_tokens"))
             var fields = Self.bindingFields(binding)
-            fields.append(contentsOf: [summary.sessionId, publishedModel,
+            fields.append(contentsOf: [summary.sessionId, publishedModel, summary.lastActivityAt.map { String($0) },
                                        String(item.inputTokens), String(item.outputTokens),
                                        String(item.cacheReadTokens), String(item.cacheCreationTokens),
                                        String(EngramServiceWebMetadataValidation.moneyCents(item.costUsd))])
@@ -3799,7 +3824,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             projectLabel: {
                 guard let project, !project.isEmpty else { return nil }
                 return Self.facetProjectLabel(project)
-            }(), startedAt: start,
+            }(), startedAt: start, lastActivityAt: try Self.optionalInteger(row, "last_activity_at"),
             isAgent: isAgent, userMessageCount: try Self.scalarCount(row, "user_message_count"),
             assistantMessageCount: try Self.scalarCount(row, "assistant_message_count"),
             systemMessageCount: try Self.scalarCount(row, "system_message_count"), nativeId: nativeId)
@@ -4215,9 +4240,21 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                 sources.map { $0 as DatabaseValueConvertible })
     }
 
-    private func authorizedStatsBase(request: EngramServiceWebStatsRequest,
+    private func authorizedStatsBase(_ db: Database, request: EngramServiceWebStatsRequest,
                                      policy: ServiceWebMetadataPolicy) throws -> ([String], [DatabaseValueConvertible]) {
         var (predicates, arguments) = try authorizedFacetBase(policy: policy, agents: request.agents)
+        if let sources = request.sources {
+            predicates.append("i.source COLLATE BINARY IN (\(Array(repeating: "?", count: sources.count).joined(separator: ",")))")
+            arguments.append(contentsOf: sources)
+        }
+        if let keys = request.projectKeys {
+            let raws = try matchingProjects(db, keys: keys, policy: policy, agents: request.agents)
+            if raws.isEmpty { predicates.append("0") }
+            else {
+                predicates.append("s.project COLLATE BINARY IN (\(Array(repeating: "?", count: raws.count).joined(separator: ",")))")
+                arguments.append(contentsOf: raws)
+            }
+        }
         if request.excludeNoise { predicates.append("(s.tier IS NULL OR s.tier != 'lite')") }
         if let since = request.since {
             predicates.append("date(s.start_time, 'localtime') >= ?")
