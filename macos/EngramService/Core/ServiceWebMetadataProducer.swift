@@ -88,7 +88,7 @@ struct ServiceWebMetadataClock: Sendable {
 }
 
 enum ServiceWebMetadataOperation: Equatable, Sendable {
-    case overview, sessions, detail, children, facets, stats, settings, costs, costSessions, toolAnalytics, fileActivity, repos, projectCwds, aiAudit, aiAuditDetail, aiStats, search, insightDetail
+    case insights, overview, sessions, detail, children, facets, stats, settings, costs, costSessions, toolAnalytics, fileActivity, repos, projectCwds, aiAudit, aiAuditDetail, aiStats, search, insightDetail
 }
 
 enum ServiceWebMetadataDatabasePhase: Equatable, Sendable {
@@ -169,6 +169,8 @@ protocol ServiceWebMetadataProviding: AnyObject, Sendable {
         requestId: String,
         deadline: ContinuousClock.Instant
     ) async throws -> EngramServiceWebSearchResponse
+
+    func insights(_ request: EngramServiceWebInsightsRequest, requestId: String, deadline: ContinuousClock.Instant) async throws -> EngramServiceWebInsightsResponse
 
     func insightDetail(
         _ request: EngramServiceWebInsightDetailRequest,
@@ -253,6 +255,10 @@ protocol ServiceWebMetadataProviding: AnyObject, Sendable {
 }
 
 extension ServiceWebMetadataProviding {
+    func insights(_ request: EngramServiceWebInsightsRequest, requestId: String, deadline: ContinuousClock.Instant) async throws -> EngramServiceWebInsightsResponse {
+        throw ServiceWebMetadataError.unavailable
+    }
+
     func keywordSearchPage(_ request: EngramServiceWebSearchRequest, requestId: String,
                            deadline: ContinuousClock.Instant) async throws -> EngramServiceWebSearchResponse {
         throw ServiceWebMetadataError.unavailable
@@ -1075,6 +1081,97 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             try Self.validate(result, requestID: requestId)
             return result
         }
+    }
+
+    func insights(_ request: EngramServiceWebInsightsRequest, requestId: String, deadline: ContinuousClock.Instant) async throws -> EngramServiceWebInsightsResponse {
+        try await submit(deadline: deadline) { control in
+            let policy = try self.currentPolicy()
+            let key = try Self.bindingKey(["insights-v1-active-hide", String(request.limit)])
+            let (lease, position) = try self.acquire(snapshotID: request.snapshotId, cursor: request.cursor, key: key, policy: policy, control: control)
+            let prepared = try self.read(lease.snapshot, control: control) {
+                try self.insightListRows($0, policy: policy, after: position.key, limit: request.limit + 1)
+            }
+            let token = position.successor ?? Self.token()
+            func response(_ count: Int) -> EngramServiceWebInsightsResponse {
+                .init(snapshotId: lease.id, observedAt: lease.observedAt, items: prepared.prefix(count).map(\.item), nextCursor: prepared.count > count ? token : nil)
+            }
+            let count = try Self.fittingCount(prepared.count, limit: request.limit, fixed: position.count) { try Self.encodedSuccessFrame(requestId: requestId, result: response($0)) }
+            let page = Array(prepared.prefix(count))
+            try self.hooks.afterPreparation?(.insights)
+            try self.requirePolicy(policy)
+            try self.pool.read { db in
+                try self.requireSchema(db, lease: lease); try control.check()
+                // Recheck only this page's note IDs and source-session IDs.
+                let fresh = try self.insightListRows(db, policy: policy, after: nil, limit: max(page.count, 1), ids: page.map { $0.item.id })
+                guard fresh == page else { throw ServiceWebMetadataError.stale }
+            }
+            try self.requirePolicy(policy); try control.check()
+            _ = try self.successor(lease, position: position, count: count, hasMore: prepared.count > count,
+                last: page.last.map { .insight($0.created, $0.item.id) }, proposed: token)
+            let result = response(count); try Self.validate(result, requestID: requestId)
+            return result
+        }
+    }
+
+    private struct InsightListRecord: Equatable {
+        let item: EngramServiceWebInsightItem
+        let created: String?
+        let authority: Data?
+    }
+
+    private func insightListRows(_ db: Database, policy: ServiceWebMetadataPolicy, after: PositionKey?, limit: Int, ids: [String]? = nil) throws -> [InsightListRecord] {
+        if let ids, ids.isEmpty { return [] }
+        guard try db.tableExists("insights") else { throw ServiceWebMetadataError.unavailable }
+        let request = try EngramServiceWebSessionsRequest(agents: .hide, limit: 100)
+        let filter = try sessionFilter(db, request: request, policy: policy, sessionIDs: nil)
+        let admittedSQL = filter.map { "EXISTS (SELECT 1 FROM sessions s JOIN capture_ingest_identity_bindings i ON i.stored_session_id = s.id COLLATE BINARY \(Self.registryJoinSQL) WHERE s.id = n.source_session_id COLLATE BINARY AND " + $0.predicates.joined(separator: " AND ") + ")" } ?? "0"
+        var position = after, records: [InsightListRecord] = []
+        repeat {
+            try relay.check()
+            var predicates = ["n.superseded_by IS NULL", "(n.source_session_id IS NULL OR \(admittedSQL))"]
+            var args = filter?.arguments ?? []
+            if let ids { predicates.append("n.id COLLATE BINARY IN (" + Array(repeating: "?", count: ids.count).joined(separator: ",") + ")"); args.append(contentsOf: ids) }
+            if let position {
+                guard case .insight(let created, let id) = position else { throw ServiceWebMetadataError.stale }
+                if let created {
+                    predicates.append("(n.created_at IS NULL OR n.created_at COLLATE BINARY < ? OR (n.created_at = ? COLLATE BINARY AND n.id COLLATE BINARY > ?))")
+                    args.append(contentsOf: [created, created, id])
+                } else { predicates.append("(n.created_at IS NULL AND n.id COLLATE BINARY > ?)"); args.append(id) }
+            }
+            let batch = max(limit - records.count, 1); args.append(batch)
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT typeof(n.id) AS id_storage, CASE WHEN length(CAST(n.id AS BLOB)) <= 128 THEN CAST(n.id AS BLOB) END AS id_bytes,
+                    typeof(n.source_session_id) AS source_storage, CASE WHEN length(CAST(n.source_session_id AS BLOB)) <= 4096 THEN CAST(n.source_session_id AS BLOB) END AS source_bytes,
+                    typeof(n.created_at) AS created_storage, CASE WHEN length(CAST(n.created_at AS BLOB)) <= 1024 THEN CAST(n.created_at AS BLOB) END AS created_bytes,
+                    CAST(strftime('%s', n.created_at) AS INTEGER) AS at,
+                    CASE WHEN length(CAST(n.content AS BLOB)) <= 1048576 THEN CAST(n.content AS BLOB) END AS content_bytes
+                FROM insights n WHERE \(predicates.joined(separator: " AND "))
+                ORDER BY n.created_at IS NULL, n.created_at COLLATE BINARY DESC, n.id COLLATE BINARY ASC LIMIT ?
+                """, arguments: StatementArguments(args))
+            let sourceIDs = try rows.compactMap { row -> String? in
+                guard let id = try Self.metadataText(row, "source"), !id.utf8.contains(0) else { return nil }
+                return id
+            }
+            let sessions = sourceIDs.isEmpty ? [] : try sessionRows(db, request: request, policy: policy, after: nil, limit: sourceIDs.count, sessionIDs: sourceIDs)
+            let authorities = Dictionary(uniqueKeysWithValues: sessions.map { (ByteKey($0.summary.sessionId), $0.authority) })
+            for row in rows {
+                try relay.check()
+                guard let id = try Self.metadataText(row, "id") else { throw ServiceWebMetadataError.unavailable }
+                let created = try Self.metadataText(row, "created")
+                guard created.map({ $0.utf8.count <= 1024 && !$0.utf8.contains(0) }) ?? true, let bytes = row["content_bytes"] as Data?, let raw = String(data: bytes, encoding: .utf8), !raw.utf8.contains(0) else { throw ServiceWebMetadataError.unavailable }
+                position = .insight(created, id)
+                let source = try Self.metadataText(row, "source")
+                if let source, source.utf8.contains(0) || authorities[ByteKey(source)] == nil { continue }
+                let redacted = TranscriptRedactionPolicy.redact(raw)
+                guard let preview = Self.insightPreview(raw) else { continue }
+                let time = try Self.optionalInteger(row, "at")
+                let item = try EngramServiceWebInsightItem(id: id, content: preview, sourceSessionId: source,
+                    createdAt: time.flatMap { (0...253402300799).contains($0) ? $0 : nil }, revision: ArchiveV2Hash.sha256(Data(redacted.utf8)))
+                records.append(.init(item: item, created: created, authority: source.flatMap { authorities[ByteKey($0)] }))
+            }
+            if rows.count < batch || ids != nil { break }
+        } while records.count < limit
+        return records
     }
 
     func insightDetail(
@@ -4887,7 +4984,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
         func check() throws { try lock.withLock { current }?.check() }
     }
 
-    private enum PositionKey { case search(Int), session(Int64?, String), stream(String, String), facet(String) }
+    private enum PositionKey { case insight(String?, String), search(Int), session(Int64?, String), stream(String, String), facet(String) }
     private final class CursorPosition {
         let key: PositionKey?
         var count: Int?

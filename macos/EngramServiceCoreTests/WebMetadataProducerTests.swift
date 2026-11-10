@@ -18,6 +18,19 @@ final class WebMetadataProducerTests: XCTestCase {
     private let secondInstance = "EEEEEEEE-0000-4000-8000-000000000002"
     private let epoch = "CCCCCCCC-0000-4000-8000-000000000003"
 
+    func testIt9B4GlobalNotesWithoutCaptureBindingsExpireOnExistingLease() async throws {
+        let fixture = try MetadataSQLFixture(); defer { fixture.remove() }
+        try fixture.migrate()
+        try fixture.write { db in
+            for id in ["a", "b", "c"] { try db.execute(sql: "INSERT INTO insights(id,content) VALUES (?, 'global note')", arguments: [id]) }
+        }
+        let producer = try fixture.producer(policy: { .init(parserRevision: "parser-v1", enabledSources: [.claudeCode]) }); defer { try? producer.stop() }
+        let first = try await producer.insights(.init(limit: 2), requestId: requestId, deadline: fixture.deadline())
+        XCTAssertEqual(first.items.map(\.id), ["a", "b"])
+        fixture.clock.advance(.seconds(30))
+        await assertStale(deadline: fixture.deadline()) { try await producer.insights(.init(limit: 2, snapshotId: first.snapshotId, cursor: first.nextCursor), requestId: self.requestId, deadline: fixture.deadline()) }
+    }
+
     func testIt9B3KeywordKeepsSearchDeadlineAndRanksOnce() async throws {
         let fixture = try MetadataSQLFixture(); defer { fixture.remove() }
         try fixture.migrate(); try fixture.seedRegistry()

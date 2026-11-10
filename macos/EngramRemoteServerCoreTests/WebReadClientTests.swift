@@ -18,6 +18,29 @@ final class WebReadClientTests: XCTestCase {
         if let directory { try FileManager.default.removeItem(at: directory) }
     }
 
+    func testIt9B4InsightsClientBindsSnapshotAndValidatesPreviews() async throws {
+        let snapshot = "AAAAAAAA-0000-4000-8000-000000000001"
+        XCTAssertEqual(try JSONDecoder().decode(EngramServiceWebInsightsRequest.self, from: Data("{}".utf8)).limit, 50)
+        XCTAssertThrowsError(try EngramServiceWebInsightsRequest(cursor: "alone"))
+        for mutation in ["valid", "snapshot", "preview", "revision", "duplicate", "booleanDate"] {
+            let path = socketPath()
+            let server = try WebReadFixture(path: path) { fd, received in
+                let envelope = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: received)
+                XCTAssertEqual(envelope.command, "webInsights"); XCTAssertNil(envelope.capabilityToken)
+                var item: [String: Any] = ["id":"note", "content":"safe preview", "revision":Self.generation]
+                if mutation == "preview" { item["content"] = String(repeating: "x", count: 601) }
+                if mutation == "revision" { item["revision"] = "bad" }
+                if mutation == "booleanDate" { item["createdAt"] = true }
+                let result: [String: Any] = ["snapshotId":mutation == "snapshot" ? "BBBBBBBB-0000-4000-8000-000000000001" : snapshot, "observedAt":1, "items":mutation == "duplicate" ? [item,item] : [item]]
+                try EngramServiceSocketIO.writeFrame(JSONEncoder().encode(EngramServiceResponseEnvelope.success(requestId: envelope.requestId, result: JSONSerialization.data(withJSONObject: result))), to: fd, requestTimeout: 1)
+            }; defer { server.stop() }
+            do {
+                let result = try await EngramServiceWebReadClient(socketPath: path).insights(.init(limit: 2, snapshotId: snapshot, cursor: "opaque"))
+                XCTAssertEqual(mutation, "valid"); XCTAssertEqual(result.items.first?.content, "safe preview")
+            } catch { XCTAssertNotEqual(mutation, "valid", "\(error)") }
+        }
+    }
+
     func testIt9B3MatchClientBindsProofIdentityAndRejectsMalformedPositions() async throws {
         let request = try EngramServiceWebMatchRequest(sessionId: "s", generation: Self.generation, q: "needle")
         for mutation in ["valid", "null", "negative", "wrongGeneration", "ordinalAndReason", "unknownScope", "badCursor", "nullWithScope", "nullWithCursor"] {
@@ -100,7 +123,7 @@ final class WebReadClientTests: XCTestCase {
                         "webSettings", "webSearch", "webSearchStatus", "webCosts", "webCostSessions",
                         "webSourceSettings", "webChildren", "webTimeline", "webMatch", "webToolAnalytics",
                         "webFileActivity", "webRepos", "webUsage",
-                        "webAiAudit", "webAiAuditDetail", "webAiStats", "webInsightDetail", "webAiSettings",
+                        "webAiAudit", "webAiAuditDetail", "webAiStats", "webInsightDetail", "webInsights", "webAiSettings",
                         "webProjectCwds"])
         XCTAssertNoThrow(try EngramServiceWebReadClient.validateCommand("webMessages"))
         XCTAssertNoThrow(try EngramServiceWebReadClient.validateCommand("webSearch"))
@@ -117,7 +140,7 @@ final class WebReadClientTests: XCTestCase {
         XCTAssertNoThrow(try EngramServiceWebReadClient.validateCommand("webAiSettings"))
         let server = try WebReadFixture(path: socketPath()) { _, _ in XCTFail("Policy checks must not perform IPC") }
         defer { server.stop() }
-        for command in commands.subtracting(["webMessages", "webOverview", "webSessions", "webSessionDetail", "webFacets", "webStats", "webSettings", "webSearch", "webSearchStatus", "webCosts", "webCostSessions", "webSourceSettings", "webChildren", "webTimeline", "webMatch", "webToolAnalytics", "webFileActivity", "webRepos", "webUsage", "webAiAudit", "webAiAuditDetail", "webAiStats", "webInsightDetail", "webAiSettings", "webProjectCwds"]).union(["", "webMessages\0shutdown", "WEBMESSAGES", "futureWrite"]) {
+        for command in commands.subtracting(["webMessages", "webOverview", "webSessions", "webSessionDetail", "webFacets", "webStats", "webSettings", "webSearch", "webSearchStatus", "webCosts", "webCostSessions", "webSourceSettings", "webChildren", "webTimeline", "webMatch", "webToolAnalytics", "webFileActivity", "webRepos", "webUsage", "webAiAudit", "webAiAuditDetail", "webAiStats", "webInsightDetail", "webInsights", "webAiSettings", "webProjectCwds"]).union(["", "webMessages\0shutdown", "WEBMESSAGES", "futureWrite"]) {
             XCTAssertThrowsError(try EngramServiceWebReadClient.validateCommand(command)) {
                 XCTAssertEqual($0 as? EngramServiceWebReadClientError, .unsupported)
             }

@@ -31,6 +31,7 @@ enum WebReadRoutes {
     typealias ProjectCwdsReader = @Sendable (EngramServiceWebProjectCwdsRequest) async throws -> EngramServiceWebProjectCwdsResponse
 
     struct Surface: Sendable {
+        var insights: @Sendable (EngramServiceWebInsightsRequest) async throws -> EngramServiceWebInsightsResponse = { _ in throw EngramServiceWebReadClientError.unsupported }
         var match: MatchReader = { _ in throw EngramServiceWebReadClientError.unsupported }
         var messages: MessagesReader
         var overview: OverviewReader
@@ -105,6 +106,7 @@ enum WebReadRoutes {
     static func makeSurface(socketPath: String) throws -> Surface {
         let client = try EngramServiceWebReadClient(socketPath: socketPath)
         return Surface(
+            insights: { request in try await client.insights(request) },
             match: { request in try await client.match(request) },
             messages: { request in try await client.messages(request) },
             overview: { request in try await client.overview(request) },
@@ -299,6 +301,14 @@ enum WebReadRoutes {
             let input: EngramServiceWebAiStatsRequest
             do { input = try aiStatsRequest(request) } catch { return Response(status: .badRequest) }
             return try await respond(surface.aiStats, input)
+        }
+        router.get("/web/api/insights") { request, _ in
+            let input: EngramServiceWebInsightsRequest
+            do {
+                let fields = try queryFields(request, names: ["limit", "snapshotId", "cursor"])
+                input = try .init(limit: fields["limit"].map { try integer($0, name: "limit") } ?? 50, snapshotId: fields["snapshotId"], cursor: fields["cursor"])
+            } catch { return Response(status: .badRequest) }
+            return try await respond(surface.insights, input)
         }
         router.get("/web/api/insights/:id") { request, context in
             let input: EngramServiceWebInsightDetailRequest

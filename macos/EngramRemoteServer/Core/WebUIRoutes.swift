@@ -42,6 +42,7 @@ enum WebUIRoutes {
         <nav id="page-nav" class="page-nav" aria-label="Main navigation" hidden>
         <a id="nav-sessions" href="#sessions" aria-current="page">Sessions</a>
         <a id="nav-search" href="#search">Search</a>
+        <a id="nav-insights" href="#/insights">Insights</a>
         <a id="nav-dashboard" href="#dashboard">Dashboard</a>
         <a id="nav-stats" href="#stats">Stats</a>
         <a id="nav-health" href="#health">Health</a>
@@ -230,6 +231,13 @@ enum WebUIRoutes {
         <button id="detail-children-more" type="button" hidden>Load more child sessions</button>
         </section>
         </section>
+        </section>
+        <section id="insights-page" hidden>
+        <div class="page-heading"><h2>Insights</h2><button id="insights-refresh" type="button">Refresh insights</button></div>
+        <p class="meta">Active library notes: global notes and notes linked to currently admitted sessions. Agent sessions are excluded. Previews are redacted and limited to 600 characters.</p>
+        <p id="insights-status" role="status" aria-live="polite"></p>
+        <div id="insights-rows"></div>
+        <button id="insights-more" type="button" hidden>Load more insights</button>
         </section>
         <section id="health-page" hidden>
         <div class="page-heading"><h2>Health</h2><button id="health-refresh" type="button">Refresh</button></div>
@@ -1005,6 +1013,7 @@ enum WebUIRoutes {
         let detailTimeline = { loaded: false, busy: false, next: null, total: null, count: 0, lastIndex: -1 };
         let authWriteTail = null;
         let insightWriteVersion = 0, insightCanWrite = false, insightSavePending = false, savedInsightId = "";
+        let insightsList = {items:[],snapshot:"",cursor:"",busy:false};
         let insightVersion = 0, insightPage = null, insightBusy = false;
         let rankedCursor = "", rankedSnapshot = "", rankedFilters = "", rankedBusy = false;
         let requestEpoch = 0;
@@ -1085,6 +1094,7 @@ enum WebUIRoutes {
           search: ["M11 18a7 7 0 1 1 0-14 7 7 0 0 1 0 14z", "M20 20l-4-4"],
           dashboard: ["M3 3h7v7H3z", "M14 3h7v7h-7z", "M3 14h7v7H3z", "M14 14h7v7h-7z"],
           stats: ["M4 4v16h16", "M8 16v-5", "M12.5 16V8", "M17 16v-3"],
+          insights: ["M4 3h16v18H4z", "M8 8h8", "M8 12h8", "M8 16h5"],
           health: ["M22 12h-4l-3 8-6-16-3 8H2"],
           settings: ["M4 21v-7", "M4 10V3", "M12 21v-9", "M12 8V3", "M20 21v-5", "M20 12V3", "M1.5 14h5", "M9.5 8h5", "M17.5 16h5"],
           x: ["M18 6L6 18", "M6 6l12 12"],
@@ -1208,7 +1218,7 @@ enum WebUIRoutes {
             clearAi();
             detailReturnPage = null;
             clearSettings();
-            clearSearchData();
+            clearSearchData(); clearInsightsPage();
           }
           signedOutNode.hidden = signedIn;
           workspaceNode.hidden = !signedIn;
@@ -1268,7 +1278,7 @@ enum WebUIRoutes {
         }
         function showSessionDetailPane() {
           activatePage(activePage === "search" ? "search" : "sessions");
-          setText(backNode, detailReturnPage === "stats" ? (statsView === "tools" ? "Tools" : "Costs") : activePage === "search" ? "Search results" : "Sessions");
+          setText(backNode, detailReturnPage === "insights" ? "Insights" : detailReturnPage === "stats" ? (statsView === "tools" ? "Tools" : "Costs") : activePage === "search" ? "Search results" : "Sessions");
           if (workspaceNode.className !== "showing-detail") sessionListScrollTop = window.scrollY;
           workspaceNode.className = "showing-detail";
           backNode.hidden = false;
@@ -1282,16 +1292,17 @@ enum WebUIRoutes {
           detailNode.appendChild(empty);
         }
         function activatePage(page) {
-          if (page !== "search") { clearInsights(); clearInsightComposer(); }
-          activePage = ["sessions", "search", "dashboard", "stats", "health", "settings"].includes(page) ? page : "sessions";
+          if (page !== "search" || activePage === "insights") { clearInsights(); clearInsightComposer(); }
+          activePage = ["sessions", "search", "dashboard", "stats", "health", "settings", "insights"].includes(page) ? page : "sessions";
           document.getElementById("library-page").hidden = !["sessions", "search"].includes(activePage);
           document.getElementById("health-page").hidden = activePage !== "health";
+          document.getElementById("insights-page").hidden = activePage !== "insights";
           workspaceNode.classList.toggle("data-page", ["dashboard", "stats"].includes(activePage));
           document.getElementById("dashboard-page").hidden = activePage !== "dashboard";
           document.getElementById("stats-page").hidden = activePage !== "stats";
           document.getElementById("settings-page").hidden = activePage !== "settings";
           document.getElementById("search-options").hidden = activePage !== "search";
-          ["sessions", "search", "dashboard", "stats", "health", "settings"].forEach(function (name) {
+          ["sessions", "search", "dashboard", "stats", "health", "settings", "insights"].forEach(function (name) {
             document.getElementById("nav-" + name).setAttribute("aria-current", name === activePage ? "page" : "false");
           });
         }
@@ -1308,7 +1319,9 @@ enum WebUIRoutes {
           if (pageHeading !== document.getElementById("query")) pageHeading.setAttribute("tabindex", "-1");
           focusVisible(pageHeading);
           window.scrollTo({ top: 0, behavior: "instant" });
-          if (activePage === "dashboard") {
+          if (activePage === "insights") {
+            await loadInsightsPage(false);
+          } else if (activePage === "dashboard") {
             await loadDashboard();
           } else if (activePage === "health") {
             setText(healthContent, "");
@@ -1358,7 +1371,7 @@ enum WebUIRoutes {
               return route;
             }
             if (parts[0] === "stats" && parts.length <= 2 && (!parts[1] || statsTabs.includes(parts[1]))) return {page:"stats", tab:parts[1] || "sessions", filters:filters};
-            if (["sessions", "search", "dashboard", "health", "settings"].includes(parts[0]) && parts.length === 1) return {page:parts[0], filters:filters};
+            if (["sessions", "search", "dashboard", "health", "settings", "insights"].includes(parts[0]) && parts.length === 1) return {page:parts[0], filters:filters};
           } catch (error) {}
           return fallback;
         }
@@ -1369,7 +1382,7 @@ enum WebUIRoutes {
             ["group","sources","projects","agents","since","until","noise"].forEach(function (key) { if (route.filters && route.filters[key]) params.set(key,route.filters[key]); });
             return "#/stats/" + (statsTabs.includes(route.tab) ? route.tab : "sessions") + (params.toString() ? "?" + params.toString() : "");
           }
-          const page = ["sessions", "search", "dashboard", "health", "settings"].includes(route.page) ? route.page : "sessions";
+          const page = ["sessions", "search", "dashboard", "health", "settings", "insights"].includes(route.page) ? route.page : "sessions";
           const params = new URLSearchParams();
           if (["sessions", "search"].includes(page)) routeFilterKeys.forEach(function (key) { if (route.filters && route.filters[key]) params.set(key, route.filters[key]); });
           return "#/" + page + (params.toString() ? "?" + params.toString().replaceAll("+", "%20") : "");
@@ -1743,6 +1756,49 @@ enum WebUIRoutes {
           setText(document.getElementById("insight-detail-status"), "");
           document.getElementById("insight-more").hidden = true;
         }
+        function clearInsightsPage() {
+          insightsList = {items:[],snapshot:"",cursor:"",busy:false};
+          setText(document.getElementById("insights-rows"),""); setText(document.getElementById("insights-status"),"");
+          document.getElementById("insights-more").hidden = true;
+        }
+        async function loadInsightsPage(more) {
+          if (more && (insightsList.busy || !insightsList.cursor)) return;
+          if (!more) clearInsightsPage();
+          const state = insightsList, token = requestEpoch;
+          const status = document.getElementById("insights-status"), button = document.getElementById("insights-more");
+          state.busy = true; button.disabled = true; setText(status,"Loading insights…");
+          const params = new URLSearchParams({limit:"25"});
+          if (more) { params.set("snapshotId",state.snapshot); params.set("cursor",state.cursor); }
+          try {
+            const page = await api("GET","/web/api/insights?" + params);
+            if (token !== requestEpoch || state !== insightsList || activePage !== "insights") return;
+            if (!page || !page.snapshotId || !Array.isArray(page.items) || page.items.length > 25 || (more && page.snapshotId !== state.snapshot) || (page.nextCursor && (!page.items.length || page.nextCursor === state.cursor))) throw new Error("invalid insights page");
+            const seen = new Set(state.items.map(function (item) { return item.id; }));
+            page.items.forEach(function (item) {
+              if (!item || typeof item.id !== "string" || !item.id || seen.has(item.id) || typeof item.content !== "string" || !item.content || Array.from(item.content).length > 600 || typeof item.revision !== "string" || !item.revision || (item.sourceSessionId != null && (typeof item.sourceSessionId !== "string" || !item.sourceSessionId))) throw new Error("invalid insight");
+              seen.add(item.id);
+            });
+            page.items.forEach(function (item) {
+              const card = document.createElement("article"); card.className = "insight-card";
+              const label = document.createElement("p"); label.className = "meta";
+              setText(label,(item.sourceSessionId ? "Linked session note" : "Global library note") + (Number.isFinite(item.createdAt) ? " · " + new Date(item.createdAt * 1000).toLocaleString() : " · date unavailable"));
+              const preview = document.createElement("p"); setText(preview,item.content);
+              const read = document.createElement("button"); read.type = "button"; setText(read,"Read insight"); read.addEventListener("click",function () { loadInsight(item.id,false); });
+              card.appendChild(label); card.appendChild(preview); card.appendChild(read);
+              if (item.sourceSessionId) { const source = document.createElement("button"); source.type = "button"; setText(source,"Open source session"); source.addEventListener("click",function () { openDetail(item.sourceSessionId,"insights").catch(function () {}); }); card.appendChild(source); }
+              document.getElementById("insights-rows").appendChild(card);
+            });
+            state.items = state.items.concat(page.items); state.snapshot = page.snapshotId; state.cursor = page.nextCursor || "";
+            button.hidden = !state.cursor;
+            setText(status,state.items.length ? state.items.length + " notes loaded · " + (state.cursor ? "More notes in this snapshot" : "End of snapshot") : "No active insights available. Global and admitted linked notes appear here.");
+          } catch (error) {
+            if (token !== requestEpoch || state !== insightsList || activePage !== "insights") return;
+            button.hidden = true;
+            setText(status,[400,404,405,501].includes(error.status) ? "Insights unavailable on this server. Upgrade the server, then Refresh insights to retry." : "Insights changed or are unavailable. Refresh insights to restart the snapshot.");
+          } finally { if (token === requestEpoch && state === insightsList) { state.busy = false; button.disabled = false; } }
+        }
+        document.getElementById("insights-refresh").addEventListener("click",function () { loadInsightsPage(false); });
+        document.getElementById("insights-more").addEventListener("click",function () { loadInsightsPage(true); });
         function clearInsights() {
           closeInsight();
           document.getElementById("insight-results").hidden = true;
@@ -4400,7 +4456,7 @@ enum WebUIRoutes {
           }
         }
         async function openDetail(sessionId, returnPage, routed, matchLanding) {
-          if (!workspaceNode.classList.contains("showing-detail") || returnPage === "stats") detailReturnRoute = (returnPage === "stats" || activePage === "stats") ? statsRoute() : libraryRoute();
+          if (!workspaceNode.classList.contains("showing-detail") || returnPage === "stats") detailReturnRoute = returnPage === "insights" ? {page:"insights"} : (returnPage === "stats" || activePage === "stats") ? statsRoute() : libraryRoute();
           if (!routed) {
             routeVersion += 1;
             writeRoute({page:"detail",id:sessionId,find:matchLanding ? matchLanding.q : activePage === "search" ? document.getElementById("query").value.trim() : ""});
@@ -5438,7 +5494,7 @@ enum WebUIRoutes {
         }
         function availableCommands() {
           if (workspaceNode.hidden) return [];
-          const result = ["sessions", "search", "dashboard", "stats", "health", "settings"].map(function (page) {
+          const result = ["sessions", "search", "dashboard", "stats", "health", "settings", "insights"].map(function (page) {
             return {kind:"page", value:page, label:page[0].toUpperCase() + page.slice(1), scope:"Page"};
           });
           commandSessions.forEach(function (item) { result.push({kind:"session", value:item.id, label:item.label, scope:"Loaded session"}); });
@@ -5625,7 +5681,7 @@ enum WebUIRoutes {
             if (typeof rows[selectedSessionIndex].focus === "function") rows[selectedSessionIndex].focus();
           } else if (event.key === "Enter" && selectedSessionIndex >= 0 && rows[selectedSessionIndex]) { event.preventDefault(); rows[selectedSessionIndex].click(); }
         });
-        ["sessions", "search", "dashboard", "stats", "health", "settings"].forEach(function (name) {
+        ["sessions", "search", "dashboard", "stats", "health", "settings", "insights"].forEach(function (name) {
           const link = document.getElementById("nav-" + name);
           link.setAttribute("href", routeHref({page:name}));
           link.addEventListener("click", function (event) { event.preventDefault(); navigate(name).catch(function () {}); });

@@ -8,6 +8,32 @@ final class WebInsightHTTPTests: XCTestCase {
     private static let viewer = "insight-viewer"
     private static let editor = "insight-editor"
 
+    func testIt9B4ViewerListAndUnchangedEditorWriteBoundary() async throws {
+        try await withServer(failOnWrite: true) { server, recorder in
+            let cookie = try await Self.login(server, credential: Self.viewer)
+            for headers in [Self.headers + [("Cookie", cookie)], [("X-Engram-Web", "1"), ("Cookie", cookie), ("Sec-Fetch-Site", "same-origin"), ("Sec-Fetch-Mode", "cors"), ("Sec-Fetch-Dest", "empty")]] {
+                let response = try await server.request("GET", "/web/api/insights?limit=2", headers: headers)
+                XCTAssertEqual(response.status, 200)
+            }
+            for path in ["/web/api/insights?source=claude-code", "/web/api/insights?limit=2&limit=3", "/web/api/insights?limit=0", "/web/api/insights?limit=true", "/web/api/insights?cursor=alone", "/web/api/insights?agents=all"] {
+                let bad = try await server.request("GET", path, headers: Self.headers + [("Cookie", cookie)])
+                XCTAssertEqual(bad.status, 400)
+            }
+            let noMarker = try await server.request("GET", "/web/api/insights", headers: Self.headers.filter { $0.0 != "X-Engram-Web" } + [("Cookie", cookie)])
+            XCTAssertEqual(noMarker.status, 403)
+            let crossOrigin = try await server.request("GET", "/web/api/insights", headers: Self.headers.filter { $0.0 != "Origin" } + [("Cookie", cookie), ("Origin", "https://evil.invalid")])
+            XCTAssertEqual(crossOrigin.status, 403)
+            for method in ["DELETE", "PATCH", "PUT"] {
+                let denied = try await server.request(method, "/web/api/insights", headers: Self.headers + [("Cookie", cookie)])
+                XCTAssertEqual(denied.status, 405)
+            }
+            let unauth = try await server.request("GET", "/web/api/insights", headers: Self.headers)
+            XCTAssertEqual(unauth.status, 401)
+            let write = try await server.request("POST", "/web/api/insights", headers: Self.headers + [("Cookie", cookie)], body: Data(#"{"content":"library note from viewer"}"#.utf8))
+            XCTAssertEqual(write.status, 403); XCTAssertTrue(recorder.requests.isEmpty)
+        }
+    }
+
     func testEditorSaveReturnsTypedIdAndWarning() async throws {
         try await withServer { server, recorder in
             recorder.response = try EngramServiceWebSaveInsightResponse(
@@ -117,7 +143,11 @@ final class WebInsightHTTPTests: XCTestCase {
                 origin: Self.origin, viewerCredential: Self.viewer,
                 serverBearerCredentials: ["insight-bearer"], editorCredential: editorCredential),
             webServiceSocketPath: directory.appendingPathComponent("service.sock").path),
-            webReadClientFactory: { _ in WebReadRoutes.messagesOnly({ _ in throw EngramServiceWebReadClientError.unavailable }) },
+            webReadClientFactory: { _ in
+                var reads = WebReadRoutes.messagesOnly({ _ in throw EngramServiceWebReadClientError.unavailable })
+                reads.insights = { _ in .init(snapshotId: "AAAAAAAA-0000-4000-8000-000000000001", observedAt: 1, items: [], nextCursor: nil) }
+                return reads
+            },
             webWriteClientFactory: { _ in writes })
         let server = try await D4HTTPServer(app: app)
         do { try await operation(server, recorder) } catch {

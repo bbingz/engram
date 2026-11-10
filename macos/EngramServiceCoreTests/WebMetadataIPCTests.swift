@@ -8,6 +8,19 @@ import XCTest
 // A5d TEST-DRAFT. The production adapter is deliberately unavailable until
 // these real-dispatch tests have been independently reviewed and run RED.
 final class WebMetadataIPCTests: XCTestCase {
+    func testIt9B4InsightsCommandIsTypedReadOnlyAndRejectsUnknownKeys() async throws {
+        let fixture = try makeHarness(realProducer: true)
+        let before = await fixture.gate.currentDatabaseGeneration()
+        XCTAssertFalse(ServiceCapabilityToken.requiresToken("webInsights"))
+        let result = try await fixture.client.insights(.init())
+        XCTAssertTrue(result.items.isEmpty); XCTAssertNil(result.nextCursor)
+        XCTAssertEqual(fixture.trace.requests.map(\.command), ["webInsights"])
+        XCTAssertTrue(fixture.trace.requests.allSatisfy { !$0.hasCapability })
+        let rejected = try await fixture.exchange(command: "webInsights", payload: Data(#"{"source":"claude-code"}"#.utf8))
+        assertFailure(rejected.envelope, name: "InvalidRequest", retry: "never")
+        let after = await fixture.gate.currentDatabaseGeneration(); XCTAssertEqual(before, after)
+    }
+
     func testIt9B3KeywordLeaseAndMatchCommandsUseReadOnlyIPC() async throws {
         let fixture = try makeHarness(realProducer: true)
         let before = await fixture.gate.currentDatabaseGeneration()

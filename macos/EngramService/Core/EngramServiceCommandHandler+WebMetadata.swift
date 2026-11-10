@@ -100,6 +100,10 @@ extension EngramServiceCommandHandler {
                 try Self.webMetadataCheckpoint(deadline)
                 let value = try await webMetadataProducer.aiStats(input, requestId: request.requestId, deadline: deadline)
                 return try Self.webMetadataSuccess(value, requestId: request.requestId, deadline: deadline)
+            case "webInsights":
+                let input = try Self.webMetadataInput(EngramServiceWebInsightsRequest.self, from: request, allowedKeys: ["limit", "snapshotId", "cursor"])
+                let value = try await webMetadataProducer.insights(input, requestId: request.requestId, deadline: deadline)
+                return try Self.webMetadataSuccess(value, requestId: request.requestId, deadline: deadline)
             case "webInsightDetail":
                 let input = try Self.webMetadataInput(EngramServiceWebInsightDetailRequest.self, from: request,
                     allowedKeys: ["id", "offset", "limit", "revision"])

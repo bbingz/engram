@@ -140,7 +140,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             case "webOverview", "webSessions", "webSessionDetail", "webFacets", "webStats", "webSettings",
                  "webSearchStatus", "webCosts", "webCostSessions", "webChildren", "webToolAnalytics",
                  "webFileActivity", "webRepos", "webUsage",
-                 "webAiAudit", "webAiAuditDetail", "webAiStats", "webInsightDetail",
+                 "webAiAudit", "webAiAuditDetail", "webAiStats", "webInsightDetail", "webInsights",
                  "webProjectCwds", "webMatch":
                 return await webMetadataResponse(request, deadline: metadataDeadline)
             case "webSearch":

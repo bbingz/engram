@@ -28,7 +28,7 @@ struct EngramServiceWebReadClient: Sendable {
         "webSettings", "webSearch", "webSearchStatus", "webCosts", "webCostSessions",
         "webSourceSettings", "webChildren", "webTimeline", "webMatch", "webToolAnalytics",
         "webFileActivity", "webRepos", "webUsage",
-        "webAiAudit", "webAiAuditDetail", "webAiStats", "webInsightDetail",
+        "webAiAudit", "webAiAuditDetail", "webAiStats", "webInsightDetail", "webInsights",
         "webAiSettings", "webProjectCwds",
     ]
 
@@ -327,6 +327,12 @@ struct EngramServiceWebReadClient: Sendable {
         return response
     }
 
+    func insights(_ request: EngramServiceWebInsightsRequest) async throws -> EngramServiceWebInsightsResponse {
+        let result: EngramServiceWebInsightsResponse = try await metadataResponse(.insights, request: request)
+        try Self.validatePage(snapshot: result.snapshotId, nextCursor: result.nextCursor, count: result.items.count, limit: request.limit, requestedSnapshot: request.snapshotId, cursor: request.cursor)
+        return result
+    }
+
     func insightDetail(_ request: EngramServiceWebInsightDetailRequest) async throws -> EngramServiceWebInsightDetailResponse {
         let response: EngramServiceWebInsightDetailResponse = try await metadataResponse(.insightDetail, request: request)
         guard response.id.utf8.elementsEqual(request.id.utf8),
@@ -618,7 +624,7 @@ struct EngramServiceWebReadClient: Sendable {
              fileActivity = "webFileActivity", repos = "webRepos", projectCwds = "webProjectCwds",
              usage = "webUsage",
              aiAudit = "webAiAudit", aiAuditDetail = "webAiAuditDetail", aiStats = "webAiStats",
-             insightDetail = "webInsightDetail"
+             insightDetail = "webInsightDetail", insights = "webInsights"
     }
 
     /// Only the three typed methods above can choose this private command enum.

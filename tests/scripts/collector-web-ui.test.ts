@@ -9405,3 +9405,69 @@ it('uses the resolver-issued opaque cursor for a deep match without sequential p
   expect(ui.node('messages').textContent).toContain('Loaded prompt #1');
   expect(ui.requests).toHaveLength(3);
 });
+
+describe('It9 B4 lazy authorized Insights page', () => {
+  it('routes to Insights lazily, pages on its snapshot, and renders literal previews', async () => {
+    const ui = harness();
+    expect(ui.requests).toHaveLength(0);
+    expect(await ui.call('parseRoute("#/insights").page')).toBe('insights');
+    const work = ui.call('navigate("insights")');
+    expect(ui.requests).toHaveLength(1);
+    expect(ui.requests[0].path).toBe('/web/api/insights?limit=25');
+    ui.requests[0].resolve({
+      snapshotId: 'snap',
+      items: [
+        {
+          id: 'a',
+          content: '<script>literal preview</script>',
+          revision: 'r',
+          sourceSessionId: 's',
+        },
+      ],
+      nextCursor: 'next',
+    });
+    await work;
+    expect(ui.node('insights-rows').textContent).toContain(
+      '<script>literal preview</script>',
+    );
+    const next = ui.call('loadInsightsPage(true)');
+    expect(ui.requests[1].path).toContain('snapshotId=snap');
+    expect(ui.requests[1].path).toContain('cursor=next');
+    ui.requests[1].resolve({
+      snapshotId: 'snap',
+      items: [{ id: 'b', content: 'global note', revision: 'r' }],
+    });
+    await next;
+    expect(ui.node('insights-rows').textContent).toContain('global note');
+    expect(ui.node('insights-rows').textContent).toContain('literal preview');
+  });
+  it('discards a late list after leaving Insights', async () => {
+    const ui = harness();
+    const old = ui.call('navigate("insights")');
+    await ui.call('bumpEpoch();activatePage("sessions")');
+    ui.requests[0].resolve({
+      snapshotId: 'old',
+      items: [{ id: 'late', content: 'must not render', revision: 'r' }],
+    });
+    await old;
+    expect(ui.node('insights-rows').textContent).not.toContain(
+      'must not render',
+    );
+  });
+});
+
+it('closes an Insights detail read when navigating to Search and discards its late payload', async () => {
+  const ui = harness();
+  const pending = ui.call('activatePage("insights");loadInsight("a",false)');
+  await ui.call('activatePage("search")');
+  expect(ui.node('insight-dialog').hidden).toBe(true);
+  ui.requests[0].resolve({
+    id: 'a',
+    revision: 'r',
+    offset: 0,
+    totalLength: 4,
+    content: 'late',
+  });
+  await pending;
+  expect(ui.node('insight-body').textContent).not.toContain('late');
+});

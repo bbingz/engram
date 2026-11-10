@@ -3307,3 +3307,55 @@ struct EngramServiceWebMatchResponse: Codable, Equatable, Sendable {
     let matchScope: EngramServiceWebMatchScope?
     var messageCursor: String? = nil
 }
+
+// Authorized active library notes, independent of session/project search filters.
+struct EngramServiceWebInsightsRequest: Codable, Equatable, Sendable {
+    let limit: Int
+    let snapshotId: String?
+    let cursor: String?
+    init(limit: Int = 50, snapshotId: String? = nil, cursor: String? = nil) throws {
+        try EngramServiceWebMetadataValidation.pageRequest(limit: limit, snapshotId: snapshotId, cursor: cursor)
+        self.limit = limit; self.snapshotId = snapshotId; self.cursor = cursor
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(limit: c.decodeIfPresent(Int.self, forKey: .limit) ?? 50,
+            snapshotId: c.decodeIfPresent(String.self, forKey: .snapshotId), cursor: c.decodeIfPresent(String.self, forKey: .cursor))
+    }
+}
+struct EngramServiceWebInsightItem: Codable, Equatable, Sendable {
+    let id: String
+    let content: String
+    let sourceSessionId: String?
+    let createdAt: Int64?
+    let revision: String
+    init(id: String, content: String, sourceSessionId: String?, createdAt: Int64?, revision: String) throws {
+        typealias V = EngramServiceWebMetadataValidation
+        try V.token(id, maximumBytes: 128); try V.text(content, maximumBytes: 2400, allowEmpty: false)
+        try V.require(content.unicodeScalars.count <= 600); try V.hash(revision)
+        if let sourceSessionId { try V.sessionID(sourceSessionId) }
+        if let createdAt { try V.time(createdAt) }
+        self.id = id; self.content = content; self.sourceSessionId = sourceSessionId; self.createdAt = createdAt; self.revision = revision
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(id: c.decode(String.self, forKey: .id), content: c.decode(String.self, forKey: .content),
+            sourceSessionId: c.decodeIfPresent(String.self, forKey: .sourceSessionId), createdAt: c.decodeIfPresent(Int64.self, forKey: .createdAt), revision: c.decode(String.self, forKey: .revision))
+    }
+}
+struct EngramServiceWebInsightsResponse: Codable, Equatable, Sendable {
+    let snapshotId: String
+    let observedAt: Int64
+    let items: [EngramServiceWebInsightItem]
+    let nextCursor: String?
+    init(snapshotId: String, observedAt: Int64, items: [EngramServiceWebInsightItem], nextCursor: String?) {
+        self.snapshotId = snapshotId; self.observedAt = observedAt; self.items = items; self.nextCursor = nextCursor
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(snapshotId: try c.decode(String.self, forKey: .snapshotId), observedAt: try c.decode(Int64.self, forKey: .observedAt), items: try c.decode([EngramServiceWebInsightItem].self, forKey: .items), nextCursor: try c.decodeIfPresent(String.self, forKey: .nextCursor))
+        typealias V = EngramServiceWebMetadataValidation
+        try V.page(snapshotId: snapshotId, count: items.count, nextCursor: nextCursor); try V.time(observedAt)
+        try V.require(Set(items.map { Data($0.id.utf8) }).count == items.count)
+    }
+}
