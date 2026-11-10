@@ -2917,15 +2917,15 @@ describe('shipped collector Web viewer behavior', () => {
     });
     await pending;
     const [tool, system] = ui.node('messages').children;
-    expect(tool.className).toBe('message tool');
-    expect(system.className).toBe('message system');
+    expect(tool.className).toContain('message tool');
+    expect(system.className).toContain('message system');
     expect(tool.className).not.toContain('assistant');
     expect(system.className).not.toContain('assistant');
     expect(tool.children.some((child) => child.className === 'body')).toBe(
       false,
     );
     const toolDump = tool.children.find((child) => child.tagName === 'DETAILS');
-    expect(toolDump?.children[0]?.textContent).toContain('Tool');
+    expect(toolDump?.children[0]?.textContent).toContain('Result');
     expect(toolDump?.children[0]?.textContent).toContain(
       'function_call_output huge dump',
     );
@@ -2957,7 +2957,7 @@ describe('shipped collector Web viewer behavior', () => {
     });
     await pending;
     const article = ui.node('messages').children[0];
-    expect(article.className).toBe('message user');
+    expect(article.className).toContain('message user');
     const body = article.children.find((child) => child.className === 'body');
     expect(body?.tagName).toBe('DIV');
     expect(body?.textContent).toBe(content);
@@ -3094,8 +3094,10 @@ describe('shipped collector Web viewer behavior', () => {
     await pending;
     expect(ui.requests).toHaveLength(1);
     expect(ui.node('messages').children).toHaveLength(2);
-    expect(ui.node('messages').children[0].className).toBe('message tool');
-    expect(ui.node('messages').children[1].className).toBe('message system');
+    expect(ui.node('messages').children[0].className).toContain('message tool');
+    expect(ui.node('messages').children[1].className).toContain(
+      'message system',
+    );
     expect(
       ui
         .node('messages')
@@ -3177,11 +3179,13 @@ describe('shipped collector Web viewer behavior', () => {
       .node('messages')
       .children[0].children.find((child) => child.className === 'body');
     expect(body?.querySelector('h1')?.textContent).toBe(
-      'Title <img src=x onerror=alert(1)>',
+      'Title <img src=x onerror=alert(1)>#',
     );
     expect(body?.querySelector('img')).toBeNull();
     expect(body?.querySelector('script')).toBeNull();
-    const link = body?.querySelector('a');
+    const link = body
+      ?.querySelectorAll('a')
+      .find((node) => !node.className.includes('heading-link'));
     expect(link?.textContent).toBe('ok');
     expect(link?.getAttribute('href')).toBe('https://example.com/a');
     expect(body?.textContent).toContain('[xss](javascript:alert(1))');
@@ -4001,7 +4005,7 @@ describe('shipped collector Web viewer presentation', () => {
     const tools = article.children.find((child) => child.tagName === 'DETAILS');
     expect(tools?.className).toBe('tool-call');
     expect(tools?.children[0]?.textContent).toContain('Read');
-    expect(tools?.children[0]?.textContent).toContain('{"path":"/secret"}');
+    expect(tools?.children[0]?.textContent).toContain('/secret');
     expect(tools?.textContent).toContain('{"path":"/secret"}');
     expect(tools?.textContent).toContain('{"ok":true}');
   });
@@ -4137,7 +4141,7 @@ describe('shipped collector Web viewer presentation', () => {
     await orphan;
     const later = ui.node('messages').children[0];
     expect(later.children[0].textContent).toBe('assistant');
-    expect(later.className).toBe('message assistant');
+    expect(later.className).toContain('message assistant');
     expect(later.textContent).toContain('after logout');
   });
 
@@ -5569,7 +5573,7 @@ describe('iteration 1 foundation: rows, chips, feedback and states', () => {
     button?.click();
     await settle();
     expect(ui.copied).toEqual(['let x = 1']);
-    expect(button?.textContent).toBe('Copied');
+    expect(button?.textContent).toBe('Copied ✓');
     const region = ui.node('toast-region');
     expect(region.children).toHaveLength(1);
     expect(region.children[0].dataset.tone).toBe('ok');
@@ -6455,4 +6459,482 @@ it('gives each KPI trend its own equivalent daily-value table instead of claimin
   expect(tiles[1].querySelector('svg')?.getAttribute('aria-label')).toContain(
     '12',
   );
+});
+
+describe('iteration 3 transcript reading', () => {
+  it('groups consecutive agent messages, keeps actual usage and ordinal permalinks', async () => {
+    const ui = harness();
+    await ui.call(`detailContextSession = 's/unsafe'; detailSource = 'codex';
+      renderMessage('user', {content:'<prompt>', timestamp:'2026-11-10T01:00:00Z'}, 8);
+      renderMessage('assistant', {content:'answer', usage:{inputTokens:12,outputTokens:3}}, 9);
+      renderMessage('assistant', {content:'continued', usage:{inputTokens:4,outputTokens:2}}, 10);`);
+    expect(ui.node('messages').querySelectorAll('.role')).toHaveLength(2);
+    expect(ui.node('messages').textContent).toContain('16 in → 5 out');
+    const link = ui.node('messages').querySelector('a');
+    expect(link?.getAttribute('href')).toBe('#/s/s%2Funsafe/m/8');
+    expect(ui.node('messages').children[0].dataset.ordinal).toBe('8');
+    const pending = [ui.node('messages')];
+    while (pending.length) {
+      const node = pending.pop();
+      expect(node?.getAttribute('id')).toBeNull();
+      pending.push(...(node?.children ?? []));
+    }
+  });
+
+  it('renders DTO string input/output, relative edit diffs, raw view and detected errors safely', async () => {
+    const ui = harness();
+    await ui.call(
+      `renderMessage('assistant', ${JSON.stringify({
+        content: '',
+        toolCalls: [
+          {
+            name: 'Edit',
+            input: JSON.stringify({
+              file_path: '<file>',
+              old_string: 'old\n<script>',
+              new_string: 'new\n<img>',
+            }),
+            output: 'Updated',
+          },
+          {
+            name: 'Bash',
+            input: '{"command":"false"}',
+            output: 'Error: exit code 1',
+          },
+          {
+            name: 'apply_patch',
+            input: '--- a/x\n+++ b/x\n@@ -2,1 +2,1 @@\n-old\n+new',
+            output: 'ok',
+          },
+        ],
+      })}, 4)`,
+    );
+    const tools = ui.node('messages').querySelectorAll('.tool-call');
+    expect(tools).toHaveLength(3);
+    expect(tools[0].children[0].textContent).toContain('<file>');
+    expect(tools[0].textContent).toContain('Input');
+    expect(tools[0].textContent).toContain('Output');
+    expect(tools[0].querySelectorAll('.diff-add').length).toBeGreaterThan(0);
+    expect(tools[0].querySelector('script')).toBeNull();
+    expect(tools[1].className).toContain('tool-error');
+    expect(tools[1].textContent).toContain('Error (detected)');
+    expect(
+      tools[2].querySelector('.diff-add')?.getAttribute('data-line-number'),
+    ).toBe('— / 2');
+    const raw = tools[0].querySelector('.tool-raw');
+    expect(raw?.hidden).toBe(true);
+    tools[0].querySelector('.raw-toggle')?.click();
+    expect(raw?.hidden).toBe(false);
+    expect(raw?.textContent).toContain('old_string');
+  });
+
+  it('detects explicit thinking only and filters tool cards with honest loaded counts', async () => {
+    const ui = harness();
+    await ui.call(`renderMessage('assistant', {content:'<thinking>private <img></thinking>'}, 2);
+      renderMessage('assistant', {content:'I am thinking about it',toolCalls:[{name:'Read',input:'{}'}]}, 3);
+      renderMessage('tool', {content:'result'}, 4);`);
+    expect(ui.node('messages').querySelectorAll('.thinking')).toHaveLength(1);
+    expect(ui.node('messages').querySelector('.thinking')?.open).toBe(false);
+    expect(ui.node('transcript-filters').textContent).toContain(
+      'Tools 2 in loaded',
+    );
+    ui.node('transcript-filters')
+      .children.find((n) => n.dataset.type === 'tools')
+      ?.click();
+    expect(ui.node('messages').children[0].hidden).toBe(true);
+    expect(ui.node('messages').querySelector('.body')?.hidden).toBe(true);
+    expect(ui.node('messages').querySelector('.tool-call')?.hidden).toBe(false);
+    expect(ui.node('messages').children[2].hidden).toBe(false);
+  });
+
+  it('preserves code text/data-lang and provides guarded copy failure feedback', async () => {
+    const ui = harness();
+    await ui.call(
+      `renderMessage('assistant', {content:${JSON.stringify('```html\n<img onerror=evil()>\n```')}}, 0)`,
+    );
+    const code = ui.node('messages').querySelector('code');
+    expect(code?.getAttribute('data-lang')).toBe('html');
+    expect(code?.textContent).toBe('<img onerror=evil()>');
+    const copy = ui.node('messages').querySelector('.copy-btn');
+    copy?.click();
+    await flushAuthWork();
+    expect(ui.copied).toEqual(['<img onerror=evil()>']);
+    expect(copy?.textContent).toBe('Copied ✓');
+    await ui.call('navigator.clipboard = undefined');
+    copy?.click();
+    expect(copy?.textContent).toBe('Copy failed');
+  });
+
+  it('lazily reads real per-session cost/model data with agents=all and drops stale info', async () => {
+    const ui = harness();
+    await ui.call(
+      `detailContextSession='agent'; detailContextGeneration='g'; detailInfoDetail={session:{sessionId:'agent'},transcriptGeneration:'g'};`,
+    );
+    expect(ui.requests).toHaveLength(0);
+    const pending = ui.call('showDetailView("info")');
+    const sessions = ui.requestFor('/web/api/costs/sessions');
+    const cost = ui.requestFor('/web/api/costs?');
+    for (const r of [sessions, cost]) {
+      const p = new URL(r.path, 'https://test').searchParams;
+      expect(p.get('agents')).toBe('all');
+      expect(p.get('sessionId')).toBe('agent');
+    }
+    sessions.resolve({
+      items: [
+        {
+          session: { sessionId: 'agent' },
+          model: 'real-model',
+          costUsd: 0.25,
+          inputTokens: 8,
+          outputTokens: 2,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+        },
+      ],
+    });
+    cost.resolve({
+      items: [],
+      totals: {
+        costUsd: 0.25,
+        inputTokens: 8,
+        outputTokens: 2,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      },
+    });
+    await pending;
+    expect(ui.node('detail-info-content').textContent).toContain('real-model');
+    expect(ui.node('detail-info-content').textContent).toContain('$0.25');
+    const stale = ui.call('loadDetailInfo()');
+    await ui.call('clearMessages(); bumpEpoch()');
+    ui.requestFor('/web/api/costs/sessions').resolve({
+      items: [{ session: { sessionId: 'agent' }, model: 'STALE' }],
+    });
+    ui.requestFor('/web/api/costs?').resolve({ items: [] });
+    await stale;
+    expect(ui.node('detail-info-content').textContent).toBe('');
+  });
+
+  it('explicitly reports missing cost/model data and protects parallel 401 success races', async () => {
+    for (const status of [200, 401]) {
+      const ui = harness();
+      await ui.call(
+        `detailContextSession='s'; detailInfoDetail={session:{sessionId:'s'}}`,
+      );
+      const info = ui.call('loadDetailInfo()');
+      ui.requestFor('/web/api/costs?').resolve({ items: [] }, status);
+      await flushAuthWork();
+      ui.requestFor('/web/api/costs/sessions').resolve({ items: [] });
+      await info;
+      if (status === 401)
+        expect(ui.node('detail-info-content').textContent).toBe('');
+      else
+        expect(ui.node('detail-info-content').textContent).toContain(
+          'not reported',
+        );
+    }
+  });
+
+  it('caps lazy outline timeline pages at 500 and chains via nextOffset on interaction', async () => {
+    const ui = harness();
+    await ui.call(
+      `detailContextSession='s'; detailContextGeneration='g'; renderMessage('user',{content:'loaded'},7)`,
+    );
+    const first = ui.call('loadDetailTimeline(false)');
+    expect(
+      new URL(ui.requests[0].path, 'https://test').searchParams.get('limit'),
+    ).toBe('500');
+    ui.requests[0].resolve({
+      sessionId: 's',
+      generation: 'g',
+      totalEntries: 501,
+      entries: Array.from({ length: 500 }, (_, index) => ({
+        index,
+        role: index === 7 ? 'user' : 'assistant',
+        type: 'message',
+        preview: 'entry',
+      })),
+      nextOffset: 500,
+    });
+    await first;
+    const more = ui.call('loadDetailTimeline(true)');
+    expect(
+      new URL(ui.requests[1].path, 'https://test').searchParams.get('offset'),
+    ).toBe('500');
+    ui.requests[1].resolve({
+      sessionId: 's',
+      generation: 'g',
+      totalEntries: 501,
+      entries: [{ index: 500, role: 'user', type: 'message', preview: 'last' }],
+      nextOffset: null,
+    });
+    await more;
+    expect(ui.node('transcript-outline').textContent).toContain('not loaded');
+    expect(ui.node('transcript-outline').children[0].dataset.ordinal).toBe('7');
+    expect(ui.node('messages').children).toHaveLength(1);
+  });
+
+  it('keeps 501-message loading bounded and UTF8 fragments intact, resets model on generation switches', async () => {
+    const ui = harness();
+    const first = ui.call('loadMessages(0,"s","g","")');
+    expect(ui.requests[0].path).toContain('maxFragments=100');
+    const fragment = (ordinal: number, content: string) => ({
+      messageOrdinal: ordinal,
+      payloadSHA256: 'a'.repeat(64),
+      role: 'user',
+      payloadFragment: JSON.stringify({ content }),
+      utf8Offset: 0,
+      isLastFragment: true,
+    });
+    ui.requests[0].resolve({
+      generation: 'g',
+      sessionId: 's',
+      fragments: Array.from({ length: 100 }, (_, i) =>
+        fragment(i, `message ${i}`),
+      ),
+      nextCursor: 'page-2',
+    });
+    await first;
+    expect(ui.requests).toHaveLength(1);
+    expect(ui.node('messages').children).toHaveLength(100);
+    const all = ui.call('loadAllMessages()');
+    for (let page = 1; page <= 5; page++) {
+      await flushAuthWork();
+      ui.requests[page].resolve({
+        sessionId: 's',
+        generation: 'g',
+        fragments: Array.from({ length: page === 5 ? 1 : 100 }, (_, i) =>
+          fragment(page * 100 + i, `message ${page * 100 + i} 会话😀`),
+        ),
+        nextCursor: page === 5 ? null : `page-${page + 2}`,
+      });
+    }
+    await all;
+    expect(ui.node('messages').children).toHaveLength(501);
+    expect(ui.node('messages').textContent).toContain('message 500 会话😀');
+    const stale = ui.call('loadMessages(0,"s","g","stale")');
+    await ui.call('clearMessages(); bumpEpoch()');
+    ui.requestFor('/web/api/sessions/s/messages').resolve({
+      fragments: [fragment(999, 'STALE')],
+    });
+    await stale;
+    expect(ui.node('messages').textContent).toBe('');
+    expect(ui.node('transcript-outline').textContent).not.toContain('message');
+  });
+});
+
+describe('iteration 3 transcript edge contracts', () => {
+  it('extends rather than replaces Markdown with safe quotes/nested lists/autolinks/image links', async () => {
+    const ui = harness();
+    await ui.call(
+      `renderMessage('assistant', {content:${JSON.stringify('> quoted <b>text</b>\n\n- outer\n  - inner\n\nVisit https://example.com/page and javascript:alert(1)\n![image](https://example.com/a.png)\n![bad](javascript:alert(1))')}}, 1)`,
+    );
+    const body = ui.node('messages').querySelector('.body');
+    expect(body?.querySelector('blockquote')?.textContent).toContain(
+      'quoted <b>text</b>',
+    );
+    expect(body?.querySelector('ul')?.querySelector('ul')?.textContent).toBe(
+      'inner',
+    );
+    const links = body?.querySelectorAll('a') ?? [];
+    expect(links.map((n) => n.getAttribute('href'))).toEqual([
+      'https://example.com/page',
+      'https://example.com/a.png',
+    ]);
+    expect(
+      links.every((n) => n.getAttribute('rel') === 'noopener noreferrer'),
+    ).toBe(true);
+    expect(body?.querySelector('img')).toBeNull();
+    expect(body?.textContent).toContain('javascript:alert(1)');
+  });
+
+  it('rejects message generation mismatches and does not paint stale outline pages after logout', async () => {
+    const ui = harness();
+    const messages = ui.call('loadMessages(0,"s","g","")');
+    ui.requestFor('/web/api/sessions/s/messages').resolve({
+      sessionId: 's',
+      generation: 'wrong',
+      fragments: [],
+    });
+    await expect(messages).rejects.toThrow('changed generation');
+    await ui.call('detailContextSession="s"; detailContextGeneration="g"');
+    const outline = ui.call('loadDetailTimeline(false)');
+    await ui.call('expireSession()');
+    ui.requestFor('/web/api/sessions/s/timeline').resolve({
+      sessionId: 's',
+      generation: 'g',
+      totalEntries: 1,
+      entries: [{ index: 0, role: 'user', type: 'message', preview: 'STALE' }],
+    });
+    await outline;
+    expect(ui.node('transcript-outline').textContent).not.toContain('STALE');
+    expect(ui.node('timeline-rows').textContent).toBe('');
+  });
+
+  it('keeps MultiEdit changes separate and plain non-diff text intact', async () => {
+    const ui = harness();
+    const input = JSON.stringify({
+      edits: [
+        { old_string: 'a', new_string: 'b' },
+        { old_string: '<bad>', new_string: 'c' },
+      ],
+    });
+    await ui.call(
+      `renderMessage('assistant', {content:'',toolCalls:[{name:'MultiEdit',input:${JSON.stringify(input)},output:'unchanged output'},{name:'apply_patch',input:'not a diff <script>',output:'plain'}]}, 5)`,
+    );
+    expect(ui.node('messages').querySelectorAll('.unified-diff')).toHaveLength(
+      2,
+    );
+    expect(ui.node('messages').querySelector('script')).toBeNull();
+    expect(ui.node('messages').textContent).toContain('not a diff <script>');
+    expect(ui.node('messages').textContent).toContain('unchanged output');
+  });
+});
+
+describe('iteration 3 tool summary coverage', () => {
+  it('shows the actual Grep pattern and path together', async () => {
+    const ui = harness();
+    await ui.call(
+      `renderMessage('assistant',{toolCalls:[{name:'Grep',input:'{"pattern":"CREATE TABLE","path":"macos/Core"}'}]},0)`,
+    );
+    const summary = ui.node('messages').querySelector('.tool-call')
+      ?.children[0];
+    expect(summary?.textContent).toContain('CREATE TABLE');
+    expect(summary?.textContent).toContain('macos/Core');
+  });
+});
+
+describe('iteration 3 reading detail affordances', () => {
+  it('keeps code line numbers out of copied text and diff copy identical to supplied input', async () => {
+    const ui = harness();
+    const diff = '--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new';
+    await ui.call(
+      `renderMessage('assistant',{content:${JSON.stringify('```js\na()\nb()\n```')},toolCalls:[{name:'apply_patch',input:${JSON.stringify(diff)}}]},0)`,
+    );
+    const code = ui.node('messages').querySelector('code');
+    expect(code?.textContent).toBe('a()\nb()');
+    expect(code?.children[1].getAttribute('data-line-number')).toBe('2');
+    const patch = ui.node('messages').querySelector('.unified-diff');
+    expect(patch?.textContent).toBe(diff);
+    ui.node('messages').querySelector('.diff-copy')?.click();
+    await flushAuthWork();
+    expect(ui.copied).toEqual([diff]);
+  });
+
+  it('labels proximity-only tool result association without merging or losing text', async () => {
+    const ui = harness();
+    await ui.call(
+      `renderMessage('assistant',{toolCalls:[{name:'Read',input:'file'}]},0);renderMessage('tool',{content:'unaltered <result>'},1)`,
+    );
+    const result = ui.node('messages').children[1];
+    expect(result.className).toContain('associated-result');
+    expect(result.textContent).toContain('Read (proximity)');
+    expect(result.querySelector('pre')?.textContent).toBe('unaltered <result>');
+  });
+});
+
+describe('iteration 3 unified diff integrity', () => {
+  it('resets file headers and line numbers between hunks and preserves malformed patches as plain text', async () => {
+    const ui = harness();
+    const patch =
+      '--- a/one\n+++ b/one\n@@ -2,1 +2,1 @@\n-a\n+b\n--- a/two\n+++ b/two\n@@ -8,1 +9,1 @@\n-c\n+d';
+    await ui.call(
+      `renderMessage('assistant',{toolCalls:[{name:'apply_patch',input:${JSON.stringify(patch)}},{name:'apply_patch',input:${JSON.stringify('@@ -1,2 +1,2 @@\n-only-one-line')}}]},0)`,
+    );
+    expect(ui.node('messages').querySelectorAll('.unified-diff')).toHaveLength(
+      1,
+    );
+    const rows = ui.node('messages').querySelectorAll('.diff-row');
+    expect(rows[5].getAttribute('data-line-number')).toBeNull();
+    expect(rows[9].getAttribute('data-line-number')).toBe('— / 9');
+    expect(ui.node('messages').textContent).toContain('only-one-line');
+  });
+});
+
+describe('iteration 3 timeline reading', () => {
+  it('uses ordinal links, local timestamps, stripped previews and duration bars from real values only', async () => {
+    const ui = harness();
+    await ui.call('detailContextSession="s"; detailContextGeneration="g"');
+    const pending = ui.call('loadDetailTimeline(false)');
+    ui.requestFor('/web/api/sessions/s/timeline').resolve({
+      sessionId: 's',
+      generation: 'g',
+      totalEntries: 2,
+      entries: [
+        {
+          index: 0,
+          type: 'message',
+          role: 'user',
+          preview: '# **prompt** `code`',
+          timestamp: '2026-11-10T01:00:00Z',
+          durationToNextMs: 4000,
+        },
+        { index: 1, type: 'message', role: 'assistant', preview: 'answer' },
+      ],
+    });
+    await pending;
+    const cards = ui.node('timeline-rows').children;
+    expect(cards[0].querySelector('time')?.title).toBe('2026-11-10T01:00:00Z');
+    expect(cards[0].querySelector('p.timeline-preview')?.textContent).toBe(
+      'prompt code',
+    );
+    expect(cards[0].querySelector('svg')?.getAttribute('aria-label')).toContain(
+      '4 s',
+    );
+    expect(cards[1].querySelector('svg')).toBeNull();
+    expect(cards[0].querySelector('a')?.getAttribute('href')).toBe('#/s/s/m/0');
+  });
+});
+
+describe('iteration 3 unloaded ordinal jumps', () => {
+  it('loads only the bounded pages needed for an unloaded prompt and keeps its real ordinal', async () => {
+    const ui = harness();
+    const fragments = (start: number) =>
+      Array.from({ length: 100 }, (_, i) => ({
+        messageOrdinal: start + i,
+        role: 'user',
+        payloadSHA256: 'a'.repeat(64),
+        utf8Offset: 0,
+        isLastFragment: true,
+        payloadFragment: JSON.stringify({ content: `prompt ${start + i}` }),
+      }));
+    const first = ui.call('loadMessages(0,"s","g","")');
+    ui.requestFor('/web/api/sessions/s/messages').resolve({
+      sessionId: 's',
+      generation: 'g',
+      fragments: fragments(0),
+      nextCursor: 'c1',
+    });
+    await first;
+    const jump = ui.call('jumpToOrdinal(501)');
+    for (let page = 1; page <= 5; page++) {
+      await flushAuthWork();
+      ui.requestFor('/web/api/sessions/s/messages').resolve({
+        sessionId: 's',
+        generation: 'g',
+        fragments: fragments(page * 100),
+        nextCursor: `c${page + 1}`,
+      });
+    }
+    await jump;
+    expect(ui.requests).toHaveLength(6);
+    expect(ui.node('messages').children[501].dataset.ordinal).toBe('501');
+    expect(ui.node('messages').children[501].className).toContain(
+      'jump-target',
+    );
+    expect(ui.node('messages').children).toHaveLength(600);
+    expect(ui.node('more-messages').hidden).toBe(false);
+  });
+});
+
+describe('iteration 3 empty replacement diffs', () => {
+  it('uses zero-based empty ranges instead of inventing a line in an empty supplied replacement', async () => {
+    const ui = harness();
+    await ui.call(
+      `renderMessage('assistant',{toolCalls:[{name:'Edit',input:'{"old_string":"","new_string":"added"}'}]},0)`,
+    );
+    expect(
+      ui.node('messages').querySelector('.unified-diff')?.textContent,
+    ).toContain('@@ -0,0 +1,1 @@');
+  });
 });

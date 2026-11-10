@@ -139,19 +139,36 @@ enum WebUIRoutes {
         </aside>
         <section class="detail-pane">
         <button id="back" type="button" hidden>Sessions</button>
-        <section id="detail"></section>
+        <div id="detail-header"><section id="detail"></section>
+        <nav id="detail-view-nav" class="agent-filters" aria-label="Session views" hidden>
+        <button id="detail-view-transcript" type="button" aria-pressed="true">Transcript</button>
+        <button id="detail-view-timeline" type="button" aria-pressed="false">Timeline</button>
+        <button id="detail-view-children" type="button" aria-pressed="false">Child sessions</button>
+        <button id="detail-view-info" type="button" aria-pressed="false">Info</button>
+        </nav></div>
+        <section id="detail-info-panel" hidden><div id="detail-info-content"></div>
         <section id="session-summary" class="settings-section" hidden><h3>Summary</h3><div id="session-summary-text"></div></section>
         <details id="session-actions" class="advanced-filters" hidden>
         <summary>Generate summary or title</summary>
         <p id="session-action-status" role="status"></p>
         <div class="search-mode-controls"><button id="session-generate-summary" type="button" disabled>Generate summary</button><button id="session-generate-title" type="button" disabled>Generate title</button></div>
         </details>
-        <nav id="detail-view-nav" class="agent-filters" aria-label="Session views" hidden>
-        <button id="detail-view-transcript" type="button" aria-pressed="true">Transcript</button>
-        <button id="detail-view-timeline" type="button" aria-pressed="false">Timeline</button>
-        <button id="detail-view-children" type="button" aria-pressed="false">Child sessions</button>
-        </nav>
+        </section>
         <section id="transcript-panel">
+        <div id="transcript-toolbar">
+        <div id="transcript-filters" class="agent-filters" aria-label="Message types"></div>
+        <p class="meta">Counts cover loaded messages; Tools counts call/result cards. Categories can overlap.</p>
+        <div class="agent-filters"><span id="transcript-loaded" role="status"></span>
+        <button id="transcript-outline-toggle" type="button" aria-expanded="false">Outline</button>
+        <button id="transcript-load-all" type="button">Load all</button>
+        <button id="transcript-end" type="button">Jump to end</button>
+        <button id="transcript-copy-id" type="button">Copy session ID</button>
+        <button id="transcript-copy" type="button">Copy loaded Markdown</button>
+        <button id="transcript-previous" type="button">↑ Previous</button><button id="transcript-next" type="button">↓ Next</button></div>
+        </div>
+        <details id="transcript-outline-box" hidden><summary>Prompt outline · loaded coverage</summary>
+        <p id="transcript-outline-status" role="status"></p><nav id="transcript-outline" aria-label="Prompt outline"></nav>
+        <button id="transcript-outline-more" type="button" hidden>More outline entries</button></details>
         <section id="messages"></section>
         <button id="more-messages" type="button" hidden>Load more messages</button>
         </section>
@@ -689,6 +706,60 @@ enum WebUIRoutes {
         .toast[data-tone="danger"] { border-left-color: var(--danger); } .toast[data-tone="danger"] > .icon { color: var(--danger); }
         .toast-close, .toast-close:active { display: inline-flex; padding: 4px; border: 0; background: transparent; color: var(--muted); }
         @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
+
+        body:has(#workspace.showing-detail) .top-nav { position: static; }
+        #detail-header { position: sticky; top: 0; z-index: 21; background: var(--bg); border-bottom: 1px solid var(--line); padding-top: 8px; }
+        #detail-header .sticky { position: static; backdrop-filter: none; background: var(--bg); padding: 8px 0; border: 0; }
+        .detail-pane .agent-filters button[aria-pressed="true"] { color: var(--text); }
+        #detail-view-nav { margin: 0; padding: 6px 0 10px; }
+        #library-page .detail-pane .sep { color: var(--muted); }
+        #messages .assistant .role { color: var(--text); border-left: 3px solid var(--source-color, var(--line)); padding-left: 8px; }
+        #detail-header h2 { max-height: 2.6em; overflow: hidden; }
+        #transcript-toolbar { padding: 12px 0; border-bottom: 1px solid var(--line); }
+        #transcript-toolbar .agent-filters { flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+        #transcript-toolbar button { font-size: 12px; padding: 5px 8px; }
+        #transcript-outline-box { padding: 12px; border: 1px solid var(--line); border-radius: 8px; margin: 12px 0; }
+        #transcript-outline { display: grid; max-height: 300px; overflow-y: auto; gap: 4px; }
+        #transcript-outline button { text-align: left; overflow-wrap: anywhere; white-space: normal; }
+        #messages .message { max-width: 100%; width: 100%; scroll-margin-top: 190px; }
+        #messages .message.user { align-self: stretch; border-left: 3px solid var(--accent); padding-left: 12px; margin-top: 14px; }
+        #messages .message.assistant .body { background: transparent; box-shadow: none; border: 0; padding: 8px 0; font-size: 15px; line-height: 1.75; }
+        #messages .turn-continuation { margin-top: -8px; }
+        .message .message-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+        .message .message-meta a { color: var(--accent); }
+        .message .turn-usage { font-variant-numeric: tabular-nums; }
+        .message .tool-call { margin-top: 8px; border-style: solid; }
+        .message details.tool-call.tool-error { border-color: var(--danger); }
+        .message .error-label { color: var(--danger); font-size: 12px; }
+        .message .tool-content { padding-top: 12px; }
+        .message .tool-content h4 { margin: 10px 0 6px; font-size: 12px; color: var(--muted); }
+        .message .tool-content pre { max-height: 360px; overflow: auto; white-space: pre-wrap; }
+        .message .tool-output { max-height: 26em; overflow: hidden; }
+        .message .tool-output.expanded, .message .tool-output.expanded pre { max-height: none; }
+        #messages .associated-result { width: calc(100% - 16px); margin-left: 16px; }
+        .message .code-line::before { content: attr(data-line-number); display: inline-block; min-width: 2.5em; padding-right: 1em; color: var(--muted); user-select: none; }
+        .message .body .heading-link { margin-left: 8px; font-size: 12px; }
+        #transcript-outline button[aria-current="true"] { border-color: var(--accent); background: var(--accent-dim); }
+        .message .code-block { min-width: 0; max-width: 100%; border: 1px solid var(--line); border-radius: 8px; background: var(--code); overflow: hidden; }
+        .message .code-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; color: var(--muted); font-size: 12px; }
+        .message .code-block pre { white-space: pre; overflow: auto; margin: 0; padding: 12px; }
+        .message .body .code-block.wrap-code pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+        .message .diff-row { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
+        .message .diff-row::before { content: attr(data-line-number); display: inline-block; min-width: 7em; margin-right: 1em; color: var(--muted); user-select: none; }
+        .message .diff-add { background: color-mix(in srgb, var(--ok) 12%, var(--code)); color: var(--ok); }
+        @media (prefers-color-scheme: light) { .message .diff-add { color: #166534; } }
+        .message .diff-del { background: color-mix(in srgb, var(--danger) 12%, var(--code)); color: var(--danger); }
+        .message.jump-target { outline: 2px solid var(--accent); }
+        .timeline-duration { display: block; max-width: 100%; margin: 8px 0; }
+        #detail-info-content dl { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 3fr); gap: 8px 16px; }
+        #detail-info-content dd { margin: 0; overflow-wrap: anywhere; }
+        #detail-info-content dt { color: var(--muted); }
+        @media (max-width: 600px) {
+          #detail-header .meta { font-size: 11px; max-height: 3.6em; overflow: hidden; }
+          #detail-header h2 { font-size: 17px; }
+          #detail-view-nav { gap: 4px; } #detail-view-nav button { padding: 6px 8px; font-size: 12px; }
+          .message details summary { flex-wrap: wrap; } .message details summary .preview { flex-basis: 65%; }
+        }
         @media (prefers-reduced-motion: reduce) {
           *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
         }
@@ -799,6 +870,10 @@ enum WebUIRoutes {
         let messageCursor = "";
         let messageBuf = null;
         let messageRequest = null;
+        let transcriptMessages = [], transcriptFilter = "all", transcriptStep = -1, transcriptAllBusy = false;
+        let detailInfoDetail = null, detailInfoLoaded = false, detailInfoBusy = false, detailMessageCoverage = null;
+        let outlineEntries = [], outlineOpen = false;
+        let turnUsageNode = null, turnUsage = null, promptNumber = 0, messageTotal = null, activeOutlineOrdinal = null;
         let detailSource = "";
         let detailContextSession = "";
         let detailContextGeneration = "";
@@ -2634,6 +2709,9 @@ enum WebUIRoutes {
           detailExtrasVersion += 1;
           detailContextSession = "";
           detailContextGeneration = "";
+          detailInfoDetail = null; detailInfoLoaded = false; detailInfoBusy = false; detailMessageCoverage = null;
+          setText(document.getElementById("detail-info-content"), "");
+          document.getElementById("detail-info-panel").hidden = true;
           detailRelationship = { canWrite: false, checking: false };
           relationshipButtons = [];
           ["relationship-access", "relationship-status"].forEach(function (id) { setText(document.getElementById(id), ""); });
@@ -2740,12 +2818,13 @@ enum WebUIRoutes {
         document.getElementById("session-generate-title").addEventListener("click", function () { generateSessionText("title"); });
         document.getElementById("batch-title-button").addEventListener("click", generateMissingTitles);
         async function showDetailView(view) {
-          if (!detailContextSession || !["transcript", "timeline", "children"].includes(view)) return;
+          if (!detailContextSession || !["transcript", "timeline", "children", "info"].includes(view)) return;
           if (view === "timeline" && !detailContextGeneration) return;
-          ["transcript", "timeline", "children"].forEach(function (name) {
+          ["transcript", "timeline", "children", "info"].forEach(function (name) {
             document.getElementById("detail-view-" + name).setAttribute("aria-pressed", String(name === view));
-            document.getElementById((name === "children" ? "detail-children" : name) + "-panel").hidden = name !== view;
+            document.getElementById((name === "children" ? "detail-children" : name === "info" ? "detail-info" : name) + "-panel").hidden = name !== view;
           });
+          if (view === "info" && !detailInfoLoaded) await loadDetailInfo();
           if (view === "children" && !detailChildren.loaded) await loadDetailChildren(false);
           if (view === "timeline" && !detailTimeline.loaded) await loadDetailTimeline(false);
         }
@@ -2887,34 +2966,50 @@ enum WebUIRoutes {
           const sessionId = detailContextSession, generation = detailContextGeneration, version = detailExtrasVersion, token = requestEpoch;
           const rows = document.getElementById("timeline-rows"), status = document.getElementById("timeline-status");
           const offset = more ? state.next : 0;
-          const params = new URLSearchParams({ generation: generation, offset: String(offset), limit: "100" });
+          const params = new URLSearchParams({ generation: generation, offset: String(offset), limit: "500" });
           state.busy = true; setText(status, "Loading timeline…");
           try {
             const page = await api("GET", "/web/api/sessions/" + encodeURIComponent(sessionId) + "/timeline?" + params);
             if (version !== detailExtrasVersion || token !== requestEpoch) return;
             let previous = more ? state.lastIndex : -1;
             if (page.sessionId !== sessionId || page.generation !== generation || !Number.isSafeInteger(page.totalEntries) || page.totalEntries < 0 ||
-                !Array.isArray(page.entries) || (more && page.totalEntries !== state.total) ||
+                !Array.isArray(page.entries) || page.entries.length > 500 || (more && page.totalEntries !== state.total) ||
                 page.entries.some(function (entry) {
                   const invalid = !Number.isSafeInteger(entry.index) || entry.index < offset || entry.index <= previous || entry.index >= page.totalEntries ||
                     !["message", "tool_use", "tool_result"].includes(entry.type) || typeof entry.preview !== "string";
                   previous = entry.index; return invalid;
                 }) || (page.nextOffset != null && (!Number.isSafeInteger(page.nextOffset) || page.nextOffset <= offset || page.nextOffset <= previous || page.nextOffset >= page.totalEntries || !page.entries.length))) throw new Error("Invalid timeline page");
-            if (!more) { setText(rows, ""); state.count = 0; }
+            if (!more) { setText(rows, ""); state.count = 0; outlineEntries = []; }
+            outlineEntries = outlineEntries.concat(page.entries);
+            renderTranscriptOutline();
+            const durationMax = Math.max(1, ...page.entries.map(function (entry) { return Number.isFinite(entry.durationToNextMs) ? entry.durationToNextMs : 0; }));
             page.entries.forEach(function (entry) {
               const card = document.createElement("article"); card.className = "message";
               const meta = document.createElement("p"); meta.className = "meta";
-              ["#" + (entry.index + 1), entry.role, entry.type].forEach(function (part) { appendMetaPart(meta, textSpan(part)); });
-              if (entry.timestamp) appendMetaPart(meta, textSpan(entry.timestamp));
+              ["#" + entry.index, entry.role, entry.type].forEach(function (part) { appendMetaPart(meta, textSpan(part)); });
+              if (entry.timestamp) {
+                const time = document.createElement("time"); time.dateTime = entry.timestamp; time.title = entry.timestamp;
+                setText(time, recordedTime(entry.timestamp) + " · " + healthAgo(Math.floor(Date.parse(entry.timestamp) / 1000))); appendMetaPart(meta, time);
+              }
               if (entry.toolName) appendMetaPart(meta, textSpan(entry.toolName));
               if (entry.tokens) appendMetaPart(meta, textSpan("Tokens: " + entry.tokens.input + " in / " + entry.tokens.output + " out"));
               if (Number.isFinite(entry.durationToNextMs)) appendMetaPart(meta, textSpan((entry.durationToNextMs / 1000).toLocaleString("en-US") + " s to next"));
               card.appendChild(meta);
-              const preview = document.createElement("p"); setText(preview, entry.preview); card.appendChild(preview); rows.appendChild(card);
+              if (Number.isFinite(entry.durationToNextMs) && entry.durationToNextMs >= 0) {
+                const bar = svg("svg", {viewBox:"0 0 300 8", width:300, height:8, role:"img", "aria-label":entry.durationToNextMs / 1000 + " s to next · scaled to longest duration in this page (" + durationMax / 1000 + " s)", class:"timeline-duration"});
+                bar.appendChild(svg("rect", {x:0,y:0,width:300,height:8,fill:"var(--line)"}));
+                bar.appendChild(svg("rect", {x:0,y:0,width:300 * entry.durationToNextMs / durationMax,height:8,fill:"var(--accent)", "data-value":entry.durationToNextMs})); card.appendChild(bar);
+              }
+              const preview = document.createElement("p"); preview.className = "timeline-preview";
+              const plain = entry.preview.replace(/[*_`#]/g, "").trim(); setText(preview, clipPreview(plain) + (plain.length >= 100 ? "…" : "")); card.appendChild(preview);
+              const jump = document.createElement("a"); jump.setAttribute("href", "#/s/" + encodeURIComponent(sessionId) + "/m/" + entry.index); setText(jump, "Jump to message #" + entry.index);
+              jump.addEventListener("click", function (event) { event.preventDefault(); showDetailView("transcript"); jumpToOrdinal(entry.index); }); card.appendChild(jump); rows.appendChild(card);
             });
             state.count += page.entries.length; state.lastIndex = previous; state.total = page.totalEntries;
             state.next = page.nextOffset == null ? null : page.nextOffset; state.loaded = true;
             setText(status, state.count + " / " + state.total + " messages");
+            document.getElementById("transcript-outline-more").hidden = state.next == null;
+            setText(document.getElementById("transcript-outline-status"), state.count + " / " + state.total + " timeline entries. Unloaded prompts load at most 5 pages per jump; click again to continue.");
           } catch (error) {
             if (version === detailExtrasVersion && token === requestEpoch) setText(status, "Timeline unavailable. Refresh the session if its transcript changed.");
           } finally {
@@ -2932,6 +3027,13 @@ enum WebUIRoutes {
           messageRequest = null;
           detailSource = "";
           setText(messagesNode, "");
+          transcriptMessages = []; transcriptFilter = "all"; transcriptStep = -1; transcriptAllBusy = false;
+          turnUsage = null; turnUsageNode = null; promptNumber = 0; messageTotal = null; activeOutlineOrdinal = null; outlineEntries = []; outlineOpen = false;
+          document.getElementById("transcript-outline-box").hidden = true;
+          document.getElementById("transcript-outline-toggle").setAttribute("aria-expanded", "false");
+          setText(document.getElementById("transcript-outline-status"), "");
+          document.getElementById("transcript-outline-more").hidden = true;
+          updateTranscript();
           updateMessageMore();
         }
         async function api(method, path, body) {
@@ -3664,6 +3766,7 @@ enum WebUIRoutes {
               return value && value.generationId === detail.transcriptGeneration;
             });
             if (shownGeneration && Number.isSafeInteger(shownGeneration.normalizedMessageCount) && shownGeneration.normalizedMessageCount >= 0) {
+              messageTotal = shownGeneration.normalizedMessageCount;
               const count = document.createElement("span");
               setText(count, plural(shownGeneration.normalizedMessageCount, "message"));
               appendMetaPart(meta, count);
@@ -3672,6 +3775,7 @@ enum WebUIRoutes {
             detailNode.appendChild(heading);
             detailSource = session.source ? String(session.source) : "";
             const generation = detail.transcriptGeneration;
+            detailInfoDetail = detail;
             detailContextSession = session.sessionId;
             detailContextGeneration = generation || "";
             renderSessionSummary(detail.summary);
@@ -3725,6 +3829,15 @@ enum WebUIRoutes {
             parent.appendChild(node);
           }
           while (i < source.length) {
+            if (starts("http://") || starts("https://")) {
+              let end = i;
+              while (end < source.length && !" <>".includes(source.charAt(end)) && source.charCodeAt(end) > 32) end += 1;
+              while (end > i && ".,;!?)".includes(source.charAt(end - 1))) end -= 1;
+              const url = source.slice(i, end);
+              wrap("a", url, function (node) { node.setAttribute("href", url); node.setAttribute("target", "_blank"); node.setAttribute("rel", "noopener noreferrer"); setText(node, url); });
+              i = end; continue;
+            }
+            if (starts("![")) { parent.appendChild(textSpan("Image: ")); i += 1; }
             if (starts("`")) {
               i += 1;
               const inner = takeUntil("`");
@@ -3790,7 +3903,7 @@ enum WebUIRoutes {
               }
             }
             let j = i + 1;
-            while (j < source.length && "`*_~[".indexOf(source.charAt(j)) < 0) j += 1;
+            while (j < source.length && "`*_~[!".indexOf(source.charAt(j)) < 0 && source.slice(j, j + 7) !== "http://" && source.slice(j, j + 8) !== "https://") j += 1;
             parent.appendChild(textSpan(source.slice(i, j)));
             i = j;
           }
@@ -3798,16 +3911,17 @@ enum WebUIRoutes {
         function copyCode(button) {
           const block = button.closest(".code-block");
           const pre = block && block.querySelector("pre");
-          const text = pre ? pre.textContent : "";
-          function failed() { toast("Copy failed. Select the code and copy it manually.", "danger"); }
+          const text = button.dataset.copyText != null ? button.dataset.copyText : pre ? pre.textContent : "";
+          if (!button.dataset.copyLabel) button.dataset.copyLabel = button.textContent;
+          function failed() { setText(button, "Copy failed"); toast("Copy failed. Select the text and copy it manually.", "danger"); }
           if (!(typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function")) { failed(); return; }
           let pending;
           try { pending = Promise.resolve(navigator.clipboard.writeText(text)); } catch (error) { failed(); return; }
           pending.then(function () {
-            setText(button, "Copied");
+            setText(button, "Copied ✓");
             button.dataset.state = "copied";
             toast("Copied to clipboard", "ok");
-            if (typeof setTimeout === "function") setTimeout(function () { setText(button, "Copy"); button.dataset.state = ""; }, 1600);
+            if (typeof setTimeout === "function") setTimeout(function () { setText(button, button.dataset.copyLabel || "Copy"); button.dataset.state = ""; }, 1600);
           }, failed);
         }
         function renderRichText(root, raw) {
@@ -3876,7 +3990,7 @@ enum WebUIRoutes {
               const header = document.createElement("div");
               header.className = "code-header";
               const label = document.createElement("span");
-              setText(label, language);
+              setText(label, language || "Plain text");
               const button = document.createElement("button");
               button.type = "button";
               button.className = "copy-btn";
@@ -3884,14 +3998,29 @@ enum WebUIRoutes {
               button.addEventListener("click", function () { copyCode(button); });
               header.appendChild(label);
               header.appendChild(button);
+              const wrap = document.createElement("button"); wrap.type = "button"; setText(wrap, "Wrap");
+              wrap.addEventListener("click", function () { block.classList.toggle("wrap-code"); wrap.setAttribute("aria-pressed", String(block.classList.contains("wrap-code"))); });
+              header.appendChild(wrap);
               const pre = document.createElement("pre");
               const code = document.createElement("code");
-              setText(code, codeLines.join(String.fromCharCode(10)));
+              code.setAttribute("data-lang", language);
+              if (codeLines.length <= 400) codeLines.forEach(function (line, index) {
+                const row = document.createElement("span"); row.className = "code-line"; row.setAttribute("data-line-number", String(index + 1));
+                setText(row, line + (index < codeLines.length - 1 ? String.fromCharCode(10) : "")); code.appendChild(row);
+              }); else setText(code, codeLines.join(String.fromCharCode(10)));
               pre.appendChild(code);
               block.appendChild(header);
               block.appendChild(pre);
               root.appendChild(block);
               continue;
+            }
+            if (trimmed.indexOf("> ") === 0) {
+              flushParagraph();
+              const quote = document.createElement("blockquote");
+              while (i < lines.length && lines[i].trimStart().indexOf("> ") === 0) {
+                const p = document.createElement("p"); appendInline(p, lines[i].trimStart().slice(2)); quote.appendChild(p); i += 1;
+              }
+              root.appendChild(quote); continue;
             }
             const stripped = trimmed.replace(/ /g, "");
             if (isRule(stripped)) {
@@ -3946,47 +4075,22 @@ enum WebUIRoutes {
               }
             }
             const firstMark = listMarker(trimmed);
-            if (firstMark && firstMark.kind === "task") {
-              flushParagraph();
-              const list = document.createElement("ul");
+            if (firstMark) {
+              flushParagraph(); const stack = [];
               while (i < lines.length) {
-                const item = listMarker(lines[i].trimStart());
-                if (!item || item.kind !== "task") break;
+                const clean = lines[i].trimStart(), item = listMarker(clean); if (!item) break;
+                const indent = Math.min(40, lines[i].length - clean.length), tag = item.kind === "ol" ? "ol" : "ul";
+                while (stack.length && indent < stack[stack.length - 1].indent) stack.pop();
+                let level = stack[stack.length - 1];
+                if (!level || indent > level.indent || tag !== level.tag) {
+                  const list = document.createElement(tag);
+                  if (level && indent > level.indent && level.last) level.last.appendChild(list); else root.appendChild(list);
+                  level = { indent: indent, tag: tag, list: list, last: null }; stack.push(level);
+                }
                 const li = document.createElement("li");
-                setText(li, item.done ? "☑ " : "☐ ");
-                appendInline(li, item.text);
-                list.appendChild(li);
-                i += 1;
+                if (item.kind === "task") li.appendChild(textSpan(item.done ? "☑ " : "☐ "));
+                appendInline(li, item.text); level.list.appendChild(li); level.last = li; i += 1;
               }
-              root.appendChild(list);
-              continue;
-            }
-            if (firstMark && firstMark.kind === "ul") {
-              flushParagraph();
-              const list = document.createElement("ul");
-              while (i < lines.length) {
-                const item = listMarker(lines[i].trimStart());
-                if (!item || item.kind !== "ul") break;
-                const li = document.createElement("li");
-                appendInline(li, item.text);
-                list.appendChild(li);
-                i += 1;
-              }
-              root.appendChild(list);
-              continue;
-            }
-            if (firstMark && firstMark.kind === "ol") {
-              flushParagraph();
-              const list = document.createElement("ol");
-              while (i < lines.length) {
-                const item = listMarker(lines[i].trimStart());
-                if (!item || item.kind !== "ol") break;
-                const li = document.createElement("li");
-                appendInline(li, item.text);
-                list.appendChild(li);
-                i += 1;
-              }
-              root.appendChild(list);
               continue;
             }
             if (trimmed === "") {
@@ -3999,48 +4103,301 @@ enum WebUIRoutes {
           }
           flushParagraph();
         }
-        function renderMessage(role, payload) {
+        function detectedThinking(content) {
+          return ["<thinking>", "<antThinking>", "[thinking]", "**Thinking:**"].some(function (prefix) { return content.trimStart().indexOf(prefix) === 0; });
+        }
+        function toolError(text) {
+          return String(text || "").split(String.fromCharCode(10)).some(function (line) {
+            return /^error:/i.test(line.trimStart()) || line.indexOf("** TEST FAILED **") === 0 || /exit code[: ]+[1-9]/i.test(line);
+          });
+        }
+        function parsedToolInput(value) {
+          try { const parsed = JSON.parse(value); return parsed && typeof parsed === "object" ? parsed : {}; } catch (error) { return {}; }
+        }
+        function copyTextButton(label, text) {
+          const button = document.createElement("button"); button.type = "button"; button.className = "copy-btn";
+          button.dataset.copyText = text; setText(button, label);
+          button.addEventListener("click", function () { copyCode(button); }); return button;
+        }
+        function codeSection(parent, label, text) {
+          const block = document.createElement("div"); block.className = "code-block";
+          const header = document.createElement("div"); header.className = "code-header";
+          header.appendChild(textSpan(label)); header.appendChild(copyTextButton("Copy", text)); block.appendChild(header);
+          const pre = document.createElement("pre"); setText(pre, text); block.appendChild(pre); parent.appendChild(block); return block;
+        }
+        function renderUnifiedDiff(root, text) {
+          const lines = text.split(String.fromCharCode(10)), rows = [];
+          let oldLine = 0, newLine = 0, oldLeft = 0, newLeft = 0, seen = false, valid = true;
+          lines.forEach(function (line) {
+            let kind = "", number = null;
+            const match = line.match(/^@@ -([0-9]+)(,([0-9]+))? [+]([0-9]+)(,([0-9]+))? @@/);
+            if (match) {
+              if (oldLeft || newLeft) valid = false;
+              oldLine = Number(match[1]); newLine = Number(match[4]); oldLeft = match[3] == null ? 1 : Number(match[3]); newLeft = match[6] == null ? 1 : Number(match[6]);
+              if (![oldLine, newLine, oldLeft, newLeft].every(Number.isSafeInteger)) valid = false;
+              seen = true;
+            } else if (oldLeft || newLeft) {
+              if (line.indexOf("+") === 0) { kind = " diff-add"; number = "— / " + newLine++; newLeft -= 1; }
+              else if (line.indexOf("-") === 0) { kind = " diff-del"; number = oldLine++ + " / —"; oldLeft -= 1; }
+              else if (line.indexOf(" ") === 0) { number = oldLine++ + " / " + newLine++; oldLeft -= 1; newLeft -= 1; }
+              else if (line.charCodeAt(0) !== 92) valid = false;
+              if (oldLeft < 0 || newLeft < 0) valid = false;
+            } else if (line && !line.startsWith("--- ") && !line.startsWith("+++ ") && !line.startsWith("diff ") && !line.startsWith("index ") && line.charCodeAt(0) !== 92) valid = false;
+            rows.push({text:line, kind:kind, number:number});
+          });
+          if (!seen || !valid || oldLeft || newLeft) return false;
+          const pre = document.createElement("pre"); pre.className = "unified-diff";
+          const copy = copyTextButton("Copy diff", text); copy.classList.add("diff-copy"); root.appendChild(copy);
+          rows.forEach(function (item, index) {
+            const row = document.createElement("span"); row.className = "diff-row" + item.kind;
+            if (item.number != null) row.setAttribute("data-line-number", item.number);
+            setText(row, item.text + (index < rows.length - 1 ? String.fromCharCode(10) : "")); pre.appendChild(row);
+          });
+          root.appendChild(pre); return true;
+        }
+        function renderTool(call) {
+          const tools = document.createElement("details"); tools.className = "tool-call";
+          const input = toolJSON(call.input), output = toolJSON(call.output), args = parsedToolInput(input);
+          const failed = toolError(output); if (failed) tools.className += " tool-error";
+          const summary = document.createElement("summary");
+          const primary = (typeof args.pattern === "string" ? ["pattern"] : ["file_path", "path", "command", "cmd", "url", "query"]).find(function (key) { return typeof args[key] === "string"; });
+          fillDisclosure(summary, call.name || "Tool", primary ? args[primary] + (primary === "pattern" && args.path ? " · " + args.path : "") : input);
+          if (Number.isFinite(args.offset)) summary.appendChild(textSpan("Line " + args.offset + (Number.isFinite(args.limit) ? " · " + args.limit + " lines" : "")));
+          if (failed) { const badge = textSpan("Error (detected)"); badge.className = "error-label"; summary.appendChild(badge); }
+          tools.appendChild(summary);
+          const body = document.createElement("div"); body.className = "tool-content";
+          const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "raw-toggle"; setText(toggle, "Raw"); body.appendChild(toggle);
+          const formatted = document.createElement("div"); formatted.className = "tool-formatted";
+          const h = document.createElement("h4"); setText(h, "Input"); formatted.appendChild(h);
+          const edits = Array.isArray(args.edits) ? args.edits : [args]; let renderedEdit = false;
+          if (/^(edit|multiedit|search_replace|str_replace.*)$/i.test(call.name || "")) edits.forEach(function (edit) {
+            const old = edit.old_string != null ? edit.old_string : edit.old_str, next = edit.new_string != null ? edit.new_string : edit.new_str;
+            if (typeof old !== "string" || typeof next !== "string") return;
+            const nl = String.fromCharCode(10), oldLines = old ? old.split(nl) : [], newLines = next ? next.split(nl) : [];
+            const patch = ["--- provided old text", "+++ provided new text", "@@ -" + (oldLines.length ? 1 : 0) + "," + oldLines.length + " +" + (newLines.length ? 1 : 0) + "," + newLines.length + " @@"].concat(oldLines.map(function (line) { return "-" + line; }), newLines.map(function (line) { return "+" + line; })).join(nl);
+            formatted.appendChild(textSpan("Provided replacement · relative lines (not file positions)"));
+            renderUnifiedDiff(formatted, patch); renderedEdit = true;
+          });
+          if (!renderedEdit && !renderUnifiedDiff(formatted, input)) codeSection(formatted, /bash|shell/i.test(call.name || "") ? "$ Command / input" : "Input", input || "not reported");
+          const oh = document.createElement("h4"); setText(oh, "Output"); formatted.appendChild(oh);
+          const result = document.createElement("div"); result.className = "tool-output";
+          if (!renderUnifiedDiff(result, output)) codeSection(result, "Output", output || "not reported");
+          formatted.appendChild(result);
+          if (output.split(String.fromCharCode(10)).length > 16) {
+            const more = document.createElement("button"); more.type = "button"; setText(more, "Show more output");
+            more.addEventListener("click", function () { result.classList.toggle("expanded"); setText(more, result.classList.contains("expanded") ? "Show less output" : "Show more output"); }); formatted.appendChild(more);
+          }
+          const raw = document.createElement("div"); raw.className = "tool-raw"; raw.hidden = true;
+          codeSection(raw, "Input (raw)", input); codeSection(raw, "Output (raw)", output);
+          toggle.addEventListener("click", function () { raw.hidden = !raw.hidden; formatted.hidden = !raw.hidden; setText(toggle, raw.hidden ? "Raw" : "Formatted"); });
+          body.appendChild(formatted); body.appendChild(raw); tools.appendChild(body); return tools;
+        }
+        function renderMessage(role, payload, messageOrdinal) {
           const kind = role === "user" ? "user" : (role === "tool" || role === "system" ? role : "assistant");
+          const ordinal = Number.isSafeInteger(messageOrdinal) && messageOrdinal >= 0 ? messageOrdinal : transcriptMessages.length;
           const article = document.createElement("article");
           const tint = kind === "assistant" ? sourceClass(detailSource) : "";
           article.className = tint ? "message " + kind + " " + tint : "message " + kind;
-          if (kind === "user" || kind === "assistant") {
-            const roleNode = document.createElement("div");
-            roleNode.className = "role";
-            setText(roleNode, kind === "user" ? "You" : (detailSource ? sourceLabel(detailSource) : (role || "assistant")));
-            article.appendChild(roleNode);
+          article.dataset.ordinal = String(ordinal);
+          const previous = transcriptMessages[transcriptMessages.length - 1];
+          const priorCalls = previous && previous.payload.toolCalls || [], priorCall = priorCalls[priorCalls.length - 1];
+          const related = kind === "tool" && priorCall && !priorCall.output;
+          if (related) article.classList.add("associated-result");
+          const start = kind === "user" || !previous || previous.kind === "system" || (kind === "assistant" && previous.kind === "user");
+          article.classList.add(start ? "turn" : "turn-continuation");
+          if (kind === "user") { promptNumber += 1; turnUsageNode = null; turnUsage = null; }
+          if ((kind === "user" || kind === "assistant") && start) {
+            const roleNode = document.createElement("div"); roleNode.className = "role";
+            setText(roleNode, kind === "user" ? "You" : (detailSource ? sourceLabel(detailSource) : (role || "assistant"))); article.appendChild(roleNode);
           }
-          const content = payload && payload.content ? payload.content : "";
-          const calls = payload && payload.toolCalls ? payload.toolCalls : [];
-          if (kind === "tool" || kind === "system") {
-            const dump = document.createElement("details");
-            const summary = document.createElement("summary");
-            fillDisclosure(summary, kind === "tool" ? "Tool" : "System", content);
-            dump.appendChild(summary);
-            const body = document.createElement("pre");
-            setText(body, content);
-            dump.appendChild(body);
-            article.appendChild(dump);
-          } else if (String(content).trim() || calls.length === 0) {
-            const body = document.createElement("div");
-            body.className = "body";
-            renderRichText(body, content);
-            article.appendChild(body);
+          const meta = document.createElement("div"); meta.className = "message-meta";
+          if (kind === "user") meta.appendChild(textSpan("Prompt #" + promptNumber));
+          if (payload.timestamp) meta.appendChild(textSpan(payload.timestamp));
+          const link = document.createElement("a"); link.setAttribute("href", "#/s/" + encodeURIComponent(detailContextSession) + "/m/" + ordinal); setText(link, "#" + ordinal);
+          link.setAttribute("aria-label", "Message " + ordinal + " permalink");
+          // It4 will own hash navigation. Today a click jumps locally, while the href can be copied.
+          link.addEventListener("click", function (event) { event.preventDefault(); jumpToOrdinal(ordinal); }); meta.appendChild(link);
+          if (start) { const copyLink = copyTextButton("Copy link", window.location.origin + "/web" + link.getAttribute("href")); copyLink.className = "permalink-copy"; meta.appendChild(copyLink); }
+          if (kind === "assistant") {
+            if (!turnUsageNode || start) { turnUsageNode = textSpan(""); turnUsageNode.className = "turn-usage"; turnUsage = { input: 0, output: 0, cache: 0 }; meta.appendChild(turnUsageNode); }
+            if (payload.usage && Number.isFinite(payload.usage.inputTokens) && Number.isFinite(payload.usage.outputTokens)) {
+              turnUsage.input += payload.usage.inputTokens; turnUsage.output += payload.usage.outputTokens;
+              turnUsage.cache += (payload.usage.cacheReadTokens || 0) + (payload.usage.cacheCreationTokens || 0);
+              setText(turnUsageNode, turnUsage.input + " in → " + turnUsage.output + " out" + (turnUsage.cache ? " · " + turnUsage.cache + " cache" : ""));
+            }
           }
-          calls.forEach(function (call) {
-            const tools = document.createElement("details");
-            tools.className = "tool-call";
+          article.appendChild(meta);
+          const content = payload && payload.content ? String(payload.content) : "";
+          const calls = payload && Array.isArray(payload.toolCalls) ? payload.toolCalls : [];
+          const thinking = kind === "assistant" && detectedThinking(content);
+          let body = null;
+          if (kind === "tool" || kind === "system" || thinking) {
+            body = document.createElement("details");
+            if (thinking) body.className = "thinking";
             const summary = document.createElement("summary");
-            const dumpText = [toolJSON(call.input), toolJSON(call.output)].filter(Boolean).join("\\n");
-            fillDisclosure(summary, call.name || "Tool", dumpText);
-            tools.appendChild(summary);
-            const dump = document.createElement("pre");
-            setText(dump, dumpText);
-            tools.appendChild(dump);
-            article.appendChild(tools);
-          });
-          messagesNode.appendChild(article);
+            fillDisclosure(summary, thinking ? "Thinking (detected)" : kind === "tool" ? (related ? "Result · " + (priorCall.name || "Tool") + " (proximity)" : "Result") : content.indexOf("<teammate-message") === 0 ? "System · Agent communication (detected)" : content.indexOf("<") === 0 ? "System · Hook / meta (detected)" : "System prompt", content);
+            body.appendChild(summary); const pre = document.createElement("pre"); setText(pre, content); body.appendChild(pre); article.appendChild(body);
+          } else if (content.trim() || calls.length === 0) {
+            body = document.createElement("div"); body.className = "body"; renderRichText(body, content); article.appendChild(body);
+            ["h1", "h2", "h3", "h4", "h5", "h6"].forEach(function (tag) { body.querySelectorAll(tag).forEach(function (heading) {
+              const anchor = document.createElement("a"); anchor.className = "heading-link"; anchor.setAttribute("href", link.getAttribute("href")); setText(anchor, "#");
+              anchor.setAttribute("aria-label", "Link to message " + ordinal); anchor.addEventListener("click", function (event) { event.preventDefault(); jumpToOrdinal(ordinal); }); heading.appendChild(anchor);
+            }); });
+          }
+          const toolNodes = calls.map(function (call) { const node = renderTool(call); article.appendChild(node); return node; });
+          const item = { ordinal: ordinal, kind: kind, thinking: thinking, content: content, payload: payload, article: article, body: body, tools: toolNodes, error: toolError(content) || toolNodes.some(function (node) { return node.classList.contains("tool-error"); }) };
+          transcriptMessages.push(item); messagesNode.appendChild(article);
+          // Batch derived controls after a fragment page, not once per message (important for long sessions).
+          if (!messageRequest) updateTranscript();
         }
+        const transcriptTypes = [["all", "All"], ["user", "You"], ["assistant", "Agent"], ["tools", "Tools"], ["thinking", "Thinking"], ["errors", "Errors"], ["system", "System"]];
+        function transcriptMatches(item, type) {
+          if (type === "all") return true;
+          if (type === "tools") return item.kind === "tool" || item.tools.length > 0;
+          if (type === "thinking") return item.thinking;
+          if (type === "errors") return item.error;
+          return item.kind === type && !item.thinking;
+        }
+        function updateTranscript() {
+          const filters = document.getElementById("transcript-filters"); setText(filters, "");
+          transcriptTypes.forEach(function (type) {
+            const count = type[0] === "tools" ? transcriptMessages.reduce(function (n, item) { return n + item.tools.length + (item.kind === "tool" ? 1 : 0); }, 0) : transcriptMessages.filter(function (item) { return transcriptMatches(item, type[0]); }).length;
+            const button = document.createElement("button"); button.type = "button"; button.dataset.type = type[0]; setText(button, type[1] + " " + count + " in loaded");
+            button.setAttribute("aria-pressed", String(transcriptFilter === type[0]));
+            button.addEventListener("click", function () { transcriptFilter = type[0]; transcriptStep = -1; updateTranscript(); }); filters.appendChild(button);
+          });
+          transcriptMessages.forEach(function (item) {
+            item.article.hidden = !transcriptMatches(item, transcriptFilter);
+            if (item.body) item.body.hidden = transcriptFilter === "tools" && item.kind !== "tool";
+            item.tools.forEach(function (node) { node.hidden = !["all", "tools", "errors"].includes(transcriptFilter); });
+          });
+          setText(document.getElementById("transcript-loaded"), transcriptMessages.length + (messageTotal == null ? " loaded" : " of " + messageTotal + " loaded") + (messageCursor ? " · more available" : ""));
+          document.getElementById("transcript-load-all").hidden = !messageCursor;
+          document.getElementById("transcript-load-all").disabled = transcriptAllBusy;
+          if (messageCursor) setText(moreMessagesNode, "Load more (" + transcriptMessages.length + " loaded)");
+          renderTranscriptOutline();
+        }
+        function renderTranscriptOutline() {
+          const root = document.getElementById("transcript-outline"); setText(root, "");
+          const entries = outlineEntries.length ? outlineEntries : transcriptMessages.map(function (item) { return { index: item.ordinal, role: item.kind, preview: item.content, timestamp:item.payload.timestamp }; });
+          entries.forEach(function (entry, i) {
+            if (entry.role !== "user") return;
+            const loaded = transcriptMessages.find(function (item) { return item.ordinal === entry.index; });
+            const next = entries.slice(i + 1).find(function (candidate) { return candidate.role === "user"; });
+            const toolNames = new Map();
+            const tools = transcriptMessages.filter(function (item) { return item.ordinal >= entry.index && (!next || item.ordinal < next.index); }).reduce(function (sum, item) { (item.payload.toolCalls || []).forEach(function (call) { const name = call.name || "Tool"; toolNames.set(name, (toolNames.get(name) || 0) + 1); }); return sum + item.tools.length; }, 0);
+            const button = document.createElement("button"); button.type = "button"; button.dataset.ordinal = String(entry.index);
+            setText(button, "#" + entry.index + " · " + clipPreview(entry.preview) + " · " + tools + " tools in loaded" + (toolNames.size ? " (" + Array.from(toolNames).map(function (pair) { return pair[1] + " " + pair[0]; }).join(" · ") + ")" : "") + (entry.timestamp ? " · " + recordedTime(entry.timestamp) : "") + (loaded ? "" : " · not loaded"));
+            button.setAttribute("aria-current", String(activeOutlineOrdinal === entry.index));
+            button.addEventListener("click", function () { jumpToOrdinal(entry.index); }); root.appendChild(button);
+          });
+        }
+        async function jumpToOrdinal(ordinal) {
+          const token = requestEpoch; let pages = 0;
+          while (!transcriptMessages.some(function (item) { return item.ordinal === ordinal; }) && messageCursor && pages < 5 && token === requestEpoch) {
+            if (messageRequest) break;
+            await loadMessages(token, messageSessionId, messageGeneration, messageCursor); pages += 1;
+          }
+          if (token !== requestEpoch) return;
+          const item = transcriptMessages.find(function (candidate) { return candidate.ordinal === ordinal; });
+          if (!item) { toast("Message not loaded. Use Load more or click the outline again.", "warning"); return; }
+          transcriptFilter = "all"; activeOutlineOrdinal = ordinal; updateTranscript();
+          if (typeof item.article.scrollIntoView === "function") item.article.scrollIntoView({ block: "start", behavior: "instant" });
+          item.article.classList.add("jump-target");
+          if (typeof setTimeout === "function") setTimeout(function () { item.article.classList.remove("jump-target"); }, 2000);
+        }
+        let outlineScrollScheduled = false;
+        window.addEventListener("scroll", function () {
+          if (!outlineOpen || outlineScrollScheduled) return;
+          function update() {
+            outlineScrollScheduled = false;
+            let ordinal = null;
+            transcriptMessages.forEach(function (item) {
+              if (item.kind === "user" && typeof item.article.getBoundingClientRect === "function" && item.article.getBoundingClientRect().top <= 210) ordinal = item.ordinal;
+            });
+            if (ordinal !== activeOutlineOrdinal) {
+              activeOutlineOrdinal = ordinal;
+              document.getElementById("transcript-outline").querySelectorAll("button").forEach(function (button) { button.setAttribute("aria-current", String(Number(button.dataset.ordinal) === ordinal)); });
+            }
+          }
+          if (typeof requestAnimationFrame === "function") { outlineScrollScheduled = true; requestAnimationFrame(update); } else update();
+        });
+        async function loadAllMessages() {
+          if (transcriptAllBusy || messageRequest) return;
+          const token = requestEpoch, version = detailExtrasVersion; transcriptAllBusy = true; updateTranscript();
+          try {
+            let pages = 0;
+            while (messageCursor && token === requestEpoch && version === detailExtrasVersion && pages < 100) {
+              const cursor = messageCursor; await loadMessages(token, messageSessionId, messageGeneration, cursor); pages += 1;
+              if (cursor === messageCursor) break;
+              // Yield between pages. No eagerly fetched huge-session history on opening.
+              if (typeof requestAnimationFrame === "function") await new Promise(function (resolve) { requestAnimationFrame(resolve); });
+            }
+          } catch (error) { if (token === requestEpoch) toast("Could not load more messages. Retry Load more.", "danger"); }
+          finally { if (token === requestEpoch && version === detailExtrasVersion) { transcriptAllBusy = false; updateTranscript(); } }
+        }
+        async function loadDetailInfo() {
+          if (!detailContextSession || detailInfoBusy) return;
+          const id = detailContextSession, token = requestEpoch, version = detailExtrasVersion;
+          const root = document.getElementById("detail-info-content"); detailInfoBusy = true; setText(root, "Loading session info…");
+          const params = new URLSearchParams({sessionId:id, agents:"all", limit:"1"});
+          try {
+            const results = await Promise.all([
+              api("GET", "/web/api/costs/sessions?" + params).catch(function () { return null; }),
+              api("GET", "/web/api/costs?" + new URLSearchParams({sessionId:id, agents:"all", groupBy:"model", limit:"100"})).catch(function () { return null; })
+            ]);
+            // Each read can expire the session while its sibling succeeds.
+            if (token !== requestEpoch || version !== detailExtrasVersion || id !== detailContextSession) return;
+            setText(root, ""); const dl = document.createElement("dl"); root.appendChild(dl);
+            function field(label, value) { const dt = document.createElement("dt"), dd = document.createElement("dd"); setText(dt, label); setText(dd, value == null || value === "" ? "not reported" : String(value)); dl.appendChild(dt); dl.appendChild(dd); return dd; }
+            const detail = detailInfoDetail || {}, session = detail.session || {}, identity = session.captureIdentity || {};
+            field("Session ID", id); root.appendChild(copyTextButton("Copy session ID", id));
+            const native = field("Native ID", session.nativeId), machine = field("Machine ID", identity.machineId);
+            if (session.nativeId) native.appendChild(copyTextButton("Copy native ID", session.nativeId));
+            if (identity.machineId) machine.appendChild(copyTextButton("Copy machine ID", identity.machineId)); field("Source", session.source ? sourceLabel(session.source) : null);
+            const project = field("Project", session.projectLabel || session.projectKey);
+            if (session.projectKey) {
+              const filter = document.createElement("button"); filter.type = "button"; setText(filter, "Sessions in project");
+              filter.addEventListener("click", function () {
+                facets.project.selected.clear(); facets.project.selected.set(session.projectKey, session.projectLabel || session.projectKey);
+                updateFacetSummary("project"); renderFacets("project"); showSessionList(); refreshLibrary().catch(function () {});
+              }); project.appendChild(filter);
+            }
+            field("Generation", detail.transcriptGeneration);
+            field("Transcript", detail.transcriptAvailability); field("Attempt", detail.currentAttempt ? [detail.currentAttempt.status, detail.currentAttempt.failureCode].filter(Boolean).join(" · ") : null);
+            const perSession = results[0] && Array.isArray(results[0].items) ? results[0].items.find(function (item) { return item.session && item.session.sessionId === id; }) : null;
+            const costs = results[1], totals = costs && costs.totals;
+            field("Model", perSession && perSession.model);
+            field("Cost (USD)", perSession && Number.isFinite(perSession.costUsd) ? "$" + perSession.costUsd.toFixed(2) : null);
+            ["inputTokens", "outputTokens", "cacheReadTokens", "cacheCreationTokens"].forEach(function (key) { field(key, perSession && Number.isFinite(perSession[key]) ? perSession[key] : totals && Number.isFinite(totals[key]) ? totals[key] : null); });
+            if (costs && Array.isArray(costs.items)) costs.items.forEach(function (item) { field("Model usage · " + item.label, Number.isFinite(item.inputTokens) && Number.isFinite(item.outputTokens) ? item.inputTokens + " in → " + item.outputTokens + " out" : null); });
+            field("Unpriced coverage", costs ? (costs.unpricedUnattributedSessions == null ? "not reported" : costs.unpricedUnattributedSessions + " unattributed sessions") + " · " + (costs.unpricedNoPriceSessions == null ? "not reported" : costs.unpricedNoPriceSessions + " sessions without price") : null);
+            field("Loaded messages", transcriptMessages.length); field("Generation message count", messageTotal); field("Truncation", detailMessageCoverage && detailMessageCoverage.truncatedAt); field("Parse failure", detailMessageCoverage && detailMessageCoverage.parseFailure);
+            const note = document.createElement("p"); setText(note, "Missing values are not reported, not zero. Parent/model metadata in the summary is deferred It9; no model is inferred from the source."); root.appendChild(note);
+            if (!results[0] || !results[1]) {
+              const missing = document.createElement("p"); setText(missing, "Cost data unavailable. Missing values are not reported."); root.appendChild(missing);
+              const retry = document.createElement("button"); retry.type = "button"; setText(retry, "Retry cost data"); retry.addEventListener("click", loadDetailInfo); root.appendChild(retry);
+            }
+            detailInfoLoaded = true;
+          } finally { if (token === requestEpoch && version === detailExtrasVersion) detailInfoBusy = false; }
+        }
+        document.getElementById("transcript-outline-toggle").addEventListener("click", function () {
+          outlineOpen = !outlineOpen; document.getElementById("transcript-outline-box").hidden = !outlineOpen; document.getElementById("transcript-outline-box").open = outlineOpen;
+          this.setAttribute("aria-expanded", String(outlineOpen));
+          if (outlineOpen && !detailTimeline.loaded) loadDetailTimeline(false); else renderTranscriptOutline();
+        });
+        document.getElementById("transcript-outline-more").addEventListener("click", function () { loadDetailTimeline(true); });
+        document.getElementById("transcript-load-all").addEventListener("click", loadAllMessages);
+        document.getElementById("transcript-end").addEventListener("click", function () { const last = transcriptMessages[transcriptMessages.length - 1]; if (last) jumpToOrdinal(last.ordinal); });
+        ["previous", "next"].forEach(function (direction) { document.getElementById("transcript-" + direction).addEventListener("click", function () {
+          const matches = transcriptMessages.filter(function (item) { return transcriptMatches(item, transcriptFilter); });
+          if (!matches.length) return; transcriptStep = (transcriptStep + (direction === "next" ? 1 : -1) + matches.length) % matches.length;
+          const item = matches[transcriptStep]; if (typeof item.article.scrollIntoView === "function") item.article.scrollIntoView({block:"start"});
+        }); });
+        document.getElementById("transcript-copy-id").addEventListener("click", function () { this.dataset.copyText = detailContextSession; copyCode(this); });
+        document.getElementById("transcript-copy").addEventListener("click", function () {
+          this.dataset.copyText = transcriptMessages.map(function (item) { return "## " + item.kind + " (#" + item.ordinal + ")" + String.fromCharCode(10) + item.content + (item.payload.toolCalls || []).map(function (call) { return String.fromCharCode(10) + (call.name || "Tool") + String.fromCharCode(10) + toolJSON(call.input) + String.fromCharCode(10) + toolJSON(call.output); }).join(""); }).join(String.fromCharCode(10, 10)); copyCode(this);
+        });
         function acceptFragment(fragment) {
           const piece = encoder.encode(fragment.payloadFragment || "");
           const ordinal = fragment.messageOrdinal;
@@ -4071,7 +4428,7 @@ enum WebUIRoutes {
               offset += messageBuf.chunks[i].length;
             }
             const text = decoder.decode(assembled);
-            renderMessage(messageBuf.role, JSON.parse(text));
+            renderMessage(messageBuf.role, JSON.parse(text), messageBuf.ordinal);
             messageBuf = null;
           }
         }
@@ -4082,14 +4439,17 @@ enum WebUIRoutes {
           messageRequest = pending;
           messageSessionId = sessionId;
           messageGeneration = generation;
-          let path = "/web/api/sessions/" + encodeURIComponent(sessionId) + "/messages?generation=" + encodeURIComponent(generation);
+          let path = "/web/api/sessions/" + encodeURIComponent(sessionId) + "/messages?generation=" + encodeURIComponent(generation) + "&maxFragments=100";
           if (cursor) path += "&cursor=" + encodeURIComponent(cursor);
           try {
             const page = await api("GET", path);
             if (token !== requestEpoch) return;
+            if ((page.sessionId != null && page.sessionId !== sessionId) || (page.generation != null && page.generation !== generation)) throw new Error("changed generation");
+            detailMessageCoverage = {truncatedAt:page.truncatedAt, parseFailure:page.parseFailure};
             (page.fragments || []).forEach(acceptFragment);
+            if (page.nextCursor && page.nextCursor === cursor) throw new Error("repeated message cursor");
             messageCursor = page.nextCursor || "";
-            updateMessageMore();
+            updateMessageMore(); updateTranscript();
             if (messageBuf && !messageCursor) setStatus("incomplete message");
             if (messageBuf && messageCursor) {
               if (messageRequest === pending) messageRequest = null;
@@ -4179,7 +4539,7 @@ enum WebUIRoutes {
         ["search-mode", "search-limit"].forEach(function (id) {
           document.getElementById(id).addEventListener("change", function () { if (activePage === "search") refreshLibrary().catch(function () {}); });
         });
-        ["transcript", "timeline", "children"].forEach(function (view) {
+        ["transcript", "timeline", "children", "info"].forEach(function (view) {
           document.getElementById("detail-view-" + view).addEventListener("click", function () { showDetailView(view); });
         });
         document.getElementById("timeline-more").addEventListener("click", function () { loadDetailTimeline(true); });

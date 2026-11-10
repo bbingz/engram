@@ -116,6 +116,28 @@ final class WebUIRoutesTests: XCTestCase {
         XCTAssertTrue(css.contains("max-width: 960px"))
     }
 
+    func testTranscriptReadingAssetsKeepSafeOrdinalAndLazyInfoContracts() async throws {
+        let harness = try UIHarness(configuration: configuration())
+        let html = try await bodyText(try await harness.respond(request(path: "/web", headers: [("Host", "viewer.example")])))
+        let js = try await bodyText(try await harness.respond(request(path: "/web/app.js", headers: [("Host", "viewer.example")])))
+        let css = try await bodyText(try await harness.respond(request(path: "/web/app.css", headers: [("Host", "viewer.example")])))
+        for hook in ["detail-header", "detail-view-info", "detail-info-panel", "detail-info-content",
+                     "transcript-toolbar", "transcript-filters", "transcript-outline", "transcript-load-all"] {
+            XCTAssertTrue(html.contains("id=\"\(hook)\""), hook)
+        }
+        for contract in ["maxFragments=100", "data-line-number", "data-lang", "Thinking (detected)",
+                         "Error (detected)", "in loaded", "async function loadDetailInfo()", "agents:\"all\"",
+                         "typeof navigator.clipboard.writeText === \"function\"", "limit: \"500\"",
+                         "renderMessage(messageBuf.role, JSON.parse(text), messageBuf.ordinal)",
+                         "token !== requestEpoch || version !== detailExtrasVersion"] {
+            XCTAssertTrue(js.contains(contract), contract)
+        }
+        XCTAssertTrue(css.contains("#detail-header { position: sticky"))
+        XCTAssertTrue(css.contains("max-width: 960px"))
+        XCTAssertLessThanOrEqual(js.utf8.count, 360_000)
+        XCTAssertLessThanOrEqual(css.utf8.count, 80_000)
+    }
+
     func testJavaScriptUsesTextContentAndExistingAPIsForLoginLogoutAndPaging() async throws {
         let harness = try UIHarness(configuration: configuration())
         let js = try await bodyText(try await harness.respond(request(path: "/web/app.js", headers: [("Host", "viewer.example")])))
