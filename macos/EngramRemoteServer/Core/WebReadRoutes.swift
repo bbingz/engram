@@ -3,6 +3,7 @@ import Hummingbird
 
 /// Typed read seam. Metadata GET routes map onto one stored Surface.
 enum WebReadRoutes {
+    typealias MatchReader = @Sendable (EngramServiceWebMatchRequest) async throws -> EngramServiceWebMatchResponse
     typealias MessagesReader = @Sendable (EngramServiceWebMessagesRequest) async throws -> EngramServiceWebMessagesResponse
     typealias OverviewReader = @Sendable (EngramServiceWebOverviewRequest) async throws -> EngramServiceWebOverviewResponse
     typealias SessionsReader = @Sendable (EngramServiceWebSessionsRequest) async throws -> EngramServiceWebSessionsResponse
@@ -30,6 +31,7 @@ enum WebReadRoutes {
     typealias ProjectCwdsReader = @Sendable (EngramServiceWebProjectCwdsRequest) async throws -> EngramServiceWebProjectCwdsResponse
 
     struct Surface: Sendable {
+        var match: MatchReader = { _ in throw EngramServiceWebReadClientError.unsupported }
         var messages: MessagesReader
         var overview: OverviewReader
         var sessions: SessionsReader
@@ -75,7 +77,7 @@ enum WebReadRoutes {
     private static let settingsQueryNames: Set<String> = ["limit", "snapshotId", "cursor"]
     private static let searchQueryNames: Set<String> = [
         "query", "source", "sources", "machineId", "sourceInstanceId", "projectKey", "projectKeys",
-        "sessionId", "agents", "since", "until", "tools", "mode", "limit",
+        "sessionId", "agents", "since", "until", "tools", "mode", "limit", "snapshotId", "cursor",
     ]
     private static let searchStatusQueryNames: Set<String> = [
         "source", "sources", "machineId", "sourceInstanceId", "projectKey", "projectKeys",
@@ -103,6 +105,7 @@ enum WebReadRoutes {
     static func makeSurface(socketPath: String) throws -> Surface {
         let client = try EngramServiceWebReadClient(socketPath: socketPath)
         return Surface(
+            match: { request in try await client.match(request) },
             messages: { request in try await client.messages(request) },
             overview: { request in try await client.overview(request) },
             sessions: { request in try await client.sessions(request) },
@@ -162,6 +165,15 @@ enum WebReadRoutes {
                 return Response(status: .badRequest)
             }
             return try await respond(surface.children, input)
+        }
+        router.get("/web/api/sessions/:id/match") { request, context in
+            let input: EngramServiceWebMatchRequest
+            do {
+                let fields = try queryFields(request, names: ["generation", "q"])
+                guard let id = context.parameters.get("id"), let generation = fields["generation"], let q = fields["q"] else { throw EngramServiceWebReadError.invalidField("match") }
+                input = try .init(sessionId: id, generation: generation, q: q)
+            } catch { return Response(status: .badRequest) }
+            return try await respond(surface.match, input)
         }
         router.get("/web/api/sessions/:id/timeline") { request, context in
             let input: EngramServiceWebTimelineRequest
@@ -483,7 +495,7 @@ enum WebReadRoutes {
                 }
                 return mode
             } ?? .keyword,
-            limit: limit
+            limit: limit, snapshotId: fields["snapshotId"], cursor: fields["cursor"]
         )
     }
 

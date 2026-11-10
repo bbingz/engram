@@ -145,7 +145,7 @@ struct WebRequestBoundary: Sendable {
               !sessionID.isEmpty, sessionID != ".", sessionID != "..",
               !sessionID.contains("/"), !sessionID.contains("\\"),
               !sessionID.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return false }
-        return parts.count == 5 || parts[5] == "messages" || parts[5] == "children" || parts[5] == "timeline"
+        return parts.count == 5 || parts[5] == "messages" || parts[5] == "children" || parts[5] == "timeline" || parts[5] == "match"
     }
 
     private static func isInsightDetailPath(_ path: String) -> Bool {

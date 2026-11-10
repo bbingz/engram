@@ -30,6 +30,33 @@ final class WebMetadataHTTPTests: XCTestCase {
 
     private var socketPath: String { directory.appendingPathComponent("service.sock").path }
 
+    func testIt9B3SearchContinuationAndMatchReadBoundary() async throws {
+        var surface = recordingSurface(recorders: A5bRouteRecorders())
+        surface.search = { request in
+            XCTAssertEqual(request.snapshotId, Self.snapshot); XCTAssertEqual(request.cursor, "opaque")
+            return .init(observedAt: 1_778_000_000, query: request.query, items: [], searchModes: ["keyword"], warning: nil, warningCode: nil,
+                snapshotId: Self.snapshot, hasMore: false, truncated: false, cohortSize: 0, coverage: "Frozen cohort")
+        }
+        surface.match = { request in
+            XCTAssertEqual(request.q, "alpha beta"); XCTAssertEqual(request.sessionId, "s")
+            return .init(sessionId: request.sessionId, generation: request.generation, messageOrdinal: 3, reason: nil, matchScope: .allTerms)
+        }
+        try await withServer(surface: surface) { server in
+            let cookie = try await Self.login(server), headers = Self.originHeaders + [("Cookie", cookie)]
+            let page = try await server.request("GET", "/web/api/search?query=alpha&snapshotId=\(Self.snapshot)&cursor=opaque", headers: headers)
+            XCTAssertEqual(page.status, 200)
+            let path = "/web/api/sessions/s/match?generation=\(String(repeating: "a", count: 64))&q=alpha%20beta"
+            let match = try await server.request("GET", path, headers: headers)
+            XCTAssertEqual(match.status, 200); Self.assertSecurityHeaders(match)
+            if match.status == 200 { XCTAssertEqual(try JSONDecoder().decode(EngramServiceWebMatchResponse.self, from: match.body).messageOrdinal, 3) }
+            for suffix in ["&path=evil", "&q=duplicate"] {
+                let bad = try await server.request("GET", path + suffix, headers: headers); XCTAssertEqual(bad.status, 400)
+            }
+            let denied = try await server.request("GET", path, headers: Self.originHeaders); XCTAssertEqual(denied.status, 401)
+            let write = try await server.request("POST", path, headers: headers); XCTAssertNotEqual(write.status, 200)
+        }
+    }
+
     func testOverviewDefaultQueryReturnsTypedDTO() async throws {
         let fixture = try fixture()
         defer { fixture.stop() }

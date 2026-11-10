@@ -9275,3 +9275,133 @@ describe('It9 B2 summary metadata and lazy nesting', () => {
     expect(current.textContent).toContain('Retry');
   });
 });
+
+describe('It9 B3 search cohort and proven match landing', () => {
+  it('loads more against the original query snapshot and displays both membership', async () => {
+    const ui = harness();
+    await ui.call('activatePage("search")');
+    ui.node('query').value = 'needle';
+    const first = ui.call('loadRankedSearch()');
+    ui.requests[0].resolve({
+      query: 'needle',
+      snapshotId: 'snapshot',
+      nextCursor: 'next',
+      hasMore: true,
+      truncated: true,
+      coverage: 'Frozen capped cohort',
+      items: [
+        { session: { sessionId: 'a', title: 'First' }, matchType: 'both' },
+      ],
+    });
+    await first;
+    expect(ui.node('sessions').textContent).toContain('Keyword + semantic');
+    expect(ui.node('search-more').hidden).toBe(false);
+    ui.node('query').value = 'edited-but-not-submitted';
+    const next = ui.call('loadRankedSearch(true)');
+    const params = new URLSearchParams(ui.requests[1].path.split('?')[1]);
+    expect(params.get('query')).toBe('needle');
+    expect(params.get('snapshotId')).toBe('snapshot');
+    expect(params.get('cursor')).toBe('next');
+    ui.requests[1].resolve({
+      query: 'needle',
+      snapshotId: 'snapshot',
+      hasMore: false,
+      coverage: 'Frozen capped cohort',
+      items: [
+        { session: { sessionId: 'b', title: 'Second' }, matchType: 'keyword' },
+      ],
+    });
+    await next;
+    expect(ui.node('sessions').textContent).toContain('First');
+    expect(ui.node('sessions').textContent).toContain('Second');
+    expect(ui.node('sessions').children.every((n) => !n.hidden)).toBe(true);
+    expect(ui.node('search-more').hidden).toBe(true);
+  });
+  it.each([3, null])(
+    'uses only a resolver-proven ordinal (%s), otherwise prefills Find',
+    async (ordinal) => {
+      const ui = harness();
+      await ui.call('activatePage("search")');
+      ui.node('query').value = 'needle';
+      const generation = 'a'.repeat(64);
+      const work = ui.call('openDetail("s",null,false,{q:"needle"})');
+      ui.requests[0].resolve({
+        detail: {
+          session: { sessionId: 's' },
+          transcriptGeneration: generation,
+        },
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(ui.requests[1].path).toContain('/web/api/sessions/s/match?');
+      ui.requests[1].resolve({
+        sessionId: 's',
+        generation,
+        messageOrdinal: ordinal,
+        reason: ordinal === null ? 'summaryOnly' : null,
+        matchScope: ordinal === null ? null : 'allTerms',
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      ui.requests[2].resolve({
+        fragments: Array.from({ length: 4 }, (_, i) => ({
+          messageOrdinal: i,
+          fragmentIndex: 0,
+          utf8Offset: 0,
+          role: 'assistant',
+          payloadSHA256: 'hash',
+          isLastFragment: true,
+          payloadFragment: JSON.stringify({ content: 'needle ' + i }),
+        })),
+      });
+      await work;
+      if (ordinal === null) {
+        expect(ui.node('transcript-find-query').value).toBe('needle');
+        expect(ui.node('toast-region').textContent).toContain(
+          'Exact match position unavailable',
+        );
+      } else {
+        expect(await ui.call('window.location.hash')).toContain('/m/3');
+        expect(
+          ui.node('messages').children[3].classList.contains('jump-target'),
+        ).toBe(true);
+      }
+    },
+  );
+});
+
+it('uses the resolver-issued opaque cursor for a deep match without sequential page chasing', async () => {
+  const ui = harness(),
+    generation = 'a'.repeat(64);
+  const work = ui.call('openDetail("s",null,false,{q:"deepneedle"})');
+  ui.requests[0].resolve({
+    detail: { session: { sessionId: 's' }, transcriptGeneration: generation },
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  ui.requests[1].resolve({
+    sessionId: 's',
+    generation,
+    messageOrdinal: 1100,
+    matchScope: 'allTerms',
+    messageCursor: 'opaque-proven',
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(
+    new URLSearchParams(ui.requests[2].path.split('?')[1]).get('cursor'),
+  ).toBe('opaque-proven');
+  ui.requests[2].resolve({
+    fragments: [
+      {
+        messageOrdinal: 1100,
+        fragmentIndex: 0,
+        utf8Offset: 0,
+        role: 'user',
+        payloadSHA256: 'hash',
+        isLastFragment: true,
+        payloadFragment: JSON.stringify({ content: 'deepneedle' }),
+      },
+    ],
+  });
+  await work;
+  expect(await ui.call('window.location.hash')).toContain('/m/1100');
+  expect(ui.node('messages').textContent).toContain('Loaded prompt #1');
+  expect(ui.requests).toHaveLength(3);
+});

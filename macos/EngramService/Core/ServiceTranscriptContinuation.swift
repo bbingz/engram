@@ -199,6 +199,16 @@ enum ServiceTranscriptContinuation {
         return empty
     }
 
+    /// Reuse the existing generation/role/redaction/payload-bound cursor for a
+    /// proved match, so landing never has to scan arbitrarily many Web pages.
+    static func matchCursor(sessionId: String, generation: String, ordinal: Int, message: NormalizedMessage) throws -> String {
+        let request = try EngramServiceWebMessagesRequest(sessionId: sessionId, generation: generation)
+        guard (0..<EngramServiceWebReadLimits.maximumMessages).contains(ordinal) else { throw EngramServiceWebReadError.invalidCursor }
+        return try Cursor(sessionSHA256: sha256(Data(sessionId.utf8)), generation: generation,
+            roles: request.roles, messageOrdinal: ordinal, utf8Offset: 0,
+            payloadSHA256: sha256(redactedPayload(for: message))).encode()
+    }
+
     static func startingOrdinal(for request: EngramServiceWebMessagesRequest) throws -> Int {
         try validatedCursor(for: request)?.messageOrdinal ?? 0
     }

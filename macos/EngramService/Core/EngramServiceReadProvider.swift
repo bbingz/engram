@@ -1170,183 +1170,182 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         warningCode: String?,
         immediate: Bool = false
     ) async throws -> EngramServiceSearchResponse {
-        let tokens = CJKText.searchableTerms(query)
-        guard !tokens.isEmpty else {
-            return EngramServiceSearchResponse(
-                items: [],
-                searchModes: ["keyword"],
-                warning: warning,
-                warningCode: warningCode
-            )
-        }
         let search: @Sendable (GRDB.Database) throws -> EngramServiceSearchResponse = { db in
-            let termMatches = CJKText.ftsMatchTerms(tokens)
-            // With the owned FTS layout and its covering `(id, c0)` shadow
-            // index, a MATCH hit resolves its UNINDEXED `session_id` from the
-            // index instead of seeking the content row. Fail closed to the
-            // virtual-table column when the layout or index is not ours.
-            let identityIndexed = try FTSRebuildPolicy.hasOwnedContentIdentityIndex(db)
-            // Search at session granularity: every query token must exist
-            // somewhere in the session, not necessarily in the same FTS row.
-            //
-            // Three phases, each bounded by the one before it:
-            //  1. `mN_hits` / `mN`: per-token hit rows and candidate sessions.
-            //     Tokens of >= 3 scalars (Latin or CJK) use trigram MATCH,
-            //     which is index-only; shorter tokens have no trigram and use
-            //     a recency-ordered LIKE through fts_map with an early-stop
-            //     LIMIT (unbounded content LIKE 503s the 8s Search budget).
-            //  2. `top`: AND-join the candidates, probe `sessions` by primary
-            //     key (CROSS JOIN fixes the order), apply filters, rank, LIMIT.
-            //  3. `mN_best`: choose one matched row per LIMIT'd session and
-            //     read content / snippet() for those rows only.
-            // The earlier single-pass shape ran two correlated MATCH subqueries
-            // per candidate session and read content for every hit; against
-            // the HQ corpus (777k FTS rows) a routine query exceeded the Web's
-            // 8s search deadline.
-            var ctes: [String] = []
-            var args: [DatabaseValueConvertible] = []
-            var candidateJoins: [String] = []
-            for (index, token) in tokens.enumerated() {
-                let alias = "m\(index)"
-                if CJKText.usesTrigramMatch(token) {
-                    if identityIndexed {
-                        ctes.append("""
-                            \(alias)_hits AS MATERIALIZED (
-                                SELECT sessions_fts.rowid AS fts_rowid, f.c0 AS session_id,
-                                       sessions_fts.rank AS rank
-                                FROM sessions_fts
-                                JOIN sessions_fts_content f INDEXED BY \(FTSRebuildPolicy.contentIdentityIndexName)
-                                  ON f.id = sessions_fts.rowid
-                                WHERE sessions_fts MATCH ?
-                            )
-                        """)
-                    } else {
-                        ctes.append("""
-                            \(alias)_hits AS MATERIALIZED (
-                                SELECT rowid AS fts_rowid, session_id, rank
-                                FROM sessions_fts
-                                WHERE sessions_fts MATCH ?
-                            )
-                        """)
-                    }
-                    args.append(termMatches[index])
-                } else {
-                    ctes.append(try shortTokenHitsCTE(alias: alias, db: db))
-                    args.append("%\(CJKText.escapeLikePattern(token))%")
-                    args.append(Self.shortQueryHitCap(limit: limit))
-                }
-                ctes.append("""
-                    \(alias) AS MATERIALIZED (
-                        SELECT session_id, MIN(rank) AS rank
-                        FROM \(alias)_hits
-                        GROUP BY session_id
-                    )
-                """)
-                if index > 0 {
-                    candidateJoins.append("JOIN \(alias) ON \(alias).session_id = m0.session_id")
-                }
-            }
-            var topParts = ["""
-                top AS MATERIALIZED (
-                    SELECT s.*, m0.rank AS search_rank
-                    FROM m0
-                    \(candidateJoins.joined(separator: " "))
-                    CROSS JOIN sessions s ON s.id = m0.session_id
-                    WHERE s.hidden_at IS NULL
-                      -- docs/invariants.md #3: keyword search excludes skip and lite tiers.
-                      AND \(SessionSemanticSearchPolicy.searchableTierSQL)
-            """]
-            appendSearchFilters(for: request, scope: scope, to: &topParts, args: &args)
-            topParts.append("""
-                    ORDER BY m0.rank, s.start_time DESC
-                    LIMIT ?
-                )
-            """)
-            args.append(limit)
-            ctes.append(topParts.joined(separator: " "))
-            var bestJoins: [String] = []
-            for (index, token) in tokens.enumerated() {
-                let alias = "m\(index)"
-                if CJKText.usesTrigramMatch(token) {
+            try Self.keywordSearchSnapshot(db, query: query, request: request, scope: scope,
+                limit: limit, warning: warning, warningCode: warningCode)
+        }
+        return immediate ? try await readImmediate(search) : try await read(search)
+    }
+
+    /// Same bounded keyword plan, also used by the Web lease on its own snapshot.
+    static func keywordSearchSnapshot(_ db: GRDB.Database, query: String, request: EngramServiceSearchRequest,
+                                     scope: EngramServiceSearchScope, limit: Int,
+                                     warning: String? = nil, warningCode: String? = nil) throws -> EngramServiceSearchResponse {
+        let tokens = query.count >= 2 ? CJKText.searchableTerms(query) : []
+        guard !tokens.isEmpty else { return .init(items: [], searchModes: ["keyword"], warning: warning, warningCode: warningCode) }
+        let termMatches = CJKText.ftsMatchTerms(tokens)
+        // With the owned FTS layout and its covering `(id, c0)` shadow
+        // index, a MATCH hit resolves its UNINDEXED `session_id` from the
+        // index instead of seeking the content row. Fail closed to the
+        // virtual-table column when the layout or index is not ours.
+        let identityIndexed = try FTSRebuildPolicy.hasOwnedContentIdentityIndex(db)
+        // Search at session granularity: every query token must exist
+        // somewhere in the session, not necessarily in the same FTS row.
+        //
+        // Three phases, each bounded by the one before it:
+        //  1. `mN_hits` / `mN`: per-token hit rows and candidate sessions.
+        //     Tokens of >= 3 scalars (Latin or CJK) use trigram MATCH,
+        //     which is index-only; shorter tokens have no trigram and use
+        //     a recency-ordered LIKE through fts_map with an early-stop
+        //     LIMIT (unbounded content LIKE 503s the 8s Search budget).
+        //  2. `top`: AND-join the candidates, probe `sessions` by primary
+        //     key (CROSS JOIN fixes the order), apply filters, rank, LIMIT.
+        //  3. `mN_best`: choose one matched row per LIMIT'd session and
+        //     read content / snippet() for those rows only.
+        // The earlier single-pass shape ran two correlated MATCH subqueries
+        // per candidate session and read content for every hit; against
+        // the HQ corpus (777k FTS rows) a routine query exceeded the Web's
+        // 8s search deadline.
+        var ctes: [String] = []
+        var args: [DatabaseValueConvertible] = []
+        var candidateJoins: [String] = []
+        for (index, token) in tokens.enumerated() {
+            let alias = "m\(index)"
+            if CJKText.usesTrigramMatch(token) {
+                if identityIndexed {
                     ctes.append("""
-                        \(alias)_pick AS MATERIALIZED (
-                            SELECT session_id, fts_rowid AS matched_rowid
-                            FROM (
-                                SELECT session_id, fts_rowid,
-                                       ROW_NUMBER() OVER (
-                                           PARTITION BY session_id
-                                           ORDER BY rank, fts_rowid
-                                       ) AS match_position
-                                FROM \(alias)_hits
-                                WHERE session_id IN (SELECT id FROM top)
-                            )
-                            WHERE match_position = 1
-                        ),
-                        \(alias)_best AS MATERIALIZED (
-                            SELECT p.session_id, p.matched_rowid,
-                                   snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 64) AS snippet
-                            FROM \(alias)_pick p
-                            CROSS JOIN sessions_fts ON sessions_fts.rowid = p.matched_rowid
+                        \(alias)_hits AS MATERIALIZED (
+                            SELECT sessions_fts.rowid AS fts_rowid, f.c0 AS session_id,
+                                   sessions_fts.rank AS rank
+                            FROM sessions_fts
+                            JOIN sessions_fts_content f INDEXED BY \(FTSRebuildPolicy.contentIdentityIndexName)
+                              ON f.id = sessions_fts.rowid
                             WHERE sessions_fts MATCH ?
                         )
                     """)
-                    args.append(termMatches[index])
                 } else {
                     ctes.append("""
-                        \(alias)_best AS MATERIALIZED (
-                            SELECT session_id, matched_rowid,
-                                   substr(content, MAX(1, instr(lower(content), lower(?)) - 200), ?) AS snippet
-                            FROM (
-                                SELECT h.session_id, h.fts_rowid AS matched_rowid, f.content AS content,
-                                       ROW_NUMBER() OVER (
-                                           PARTITION BY h.session_id
-                                           ORDER BY instr(lower(f.content), lower(?)), h.fts_rowid
-                                       ) AS match_position
-                                FROM \(alias)_hits h
-                                CROSS JOIN sessions_fts f ON f.rowid = h.fts_rowid
-                                WHERE h.session_id IN (SELECT id FROM top)
-                            )
-                            WHERE match_position = 1
+                        \(alias)_hits AS MATERIALIZED (
+                            SELECT rowid AS fts_rowid, session_id, rank
+                            FROM sessions_fts
+                            WHERE sessions_fts MATCH ?
                         )
                     """)
-                    args.append(token)
-                    args.append(Self.maxSnippetLength)
-                    args.append(token)
                 }
-                bestJoins.append("LEFT JOIN \(alias)_best ON \(alias)_best.session_id = top.id")
+                args.append(termMatches[index])
+            } else {
+                ctes.append(try shortTokenHitsCTE(alias: alias, db: db))
+                args.append("%\(CJKText.escapeLikePattern(token))%")
+                args.append(Self.shortQueryHitCap(limit: limit))
             }
-            let snippetExpression = tokens.indices.dropFirst().reduce(
-                "COALESCE(m0_best.snippet, '')"
-            ) { expression, index in
-                let priorRowIDs = tokens.indices.prefix(index)
-                    .map { "m\($0)_best.matched_rowid" }
-                    .joined(separator: ", ")
-                return """
-                    \(expression) || CASE
-                      WHEN NULLIF(m\(index)_best.snippet, '') IS NULL THEN ''
-                      WHEN m\(index)_best.matched_rowid IN (\(priorRowIDs)) THEN ''
-                      ELSE '\n…\n' || m\(index)_best.snippet
-                    END
-                    """
+            ctes.append("""
+                \(alias) AS MATERIALIZED (
+                    SELECT session_id, MIN(rank) AS rank
+                    FROM \(alias)_hits
+                    GROUP BY session_id
+                )
+            """)
+            if index > 0 {
+                candidateJoins.append("JOIN \(alias) ON \(alias).session_id = m0.session_id")
             }
-            let sql = """
-                WITH \(ctes.joined(separator: ", "))
-                SELECT top.*, \(snippetExpression) AS snippet
-                FROM top
-                \(bestJoins.joined(separator: " "))
-                ORDER BY top.search_rank, top.start_time DESC
-                """
-            let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(args))
-            return EngramServiceSearchResponse(
-                items: rows.map { Self.item(from: $0, query: query) },
-                searchModes: ["keyword"],
-                warning: warning,
-                warningCode: warningCode
-            )
         }
-        return immediate
-            ? try await readImmediate(search)
-            : try await read(search)
+        var topParts = ["""
+            top AS MATERIALIZED (
+                SELECT s.*, m0.rank AS search_rank
+                FROM m0
+                \(candidateJoins.joined(separator: " "))
+                CROSS JOIN sessions s ON s.id = m0.session_id
+                WHERE s.hidden_at IS NULL
+                  -- docs/invariants.md #3: keyword search excludes skip and lite tiers.
+                  AND \(SessionSemanticSearchPolicy.searchableTierSQL)
+        """]
+        appendSearchFilters(for: request, scope: scope, to: &topParts, args: &args)
+        topParts.append("""
+                ORDER BY m0.rank, s.start_time DESC, s.id COLLATE BINARY ASC
+                LIMIT ?
+            )
+        """)
+        args.append(limit)
+        ctes.append(topParts.joined(separator: " "))
+        var bestJoins: [String] = []
+        for (index, token) in tokens.enumerated() {
+            let alias = "m\(index)"
+            if CJKText.usesTrigramMatch(token) {
+                ctes.append("""
+                    \(alias)_pick AS MATERIALIZED (
+                        SELECT session_id, fts_rowid AS matched_rowid
+                        FROM (
+                            SELECT session_id, fts_rowid,
+                                   ROW_NUMBER() OVER (
+                                       PARTITION BY session_id
+                                       ORDER BY rank, fts_rowid
+                                   ) AS match_position
+                            FROM \(alias)_hits
+                            WHERE session_id IN (SELECT id FROM top)
+                        )
+                        WHERE match_position = 1
+                    ),
+                    \(alias)_best AS MATERIALIZED (
+                        SELECT p.session_id, p.matched_rowid,
+                               snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 64) AS snippet
+                        FROM \(alias)_pick p
+                        CROSS JOIN sessions_fts ON sessions_fts.rowid = p.matched_rowid
+                        WHERE sessions_fts MATCH ?
+                    )
+                """)
+                args.append(termMatches[index])
+            } else {
+                ctes.append("""
+                    \(alias)_best AS MATERIALIZED (
+                        SELECT session_id, matched_rowid,
+                               substr(content, MAX(1, instr(lower(content), lower(?)) - 200), ?) AS snippet
+                        FROM (
+                            SELECT h.session_id, h.fts_rowid AS matched_rowid, f.content AS content,
+                                   ROW_NUMBER() OVER (
+                                       PARTITION BY h.session_id
+                                       ORDER BY instr(lower(f.content), lower(?)), h.fts_rowid
+                                   ) AS match_position
+                            FROM \(alias)_hits h
+                            CROSS JOIN sessions_fts f ON f.rowid = h.fts_rowid
+                            WHERE h.session_id IN (SELECT id FROM top)
+                        )
+                        WHERE match_position = 1
+                    )
+                """)
+                args.append(token)
+                args.append(Self.maxSnippetLength)
+                args.append(token)
+            }
+            bestJoins.append("LEFT JOIN \(alias)_best ON \(alias)_best.session_id = top.id")
+        }
+        let snippetExpression = tokens.indices.dropFirst().reduce(
+            "COALESCE(m0_best.snippet, '')"
+        ) { expression, index in
+            let priorRowIDs = tokens.indices.prefix(index)
+                .map { "m\($0)_best.matched_rowid" }
+                .joined(separator: ", ")
+            return """
+                \(expression) || CASE
+                  WHEN NULLIF(m\(index)_best.snippet, '') IS NULL THEN ''
+                  WHEN m\(index)_best.matched_rowid IN (\(priorRowIDs)) THEN ''
+                  ELSE '\n…\n' || m\(index)_best.snippet
+                END
+                """
+        }
+        let sql = """
+            WITH \(ctes.joined(separator: ", "))
+            SELECT top.*, \(snippetExpression) AS snippet
+            FROM top
+            \(bestJoins.joined(separator: " "))
+            ORDER BY top.search_rank, top.start_time DESC, top.id COLLATE BINARY ASC
+            """
+        let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(args))
+        return EngramServiceSearchResponse(
+            items: rows.map { Self.item(from: $0, query: query) },
+            searchModes: ["keyword"],
+            warning: warning,
+            warningCode: warningCode
+        )
     }
 
     private func withInsightResults(
@@ -1378,7 +1377,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 return hits
             }
             guard query.count >= 3 else { return [] }
-            return try self.searchInsightFTS(db, query: query)
+            return try Self.searchInsightFTS(db, query: query)
         }
         do {
             return immediate
@@ -1490,11 +1489,11 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         }
     }
 
-    private func searchInsightFTS(
+    static func searchInsightFTS(
         _ db: GRDB.Database,
         query: String
     ) throws -> [EngramServiceSearchResponse.Insight] {
-        guard try tableExists("insights_fts", db: db) else { return [] }
+        guard try db.tableExists("insights_fts") else { return [] }
         let tokens = CJKText.searchableTerms(query)
         guard !tokens.isEmpty else { return [] }
         let termMatches = CJKText.ftsMatchTerms(tokens)
@@ -1740,8 +1739,10 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     .map(\.id)
                 let keywordById = Dictionary(uniqueKeysWithValues: keyword.items.map { ($0.id, $0) })
                 let semanticById = Dictionary(uniqueKeysWithValues: semanticItems.map { ($0.id, $0) })
-                let fusedItems = fusedIds.compactMap { id in
-                    semanticById[id] ?? keywordById[id]
+                let fusedItems: [EngramServiceSearchResponse.Item] = fusedIds.compactMap { id in
+                    guard var item = semanticById[id] ?? keywordById[id] else { return nil }
+                    if semanticById[id] != nil && keywordById[id] != nil { item.matchType = "both" }
+                    return item
                 }
                 return .results(EngramServiceSearchResponse(
                     items: fusedItems,
@@ -1854,7 +1855,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                   AND \(SessionSemanticSearchPolicy.searchableTierSQL)
             """]
             var args: [DatabaseValueConvertible] = [model, dim, afterRowID]
-            appendSearchFilters(for: request, scope: scope, to: &parts, args: &args)
+            Self.appendSearchFilters(for: request, scope: scope, to: &parts, args: &args)
             // Stable full-corpus order by rowid (not recency). Pagination via rowid cursor.
             parts.append("ORDER BY sc.rowid ASC LIMIT ?")
             args.append(batchSize)
@@ -2784,8 +2785,8 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         max(256, min(limit * 32, 2_048))
     }
 
-    private func shortTokenHitsCTE(alias: String, db: GRDB.Database) throws -> String {
-        let mapped = try tableExists("fts_map", db: db) && indexExists("idx_sessions_activity_time", db: db)
+    private static func shortTokenHitsCTE(alias: String, db: GRDB.Database) throws -> String {
+        let mapped = try db.tableExists("fts_map") && Int.fetchOne(db, sql: "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_sessions_activity_time'") == 1
         if mapped {
             return """
                 \(alias)_hits AS MATERIALIZED (
@@ -3044,7 +3045,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         unit == nil || unit == "%"
     }
 
-    private func appendSearchFilters(
+    private static func appendSearchFilters(
         for request: EngramServiceSearchRequest,
         scope: EngramServiceSearchScope,
         to parts: inout [String],

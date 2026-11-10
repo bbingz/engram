@@ -18,6 +18,36 @@ final class WebReadClientTests: XCTestCase {
         if let directory { try FileManager.default.removeItem(at: directory) }
     }
 
+    func testIt9B3MatchClientBindsProofIdentityAndRejectsMalformedPositions() async throws {
+        let request = try EngramServiceWebMatchRequest(sessionId: "s", generation: Self.generation, q: "needle")
+        for mutation in ["valid", "null", "negative", "wrongGeneration", "ordinalAndReason", "unknownScope", "badCursor", "nullWithScope", "nullWithCursor"] {
+            let path = socketPath()
+            let server = try WebReadFixture(path: path) { fd, received in
+                let envelope = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: received)
+                XCTAssertEqual(envelope.command, "webMatch"); XCTAssertNil(envelope.capabilityToken)
+                XCTAssertEqual(try JSONDecoder().decode(EngramServiceWebMatchRequest.self, from: XCTUnwrap(envelope.payload)), request)
+                var result: [String: Any] = ["sessionId":"s", "generation":Self.generation, "messageOrdinal":3, "matchScope":"allTerms"]
+                switch mutation {
+                case "null": result.removeValue(forKey: "messageOrdinal"); result.removeValue(forKey: "matchScope"); result["reason"] = "summaryOnly"
+                case "negative": result["messageOrdinal"] = -1
+                case "wrongGeneration": result["generation"] = String(repeating: "b", count: 64)
+                case "ordinalAndReason": result["reason"] = "unverified"
+                case "unknownScope": result["matchScope"] = "guessed"
+                case "badCursor": result["messageCursor"] = "not a cursor"
+                case "nullWithScope": result.removeValue(forKey: "messageOrdinal"); result["reason"] = "unverified"
+                case "nullWithCursor": result.removeValue(forKey: "messageOrdinal"); result.removeValue(forKey: "matchScope"); result["reason"] = "unverified"; result["messageCursor"] = "opaque"
+                default: break
+                }
+                try EngramServiceSocketIO.writeFrame(JSONEncoder().encode(EngramServiceResponseEnvelope.success(requestId: envelope.requestId, result: JSONSerialization.data(withJSONObject: result))), to: fd, requestTimeout: 1)
+            }; defer { server.stop() }
+            do {
+                let result = try await EngramServiceWebReadClient(socketPath: path).match(request)
+                XCTAssertTrue(["valid", "null"].contains(mutation))
+                XCTAssertEqual(result.messageOrdinal, mutation == "valid" ? 3 : nil)
+            } catch { XCTAssertFalse(["valid", "null"].contains(mutation), "\(error)") }
+        }
+    }
+
     func testMessagesSendsOnlyHardcodedCommandTypedDataUUIDAndNoCapability() async throws {
         let path = socketPath()
         let sentinel = Data("fixture-secret-never-attach-or-load".utf8)
@@ -68,7 +98,7 @@ final class WebReadClientTests: XCTestCase {
         XCTAssertEqual(EngramServiceWebReadClient.allowedCommands,
                        ["webMessages", "webOverview", "webSessions", "webSessionDetail", "webFacets", "webStats",
                         "webSettings", "webSearch", "webSearchStatus", "webCosts", "webCostSessions",
-                        "webSourceSettings", "webChildren", "webTimeline", "webToolAnalytics",
+                        "webSourceSettings", "webChildren", "webTimeline", "webMatch", "webToolAnalytics",
                         "webFileActivity", "webRepos", "webUsage",
                         "webAiAudit", "webAiAuditDetail", "webAiStats", "webInsightDetail", "webAiSettings",
                         "webProjectCwds"])
@@ -87,7 +117,7 @@ final class WebReadClientTests: XCTestCase {
         XCTAssertNoThrow(try EngramServiceWebReadClient.validateCommand("webAiSettings"))
         let server = try WebReadFixture(path: socketPath()) { _, _ in XCTFail("Policy checks must not perform IPC") }
         defer { server.stop() }
-        for command in commands.subtracting(["webMessages", "webOverview", "webSessions", "webSessionDetail", "webFacets", "webStats", "webSettings", "webSearch", "webSearchStatus", "webCosts", "webCostSessions", "webSourceSettings", "webChildren", "webTimeline", "webToolAnalytics", "webFileActivity", "webRepos", "webUsage", "webAiAudit", "webAiAuditDetail", "webAiStats", "webInsightDetail", "webAiSettings", "webProjectCwds"]).union(["", "webMessages\0shutdown", "WEBMESSAGES", "futureWrite"]) {
+        for command in commands.subtracting(["webMessages", "webOverview", "webSessions", "webSessionDetail", "webFacets", "webStats", "webSettings", "webSearch", "webSearchStatus", "webCosts", "webCostSessions", "webSourceSettings", "webChildren", "webTimeline", "webMatch", "webToolAnalytics", "webFileActivity", "webRepos", "webUsage", "webAiAudit", "webAiAuditDetail", "webAiStats", "webInsightDetail", "webAiSettings", "webProjectCwds"]).union(["", "webMessages\0shutdown", "WEBMESSAGES", "futureWrite"]) {
             XCTAssertThrowsError(try EngramServiceWebReadClient.validateCommand(command)) {
                 XCTAssertEqual($0 as? EngramServiceWebReadClientError, .unsupported)
             }

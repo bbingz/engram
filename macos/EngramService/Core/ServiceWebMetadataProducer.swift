@@ -154,6 +154,9 @@ protocol ServiceWebMetadataProviding: AnyObject, Sendable {
         deadline: ContinuousClock.Instant
     ) async throws -> EngramServiceWebSettingsResponse
 
+    func keywordSearchPage(_ request: EngramServiceWebSearchRequest, requestId: String,
+                           deadline: ContinuousClock.Instant) async throws -> EngramServiceWebSearchResponse
+
     func searchScope(
         _ request: EngramServiceWebSearchRequest,
         requestId: String,
@@ -250,6 +253,11 @@ protocol ServiceWebMetadataProviding: AnyObject, Sendable {
 }
 
 extension ServiceWebMetadataProviding {
+    func keywordSearchPage(_ request: EngramServiceWebSearchRequest, requestId: String,
+                           deadline: ContinuousClock.Instant) async throws -> EngramServiceWebSearchResponse {
+        throw ServiceWebMetadataError.unavailable
+    }
+
     func usage(_ request: EngramServiceWebUsageRequest, requestId: String,
                deadline: ContinuousClock.Instant) async throws -> EngramServiceWebUsageResponse {
         throw ServiceWebMetadataError.unavailable
@@ -903,6 +911,94 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
         }
     }
 
+    /// Freeze the ranking once on the lease's read transaction. 99 slots plus
+    /// one lookahead never exceeds the existing reader's 100-hit cap.
+    func keywordSearchPage(_ request: EngramServiceWebSearchRequest, requestId: String,
+                           deadline: ContinuousClock.Instant) async throws -> EngramServiceWebSearchResponse {
+        try await submit(deadline: deadline, maximumDuration: ServiceWebMetadataLimits.maximumSearchDuration) { control in
+            let policy = try self.currentPolicy()
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            let encoded = try encoder.encode(EngramServiceWebSearchRequest(
+                query: request.query, source: request.source, sources: request.sources,
+                machineId: request.machineId, sourceInstanceId: request.sourceInstanceId,
+                projectKey: request.projectKey, projectKeys: request.projectKeys, sessionId: request.sessionId,
+                agents: request.agents, since: request.since, until: request.until, tools: request.tools,
+                mode: request.mode, limit: request.limit))
+            let key = try Self.bindingKey(["search-cohort-v1-cap99", String(decoding: encoded, as: UTF8.self)])
+            let (lease, position) = try self.acquire(snapshotID: request.snapshotId, cursor: request.cursor,
+                key: key, policy: policy, control: control)
+            guard request.mode == .keyword else { throw ServiceWebMetadataError.stale }
+            let filter = try self.sessionsFilter(from: request)
+            if lease.searchCohort == nil {
+                lease.searchCohort = try self.read(lease.snapshot, control: control) { db in
+                    let scope = try self.makeSearchScope(db, request: filter, policy: policy)
+                    let query = request.query.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let ranked = try SQLiteEngramServiceReadProvider.keywordSearchSnapshot(db,
+                        query: query,
+                        request: .init(query: request.query, mode: "keyword", limit: 100), scope: scope, limit: 100)
+                    var insights: [EngramServiceSearchResponse.Insight] = []
+                    if query.count >= 3 {
+                        do { insights = try SQLiteEngramServiceReadProvider.searchInsightFTS(db, query: query) }
+                        catch { try control.check() } // Existing optional insight-search failure semantics.
+                    }
+                    return .init(items: ranked.items, searchModes: query.isEmpty ? [] : ["keyword"], warning: nil, insightResults: insights)
+                }
+            }
+            let ranked = lease.searchCohort!
+            let cohort = Array(ranked.items.prefix(99))
+            let start: Int
+            if let key = position.key { guard case .search(let offset) = key else { throw ServiceWebMetadataError.stale }; start = offset } else { start = 0 }
+            let slots = Array(cohort.dropFirst(start).prefix(request.limit))
+            let prepared = try self.read(lease.snapshot, control: control) { db in
+                try self.sessionRows(db, request: filter, policy: policy, after: nil,
+                    limit: max(slots.count, 1), sessionIDs: slots.map(\.id))
+            }
+            let byID = Dictionary(uniqueKeysWithValues: prepared.map { (ByteKey($0.summary.sessionId), $0) })
+            let preparedInsights = start == 0 ? try self.read(lease.snapshot, control: control) {
+                try self.admittedSearchInsights($0, ranked: ranked, policy: policy)
+            } : []
+            let token = position.successor ?? Self.token()
+            func response(_ count: Int, _ live: [ByteKey: SessionRecord]) throws -> EngramServiceWebSearchResponse {
+                let hits = slots.prefix(count).compactMap { hit -> EngramServiceWebSearchHit? in
+                    guard let row = live[ByteKey(hit.id)] else { return nil }
+                    return .init(session: row.summary, snippet: hit.snippet, matchType: "keyword", score: hit.score)
+                }
+                let more = start + count < cohort.count
+                return .init(observedAt: lease.observedAt, query: request.query, items: hits, insightResults: preparedInsights, searchModes: ranked.searchModes ?? [],
+                    warning: nil, warningCode: nil, snapshotId: lease.id, nextCursor: more ? token : nil,
+                    hasMore: more, truncated: ranked.items.count > 99, cohortSize: cohort.count,
+                    coverage: "Frozen keyword cohort: \(cohort.count)/99 slots; short-token candidates bounded at 2048; revoked sessions dropped without backfill.")
+            }
+            let count = try Self.fittingCount(slots.count, limit: request.limit, fixed: position.count) {
+                try Self.encodedSuccessFrame(requestId: requestId, result: response($0, byID))
+            }
+            try self.hooks.afterPreparation?(.search)
+            try self.requirePolicy(policy)
+            let live = try self.pool.read { db -> [ByteKey: SessionRecord] in
+                try self.requireSchema(db, lease: lease); try control.check()
+                let rows = try self.sessionRows(db, request: filter, policy: policy, after: nil,
+                    limit: max(count, 1), sessionIDs: slots.prefix(count).map(\.id))
+                var kept: [ByteKey: SessionRecord] = [:]
+                for row in rows {
+                    let id = ByteKey(row.summary.sessionId)
+                    guard let old = byID[id], old.authority == row.authority, old.summary == row.summary else { throw ServiceWebMetadataError.stale }
+                    kept[id] = row
+                }
+                return kept
+            }
+            try self.requirePolicy(policy); try control.check()
+            let more = start + count < cohort.count
+            _ = try self.successor(lease, position: position, count: count, hasMore: more,
+                last: .search(start + count), proposed: token)
+            let result = try response(count, live)
+            // Insights retain the existing admission/redaction path, on the first page only.
+            let insights = start == 0 ? try self.pool.read { try self.admittedSearchInsights($0, ranked: ranked, policy: policy) } : []
+            guard insights == preparedInsights else { throw ServiceWebMetadataError.stale }
+            try self.requirePolicy(policy); try control.check(); try Self.validate(result, requestID: requestId)
+            return result
+        }
+    }
+
     func searchScope(
         _ request: EngramServiceWebSearchRequest,
         requestId: String,
@@ -939,7 +1035,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                 for item in hits {
                     try control.check()
                     guard let row = byID[ByteKey(item.id)] else { continue }
-                    let matchType = item.matchType == "semantic" ? "semantic" : "keyword"
+                    let matchType = ["semantic", "both"].contains(item.matchType ?? "") ? item.matchType! : "keyword"
                     admitted.append(EngramServiceWebSearchHit(
                         session: row.summary,
                         snippet: item.snippet,
@@ -973,7 +1069,8 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                 insightResults: freshInsights,
                 searchModes: ranked.searchModes ?? [],
                 warning: ranked.warning,
-                warningCode: ranked.warningCode
+                warningCode: ranked.warningCode, hasMore: false,
+                coverage: "Semantic/hybrid first page only; ranking is not paginated. Narrow the query or use keyword for a frozen cohort."
             )
             try Self.validate(result, requestID: requestId)
             return result
@@ -4563,10 +4660,10 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
 
     // MARK: - One owned operation, cooperative SQLite cancellation, and leases
 
-    private func submit<Value: Sendable>(deadline: ContinuousClock.Instant,
+    private func submit<Value: Sendable>(deadline: ContinuousClock.Instant, maximumDuration: Duration = ServiceWebMetadataLimits.maximumRequestDuration,
         _ operation: @escaping @Sendable (RequestControl) throws -> Value) async throws -> Value {
         try Task.checkCancellation()
-        let control = RequestControl(clock: clock, deadline: min(deadline, clock.now() + ServiceWebMetadataLimits.maximumRequestDuration))
+        let control = RequestControl(clock: clock, deadline: min(deadline, clock.now() + maximumDuration))
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Value, Error>) in
                 admission.lock()
@@ -4790,7 +4887,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
         func check() throws { try lock.withLock { current }?.check() }
     }
 
-    private enum PositionKey { case session(Int64?, String), stream(String, String), facet(String) }
+    private enum PositionKey { case search(Int), session(Int64?, String), stream(String, String), facet(String) }
     private final class CursorPosition {
         let key: PositionKey?
         var count: Int?
@@ -4811,6 +4908,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
         var timer: ServiceWebMetadataExpiryHandle?
         var cursors: [String: CursorPosition] = [:]
         var cursorOrder: [String] = []
+        var searchCohort: EngramServiceSearchResponse?
         var sessionsTotal: SessionsTotal?
         init(snapshot: DatabaseSnapshot, key: Data, policy: ServiceWebMetadataPolicy, order: UInt64,
              expiresAt: ContinuousClock.Instant, schema: Schema) {

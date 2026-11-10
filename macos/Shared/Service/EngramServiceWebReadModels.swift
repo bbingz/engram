@@ -662,7 +662,7 @@ enum EngramServiceWebSearchMode: String, Codable, Equatable, Sendable {
 struct EngramServiceWebSearchRequest: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case query, source, sources, machineId, sourceInstanceId, projectKey, projectKeys
-        case sessionId, agents, since, until, tools, mode, limit
+        case sessionId, agents, since, until, tools, mode, limit, snapshotId, cursor
     }
 
     let query: String
@@ -678,6 +678,8 @@ struct EngramServiceWebSearchRequest: Codable, Equatable, Sendable {
     let until: String?
     let tools: EngramServiceWebToolFilter
     let mode: EngramServiceWebSearchMode
+    let snapshotId: String?
+    let cursor: String?
     let limit: Int
 
     var resolvedSources: [String]? { sources ?? source.map { [$0] } }
@@ -689,7 +691,8 @@ struct EngramServiceWebSearchRequest: Codable, Equatable, Sendable {
          sessionId: String? = nil, agents: EngramServiceWebAgentFilter = .hide,
          since: String? = nil, until: String? = nil,
          tools: EngramServiceWebToolFilter = .all,
-         mode: EngramServiceWebSearchMode = .keyword, limit: Int = 10) throws {
+         mode: EngramServiceWebSearchMode = .keyword, limit: Int = 10,
+         snapshotId: String? = nil, cursor: String? = nil) throws {
         try EngramServiceWebMetadataValidation.searchLimit(limit)
         try EngramServiceWebMetadataValidation.dateRange(since: since, until: until)
         try EngramServiceWebMetadataValidation.text(query, maximumBytes: 1024)
@@ -701,6 +704,9 @@ struct EngramServiceWebSearchRequest: Codable, Equatable, Sendable {
         try EngramServiceWebMetadataValidation.require(sourceInstanceId == nil || machineId != nil)
         try EngramServiceWebMetadataValidation.require(source == nil || sources == nil)
         try EngramServiceWebMetadataValidation.require(projectKey == nil || projectKeys == nil)
+        try EngramServiceWebMetadataValidation.pageRequest(limit: limit, snapshotId: snapshotId, cursor: cursor)
+        self.snapshotId = snapshotId
+        self.cursor = cursor
         self.query = query
         self.source = source
         self.sources = try sources.map { try EngramServiceWebMetadataValidation.sourceList($0) }
@@ -785,9 +791,15 @@ struct EngramServiceWebSearchInsight: Codable, Equatable, Sendable {
 
 struct EngramServiceWebSearchResponse: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
-        case observedAt, query, items, insightResults, searchModes, warning, warningCode
+        case observedAt, query, items, insightResults, searchModes, warning, warningCode, snapshotId, nextCursor, hasMore, truncated, cohortSize, coverage
     }
 
+    let snapshotId: String?
+    let nextCursor: String?
+    let hasMore: Bool?
+    let truncated: Bool?
+    let cohortSize: Int?
+    let coverage: String?
     let observedAt: Int64
     let query: String
     let items: [EngramServiceWebSearchHit]
@@ -798,7 +810,14 @@ struct EngramServiceWebSearchResponse: Codable, Equatable, Sendable {
 
     init(observedAt: Int64, query: String, items: [EngramServiceWebSearchHit],
          insightResults: [EngramServiceWebSearchInsight] = [], searchModes: [String],
-         warning: String?, warningCode: String?) {
+         warning: String?, warningCode: String?,
+         snapshotId: String? = nil, nextCursor: String? = nil, hasMore: Bool? = nil, truncated: Bool? = nil, cohortSize: Int? = nil, coverage: String? = nil) {
+        self.snapshotId = snapshotId
+        self.nextCursor = nextCursor
+        self.hasMore = hasMore
+        self.truncated = truncated
+        self.cohortSize = cohortSize
+        self.coverage = coverage
         self.observedAt = observedAt
         self.query = query
         self.items = items
@@ -1626,7 +1645,9 @@ extension EngramServiceWebSearchRequest {
             until: try c.decodeIfPresent(String.self, forKey: .until),
             tools: try c.decodeIfPresent(EngramServiceWebToolFilter.self, forKey: .tools) ?? .all,
             mode: try c.decodeIfPresent(EngramServiceWebSearchMode.self, forKey: .mode) ?? .keyword,
-            limit: try c.decodeIfPresent(Int.self, forKey: .limit) ?? 10
+            limit: try c.decodeIfPresent(Int.self, forKey: .limit) ?? 10,
+            snapshotId: try c.decodeIfPresent(String.self, forKey: .snapshotId),
+            cursor: try c.decodeIfPresent(String.self, forKey: .cursor)
         )
     }
 
@@ -1646,6 +1667,8 @@ extension EngramServiceWebSearchRequest {
         if tools != .all { try c.encode(tools, forKey: .tools) }
         if mode != .keyword { try c.encode(mode, forKey: .mode) }
         try c.encode(limit, forKey: .limit)
+        try c.encodeIfPresent(snapshotId, forKey: .snapshotId)
+        try c.encodeIfPresent(cursor, forKey: .cursor)
     }
 }
 
@@ -1694,14 +1717,25 @@ extension EngramServiceWebSearchResponse {
             insightResults: try c.decodeIfPresent([EngramServiceWebSearchInsight].self, forKey: .insightResults) ?? [],
             searchModes: try c.decode([String].self, forKey: .searchModes),
             warning: try c.decodeIfPresent(String.self, forKey: .warning),
-            warningCode: try c.decodeIfPresent(String.self, forKey: .warningCode)
+            warningCode: try c.decodeIfPresent(String.self, forKey: .warningCode),
+            snapshotId: try c.decodeIfPresent(String.self, forKey: .snapshotId),
+            nextCursor: try c.decodeIfPresent(String.self, forKey: .nextCursor),
+            hasMore: try c.decodeIfPresent(Bool.self, forKey: .hasMore),
+            truncated: try c.decodeIfPresent(Bool.self, forKey: .truncated),
+            cohortSize: try c.decodeIfPresent(Int.self, forKey: .cohortSize),
+            coverage: try c.decodeIfPresent(String.self, forKey: .coverage)
         )
+        if let snapshotId { try V.uuid(snapshotId) }
+        if let nextCursor { try V.token(nextCursor, maximumBytes: 1024); try V.require(snapshotId != nil && hasMore == true) }
+        if let hasMore { try V.require(hasMore == (nextCursor != nil)) }
+        if let cohortSize { try V.require((0...99).contains(cohortSize)) }
+        if let coverage { try V.text(coverage, maximumBytes: 1024, allowEmpty: false) }
         try V.time(observedAt)
         try V.text(query, maximumBytes: 1024)
         try V.require(items.count <= 50)
         try V.require(Set(items.map { Data($0.session.sessionId.utf8) }).count == items.count)
         for hit in items {
-            try V.require(hit.matchType == "keyword" || hit.matchType == "semantic")
+            try V.require(hit.matchType == "keyword" || hit.matchType == "semantic" || hit.matchType == "both")
         }
         try V.require(insightResults.count <= 5)
         try V.require(Set(insightResults.map { Data($0.id.utf8) }).count == insightResults.count)
@@ -1718,6 +1752,12 @@ extension EngramServiceWebSearchResponse {
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(snapshotId, forKey: .snapshotId)
+        try c.encodeIfPresent(nextCursor, forKey: .nextCursor)
+        try c.encodeIfPresent(hasMore, forKey: .hasMore)
+        try c.encodeIfPresent(truncated, forKey: .truncated)
+        try c.encodeIfPresent(cohortSize, forKey: .cohortSize)
+        try c.encodeIfPresent(coverage, forKey: .coverage)
         try c.encode(observedAt, forKey: .observedAt)
         try c.encode(query, forKey: .query)
         try c.encode(items, forKey: .items)
@@ -3239,4 +3279,31 @@ struct EngramServiceWebAiStatsResponse: Codable, Equatable, Sendable {
             try V.count(row.requests); try V.count(row.tokens)
         }
     }
+}
+
+// Match positions are generation-proven original normalized ordinals, not FTS msg_seq.
+struct EngramServiceWebMatchRequest: Codable, Equatable, Sendable {
+    let sessionId: String
+    let generation: String
+    let q: String
+    init(sessionId: String, generation: String, q: String) throws {
+        try EngramServiceWebMetadataValidation.sessionID(sessionId)
+        try EngramServiceWebMetadataValidation.hash(generation)
+        try EngramServiceWebMetadataValidation.text(q, maximumBytes: 1024, allowEmpty: false)
+        self.sessionId = sessionId; self.generation = generation; self.q = q
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(sessionId: c.decode(String.self, forKey: .sessionId), generation: c.decode(String.self, forKey: .generation), q: c.decode(String.self, forKey: .q))
+    }
+}
+enum EngramServiceWebMatchReason: String, Codable, Sendable { case summaryOnly, unverified, semanticOnly, notCaptureIndexed, noMatch }
+enum EngramServiceWebMatchScope: String, Codable, Sendable { case allTerms, firstTerm }
+struct EngramServiceWebMatchResponse: Codable, Equatable, Sendable {
+    let sessionId: String
+    let generation: String
+    let messageOrdinal: Int?
+    let reason: EngramServiceWebMatchReason?
+    let matchScope: EngramServiceWebMatchScope?
+    var messageCursor: String? = nil
 }

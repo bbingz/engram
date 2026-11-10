@@ -26,7 +26,7 @@ struct EngramServiceWebReadClient: Sendable {
     static let allowedCommands: Set<String> = [
         "webMessages", "webOverview", "webSessions", "webSessionDetail", "webFacets", "webStats",
         "webSettings", "webSearch", "webSearchStatus", "webCosts", "webCostSessions",
-        "webSourceSettings", "webChildren", "webTimeline", "webToolAnalytics",
+        "webSourceSettings", "webChildren", "webTimeline", "webMatch", "webToolAnalytics",
         "webFileActivity", "webRepos", "webUsage",
         "webAiAudit", "webAiAuditDetail", "webAiStats", "webInsightDetail",
         "webAiSettings", "webProjectCwds",
@@ -284,17 +284,31 @@ struct EngramServiceWebReadClient: Sendable {
         return response
     }
 
+    func match(_ request: EngramServiceWebMatchRequest) async throws -> EngramServiceWebMatchResponse {
+        let result: EngramServiceWebMatchResponse = try await typedResponse("webMatch", request: request, timeout: totalTimeout)
+        guard result.sessionId.utf8.elementsEqual(request.sessionId.utf8), result.generation == request.generation else { throw EngramServiceWebReadClientError.malformed }
+        if let ordinal = result.messageOrdinal {
+            guard (0..<EngramServiceWebReadLimits.maximumMessages).contains(ordinal), result.reason == nil, result.matchScope != nil else { throw EngramServiceWebReadClientError.malformed }
+        } else if result.reason == nil || result.matchScope != nil || result.messageCursor != nil { throw EngramServiceWebReadClientError.malformed }
+        if let cursor = result.messageCursor {
+            guard !cursor.isEmpty, cursor.utf8.count <= EngramServiceWebReadLimits.maximumCursorBytes,
+                  cursor.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 95 }) else { throw EngramServiceWebReadClientError.malformed }
+        }
+        return result
+    }
+
     func search(_ request: EngramServiceWebSearchRequest) async throws -> EngramServiceWebSearchResponse {
         let response: EngramServiceWebSearchResponse = try await typedResponse(
             "webSearch", request: request, timeout: searchTimeout
         )
+        if let snapshot = request.snapshotId, response.snapshotId != snapshot { throw EngramServiceWebReadClientError.malformed }
         guard response.query.utf8.elementsEqual(request.query.utf8),
               response.items.count <= request.limit,
               Set(response.items.map { Data($0.session.sessionId.utf8) }).count == response.items.count else {
             throw EngramServiceWebReadClientError.malformed
         }
         for hit in response.items {
-            guard hit.matchType == "keyword" || hit.matchType == "semantic" else {
+            guard hit.matchType == "keyword" || hit.matchType == "semantic" || hit.matchType == "both" else {
                 throw EngramServiceWebReadClientError.malformed
             }
             try Self.validateSessionFilters(hit.session, request: request)

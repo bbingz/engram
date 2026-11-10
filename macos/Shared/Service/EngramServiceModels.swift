@@ -207,7 +207,7 @@ struct EngramServiceSearchResponse: Codable, Equatable, Sendable {
         let id: String
         let title: String?
         let snippet: String?
-        let matchType: String?
+        var matchType: String?
         let score: Double?
         let source: String?
         let startTime: String?

@@ -122,6 +122,7 @@ enum WebUIRoutes {
         </div>
         <details id="search-capability-details" class="search-secondary"><summary id="search-capability-summary">Search availability &amp; index</summary><p id="search-capabilities" role="status"></p></details>
         <p id="search-result-status" role="status"></p>
+        <button id="search-more" type="button" hidden>Load more search results</button>
         <details id="insight-compose" class="search-secondary">
         <summary>Save an insight</summary>
         <p id="insight-write-status" role="status"></p>
@@ -1005,6 +1006,7 @@ enum WebUIRoutes {
         let authWriteTail = null;
         let insightWriteVersion = 0, insightCanWrite = false, insightSavePending = false, savedInsightId = "";
         let insightVersion = 0, insightPage = null, insightBusy = false;
+        let rankedCursor = "", rankedSnapshot = "", rankedFilters = "", rankedBusy = false;
         let requestEpoch = 0;
         let activePage = "sessions";
         let searchStatusVersion = 0;
@@ -1570,20 +1572,22 @@ enum WebUIRoutes {
           const results = document.getElementById("query").value.trim() ? loadRankedSearch() : loadSessions(false);
           return Promise.all([results, loadSearchStatus()]);
         }
-        async function loadRankedSearch() {
-          clearInsights();
+        async function loadRankedSearch(more) {
+          if (more && (!rankedCursor || !rankedSnapshot || rankedBusy)) return;
+          if (!more) clearInsights();
           const token = bumpEpoch();
-          listRouteKey = "";
-          clearSessionPaging();
-          showListSkeleton();
-          showSessionList();
-          showDetailEmpty();
-          clearMessages();
-          const status = document.getElementById("search-result-status");
-          const params = new URLSearchParams(sessionQuery(false).slice(1));
+          if (!more) {
+            listRouteKey = ""; clearSessionPaging(); showListSkeleton(); showSessionList(); showDetailEmpty(); clearMessages();
+          }
+          const status = document.getElementById("search-result-status"), moreButton = document.getElementById("search-more");
+          const params = new URLSearchParams(more ? rankedFilters : sessionQuery(false).slice(1));
           const mode = document.getElementById("search-mode").value || "keyword";
-          if (mode !== "keyword") params.set("mode", mode);
-          params.set("limit", document.getElementById("search-limit").value || "25");
+          if (!more) {
+            if (mode !== "keyword") params.set("mode", mode);
+            params.set("limit", document.getElementById("search-limit").value || "25");
+            rankedFilters = params.toString();
+          } else { params.set("snapshotId",rankedSnapshot); params.set("cursor",rankedCursor); }
+          rankedBusy = true; moreButton.disabled = true;
           setText(status, "Searching…");
           try {
             const page = await api("GET", "/web/api/search?" + params.toString().replaceAll("+", "%20"));
@@ -1593,19 +1597,30 @@ enum WebUIRoutes {
               if (!hit.session || typeof hit.session.sessionId !== "string") throw new Error("invalid search hit");
               return Object.assign({}, hit.session, { snippet: hit.snippet, matchType: hit.matchType });
             });
-            acceptSessionsPage(false, { items: items });
+            if (more && page.snapshotId !== rankedSnapshot) throw new Error("changed search snapshot");
+            if (page.hasMore === true && (!page.snapshotId || !page.nextCursor)) throw new Error("invalid search cursor");
+            const query = params.get("query");
+            items.forEach(function (item) { item.searchQuery = query; });
+            acceptSessionsPage(!!more, { items: items });
+            // Search appends a frozen cohort, not the library's previous/next pages.
+            sessionPageSizes = []; sessionPage = 0; sessionCursor = ""; sessionSnapshotId = "";
+            Array.from(sessionsNode.children).forEach(function (row) { row.hidden = false; }); updateSessionMore();
+            rankedSnapshot = page.snapshotId || ""; rankedCursor = page.hasMore === true ? page.nextCursor : "";
+            moreButton.hidden = !rankedCursor;
             setStatus("signed in");
             const modes = Array.isArray(page.searchModes) ? page.searchModes.join(" + ") : mode;
-            const insightCount = renderInsights(page.insightResults || []);
-            const counts = plural(page.items.length, "session") + (insightCount ? " · " + plural(insightCount, "insight") : "");
-            setText(status, counts + " · " + (page.warning || modes));
+            const insightCount = more ? 0 : renderInsights(page.insightResults || []);
+            const counts = plural(sessionsNode.children.length, "session") + (insightCount ? " · " + plural(insightCount, "insight") : "");
+            setText(status, counts + " · " + (page.warning || modes) + (page.coverage ? " · " + page.coverage : " · Legacy server: paging coverage not reported") + (page.truncated ? " · Truncated cohort" : ""));
           } catch (error) {
             if (token === requestEpoch) {
-              setText(status, "Search unavailable. Submit again to retry.");
-              showListError();
+              rankedCursor = ""; moreButton.hidden = true;
+              setText(status, "Search unavailable or this server does not support continuation. Submit again to restart; no query options were silently dropped.");
+              if (!more) showListError();
             }
-          }
+          } finally { if (token === requestEpoch) { rankedBusy = false; moreButton.disabled = false; } }
         }
+        document.getElementById("search-more").addEventListener("click",function () { loadRankedSearch(true); });
         function updateInsightWriteControls() {
           document.getElementById("insight-save-form").hidden = !insightCanWrite;
           ["insight-content-input", "insight-wing-input", "insight-room-input", "insight-importance-input", "insight-source-input", "insight-save-button"].forEach(function (id) {
@@ -3101,6 +3116,8 @@ enum WebUIRoutes {
         }
         function clearSessionPaging() {
           closeCommandPalette(); commandSessions = [];
+          rankedCursor = ""; rankedSnapshot = ""; rankedFilters = ""; rankedBusy = false;
+          document.getElementById("search-more").hidden = true;
           sessionsNode.setAttribute("aria-busy", "false");
           sessionSnapshotId = "";
           sessionCursor = "";
@@ -4252,7 +4269,7 @@ enum WebUIRoutes {
               const match = document.createElement("span");
               match.className = "match-badge";
               match.dataset.match = item.matchType === "semantic" ? "semantic" : "keyword";
-              setText(match, item.matchType === "semantic" ? "Semantic match" : "Keyword match");
+              setText(match, item.matchType === "both" ? "Keyword + semantic" : item.matchType === "semantic" ? "Semantic match" : "Keyword match");
               appendMetaPart(meta, match);
             }
             button.appendChild(meta);
@@ -4279,9 +4296,16 @@ enum WebUIRoutes {
             button.addEventListener("click", function () {
               openDetail(item.sessionId).catch(function () {});
             });
-            if ((Number.isSafeInteger(item.childCount) && item.childCount > 0) || item.parentSessionId) {
+            if (item.matchType || (Number.isSafeInteger(item.childCount) && item.childCount > 0) || item.parentSessionId) {
               const row = document.createElement("div"); row.className = "session-row";
-              row.appendChild(button); appendSessionNesting(row,item); sessionsNode.appendChild(row);
+              row.appendChild(button); appendSessionNesting(row,item);
+              if (item.matchType) {
+                const match = document.createElement("button"); match.type = "button"; match.className = "open-match parent-link";
+                setText(match,"Open at match");
+                match.addEventListener("click",function () { openDetail(item.sessionId,null,false,{q:item.searchQuery || document.getElementById("query").value.trim()}).catch(function () {}); });
+                row.appendChild(match);
+              }
+              sessionsNode.appendChild(row);
             } else sessionsNode.appendChild(button);
           });
           updateSessionMore();
@@ -4375,11 +4399,11 @@ enum WebUIRoutes {
             } catch (error) {} // Auth display is optional; authorization remains server-owned.
           }
         }
-        async function openDetail(sessionId, returnPage, routed) {
+        async function openDetail(sessionId, returnPage, routed, matchLanding) {
           if (!workspaceNode.classList.contains("showing-detail") || returnPage === "stats") detailReturnRoute = (returnPage === "stats" || activePage === "stats") ? statsRoute() : libraryRoute();
           if (!routed) {
             routeVersion += 1;
-            writeRoute({page:"detail",id:sessionId,find:activePage === "search" ? document.getElementById("query").value.trim() : ""});
+            writeRoute({page:"detail",id:sessionId,find:matchLanding ? matchLanding.q : activePage === "search" ? document.getElementById("query").value.trim() : ""});
           }
           detailReturnPage = returnPage || (detailReturnRoute && detailReturnRoute.page === "stats" ? "stats" : null);
           const version = routeVersion, token = bumpEpoch();
@@ -4433,9 +4457,31 @@ enum WebUIRoutes {
             if (!generation) {
               const reason = typeof detail.transcriptAvailability === "string" && detail.transcriptAvailability !== "available" ? "Availability: " + detail.transcriptAvailability + "." : "";
               messagesNode.appendChild(emptyState("inbox", "Transcript unavailable", ("The service has not admitted a readable transcript for this session. " + reason).trim()));
+              if (matchLanding) { openTranscriptFind(matchLanding.q); toast("Exact match position unavailable (transcript not admitted). Find is prefilled but no transcript messages are loaded.","info"); }
               return;
             }
-            await loadMessages(token, session.sessionId, generation, "");
+            let provenMatch = null, matchReason = "unverified";
+            if (matchLanding) {
+              try {
+                const params = new URLSearchParams({generation:generation,q:matchLanding.q});
+                const match = await api("GET","/web/api/sessions/" + encodeURIComponent(session.sessionId) + "/match?" + params);
+                if (token !== requestEpoch || version !== routeVersion) return;
+                if (!match || match.sessionId !== session.sessionId || match.generation !== generation) throw new Error("changed match generation");
+                if (Number.isSafeInteger(match.messageOrdinal) && match.messageOrdinal >= 0 && match.messageOrdinal < 100000 && !match.reason && ["allTerms","firstTerm"].includes(match.matchScope)) provenMatch = match;
+                else matchReason = match.reason || "unverified";
+              } catch (error) { if (token !== requestEpoch || version !== routeVersion) return; matchReason = "unavailable or older server"; }
+            }
+            await loadMessages(token, session.sessionId, generation, provenMatch && typeof provenMatch.messageCursor === "string" ? provenMatch.messageCursor : "");
+            if (matchLanding && token === requestEpoch && version === routeVersion) {
+              if (provenMatch) {
+                await jumpToOrdinal(provenMatch.messageOrdinal);
+                if (provenMatch.matchScope === "firstTerm") toast("Landed on the first query term; all terms were not found in one message.","info");
+              } else {
+                writeRoute({page:"detail",id:session.sessionId,find:matchLanding.q});
+                openTranscriptFind(matchLanding.q); toast("Exact match position unavailable (" + matchReason + "). Find is prefilled; it searches loaded messages, not a guessed snippet position.","info");
+              }
+              return;
+            }
             if (!routed && version === routeVersion && token === requestEpoch && activePage === "search") {
               openTranscriptFind(document.getElementById("query").value.trim()); await searchFurther();
             }
@@ -4954,7 +5000,7 @@ enum WebUIRoutes {
             setText(roleNode, kind === "user" ? "You" : (detailSource ? sourceLabel(detailSource) : (role || "assistant"))); article.appendChild(roleNode);
           }
           const meta = document.createElement("div"); meta.className = "message-meta";
-          if (kind === "user") meta.appendChild(textSpan("Prompt #" + promptNumber));
+          if (kind === "user") meta.appendChild(textSpan(((transcriptMessages.length ? transcriptMessages[0].ordinal : ordinal) > 0 ? "Loaded prompt #" : "Prompt #") + promptNumber));
           if (payload.timestamp) meta.appendChild(textSpan(payload.timestamp));
           const link = document.createElement("a"); link.setAttribute("href", "#/s/" + encodeURIComponent(detailContextSession) + "/m/" + ordinal); setText(link, "#" + ordinal);
           link.setAttribute("aria-label", "Message " + ordinal + " permalink");

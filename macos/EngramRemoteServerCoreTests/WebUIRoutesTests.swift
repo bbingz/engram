@@ -265,7 +265,7 @@ final class WebUIRoutesTests: XCTestCase {
         XCTAssertTrue(js.contains("No sessions found"))
         // Ready/parsed metadata may label counts; only the admitted generation authorizes reads.
         XCTAssertTrue(js.contains("const generation = detail.transcriptGeneration;"))
-        XCTAssertTrue(js.contains("await loadMessages(token, session.sessionId, generation, \"\");"))
+        XCTAssertTrue(js.contains("await loadMessages(token, session.sessionId, generation, provenMatch && typeof provenMatch.messageCursor"))
         XCTAssertFalse(js.contains("const generation = detail.lastReady"))
         XCTAssertTrue(js.contains("TextEncoder"))
         XCTAssertTrue(js.contains("utf8Offset"))

@@ -18,6 +18,84 @@ final class WebMetadataProducerTests: XCTestCase {
     private let secondInstance = "EEEEEEEE-0000-4000-8000-000000000002"
     private let epoch = "CCCCCCCC-0000-4000-8000-000000000003"
 
+    func testIt9B3KeywordKeepsSearchDeadlineAndRanksOnce() async throws {
+        let fixture = try MetadataSQLFixture(); defer { fixture.remove() }
+        try fixture.migrate(); try fixture.seedRegistry()
+        for id in ["a", "b", "c"] { try fixture.seedBoundSession(id: id, start: nil, nativeID: id, title: "needle") }
+        let statements = MetadataShortQueryStatements()
+        let producer = try fixture.producer(hooks: .init(prepareDatabase: { db in
+            db.trace(options: .statement) { if case .statement(let statement) = $0 { statements.record(statement.sql) } }
+        }, afterPreparation: { operation in
+            if operation == .search { fixture.clock.advance(.seconds(3)) }
+        })); defer { try? producer.stop() }
+        let first = try await producer.keywordSearchPage(.init(query: "needle", limit: 1), requestId: requestId, deadline: fixture.clock.now() + .seconds(8))
+        let next = try await producer.keywordSearchPage(.init(query: "needle", limit: 1, snapshotId: first.snapshotId, cursor: first.nextCursor), requestId: requestId, deadline: fixture.clock.now() + .seconds(8))
+        XCTAssertEqual(next.items.first?.session.sessionId, "b")
+        XCTAssertEqual(statements.values.filter { $0.contains("top AS MATERIALIZED") }.count, 1, "Continuation must never rerank with a larger limit")
+    }
+
+    func testIt9B3KeywordRetainsEmptyQueryAndOptionalInsightFailureSemantics() async throws {
+        let fixture = try MetadataSQLFixture(); defer { fixture.remove() }
+        try fixture.migrate(); try fixture.seedRegistry()
+        try fixture.seedBoundSession(id: "a", start: nil, nativeID: "a", title: "needle")
+        let producer = try fixture.producer(); defer { try? producer.stop() }
+        let empty = try await producer.keywordSearchPage(.init(query: "  "), requestId: requestId, deadline: fixture.deadline())
+        XCTAssertEqual(empty.searchModes, [])
+        try fixture.write { db in
+            try db.execute(sql: "DROP TABLE insights_fts; CREATE TABLE insights_fts(junk TEXT)")
+        }
+        let found = try await producer.keywordSearchPage(.init(query: "needle"), requestId: requestId, deadline: fixture.deadline())
+        XCTAssertEqual(found.items.map { $0.session.sessionId }, ["a"])
+        XCTAssertTrue(found.insightResults.isEmpty, "Optional insight search failure must not fail keyword results")
+    }
+
+    func testIt9B3HybridRetainsBothRetrievalMemberships() async throws {
+        let fixture = try MetadataSQLFixture(); defer { fixture.remove() }
+        try fixture.migrate(); try fixture.seedRegistry()
+        try fixture.seedBoundSession(id: "both", start: nil, title: "vector memory")
+        try fixture.seedEmbeddingMeta(model: "probe")
+        try fixture.seedSemanticChunk(sessionID: "both", model: "probe", vector: [1, 0, 0], text: "vector memory")
+        let env = isolatedEmbeddingEnv(apiKey: "test"), counter = SearchEmbedCounter()
+        let producer = try fixture.producer(embeddingEnvironment: env); defer { try? producer.stop() }
+        let provider = try searchProvider(databasePath: fixture.path, environment: env, counter: counter)
+        let page = try await performSearch(producer: producer, provider: provider, request: .init(query: "vector memory", mode: .hybrid))
+        XCTAssertEqual(page.items.first?.matchType, "both")
+        XCTAssertEqual(page.hasMore, false); XCTAssertNotNil(page.coverage)
+    }
+
+    func testIt9B3FrozenKeywordCohortCursorAndRevocation() async throws {
+        let fixture = try MetadataSQLFixture(); defer { fixture.remove() }
+        try fixture.migrate(); try fixture.seedRegistry()
+        for id in ["a", "b", "c", "d", "e"] { try fixture.seedBoundSession(id: id, start: "2026-09-01 00:00:00", nativeID: id, title: "fixture") }
+        let producer = try fixture.producer(); defer { try? producer.stop() }
+        let first = try await producer.keywordSearchPage(.init(query: "fixture", limit: 2), requestId: requestId, deadline: fixture.deadline())
+        XCTAssertEqual(first.items.map(\.session.sessionId), ["a", "b"])
+        XCTAssertEqual(first.hasMore, true); XCTAssertEqual(first.truncated, false); XCTAssertEqual(first.cohortSize, 5)
+        let snapshot = try XCTUnwrap(first.snapshotId), cursor = try XCTUnwrap(first.nextCursor)
+        // New high-ranked data cannot move a frozen cohort; revoked rows drop, no backfill.
+        try fixture.seedBoundSession(id: "new", start: "2026-10-01 00:00:00", nativeID: "new", title: "fixture")
+        try fixture.write { try $0.execute(sql: "UPDATE sessions SET hidden_at = 'now' WHERE id = 'c'") }
+        let second = try await producer.keywordSearchPage(.init(query: "fixture", limit: 2, snapshotId: snapshot, cursor: cursor), requestId: requestId, deadline: fixture.deadline())
+        XCTAssertEqual(second.items.map(\.session.sessionId), ["d"])
+        XCTAssertEqual(second.cohortSize, 5)
+        let last = try await producer.keywordSearchPage(.init(query: "fixture", limit: 2, snapshotId: snapshot, cursor: second.nextCursor), requestId: requestId, deadline: fixture.deadline())
+        XCTAssertEqual(last.items.map(\.session.sessionId), ["e"]); XCTAssertEqual(last.hasMore, false)
+        for input in [try EngramServiceWebSearchRequest(query: "other", limit: 2, snapshotId: snapshot, cursor: cursor),
+                      try .init(query: "fixture", agents: .all, limit: 2, snapshotId: snapshot, cursor: cursor),
+                      try .init(query: "fixture", mode: .hybrid, limit: 2, snapshotId: snapshot, cursor: cursor)] {
+            await assertStale(deadline: fixture.deadline()) { try await producer.keywordSearchPage(input, requestId: self.requestId, deadline: fixture.deadline()) }
+        }
+    }
+
+    func testIt9B3KeywordCapReportsTruncation() async throws {
+        let fixture = try MetadataSQLFixture(); defer { fixture.remove() }
+        try fixture.migrate(); try fixture.seedRegistry()
+        for n in 0..<101 { try fixture.seedBoundSession(id: "item-\(n)", start: nil, nativeID: "item-\(n)", title: "fixture") }
+        let producer = try fixture.producer(); defer { try? producer.stop() }
+        let page = try await producer.keywordSearchPage(.init(query: "fixture", limit: 50), requestId: requestId, deadline: fixture.deadline())
+        XCTAssertEqual(page.cohortSize, 99); XCTAssertEqual(page.truncated, true); XCTAssertEqual(page.hasMore, true)
+    }
+
     // B2 asserts the wire fields so RED runs before the DTO exists.
     func testIt9B2SharedSummaryAdmissionAndUnknownCosts() async throws {
         let fixture = try MetadataSQLFixture(); defer { fixture.remove() }
