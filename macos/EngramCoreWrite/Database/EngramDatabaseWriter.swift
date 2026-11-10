@@ -6,6 +6,8 @@ public final class EngramDatabaseWriter: Sendable {
     private let pool: DatabasePool
     private let path: String
 
+    public var databasePath: String { path }
+
     public init(path: String) throws {
         self.path = path
         pool = try DatabasePool(

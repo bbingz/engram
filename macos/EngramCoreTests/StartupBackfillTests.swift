@@ -3000,6 +3000,138 @@ final class StartupBackfillTests: XCTestCase {
         XCTAssertEqual(second.recovered, 0, "the versioned repair must be idempotent")
     }
 
+    func testOrphanScanSkipsAndRecoversReclaimedArchiveV2Sessions_repro() async throws {
+        // The shared fixture DB sits directly in $TMPDIR, so its sibling
+        // `archive-v2` would be shared by every run; give this test its own root.
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("startup-reclaimed-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let writer = try EngramDatabaseWriter(path: root.appendingPathComponent("index.sqlite").path)
+        try writer.migrate()
+        let archiveRoot = URL(fileURLWithPath: writer.databasePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("archive-v2", isDirectory: true)
+        let machineID = "7C1D3A52-9E4B-4F60-8A21-5B0C6D7E8F90"
+        let catalog = try ArchiveCatalog(root: archiveRoot, machineID: machineID)
+        try catalog.migrate()
+
+        func seedReclaimedIntent(name: String, sessionID: String, locator: String, inode: Int64) throws {
+            let bytes = Data("{\"session\":\"\(name)\"}\n".utf8)
+            let objectSHA = ArchiveV2Hash.sha256(bytes)
+            let captureID = ArchiveV2Hash.sha256(Data("capture-\(name)".utf8))
+            let generation = try ArchiveSourceGeneration(
+                device: 1,
+                inode: inode,
+                size: Int64(bytes.count),
+                mtimeNs: 1_700_000_000_000_000_000,
+                ctimeNs: 1_700_000_000_000_000_000,
+                mode: Int64(S_IFREG | 0o600)
+            )
+            let unbound = try ArchiveSourceManifest(
+                captureID: captureID,
+                machineID: machineID,
+                source: "codex",
+                locator: locator,
+                sessionID: nil,
+                capturedAt: "2026-07-12T00:00:00.000Z",
+                generation: generation,
+                wholeSourceSHA256: objectSHA,
+                rawByteCount: Int64(bytes.count),
+                chunks: [try ArchiveChunkReference(ordinal: 0, rawSHA256: objectSHA, rawByteCount: Int64(bytes.count))],
+                replayLayout: try ArchiveReplayLayout(strategy: .singleFile, relativePaths: ["\(name).jsonl"])
+            )
+            _ = try catalog.recordCapture(canonicalManifestBytes: ArchiveCanonicalJSON.encode(unbound))
+            let bound = try ArchiveSourceManifest(
+                captureID: captureID,
+                machineID: machineID,
+                source: "codex",
+                locator: locator,
+                sessionID: sessionID,
+                capturedAt: unbound.capturedAt,
+                generation: generation,
+                wholeSourceSHA256: objectSHA,
+                rawByteCount: Int64(bytes.count),
+                chunks: unbound.chunks,
+                replayLayout: unbound.replayLayout
+            )
+            let binding = try catalog.bind(
+                canonicalManifestBytes: ArchiveCanonicalJSON.encode(bound),
+                sourceSnapshotFingerprint: ArchiveV2Hash.sha256(Data("snap-\(name)".utf8)),
+                boundAt: "2026-07-12T00:01:00.000Z"
+            )
+            let intent = try catalog.upsertReclamationIntent(
+                manifestSHA256: binding.manifestSHA256,
+                captureID: binding.captureID,
+                sessionID: binding.sessionID,
+                locator: locator,
+                updatedAt: "2026-07-12T00:02:00.000Z"
+            )
+            _ = try catalog.transitionReclamationIntent(
+                manifestSHA256: binding.manifestSHA256,
+                from: ArchiveReclamationPhase.eligible,
+                to: ArchiveReclamationPhase.quarantinePlanned,
+                expectedClaimGeneration: intent.claimGeneration,
+                quarantinePath: "/tmp/quarantine/\(name).jsonl",
+                updatedAt: "2026-07-12T00:03:00.000Z"
+            )
+            _ = try catalog.transitionReclamationIntent(
+                manifestSHA256: binding.manifestSHA256,
+                from: ArchiveReclamationPhase.quarantinePlanned,
+                to: ArchiveReclamationPhase.sourceQuarantined,
+                expectedClaimGeneration: intent.claimGeneration + 1,
+                quarantinePath: "/tmp/quarantine/\(name).jsonl",
+                updatedAt: "2026-07-12T00:04:00.000Z"
+            )
+            _ = try catalog.transitionReclamationIntent(
+                manifestSHA256: binding.manifestSHA256,
+                from: ArchiveReclamationPhase.sourceQuarantined,
+                to: ArchiveReclamationPhase.sourceDeletePlanned,
+                expectedClaimGeneration: intent.claimGeneration + 2,
+                quarantinePath: "/tmp/quarantine/\(name).jsonl",
+                updatedAt: "2026-07-12T00:05:00.000Z"
+            )
+            _ = try catalog.transitionReclamationIntent(
+                manifestSHA256: binding.manifestSHA256,
+                from: ArchiveReclamationPhase.sourceDeletePlanned,
+                to: ArchiveReclamationPhase.sourceDeleted,
+                expectedClaimGeneration: intent.claimGeneration + 3,
+                quarantinePath: nil as String?,
+                updatedAt: "2026-07-12T00:06:00.000Z"
+            )
+        }
+
+        try seedReclaimedIntent(name: "reclaimed-clean", sessionID: "reclaimed-clean", locator: "/files/reclaimed-clean.jsonl", inode: 101)
+        try seedReclaimedIntent(name: "reclaimed-suspect", sessionID: "reclaimed-suspect", locator: "/files/reclaimed-suspect.jsonl", inode: 102)
+
+        try writer.write { db in
+            try insertSession(db, id: "reclaimed-clean", source: "codex", filePath: "/files/reclaimed-clean.jsonl")
+            try insertSession(db, id: "reclaimed-suspect", source: "codex", filePath: "/files/reclaimed-suspect.jsonl")
+            try db.execute(
+                sql: "UPDATE sessions SET orphan_status = 'suspect', orphan_since = datetime('now', '-5 days') WHERE id = 'reclaimed-suspect'"
+            )
+            try insertSession(db, id: "truly-missing", source: "codex", filePath: "/files/truly-missing.jsonl")
+        }
+
+        let adapter = FakeAccessibilityAdapter(accessibleLocators: [])
+        let scanner = WriterStartupOrphanScanning(writer: writer, minimumScanInterval: 0)
+        let result = try await scanner.detectOrphans(adapters: [adapter])
+
+        XCTAssertEqual(result.scanned, 3)
+        XCTAssertEqual(result.recovered, 1, "previously suspect reclaimed session must be healed back to NULL orphan_status")
+        XCTAssertEqual(result.newlyFlagged, 1, "only non-reclaimed missing files may be flagged suspect")
+        XCTAssertEqual(adapter.probedLocators, ["/files/truly-missing.jsonl"])
+
+        try writer.read { db in
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT orphan_status FROM sessions WHERE id = 'reclaimed-clean'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT orphan_status FROM sessions WHERE id = 'reclaimed-suspect'"))
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT orphan_status FROM sessions WHERE id = 'truly-missing'"),
+                "suspect"
+            )
+        }
+    }
+
     func testEnqueueStaleFtsJobsAddsPendingJobForCurrentSnapshotHash() throws {
         try writer.write { db in
             try insertSession(db, id: "stale", source: "codex", tier: "normal")

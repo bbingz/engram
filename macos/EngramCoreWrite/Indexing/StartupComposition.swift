@@ -277,15 +277,18 @@ public final class WriterStartupOrphanScanning: StartupOrphanScanning {
     static let remoteOrphanReconcileVersion = "1"
 
     private let writer: EngramDatabaseWriter
+    private let archiveCatalog: ArchiveCatalog?
     private let gracePeriodDays: Int
     private let minimumScanInterval: TimeInterval
 
     public init(
         writer: EngramDatabaseWriter,
+        archiveCatalog: ArchiveCatalog? = nil,
         gracePeriodDays: Int = 30,
         minimumScanInterval: TimeInterval = 24 * 60 * 60
     ) {
         self.writer = writer
+        self.archiveCatalog = archiveCatalog
         self.gracePeriodDays = gracePeriodDays
         self.minimumScanInterval = minimumScanInterval
     }
@@ -346,6 +349,7 @@ public final class WriterStartupOrphanScanning: StartupOrphanScanning {
         var skipped = 0
         let now = Date()
         let graceInterval = TimeInterval(gracePeriodDays) * 24 * 60 * 60
+        let reclaimed = resolveReclaimedSessionSnapshot()
 
         // Phase 1 (ungated): probe each session's source file without holding the
         // write gate. The per-session `isAccessible` probe is I/O and was
@@ -365,6 +369,13 @@ public final class WriterStartupOrphanScanning: StartupOrphanScanning {
                   !row.locator.hasPrefix("sync://")
             else {
                 skipped += 1
+                continue
+            }
+
+            if reclaimed.contains(sessionID: row.id, locator: row.locator) {
+                if row.orphanStatus != nil {
+                    recover.append(row.id)
+                }
                 continue
             }
 
@@ -517,6 +528,26 @@ public final class WriterStartupOrphanScanning: StartupOrphanScanning {
                 arguments: [Self.lastScanMetadataKey]
             )
         }
+    }
+
+    private func resolveReclaimedSessionSnapshot() -> ArchiveReclaimedSessionSnapshot {
+        if let archiveCatalog, let snapshot = try? archiveCatalog.reclaimedSessionSnapshot() {
+            return snapshot
+        }
+        guard !writer.databasePath.isEmpty else {
+            return ArchiveReclaimedSessionSnapshot()
+        }
+        let archiveRoot = URL(fileURLWithPath: writer.databasePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("archive-v2", isDirectory: true)
+        let catalogDBPath = archiveRoot.appendingPathComponent("archive.sqlite").path
+        guard FileManager.default.fileExists(atPath: catalogDBPath),
+              let catalog = try? ArchiveCatalog(root: archiveRoot),
+              let snapshot = try? catalog.reclaimedSessionSnapshot()
+        else {
+            return ArchiveReclaimedSessionSnapshot()
+        }
+        return snapshot
     }
 
     /// Parses SQLite `datetime('now')` output ("YYYY-MM-DD HH:MM:SS", UTC).
