@@ -5313,7 +5313,7 @@ enum WebUIRoutes {
             field("Unpriced coverage", costs ? (costs.unpricedUnattributedSessions == null ? "not reported" : costs.unpricedUnattributedSessions + " unattributed sessions") + " · " + (costs.unpricedNoPriceSessions == null ? "not reported" : costs.unpricedNoPriceSessions + " sessions without price") : null);
             const coverage = detailInfoCoverage();
             Object.keys(coverage).forEach(function (label) { const node = field(label, coverage[label]); node.className = "info-coverage"; node.dataset.coverage = label; });
-            const note = document.createElement("p"); setText(note, "Missing values are not reported, not zero. Parent/model metadata in the summary is deferred It9; no model is inferred from the source."); root.appendChild(note);
+            const note = document.createElement("p"); setText(note, "Missing values are not reported, not zero. Model comes only from recorded session cost data; it is never inferred from the source."); root.appendChild(note);
             if (!results[0] || !results[1]) {
               const missing = document.createElement("p"); setText(missing, "Cost data unavailable. Missing values are not reported."); root.appendChild(missing);
               const retry = document.createElement("button"); retry.type = "button"; setText(retry, "Retry cost data"); retry.addEventListener("click", loadDetailInfo); root.appendChild(retry);

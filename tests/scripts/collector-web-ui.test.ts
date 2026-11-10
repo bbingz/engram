@@ -8979,6 +8979,16 @@ describe('It8 genuine session-start heatmap and ordering', () => {
   });
 });
 
+describe('It9 user-facing copy', () => {
+  it('does not ship internal iteration labels or stale deferral notes', () => {
+    const js = shipped('javascript');
+    expect(js).not.toMatch(/deferred It\d|\bIt[0-9]\b/);
+    expect(js).toContain(
+      'Model comes only from recorded session cost data; it is never inferred from the source.',
+    );
+  });
+});
+
 describe('It8 readable hour-of-week labels', () => {
   const counts = {
     messageCount: 0,
