@@ -7253,6 +7253,168 @@ describe('iteration 4 route and find fences', () => {
     expect(ui.node('transcript-find').hidden).toBe(true);
   });
 
+  it('cancels ordinary search-hit Find continuation after explicit Info navigation', async () => {
+    const ui = harness();
+    await ui.call(
+      'setSignedIn(true); activatePage("search"); document.getElementById("query").value="needle"',
+    );
+    const search = ui.call('loadRankedSearch()');
+    ui.requestFor('/web/api/search?').resolve({
+      query: 'needle',
+      items: [
+        {
+          session: { sessionId: 's', title: 'Search hit' },
+          snippet: '<mark>needle</mark>',
+        },
+      ],
+    });
+    await search;
+    ui.node('sessions').children[0].click();
+    ui.requestFor('/web/api/sessions/s').resolve(detail);
+    await flushAuthWork();
+    const pending = ui.requestFor('/web/api/sessions/s/messages');
+    await ui.call('detailInfoLoaded=true');
+    ui.node('detail-view-info').click();
+    await flushAuthWork();
+    const focus = ui.activeElement();
+    const count = ui.requests.length;
+    pending.resolve({
+      fragments: [fragment(0, 'No matching text')],
+      nextCursor: 'more',
+    });
+    await flushAuthWork();
+    expect(await ui.call('window.location.hash')).toBe('#/s/s/info');
+    expect(ui.node('detail-info-panel').hidden).toBe(false);
+    expect(ui.node('transcript-find').hidden).toBe(true);
+    expect(ui.node('transcript-find-query').value).toBe('');
+    expect(ui.activeElement()).toBe(focus);
+    expect(ui.node('messages').querySelector('.jump-target')).toBe(null);
+    expect(ui.requests).toHaveLength(count);
+  });
+
+  for (const completion of [
+    'before Forward',
+    'during replacement',
+    'after replacement',
+  ]) {
+    it.each(['info', 'timeline', 'children'])(
+      `recovers pending %s panel history when the old read completes ${completion}`,
+      async (view) => {
+        const ui = harness();
+        await ui.call(
+          'setSignedIn(true); detailContextSession="s"; detailContextGeneration="g"; showSessionDetailPane(); writeRoute({page:"detail",id:"s"})',
+        );
+        const prefixes =
+          view === 'info'
+            ? ['/web/api/costs/sessions?', '/web/api/costs?']
+            : [`/web/api/sessions/s/${view}?`];
+        const reads = () =>
+          ui.requests.filter((r) =>
+            prefixes.some((prefix) => r.path.startsWith(prefix)),
+          );
+        const finish = (requests: ReturnType<typeof reads>, label: string) => {
+          for (const request of requests) {
+            if (view === 'info')
+              request.resolve(
+                request.path.startsWith('/web/api/costs/sessions?')
+                  ? { items: [{ session: { sessionId: 's' }, model: label }] }
+                  : { items: [] },
+              );
+            else if (view === 'timeline')
+              request.resolve({
+                sessionId: 's',
+                generation: 'g',
+                totalEntries: 1,
+                entries: [
+                  { index: 0, type: 'message', role: 'user', preview: label },
+                ],
+              });
+            else
+              request.resolve({
+                sessionId: 's',
+                snapshotId: label,
+                items: [
+                  {
+                    session: { sessionId: `child-${label}`, title: label },
+                    relationship: 'confirmed',
+                  },
+                ],
+              });
+          }
+        };
+        const busy = () =>
+          ui.call(
+            view === 'info'
+              ? 'detailInfoBusy'
+              : `detail${view === 'timeline' ? 'Timeline' : 'Children'}.busy`,
+          );
+        const loaded = () =>
+          ui.call(
+            view === 'info'
+              ? 'detailInfoLoaded'
+              : `detail${view === 'timeline' ? 'Timeline' : 'Children'}.loaded`,
+          );
+        const content = () =>
+          ui.node(
+            view === 'info'
+              ? 'detail-info-content'
+              : view === 'timeline'
+                ? 'timeline-rows'
+                : 'detail-children-rows',
+          ).textContent;
+        ui.node(`detail-view-${view}`).click();
+        await flushAuthWork();
+        const old = [...reads()];
+        expect(old).toHaveLength(prefixes.length);
+        await ui.call('window.location.hash="#/s/s"; applyRoute(false)');
+        if (completion === 'before Forward') {
+          finish(old, 'STALE');
+          await flushAuthWork();
+        }
+        const forward = ui.call(
+          `window.location.hash="#/s/s/${view}"; applyRoute(false)`,
+        );
+        await flushAuthWork();
+        const replacement = reads().filter((r) => !old.includes(r));
+        expect(replacement).toHaveLength(prefixes.length);
+        expect(await busy()).toBe(true);
+        if (completion === 'during replacement') {
+          finish(old, 'STALE');
+          await flushAuthWork();
+          expect(await busy()).toBe(true); // An old finally must not unlock the replacement.
+          ui.node(`detail-view-${view}`).click();
+          if (view !== 'info')
+            ui.node(
+              view === 'timeline'
+                ? 'timeline-refresh'
+                : 'detail-children-refresh',
+            ).click();
+          expect(reads()).toHaveLength(2 * prefixes.length);
+        }
+        expect(content()).not.toContain('STALE');
+        finish(replacement, 'CURRENT');
+        await forward;
+        if (completion === 'after replacement') {
+          finish(old, 'STALE');
+          await flushAuthWork();
+        }
+        expect(await busy()).toBe(false);
+        expect(await loaded()).toBe(true);
+        expect(content()).toContain('CURRENT');
+        expect(content()).not.toContain('STALE');
+        expect(
+          ui.node(`detail-view-${view}`).getAttribute('aria-pressed'),
+        ).toBe('true');
+        // Completed panels are reused through history, without rereading the session/messages.
+        await ui.call('window.location.hash="#/s/s"; applyRoute(false)');
+        await ui.call(
+          `window.location.hash="#/s/s/${view}"; applyRoute(false)`,
+        );
+        expect(ui.requests).toHaveLength(2 * prefixes.length);
+      },
+    );
+  }
+
   it('retains pending message routes across credential login with original login read ordering', async () => {
     const ui = harness();
     await ui.call('window.location.hash="#/s/s/m/42"');

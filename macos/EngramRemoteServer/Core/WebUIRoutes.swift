@@ -897,7 +897,7 @@ enum WebUIRoutes {
         let messageBuf = null;
         let messageRequest = null;
         let transcriptMessages = [], transcriptFilter = "all", transcriptStep = -1, transcriptAllBusy = false;
-        let detailInfoDetail = null, detailInfoLoaded = false, detailInfoBusy = false, detailMessageCoverage = null;
+        let detailInfoDetail = null, detailInfoLoaded = false, detailInfoBusy = false, detailInfoEpoch = -1, detailMessageCoverage = null;
         let outlineEntries = [], outlineOpen = false;
         let turnUsageNode = null, turnUsage = null, promptNumber = 0, messageTotal = null, activeOutlineOrdinal = null;
         let detailSource = "";
@@ -2867,7 +2867,7 @@ enum WebUIRoutes {
           detailExtrasVersion += 1;
           detailContextSession = "";
           detailContextGeneration = "";
-          detailInfoDetail = null; detailInfoLoaded = false; detailInfoBusy = false; detailMessageCoverage = null;
+          detailInfoDetail = null; detailInfoLoaded = false; detailInfoBusy = false; detailInfoEpoch = -1; detailMessageCoverage = null;
           setText(document.getElementById("detail-info-content"), "");
           document.getElementById("detail-info-panel").hidden = true;
           detailRelationship = { canWrite: false, checking: false };
@@ -2991,12 +2991,13 @@ enum WebUIRoutes {
         }
         async function loadDetailChildren(more) {
           const state = detailChildren;
-          if (!detailContextSession || state.busy || (more && !state.cursor)) return;
+          // A history route cancels reads, not panel data. Only a current read blocks a replacement.
+          if (!detailContextSession || (state.busy && state.busyEpoch === requestEpoch) || (more && !state.cursor)) return;
           const sessionId = detailContextSession, version = detailExtrasVersion, token = requestEpoch;
           const rows = document.getElementById("detail-children-rows"), status = document.getElementById("detail-children-status");
           const params = new URLSearchParams({ limit: "20" });
           if (more) { params.set("snapshotId", state.snapshot); params.set("cursor", state.cursor); }
-          state.busy = true;
+          state.busy = true; state.busyEpoch = token;
           setText(status, "Loading child sessions…");
           try {
             const page = await api("GET", "/web/api/sessions/" + encodeURIComponent(sessionId) + "/children?" + params);
@@ -3014,9 +3015,9 @@ enum WebUIRoutes {
           } catch (error) {
             if (version === detailExtrasVersion && token === requestEpoch) setText(status, "Child sessions unavailable. Refresh to retry.");
           } finally {
-            if (version === detailExtrasVersion && token === requestEpoch) {
+            if (version === detailExtrasVersion && state.busyEpoch === token) {
               state.busy = false;
-              document.getElementById("detail-children-more").hidden = !state.cursor;
+              if (token === requestEpoch) document.getElementById("detail-children-more").hidden = !state.cursor;
             }
           }
         }
@@ -3123,12 +3124,12 @@ enum WebUIRoutes {
         }
         async function loadDetailTimeline(more) {
           const state = detailTimeline;
-          if (!detailContextSession || !detailContextGeneration || state.busy || (more && state.next == null)) return;
+          if (!detailContextSession || !detailContextGeneration || (state.busy && state.busyEpoch === requestEpoch) || (more && state.next == null)) return;
           const sessionId = detailContextSession, generation = detailContextGeneration, version = detailExtrasVersion, token = requestEpoch;
           const rows = document.getElementById("timeline-rows"), status = document.getElementById("timeline-status");
           const offset = more ? state.next : 0;
           const params = new URLSearchParams({ generation: generation, offset: String(offset), limit: "500" });
-          state.busy = true; setText(status, "Loading timeline…");
+          state.busy = true; state.busyEpoch = token; setText(status, "Loading timeline…");
           try {
             const page = await api("GET", "/web/api/sessions/" + encodeURIComponent(sessionId) + "/timeline?" + params);
             if (version !== detailExtrasVersion || token !== requestEpoch) return;
@@ -3174,8 +3175,9 @@ enum WebUIRoutes {
           } catch (error) {
             if (version === detailExtrasVersion && token === requestEpoch) setText(status, "Timeline unavailable. Refresh the session if its transcript changed.");
           } finally {
-            if (version === detailExtrasVersion && token === requestEpoch) {
-              state.busy = false; document.getElementById("timeline-more").hidden = state.next == null;
+            if (version === detailExtrasVersion && state.busyEpoch === token) {
+              state.busy = false;
+              if (token === requestEpoch) document.getElementById("timeline-more").hidden = state.next == null;
             }
           }
         }
@@ -3989,7 +3991,7 @@ enum WebUIRoutes {
             writeRoute({page:"detail",id:sessionId,find:activePage === "search" ? document.getElementById("query").value.trim() : ""});
           }
           detailReturnPage = returnPage || (detailReturnRoute && detailReturnRoute.page === "stats" ? "stats" : null);
-          const token = bumpEpoch();
+          const version = routeVersion, token = bumpEpoch();
           sessionPagingBusy = false;
           updateSessionMore();
           showSessionDetailPane();
@@ -4042,7 +4044,7 @@ enum WebUIRoutes {
               return;
             }
             await loadMessages(token, session.sessionId, generation, "");
-            if (!routed && token === requestEpoch && activePage === "search") {
+            if (!routed && version === routeVersion && token === requestEpoch && activePage === "search") {
               openTranscriptFind(document.getElementById("query").value.trim()); await searchFurther();
             }
           } catch (error) {
@@ -4611,9 +4613,9 @@ enum WebUIRoutes {
           });
         }
         async function loadDetailInfo() {
-          if (!detailContextSession || detailInfoBusy) return;
+          if (!detailContextSession || (detailInfoBusy && detailInfoEpoch === requestEpoch)) return;
           const id = detailContextSession, token = requestEpoch, version = detailExtrasVersion;
-          const root = document.getElementById("detail-info-content"); detailInfoBusy = true; setText(root, "Loading session info…");
+          const root = document.getElementById("detail-info-content"); detailInfoBusy = true; detailInfoEpoch = token; setText(root, "Loading session info…");
           const params = new URLSearchParams({sessionId:id, agents:"all", limit:"1"});
           try {
             const results = await Promise.all([
@@ -4654,7 +4656,7 @@ enum WebUIRoutes {
               const retry = document.createElement("button"); retry.type = "button"; setText(retry, "Retry cost data"); retry.addEventListener("click", loadDetailInfo); root.appendChild(retry);
             }
             detailInfoLoaded = true;
-          } finally { if (token === requestEpoch && version === detailExtrasVersion) detailInfoBusy = false; }
+          } finally { if (detailInfoEpoch === token && version === detailExtrasVersion) detailInfoBusy = false; }
         }
         document.getElementById("transcript-outline-toggle").addEventListener("click", function () {
           outlineOpen = !outlineOpen; document.getElementById("transcript-outline-box").hidden = !outlineOpen; document.getElementById("transcript-outline-box").open = outlineOpen;
