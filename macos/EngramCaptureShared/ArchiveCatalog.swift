@@ -3794,4 +3794,48 @@ public final class ArchiveCatalog: @unchecked Sendable {
         ]
         return formatter
     }
+
+    /// Returns session IDs and source locators whose on-disk source files have
+    /// been intentionally quarantined or unlinked by Archive V2 reclamation.
+    /// Startup orphan scanning treats these sessions as accessible so they
+    /// remain visible in MCP search, list, and timeline queries.
+    public func reclaimedSessionSnapshot() throws -> ArchiveReclaimedSessionSnapshot {
+        try pool.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT DISTINCT session_id, locator
+                FROM archive_reclamation_intents
+                WHERE phase IN ('sourceQuarantined', 'sourceDeletePlanned', 'sourceDeleted', 'localContentEvicted')
+                """
+            )
+            var sessionIDs: Set<String> = []
+            var locators: Set<String> = []
+            sessionIDs.reserveCapacity(rows.count)
+            locators.reserveCapacity(rows.count)
+            for row in rows {
+                if let sessionID: String = row["session_id"], !sessionID.isEmpty {
+                    sessionIDs.insert(sessionID)
+                }
+                if let locator: String = row["locator"], !locator.isEmpty {
+                    locators.insert(locator)
+                }
+            }
+            return ArchiveReclaimedSessionSnapshot(sessionIDs: sessionIDs, locators: locators)
+        }
+    }
+}
+
+public struct ArchiveReclaimedSessionSnapshot: Sendable, Equatable {
+    public let sessionIDs: Set<String>
+    public let locators: Set<String>
+
+    public init(sessionIDs: Set<String> = [], locators: Set<String> = []) {
+        self.sessionIDs = sessionIDs
+        self.locators = locators
+    }
+
+    public func contains(sessionID: String, locator: String) -> Bool {
+        sessionIDs.contains(sessionID) || (!locator.isEmpty && locators.contains(locator))
+    }
 }

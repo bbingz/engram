@@ -2,7 +2,17 @@ import CryptoKit
 import Darwin
 import Dispatch
 import Foundation
+#if canImport(Logging)
 import Logging
+#else
+private struct Logger: Sendable {
+    typealias Metadata = [String: String]
+    init(label: String) {}
+    func error(_ message: @autoclosure () -> String, metadata: @autoclosure () -> Metadata? = nil) {
+        FileHandle.standardError.write(Data((message() + "\n").utf8))
+    }
+}
+#endif
 
 public enum ArchivePublishResult: Equatable, Sendable {
     case published
@@ -695,11 +705,30 @@ public struct ArchiveStore: Sendable {
         do {
             try acquirePublicationLock(owner)
             let index = try preparePublicationIndex(owner)
+            #if arch(x86_64)
+            if let cached = loadEnvelopeCache(kind: .publicationAcceptance) {
+                for entry in cached {
+                    let record = try decodedPublicationRecord(entry.raw, expectedDigest: entry.digest)
+                    try index.insert(record, digest: entry.digest)
+                }
+                try validatePublicationLock(owner)
+            } else {
+                var entries: [(digest: String, raw: Data)] = []
+                try forEachEnvelope(kind: .publicationAcceptance, durable: true) { digest, bytes in
+                    try validatePublicationLock(owner)
+                    let record = try decodedPublicationRecord(bytes, expectedDigest: digest)
+                    try index.insert(record, digest: digest)
+                    entries.append((digest, bytes))
+                }
+                writeEnvelopeCache(kind: .publicationAcceptance, entries: entries)
+            }
+            #else
             try forEachEnvelope(kind: .publicationAcceptance, durable: true) { digest, bytes in
                 try validatePublicationLock(owner)
                 let record = try decodedPublicationRecord(bytes, expectedDigest: digest)
                 try index.insert(record, digest: digest)
             }
+            #endif
             index.arrivals.sort { $0.ack.arrivalOrdinal < $1.ack.arrivalOrdinal }
             hooks.afterPublicationIndexScan?()
             try validatePublicationOwnership(owner, index: index)
@@ -775,6 +804,9 @@ public struct ArchiveStore: Sendable {
             ) {
             case .published:
                 try index.insert(record, digest: digest)
+                #if arch(x86_64)
+                appendEnvelopeCache(kind: .publicationAcceptance, digest: digest, envelope: envelope)
+                #endif
                 return ArchivePublicationAcceptance(record: record, result: .published)
             case .alreadyPresent:
                 // An unindexed final cannot arise under our lifetime lock.
@@ -1184,6 +1216,27 @@ public struct ArchiveStore: Sendable {
     private func ensureListIndexReady(forced: Bool) throws {
         try listIndex.ensureReady(forced: forced) {
             var entries: [ArchiveReceiptListIndex.Entry] = []
+            #if arch(x86_64)
+            if let cached = loadEnvelopeCache(kind: .receipt) {
+                for entry in cached {
+                    let receipt = try scanReceipt(bytes: entry.raw, manifestDigest: entry.digest)
+                    guard let canonicalMachineID = UUID(uuidString: receipt.machineID)?.uuidString else {
+                        throw ArchiveStoreError.conflict
+                    }
+                    entries.append(
+                        Self.listIndexEntry(
+                            machineID: canonicalMachineID,
+                            manifestDigest: entry.digest,
+                            receiptBytes: entry.raw,
+                            receipt: receipt
+                        )
+                    )
+                }
+                hooks.afterListIndexBuild?()
+                return entries
+            }
+            var cacheEntries: [(digest: String, raw: Data)] = []
+            #endif
             try forEachReceipt { manifestDigest, receiptBytes, receipt in
                 guard let canonicalMachineID = UUID(uuidString: receipt.machineID)?.uuidString else {
                     throw ArchiveStoreError.conflict
@@ -1196,7 +1249,13 @@ public struct ArchiveStore: Sendable {
                         receipt: receipt
                     )
                 )
+                #if arch(x86_64)
+                cacheEntries.append((manifestDigest, receiptBytes))
+                #endif
             }
+            #if arch(x86_64)
+            writeEnvelopeCache(kind: .receipt, entries: cacheEntries)
+            #endif
             hooks.afterListIndexBuild?()
             return entries
         }
@@ -1207,6 +1266,11 @@ public struct ArchiveStore: Sendable {
               let machineID = UUID(uuidString: receipt.machineID)?.uuidString else {
             return
         }
+        #if arch(x86_64)
+        if let envelope = try? codec.encode(raw: bytes, kind: .receipt, expectedDigest: manifestDigest) {
+            appendEnvelopeCache(kind: .receipt, digest: manifestDigest, envelope: envelope)
+        }
+        #endif
         listIndex.note(
             Self.listIndexEntry(
                 machineID: machineID,
@@ -2090,7 +2154,7 @@ public struct ArchiveStore: Sendable {
                     throw ArchiveStoreError.conflict
                 }
                 let bytes = try readEnvelope(
-                    at: url(for: digest, kind: kind, createShard: false),
+                    at: shardURL.appendingPathComponent(digest, isDirectory: false),
                     expectedKind: kind,
                     expectedDigest: digest,
                     fsyncBeforeAccept: durable,
@@ -2110,6 +2174,129 @@ public struct ArchiveStore: Sendable {
             throw ArchiveStoreError.conflict
         }
     }
+
+    #if arch(x86_64)
+    // Startup accelerator for the slow storage-only host (10.0.0.9: Intel,
+    // macOS 12): one sequential file instead of one open+fsync per record.
+    // Lines are "<digest> <base64 envelope>", sealed with this store's at-rest
+    // key and bound to their digest, so the cache never holds plaintext. It is
+    // advisory: used only when every line authenticates, every final file still
+    // has the inode/size/mtime/ctime recorded for it, and the digest set equals
+    // the on-disk finals. A crash before an append, a missed append or a
+    // foreign file makes it fall back to the full durable scan, which rewrites
+    // it; a stale cache can therefore never hide a record or reuse an ordinal.
+    private func envelopeCacheURL(kind: ArchiveEnvelopeKind) -> URL {
+        let top = topDirectoryName(for: kind)
+        return root.appendingPathComponent(top, isDirectory: true)
+            .appendingPathComponent(".\(top)-cache.v2", isDirectory: false)
+    }
+
+    private func loadEnvelopeCache(kind: ArchiveEnvelopeKind) -> [(digest: String, raw: Data)]? {
+        let url = envelopeCacheURL(kind: kind)
+        var info = stat()
+        guard Darwin.lstat(url.path, &info) == 0, Self.isSafeFinalFile(info),
+              let data = try? Data(contentsOf: url), !data.isEmpty else {
+            return nil
+        }
+        var entries: [(digest: String, raw: Data)] = []
+        var digests = Set<String>()
+        for line in data.split(separator: UInt8(ascii: "\n")) {
+            let fields = line.split(separator: UInt8(ascii: " "), omittingEmptySubsequences: false)
+            guard fields.count == 3 else { return nil }
+            let digest = String(decoding: fields[0], as: UTF8.self)
+            // The fingerprint proves the final file was not replaced or rewritten
+            // since this line was written, without reading or fsyncing it.
+            guard ArchiveV2Hash.isValidSHA256(digest), digests.insert(digest).inserted,
+                  envelopeCacheFingerprint(kind: kind, digest: digest) == String(decoding: fields[1], as: UTF8.self),
+                  let envelope = Data(base64Encoded: Data(fields[2])),
+                  let raw = try? codec.decode(envelope, expectedKind: kind, expectedDigest: digest) else {
+                return nil
+            }
+            entries.append((digest, raw))
+        }
+        guard let onDisk = try? finalDigests(kind: kind), onDisk == digests else { return nil }
+        return entries
+    }
+
+    private func writeEnvelopeCache(kind: ArchiveEnvelopeKind, entries: [(digest: String, raw: Data)]) {
+        var out = Data()
+        for entry in entries {
+            guard let envelope = try? codec.encode(raw: entry.raw, kind: kind, expectedDigest: entry.digest) else {
+                return
+            }
+            guard let fingerprint = envelopeCacheFingerprint(kind: kind, digest: entry.digest) else { return }
+            out.append(Self.envelopeCacheLine(digest: entry.digest, fingerprint: fingerprint, envelope: envelope))
+        }
+        let url = envelopeCacheURL(kind: kind)
+        let temporaryURL = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(UUID().uuidString).cache-tmp", isDirectory: false)
+        let fd = Darwin.open(temporaryURL.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return }
+        let written = Self.writeAllBytes(fd: fd, data: out) && Darwin.fsync(fd) == 0
+        _ = Darwin.close(fd)
+        guard written, Darwin.rename(temporaryURL.path, url.path) == 0 else {
+            _ = Darwin.unlink(temporaryURL.path)
+            return
+        }
+    }
+
+    /// Best effort: a failed append only makes the next load fall back to disk.
+    private func appendEnvelopeCache(kind: ArchiveEnvelopeKind, digest: String, envelope: Data) {
+        guard let fingerprint = envelopeCacheFingerprint(kind: kind, digest: digest) else { return }
+        let fd = Darwin.open(envelopeCacheURL(kind: kind).path, O_WRONLY | O_APPEND | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return }
+        _ = Self.writeAllBytes(
+            fd: fd, data: Self.envelopeCacheLine(digest: digest, fingerprint: fingerprint, envelope: envelope)
+        )
+        _ = Darwin.close(fd)
+    }
+
+    private func finalDigests(kind: ArchiveEnvelopeKind) throws -> Set<String> {
+        let base = baseURL(for: kind)
+        var digests = Set<String>()
+        for shard in try FileManager.default.contentsOfDirectory(atPath: base.path) where !shard.hasPrefix(".") {
+            let shardPath = base.appendingPathComponent(shard, isDirectory: true).path
+            for digest in try FileManager.default.contentsOfDirectory(atPath: shardPath) where !digest.hasPrefix(".") {
+                digests.insert(digest)
+            }
+        }
+        return digests
+    }
+
+    private func envelopeCacheFingerprint(kind: ArchiveEnvelopeKind, digest: String) -> String? {
+        let url = baseURL(for: kind)
+            .appendingPathComponent(String(digest.prefix(2)), isDirectory: true)
+            .appendingPathComponent(digest, isDirectory: false)
+        var info = stat()
+        guard Darwin.lstat(url.path, &info) == 0, Self.isSafeFinalFile(info) else { return nil }
+        return "\(info.st_ino):\(info.st_size):\(info.st_mtimespec.tv_sec).\(info.st_mtimespec.tv_nsec)"
+            + ":\(info.st_ctimespec.tv_sec).\(info.st_ctimespec.tv_nsec)"
+    }
+
+    private static func envelopeCacheLine(digest: String, fingerprint: String, envelope: Data) -> Data {
+        var line = Data(digest.utf8)
+        line.append(UInt8(ascii: " "))
+        line.append(Data(fingerprint.utf8))
+        line.append(UInt8(ascii: " "))
+        line.append(envelope.base64EncodedData())
+        line.append(UInt8(ascii: "\n"))
+        return line
+    }
+
+    private static func writeAllBytes(fd: Int32, data: Data) -> Bool {
+        data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return data.isEmpty }
+            var offset = 0
+            while offset < data.count {
+                let count = Darwin.write(fd, base.advanced(by: offset), data.count - offset)
+                if count < 0, errno == EINTR { continue }
+                guard count > 0 else { return false }
+                offset += count
+            }
+            return true
+        }
+    }
+    #endif
 
     private static func directoryEntryName(_ entry: UnsafeMutablePointer<dirent>) -> String {
         withUnsafePointer(to: &entry.pointee.d_name) { namePointer in

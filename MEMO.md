@@ -2,6 +2,19 @@
 
 ## Changelog Memo
 
+### 2026-11-10
+
+- [修复] Took over remediation of the 0.9 cutover. Disabled the two unsafe daily jobs and the old hq receiver. On macbookpro, restored 1,067 spool objects from Time Machine 11-08, re-queued the 1,437 stuck publications and re-dirtied 55 wrongly acknowledged locators. Reverted the plaintext token mirror. Rewrote the x86 cache to be encrypted and fingerprint-checked, and added a repro. Deployed the 0.9 binary and the Developer ID-signed hq service, then deleted the plaintext token file. See CHANGELOG.md.
+- [验证] remote-server suite passes 521/521 on x86_64 and arm64. The repro fails against Gemini's code and passes after the fix. Isolated service tests pass 46/46. Core has 6 pre-existing failures, none from this batch. After the restart, hq and m1 receipts kept arriving, and hq index ingestion from 0.9 is normal.
+- [验证] The escrow of the retired macbookpro `~/.engram` on 0.9 is complete: 319,384 files / 54.3 GB; manifest identical; SHA-256 of both DBs and a 400-file sample match. The Time Machine deny-ACL and 620 stray AppleDouble temp files were removed from the copy. The macbookpro snapshot mount and temp files are cleaned up. See CHANGELOG.md.
+- [决策] Owner: Macs are trusted, so the plaintext escrow on 0.9 is accepted. Replicas on 0.9 are sufficient, so the deleted raw files are not restored.
+- [风险] hq was down about 5 minutes waiting on a Keychain prompt. StorageOnly is outside CI. A cache invalidation costs a 26-minute warm on 0.9.
+- [修复] Correction: `com.engram.capture-core.receiver`, which Claude stopped, was actually the HQ Web reader (Web only, no intake). It was down 06:30–08:31 and has been restored; search and transcript opening are verified. Web: 41,439 macbookpro sessions (7,103 visible). hq App: 65,925 hq-local sessions. About 613 visible sessions from the retired macbookpro index exist only in escrow. See CHANGELOG.md.
+
+- [排查] Read-only audit of Antigravity's 10.0.0.9 cutover. The S1 and S2 seeds on 0.9 are complete (filename diff, 0 missing). Still not on 0.9: 7,761 hq eligible captures waiting to upload; about 16k hq sessions with unknown eligibility or a non-claude/codex source; m1 and m2 sessions that were never captured; the deleted macbookpro S4. See CHANGELOG.md.
+- [风险] Two new daily jobs: macbookpro `collector-reclaim` and hq `hq-cas-evict`. The macbookpro job's keep-set is empty, so 1,437 pending publications are already stuck and 40 claude-code generations are lost. The deployed hq build writes plaintext replica tokens. The 0.9 x86_64 caches hold plaintext at 0644.
+- [未验证] C1/C2 xcodebuild tests, decrypting reads, StorageOnly parity, and the contents of the encrypted backups. Resume point: wait for authorization to bootout the two jobs and stop the old hq receiver.
+
 ### 2026-10-20
 
 - [部署] Web 视觉精修已上 HQ：Release/arm64 从 main `881d3ffa` 打包为 `remote-server-main-881d3ffa-20261020`（verify-only 通过），receiver 只改 `ProgramArguments[0]`，plist 已备份。第一次 bootstrap 报 `5: Input/output error` 且任务被卸下，03:36:24Z 重试成功，新 PID 79714。`/v1/health` 200，新 CSS 已在线上，调色板未变，本地渲染确认徽标、卡片和转录气泡生效。回滚：用备份 plist bootstrap，旧包保留。详见 `CHANGELOG.md`。

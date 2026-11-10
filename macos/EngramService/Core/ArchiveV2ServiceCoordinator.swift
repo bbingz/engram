@@ -533,6 +533,9 @@ actor ArchiveV2ServiceCoordinator {
                 } catch {
                     return false
                 }
+            },
+            recoveryDrillRunner: { replicaID in
+                try await operations.recoveryDrill(replicaID)
             }
         )
         return ArchiveV2ServiceCoordinator(

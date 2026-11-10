@@ -17,6 +17,7 @@ struct ArchiveReclamationCoordinatorTestHooks: Sendable {
 actor ArchiveReclamationCoordinator {
     static let maximumCandidatesPerCycle = 10
     static let defaultMaximumSourceBytesPerCycle: Int64 = 256 * 1_024 * 1_024
+    static let automaticDrillRefreshAge: TimeInterval = 23 * 24 * 60 * 60
     /// Test hook: when non-nil, replaces `defaultMaximumSourceBytesPerCycle`.
     static var testMaximumSourceBytesPerCycle: Int64?
     static var maximumSourceBytesPerCycle: Int64 {
@@ -49,6 +50,7 @@ actor ArchiveReclamationCoordinator {
     private let productPool: DatabasePool
     private let remoteReplicationEnabled: Bool
     private let remoteAvailability: @Sendable () async throws -> Bool
+    private let recoveryDrillRunner: (@Sendable (String) async throws -> ArchiveRecoveryLease)?
     private let testHooks: ArchiveReclamationCoordinatorTestHooks
     private var cycleTask: Task<EngramServiceArchiveReclamationRunResponse, Never>?
     private var lastError: String?
@@ -62,6 +64,7 @@ actor ArchiveReclamationCoordinator {
         profileResolver: ClaudeCodeProfileResolver? = nil,
         remoteReplicationEnabled: Bool = true,
         remoteAvailability: @escaping @Sendable () async throws -> Bool = { true },
+        recoveryDrillRunner: (@Sendable (String) async throws -> ArchiveRecoveryLease)? = nil,
         testHooks: ArchiveReclamationCoordinatorTestHooks = .init()
     ) throws {
         self.settingsURL = settingsURL
@@ -76,6 +79,7 @@ actor ArchiveReclamationCoordinator {
         )
         self.remoteReplicationEnabled = remoteReplicationEnabled
         self.remoteAvailability = remoteAvailability
+        self.recoveryDrillRunner = recoveryDrillRunner
         self.testHooks = testHooks
         var configuration = Configuration()
         configuration.readonly = true
@@ -158,7 +162,30 @@ actor ArchiveReclamationCoordinator {
 
     func runAutomatically(now: Date = Date()) async {
         guard loadSettings().reclamation.enabled else { return }
+        await refreshRecoveryLeasesIfNeeded(now: now)
         _ = await runNow(now: now)
+    }
+
+    private func refreshRecoveryLeasesIfNeeded(now: Date) async {
+        guard remoteReplicationEnabled, let recoveryDrillRunner else { return }
+        for replicaID in ArchiveCatalog.currentReplicaIDs {
+            if let lease = try? catalog.recoveryLease(replicaID: replicaID),
+               let verifiedAt = Self.date(lease.verifiedAt),
+               verifiedAt <= now,
+               now.timeIntervalSince(verifiedAt) <= Self.automaticDrillRefreshAge {
+                continue
+            }
+            do {
+                _ = try await recoveryDrillRunner(replicaID)
+            } catch {
+                // Reclamation stays fail-closed (expired lease blocks it); make the
+                // stalled refresh visible instead of silently retrying every cycle.
+                ServiceLogger.warn(
+                    "archive automatic recovery drill failed replica=\(replicaID)",
+                    category: .runner
+                )
+            }
+        }
     }
 
     private func executeCycle(now: Date) async -> EngramServiceArchiveReclamationRunResponse {
