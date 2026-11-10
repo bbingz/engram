@@ -173,6 +173,7 @@ Owner authorization: "后续都好了，CI 都过了，就部署好", then a pla
 - HQ currently has no visible confirmed parent/child pairs, so nesting disclosures do not appear yet.
 - HQ has no active insights.
 - The deploy line is local-only, like `b6215ab6`. Converging back to main still depends on #496.
+- **Base rule.** Until #496 lands, any future HQ service-index or receiver deploy must start from `4b5b3e00` or a descendant of it, not from main. Main lacks the `fb9538a` migration the live DB already has.
 
 ## Web viewer nine-iteration upgrade — all nine iterations verified (2026-11-10)
 

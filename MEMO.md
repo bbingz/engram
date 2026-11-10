@@ -4,7 +4,7 @@
 
 ### 2026-11-11
 
-- [部署] Web 九轮升级已上 HQ：PR #505（`22c6e125`）与 #506（`29c11ff8`，match 路由 ID 解码修复）CI 全绿后合入 main；因 HQ 跑 fb9538a 系（含线上已有迁移），从本地部署线 `deploy/web-ui-hq-20261110` 构建。service-index→`ed068488`（PID 9935），receiver→`4b5b3e00`（PID 19042），只改 `ProgramArguments[0]`，与 HQ 运维 Claude 逐步确认 ingest 正常；旧包与 plist 备份保留可回滚。Tailnet 冒烟：热力图 168 格合计与按来源一致、活动排序两页有序、搜索分页无重叠、命中跳转 5/5 落在含词消息。详见 `CHANGELOG.md`。
+- [部署] Web 九轮升级已上 HQ：PR #505（`22c6e125`）与 #506（`29c11ff8`，match 路由 ID 解码修复）CI 全绿后合入 main；因 HQ 跑 fb9538a 系（含线上已有迁移），从本地部署线 `deploy/web-ui-hq-20261110` 构建。service-index→`ed068488`（PID 9935），receiver→`4b5b3e00`（PID 19042），只改 `ProgramArguments[0]`，与 HQ 运维 Claude 逐步确认 ingest 正常；旧包与 plist 备份保留可回滚。#496 合入前，HQ 后续部署必须从 `4b5b3e00` 或其后代构建，不能从 main 构建。Tailnet 冒烟：热力图 168 格合计与按来源一致、活动排序两页有序、搜索分页无重叠、命中跳转 5/5 落在含词消息。详见 `CHANGELOG.md`。
 
 ### 2026-11-10
 
