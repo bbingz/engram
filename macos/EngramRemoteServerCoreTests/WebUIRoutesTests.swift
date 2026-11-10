@@ -93,6 +93,29 @@ final class WebUIRoutesTests: XCTestCase {
         XCTAssertLessThanOrEqual(css.utf8.count, 80_000)
     }
 
+    func testDashboardAndStatsChartsKeepLazySafeAccessibleAssetContract() async throws {
+        let harness = try UIHarness(configuration: configuration())
+        let html = try await bodyText(try await harness.respond(request(path: "/web", headers: [("Host", "viewer.example")])))
+        let js = try await bodyText(try await harness.respond(request(path: "/web/app.js", headers: [("Host", "viewer.example")])))
+        let css = try await bodyText(try await harness.respond(request(path: "/web/app.css", headers: [("Host", "viewer.example")])))
+        for hook in ["nav-dashboard", "dashboard-page", "dashboard-kpis", "dashboard-activity", "dashboard-cost",
+                     "dashboard-sources", "dashboard-projects", "stats-chart", "costs-chart", "tools-chart",
+                     "files-chart", "usage-chart", "repos-chart", "ai-chart"] {
+            XCTAssertTrue(html.contains("id=\"\(hook)\""), hook)
+        }
+        XCTAssertTrue(html.contains("deferred It8"))
+        XCTAssertTrue(html.contains("id=\"nav-sessions\" href=\"#sessions\" aria-current=\"page\""))
+        XCTAssertTrue(js.contains("function dailySeries("))
+        XCTAssertTrue(js.contains("function renderChart("))
+        XCTAssertTrue(js.contains("async function dashboardRead("))
+        XCTAssertTrue(js.contains("overviewStreams === null"))
+        XCTAssertTrue(js.contains("version !== dashboardVersion"))
+        XCTAssertTrue(js.contains("Table · chart values"))
+        XCTAssertTrue(css.contains("#workspace.data-page"))
+        XCTAssertTrue(css.contains("--c1:"))
+        XCTAssertTrue(css.contains("max-width: 960px"))
+    }
+
     func testJavaScriptUsesTextContentAndExistingAPIsForLoginLogoutAndPaging() async throws {
         let harness = try UIHarness(configuration: configuration())
         let js = try await bodyText(try await harness.respond(request(path: "/web/app.js", headers: [("Host", "viewer.example")])))

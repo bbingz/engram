@@ -5869,3 +5869,542 @@ describe('iteration 1 foundation: shipped CSS and HTML', () => {
       expect(js).not.toContain(banned);
   });
 });
+
+describe('Dashboard and accessible analytics charts', () => {
+  const totals = {
+    sessionCount: 3,
+    messageCount: 12,
+    userMessageCount: 4,
+    assistantMessageCount: 6,
+    toolMessageCount: 2,
+  };
+  const page = (
+    groupBy = 'day',
+    items: unknown[] = [],
+    nextCursor: string | null = null,
+  ) => ({
+    snapshotId: 'chart-snapshot',
+    observedAt: 1794283200,
+    timeZone: 'Asia/Shanghai',
+    groupBy,
+    totals,
+    items,
+    nextCursor,
+  });
+
+  it('zero-fills exactly 30 ascending calendar days without changing unknown metrics', async () => {
+    const ui = harness();
+    const rows = (await ui.call(
+      'dailySeries([{key:"2026-11-10",sessionCount:2},{key:"2026-10-12",sessionCount:1}], "sessionCount", "2026-11-10", 30)',
+    )) as unknown as { label: string; value: number }[];
+    expect(rows).toHaveLength(30);
+    expect(rows[0]).toEqual({ label: '2026-10-12', value: 1 });
+    expect(rows[1]).toEqual({ label: '2026-10-13', value: 0 });
+    expect(rows[29]).toEqual({ label: '2026-11-10', value: 2 });
+    expect(
+      await ui.call(
+        'dailySeries([{key:"2024-02-29",costUsd:null}], "costUsd", "2024-03-01", 3)',
+      ),
+    ).toEqual([
+      { label: '2024-02-28', value: 0 },
+      { label: '2024-02-29', value: null },
+      { label: '2024-03-01', value: 0 },
+    ]);
+  });
+
+  it('uses finite scales and safe SVG titles/text, preserving ranked sums including Other', async () => {
+    const ui = harness();
+    await ui.call(
+      'renderChart("stats-chart", "<script>sessions</script>", Array.from({length:20}, function (_,i) {return {label:i === 0 ? "<img onerror=x>" : "row " + i, value:i};}), {fullTotal:190, coverage:"All groups"})',
+    );
+    const chart = ui.node('stats-chart');
+    expect(chart.querySelector('svg')?.namespaceURI).toBe(
+      'http://www.w3.org/2000/svg',
+    );
+    expect(chart.querySelector('svg')?.getAttribute('role')).toBe('img');
+    expect(chart.querySelector('svg')?.getAttribute('aria-label')).toContain(
+      '190',
+    );
+    expect(
+      chart
+        .querySelectorAll('rect')
+        .reduce((n, rect) => n + Number(rect.dataset.value), 0),
+    ).toBe(190);
+    expect(chart.querySelector('title')?.textContent).toContain('190');
+    expect(chart.querySelectorAll('script')).toHaveLength(0);
+    expect(chart.querySelectorAll('img')).toHaveLength(0);
+    expect(chart.textContent).toContain('Other loaded groups');
+    expect(chart.querySelector('table')).not.toBeNull();
+    await ui.call(
+      'renderChart("stats-chart", "Zero", [{label:"zero",value:0},{label:"unknown",value:null}], {fullTotal:null,coverage:"Loaded rows"})',
+    );
+    expect(chart.textContent).toContain('Not reported');
+    expect(chart.textContent).toContain('All reported values are zero');
+    expect(
+      chart
+        .querySelectorAll('rect')
+        .every((r) => Number.isFinite(Number(r.getAttribute('width')))),
+    ).toBe(true);
+    await ui.call(
+      'renderChart("stats-chart", "Empty", [], {coverage:"Loaded rows"})',
+    );
+    expect(chart.textContent).toContain('No observations');
+  });
+
+  it('is lazy and reuses the completed overview stream walk, chaining each widget cursor once', async () => {
+    const ui = harness();
+    const overview = ui.call('loadOverview()');
+    ui.requestFor('/web/api/overview').resolve({
+      snapshotId: 'streams',
+      streams: [],
+      nextCursor: null,
+      observedAt: 1794283200,
+    });
+    await overview;
+    expect(ui.requestsFor('/web/api/stats')).toHaveLength(0);
+    expect(ui.requestsFor('/web/api/costs')).toHaveLength(0);
+    const pending = ui.call('navigate("dashboard")');
+    expect(ui.node('dashboard-page').hidden).toBe(false);
+    expect(ui.requestsFor('/web/api/overview')).toHaveLength(1);
+    expect(ui.requestsFor('/web/api/stats')).toHaveLength(3);
+    const daily = ui
+      .requestsFor('/web/api/stats')
+      .find((r) => r.path.includes('groupBy=day'));
+    if (!daily) throw new Error('Missing daily stats');
+    daily.resolve(page('day', [{ key: '2026-11-10', ...totals }], 'next'));
+    await flushAuthWork();
+    const continued = ui.requestFor('/web/api/stats?groupBy=day');
+    expect(continued.path).toContain('snapshotId=chart-snapshot');
+    expect(continued.path).toContain('cursor=next');
+    expect(ui.requestsFor('/web/api/stats?groupBy=day')).toHaveLength(2);
+    continued.resolve(page('day', []));
+    for (const request of ui
+      .requestsFor('/web/api/stats')
+      .filter((r) => !r.settled)) {
+      const group = new URL(
+        request.path,
+        'https://example.test',
+      ).searchParams.get('groupBy');
+      request.resolve(
+        page(group || '', [{ key: 'one', label: '<b>one</b>', ...totals }]),
+      );
+    }
+    ui.requestFor('/web/api/costs').resolve({
+      ...page('day', []),
+      totals: { costUsd: 0, sessionCount: 0 },
+      unpricedNoPriceSessions: 3,
+    });
+    await pending;
+    expect(ui.node('dashboard-kpis').children).toHaveLength(5);
+    expect(ui.node('dashboard-activity').querySelectorAll('rect')).toHaveLength(
+      30,
+    );
+    expect(ui.node('dashboard-cost').textContent).toContain('0');
+    expect(shipped('html')).toContain('deferred It8');
+    expect(ui.node('dashboard-health').textContent).toContain('0 streams');
+  });
+
+  it('cancels cursor chaining and late paints on navigation/logout and isolates failed widgets', async () => {
+    const ui = harness();
+    const pending = ui.call('navigate("dashboard")');
+    const daily = ui.requestFor('/web/api/stats?groupBy=day');
+    const logout = ui.call('logout()');
+    ui.requestFor('/web/api/auth').resolve(null, 204);
+    await logout;
+    daily.resolve(page('day', [], 'late'));
+    for (const request of ui.requests.filter((r) => !r.settled))
+      request.resolve({}, 503);
+    await pending;
+    expect(ui.requestsFor('/web/api/stats?groupBy=day')).toHaveLength(1);
+    expect(ui.node('dashboard-kpis').textContent).toBe('');
+    expect(ui.node('dashboard-activity').textContent).toBe('');
+
+    const retry = ui.call('navigate("dashboard")');
+    for (const request of ui.requests.filter((r) => !r.settled)) {
+      if (request.path.includes('groupBy=source')) request.resolve({}, 503);
+      else if (request.path.includes('/costs')) request.resolve({}, 503);
+      else
+        request.resolve(
+          page(request.path.includes('groupBy=project') ? 'project' : 'day'),
+        );
+    }
+    await retry;
+    expect(ui.node('dashboard-sources').textContent).toContain('unavailable');
+    expect(ui.node('dashboard-activity').querySelector('svg')).not.toBeNull();
+  });
+
+  it('rejects repeated cursors and caps sequential dashboard walks with honest partial coverage', async () => {
+    const ui = harness();
+    const pending = ui.call('navigate("dashboard")');
+    for (let i = 0; i < 10; i += 1) {
+      for (const request of ui.requests.filter((r) => !r.settled)) {
+        const by =
+          new URL(request.path, 'https://example.test').searchParams.get(
+            'groupBy',
+          ) || 'day';
+        request.resolve({
+          ...page(by, [{ key: '2026-11-10', label: 'one', ...totals }], 'same'),
+          totals: request.path.includes('/costs') ? { costUsd: 0 } : totals,
+        });
+      }
+      await flushAuthWork();
+    }
+    await pending;
+    expect(ui.requestsFor('/web/api/stats?groupBy=day')).toHaveLength(2);
+    expect(ui.node('dashboard-activity').textContent).toContain('unavailable');
+  });
+
+  it('keeps stats chart loaded totals separate from full totals and updates on More', async () => {
+    const ui = harness();
+    const first = ui.call('loadStats(false)');
+    ui.requestFor('/web/api/stats').resolve(
+      page(
+        'source',
+        [
+          {
+            key: 'claude-code',
+            sessionCount: 1,
+            messageCount: 4,
+            userMessageCount: 1,
+            assistantMessageCount: 2,
+            toolMessageCount: 1,
+          },
+        ],
+        'next',
+      ),
+    );
+    await first;
+    expect(ui.node('stats-chart').textContent).toContain('1 loaded');
+    expect(ui.node('stats-chart').textContent).toContain('3 full');
+    const more = ui.call('loadStats(true)');
+    ui.requestFor('/web/api/stats').resolve(
+      page('source', [
+        {
+          key: 'codex',
+          sessionCount: 2,
+          messageCount: 8,
+          userMessageCount: 3,
+          assistantMessageCount: 4,
+          toolMessageCount: 1,
+        },
+      ]),
+    );
+    await more;
+    expect(ui.node('stats-chart').textContent).toContain('3 loaded');
+    expect(
+      ui
+        .node('stats-chart')
+        .querySelectorAll('rect')
+        .reduce((n, r) => n + Number(r.dataset.value), 0),
+    ).toBe(3);
+    expect(ui.node('stats-rows').children).toHaveLength(2);
+  });
+
+  it('exposes Dashboard hooks without changing the default Sessions landing or reading column', () => {
+    expect(shipped('html')).toContain('id="nav-dashboard"');
+    expect(shipped('html')).toContain('id="dashboard-page"');
+    expect(shipped('css')).toContain('#workspace.data-page');
+    expect(shipped('css')).toContain('max-width: 960px');
+  });
+});
+
+describe('chart data scope, meter math and dashboard bounds', () => {
+  const rectTotal = (node: Element) =>
+    node
+      .querySelectorAll('rect')
+      .reduce((sum, rect) => sum + Number(rect.dataset.value || 0), 0);
+
+  it('renders costs, tools, files and repository charts from the same loaded rows as their retained data views', async () => {
+    const ui = harness();
+    const costs = ui.call('showStatsView("costs")');
+    ui.requestFor('/web/api/costs?').resolve({
+      snapshotId: 'costs',
+      groupBy: 'model',
+      totals: { costUsd: 1.5 },
+      items: [{ key: 'm', label: '<script>model</script>', costUsd: 1.5 }],
+    });
+    ui.requestFor('/web/api/costs/sessions').resolve({ items: [] });
+    await costs;
+    expect(rectTotal(ui.node('costs-chart'))).toBe(1.5);
+    expect(ui.node('costs-chart').textContent).toContain(
+      '$1.50 loaded / $1.50 full',
+    );
+    expect(ui.node('costs-chart').querySelector('script')).toBeNull();
+    expect(ui.node('costs-rows').textContent).toContain('$1.50');
+
+    const tools = ui.call('showStatsView("tools")');
+    ui.requestFor('/web/api/tool-analytics').resolve({
+      snapshotId: 'tools',
+      groupBy: 'tool',
+      totalCalls: 10,
+      groupCount: 2,
+      items: [
+        { key: 'Read', label: 'Read', callCount: 6, sessionCount: 3 },
+        { key: 'Write', label: 'Write', callCount: 4, sessionCount: 2 },
+      ],
+    });
+    await tools;
+    expect(rectTotal(ui.node('tools-chart'))).toBe(10);
+    expect(ui.node('tools-col-tools').hidden).toBe(true);
+
+    const files = ui.call('showStatsView("files")');
+    ui.requestFor('/web/api/file-activity').resolve({
+      snapshotId: 'files',
+      totalFiles: 1,
+      totalOperations: 9,
+      items: [
+        {
+          key: 'a',
+          label: 'a',
+          readCount: 2,
+          editCount: 3,
+          writeCount: 4,
+          sessionCount: 1,
+        },
+      ],
+    });
+    await files;
+    expect(rectTotal(ui.node('files-chart'))).toBe(9);
+    expect(ui.node('files-chart').textContent).toContain('9 loaded / 9 full');
+
+    const repos = ui.call('showStatsView("repos")');
+    ui.requestFor('/web/api/repos').resolve({
+      snapshotId: 'repos',
+      scope: 'serverFilesystem',
+      totalRepos: 7,
+      nextCursor: 'next',
+      items: [{ name: 'Repo', sessionCount: 24 }],
+    });
+    await repos;
+    expect(rectTotal(ui.node('repos-chart'))).toBe(24);
+    expect(ui.node('repos-chart').textContent).toContain('24 loaded');
+    expect(ui.node('repos-chart').textContent).not.toContain('7 full'); // repositories are not sessions
+  });
+
+  it('calculates meter thresholds without adding unrelated units or inventing missing limits', async () => {
+    const ui = harness();
+    const pending = ui.call('showStatsView("usage")');
+    ui.requestFor('/web/api/usage').resolve({
+      scope: 'server',
+      items: [
+        {
+          source: 'codex',
+          metric: 'A',
+          value: 9,
+          limit: 10,
+          unit: 'tokens',
+          basis: 'indexedSessions',
+        },
+        { source: 'pi', metric: 'B', value: 7, limit: 10, unit: 'requests' },
+        { source: 'cursor', metric: 'C', value: 120, limit: 100 },
+        { source: 'unknown', metric: '<img>', value: null, limit: 0 },
+      ],
+    });
+    await pending;
+    const meters = ui.node('usage-chart').querySelectorAll('.usage-meter');
+    expect(meters.map((row) => row.dataset.tone)).toEqual([
+      'danger',
+      'warn',
+      'danger',
+      'ok',
+    ]);
+    expect(meters[0].textContent).toContain('90.0%');
+    expect(meters[0].textContent).toContain('estimate');
+    expect(meters[2].querySelectorAll('rect')[1].getAttribute('width')).toBe(
+      '720',
+    );
+    expect(meters[3].querySelectorAll('rect')).toHaveLength(1);
+    expect(meters[3].textContent).toContain('ratio unavailable');
+    expect(ui.node('usage-chart').querySelector('img')).toBeNull();
+    expect(ui.node('usage-rows').children).toHaveLength(4);
+  });
+
+  it('keeps filtered loaded AI outcomes independent from hourly statistics and preserves detail actions', async () => {
+    const ui = harness();
+    const pending = ui.call('showStatsView("ai")');
+    ui.requestFor('/web/api/ai/audit?').resolve({
+      snapshotId: 'ai',
+      total: 8,
+      nextCursor: 'more',
+      items: [
+        {
+          id: 'one',
+          caller: '<script>',
+          operation: 'chat',
+          hasError: false,
+          totalTokens: 5,
+        },
+        {
+          id: 'two',
+          caller: 'summary',
+          operation: 'chat',
+          hasError: true,
+          totalTokens: null,
+        },
+      ],
+    });
+    await pending;
+    expect(rectTotal(ui.node('ai-chart'))).toBe(2);
+    expect(ui.node('ai-chart').textContent).toContain('2 loaded / 8 full');
+    expect(ui.node('ai-chart').textContent).toContain(
+      'call-history filters only',
+    );
+    expect(
+      ui.node('ai-rows').children.every((row) => row.tagName === 'TR'),
+    ).toBe(true);
+    expect(ui.node('ai-rows').querySelector('script')).toBeNull();
+    expect(ui.requestsFor('/web/api/ai/stats')).toHaveLength(0);
+    ui.node('ai-rows').querySelector('button')?.click();
+    expect(ui.requestFor('/web/api/ai/audit/one').path).toContain('/one');
+    ui.requestFor('/web/api/ai/audit/one').resolve({ item: { id: 'one' } });
+    await flushAuthWork();
+    const stats = ui.call('loadAiStats()');
+    ui.requestFor('/web/api/ai/stats').resolve({
+      totals: { requests: 4 },
+      timeRange: { from: 'A', to: 'B' },
+      byCaller: [],
+      byModel: [],
+      hourly: [
+        { hour: '2026-11-10T02:00', requests: 3 },
+        { hour: '2026-11-10T01:00', requests: 1 },
+      ],
+    });
+    await stats;
+    expect(rectTotal(ui.node('ai-hourly-chart'))).toBe(4);
+    expect(ui.node('ai-hourly-chart').textContent).toContain(
+      'independent of call-history',
+    );
+    expect(rectTotal(ui.node('ai-chart'))).toBe(2);
+  });
+
+  it('stops at 10 cursor pages and labels absent days unknown rather than zero-filling partial data', async () => {
+    const ui = harness();
+    const pending = ui.call('navigate("dashboard")');
+    for (let i = 0; i < 10; i += 1) {
+      for (const request of ui.requests.filter((r) => !r.settled)) {
+        const groupBy = new URL(
+          request.path,
+          'https://example.test',
+        ).searchParams.get('groupBy');
+        request.resolve({
+          snapshotId: groupBy + request.path.split('?')[0],
+          groupBy,
+          timeZone: 'UTC',
+          totals: { sessionCount: 100, costUsd: 10 },
+          items: [
+            {
+              key: `2026-11-${String(i + 1).padStart(2, '0')}`,
+              label: `Day ${i}`,
+              sessionCount: 1,
+              costUsd: 0.1,
+            },
+          ],
+          nextCursor: `page-${i}`,
+        });
+      }
+      await flushAuthWork();
+    }
+    await pending;
+    expect(ui.requests).toHaveLength(40); // 4 independent endpoints x 10 sequential pages
+    expect(ui.node('dashboard-activity').querySelectorAll('rect')).toHaveLength(
+      10,
+    );
+    expect(ui.node('dashboard-activity').textContent).toContain(
+      'absent days unknown',
+    );
+    expect(ui.node('dashboard-activity').textContent).toContain(
+      '10 loaded / 100 full',
+    );
+  });
+
+  it('drops the previous refresh even when the same dashboard remains active', async () => {
+    const ui = harness();
+    const old = ui.call('navigate("dashboard")');
+    const oldRequests = [...ui.requests];
+    const current = ui.call('loadDashboard()');
+    for (const request of ui.requests.filter((r) => !oldRequests.includes(r)))
+      request.resolve({}, 503);
+    await current;
+    for (const request of oldRequests)
+      request.resolve({
+        snapshotId: 'old',
+        groupBy: 'day',
+        timeZone: 'UTC',
+        totals: { sessionCount: 999 },
+        items: [],
+        nextCursor: 'next',
+      });
+    await old;
+    expect(ui.requests).toHaveLength(8);
+    expect(ui.node('dashboard-activity').textContent).toContain('unavailable');
+    expect(ui.node('dashboard-kpis').textContent).not.toContain('999');
+  });
+});
+
+describe('responsive chart refinement', () => {
+  it('zero-fills complete bounded stats day series, but never fills missing partial pages', async () => {
+    const ui = harness();
+    await ui.call(
+      'updateChartRows("stats", [{key:"2024-03-01",label:"2024-03-01",sessionCount:2},{key:"2024-02-28",label:"2024-02-28",sessionCount:1}], "Sessions", "sessionCount", 3, "", "day")',
+    );
+    expect(
+      ui
+        .node('stats-chart')
+        .querySelectorAll('rect')
+        .map((r) => r.dataset.value),
+    ).toEqual(['1', '0', '2']);
+    await ui.call(
+      'clearStats(); updateChartRows("stats", [{key:"2024-03-01",label:"2024-03-01",sessionCount:2},{key:"2024-02-28",label:"2024-02-28",sessionCount:1}], "Sessions", "sessionCount", 3, "more", "day")',
+    );
+    expect(ui.node('stats-chart').querySelectorAll('rect')).toHaveLength(2);
+    expect(ui.node('stats-chart').textContent).toContain('Partial');
+  });
+
+  it('keeps responsive ranked/usage bar viewports from letterboxing and scopes the light-tab contrast repair', async () => {
+    const ui = harness();
+    await ui.call(
+      'renderChart("stats-chart", "Counts", [{label:"A",value:2}], {})',
+    );
+    expect(
+      ui
+        .node('stats-chart')
+        .querySelector('svg')
+        ?.getAttribute('preserveAspectRatio'),
+    ).toBe('none');
+    expect(shipped('css')).toContain(
+      '#stats-page .agent-filters button[aria-pressed="true"] { color:var(--text); }',
+    );
+  });
+});
+
+it('restores detail-return scroll before applying the wider Stats page class', async () => {
+  const ui = harness();
+  await ui.call(
+    'detailReturnPage = "stats"; workspaceNode.className = "showing-detail"; sessionListScrollTop = 123; window.scrollY = 0; showSessionList()',
+  );
+  expect(await ui.call('window.scrollY')).toBe(123);
+  expect(ui.node('workspace').className).toBe('data-page');
+  expect(ui.node('library-page').hidden).toBe(true);
+  expect(ui.node('stats-page').hidden).toBe(false);
+});
+
+it('gives each KPI trend its own equivalent daily-value table instead of claiming unrelated activity scope', async () => {
+  const ui = harness();
+  await ui.call(
+    'dashboardKpis({page:{timeZone:"UTC",totals:{sessionCount:3,messageCount:12,userMessageCount:4,assistantMessageCount:8}},items:[{key:"2026-11-10",sessionCount:3,messageCount:12,userMessageCount:4,assistantMessageCount:8}],complete:true},"2026-11-10",false)',
+  );
+  const tiles = ui.node('dashboard-kpis').children;
+  expect(tiles.every((tile) => tile.querySelector('table'))).toBe(true);
+  const messageRows =
+    tiles[1].querySelector('table')?.querySelectorAll('tr').slice(1) ?? [];
+  expect(messageRows).toHaveLength(30);
+  expect(
+    messageRows.reduce(
+      (sum, row) => sum + Number(row.children[1].textContent),
+      0,
+    ),
+  ).toBe(12);
+  expect(tiles[1].querySelector('svg')?.getAttribute('aria-label')).toContain(
+    '12',
+  );
+});

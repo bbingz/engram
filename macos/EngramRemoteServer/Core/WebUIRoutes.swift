@@ -42,6 +42,7 @@ enum WebUIRoutes {
         <nav id="page-nav" class="page-nav" aria-label="Main navigation" hidden>
         <a id="nav-sessions" href="#sessions" aria-current="page">Sessions</a>
         <a id="nav-search" href="#search">Search</a>
+        <a id="nav-dashboard" href="#dashboard">Dashboard</a>
         <a id="nav-stats" href="#stats">Stats</a>
         <a id="nav-health" href="#health">Health</a>
         <a id="nav-settings" href="#settings">Settings</a>
@@ -251,6 +252,15 @@ enum WebUIRoutes {
         </section>
         <p id="alias-status" role="status"></p>
         </section>
+        <section id="dashboard-page" hidden aria-labelledby="dashboard-heading">
+        <div class="page-heading"><h2 id="dashboard-heading">Dashboard</h2><button id="dashboard-refresh" type="button">Refresh dashboard</button></div>
+        <p class="meta">Last 30 calendar dates · agents hidden · server-local day buckets. Costs include priced usage only, not a billing statement.</p>
+        <div id="dashboard-kpis" class="dashboard-kpis"></div>
+        <div id="dashboard-activity"></div>
+        <div class="dashboard-grid"><div id="dashboard-cost"></div><div id="dashboard-sources"></div><div id="dashboard-projects"></div></div>
+        <p id="dashboard-health" class="meta"></p>
+        <p id="dashboard-dependencies" class="meta">Work-time heatmap and per-source health history unavailable: no hourly/history API yet (deferred It8). No activity is inferred from heartbeats.</p>
+        </section>
         <section id="stats-page" hidden>
         <div class="page-heading"><h2>Stats</h2></div>
         <div class="agent-filters" role="group" aria-label="Statistics view"><button id="stats-view-sessions" type="button" aria-pressed="true">Sessions</button><button id="stats-view-costs" type="button" aria-pressed="false">Costs</button><button id="stats-view-tools" type="button" aria-pressed="false">Tools</button><button id="stats-view-files" type="button" aria-pressed="false">Files</button><button id="stats-view-usage" type="button" aria-pressed="false">Usage</button><button id="stats-view-repos" type="button" aria-pressed="false">Repositories</button><button id="stats-view-ai" type="button" aria-pressed="false">AI calls</button></div>
@@ -265,6 +275,7 @@ enum WebUIRoutes {
         </form>
         <p id="stats-status" role="status"></p>
         <dl id="stats-totals" class="stats-totals"></dl>
+        <div id="stats-chart"></div>
         <div class="stats-table"><table aria-label="Session statistics"><thead><tr><th>Group</th><th>Sessions</th><th>Messages</th><th>User</th><th>Assistant</th><th>Tool</th></tr></thead><tbody id="stats-rows"></tbody></table></div>
         <button id="stats-more" type="button" hidden>More groups</button>
         </div>
@@ -280,6 +291,7 @@ enum WebUIRoutes {
         <p id="costs-status" role="status"></p>
         <dl id="costs-totals" class="stats-totals"></dl>
         <p id="costs-unpriced"></p>
+        <div id="costs-chart"></div>
         <div class="stats-table"><table aria-label="Cost breakdown"><thead><tr><th>Group</th><th>USD</th><th>Sessions</th><th>Input tokens</th><th>Output tokens</th><th>Cache read</th><th>Cache write</th></tr></thead><tbody id="costs-rows"></tbody></table></div>
         <button id="costs-more" type="button" hidden>More groups</button>
         <h3>Highest-cost sessions</h3>
@@ -297,6 +309,7 @@ enum WebUIRoutes {
         </form>
         <p id="tools-status" role="status"></p>
         <p id="tools-totals"></p>
+        <div id="tools-chart"></div>
         <div class="stats-table"><table aria-label="Tool activity"><thead><tr><th>Group</th><th>Calls</th><th>Sessions</th><th id="tools-col-tools">Tools</th></tr></thead><tbody id="tools-rows"></tbody></table></div>
         <button id="tools-more" type="button" hidden>More groups</button>
         </div>
@@ -310,12 +323,14 @@ enum WebUIRoutes {
         </form>
         <p id="files-status" role="status"></p>
         <p id="files-totals"></p>
+        <div id="files-chart"></div>
         <div class="stats-table"><table aria-label="File activity"><thead><tr><th>File</th><th>Reads</th><th>Edits</th><th>Writes</th><th>Sessions</th></tr></thead><tbody id="files-rows"></tbody></table></div>
         <button id="files-more" type="button" hidden>More files</button>
         </div>
         <div id="usage-content" hidden>
         <button id="usage-refresh" type="button">Reload observations</button>
         <p id="usage-status" role="status"></p>
+        <div id="usage-chart"></div>
         <div class="stats-table"><table aria-label="Recorded usage"><thead><tr><th>Source</th><th>Metric</th><th>Value / limit</th><th>Basis</th><th>Status</th><th>Resets</th><th>Collected</th></tr></thead><tbody id="usage-rows"></tbody></table></div>
         </div>
         <div id="ai-content" hidden>
@@ -331,13 +346,15 @@ enum WebUIRoutes {
         </form>
         <p class="meta">Statistics use the date range only; without dates they cover the last 24 hours. Call history uses all filters.</p>
         <p id="ai-stats-status" role="status"></p><div id="ai-stats"></div>
-        <p id="ai-status" role="status"></p><div id="ai-rows" class="health-grid"></div>
+        <p id="ai-status" role="status"></p><div id="ai-chart"></div>
+        <div class="stats-table"><table aria-label="AI call history"><thead><tr><th>Call</th><th>Time / outcome</th><th>Model</th><th>Tokens</th><th>Details</th></tr></thead><tbody id="ai-rows"></tbody></table></div>
         <button id="ai-more" type="button" hidden>More calls</button>
         <section id="ai-detail" class="settings-section" hidden aria-label="AI call details"></section>
         </div>
         <div id="repos-content" hidden>
         <button id="repos-refresh" type="button">Reload observations</button>
         <p id="repos-status" role="status"></p>
+        <div id="repos-chart"></div>
         <div id="repos-rows" class="health-grid"></div>
         <button id="repos-more" type="button" hidden>More repositories</button>
         </div>
@@ -693,6 +710,31 @@ enum WebUIRoutes {
           #files-rows td:first-child, #usage-rows td:nth-child(3) { grid-column: 1 / -1; }
           #files-rows td[data-label]::before, #usage-rows td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 4px; color: var(--muted); font-size: 11px; }
         }
+        /* Charts scale by viewBox, without observers, runtime CSS injection or animation. */
+        #workspace.data-page { max-width: 1200px; }
+        #stats-page .agent-filters button[aria-pressed="true"] { color:var(--text); }
+        :root { --c1:var(--accent); }
+        .dashboard-kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr)); gap:12px; margin:16px 0; }
+        .dashboard-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr)); gap:16px; }
+        .kpi, .chart { min-width:0; padding:16px; border:1px solid var(--line); border-radius:var(--r-lg); background:var(--panel); margin:0 0 16px; }
+        .kpi strong { display:block; font-size:24px; font-variant-numeric:tabular-nums; }
+        .kpi svg { display:block; width:100%; height:32px; color:var(--c1); }
+        .chart h3 { margin:0; font-size:16px; }
+        .chart p { color:var(--muted); margin:6px 0 10px; }
+        .chart svg { display:block; width:100%; height:auto; max-height:420px; }
+        .chart-bar { fill:var(--c1); }
+        .ranked-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:2px 12px; margin:10px 0; font-size:13px; }
+        .ranked-row svg { grid-column:1 / -1; height:8px; }
+        .ranked-row .chart-bar { fill:var(--source-color,var(--c1)); }
+        .ranked-row strong { font-variant-numeric:tabular-nums; }
+        .chart details, .kpi details { margin-top:8px; }
+        .chart table, .kpi table { width:100%; border-collapse:collapse; }
+        .chart td, .chart th, .kpi td, .kpi th { text-align:left; padding:4px 8px; border-bottom:1px solid var(--line); }
+        .usage-meter { margin:12px 0; }
+        .usage-meter svg { height:16px; }
+        .usage-track { fill:var(--panel-3); }
+        .usage-meter[data-tone="danger"] .chart-bar { fill:var(--danger); }
+        .usage-meter[data-tone="warn"] .chart-bar { fill:var(--warn); }
         """
 
     static let javascript = """
@@ -724,6 +766,10 @@ enum WebUIRoutes {
         let statsTotals = null;
         const costFields = [["costUsd", "Cost (USD)"], ["sessionCount", "Sessions"], ["inputTokens", "Input tokens"], ["outputTokens", "Output tokens"], ["cacheReadTokens", "Cache read"], ["cacheCreationTokens", "Cache write"]];
         let statsView = "sessions";
+        const chartRows = { stats: [], costs: [], tools: [], files: [], repos: [], ai: [] };
+        let overviewStreams = null;
+        let overviewObservedAt = null;
+        let dashboardVersion = 0;
         let aiSnapshot = "", aiCursor = "", aiFilters = "", aiTotal = null;
         let aiDetailVersion = 0, aiStatsVersion = 0;
         let reposSnapshot = "", reposCursor = "", reposTotal = null;
@@ -829,6 +875,7 @@ enum WebUIRoutes {
         const iconPaths = {
           sessions: ["M8 6h13", "M8 12h13", "M8 18h13", "M3.5 6h.01", "M3.5 12h.01", "M3.5 18h.01"],
           search: ["M11 18a7 7 0 1 1 0-14 7 7 0 0 1 0 14z", "M20 20l-4-4"],
+          dashboard: ["M3 3h7v7H3z", "M14 3h7v7h-7z", "M3 14h7v7H3z", "M14 14h7v7h-7z"],
           stats: ["M4 4v16h16", "M8 16v-5", "M12.5 16V8", "M17 16v-3"],
           health: ["M22 12h-4l-3 8-6-16-3 8H2"],
           settings: ["M4 21v-7", "M4 10V3", "M12 21v-9", "M12 8V3", "M20 21v-5", "M20 12V3", "M1.5 14h5", "M9.5 8h5", "M17.5 16h5"],
@@ -930,6 +977,8 @@ enum WebUIRoutes {
             setText(healthContent, "");
             setText(healthStatus, "");
             setText(document.getElementById("health-summary"), "");
+            clearDashboard();
+            overviewStreams = null; overviewObservedAt = null;
             clearStats();
             clearCosts();
             clearTools();
@@ -989,10 +1038,10 @@ enum WebUIRoutes {
           return true;
         }
         function showSessionList() {
+          const wasDetail = workspaceNode.classList.contains("showing-detail");
           activatePage(detailReturnPage || (activePage === "search" ? "search" : "sessions"));
           detailReturnPage = null;
-          const wasDetail = workspaceNode.className === "showing-detail";
-          workspaceNode.className = "";
+          workspaceNode.className = ["dashboard", "stats"].includes(activePage) ? "data-page" : "";
           backNode.hidden = true;
           if (wasDetail) window.scrollTo({ top: sessionListScrollTop, behavior: "instant" });
         }
@@ -1013,13 +1062,15 @@ enum WebUIRoutes {
         }
         function activatePage(page) {
           if (page !== "search") { clearInsights(); clearInsightComposer(); }
-          activePage = ["sessions", "search", "stats", "health", "settings"].includes(page) ? page : "sessions";
+          activePage = ["sessions", "search", "dashboard", "stats", "health", "settings"].includes(page) ? page : "sessions";
           document.getElementById("library-page").hidden = !["sessions", "search"].includes(activePage);
           document.getElementById("health-page").hidden = activePage !== "health";
+          workspaceNode.classList.toggle("data-page", ["dashboard", "stats"].includes(activePage));
+          document.getElementById("dashboard-page").hidden = activePage !== "dashboard";
           document.getElementById("stats-page").hidden = activePage !== "stats";
           document.getElementById("settings-page").hidden = activePage !== "settings";
           document.getElementById("search-options").hidden = activePage !== "search";
-          ["sessions", "search", "stats", "health", "settings"].forEach(function (name) {
+          ["sessions", "search", "dashboard", "stats", "health", "settings"].forEach(function (name) {
             document.getElementById("nav-" + name).setAttribute("aria-current", name === activePage ? "page" : "false");
           });
         }
@@ -1029,7 +1080,9 @@ enum WebUIRoutes {
           clearMessages();
           activatePage(page);
           window.scrollTo({ top: 0, behavior: "instant" });
-          if (activePage === "health") {
+          if (activePage === "dashboard") {
+            await loadDashboard();
+          } else if (activePage === "health") {
             setText(healthContent, "");
             setText(document.getElementById("health-summary"), "");
             setText(healthStatus, "Loading…");
@@ -1047,7 +1100,7 @@ enum WebUIRoutes {
         function restoreRequestedPage() {
           if (workspaceNode.hidden || !window.location.hash) return;
           const page = window.location.hash.slice(1);
-          if (page === "stats" || page === "settings") return navigate(page);
+          if (page === "stats" || page === "settings" || page === "dashboard") return navigate(page);
           activatePage(page);
           if (page === "search") return loadSearchStatus();
         }
@@ -1811,7 +1864,183 @@ enum WebUIRoutes {
             updateAliasControls();
           }
         }
+        // --- Charts: numeric observations only. Unknown is never converted to zero.
+        function chartNumber(value) { return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null; }
+        function dailySeries(items, field, end, days) {
+          const byDay = new Map(items.map(function (item) { return [item.key, chartNumber(item[field])]; }));
+          const result = [], last = Date.parse(end + "T00:00:00Z");
+          if (!Number.isFinite(last) || days < 1 || days > 366) return result;
+          for (let i = days - 1; i >= 0; i -= 1) {
+            const label = new Date(last - i * 86400000).toISOString().slice(0, 10);
+            result.push({label:label, value:byDay.has(label) ? byDay.get(label) : 0});
+          }
+          return result;
+        }
+        function chartAmount(value, currency) { return value === null ? "Not reported" : costValue(value, currency ? "costUsd" : "count"); }
+        function renderChart(id, title, data, options) {
+          const node = document.getElementById(id); setText(node, ""); node.className = "chart";
+          const opts = options || {}, currency = !!opts.currency;
+          let rows = data.map(function (item) { return {label:String(item.label == null ? "Not reported" : item.label), value:chartNumber(item.value), source:item.source}; });
+          const total = rows.reduce(function (sum, row) { return sum + (row.value === null ? 0 : row.value); }, 0);
+          const unknown = rows.filter(function (row) { return row.value === null; }).length;
+          const summary = chartAmount(total, currency) + " loaded" + (chartNumber(opts.fullTotal) === null ? "" : " / " + chartAmount(opts.fullTotal, currency) + " full") + " · " + (opts.coverage || "Loaded rows") + (unknown ? " · " + unknown + " values not reported" : "");
+          const heading = document.createElement("h3"), note = document.createElement("p");
+          setText(heading, title); setText(note, summary); node.appendChild(heading); node.appendChild(note);
+          if (!rows.length) { const empty = document.createElement("p"); setText(empty, "No observations for this scope."); node.appendChild(empty); return; }
+          if (!opts.columns) {
+            rows.sort(function (a,b) { return (b.value || 0) - (a.value || 0); });
+            if (rows.length > 12) {
+              const rest = rows.slice(12); rows = rows.slice(0, 12);
+              rows.push({label:"Other loaded groups", value:rest.every(function (row) { return row.value !== null; }) ? rest.reduce(function (n,row) { return n + row.value; },0) : null});
+              // Keep unknown rows distinct so aggregation cannot conceal reported observations.
+              if (rest.some(function (row) { return row.value === null; })) {
+                rows[12].value = rest.reduce(function (n,row) { return n + (row.value || 0); },0);
+                rows.push({label:"Other unreported groups", value:null});
+              }
+            }
+          }
+          const width = 720, height = 210;
+          const max = Math.max(1, ...rows.map(function (row) { return row.value || 0; }));
+          if (opts.columns) {
+            const image = svg("svg", {viewBox:"0 0 " + width + " " + height, role:"img", "aria-label":title + ": " + summary});
+            const imageTitle = svg("title"); setText(imageTitle, title + ": " + summary); image.appendChild(imageTitle);
+            rows.forEach(function (row,i) {
+              const value = row.value || 0, bar = svg("rect", {x:8 + i * 704 / rows.length, y:170 - value / max * 155, width:Math.max(1,704 / rows.length - 3), height:value / max * 155, class:"chart-bar"});
+              bar.dataset.value = String(value);
+              const tip = svg("title"); setText(tip, row.label + ": " + chartAmount(row.value,currency)); bar.appendChild(tip); image.appendChild(bar);
+            });
+            node.appendChild(image);
+            const axis = document.createElement("p"); axis.className = "chart-dates";
+            setText(axis, rows[0].label + " → " + rows[rows.length - 1].label + " · Peak " + chartAmount(Math.max(0,...rows.map(function (row) { return row.value || 0; })),currency)); node.appendChild(axis);
+          } else {
+            rows.forEach(function (row) {
+              const line = document.createElement("div"); line.className = "ranked-row " + sourceClass(row.source);
+              const label = document.createElement("span"), amount = document.createElement("strong");
+              setText(label,row.label); setText(amount,chartAmount(row.value,currency)); line.appendChild(label); line.appendChild(amount);
+              const image = svg("svg", {viewBox:"0 0 720 12", preserveAspectRatio:"none", role:"img","aria-label":title + ": " + summary + " · " + row.label + ": " + chartAmount(row.value,currency)});
+              const tip = svg("title"); setText(tip,title + ": " + summary + " · " + row.label + ": " + chartAmount(row.value,currency)); image.appendChild(tip);
+              const bar = svg("rect", {width:(row.value || 0) / max * 720,height:12,class:"chart-bar"}); bar.dataset.value = String(row.value || 0); image.appendChild(bar); line.appendChild(image); node.appendChild(line);
+            });
+          }
+          if (!total) { const empty = document.createElement("p"); setText(empty, unknown === data.length ? "No numeric observations reported." : "All reported values are zero."); node.appendChild(empty); }
+          const details = document.createElement("details"), caption = document.createElement("summary"); setText(caption, "Table · chart values"); details.appendChild(caption);
+          const table = document.createElement("table"); table.setAttribute("aria-label", title + " chart values");
+          const header = document.createElement("tr"); ["Group", currency ? "USD" : "Value"].forEach(function (value) { const th = document.createElement("th"); th.setAttribute("scope","col"); setText(th,value); header.appendChild(th); }); table.appendChild(header);
+          rows.forEach(function (row) { const tr = document.createElement("tr"); [row.label, chartAmount(row.value,currency)].forEach(function (value) { const td = document.createElement("td"); setText(td,value); tr.appendChild(td); }); table.appendChild(tr); });
+          details.appendChild(table); node.appendChild(details);
+        }
+        function updateChartRows(name, items, title, field, fullTotal, cursor, groupBy) {
+          chartRows[name].push(...items);
+          const columns = groupBy === "day" || groupBy === "week";
+          let rows = chartRows[name].map(function (item) { return {label:groupBy === "source" ? sourceLabel(item.key) : item.label || item.key, value:item[field], source:groupBy === "source" ? item.key : null}; });
+          let bins = columns ? " · returned buckets only" : "";
+          if (columns) rows.sort(function (a,b) { return String(a.label).localeCompare(String(b.label)); });
+          if (groupBy === "day" && !cursor && rows.length && chartRows[name].every(function (item) { return /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(item.key); })) {
+            const keys = chartRows[name].map(function (item) { return item.key; }).sort();
+            const days = Math.round((Date.parse(keys[keys.length - 1]) - Date.parse(keys[0])) / 86400000) + 1;
+            if (days > 0 && days <= 366) { rows = dailySeries(chartRows[name],field,keys[keys.length - 1],days); bins = " · calendar dates (zero-filled)"; }
+          }
+          renderChart(name + "-chart", title, rows, {columns:columns, currency:field === "costUsd", fullTotal:fullTotal, coverage:(cursor ? (chartRows[name].length >= 5000 ? "Partial: 5,000-row cap; narrow filters" : "Partial: load more for remaining groups") : "All returned groups") + " · " + chartRows[name].length + " loaded rows" + bins});
+        }
+        function renderUsageChart(items) {
+          const node = document.getElementById("usage-chart"); setText(node, ""); node.className = "chart";
+          const title = document.createElement("h3"); setText(title, "Recorded usage · separate units, not additive"); node.appendChild(title);
+          if (!items.length) { const empty = document.createElement("p"); setText(empty, "No recorded usage observations."); node.appendChild(empty); }
+          items.forEach(function (item) {
+            const value = chartNumber(item.value), limit = chartNumber(item.limit), percent = value !== null && limit !== null && limit > 0 ? value / limit * 100 : null;
+            const row = document.createElement("div"); row.className = "usage-meter"; row.dataset.tone = percent !== null && percent >= 90 ? "danger" : percent !== null && percent >= 70 ? "warn" : "ok";
+            const label = document.createElement("p");
+            const text = sourceLabel(item.source) + " · " + item.metric + ": " + chartAmount(value,false) + (item.unit ? " " + item.unit : "") + (limit === null ? " · limit not reported" : " / " + chartAmount(limit,false)) + (percent === null ? " · ratio unavailable" : " · " + percent.toFixed(1) + "%") + " · " + (item.basis === "indexedSessions" ? "Indexed sessions (estimate)" : "Reported");
+            setText(label,text); row.appendChild(label);
+            const image = svg("svg", {viewBox:"0 0 720 16", preserveAspectRatio:"none", role:"img", "aria-label":text});
+            const tip = svg("title"); setText(tip,text); image.appendChild(tip);
+            image.appendChild(svg("rect", {width:720,height:16,class:"usage-track"}));
+            if (percent !== null) image.appendChild(svg("rect", {width:Math.min(100,percent) * 7.2,height:16,class:"chart-bar"}));
+            row.appendChild(image); node.appendChild(row);
+          });
+        }
+        function clearDashboard() {
+          dashboardVersion += 1;
+          ["kpis", "activity", "cost", "sources", "projects", "health"].forEach(function (name) { setText(document.getElementById("dashboard-" + name), ""); });
+        }
+        // Each endpoint walks one cursor at a time; the four independent widgets may run concurrently.
+        // Cap both pages and rows, keep partial coverage explicit, and stop chaining on navigation/expiry.
+        async function dashboardRead(path, filters, token, version) {
+          const params = new URLSearchParams(filters), items = [], keys = new Set(), cursors = new Set();
+          params.set("limit", "100");
+          let first = null;
+          for (let count = 0; count < 10; count += 1) {
+            if (token !== requestEpoch || version !== dashboardVersion || activePage !== "dashboard") return null;
+            const page = await api("GET", path + "?" + params.toString());
+            if (token !== requestEpoch || version !== dashboardVersion || activePage !== "dashboard") return null;
+            if (!page || !Array.isArray(page.items) || !page.totals || page.groupBy !== params.get("groupBy") || typeof page.snapshotId !== "string" || !page.snapshotId || typeof page.timeZone !== "string" || page.items.length > 100 || items.length + page.items.length > 1000) throw new Error("Invalid chart page");
+            if (first && (page.snapshotId !== first.snapshotId || page.timeZone !== first.timeZone || JSON.stringify(page.totals) !== JSON.stringify(first.totals))) throw new Error("Changed chart snapshot");
+            if (!first) first = page;
+            page.items.forEach(function (item) { if (typeof item.key !== "string" || keys.has(item.key)) throw new Error("Duplicate chart group"); keys.add(item.key); items.push(item); });
+            if (!page.nextCursor) return {page:first, items:items, complete:true};
+            if (typeof page.nextCursor !== "string" || cursors.has(page.nextCursor)) throw new Error("Repeated chart cursor");
+            cursors.add(page.nextCursor); params.set("snapshotId",first.snapshotId); params.set("cursor",page.nextCursor);
+          }
+          return {page:first, items:items, complete:false};
+        }
+        function dashboardKpis(result, end, cost) {
+          const container = document.getElementById("dashboard-kpis");
+          const fields = cost ? [["costUsd","Priced cost (USD)"]] : [["sessionCount","Sessions"],["messageCount","Messages"],["userMessageCount","User messages"],["assistantMessageCount","Assistant messages"]];
+          fields.forEach(function (field) {
+            const tile = document.createElement("div"); tile.className = "kpi";
+            const label = document.createElement("span"), value = document.createElement("strong"), note = document.createElement("span");
+            setText(label,field[1]); setText(value,chartAmount(chartNumber(result.page.totals[field[0]]),cost));
+            setText(note,"Full range · " + result.page.timeZone + (result.complete ? "" : " · partial sparkline"));
+            tile.appendChild(label); tile.appendChild(value); tile.appendChild(note);
+            const rows = result.complete ? dailySeries(result.items,field[0],end,30) : result.items.slice().sort(function (a,b) { return a.key.localeCompare(b.key); }).map(function (item) { return {label:item.key,value:chartNumber(item[field[0]])}; });
+            const max = Math.max(1,...rows.map(function (row) { return row.value || 0; }));
+            const image = svg("svg", {viewBox:"0 0 180 32", role:"img","aria-label":field[1] + " daily trend, " + chartAmount(chartNumber(result.page.totals[field[0]]),cost) + " full range · " + (result.complete ? "30 dates" : "loaded dates only")});
+            const tip = svg("title"); setText(tip,field[1] + " · daily values in the accompanying table"); image.appendChild(tip);
+            // Missing numeric metrics break the sparkline instead of fabricating zero observations.
+            rows.forEach(function (row,i) { if (row.value !== null) image.appendChild(svg("rect", {x:i * 180 / rows.length, y:30 - (row.value || 0) / max * 28,width:Math.max(1,180 / rows.length - 1),height:(row.value || 0) / max * 28,fill:"currentColor"})); });
+            tile.appendChild(image);
+            const details = document.createElement("details"), summary = document.createElement("summary"), table = document.createElement("table");
+            setText(summary,"Daily values"); details.appendChild(summary); table.setAttribute("aria-label",field[1] + " daily values");
+            const header = document.createElement("tr"); ["Date",cost ? "USD" : "Value"].forEach(function (text) { const cell = document.createElement("th"); cell.setAttribute("scope","col"); setText(cell,text); header.appendChild(cell); }); table.appendChild(header);
+            rows.forEach(function (row) { const tr = document.createElement("tr"); [row.label,chartAmount(row.value,cost)].forEach(function (text) { const cell = document.createElement("td"); setText(cell,text); tr.appendChild(cell); }); table.appendChild(tr); });
+            details.appendChild(table); tile.appendChild(details); container.appendChild(tile);
+          });
+        }
+        async function loadDashboard() {
+          if (activePage !== "dashboard") return;
+          clearDashboard();
+          const token = requestEpoch, version = dashboardVersion;
+          const today = new Date(), end = today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2,"0") + "-" + String(today.getDate()).padStart(2,"0");
+          const since = dailySeries([],"value",end,30)[0].label;
+          const health = document.getElementById("dashboard-health");
+          setText(health, overviewStreams === null ? "Stream observations unavailable. Visit Health to retry; no duplicate overview walk is started here." : overviewStreams.length + " streams · reused sign-in/Health snapshot · Observed: " + healthTime(overviewObservedAt) + " · no historical health data");
+          let activityResult = null, costResult = null;
+          const widgets = [["activity","/web/api/stats","day","sessionCount","Daily sessions"],["sources","/web/api/stats","source","sessionCount","Sessions by source"],["projects","/web/api/stats","project","sessionCount","Sessions by project"],["cost","/web/api/costs","day","costUsd","Daily priced cost (USD)"]];
+          await Promise.all(widgets.map(async function (widget) {
+            const node = document.getElementById("dashboard-" + widget[0]); setText(node,"Loading " + widget[4].toLowerCase() + "…");
+            try {
+              const result = await dashboardRead(widget[1],{groupBy:widget[2], since:since, until:end},token,version);
+              if (!result) return;
+              const currency = widget[3] === "costUsd", daily = widget[2] === "day";
+              const rows = daily && result.complete ? dailySeries(result.items,widget[3],end,30) : result.items.map(function (item) { return {label:widget[2] === "source" ? sourceLabel(item.key) : item.label || item.key, value:item[widget[3]], source:widget[2] === "source" ? item.key : null}; });
+              if (daily) rows.sort(function (a,b) {return a.label.localeCompare(b.label);});
+              renderChart("dashboard-" + widget[0],widget[4],rows,{columns:daily,currency:currency,fullTotal:result.page.totals[widget[3]],coverage:(result.complete ? "All groups" : "Partial: 10-page cap; absent days unknown, not zero-filled") + " · " + since + " → " + end + " · " + result.page.timeZone});
+              if (widget[0] === "activity" || currency) {
+                if (currency) costResult = result; else activityResult = result;
+                setText(document.getElementById("dashboard-kpis"), "");
+                if (activityResult) dashboardKpis(activityResult,end,false);
+                if (costResult) dashboardKpis(costResult,end,true);
+              }
+              if (currency) {
+                const note = document.createElement("p"); setText(note,"Unpriced sessions: " + costValue(result.page.unpricedUnattributedSessions,"count") + " without attribution; " + costValue(result.page.unpricedNoPriceSessions,"count") + " without a matching price. Unpriced tokens: " + costValue(result.page.unpricedUnattributedTokens,"count") + " unattributed; " + costValue(result.page.unpricedNoPriceTokens,"count") + " without a matching price."); node.appendChild(note);
+              }
+            } catch (error) {
+              if (token === requestEpoch && version === dashboardVersion && activePage === "dashboard") { node.className = "chart"; setText(node,widget[4] + " unavailable. Refresh dashboard to retry."); }
+            }
+          }));
+        }
         function clearStats() {
+          chartRows.stats = []; setText(document.getElementById("stats-chart"), "");
           statsSnapshot = "";
           statsCursor = "";
           statsFilters = "";
@@ -1845,11 +2074,13 @@ enum WebUIRoutes {
             const page = await api("GET", "/web/api/stats?" + params.toString());
             if (token !== requestEpoch) return;
             if (!page || !Array.isArray(page.items) || !page.totals || page.groupBy !== params.get("groupBy")
-                || (more && page.snapshotId !== statsSnapshot)
+                || (more && (page.snapshotId !== statsSnapshot || page.nextCursor === statsCursor))
                 || (statsTotals && statsFields.some(function (field) { return statsTotals[field[0]] !== page.totals[field[0]]; }))) throw new Error("changed statistics");
             statsSnapshot = page.snapshotId;
             statsCursor = page.nextCursor || "";
+            if (chartRows.stats.length + page.items.length > 5000) throw new Error("Chart row limit reached; narrow the filters");
             statsTotals = page.totals;
+            updateChartRows("stats", page.items, "Session counts", "sessionCount", page.totals.sessionCount, statsCursor, page.groupBy);
             const totals = document.getElementById("stats-totals");
             setText(totals, "");
             statsFields.forEach(function (field) {
@@ -1875,7 +2106,7 @@ enum WebUIRoutes {
               document.getElementById("stats-rows").appendChild(row);
             });
             setText(status, "Grouped by " + page.groupBy + " · " + page.timeZone + " · Observed: " + healthTime(page.observedAt));
-            moreButton.hidden = !statsCursor;
+            moreButton.hidden = !statsCursor || chartRows.stats.length >= 5000;
           } catch (error) {
             if (token === requestEpoch) setText(status, "Statistics unavailable. Apply filters to retry.");
           } finally {
@@ -1897,6 +2128,7 @@ enum WebUIRoutes {
           else await loadStats(false);
         }
         function clearAi() {
+          chartRows.ai = []; setText(document.getElementById("ai-chart"), "");
           aiSnapshot = ""; aiCursor = ""; aiFilters = ""; aiTotal = null;
           ["ai-status", "ai-rows", "ai-detail", "ai-stats", "ai-stats-status"].forEach(function (id) { setText(document.getElementById(id), ""); });
           document.getElementById("ai-more").hidden = true;
@@ -1944,10 +2176,20 @@ enum WebUIRoutes {
             if (!page || !Array.isArray(page.items) || !Number.isSafeInteger(page.total)
                 || (more && (page.snapshotId !== aiSnapshot || page.nextCursor === aiCursor))
                 || (aiTotal !== null && page.total !== aiTotal)) throw new Error("changed AI observations");
-            aiSnapshot = page.snapshotId; aiCursor = page.nextCursor || ""; aiTotal = page.total;
-            page.items.forEach(function (item) { document.getElementById("ai-rows").appendChild(aiCard(item, false)); });
+            aiSnapshot = page.snapshotId; aiCursor = page.nextCursor || "";
+            if (chartRows.ai.length + page.items.length > 5000) throw new Error("Chart row limit reached; narrow the filters"); aiTotal = page.total;
+            chartRows.ai.push(...page.items);
+            const errors = chartRows.ai.filter(function (item) { return item.hasError === true; }).length;
+            const successes = chartRows.ai.filter(function (item) { return item.hasError === false; }).length;
+            renderChart("ai-chart", "Loaded call outcomes", [{label:"Success",value:successes},{label:"Error",value:errors},{label:"Outcome not reported",value:chartRows.ai.length - errors - successes}], {fullTotal:page.total, coverage:(aiCursor ? (chartRows.ai.length >= 5000 ? "Partial history: 5,000-row cap; narrow filters" : "Partial history") : "All matching calls") + " · call-history filters only"});
+            page.items.forEach(function (item) {
+              const row = document.createElement("tr");
+              [item.caller + " · " + item.operation, healthTime(item.at) + " · " + (item.hasError === true ? "Error" : item.hasError === false ? "Success" : "Not reported"), item.model || "Not reported", costValue(item.totalTokens, "tokens")].forEach(function (text) { const cell = document.createElement("td"); setText(cell, text); row.appendChild(cell); });
+              const cell = document.createElement("td"), open = document.createElement("button"); open.type = "button"; setText(open, "View call"); open.addEventListener("click", function () { loadAiDetail(item.id); }); cell.appendChild(open); row.appendChild(cell);
+              document.getElementById("ai-rows").appendChild(row);
+            });
             setText(status, page.total ? plural(page.total, "call") + " · Observed: " + healthTime(page.observedAt) : "No recorded AI calls for these filters.");
-            button.hidden = !aiCursor;
+            button.hidden = !aiCursor || chartRows.ai.length >= 5000;
           } catch (error) { if (token === requestEpoch) setText(status, "AI call history unavailable. Find calls to retry."); }
           finally { if (token === requestEpoch) button.disabled = false; }
         }
@@ -1973,6 +2215,8 @@ enum WebUIRoutes {
             const page = await api("GET", "/web/api/ai/stats?" + params.toString());
             if (token !== requestEpoch || version !== aiStatsVersion) return;
             if (!page || !page.totals || !page.timeRange || !Array.isArray(page.byCaller) || !Array.isArray(page.byModel) || !Array.isArray(page.hourly)) throw new Error("invalid AI statistics");
+            const hourly = document.createElement("div"); hourly.id = "ai-hourly-chart"; content.appendChild(hourly);
+            renderChart("ai-hourly-chart", "Hourly AI requests (UTC)", page.hourly.map(function (item) { return {label:item.hour, value:item.requests}; }).sort(function (a,b) {return a.label.localeCompare(b.label);}), {columns:true, fullTotal:page.totals.requests, coverage:"Statistics date range only; independent of call-history filters"});
             aiCounts(content, [["Requests", page.totals.requests], ["Errors", page.totals.errors], ["Input tokens", page.totals.promptTokens], ["Output tokens", page.totals.completionTokens], ["Average duration (ms)", page.totals.avgDurationMs]], true);
             [["By caller", page.byCaller], ["By model", page.byModel], ["Hourly (UTC)", page.hourly]].forEach(function (group) {
               const section = document.createElement("details"); section.open = true;
@@ -1991,6 +2235,7 @@ enum WebUIRoutes {
           } catch (error) { if (token === requestEpoch && version === aiStatsVersion) setText(status, "AI statistics unavailable. View statistics to retry."); }
         }
         function clearRepos() {
+          chartRows.repos = []; setText(document.getElementById("repos-chart"), "");
           reposSnapshot = ""; reposCursor = ""; reposTotal = null;
           setText(document.getElementById("repos-rows"), ""); setText(document.getElementById("repos-status"), "");
           document.getElementById("repos-more").hidden = true;
@@ -2008,7 +2253,9 @@ enum WebUIRoutes {
             if (!page || page.scope !== "serverFilesystem" || !Array.isArray(page.items) || !Number.isSafeInteger(page.totalRepos)
                 || (more && (page.snapshotId !== reposSnapshot || page.nextCursor === reposCursor))
                 || (reposTotal !== null && reposTotal !== page.totalRepos)) throw new Error("changed repository observations");
-            reposSnapshot = page.snapshotId; reposCursor = page.nextCursor || ""; reposTotal = page.totalRepos;
+            reposSnapshot = page.snapshotId; reposCursor = page.nextCursor || "";
+            if (chartRows.repos.length + page.items.length > 5000) throw new Error("Chart row limit reached; narrow the filters"); reposTotal = page.totalRepos;
+            updateChartRows("repos", page.items.map(function (item) { return Object.assign({}, item, { label: item.name }); }), "Sessions per observed repository", "sessionCount", null, reposCursor, "repository");
             page.items.forEach(function (item) {
               const card = document.createElement("article"); card.className = "health-card";
               const title = document.createElement("h3"); setText(title, item.name); card.appendChild(title);
@@ -2024,12 +2271,13 @@ enum WebUIRoutes {
               document.getElementById("repos-rows").appendChild(card);
             });
             setText(status, plural(page.totalRepos, "repository", "repositories") + " · Observations from this server’s filesystem.");
-            moreButton.hidden = !reposCursor;
+            moreButton.hidden = !reposCursor || chartRows.repos.length >= 5000;
           } catch (error) {
             if (token === requestEpoch) setText(status, "Repository observations unavailable. Reload observations to retry.");
           } finally { if (token === requestEpoch) moreButton.disabled = false; }
         }
         function clearUsage() {
+          setText(document.getElementById("usage-chart"), "");
           setText(document.getElementById("usage-rows"), "");
           setText(document.getElementById("usage-status"), "");
         }
@@ -2044,6 +2292,7 @@ enum WebUIRoutes {
             const page = await api("GET", "/web/api/usage");
             if (token !== requestEpoch) return;
             if (!page || page.scope !== "server" || !Array.isArray(page.items)) throw new Error("invalid usage");
+            renderUsageChart(page.items);
             page.items.forEach(function (item) {
               const row = document.createElement("tr");
               const unit = item.unit ? " " + item.unit : "";
@@ -2060,6 +2309,7 @@ enum WebUIRoutes {
           } finally { if (token === requestEpoch) refresh.disabled = false; }
         }
         function clearFiles() {
+          chartRows.files = []; setText(document.getElementById("files-chart"), "");
           filesSnapshot = ""; filesCursor = ""; filesFilters = ""; filesTotals = null;
           ["files-status", "files-totals", "files-rows"].forEach(function (id) { setText(document.getElementById(id), ""); });
           document.getElementById("files-more").hidden = true;
@@ -2087,7 +2337,9 @@ enum WebUIRoutes {
                 || (more && (page.snapshotId !== filesSnapshot || page.nextCursor === filesCursor))
                 || (filesTotals && (filesTotals.files !== page.totalFiles || filesTotals.operations !== page.totalOperations))) throw new Error("changed file activity");
             filesSnapshot = page.snapshotId; filesCursor = page.nextCursor || "";
+            if (chartRows.files.length + page.items.length > 5000) throw new Error("Chart row limit reached; narrow the filters");
             filesTotals = {files: page.totalFiles, operations: page.totalOperations};
+            updateChartRows("files", page.items.map(function (item) { return Object.assign({}, item, { operations: item.readCount + item.editCount + item.writeCount }); }), "File operations (reads + edits + writes)", "operations", page.totalOperations, filesCursor, "file");
             setText(document.getElementById("files-totals"), plural(page.totalFiles, "file") + " · " + plural(page.totalOperations, "operation"));
             page.items.forEach(function (item) {
               const row = document.createElement("tr"), label = document.createElement("td"); setText(label, item.label); row.appendChild(label);
@@ -2097,12 +2349,13 @@ enum WebUIRoutes {
               document.getElementById("files-rows").appendChild(row);
             });
             setText(status, page.totalFiles ? "Most active files · Observed: " + healthTime(page.observedAt) : "No file activity in this range");
-            moreButton.hidden = !filesCursor;
+            moreButton.hidden = !filesCursor || chartRows.files.length >= 5000;
           } catch (error) {
             if (token === requestEpoch) setText(status, "File activity unavailable. Apply filters to retry.");
           } finally { if (token === requestEpoch) moreButton.disabled = false; }
         }
         function clearTools() {
+          chartRows.tools = []; setText(document.getElementById("tools-chart"), "");
           toolsSnapshot = ""; toolsCursor = ""; toolsFilters = ""; toolsTotals = null;
           ["tools-status", "tools-totals", "tools-rows"].forEach(function (id) { setText(document.getElementById(id), ""); });
           document.getElementById("tools-more").hidden = true;
@@ -2131,7 +2384,9 @@ enum WebUIRoutes {
                 || (more && (page.snapshotId !== toolsSnapshot || page.nextCursor === toolsCursor))
                 || (toolsTotals && (toolsTotals.calls !== page.totalCalls || toolsTotals.groups !== page.groupCount))) throw new Error("changed tool activity");
             toolsSnapshot = page.snapshotId; toolsCursor = page.nextCursor || "";
+            if (chartRows.tools.length + page.items.length > 5000) throw new Error("Chart row limit reached; narrow the filters");
             toolsTotals = {calls: page.totalCalls, groups: page.groupCount};
+            updateChartRows("tools", page.items, "Tool calls", "callCount", page.totalCalls, toolsCursor, page.groupBy);
             // Grouped by tool, every row is exactly one tool, so the column carries no information.
             document.getElementById("tools-col-tools").hidden = page.groupBy === "tool";
             setText(document.getElementById("tools-totals"), plural(page.totalCalls, "call") + " · " + plural(page.groupCount, "group"));
@@ -2149,12 +2404,13 @@ enum WebUIRoutes {
               document.getElementById("tools-rows").appendChild(row);
             });
             setText(status, page.groupCount ? "Grouped by " + page.groupBy + " · Observed: " + healthTime(page.observedAt) : "No tool activity in this range");
-            moreButton.hidden = !toolsCursor;
+            moreButton.hidden = !toolsCursor || chartRows.tools.length >= 5000;
           } catch (error) {
             if (token === requestEpoch) setText(status, "Tool activity unavailable. Apply filters to retry.");
           } finally { if (token === requestEpoch) moreButton.disabled = false; }
         }
         function clearCosts() {
+          chartRows.costs = []; setText(document.getElementById("costs-chart"), "");
           costsSnapshot = "";
           costsCursor = "";
           costsFilters = "";
@@ -2191,11 +2447,13 @@ enum WebUIRoutes {
               const page = await api("GET", "/web/api/costs?" + params.toString());
               if (token !== requestEpoch) return;
               if (!page || !Array.isArray(page.items) || !page.totals || page.groupBy !== params.get("groupBy")
-                  || (more && page.snapshotId !== costsSnapshot)
+                  || (more && (page.snapshotId !== costsSnapshot || page.nextCursor === costsCursor))
                   || (costsTotals && costFields.some(function (field) { return costsTotals[field[0]] !== page.totals[field[0]]; }))) throw new Error("changed costs");
               costsSnapshot = page.snapshotId;
               costsCursor = page.nextCursor || "";
+              if (chartRows.costs.length + page.items.length > 5000) throw new Error("Chart row limit reached; narrow the filters");
               costsTotals = page.totals;
+              updateChartRows("costs", page.items, "Priced cost (USD)", "costUsd", page.totals.costUsd, costsCursor, page.groupBy);
               const totals = document.getElementById("costs-totals");
               setText(totals, "");
               costFields.forEach(function (field) {
@@ -2220,9 +2478,11 @@ enum WebUIRoutes {
               const unpriced = [];
               if (Number.isSafeInteger(page.unpricedUnattributedSessions)) unpriced.push(plural(page.unpricedUnattributedSessions, "session has", "sessions have") + " no model attribution");
               if (Number.isSafeInteger(page.unpricedNoPriceSessions)) unpriced.push(plural(page.unpricedNoPriceSessions, "session has", "sessions have") + " no matching price");
+              if (Number.isSafeInteger(page.unpricedUnattributedTokens)) unpriced.push(costValue(page.unpricedUnattributedTokens, "tokens") + " unattributed tokens");
+              if (Number.isSafeInteger(page.unpricedNoPriceTokens)) unpriced.push(costValue(page.unpricedNoPriceTokens, "tokens") + " tokens without a price");
               setText(document.getElementById("costs-unpriced"), unpriced.length ? "Unpriced usage: " + unpriced.join("; ") + "." : "Unpriced usage: not reported.");
               setText(status, "Grouped by " + page.groupBy + " · " + page.timeZone + (page.totals.sessionCount === 0 ? " · No cost records in this range" : ""));
-              moreButton.hidden = !costsCursor;
+              moreButton.hidden = !costsCursor || chartRows.costs.length >= 5000;
             } catch (error) {
               if (token === requestEpoch) setText(status, "Costs unavailable. Apply filters to retry.");
             }
@@ -2933,6 +3193,7 @@ enum WebUIRoutes {
           return number > 0 ? number : 0;
         }
         function showOverviewUnavailable() {
+          overviewStreams = null; overviewObservedAt = null;
           setText(healthContent, "");
           setText(document.getElementById("health-summary"), "");
           setText(healthStatus, "Health is temporarily unavailable.");
@@ -2977,6 +3238,7 @@ enum WebUIRoutes {
               showOverviewUnavailable();
               return token;
             }
+            if (streams.length + page.streams.length > 2000 || seenCursors.size >= 1000) { showOverviewUnavailable(); return token; }
             streams.push(...page.streams);
             if (observedAt === null) observedAt = page.observedAt;
             if (!page.nextCursor) break;
@@ -2989,6 +3251,7 @@ enum WebUIRoutes {
             params.set("snapshotId", page.snapshotId);
             params.set("cursor", page.nextCursor);
           } while (true);
+          overviewStreams = streams; overviewObservedAt = observedAt;
           renderHealth(streams, observedAt);
           setText(overviewNode, "");
           let publications = 0;
@@ -3887,7 +4150,7 @@ enum WebUIRoutes {
             if (typeof summary.focus === "function") summary.focus();
           });
         });
-        ["sessions", "search", "stats", "health", "settings"].forEach(function (name) {
+        ["sessions", "search", "dashboard", "stats", "health", "settings"].forEach(function (name) {
           const link = document.getElementById("nav-" + name);
           link.insertBefore(icon(name), link.firstChild);
         });
@@ -3931,6 +4194,7 @@ enum WebUIRoutes {
         document.getElementById("alias-project-more").addEventListener("click", function () { loadAliasProjects(true); });
         document.getElementById("settings-refresh").addEventListener("click", function () { loadSettings(false); });
         document.getElementById("settings-more").addEventListener("click", function () { loadSettings(true); });
+        document.getElementById("dashboard-refresh").addEventListener("click", function () { loadDashboard(); });
         document.getElementById("stats-form").addEventListener("submit", function (event) { event.preventDefault(); loadStats(false); });
         document.getElementById("stats-more").addEventListener("click", function () { loadStats(true); });
         document.getElementById("stats-view-sessions").addEventListener("click", function () { showStatsView("sessions"); });
