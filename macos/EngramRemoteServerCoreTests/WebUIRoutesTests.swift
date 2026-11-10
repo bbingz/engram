@@ -72,6 +72,175 @@ final class WebUIRoutesTests: XCTestCase {
         XCTAssertTrue(cssText.contains("showing-detail"))
     }
 
+    func testFoundationAssetsKeepSafeDOMThemeTokensAndPayloadBudget() async throws {
+        let harness = try UIHarness(configuration: configuration())
+        let html = try await bodyText(try await harness.respond(request(path: "/web", headers: [("Host", "viewer.example")])))
+        let js = try await bodyText(try await harness.respond(request(path: "/web/app.js", headers: [("Host", "viewer.example")])))
+        let css = try await bodyText(try await harness.respond(request(path: "/web/app.css", headers: [("Host", "viewer.example")])))
+        for hook in ["page-nav", "active-filters", "toast-region", "health-summary", "tools-col-tools"] {
+            XCTAssertTrue(html.contains("id=\"\(hook)\""), hook)
+        }
+        XCTAssertTrue(html.contains("aria-live=\"polite\""))
+        XCTAssertTrue(js.contains("createElementNS"))
+        for banned in ["insertAdjacentHTML", "outerHTML", "DOMParser", "new Function", "setAttribute(\"style\""] {
+            XCTAssertFalse(js.contains(banned), banned)
+        }
+        XCTAssertTrue(css.contains("color-scheme: light dark"))
+        XCTAssertTrue(css.contains("@media (prefers-color-scheme: light)"))
+        XCTAssertTrue(css.contains("@media (prefers-reduced-motion: reduce)"))
+        XCTAssertTrue(css.contains("var(--mono)"))
+        XCTAssertLessThanOrEqual(js.utf8.count, 360_000)
+        XCTAssertLessThanOrEqual(css.utf8.count, 80_000)
+    }
+
+    func testIt8StatsHeatmapAndSortAssetsUseSafeOptionalContracts() async throws {
+        let harness = try UIHarness(configuration: configuration())
+        let html = try await bodyText(try await harness.respond(request(path: "/web", headers: [("Host", "viewer.example")])))
+        for hook in ["session-sort", "stats-source", "stats-project", "stats-choices", "dashboard-hours", "dashboard-hours-load"] {
+            XCTAssertTrue(html.contains("id=\"\(hook)\""), hook)
+        }
+        XCTAssertTrue(WebUIRoutes.javascript.contains("function renderHourOfWeek("))
+        XCTAssertTrue(WebUIRoutes.javascript.contains("missing bins unknown"))
+        XCTAssertTrue(WebUIRoutes.javascript.contains("params.set(\"sort\", \"lastActivity\")"))
+        XCTAssertTrue(WebUIRoutes.javascript.contains("No filters were silently dropped"))
+    }
+
+    func testDashboardAndStatsChartsKeepLazySafeAccessibleAssetContract() async throws {
+        let harness = try UIHarness(configuration: configuration())
+        let html = try await bodyText(try await harness.respond(request(path: "/web", headers: [("Host", "viewer.example")])))
+        let js = try await bodyText(try await harness.respond(request(path: "/web/app.js", headers: [("Host", "viewer.example")])))
+        let css = try await bodyText(try await harness.respond(request(path: "/web/app.css", headers: [("Host", "viewer.example")])))
+        for hook in ["nav-dashboard", "dashboard-page", "dashboard-kpis", "dashboard-activity", "dashboard-cost",
+                     "dashboard-sources", "dashboard-projects", "stats-chart", "costs-chart", "tools-chart",
+                     "files-chart", "usage-chart", "repos-chart", "ai-chart"] {
+            XCTAssertTrue(html.contains("id=\"\(hook)\""), hook)
+        }
+        XCTAssertTrue(html.contains("Heatmap counts session starts, not work duration"))
+        XCTAssertTrue(html.contains("id=\"nav-sessions\" href=\"#sessions\" aria-current=\"page\""))
+        XCTAssertTrue(js.contains("function dailySeries("))
+        XCTAssertTrue(js.contains("function renderChart("))
+        XCTAssertTrue(js.contains("async function dashboardRead("))
+        XCTAssertTrue(js.contains("overviewStreams === null"))
+        XCTAssertTrue(js.contains("version !== dashboardVersion"))
+        XCTAssertTrue(js.contains("Table · chart values"))
+        XCTAssertTrue(css.contains("#workspace.data-page"))
+        XCTAssertTrue(css.contains("--c1:"))
+        XCTAssertTrue(css.contains("max-width: 960px"))
+    }
+
+    func testTranscriptReadingAssetsKeepSafeOrdinalAndLazyInfoContracts() async throws {
+        let harness = try UIHarness(configuration: configuration())
+        let html = try await bodyText(try await harness.respond(request(path: "/web", headers: [("Host", "viewer.example")])))
+        let js = try await bodyText(try await harness.respond(request(path: "/web/app.js", headers: [("Host", "viewer.example")])))
+        let css = try await bodyText(try await harness.respond(request(path: "/web/app.css", headers: [("Host", "viewer.example")])))
+        for hook in ["detail-header", "detail-view-info", "detail-info-panel", "detail-info-content",
+                     "transcript-toolbar", "transcript-filters", "transcript-outline", "transcript-load-all"] {
+            XCTAssertTrue(html.contains("id=\"\(hook)\""), hook)
+        }
+        for contract in ["maxFragments=100", "data-line-number", "data-lang", "Thinking (detected)",
+                         "Error (detected)", "in loaded", "async function loadDetailInfo()", "agents:\"all\"",
+                         "typeof navigator.clipboard.writeText === \"function\"", "limit: \"500\"",
+                         "renderMessage(messageBuf.role, JSON.parse(text), messageBuf.ordinal)",
+                         "token !== requestEpoch || version !== detailExtrasVersion"] {
+            XCTAssertTrue(js.contains(contract), contract)
+        }
+        XCTAssertTrue(css.contains("#detail-header { position: sticky"))
+        XCTAssertTrue(css.contains("max-width: 960px"))
+        XCTAssertLessThanOrEqual(js.utf8.count, 360_000)
+        XCTAssertLessThanOrEqual(css.utf8.count, 80_000)
+    }
+
+    func testNavigationSearchAndFindAssetsKeepSafeAddressableContracts() async throws {
+        let harness = try UIHarness(configuration: configuration())
+        let html = try await bodyText(try await harness.respond(request(path: "/web", headers: [("Host", "viewer.example")])))
+        let js = try await bodyText(try await harness.respond(request(path: "/web/app.js", headers: [("Host", "viewer.example")])))
+        for hook in ["shortcuts-dialog", "shortcuts-help", "transcript-find", "transcript-find-query", "transcript-find-status", "transcript-find-preview", "transcript-find-more"] {
+            XCTAssertTrue(html.contains("id=\"\(hook)\""), hook)
+        }
+        for contract in ["function parseRoute(", "function routeHref(", "pushState", "replaceState",
+                         "addEventListener(\"popstate\", historyChanged)", "addEventListener(\"hashchange\", historyChanged)",
+                         "decodeURIComponent", "catch (error)", "budget.remaining", "function updateTranscriptFind()",
+                         "event.isComposing", "function editableTarget(", "},350)"] {
+            XCTAssertTrue(js.contains(contract), contract)
+        }
+        // Find searches decoded model fields and provides a safe, separate highlighted context.
+        XCTAssertTrue(js.contains("fields.push(call.name"))
+        XCTAssertFalse(js.contains("createTreeWalker"))
+        XCTAssertFalse(js.contains("NodeFilter"))
+        XCTAssertTrue(js.contains("routeFilterKeys"))
+        XCTAssertTrue(js.contains("workspaceNode.hidden) return; // Leave the pending URL"))
+        XCTAssertLessThanOrEqual(js.utf8.count, 360_000)
+    }
+
+    func testPolishKeepsAccessibleDialogsScopeProvenanceAndSignedOutCopy() async throws {
+        let harness = try UIHarness(configuration: configuration())
+        let html = try await bodyText(try await harness.respond(request(path: "/web", headers: [("Host", "viewer.example")])))
+        let js = try await bodyText(try await harness.respond(request(path: "/web/app.js", headers: [("Host", "viewer.example")])))
+        let css = try await bodyText(try await harness.respond(request(path: "/web/app.css", headers: [("Host", "viewer.example")])))
+        for contract in ["Sign in to browse your session library.", "Browse your session library.", "identity-status",
+                         "aria-modal=\"true\"", "role=\"dialog\"", "aria-controls=\"transcript-find\"",
+                         "Message types in loaded messages", "Search availability &amp; index",
+                         "Heartbeat shows collector liveness, not capture activity.", "Server configuration and captured-library metadata."] {
+            XCTAssertTrue(html.contains(contract), contract)
+        }
+        for contract in ["function focusVisible(", "function openModal(", "function closeModal(", "addEventListener(\"focusin\"",
+                         "Capture & sync provenance", "Clock ahead", "health-timestamp", "createElement(\"time\")", "focusedType"] {
+            XCTAssertTrue(js.contains(contract), contract)
+        }
+        XCTAssertTrue(css.contains(".sign-in-card"))
+        XCTAssertTrue(css.contains("input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }"))
+        XCTAssertTrue(css.contains("@media (prefers-reduced-motion: reduce)"))
+        XCTAssertTrue(css.contains("max-width: 960px"))
+        XCTAssertLessThanOrEqual(js.utf8.count, 360_000)
+        XCTAssertLessThanOrEqual(css.utf8.count, 80_000)
+    }
+
+    func testMinimapAndSyntaxKeepBoundedSafeLazyAssetContracts() async throws {
+        let harness = try UIHarness(configuration: configuration())
+        let html = try await bodyText(try await harness.respond(request(path: "/web", headers: [("Host", "viewer.example")])))
+        let js = try await bodyText(try await harness.respond(request(path: "/web/app.js", headers: [("Host", "viewer.example")])))
+        let css = try await bodyText(try await harness.respond(request(path: "/web/app.css", headers: [("Host", "viewer.example")])))
+        for hook in ["transcript-minimap-toggle", "transcript-minimap-box", "transcript-minimap", "transcript-minimap-status"] {
+            XCTAssertTrue(html.contains("id=\"\(hook)\""), hook)
+        }
+        for contract in ["function tokenizeCode(", "function renderSyntaxCode(", "function renderTranscriptMinimap(",
+                         "32768", "2000", "120", "timeline known", "data-start", "data-end"] {
+            XCTAssertTrue(js.contains(contract), contract)
+        }
+        XCTAssertTrue(css.contains(".syntax-keyword"))
+        XCTAssertTrue(css.contains("#transcript-minimap"))
+        XCTAssertTrue(css.contains("max-width: 960px"))
+        XCTAssertFalse(js.contains("innerHTML"))
+        XCTAssertLessThanOrEqual(js.utf8.count, 360_000)
+        XCTAssertLessThanOrEqual(css.utf8.count, 80_000)
+    }
+
+    func testCommandPaletteKeepsNativeAccessibleLocalAndFencedContracts() async throws {
+        let harness = try UIHarness(configuration: configuration())
+        let html = try await bodyText(try await harness.respond(request(path: "/web", headers: [("Host", "viewer.example")])))
+        let js = try await bodyText(try await harness.respond(request(path: "/web/app.js", headers: [("Host", "viewer.example")])))
+        let css = try await bodyText(try await harness.respond(request(path: "/web/app.css", headers: [("Host", "viewer.example")])))
+        for hook in ["command-trigger", "command-dialog", "command-query", "command-results", "command-scope", "command-status", "command-close"] {
+            XCTAssertTrue(html.contains("id=\"\(hook)\""), hook)
+        }
+        for contract in ["<dialog id=\"command-dialog\"", "role=\"combobox\"", "role=\"listbox\"", "Cmd/Ctrl+K"] {
+            XCTAssertTrue(html.contains(contract), contract)
+        }
+        for contract in ["function commandScore(", "function availableCommands(", "commandContext !== commandState()",
+                         "revision !== commandRevision", "command-option-", "not global search", "matches.slice(0, 60)",
+                         "typeof dialog.showModal === \"function\"", "sessionActionCanWrite === true", "await loadSessionActionAccess()",
+                         "sessionActionAccessRequest.key === key", "sessionActionAccessRequest === pending",
+                         "JSON.stringify([token, version, id, generation])"] {
+            XCTAssertTrue(js.contains(contract), contract)
+        }
+        XCTAssertTrue(css.contains("#command-dialog"))
+        XCTAssertTrue(css.contains(".command-option[aria-selected=\"true\"]"))
+        XCTAssertTrue(css.contains("max-width: 960px"))
+        XCTAssertFalse(js.contains("innerHTML"))
+        XCTAssertLessThanOrEqual(js.utf8.count, 360_000)
+        XCTAssertLessThanOrEqual(css.utf8.count, 80_000)
+    }
+
     func testJavaScriptUsesTextContentAndExistingAPIsForLoginLogoutAndPaging() async throws {
         let harness = try UIHarness(configuration: configuration())
         let js = try await bodyText(try await harness.respond(request(path: "/web/app.js", headers: [("Host", "viewer.example")])))
@@ -96,7 +265,7 @@ final class WebUIRoutesTests: XCTestCase {
         XCTAssertTrue(js.contains("No sessions found"))
         // Ready/parsed metadata may label counts; only the admitted generation authorizes reads.
         XCTAssertTrue(js.contains("const generation = detail.transcriptGeneration;"))
-        XCTAssertTrue(js.contains("await loadMessages(token, session.sessionId, generation, \"\");"))
+        XCTAssertTrue(js.contains("await loadMessages(token, session.sessionId, generation, provenMatch && typeof provenMatch.messageCursor"))
         XCTAssertFalse(js.contains("const generation = detail.lastReady"))
         XCTAssertTrue(js.contains("TextEncoder"))
         XCTAssertTrue(js.contains("utf8Offset"))

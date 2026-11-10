@@ -88,7 +88,7 @@ struct ServiceWebMetadataClock: Sendable {
 }
 
 enum ServiceWebMetadataOperation: Equatable, Sendable {
-    case overview, sessions, detail, children, facets, stats, settings, costs, costSessions, toolAnalytics, fileActivity, repos, projectCwds, aiAudit, aiAuditDetail, aiStats, search, insightDetail
+    case insights, overview, sessions, detail, children, facets, stats, settings, costs, costSessions, toolAnalytics, fileActivity, repos, projectCwds, aiAudit, aiAuditDetail, aiStats, search, insightDetail
 }
 
 enum ServiceWebMetadataDatabasePhase: Equatable, Sendable {
@@ -154,6 +154,9 @@ protocol ServiceWebMetadataProviding: AnyObject, Sendable {
         deadline: ContinuousClock.Instant
     ) async throws -> EngramServiceWebSettingsResponse
 
+    func keywordSearchPage(_ request: EngramServiceWebSearchRequest, requestId: String,
+                           deadline: ContinuousClock.Instant) async throws -> EngramServiceWebSearchResponse
+
     func searchScope(
         _ request: EngramServiceWebSearchRequest,
         requestId: String,
@@ -166,6 +169,8 @@ protocol ServiceWebMetadataProviding: AnyObject, Sendable {
         requestId: String,
         deadline: ContinuousClock.Instant
     ) async throws -> EngramServiceWebSearchResponse
+
+    func insights(_ request: EngramServiceWebInsightsRequest, requestId: String, deadline: ContinuousClock.Instant) async throws -> EngramServiceWebInsightsResponse
 
     func insightDetail(
         _ request: EngramServiceWebInsightDetailRequest,
@@ -250,6 +255,15 @@ protocol ServiceWebMetadataProviding: AnyObject, Sendable {
 }
 
 extension ServiceWebMetadataProviding {
+    func insights(_ request: EngramServiceWebInsightsRequest, requestId: String, deadline: ContinuousClock.Instant) async throws -> EngramServiceWebInsightsResponse {
+        throw ServiceWebMetadataError.unavailable
+    }
+
+    func keywordSearchPage(_ request: EngramServiceWebSearchRequest, requestId: String,
+                           deadline: ContinuousClock.Instant) async throws -> EngramServiceWebSearchResponse {
+        throw ServiceWebMetadataError.unavailable
+    }
+
     func usage(_ request: EngramServiceWebUsageRequest, requestId: String,
                deadline: ContinuousClock.Instant) async throws -> EngramServiceWebUsageResponse {
         throw ServiceWebMetadataError.unavailable
@@ -559,7 +573,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                 try Self.listIdentity(request.sources), request.machineId, request.sourceInstanceId,
                 request.projectKey, try Self.listIdentity(request.projectKeys),
                 request.sessionId, request.agents.rawValue, request.since, request.until,
-                request.tools.rawValue, String(request.limit), ServiceWebMetadataLimits.sortVersion])
+                request.tools.rawValue, request.sort.rawValue, String(request.limit), ServiceWebMetadataLimits.sortVersion])
             let (lease, position) = try self.acquire(snapshotID: request.snapshotId, cursor: request.cursor,
                 key: key, policy: policy, control: control)
             let cachedTotal = lease.sessionsTotal
@@ -605,14 +619,14 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                     for item in page {
                         try control.check()
                         guard let row = byID[Data(item.summary.sessionId.utf8)],
-                              row.authority == item.authority else { throw ServiceWebMetadataError.stale }
+                              row.authority == item.authority, row.summary == item.summary else { throw ServiceWebMetadataError.stale }
                     }
                 }
             }
             try self.requirePolicy(policy)
             try control.check()
             let next = try self.successor(lease, position: position, count: count, hasMore: prepared.rows.count > count,
-                last: page.last.map { .session($0.summary.startedAt, $0.summary.sessionId) }, proposed: token)
+                last: page.last.map { .session(request.sort == .started ? $0.summary.startedAt : $0.summary.lastActivityAt, $0.summary.sessionId) }, proposed: token)
             let result = EngramServiceWebSessionsResponse(snapshotId: lease.id, observedAt: lease.observedAt,
                 items: page.map(\.summary), nextCursor: next, totalCount: prepared.totalCount,
                 warning: shortQuery?.warning, warningCode: shortQuery?.code)
@@ -651,7 +665,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                     try self.sessionRows(db, request: filter, policy: current, after: nil,
                                          limit: 1, sessionIDs: [request.sessionId]).first
                 }
-                if fresh?.authority == prepared.0.authority {
+                if fresh?.authority == prepared.0.authority, fresh?.summary == prepared.0.summary {
                     let summary = try self.pool.read { db in
                         try Self.publishedSessionSummary(db, sessionID: request.sessionId)
                     }
@@ -710,7 +724,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                 try control.check()
                 guard let freshParent = try self.sessionRows(db, request: parentFilter, policy: policy, after: nil,
                                                             limit: 1, sessionIDs: [request.sessionId]).first,
-                      freshParent.authority == prepared.0.authority else {
+                      freshParent.authority == prepared.0.authority, freshParent.summary == prepared.0.summary else {
                     throw ServiceWebMetadataError.stale
                 }
                 if !page.isEmpty {
@@ -724,7 +738,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                     for item in page {
                         try control.check()
                         guard let row = byID[Data(item.item.session.sessionId.utf8)],
-                              row.authority == item.authority,
+                              row.authority == item.authority, row.item.session == item.item.session,
                               row.item.relationship == item.item.relationship else {
                             throw ServiceWebMetadataError.stale
                         }
@@ -802,9 +816,10 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
     ) async throws -> EngramServiceWebStatsResponse {
         try await submit(deadline: deadline) { control in
             let policy = try self.currentPolicy()
+            let timeZone = TimeZone.current.identifier
             let key = try Self.bindingKey(["stats", request.groupBy.rawValue, request.since, request.until,
-                request.excludeNoise ? "1" : "0", request.agents.rawValue, String(request.limit),
-                ServiceWebMetadataLimits.sortVersion])
+                request.excludeNoise ? "1" : "0", request.agents.rawValue, String(request.limit), try Self.listIdentity(request.sources),
+                try Self.listIdentity(request.projectKeys), timeZone, ServiceWebMetadataLimits.sortVersion])
             let (lease, position) = try self.acquire(snapshotID: request.snapshotId, cursor: request.cursor,
                 key: key, policy: policy, control: control)
             let prepared = try self.read(lease.snapshot, control: control) { db in
@@ -812,7 +827,6 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                                         limit: request.limit + 1)
             }
             let token = position.successor ?? Self.token()
-            let timeZone = TimeZone.current.identifier
             let count = try Self.fittingCount(prepared.items.count, limit: request.limit, fixed: position.count) { count in
                 try Self.encodedSuccessFrame(requestId: requestId, result: EngramServiceWebStatsResponse(
                     snapshotId: lease.id, observedAt: lease.observedAt, groupBy: request.groupBy, timeZone: timeZone,
@@ -821,6 +835,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             }
             let page = Array(prepared.items.prefix(count))
             try self.hooks.afterPreparation?(.stats)
+            guard TimeZone.current.identifier == timeZone else { throw ServiceWebMetadataError.stale }
             try self.requirePolicy(policy)
             try self.pool.read { db in
                 try self.requireSchema(db, lease: lease)
@@ -839,6 +854,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                     }
                 }
             }
+            guard TimeZone.current.identifier == timeZone else { throw ServiceWebMetadataError.stale }
             try self.requirePolicy(policy)
             try control.check()
             let next = try self.successor(lease, position: position, count: count, hasMore: prepared.items.count > count,
@@ -901,6 +917,94 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
         }
     }
 
+    /// Freeze the ranking once on the lease's read transaction. 99 slots plus
+    /// one lookahead never exceeds the existing reader's 100-hit cap.
+    func keywordSearchPage(_ request: EngramServiceWebSearchRequest, requestId: String,
+                           deadline: ContinuousClock.Instant) async throws -> EngramServiceWebSearchResponse {
+        try await submit(deadline: deadline, maximumDuration: ServiceWebMetadataLimits.maximumSearchDuration) { control in
+            let policy = try self.currentPolicy()
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            let encoded = try encoder.encode(EngramServiceWebSearchRequest(
+                query: request.query, source: request.source, sources: request.sources,
+                machineId: request.machineId, sourceInstanceId: request.sourceInstanceId,
+                projectKey: request.projectKey, projectKeys: request.projectKeys, sessionId: request.sessionId,
+                agents: request.agents, since: request.since, until: request.until, tools: request.tools,
+                mode: request.mode, limit: request.limit))
+            let key = try Self.bindingKey(["search-cohort-v1-cap99", String(decoding: encoded, as: UTF8.self)])
+            let (lease, position) = try self.acquire(snapshotID: request.snapshotId, cursor: request.cursor,
+                key: key, policy: policy, control: control)
+            guard request.mode == .keyword else { throw ServiceWebMetadataError.stale }
+            let filter = try self.sessionsFilter(from: request)
+            if lease.searchCohort == nil {
+                lease.searchCohort = try self.read(lease.snapshot, control: control) { db in
+                    let scope = try self.makeSearchScope(db, request: filter, policy: policy)
+                    let query = request.query.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let ranked = try SQLiteEngramServiceReadProvider.keywordSearchSnapshot(db,
+                        query: query,
+                        request: .init(query: request.query, mode: "keyword", limit: 100), scope: scope, limit: 100)
+                    var insights: [EngramServiceSearchResponse.Insight] = []
+                    if query.count >= 3 {
+                        do { insights = try SQLiteEngramServiceReadProvider.searchInsightFTS(db, query: query) }
+                        catch { try control.check() } // Existing optional insight-search failure semantics.
+                    }
+                    return .init(items: ranked.items, searchModes: query.isEmpty ? [] : ["keyword"], warning: nil, insightResults: insights)
+                }
+            }
+            let ranked = lease.searchCohort!
+            let cohort = Array(ranked.items.prefix(99))
+            let start: Int
+            if let key = position.key { guard case .search(let offset) = key else { throw ServiceWebMetadataError.stale }; start = offset } else { start = 0 }
+            let slots = Array(cohort.dropFirst(start).prefix(request.limit))
+            let prepared = try self.read(lease.snapshot, control: control) { db in
+                try self.sessionRows(db, request: filter, policy: policy, after: nil,
+                    limit: max(slots.count, 1), sessionIDs: slots.map(\.id))
+            }
+            let byID = Dictionary(uniqueKeysWithValues: prepared.map { (ByteKey($0.summary.sessionId), $0) })
+            let preparedInsights = start == 0 ? try self.read(lease.snapshot, control: control) {
+                try self.admittedSearchInsights($0, ranked: ranked, policy: policy)
+            } : []
+            let token = position.successor ?? Self.token()
+            func response(_ count: Int, _ live: [ByteKey: SessionRecord]) throws -> EngramServiceWebSearchResponse {
+                let hits = slots.prefix(count).compactMap { hit -> EngramServiceWebSearchHit? in
+                    guard let row = live[ByteKey(hit.id)] else { return nil }
+                    return .init(session: row.summary, snippet: hit.snippet, matchType: "keyword", score: hit.score)
+                }
+                let more = start + count < cohort.count
+                return .init(observedAt: lease.observedAt, query: request.query, items: hits, insightResults: preparedInsights, searchModes: ranked.searchModes ?? [],
+                    warning: nil, warningCode: nil, snapshotId: lease.id, nextCursor: more ? token : nil,
+                    hasMore: more, truncated: ranked.items.count > 99, cohortSize: cohort.count,
+                    coverage: "Frozen keyword cohort: \(cohort.count)/99 slots; short-token candidates bounded at 2048; revoked sessions dropped without backfill.")
+            }
+            let count = try Self.fittingCount(slots.count, limit: request.limit, fixed: position.count) {
+                try Self.encodedSuccessFrame(requestId: requestId, result: response($0, byID))
+            }
+            try self.hooks.afterPreparation?(.search)
+            try self.requirePolicy(policy)
+            let live = try self.pool.read { db -> [ByteKey: SessionRecord] in
+                try self.requireSchema(db, lease: lease); try control.check()
+                let rows = try self.sessionRows(db, request: filter, policy: policy, after: nil,
+                    limit: max(count, 1), sessionIDs: slots.prefix(count).map(\.id))
+                var kept: [ByteKey: SessionRecord] = [:]
+                for row in rows {
+                    let id = ByteKey(row.summary.sessionId)
+                    guard let old = byID[id], old.authority == row.authority, old.summary == row.summary else { throw ServiceWebMetadataError.stale }
+                    kept[id] = row
+                }
+                return kept
+            }
+            try self.requirePolicy(policy); try control.check()
+            let more = start + count < cohort.count
+            _ = try self.successor(lease, position: position, count: count, hasMore: more,
+                last: .search(start + count), proposed: token)
+            let result = try response(count, live)
+            // Insights retain the existing admission/redaction path, on the first page only.
+            let insights = start == 0 ? try self.pool.read { try self.admittedSearchInsights($0, ranked: ranked, policy: policy) } : []
+            guard insights == preparedInsights else { throw ServiceWebMetadataError.stale }
+            try self.requirePolicy(policy); try control.check(); try Self.validate(result, requestID: requestId)
+            return result
+        }
+    }
+
     func searchScope(
         _ request: EngramServiceWebSearchRequest,
         requestId: String,
@@ -924,16 +1028,20 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
         try await submit(deadline: deadline) { control in
             let policy = try self.currentPolicy()
             let filter = try self.sessionsFilter(from: request)
-            let prepared = try self.pool.read { db -> ([EngramServiceWebSearchHit], [EngramServiceWebSearchInsight]) in
+            let prepared = try self.pool.read { db -> ([EngramServiceWebSearchHit], [EngramServiceWebSearchInsight], [SessionRecord]) in
                 try control.check()
+                // Direct summary caller: batch only the bounded ranked page, not
+                // one enrichment/admission query per hit. Preserve ranked order.
+                let hits = Array(ranked.items.prefix(request.limit))
+                let ids = Array(Set(hits.map { ByteKey($0.id) })).map(\.string)
+                let rows = try self.sessionRows(db, request: filter, policy: policy, after: nil,
+                    limit: max(ids.count, 1), sessionIDs: ids)
+                let byID = Dictionary(uniqueKeysWithValues: rows.map { (ByteKey($0.summary.sessionId), $0) })
                 var admitted: [EngramServiceWebSearchHit] = []
-                for item in ranked.items {
+                for item in hits {
                     try control.check()
-                    let rows = try self.sessionRows(db, request: filter, policy: policy, after: nil,
-                                                    limit: 1, sessionIDs: [item.id])
-                    guard let row = rows.first,
-                          row.summary.sessionId.utf8.elementsEqual(item.id.utf8) else { continue }
-                    let matchType = item.matchType == "semantic" ? "semantic" : "keyword"
+                    guard let row = byID[ByteKey(item.id)] else { continue }
+                    let matchType = ["semantic", "both"].contains(item.matchType ?? "") ? item.matchType! : "keyword"
                     admitted.append(EngramServiceWebSearchHit(
                         session: row.summary,
                         snippet: item.snippet,
@@ -942,12 +1050,20 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                     ))
                 }
                 let insights = try self.admittedSearchInsights(db, ranked: ranked, policy: policy)
-                return (admitted, insights)
+                return (admitted, insights, rows)
             }
             try self.hooks.afterPreparation?(.search)
             try self.requirePolicy(policy)
             let freshInsights = try self.pool.read { db in
                 try control.check()
+                let ids = prepared.2.map(\.summary.sessionId)
+                let rows = try self.sessionRows(db, request: filter, policy: policy, after: nil,
+                    limit: max(ids.count, 1), sessionIDs: ids)
+                let byID = Dictionary(uniqueKeysWithValues: rows.map { (ByteKey($0.summary.sessionId), $0) })
+                for item in prepared.2 {
+                    guard let row = byID[ByteKey(item.summary.sessionId)], row.authority == item.authority,
+                          row.summary == item.summary else { throw ServiceWebMetadataError.stale }
+                }
                 return try self.admittedSearchInsights(db, ranked: ranked, policy: policy)
             }
             try self.requirePolicy(policy); try control.check()
@@ -959,11 +1075,103 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                 insightResults: freshInsights,
                 searchModes: ranked.searchModes ?? [],
                 warning: ranked.warning,
-                warningCode: ranked.warningCode
+                warningCode: ranked.warningCode, hasMore: false,
+                coverage: "Semantic/hybrid first page only; ranking is not paginated. Narrow the query or use keyword for a frozen cohort."
             )
             try Self.validate(result, requestID: requestId)
             return result
         }
+    }
+
+    func insights(_ request: EngramServiceWebInsightsRequest, requestId: String, deadline: ContinuousClock.Instant) async throws -> EngramServiceWebInsightsResponse {
+        try await submit(deadline: deadline) { control in
+            let policy = try self.currentPolicy()
+            let key = try Self.bindingKey(["insights-v1-active-hide", String(request.limit)])
+            let (lease, position) = try self.acquire(snapshotID: request.snapshotId, cursor: request.cursor, key: key, policy: policy, control: control)
+            let prepared = try self.read(lease.snapshot, control: control) {
+                try self.insightListRows($0, policy: policy, after: position.key, limit: request.limit + 1)
+            }
+            let token = position.successor ?? Self.token()
+            func response(_ count: Int) -> EngramServiceWebInsightsResponse {
+                .init(snapshotId: lease.id, observedAt: lease.observedAt, items: prepared.prefix(count).map(\.item), nextCursor: prepared.count > count ? token : nil)
+            }
+            let count = try Self.fittingCount(prepared.count, limit: request.limit, fixed: position.count) { try Self.encodedSuccessFrame(requestId: requestId, result: response($0)) }
+            let page = Array(prepared.prefix(count))
+            try self.hooks.afterPreparation?(.insights)
+            try self.requirePolicy(policy)
+            try self.pool.read { db in
+                try self.requireSchema(db, lease: lease); try control.check()
+                // Recheck only this page's note IDs and source-session IDs.
+                let fresh = try self.insightListRows(db, policy: policy, after: nil, limit: max(page.count, 1), ids: page.map { $0.item.id })
+                guard fresh == page else { throw ServiceWebMetadataError.stale }
+            }
+            try self.requirePolicy(policy); try control.check()
+            _ = try self.successor(lease, position: position, count: count, hasMore: prepared.count > count,
+                last: page.last.map { .insight($0.created, $0.item.id) }, proposed: token)
+            let result = response(count); try Self.validate(result, requestID: requestId)
+            return result
+        }
+    }
+
+    private struct InsightListRecord: Equatable {
+        let item: EngramServiceWebInsightItem
+        let created: String?
+        let authority: Data?
+    }
+
+    private func insightListRows(_ db: Database, policy: ServiceWebMetadataPolicy, after: PositionKey?, limit: Int, ids: [String]? = nil) throws -> [InsightListRecord] {
+        if let ids, ids.isEmpty { return [] }
+        guard try db.tableExists("insights") else { throw ServiceWebMetadataError.unavailable }
+        let request = try EngramServiceWebSessionsRequest(agents: .hide, limit: 100)
+        let filter = try sessionFilter(db, request: request, policy: policy, sessionIDs: nil)
+        let admittedSQL = filter.map { "EXISTS (SELECT 1 FROM sessions s JOIN capture_ingest_identity_bindings i ON i.stored_session_id = s.id COLLATE BINARY \(Self.registryJoinSQL) WHERE s.id = n.source_session_id COLLATE BINARY AND " + $0.predicates.joined(separator: " AND ") + ")" } ?? "0"
+        var position = after, records: [InsightListRecord] = []
+        repeat {
+            try relay.check()
+            var predicates = ["n.superseded_by IS NULL", "(n.source_session_id IS NULL OR \(admittedSQL))"]
+            var args = filter?.arguments ?? []
+            if let ids { predicates.append("n.id COLLATE BINARY IN (" + Array(repeating: "?", count: ids.count).joined(separator: ",") + ")"); args.append(contentsOf: ids) }
+            if let position {
+                guard case .insight(let created, let id) = position else { throw ServiceWebMetadataError.stale }
+                if let created {
+                    predicates.append("(n.created_at IS NULL OR n.created_at COLLATE BINARY < ? OR (n.created_at = ? COLLATE BINARY AND n.id COLLATE BINARY > ?))")
+                    args.append(contentsOf: [created, created, id])
+                } else { predicates.append("(n.created_at IS NULL AND n.id COLLATE BINARY > ?)"); args.append(id) }
+            }
+            let batch = max(limit - records.count, 1); args.append(batch)
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT typeof(n.id) AS id_storage, CASE WHEN length(CAST(n.id AS BLOB)) <= 128 THEN CAST(n.id AS BLOB) END AS id_bytes,
+                    typeof(n.source_session_id) AS source_storage, CASE WHEN length(CAST(n.source_session_id AS BLOB)) <= 4096 THEN CAST(n.source_session_id AS BLOB) END AS source_bytes,
+                    typeof(n.created_at) AS created_storage, CASE WHEN length(CAST(n.created_at AS BLOB)) <= 1024 THEN CAST(n.created_at AS BLOB) END AS created_bytes,
+                    CAST(strftime('%s', n.created_at) AS INTEGER) AS at,
+                    CASE WHEN length(CAST(n.content AS BLOB)) <= 1048576 THEN CAST(n.content AS BLOB) END AS content_bytes
+                FROM insights n WHERE \(predicates.joined(separator: " AND "))
+                ORDER BY n.created_at IS NULL, n.created_at COLLATE BINARY DESC, n.id COLLATE BINARY ASC LIMIT ?
+                """, arguments: StatementArguments(args))
+            let sourceIDs = try rows.compactMap { row -> String? in
+                guard let id = try Self.metadataText(row, "source"), !id.utf8.contains(0) else { return nil }
+                return id
+            }
+            let sessions = sourceIDs.isEmpty ? [] : try sessionRows(db, request: request, policy: policy, after: nil, limit: sourceIDs.count, sessionIDs: sourceIDs)
+            let authorities = Dictionary(uniqueKeysWithValues: sessions.map { (ByteKey($0.summary.sessionId), $0.authority) })
+            for row in rows {
+                try relay.check()
+                guard let id = try Self.metadataText(row, "id") else { throw ServiceWebMetadataError.unavailable }
+                let created = try Self.metadataText(row, "created")
+                guard created.map({ $0.utf8.count <= 1024 && !$0.utf8.contains(0) }) ?? true, let bytes = row["content_bytes"] as Data?, let raw = String(data: bytes, encoding: .utf8), !raw.utf8.contains(0) else { throw ServiceWebMetadataError.unavailable }
+                position = .insight(created, id)
+                let source = try Self.metadataText(row, "source")
+                if let source, source.utf8.contains(0) || authorities[ByteKey(source)] == nil { continue }
+                let redacted = TranscriptRedactionPolicy.redact(raw)
+                guard let preview = Self.insightPreview(raw) else { continue }
+                let time = try Self.optionalInteger(row, "at")
+                let item = try EngramServiceWebInsightItem(id: id, content: preview, sourceSessionId: source,
+                    createdAt: time.flatMap { (0...253402300799).contains($0) ? $0 : nil }, revision: ArchiveV2Hash.sha256(Data(redacted.utf8)))
+                records.append(.init(item: item, created: created, authority: source.flatMap { authorities[ByteKey($0)] }))
+            }
+            if rows.count < batch || ids != nil { break }
+        } while records.count < limit
+        return records
     }
 
     func insightDetail(
@@ -2165,13 +2373,16 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             try self.requirePolicy(policy)
             try self.pool.read { db in
                 try control.check()
+                let ids = prepared.map(\.item.session.sessionId)
+                let rows = try self.costSessionRows(db, request: filter, policy: policy,
+                    limit: max(ids.count, 1), sessionIDs: ids)
+                let byID = Dictionary(uniqueKeysWithValues: rows.map { (ByteKey($0.item.session.sessionId), $0) })
                 for item in prepared {
                     try control.check()
-                    let rows = try self.costSessionRows(db, request: filter, policy: policy, limit: 1,
-                                                       sessionIDs: [item.item.session.sessionId])
-                    guard let row = rows.first,
-                          row.item.session.sessionId.utf8.elementsEqual(item.item.session.sessionId.utf8),
-                          row.authority == item.authority else { throw ServiceWebMetadataError.stale }
+                    guard let row = byID[ByteKey(item.item.session.sessionId)],
+                          row.authority == item.authority, row.item.session == item.item.session else {
+                        throw ServiceWebMetadataError.stale
+                    }
                 }
             }
             let result = EngramServiceWebCostSessionsResponse(
@@ -2379,6 +2590,10 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
     private static let startSQL = """
         CASE WHEN CAST(strftime('%s', s.start_time) AS INTEGER) BETWEEN 0 AND 253402300799
              THEN CAST(strftime('%s', s.start_time) AS INTEGER) ELSE NULL END
+        """
+    private static let lastActivitySQL = """
+        CASE WHEN CAST(strftime('%s', COALESCE(NULLIF(s.end_time, ''), s.start_time)) AS INTEGER) BETWEEN 0 AND 253402300799
+             THEN CAST(strftime('%s', COALESCE(NULLIF(s.end_time, ''), s.start_time)) AS INTEGER) ELSE NULL END
         """
     /// Legacy `5013bab7` `src/tools/search.ts` 279–282: hide only proven tool-only sessions.
     private static let toolOnlyHideSQL = """
@@ -2771,6 +2986,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
         } else {
             sessionsJoin = Self.sessionsJoinSQL(agents: request.agents, on: "s.id = i.stored_session_id COLLATE BINARY")
         }
+        let sortSQL = request.sort == .started ? Self.startSQL : Self.lastActivitySQL
         var position = after
         var records: [SessionRecord] = []
         repeat {
@@ -2780,66 +2996,50 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             if let position {
                 guard case .session(let time, let id) = position else { throw ServiceWebMetadataError.stale }
                 if let time {
-                    predicates.append("(\(Self.startSQL) IS NULL OR \(Self.startSQL) < ? OR (\(Self.startSQL) = ? AND s.id COLLATE BINARY > ?))")
+                    predicates.append("(\(sortSQL) IS NULL OR \(sortSQL) < ? OR (\(sortSQL) = ? AND s.id COLLATE BINARY > ?))")
                     args.append(time)
                     args.append(time)
                     args.append(id)
                 } else {
-                    predicates.append("(\(Self.startSQL) IS NULL AND s.id COLLATE BINARY > ?)")
+                    predicates.append("(\(sortSQL) IS NULL AND s.id COLLATE BINARY > ?)")
                     args.append(id)
                 }
             }
             args.append(limit)
             let rows = try Row.fetchAll(db, sql: """
                 SELECT s.id, s.source, s.authoritative_node, s.sync_version, s.snapshot_hash, s.tier,
-                    s.agent_role, s.parent_session_id, s.suggested_parent_id,
+                    s.agent_role, s.suggested_parent_id,
+                    typeof(s.parent_session_id) AS parent_session_id_storage, CAST(s.parent_session_id AS BLOB) AS parent_session_id_bytes,
                     s.user_message_count, s.assistant_message_count, s.system_message_count, s.tool_message_count,
                     typeof(s.generated_title) AS generated_title_storage, CAST(s.generated_title AS BLOB) AS generated_title_bytes,
                     typeof(s.custom_name) AS custom_name_storage, CAST(s.custom_name AS BLOB) AS custom_name_bytes,
                     typeof(s.project) AS project_storage, CAST(s.project AS BLOB) AS project_bytes,
-                    \(Self.startSQL) AS started_at,
+                    \(Self.startSQL) AS started_at, \(Self.lastActivitySQL) AS last_activity_at,
                     i.machine_id, i.source_instance_id, i.native_id, i.last_sync_version,
                     i.last_parsed_generation_id, i.last_ready_generation_id
                 FROM capture_ingest_identity_bindings i \(sessionsJoin)
                 \(Self.registryJoinSQL)
                 WHERE \(predicates.joined(separator: " AND "))
-                ORDER BY started_at IS NULL, started_at DESC, s.id COLLATE BINARY LIMIT ?
+                ORDER BY \(sortSQL) IS NULL, \(sortSQL) DESC, s.id COLLATE BINARY LIMIT ?
                 """, arguments: StatementArguments(args))
+            let metadata = try summaryMetadata(db, rows: rows, policy: policy, agents: request.agents)
+            var bindings: [StreamKey: CaptureIngestSourceBinding?] = [:]
             for row in rows {
                 try relay.check()
                 let id = try Self.string(row, "id")
                 let start = try Self.optionalInteger(row, "started_at")
-                position = .session(start, id)
-                let machine = try Self.string(row, "machine_id")
-                let instance = try Self.string(row, "source_instance_id")
-                guard let binding = try binding(db, machineID: machine, instanceID: instance, policy: policy) else { continue }
+                let activity = try Self.optionalInteger(row, "last_activity_at")
+                position = .session(request.sort == .started ? start : activity, id)
+                guard let binding = try cachedBinding(db, row: row, policy: policy, cache: &bindings) else { continue }
                 let parsed = try Self.optionalString(row, "last_parsed_generation_id")
                 let ready = try Self.optionalString(row, "last_ready_generation_id")
                 let project = try Self.metadataText(row, "project")
                 let generatedTitle = try Self.metadataText(row, "generated_title")
                 let customName = try Self.metadataText(row, "custom_name")
-                let title = customName ?? generatedTitle
-                let parent = try Self.optionalString(row, "parent_session_id")
+                let parent = try Self.metadataText(row, "parent_session_id")
                 let suggested = try Self.optionalString(row, "suggested_parent_id")
                 let role = try Self.optionalString(row, "agent_role")
-                let native = try Self.optionalString(row, "native_id")
-                let nativeId = native.flatMap { value -> String? in
-                    guard !value.isEmpty, value.utf8.count <= EngramServiceWebReadLimits.maximumSessionIDBytes,
-                          !value.utf8.contains(0) else { return nil }
-                    return value
-                }
-                let isAgent = parent != nil || suggested != nil
-                    || role == "subagent" || role == "dispatched"
-                let summary = EngramServiceWebSessionSummary(sessionId: id, source: try Self.string(row, "source"),
-                    captureIdentity: .init(machineId: machine, sourceInstanceId: instance), metadataGeneration: parsed,
-                    title: Self.safeText(title, maximumBytes: 1024), projectKey: Self.publishedProjectKey(project),
-                    projectLabel: {
-                        guard let project, !project.isEmpty else { return nil }
-                        return Self.facetProjectLabel(project)
-                    }(), startedAt: start,
-                    isAgent: isAgent, userMessageCount: try Self.scalarCount(row, "user_message_count"),
-                    assistantMessageCount: try Self.scalarCount(row, "assistant_message_count"),
-                    systemMessageCount: try Self.scalarCount(row, "system_message_count"), nativeId: nativeId)
+                let summary = try sessionSummary(from: row, metadata: metadata[ByteKey(id)])
                 var fields = Self.bindingFields(binding)
                 for name in ["id", "source", "authoritative_node", "snapshot_hash", "tier", "native_id"] {
                     fields.append(try Self.optionalString(row, name))
@@ -2848,6 +3048,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                 fields.append(String(try Self.integer(row, "sync_version")))
                 fields.append(String(try Self.integer(row, "last_sync_version")))
                 fields.append(start.map { String($0) })
+                fields.append(activity.map { String($0) })
                 fields.append(contentsOf: ["user_message_count", "assistant_message_count", "system_message_count",
                                            "tool_message_count"].map {
                     String((try? Self.integer(row, $0)) ?? -1)
@@ -2896,12 +3097,13 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             args.append(limit)
             let rows = try Row.fetchAll(db, sql: """
                 SELECT s.id, s.source, s.authoritative_node, s.sync_version, s.snapshot_hash, s.tier,
-                    s.agent_role, s.parent_session_id, s.suggested_parent_id,
+                    s.agent_role, s.suggested_parent_id,
+                    typeof(s.parent_session_id) AS parent_session_id_storage, CAST(s.parent_session_id AS BLOB) AS parent_session_id_bytes,
                     s.user_message_count, s.assistant_message_count, s.system_message_count, s.tool_message_count,
                     typeof(s.generated_title) AS generated_title_storage, CAST(s.generated_title AS BLOB) AS generated_title_bytes,
                     typeof(s.custom_name) AS custom_name_storage, CAST(s.custom_name AS BLOB) AS custom_name_bytes,
                     typeof(s.project) AS project_storage, CAST(s.project AS BLOB) AS project_bytes,
-                    \(Self.startSQL) AS started_at,
+                    \(Self.startSQL) AS started_at, \(Self.lastActivitySQL) AS last_activity_at,
                     i.machine_id, i.source_instance_id, i.native_id, i.last_sync_version,
                     i.last_parsed_generation_id, i.last_ready_generation_id
                 FROM capture_ingest_identity_bindings i
@@ -2910,24 +3112,25 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                 WHERE \(pagePredicates.joined(separator: " AND "))
                 ORDER BY started_at IS NULL, started_at DESC, s.id COLLATE BINARY LIMIT ?
                 """, arguments: StatementArguments(args))
+            let metadata = try summaryMetadata(db, rows: rows, policy: policy, agents: .all)
+            var bindings: [StreamKey: CaptureIngestSourceBinding?] = [:]
             for row in rows {
                 try relay.check()
                 let id = try Self.string(row, "id")
                 let start = try Self.optionalInteger(row, "started_at")
                 position = .session(start, id)
-                let machine = try Self.string(row, "machine_id")
-                let instance = try Self.string(row, "source_instance_id")
-                guard let binding = try binding(db, machineID: machine, instanceID: instance, policy: policy) else {
+                guard let binding = try cachedBinding(db, row: row, policy: policy, cache: &bindings) else {
                     continue
                 }
-                let parent = try Self.optionalString(row, "parent_session_id")
+                let parent = try Self.metadataText(row, "parent_session_id")
                 let relationship: EngramServiceWebChildRelationship =
                     parent.map { $0.utf8.elementsEqual(parentID.utf8) } == true ? .confirmed : .suggested
-                let summary = try sessionSummary(from: row)
+                let summary = try sessionSummary(from: row, metadata: metadata[ByteKey(try Self.string(row, "id"))])
                 var fields = Self.bindingFields(binding)
                 fields.append(contentsOf: [id, relationship.rawValue, parent,
                                            try Self.optionalString(row, "suggested_parent_id")])
                 fields.append(start.map { String($0) })
+                fields.append(summary.lastActivityAt.map { String($0) })
                 records.append(ChildRecord(
                     item: EngramServiceWebChildItem(relationship: relationship, session: summary),
                     authority: try Self.bindingKey(fields)))
@@ -3300,7 +3503,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             records = try sourceStats(db, request: request, policy: policy)
         case .project:
             records = try projectStats(db, request: request, policy: policy)
-        case .day, .week:
+        case .day, .week, .hourOfWeek:
             records = try dateStats(db, request: request, policy: policy)
         }
         let totals = try Self.sumStats(records.map(\.item))
@@ -3315,7 +3518,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                              policy: ServiceWebMetadataPolicy) throws -> [StatsRecord] {
         let schema = try Self.schema(db)
         guard schema.capture else { return [] }
-        let (predicates, arguments) = try authorizedStatsBase(request: request, policy: policy)
+        let (predicates, arguments) = try authorizedStatsBase(db, request: request, policy: policy)
         let rows = try Row.fetchAll(db, sql: """
             SELECT i.source AS facet_key, i.machine_id, i.source_instance_id,
                 COUNT(*) AS session_count,
@@ -3354,7 +3557,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                               policy: ServiceWebMetadataPolicy) throws -> [StatsRecord] {
         let schema = try Self.schema(db)
         guard schema.capture else { return [] }
-        let (predicates, arguments) = try authorizedStatsBase(request: request, policy: policy)
+        let (predicates, arguments) = try authorizedStatsBase(db, request: request, policy: policy)
         let rows = try Row.fetchAll(db, sql: """
             SELECT typeof(s.project) AS project_storage, CAST(s.project AS BLOB) AS project_bytes,
                 i.machine_id, i.source_instance_id,
@@ -3403,10 +3606,15 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                            policy: ServiceWebMetadataPolicy) throws -> [StatsRecord] {
         let schema = try Self.schema(db)
         guard schema.capture else { return [] }
-        let (predicates, arguments) = try authorizedStatsBase(request: request, policy: policy)
-        let expression = request.groupBy == .day
-            ? "date(s.start_time, 'localtime')"
-            : "date(s.start_time, 'localtime', 'weekday 0', '-6 days')"
+        let (predicates, arguments) = try authorizedStatsBase(db, request: request, policy: policy)
+        let expression: String
+        switch request.groupBy {
+        case .hourOfWeek:
+            // Monday=0. NULL dates remain unknown; printf(NULL) must not create a false Monday.
+            expression = "CASE WHEN strftime('%w', s.start_time, 'localtime') IS NOT NULL THEN printf('h.%d.%02d', (CAST(strftime('%w', s.start_time, 'localtime') AS INTEGER) + 6) % 7, CAST(strftime('%H', s.start_time, 'localtime') AS INTEGER)) END"
+        case .day: expression = "date(s.start_time, 'localtime')"
+        default: expression = "date(s.start_time, 'localtime', 'weekday 0', '-6 days')"
+        }
         let rows = try Row.fetchAll(db, sql: """
             SELECT \(expression) AS facet_key, i.machine_id, i.source_instance_id,
                 COUNT(*) AS session_count,
@@ -3422,25 +3630,51 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             ORDER BY \(expression), i.machine_id COLLATE BINARY, i.source_instance_id COLLATE BINARY
             """, arguments: StatementArguments(arguments))
         var totals: [Data: (key: String, counts: StatsCounts, fields: [String?])] = [:]
+        // One registry validation per stream in this read transaction, not per
+        // occupied bin/session. The publish-time live read builds a fresh cache.
+        var bindings: [StreamKey: CaptureIngestSourceBinding?] = [:]
         for row in rows {
             try relay.check()
             let raw = try Self.optionalString(row, "facet_key")
             let key = raw ?? EngramServiceWebMetadataValidation.unknownDateKey
-            guard let binding = try binding(db, machineID: try Self.string(row, "machine_id"),
-                                           instanceID: try Self.string(row, "source_instance_id"),
-                                           policy: policy) else { continue }
+            guard let binding = try cachedBinding(db, row: row, policy: policy, cache: &bindings) else { continue }
             let added = try Self.rowCounts(row)
             let current = totals[Data(key.utf8)]
             var fields = current?.fields ?? []
             fields.append(contentsOf: Self.bindingFields(binding))
             totals[Data(key.utf8)] = (key, try Self.addCounts(current?.counts, added), fields)
         }
+        if request.groupBy == .hourOfWeek {
+            for day in 0..<7 { for hour in 0..<24 {
+                let key = String(format: "h.%d.%02d", day, hour)
+                let id = Data(key.utf8)
+                if totals[id] == nil {
+                    totals[id] = (key, StatsCounts(session: 0, message: 0, user: 0, assistant: 0, tool: 0), [])
+                }
+            } }
+        }
+        // Every hourly page publishes full-range totals, even when all of its
+        // buckets are zero. Bind those buckets to every contributing stream,
+        // not just streams with an occupied bucket on this page.
+        var scopeAuthority: [String?] = []
+        if request.groupBy == .hourOfWeek {
+            let streams = bindings.values.compactMap { $0 }.sorted {
+                if $0.machineID != $1.machineID { return $0.machineID.utf8.lexicographicallyPrecedes($1.machineID.utf8) }
+                return $0.sourceInstanceID.utf8.lexicographicallyPrecedes($1.sourceInstanceID.utf8)
+            }
+            var digest = SHA256()
+            for stream in streams {
+                try relay.check()
+                Self.absorb(&digest, Self.bindingFields(stream))
+            }
+            scopeAuthority = [Data(digest.finalize()).base64EncodedString()]
+        }
         return try totals.values.map { entry in
             let label = entry.key == EngramServiceWebMetadataValidation.unknownDateKey ? "Unknown" : entry.key
             return StatsRecord(
                 item: Self.statsItem(key: entry.key, label: label, counts: entry.counts),
                 authority: try Self.bindingKey([request.groupBy.rawValue, entry.key]
-                    + Self.countFields(entry.counts) + entry.fields))
+                    + Self.countFields(entry.counts) + entry.fields + scopeAuthority))
         }
     }
 
@@ -3725,12 +3959,13 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
         args.append(limit)
         let rows = try Row.fetchAll(db, sql: """
             SELECT s.id, s.source, s.authoritative_node, s.sync_version, s.snapshot_hash, s.tier,
-                s.agent_role, s.parent_session_id, s.suggested_parent_id,
+                s.agent_role, s.suggested_parent_id,
+                typeof(s.parent_session_id) AS parent_session_id_storage, CAST(s.parent_session_id AS BLOB) AS parent_session_id_bytes,
                 s.user_message_count, s.assistant_message_count, s.system_message_count, s.tool_message_count,
                 typeof(s.generated_title) AS generated_title_storage, CAST(s.generated_title AS BLOB) AS generated_title_bytes,
                 typeof(s.custom_name) AS custom_name_storage, CAST(s.custom_name AS BLOB) AS custom_name_bytes,
                 typeof(s.project) AS project_storage, CAST(s.project AS BLOB) AS project_bytes,
-                \(Self.startSQL) AS started_at,
+                \(Self.startSQL) AS started_at, \(Self.lastActivitySQL) AS last_activity_at,
                 i.machine_id, i.source_instance_id, i.native_id, i.last_sync_version,
                 i.last_parsed_generation_id, i.last_ready_generation_id,
                 c.cost_usd, c.model, c.input_tokens, c.output_tokens,
@@ -3743,14 +3978,14 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             ORDER BY c.cost_usd DESC, s.id COLLATE BINARY LIMIT ?
             """, arguments: StatementArguments(args))
         var records: [CostSessionRecord] = []
+        let metadata = try summaryMetadata(db, rows: rows, policy: policy, agents: request.agents)
+        var bindings: [StreamKey: CaptureIngestSourceBinding?] = [:]
         for row in rows {
             try relay.check()
-            let machine = try Self.string(row, "machine_id")
-            let instance = try Self.string(row, "source_instance_id")
-            guard let binding = try binding(db, machineID: machine, instanceID: instance, policy: policy) else {
+            guard let binding = try cachedBinding(db, row: row, policy: policy, cache: &bindings) else {
                 continue
             }
-            let summary = try sessionSummary(from: row)
+            let summary = try sessionSummary(from: row, metadata: metadata[ByteKey(try Self.string(row, "id"))])
             let model = try Self.optionalString(row, "model")
             let publishedModel = model.flatMap { $0.isEmpty ? nil : $0 }
             let item = EngramServiceWebCostSessionItem(
@@ -3762,7 +3997,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                 cacheReadTokens: try Self.integer(row, "cache_read_tokens"),
                 cacheCreationTokens: try Self.integer(row, "cache_creation_tokens"))
             var fields = Self.bindingFields(binding)
-            fields.append(contentsOf: [summary.sessionId, publishedModel,
+            fields.append(contentsOf: [summary.sessionId, publishedModel, summary.lastActivityAt.map { String($0) },
                                        String(item.inputTokens), String(item.outputTokens),
                                        String(item.cacheReadTokens), String(item.cacheCreationTokens),
                                        String(EngramServiceWebMetadataValidation.moneyCents(item.costUsd))])
@@ -3771,7 +4006,97 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
         return records
     }
 
-    private func sessionSummary(from row: Row) throws -> EngramServiceWebSessionSummary {
+    private struct SummaryMetadata {
+        var model: String?
+        var cost: Double?
+        var parent: String?
+        var children = 0
+    }
+
+    /// Bounded page-ID enrichment shared by list, children, detail and cost summaries.
+    /// Parents use the caller's agent policy; child counts deliberately use the
+    /// children endpoint's .all policy (confirmed OR suggested, deduplicated).
+    /// All queries run in the caller's snapshot/read transaction and repeat live.
+    private func summaryMetadata(_ db: Database, rows: [Row], policy: ServiceWebMetadataPolicy,
+                                 agents: EngramServiceWebAgentFilter) throws -> [ByteKey: SummaryMetadata] {
+        guard !rows.isEmpty else { return [:] }
+        let ids = try rows.map { try Self.string($0, "id") }
+        var result = Dictionary(uniqueKeysWithValues: ids.map { (ByteKey($0), SummaryMetadata()) })
+        let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ",")
+        if try db.tableExists("session_costs") {
+            let costs = try Row.fetchAll(db, sql: """
+                SELECT session_id, typeof(model) AS model_storage, CAST(model AS BLOB) AS model_bytes,
+                    cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+                FROM session_costs WHERE session_id COLLATE BINARY IN (\(placeholders))
+                """, arguments: StatementArguments(ids))
+            for row in costs {
+                try relay.check()
+                let key = ByteKey(try Self.string(row, "session_id"))
+                if let model = try Self.metadataText(row, "model"), !model.isEmpty, !model.utf8.contains(0) {
+                    let redacted = TranscriptRedactionPolicy.redact(model)
+                    if !redacted.isEmpty, redacted.utf8.count <= 1024 { result[key]?.model = redacted }
+                }
+                // Optional metadata: NULL/unexpected token or cost storage (for
+                // example unpriced models stored as cost_usd NULL) is "not
+                // reported", never a failure of the whole summary page.
+                let known = ["input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"]
+                    .contains { ((try? Self.optionalInteger(row, $0)) ?? nil).map { $0 > 0 } ?? false }
+                if known, let cost = (try? Self.optionalDouble(row, "cost_usd")) ?? nil {
+                    result[key]?.cost = try? Self.money(cost)
+                }
+            }
+        }
+        // Never let GRDB TEXT/NUL truncation turn a stored link into a different parent.
+        var confirmedParents: [ByteKey: String] = [:]
+        for row in rows {
+            guard let parent = try Self.metadataText(row, "parent_session_id"), !parent.isEmpty,
+                  parent.utf8.count <= EngramServiceWebReadLimits.maximumSessionIDBytes,
+                  !parent.utf8.contains(0) else { continue }
+            confirmedParents[ByteKey(try Self.string(row, "id"))] = parent
+        }
+        let parents = Array(Set(confirmedParents.values.map(ByteKey.init))).map(\.string)
+        var bindings: [StreamKey: CaptureIngestSourceBinding?] = [:]
+        var admittedParents = Set<ByteKey>()
+        if !parents.isEmpty, let filter = try sessionFilter(db, request: .init(agents: agents), policy: policy, sessionIDs: parents) {
+            let parents = try Row.fetchAll(db, sql: """
+                SELECT s.id, i.machine_id, i.source_instance_id
+                FROM capture_ingest_identity_bindings i
+                \(try Self.primaryKeyJoinSQL(db, on: "s.id = i.stored_session_id COLLATE BINARY"))
+                \(Self.registryJoinSQL)
+                WHERE \(filter.predicates.joined(separator: " AND "))
+                """, arguments: StatementArguments(filter.arguments))
+            for row in parents {
+                try relay.check()
+                if try cachedBinding(db, row: row, policy: policy, cache: &bindings) != nil {
+                    admittedParents.insert(ByteKey(try Self.string(row, "id")))
+                }
+            }
+        }
+        for (child, parent) in confirmedParents where admittedParents.contains(ByteKey(parent)) {
+            result[child]?.parent = parent
+        }
+        let sources = policy.enabledSources.map(\.rawValue).sorted()
+        let counts = try Row.fetchAll(db, sql: """
+            WITH page(id) AS (VALUES \(Array(repeating: "(?)", count: ids.count).joined(separator: ",")))
+            SELECT page.id, i.machine_id, i.source_instance_id, COUNT(*) AS value
+            FROM page JOIN sessions s ON (s.parent_session_id = page.id OR s.suggested_parent_id = page.id)
+            JOIN capture_ingest_identity_bindings i ON s.id = i.stored_session_id COLLATE BINARY
+            \(Self.registryJoinSQL)
+            WHERE \(Self.childVisibilitySQL)
+              AND i.source IN (\(Array(repeating: "?", count: sources.count).joined(separator: ",")))
+            GROUP BY page.id COLLATE BINARY, i.machine_id COLLATE BINARY, i.source_instance_id COLLATE BINARY
+            """, arguments: StatementArguments(ids + sources))
+        for row in counts {
+            try relay.check()
+            guard try cachedBinding(db, row: row, policy: policy, cache: &bindings) != nil else { continue }
+            let key = ByteKey(try Self.string(row, "id"))
+            let count = try Self.addCount(Int64(result[key]?.children ?? 0), try Self.integer(row, "value"))
+            result[key]?.children = Int(count)
+        }
+        return result
+    }
+
+    private func sessionSummary(from row: Row, metadata: SummaryMetadata?) throws -> EngramServiceWebSessionSummary {
         let id = try Self.string(row, "id")
         let start = try Self.optionalInteger(row, "started_at")
         let machine = try Self.string(row, "machine_id")
@@ -3781,7 +4106,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
         let generatedTitle = try Self.metadataText(row, "generated_title")
         let customName = try Self.metadataText(row, "custom_name")
         let title = customName ?? generatedTitle
-        let parent = try Self.optionalString(row, "parent_session_id")
+        let parent = try Self.metadataText(row, "parent_session_id")
         let suggested = try Self.optionalString(row, "suggested_parent_id")
         let role = try Self.optionalString(row, "agent_role")
         let native = try Self.optionalString(row, "native_id")
@@ -3799,10 +4124,12 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             projectLabel: {
                 guard let project, !project.isEmpty else { return nil }
                 return Self.facetProjectLabel(project)
-            }(), startedAt: start,
+            }(), startedAt: start, lastActivityAt: try Self.optionalInteger(row, "last_activity_at"),
             isAgent: isAgent, userMessageCount: try Self.scalarCount(row, "user_message_count"),
             assistantMessageCount: try Self.scalarCount(row, "assistant_message_count"),
-            systemMessageCount: try Self.scalarCount(row, "system_message_count"), nativeId: nativeId)
+            systemMessageCount: try Self.scalarCount(row, "system_message_count"), nativeId: nativeId,
+            toolMessageCount: try Self.scalarCount(row, "tool_message_count"), model: metadata?.model,
+            costUsd: metadata?.cost, parentSessionId: metadata?.parent, childCount: metadata?.children)
     }
 
     private static func pageCosts(_ items: [CostRecord], after: PositionKey?, limit: Int) throws -> [CostRecord] {
@@ -4176,13 +4503,12 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             ORDER BY CAST(s.project AS BLOB), i.machine_id COLLATE BINARY, i.source_instance_id COLLATE BINARY
             """, arguments: StatementArguments(arguments))
         var totals: [Data: (raw: String, published: String, count: Int64, fields: [String?])] = [:]
+        var bindings: [StreamKey: CaptureIngestSourceBinding?] = [:]
         for row in rows {
             try checkpoint()
             guard let raw = try Self.metadataText(row, "project"),
                   let published = Self.publishedProjectKey(raw) else { continue }
-            guard let binding = try binding(db, machineID: try Self.string(row, "machine_id"),
-                                           instanceID: try Self.string(row, "source_instance_id"),
-                                           policy: policy) else { continue }
+            guard let binding = try cachedBinding(db, row: row, policy: policy, cache: &bindings) else { continue }
             let id = Data(published.utf8)
             if let existing = totals[id], !existing.raw.utf8.elementsEqual(raw.utf8) {
                 throw ServiceWebMetadataError.unavailable
@@ -4215,9 +4541,21 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                 sources.map { $0 as DatabaseValueConvertible })
     }
 
-    private func authorizedStatsBase(request: EngramServiceWebStatsRequest,
+    private func authorizedStatsBase(_ db: Database, request: EngramServiceWebStatsRequest,
                                      policy: ServiceWebMetadataPolicy) throws -> ([String], [DatabaseValueConvertible]) {
         var (predicates, arguments) = try authorizedFacetBase(policy: policy, agents: request.agents)
+        if let sources = request.sources {
+            predicates.append("i.source COLLATE BINARY IN (\(Array(repeating: "?", count: sources.count).joined(separator: ",")))")
+            arguments.append(contentsOf: sources)
+        }
+        if let keys = request.projectKeys {
+            let raws = try matchingProjects(db, keys: keys, policy: policy, agents: request.agents)
+            if raws.isEmpty { predicates.append("0") }
+            else {
+                predicates.append("s.project COLLATE BINARY IN (\(Array(repeating: "?", count: raws.count).joined(separator: ",")))")
+                arguments.append(contentsOf: raws)
+            }
+        }
         if request.excludeNoise { predicates.append("(s.tier IS NULL OR s.tier != 'lite')") }
         if let since = request.since {
             predicates.append("date(s.start_time, 'localtime') >= ?")
@@ -4355,8 +4693,8 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
 
     private static func metadataText(_ row: Row, _ column: String) throws -> String? {
         // GRDB's TEXT decoder uses String(cString:) and loses bytes after NUL.
-        // Only these display fields use byte projections; preserve TEXT/NULL
-        // storage checks and the full UTF-8 string before redaction and fences.
+        // Byte projections preserve TEXT/NULL storage checks and the full UTF-8
+        // string before display redaction or parent-identity admission/freshness.
         switch (try string(row, column + "_storage"), (row[column + "_bytes"] as DatabaseValue).storage) {
         case ("null", .null): return nil
         case ("text", .blob(let bytes)):
@@ -4433,10 +4771,10 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
 
     // MARK: - One owned operation, cooperative SQLite cancellation, and leases
 
-    private func submit<Value: Sendable>(deadline: ContinuousClock.Instant,
+    private func submit<Value: Sendable>(deadline: ContinuousClock.Instant, maximumDuration: Duration = ServiceWebMetadataLimits.maximumRequestDuration,
         _ operation: @escaping @Sendable (RequestControl) throws -> Value) async throws -> Value {
         try Task.checkCancellation()
-        let control = RequestControl(clock: clock, deadline: min(deadline, clock.now() + ServiceWebMetadataLimits.maximumRequestDuration))
+        let control = RequestControl(clock: clock, deadline: min(deadline, clock.now() + maximumDuration))
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Value, Error>) in
                 admission.lock()
@@ -4660,7 +4998,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
         func check() throws { try lock.withLock { current }?.check() }
     }
 
-    private enum PositionKey { case session(Int64?, String), stream(String, String), facet(String) }
+    private enum PositionKey { case insight(String?, String), search(Int), session(Int64?, String), stream(String, String), facet(String) }
     private final class CursorPosition {
         let key: PositionKey?
         var count: Int?
@@ -4681,6 +5019,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
         var timer: ServiceWebMetadataExpiryHandle?
         var cursors: [String: CursorPosition] = [:]
         var cursorOrder: [String] = []
+        var searchCohort: EngramServiceSearchResponse?
         var sessionsTotal: SessionsTotal?
         init(snapshot: DatabaseSnapshot, key: Data, policy: ServiceWebMetadataPolicy, order: UInt64,
              expiresAt: ContinuousClock.Instant, schema: Schema) {

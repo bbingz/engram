@@ -18,6 +18,59 @@ final class WebReadClientTests: XCTestCase {
         if let directory { try FileManager.default.removeItem(at: directory) }
     }
 
+    func testIt9B4InsightsClientBindsSnapshotAndValidatesPreviews() async throws {
+        let snapshot = "AAAAAAAA-0000-4000-8000-000000000001"
+        XCTAssertEqual(try JSONDecoder().decode(EngramServiceWebInsightsRequest.self, from: Data("{}".utf8)).limit, 50)
+        XCTAssertThrowsError(try EngramServiceWebInsightsRequest(cursor: "alone"))
+        for mutation in ["valid", "snapshot", "preview", "revision", "duplicate", "booleanDate"] {
+            let path = socketPath()
+            let server = try WebReadFixture(path: path) { fd, received in
+                let envelope = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: received)
+                XCTAssertEqual(envelope.command, "webInsights"); XCTAssertNil(envelope.capabilityToken)
+                var item: [String: Any] = ["id":"note", "content":"safe preview", "revision":Self.generation]
+                if mutation == "preview" { item["content"] = String(repeating: "x", count: 601) }
+                if mutation == "revision" { item["revision"] = "bad" }
+                if mutation == "booleanDate" { item["createdAt"] = true }
+                let result: [String: Any] = ["snapshotId":mutation == "snapshot" ? "BBBBBBBB-0000-4000-8000-000000000001" : snapshot, "observedAt":1, "items":mutation == "duplicate" ? [item,item] : [item]]
+                try EngramServiceSocketIO.writeFrame(JSONEncoder().encode(EngramServiceResponseEnvelope.success(requestId: envelope.requestId, result: JSONSerialization.data(withJSONObject: result))), to: fd, requestTimeout: 1)
+            }; defer { server.stop() }
+            do {
+                let result = try await EngramServiceWebReadClient(socketPath: path).insights(.init(limit: 2, snapshotId: snapshot, cursor: "opaque"))
+                XCTAssertEqual(mutation, "valid"); XCTAssertEqual(result.items.first?.content, "safe preview")
+            } catch { XCTAssertNotEqual(mutation, "valid", "\(error)") }
+        }
+    }
+
+    func testIt9B3MatchClientBindsProofIdentityAndRejectsMalformedPositions() async throws {
+        let request = try EngramServiceWebMatchRequest(sessionId: "s", generation: Self.generation, q: "needle")
+        for mutation in ["valid", "null", "negative", "wrongGeneration", "ordinalAndReason", "unknownScope", "badCursor", "nullWithScope", "nullWithCursor"] {
+            let path = socketPath()
+            let server = try WebReadFixture(path: path) { fd, received in
+                let envelope = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: received)
+                XCTAssertEqual(envelope.command, "webMatch"); XCTAssertNil(envelope.capabilityToken)
+                XCTAssertEqual(try JSONDecoder().decode(EngramServiceWebMatchRequest.self, from: XCTUnwrap(envelope.payload)), request)
+                var result: [String: Any] = ["sessionId":"s", "generation":Self.generation, "messageOrdinal":3, "matchScope":"allTerms"]
+                switch mutation {
+                case "null": result.removeValue(forKey: "messageOrdinal"); result.removeValue(forKey: "matchScope"); result["reason"] = "summaryOnly"
+                case "negative": result["messageOrdinal"] = -1
+                case "wrongGeneration": result["generation"] = String(repeating: "b", count: 64)
+                case "ordinalAndReason": result["reason"] = "unverified"
+                case "unknownScope": result["matchScope"] = "guessed"
+                case "badCursor": result["messageCursor"] = "not a cursor"
+                case "nullWithScope": result.removeValue(forKey: "messageOrdinal"); result["reason"] = "unverified"
+                case "nullWithCursor": result.removeValue(forKey: "messageOrdinal"); result.removeValue(forKey: "matchScope"); result["reason"] = "unverified"; result["messageCursor"] = "opaque"
+                default: break
+                }
+                try EngramServiceSocketIO.writeFrame(JSONEncoder().encode(EngramServiceResponseEnvelope.success(requestId: envelope.requestId, result: JSONSerialization.data(withJSONObject: result))), to: fd, requestTimeout: 1)
+            }; defer { server.stop() }
+            do {
+                let result = try await EngramServiceWebReadClient(socketPath: path).match(request)
+                XCTAssertTrue(["valid", "null"].contains(mutation))
+                XCTAssertEqual(result.messageOrdinal, mutation == "valid" ? 3 : nil)
+            } catch { XCTAssertFalse(["valid", "null"].contains(mutation), "\(error)") }
+        }
+    }
+
     func testMessagesSendsOnlyHardcodedCommandTypedDataUUIDAndNoCapability() async throws {
         let path = socketPath()
         let sentinel = Data("fixture-secret-never-attach-or-load".utf8)
@@ -68,9 +121,9 @@ final class WebReadClientTests: XCTestCase {
         XCTAssertEqual(EngramServiceWebReadClient.allowedCommands,
                        ["webMessages", "webOverview", "webSessions", "webSessionDetail", "webFacets", "webStats",
                         "webSettings", "webSearch", "webSearchStatus", "webCosts", "webCostSessions",
-                        "webSourceSettings", "webChildren", "webTimeline", "webToolAnalytics",
+                        "webSourceSettings", "webChildren", "webTimeline", "webMatch", "webToolAnalytics",
                         "webFileActivity", "webRepos", "webUsage",
-                        "webAiAudit", "webAiAuditDetail", "webAiStats", "webInsightDetail", "webAiSettings",
+                        "webAiAudit", "webAiAuditDetail", "webAiStats", "webInsightDetail", "webInsights", "webAiSettings",
                         "webProjectCwds"])
         XCTAssertNoThrow(try EngramServiceWebReadClient.validateCommand("webMessages"))
         XCTAssertNoThrow(try EngramServiceWebReadClient.validateCommand("webSearch"))
@@ -87,7 +140,7 @@ final class WebReadClientTests: XCTestCase {
         XCTAssertNoThrow(try EngramServiceWebReadClient.validateCommand("webAiSettings"))
         let server = try WebReadFixture(path: socketPath()) { _, _ in XCTFail("Policy checks must not perform IPC") }
         defer { server.stop() }
-        for command in commands.subtracting(["webMessages", "webOverview", "webSessions", "webSessionDetail", "webFacets", "webStats", "webSettings", "webSearch", "webSearchStatus", "webCosts", "webCostSessions", "webSourceSettings", "webChildren", "webTimeline", "webToolAnalytics", "webFileActivity", "webRepos", "webUsage", "webAiAudit", "webAiAuditDetail", "webAiStats", "webInsightDetail", "webAiSettings", "webProjectCwds"]).union(["", "webMessages\0shutdown", "WEBMESSAGES", "futureWrite"]) {
+        for command in commands.subtracting(["webMessages", "webOverview", "webSessions", "webSessionDetail", "webFacets", "webStats", "webSettings", "webSearch", "webSearchStatus", "webCosts", "webCostSessions", "webSourceSettings", "webChildren", "webTimeline", "webMatch", "webToolAnalytics", "webFileActivity", "webRepos", "webUsage", "webAiAudit", "webAiAuditDetail", "webAiStats", "webInsightDetail", "webInsights", "webAiSettings", "webProjectCwds"]).union(["", "webMessages\0shutdown", "WEBMESSAGES", "futureWrite"]) {
             XCTAssertThrowsError(try EngramServiceWebReadClient.validateCommand(command)) {
                 XCTAssertEqual($0 as? EngramServiceWebReadClientError, .unsupported)
             }
@@ -1570,6 +1623,72 @@ final class WebMetadataClientTests: XCTestCase {
                 }
                 return Data()
             }
+        }
+    }
+
+    func testIt8StatsFiltersAndHourKeyClientAdmission() async throws {
+        for key in ["h.0.00", "h.6.23", "u.date"] {
+            let response = try await statsExchange(input: ["groupBy": "hourOfWeek", "sources": ["codex"], "limit": 100]) { incoming in
+                let request = try JSONDecoder().decode(EngramServiceWebStatsRequest.self, from: XCTUnwrap(incoming.payload))
+                XCTAssertEqual(request.sources, ["codex"])
+                return try Self.metadataEnvelope(Self.statsPage(groupBy: "hourOfWeek", key: key), requestId: incoming.requestId)
+            }
+            XCTAssertEqual(response.items.first?.key, key)
+        }
+        for key in ["h.7.00", "h.0.24", "h.0.1", "h.00.00"] {
+            await expectMetadata(.malformed) {
+                _ = try await self.statsExchange(input: ["groupBy": "hourOfWeek"]) { incoming in
+                    try Self.metadataEnvelope(Self.statsPage(groupBy: "hourOfWeek", key: key), requestId: incoming.requestId)
+                }
+                return Data()
+            }
+        }
+        for (group, field, selected, returned) in [("source", "sources", "codex", "claude-code"), ("project", "projectKeys", "project_1", "project_2")] {
+            await expectMetadata(.malformed) {
+                _ = try await self.statsExchange(input: ["groupBy": group, field: [selected]]) { incoming in
+                    try Self.metadataEnvelope(Self.statsPage(groupBy: group, key: returned), requestId: incoming.requestId)
+                }
+                return Data()
+            }
+        }
+    }
+
+    func testIt9B2OptionalSummaryWireValidationAndLegacyDefaults() throws {
+        let old = try JSONDecoder().decode(EngramServiceWebSessionSummary.self, from: JSONSerialization.data(withJSONObject: Self.summary()))
+        XCTAssertNil(old.toolMessageCount); XCTAssertNil(old.model); XCTAssertNil(old.costUsd)
+        XCTAssertNil(old.parentSessionId); XCTAssertNil(old.childCount)
+        let fields: [String: Any] = ["toolMessageCount": 0, "model": "model", "costUsd": 0, "parentSessionId": "parent", "childCount": 2]
+        var valid = Self.summary(); fields.forEach { valid[$0.key] = $0.value }
+        let decoded = try JSONDecoder().decode(EngramServiceWebSessionSummary.self, from: JSONSerialization.data(withJSONObject: valid))
+        XCTAssertEqual(decoded.toolMessageCount, 0); XCTAssertEqual(decoded.model, "model"); XCTAssertEqual(decoded.costUsd, 0)
+        XCTAssertEqual(decoded.parentSessionId, "parent"); XCTAssertEqual(decoded.childCount, 2)
+        for (field, bad) in [("toolMessageCount", -1 as Any), ("childCount", -1), ("costUsd", -0.1), ("parentSessionId", ""), ("model", "")] {
+            var input = valid; input[field] = bad
+            XCTAssertThrowsError(try JSONDecoder().decode(EngramServiceWebSessionSummary.self, from: JSONSerialization.data(withJSONObject: input)), field)
+        }
+    }
+
+    func testIt8LastActivityClientOrderAndLegacyDecode() async throws {
+        let old = try JSONDecoder().decode(EngramServiceWebSessionSummary.self, from: JSONSerialization.data(withJSONObject: Self.summary()))
+        XCTAssertNil(old.lastActivityAt)
+        let legacy = try EngramServiceWebSessionsRequest()
+        XCTAssertEqual(legacy.sort, .started)
+        let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any])
+        XCTAssertNil(encoded["sort"], "Old servers must not receive a new default field")
+        for bad in [false, true] {
+            let operation = {
+                try await self.metadataExchange(.sessions, input: ["sort": "lastActivity", "limit": 50]) { incoming in
+                    let request = try JSONDecoder().decode(EngramServiceWebSessionsRequest.self, from: XCTUnwrap(incoming.payload))
+                    XCTAssertEqual(request.sort, .lastActivity)
+                    var a = Self.summary(id: "a", startedAt: Self.now - 100)
+                    var b = Self.summary(id: "b")
+                    a["lastActivityAt"] = Self.now
+                    b["lastActivityAt"] = Self.now - 1
+                    return try Self.metadataEnvelope(Self.replacing(Self.sessions(), "items", bad ? [b,a] : [a,b]), requestId: incoming.requestId)
+                }
+            }
+            if bad { await expectMetadata(.malformed, operation) }
+            else { _ = try await operation() }
         }
     }
 

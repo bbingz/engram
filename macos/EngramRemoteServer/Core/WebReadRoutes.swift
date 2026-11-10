@@ -3,6 +3,7 @@ import Hummingbird
 
 /// Typed read seam. Metadata GET routes map onto one stored Surface.
 enum WebReadRoutes {
+    typealias MatchReader = @Sendable (EngramServiceWebMatchRequest) async throws -> EngramServiceWebMatchResponse
     typealias MessagesReader = @Sendable (EngramServiceWebMessagesRequest) async throws -> EngramServiceWebMessagesResponse
     typealias OverviewReader = @Sendable (EngramServiceWebOverviewRequest) async throws -> EngramServiceWebOverviewResponse
     typealias SessionsReader = @Sendable (EngramServiceWebSessionsRequest) async throws -> EngramServiceWebSessionsResponse
@@ -30,6 +31,8 @@ enum WebReadRoutes {
     typealias ProjectCwdsReader = @Sendable (EngramServiceWebProjectCwdsRequest) async throws -> EngramServiceWebProjectCwdsResponse
 
     struct Surface: Sendable {
+        var insights: @Sendable (EngramServiceWebInsightsRequest) async throws -> EngramServiceWebInsightsResponse = { _ in throw EngramServiceWebReadClientError.unsupported }
+        var match: MatchReader = { _ in throw EngramServiceWebReadClientError.unsupported }
         var messages: MessagesReader
         var overview: OverviewReader
         var sessions: SessionsReader
@@ -64,18 +67,18 @@ enum WebReadRoutes {
     private static let overviewQueryNames: Set<String> = ["limit", "snapshotId", "cursor"]
     private static let sessionsQueryNames: Set<String> = [
         "query", "source", "sources", "machineId", "sourceInstanceId", "projectKey", "projectKeys",
-        "sessionId", "agents", "since", "until", "tools", "limit", "snapshotId", "cursor",
+        "sessionId", "agents", "since", "until", "tools", "sort", "limit", "snapshotId", "cursor",
     ]
     private static let facetsQueryNames: Set<String> = [
         "kind", "query", "agents", "limit", "snapshotId", "cursor",
     ]
     private static let statsQueryNames: Set<String> = [
-        "groupBy", "since", "until", "excludeNoise", "agents", "limit", "snapshotId", "cursor",
+        "groupBy", "sources", "projectKeys", "since", "until", "excludeNoise", "agents", "limit", "snapshotId", "cursor",
     ]
     private static let settingsQueryNames: Set<String> = ["limit", "snapshotId", "cursor"]
     private static let searchQueryNames: Set<String> = [
         "query", "source", "sources", "machineId", "sourceInstanceId", "projectKey", "projectKeys",
-        "sessionId", "agents", "since", "until", "tools", "mode", "limit",
+        "sessionId", "agents", "since", "until", "tools", "mode", "limit", "snapshotId", "cursor",
     ]
     private static let searchStatusQueryNames: Set<String> = [
         "source", "sources", "machineId", "sourceInstanceId", "projectKey", "projectKeys",
@@ -103,6 +106,8 @@ enum WebReadRoutes {
     static func makeSurface(socketPath: String) throws -> Surface {
         let client = try EngramServiceWebReadClient(socketPath: socketPath)
         return Surface(
+            insights: { request in try await client.insights(request) },
+            match: { request in try await client.match(request) },
             messages: { request in try await client.messages(request) },
             overview: { request in try await client.overview(request) },
             sessions: { request in try await client.sessions(request) },
@@ -162,6 +167,15 @@ enum WebReadRoutes {
                 return Response(status: .badRequest)
             }
             return try await respond(surface.children, input)
+        }
+        router.get("/web/api/sessions/:id/match") { request, context in
+            let input: EngramServiceWebMatchRequest
+            do {
+                let fields = try queryFields(request, names: ["generation", "q"])
+                guard let id = context.parameters.get("id"), let generation = fields["generation"], let q = fields["q"] else { throw EngramServiceWebReadError.invalidField("match") }
+                input = try .init(sessionId: id, generation: generation, q: q)
+            } catch { return Response(status: .badRequest) }
+            return try await respond(surface.match, input)
         }
         router.get("/web/api/sessions/:id/timeline") { request, context in
             let input: EngramServiceWebTimelineRequest
@@ -288,6 +302,14 @@ enum WebReadRoutes {
             do { input = try aiStatsRequest(request) } catch { return Response(status: .badRequest) }
             return try await respond(surface.aiStats, input)
         }
+        router.get("/web/api/insights") { request, _ in
+            let input: EngramServiceWebInsightsRequest
+            do {
+                let fields = try queryFields(request, names: ["limit", "snapshotId", "cursor"])
+                input = try .init(limit: fields["limit"].map { try integer($0, name: "limit") } ?? 50, snapshotId: fields["snapshotId"], cursor: fields["cursor"])
+            } catch { return Response(status: .badRequest) }
+            return try await respond(surface.insights, input)
+        }
         router.get("/web/api/insights/:id") { request, context in
             let input: EngramServiceWebInsightDetailRequest
             do { input = try insightDetailRequest(request, rawID: context.parameters.get("id")) }
@@ -382,6 +404,12 @@ enum WebReadRoutes {
                 }
                 return tools
             } ?? .all,
+            sort: try fields["sort"].map {
+                guard let sort = EngramServiceWebSessionSort(rawValue: $0) else {
+                    throw EngramServiceWebReadError.invalidField("sort")
+                }
+                return sort
+            } ?? .started,
             limit: limit, snapshotId: fields["snapshotId"], cursor: fields["cursor"]
         )
     }
@@ -420,7 +448,9 @@ enum WebReadRoutes {
         } ?? false
         let limit = try fields["limit"].map { try integer($0, name: "limit") } ?? 50
         return try EngramServiceWebStatsRequest(
-            groupBy: groupBy, since: fields["since"], until: fields["until"],
+            groupBy: groupBy,
+            sources: try fields["sources"].map { try commaList($0, name: "sources") },
+            projectKeys: try fields["projectKeys"].map { try commaList($0, name: "projectKeys") }, since: fields["since"], until: fields["until"],
             excludeNoise: excludeNoise,
             agents: try fields["agents"].map {
                 guard let agents = EngramServiceWebAgentFilter(rawValue: $0) else {
@@ -475,7 +505,7 @@ enum WebReadRoutes {
                 }
                 return mode
             } ?? .keyword,
-            limit: limit
+            limit: limit, snapshotId: fields["snapshotId"], cursor: fields["cursor"]
         )
     }
 

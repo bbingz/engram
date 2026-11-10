@@ -26,9 +26,9 @@ struct EngramServiceWebReadClient: Sendable {
     static let allowedCommands: Set<String> = [
         "webMessages", "webOverview", "webSessions", "webSessionDetail", "webFacets", "webStats",
         "webSettings", "webSearch", "webSearchStatus", "webCosts", "webCostSessions",
-        "webSourceSettings", "webChildren", "webTimeline", "webToolAnalytics",
+        "webSourceSettings", "webChildren", "webTimeline", "webMatch", "webToolAnalytics",
         "webFileActivity", "webRepos", "webUsage",
-        "webAiAudit", "webAiAuditDetail", "webAiStats", "webInsightDetail",
+        "webAiAudit", "webAiAuditDetail", "webAiStats", "webInsightDetail", "webInsights",
         "webAiSettings", "webProjectCwds",
     ]
 
@@ -166,8 +166,8 @@ struct EngramServiceWebReadClient: Sendable {
         for (previous, current) in zip(response.items, response.items.dropFirst()) {
             // Valid timestamps are nonnegative; unknown dates sort last. IDs
             // break ties by exact UTF-8 bytes, never Swift canonical equality.
-            let previousTime = previous.startedAt ?? -1
-            let currentTime = current.startedAt ?? -1
+            let previousTime = (request.sort == .started ? previous.startedAt : previous.lastActivityAt) ?? -1
+            let currentTime = (request.sort == .started ? current.startedAt : current.lastActivityAt) ?? -1
             guard previousTime > currentTime || (previousTime == currentTime
                 && previous.sessionId.utf8.lexicographicallyPrecedes(current.sessionId.utf8)) else {
                 throw EngramServiceWebReadClientError.malformed
@@ -218,6 +218,12 @@ struct EngramServiceWebReadClient: Sendable {
             count: response.items.count, limit: request.limit, requestedSnapshot: request.snapshotId, cursor: request.cursor)
         guard response.groupBy == request.groupBy else { throw EngramServiceWebReadClientError.malformed }
         for item in response.items {
+            if request.groupBy == .source, let sources = request.sources, !sources.contains(item.key) {
+                throw EngramServiceWebReadClientError.malformed
+            }
+            if request.groupBy == .project, let keys = request.projectKeys, !keys.contains(item.key) {
+                throw EngramServiceWebReadClientError.malformed
+            }
             guard (try? EngramServiceWebMetadataValidation.statsKey(item.key, groupBy: request.groupBy)) != nil else {
                 throw EngramServiceWebReadClientError.malformed
             }
@@ -278,17 +284,31 @@ struct EngramServiceWebReadClient: Sendable {
         return response
     }
 
+    func match(_ request: EngramServiceWebMatchRequest) async throws -> EngramServiceWebMatchResponse {
+        let result: EngramServiceWebMatchResponse = try await typedResponse("webMatch", request: request, timeout: totalTimeout)
+        guard result.sessionId.utf8.elementsEqual(request.sessionId.utf8), result.generation == request.generation else { throw EngramServiceWebReadClientError.malformed }
+        if let ordinal = result.messageOrdinal {
+            guard (0..<EngramServiceWebReadLimits.maximumMessages).contains(ordinal), result.reason == nil, result.matchScope != nil else { throw EngramServiceWebReadClientError.malformed }
+        } else if result.reason == nil || result.matchScope != nil || result.messageCursor != nil { throw EngramServiceWebReadClientError.malformed }
+        if let cursor = result.messageCursor {
+            guard !cursor.isEmpty, cursor.utf8.count <= EngramServiceWebReadLimits.maximumCursorBytes,
+                  cursor.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 95 }) else { throw EngramServiceWebReadClientError.malformed }
+        }
+        return result
+    }
+
     func search(_ request: EngramServiceWebSearchRequest) async throws -> EngramServiceWebSearchResponse {
         let response: EngramServiceWebSearchResponse = try await typedResponse(
             "webSearch", request: request, timeout: searchTimeout
         )
+        if let snapshot = request.snapshotId, response.snapshotId != snapshot { throw EngramServiceWebReadClientError.malformed }
         guard response.query.utf8.elementsEqual(request.query.utf8),
               response.items.count <= request.limit,
               Set(response.items.map { Data($0.session.sessionId.utf8) }).count == response.items.count else {
             throw EngramServiceWebReadClientError.malformed
         }
         for hit in response.items {
-            guard hit.matchType == "keyword" || hit.matchType == "semantic" else {
+            guard hit.matchType == "keyword" || hit.matchType == "semantic" || hit.matchType == "both" else {
                 throw EngramServiceWebReadClientError.malformed
             }
             try Self.validateSessionFilters(hit.session, request: request)
@@ -305,6 +325,12 @@ struct EngramServiceWebReadClient: Sendable {
         }
         try Task.checkCancellation()
         return response
+    }
+
+    func insights(_ request: EngramServiceWebInsightsRequest) async throws -> EngramServiceWebInsightsResponse {
+        let result: EngramServiceWebInsightsResponse = try await metadataResponse(.insights, request: request)
+        try Self.validatePage(snapshot: result.snapshotId, nextCursor: result.nextCursor, count: result.items.count, limit: request.limit, requestedSnapshot: request.snapshotId, cursor: request.cursor)
+        return result
     }
 
     func insightDetail(_ request: EngramServiceWebInsightDetailRequest) async throws -> EngramServiceWebInsightDetailResponse {
@@ -598,7 +624,7 @@ struct EngramServiceWebReadClient: Sendable {
              fileActivity = "webFileActivity", repos = "webRepos", projectCwds = "webProjectCwds",
              usage = "webUsage",
              aiAudit = "webAiAudit", aiAuditDetail = "webAiAuditDetail", aiStats = "webAiStats",
-             insightDetail = "webInsightDetail"
+             insightDetail = "webInsightDetail", insights = "webInsights"
     }
 
     /// Only the three typed methods above can choose this private command enum.

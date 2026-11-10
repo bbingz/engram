@@ -23,7 +23,7 @@ extension EngramServiceCommandHandler {
                 let input = try Self.webMetadataInput(EngramServiceWebSessionsRequest.self, from: request,
                     allowedKeys: ["query", "source", "sources", "machineId", "sourceInstanceId",
                                   "projectKey", "projectKeys", "sessionId", "agents", "since", "until",
-                                  "tools", "limit", "snapshotId", "cursor"])
+                                  "tools", "sort", "limit", "snapshotId", "cursor"])
                 try Self.webMetadataCheckpoint(deadline)
                 let value = try await webMetadataProducer.sessions(input, requestId: request.requestId, deadline: deadline)
                 return try Self.webMetadataSuccess(value, requestId: request.requestId, deadline: deadline)
@@ -35,7 +35,7 @@ extension EngramServiceCommandHandler {
                 return try Self.webMetadataSuccess(value, requestId: request.requestId, deadline: deadline)
             case "webStats":
                 let input = try Self.webMetadataInput(EngramServiceWebStatsRequest.self, from: request,
-                    allowedKeys: ["groupBy", "since", "until", "excludeNoise", "agents", "limit",
+                    allowedKeys: ["groupBy", "sources", "projectKeys", "since", "until", "excludeNoise", "agents", "limit",
                                   "snapshotId", "cursor"])
                 try Self.webMetadataCheckpoint(deadline)
                 let value = try await webMetadataProducer.stats(input, requestId: request.requestId, deadline: deadline)
@@ -100,6 +100,10 @@ extension EngramServiceCommandHandler {
                 try Self.webMetadataCheckpoint(deadline)
                 let value = try await webMetadataProducer.aiStats(input, requestId: request.requestId, deadline: deadline)
                 return try Self.webMetadataSuccess(value, requestId: request.requestId, deadline: deadline)
+            case "webInsights":
+                let input = try Self.webMetadataInput(EngramServiceWebInsightsRequest.self, from: request, allowedKeys: ["limit", "snapshotId", "cursor"])
+                let value = try await webMetadataProducer.insights(input, requestId: request.requestId, deadline: deadline)
+                return try Self.webMetadataSuccess(value, requestId: request.requestId, deadline: deadline)
             case "webInsightDetail":
                 let input = try Self.webMetadataInput(EngramServiceWebInsightDetailRequest.self, from: request,
                     allowedKeys: ["id", "offset", "limit", "revision"])
@@ -126,6 +130,14 @@ extension EngramServiceCommandHandler {
                     allowedKeys: ["sessionId", "limit", "snapshotId", "cursor"])
                 try Self.webMetadataCheckpoint(deadline)
                 let value = try await webMetadataProducer.children(input, requestId: request.requestId, deadline: deadline)
+                return try Self.webMetadataSuccess(value, requestId: request.requestId, deadline: deadline)
+            case "webMatch":
+                let input = try Self.webMetadataInput(EngramServiceWebMatchRequest.self, from: request,
+                    allowedKeys: ["sessionId", "generation", "q"])
+                let detail = try await webMetadataProducer.sessionDetail(.init(sessionId: input.sessionId), requestId: request.requestId, deadline: deadline)
+                guard let admitted = detail.detail else { throw ServiceWebMetadataError.notFound }
+                guard admitted.lastReady?.generationId == input.generation else { throw ServiceWebMetadataError.stale }
+                let value = try await webTranscriptSnapshotProvider.match(request: input, deadline: deadline)
                 return try Self.webMetadataSuccess(value, requestId: request.requestId, deadline: deadline)
             case "webSessionDetail":
                 let input = try Self.webMetadataInput(EngramServiceWebSessionDetailRequest.self, from: request,
@@ -174,8 +186,13 @@ extension EngramServiceCommandHandler {
             let input = try Self.webMetadataInput(EngramServiceWebSearchRequest.self, from: request,
                 allowedKeys: ["query", "source", "sources", "machineId", "sourceInstanceId",
                               "projectKey", "projectKeys", "sessionId", "agents", "since", "until",
-                              "tools", "mode", "limit"])
+                              "tools", "mode", "limit", "snapshotId", "cursor"])
             try Self.webMetadataCheckpoint(deadline)
+            if input.mode == .keyword {
+                let value = try await webMetadataProducer.keywordSearchPage(input, requestId: request.requestId, deadline: deadline)
+                return try Self.webMetadataSuccess(value, requestId: request.requestId, deadline: deadline)
+            }
+            guard input.cursor == nil else { throw ServiceWebMetadataError.stale }
             let scope = try await webMetadataProducer.searchScope(
                 input, requestId: request.requestId, deadline: deadline)
             try Self.webMetadataCheckpoint(deadline)

@@ -20,6 +20,8 @@ protocol ServiceWebTranscriptSnapshotProviding: Sendable {
         deadline: ContinuousClock.Instant
     ) async throws -> ServiceTranscriptContinuation.Snapshot?
 
+    func match(request: EngramServiceWebMatchRequest, deadline: ContinuousClock.Instant) async throws -> EngramServiceWebMatchResponse
+
     func timeline(
         request: EngramServiceWebTimelineRequest,
         deadline: ContinuousClock.Instant
@@ -28,6 +30,10 @@ protocol ServiceWebTranscriptSnapshotProviding: Sendable {
 
 extension ServiceWebTranscriptSnapshotProviding {
     var supportsNormalizedTranscripts: Bool { false }
+    func match(request: EngramServiceWebMatchRequest, deadline: ContinuousClock.Instant) async throws -> EngramServiceWebMatchResponse {
+        throw ServiceWebTranscriptSnapshotError.unavailable
+    }
+
 
     func snapshot(request: EngramServiceWebMessagesRequest,
                   deadline: ContinuousClock.Instant) async throws -> ServiceTranscriptContinuation.Snapshot? {

@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import GRDB
 import EngramCoreRead
 import EngramCoreWrite
@@ -40,6 +41,71 @@ final class ServiceWebNormalizedTranscriptSnapshotProvider: ServiceWebTranscript
             admission: .timeline(offset: request.offset, limit: request.limit), deadline: deadline)
         guard let window else { throw EngramServiceWebReadError.staleCursor }
         return try ServiceWebTimelineProjection.response(request: request, loaded: window)
+    }
+
+    func match(request: EngramServiceWebMatchRequest, deadline: ContinuousClock.Instant) async throws -> EngramServiceWebMatchResponse {
+        let policy = try currentPolicy()
+        let first = try await read { try Self.resolveMatch($0, request: request, policy: policy, deadline: deadline) }
+        try Self.checkpoint(deadline)
+        guard Self.samePolicy(policy, try currentPolicy()) else { throw ServiceWebTranscriptSnapshotError.unavailable }
+        let fresh = try await read { try Self.resolveMatch($0, request: request, policy: policy, deadline: deadline) }
+        try Self.checkpoint(deadline)
+        guard Self.samePolicy(policy, try currentPolicy()), fresh == first else { throw ServiceWebTranscriptSnapshotError.unavailable }
+        return fresh
+    }
+
+    private static func resolveMatch(_ db: Database, request: EngramServiceWebMatchRequest,
+                                     policy: ServiceWebMetadataPolicy, deadline: ContinuousClock.Instant) throws -> EngramServiceWebMatchResponse {
+        guard let loaded = try load(db, sessionID: request.sessionId, generation: request.generation,
+            policy: policy, admission: .complete, deadline: deadline, requiresFTSProof: false) else { throw EngramServiceWebReadError.staleCursor }
+        func result(_ ordinal: Int? = nil, _ reason: EngramServiceWebMatchReason? = nil, _ scope: EngramServiceWebMatchScope? = nil) -> EngramServiceWebMatchResponse {
+            .init(sessionId: request.sessionId, generation: request.generation, messageOrdinal: ordinal, reason: reason, matchScope: scope)
+        }
+        guard try db.tableExists("fts_map"), try db.tableExists("sessions_fts") else { return result(nil, .notCaptureIndexed) }
+        guard try completedFTSProof(db, snapshot: loaded.snapshot) else { return result(nil, .unverified) }
+        let terms = CJKText.searchableTerms(request.q)
+        guard !terms.isEmpty else { return result(nil, .noMatch) }
+        func candidate(_ terms: [String], summary: Bool = false) throws -> Row? {
+            var predicates: [String] = [], args: [DatabaseValueConvertible] = [request.sessionId]
+            let long = terms.filter { CJKText.usesTrigramMatch($0) }
+            if !long.isEmpty { predicates.append("sessions_fts MATCH ?"); args.append(CJKText.ftsMatchTerms(long).joined(separator: " AND ")) }
+            for term in terms where !CJKText.usesTrigramMatch(term) {
+                predicates.append("sessions_fts.content LIKE ? ESCAPE '\\'"); args.append("%" + CJKText.escapeLikePattern(term) + "%")
+            }
+            try checkpoint(deadline)
+            return try Row.fetchOne(db, sql: """
+                SELECT m.msg_seq, CAST(m.content_hash AS BLOB) AS hash_bytes
+                FROM fts_map m JOIN sessions_fts ON sessions_fts.rowid = m.fts_rowid
+                WHERE m.session_id = ? COLLATE BINARY AND sessions_fts.session_id = m.session_id COLLATE BINARY
+                  AND m.msg_seq \(summary ? "= -1" : ">= 0") AND \(predicates.joined(separator: " AND "))
+                ORDER BY m.msg_seq ASC LIMIT 1
+                """, arguments: StatementArguments(args))
+        }
+        let all = try candidate(terms)
+        let row = try all ?? candidate([terms[0]])
+        guard let row else {
+            return try candidate([terms[0]], summary: true) == nil ? result(nil, .noMatch) : result(nil, .summaryOnly)
+        }
+        guard let sequence = row["msg_seq"] as Int?, sequence >= 0,
+              let bytes = row["hash_bytes"] as Data?, bytes.count == 32,
+              let expected = String(data: bytes, encoding: .utf8) else { return result(nil, .unverified) }
+        var index = 0
+        for (ordinal, message) in loaded.snapshot.messages.enumerated() {
+            try checkpoint(deadline)
+            guard !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            let included = message.role == .user || message.role == .assistant ||
+                (loaded.snapshot.nativeIdentity.source == .grok && message.role == .system && message.content.hasPrefix("Grok compaction archive\n"))
+            guard included else { continue }
+            if index == sequence {
+                let hash = SHA256.hash(data: Data(message.content.utf8)).prefix(16).map { String(format: "%02x", $0) }.joined()
+                guard hash.utf8.elementsEqual(expected.utf8) else { return result(nil, .unverified) }
+                var proven = result(ordinal, nil, all == nil ? .firstTerm : .allTerms)
+                proven.messageCursor = try ServiceTranscriptContinuation.matchCursor(sessionId: request.sessionId, generation: request.generation, ordinal: ordinal, message: message)
+                return proven
+            }
+            index += 1
+        }
+        return result(nil, .unverified)
     }
 
     fileprivate struct Loaded: Equatable, Sendable {
@@ -136,7 +202,7 @@ final class ServiceWebNormalizedTranscriptSnapshotProvider: ServiceWebTranscript
 
     private static func load(_ db: Database, sessionID: String, generation: String,
                              policy: ServiceWebMetadataPolicy, admission: Admission,
-                             deadline: ContinuousClock.Instant) throws -> Loaded? {
+                             deadline: ContinuousClock.Instant, requiresFTSProof: Bool = true) throws -> Loaded? {
         try checkpoint(deadline)
         // Visibility follows the metadata read surface. Ready is stricter:
         // parsed, ready and requested heads must agree with the ready ledger.
@@ -178,21 +244,26 @@ final class ServiceWebNormalizedTranscriptSnapshotProvider: ServiceWebTranscript
         try checkpoint(deadline)
         // Readiness.commit requires this exact completed FTS job for a visible
         // generation. A later edit of ready scalars cannot replace that proof.
+        if requiresFTSProof, try !completedFTSProof(db, snapshot: snapshot) { throw ServiceWebTranscriptSnapshotError.unavailable }
+        try checkpoint(deadline)
+        return loaded
+    }
+
+    private static func completedFTSProof(_ db: Database, snapshot: CaptureIngestNormalizedSnapshot) throws -> Bool {
         let expectedJob = "\(snapshot.sessionID):\(snapshot.syncVersion):\(snapshot.snapshotHash):fts"
         guard let jobID = snapshot.requiredFTSJobID, jobID.utf8.elementsEqual(expectedJob.utf8),
               let job = try Row.fetchOne(db, sql: """
                 SELECT session_id, job_kind, target_sync_version, status FROM session_index_jobs WHERE id = ?
                 """, arguments: [jobID]),
               case .string(let storedID) = (job["session_id"] as DatabaseValue).storage,
-              storedID.utf8.elementsEqual(sessionID.utf8),
+              storedID.utf8.elementsEqual(snapshot.sessionID.utf8),
               case .string("fts") = (job["job_kind"] as DatabaseValue).storage,
               case .int64(let version) = (job["target_sync_version"] as DatabaseValue).storage,
               version == Int64(snapshot.syncVersion),
               case .string("completed") = (job["status"] as DatabaseValue).storage else {
-            throw ServiceWebTranscriptSnapshotError.unavailable
+            return false
         }
-        try checkpoint(deadline)
-        return loaded
+        return true
     }
 
     /// Like other Service read facades, join the blocking SQLite read before

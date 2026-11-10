@@ -18,8 +18,63 @@ const scriptMatch = source.match(
 if (!scriptMatch) throw new Error('Missing shipped Web viewer script');
 const script = scriptMatch;
 
+type Listener = (event: FakeEvent) => void;
+
+interface FakeEvent {
+  type: string;
+  target: Element | null;
+  currentTarget: Element | null;
+  defaultPrevented: boolean;
+  key?: string;
+  preventDefault(): void;
+  stopPropagation(): void;
+  [extra: string]: unknown;
+}
+
+function fakeEvent(
+  type: string,
+  target: Element | null,
+  init: Record<string, unknown> = {},
+): FakeEvent {
+  const event: FakeEvent = {
+    target,
+    currentTarget: target,
+    defaultPrevented: false,
+    preventDefault() {
+      event.defaultPrevented = true;
+    },
+    stopPropagation() {},
+    ...init,
+    type,
+  };
+  return event;
+}
+
+// Minimal CSSOM style declaration: custom properties and regular properties
+// both land in one bag; inline style is only ever set through setProperty.
+class StyleDeclaration {
+  readonly props = new Map<string, string>();
+
+  setProperty(name: string, value: string): void {
+    this.props.set(name, String(value));
+  }
+
+  getPropertyValue(name: string): string {
+    return this.props.get(name) ?? '';
+  }
+
+  removeProperty(name: string): string {
+    const value = this.props.get(name) ?? '';
+    this.props.delete(name);
+    return value;
+  }
+}
+
+let activeElement: Element | null = null;
+
 class Element {
   tagName = 'DIV';
+  namespaceURI: string | null = null;
   className = '';
   hidden = false;
   value = '';
@@ -29,11 +84,14 @@ class Element {
   title = '';
   dateTime = '';
   type = '';
+  href = '';
   parent: Element | null = null;
   children: Element[] = [];
+  readonly style = new StyleDeclaration();
+  readonly dataset: Record<string, string> = {};
   private text = '';
   private attrs = new Map<string, string>();
-  private listeners: { type: string; fn: () => void }[] = [];
+  private listeners: { type: string; fn: Listener }[] = [];
 
   get textContent(): string {
     return this.text + this.children.map((child) => child.textContent).join('');
@@ -41,40 +99,154 @@ class Element {
 
   set textContent(value: string) {
     this.text = value;
+    for (const child of this.children) child.parent = null;
     this.children = [];
   }
 
-  appendChild(child: Element): void {
+  get parentNode(): Element | null {
+    return this.parent;
+  }
+
+  get firstChild(): Element | null {
+    return this.children[0] ?? null;
+  }
+
+  get lastChild(): Element | null {
+    return this.children[this.children.length - 1] ?? null;
+  }
+
+  get classList() {
+    const tokens = () => this.className.split(/\s+/).filter(Boolean);
+    const write = (list: string[]) => {
+      this.className = list.join(' ');
+    };
+    return {
+      contains: (name: string) => tokens().includes(name),
+      add: (...names: string[]) =>
+        write([...tokens(), ...names.filter((n) => !tokens().includes(n))]),
+      remove: (...names: string[]) =>
+        write(tokens().filter((n) => !names.includes(n))),
+      toggle: (name: string, force?: boolean) => {
+        const has = tokens().includes(name);
+        const want = force === undefined ? !has : force;
+        if (want && !has) write([...tokens(), name]);
+        if (!want && has) write(tokens().filter((n) => n !== name));
+        return want;
+      },
+    };
+  }
+
+  private detach(child: Element): void {
+    if (child.parent) {
+      const siblings = child.parent.children;
+      const at = siblings.indexOf(child);
+      if (at >= 0) siblings.splice(at, 1);
+    }
+    child.parent = null;
+  }
+
+  appendChild(child: Element): Element {
+    this.detach(child);
     child.parent = this;
     this.children.push(child);
+    return child;
+  }
+
+  insertBefore(child: Element, reference: Element | null): Element {
+    if (!reference) return this.appendChild(child);
+    this.detach(child);
+    const at = this.children.indexOf(reference);
+    if (at < 0) throw new Error('insertBefore reference is not a child');
+    child.parent = this;
+    this.children.splice(at, 0, child);
+    return child;
+  }
+
+  removeChild(child: Element): Element {
+    if (child.parent !== this) throw new Error('removeChild: not a child');
+    this.detach(child);
+    return child;
+  }
+
+  remove(): void {
+    this.detach(this);
+  }
+
+  contains(other: Element | null): boolean {
+    let node = other;
+    while (node) {
+      if (node === this) return true;
+      node = node.parent;
+    }
+    return false;
   }
 
   setAttribute(name: string, value: string): void {
-    this.attrs.set(name, value);
+    this.attrs.set(name, String(value));
+    if (name.startsWith('data-')) {
+      const key = name
+        .slice(5)
+        .replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+      this.dataset[key] = String(value);
+    }
   }
 
   getAttribute(name: string): string | null {
     return this.attrs.get(name) ?? null;
   }
 
-  addEventListener(type: string, fn: () => void): void {
+  hasAttribute(name: string): boolean {
+    return this.attrs.has(name);
+  }
+
+  removeAttribute(name: string): void {
+    this.attrs.delete(name);
+  }
+
+  addEventListener(type: string, fn: Listener): void {
     this.listeners.push({ type, fn });
   }
 
-  click(): void {
+  removeEventListener(type: string, fn: Listener): void {
+    this.listeners = this.listeners.filter(
+      (entry) => entry.type !== type || entry.fn !== fn,
+    );
+  }
+
+  dispatch(type: string, init: Record<string, unknown> = {}): FakeEvent {
+    const event = fakeEvent(type, this, init);
+    for (const listener of [...this.listeners]) {
+      if (listener.type === type) listener.fn.call(this, event);
+    }
+    return event;
+  }
+
+  click(init: Record<string, unknown> = {}): void {
     if (this.type === 'checkbox') this.checked = !this.checked;
-    for (const listener of this.listeners) {
-      if (listener.type === 'click') listener.fn();
-      if (this.type === 'checkbox' && listener.type === 'change') listener.fn();
+    const event = fakeEvent('click', this, init);
+    for (const listener of [...this.listeners]) {
+      if (listener.type === 'click') listener.fn.call(this, event);
+      if (this.type === 'checkbox' && listener.type === 'change')
+        listener.fn.call(this, fakeEvent('change', this, init));
     }
   }
 
+  focus(): void {
+    activeElement = this;
+  }
+
+  blur(): void {
+    if (activeElement === this) activeElement = null;
+  }
+
   matches(selector: string): boolean {
+    if (selector.includes(','))
+      return selector.split(',').some((part) => this.matches(part.trim()));
     if (selector.startsWith('.')) {
       return this.className.split(/\s+/).includes(selector.slice(1));
     }
     const [tag, cls] = selector.split('.');
-    if (tag && this.tagName !== tag.toUpperCase()) return false;
+    if (tag && this.tagName.toUpperCase() !== tag.toUpperCase()) return false;
     return !cls || this.className.split(/\s+/).includes(cls);
   }
 
@@ -94,6 +266,15 @@ class Element {
       if (nested) return nested;
     }
     return null;
+  }
+
+  querySelectorAll(selector: string): Element[] {
+    const found: Element[] = [];
+    for (const child of this.children) {
+      if (child.matches(selector)) found.push(child);
+      found.push(...child.querySelectorAll(selector));
+    }
+    return found;
   }
 }
 
@@ -135,12 +316,24 @@ function harness(
   const revokedCookies: (string | null)[] = [];
   let maximumInflightAuth = 0;
   const copied: string[] = [];
-  const documentListeners: { type: string; fn: () => void }[] = [];
-  const windowListeners: { type: string; fn: () => void }[] = [];
+  const documentListeners: { type: string; fn: Listener }[] = [];
+  const windowListeners: { type: string; fn: Listener }[] = [];
+  // Fake timers: queued, never run on their own; tests flush them explicitly.
+  const timers = new Map<number, () => void>();
+  let nextTimer = 1;
+  activeElement = null;
   const context = createContext({
     window: {
       location: { hash: '', origin: 'https://viewer.example' },
-      addEventListener: (type: string, fn: () => void) =>
+      history: {
+        pushState(_state: unknown, _title: string, href: string) {
+          runInContext(`window.location.hash=${JSON.stringify(href)}`, context);
+        },
+        replaceState(_state: unknown, _title: string, href: string) {
+          runInContext(`window.location.hash=${JSON.stringify(href)}`, context);
+        },
+      },
+      addEventListener: (type: string, fn: Listener) =>
         windowListeners.push({ type, fn }),
       scrollY: 0,
       scrollTo(options: { top: number }) {
@@ -158,7 +351,17 @@ function harness(
         element.tagName = String(tag || 'div').toUpperCase();
         return element;
       },
-      addEventListener: (type: string, fn: () => void) => {
+      // SVG elements keep their lower-case qualified name, as in a browser.
+      createElementNS: (namespace: string, tag: string) => {
+        const element = new Element();
+        element.namespaceURI = namespace;
+        element.tagName = String(tag);
+        return element;
+      },
+      get activeElement() {
+        return activeElement;
+      },
+      addEventListener: (type: string, fn: Listener) => {
         documentListeners.push({ type, fn });
       },
     },
@@ -173,6 +376,15 @@ function harness(
     TextEncoder,
     TextDecoder,
     URLSearchParams,
+    setTimeout: (fn: () => void) => {
+      const id = nextTimer;
+      nextTimer += 1;
+      timers.set(id, fn);
+      return id;
+    },
+    clearTimeout: (id: number) => {
+      timers.delete(id);
+    },
     fetch: (path: string, options?: { method?: string; body?: string }) =>
       new Promise((fulfill, reject) => {
         const request: (typeof requests)[number] = {
@@ -251,17 +463,79 @@ function harness(
     },
     call: (expression: string) =>
       runInContext(expression, context) as Promise<void>,
-    dispatchDocument: (type: string) => {
-      for (const listener of documentListeners) {
-        if (listener.type === type) listener.fn();
+    // The newest request whose path starts with the prefix. New lazy fetches
+    // must not shift positional requests[N] indexes in existing sequences.
+    requestFor: (pathPrefix: string) => {
+      for (let i = requests.length - 1; i >= 0; i -= 1) {
+        if (requests[i].path.startsWith(pathPrefix)) return requests[i];
       }
+      throw new Error(`No request for ${pathPrefix}`);
     },
-    dispatchWindow: (type: string) => {
+    requestsFor: (pathPrefix: string) =>
+      requests.filter((request) => request.path.startsWith(pathPrefix)),
+    pendingTimers: () => timers.size,
+    runTimers: () => {
+      const queued = [...timers.values()];
+      timers.clear();
+      for (const fn of queued) fn();
+    },
+    activeElement: () => activeElement,
+    dispatchDocument: (type: string, init: Record<string, unknown> = {}) => {
+      const event = fakeEvent(type, null, init);
+      for (const listener of documentListeners) {
+        if (listener.type === type) listener.fn(event);
+      }
+      return event;
+    },
+    dispatchWindow: (type: string, init: Record<string, unknown> = {}) => {
+      const event = fakeEvent(type, null, init);
       for (const listener of windowListeners)
-        if (listener.type === type) listener.fn();
+        if (listener.type === type) listener.fn(event);
+      return event;
     },
   };
 }
+
+describe('fake DOM harness', () => {
+  it('supports SVG, CSSOM, tree edits, events, timers and request lookup', async () => {
+    const ui = harness();
+    const svg = await ui.call(
+      'document.createElementNS("http://www.w3.org/2000/svg", "svg")',
+    );
+    const el = svg as unknown as Element;
+    expect(el.tagName).toBe('svg');
+    expect(el.namespaceURI).toBe('http://www.w3.org/2000/svg');
+    el.style.setProperty('--pct', '42%');
+    expect(el.style.getPropertyValue('--pct')).toBe('42%');
+    el.classList.add('a', 'b');
+    el.classList.toggle('a');
+    expect(el.className).toBe('b');
+    const parent = ui.node('fake-parent');
+    const first = ui.node('fake-first');
+    const second = ui.node('fake-second');
+    parent.appendChild(second);
+    parent.insertBefore(first, second);
+    expect(parent.children).toEqual([first, second]);
+    expect(parent.contains(second)).toBe(true);
+    parent.removeChild(first);
+    expect(parent.children).toEqual([second]);
+    let seen: { key?: string; target: unknown } | null = null;
+    second.addEventListener('click', (event) => {
+      seen = event;
+    });
+    second.click({ key: 'x' });
+    expect(seen).toMatchObject({ key: 'x', target: second });
+    await ui.call('setTimeout(function () { window.fired = true; }, 10)');
+    expect(ui.pendingTimers()).toBe(1);
+    ui.runTimers();
+    expect(await ui.call('window.fired')).toBe(true);
+    ui.call('loadSessions(false)').catch(() => undefined);
+    expect(ui.requestFor('/web/api/sessions').path).toContain(
+      '/web/api/sessions',
+    );
+    expect(() => ui.requestFor('/web/api/nope')).toThrow();
+  });
+});
 
 describe('legacy session ID navigation', () => {
   it('resolves a native ID before opening its canonical session', async () => {
@@ -590,9 +864,7 @@ describe('legacy session paging and search filters', () => {
     await replacement;
     expect(ui.node('sessions').children).toHaveLength(1);
     expect(ui.node('sessions').children[0].hidden).toBe(false);
-    expect(ui.node('session-page-status').textContent).toBe(
-      '1–1 of 1 sessions',
-    );
+    expect(ui.node('session-page-status').textContent).toBe('1–1 of 1 session');
     expect(ui.node('session-previous').hidden).toBe(true);
   });
 
@@ -627,7 +899,7 @@ describe('legacy session paging and search filters', () => {
       items: [{ sessionId: 'one' }],
     });
     await first;
-    expect(ui.node('session-page-status').textContent).toBe('1–1 sessions');
+    expect(ui.node('session-page-status').textContent).toBe('1–1 session');
     const logout = ui.call('logout()');
     ui.requests[1].resolve(undefined, 204);
     await logout;
@@ -666,7 +938,7 @@ describe('native Settings page', () => {
     for (const text of [
       'Database',
       'Active Sources',
-      'Sync',
+      'Capture & sync provenance',
       'Project Aliases',
       '120',
       'Codex',
@@ -2263,7 +2535,7 @@ describe('legacy agent filters and session metadata', () => {
     const first = ui.node('sessions').children[0];
     expect(first.querySelector('.agent-label')?.textContent).toBe('agent');
     expect(first.querySelector('.message-counts')?.textContent).toBe(
-      '0 user · 1,234 assistant · 2 system',
+      '1,234 assistant · 2 system',
     );
     const second = ui.node('sessions').children[1];
     expect(second.querySelector('.agent-label')).toBeNull();
@@ -2503,7 +2775,7 @@ describe('shipped collector Web viewer behavior', () => {
       .catch(() => undefined);
     ui.requests[0].resolve({}, 401);
     await pending;
-    expect(ui.node('status').textContent).toBe('401');
+    expect(ui.node('status').textContent).toBe('Not authorized (401)');
     expect(ui.node('status').textContent).not.toBe('Session expired');
     expect(ui.node('workspace').hidden).toBe(true);
     expect(ui.node('login').hidden).toBe(false);
@@ -2661,15 +2933,15 @@ describe('shipped collector Web viewer behavior', () => {
     });
     await pending;
     const [tool, system] = ui.node('messages').children;
-    expect(tool.className).toBe('message tool');
-    expect(system.className).toBe('message system');
+    expect(tool.className).toContain('message tool');
+    expect(system.className).toContain('message system');
     expect(tool.className).not.toContain('assistant');
     expect(system.className).not.toContain('assistant');
     expect(tool.children.some((child) => child.className === 'body')).toBe(
       false,
     );
     const toolDump = tool.children.find((child) => child.tagName === 'DETAILS');
-    expect(toolDump?.children[0]?.textContent).toContain('Tool');
+    expect(toolDump?.children[0]?.textContent).toContain('Result');
     expect(toolDump?.children[0]?.textContent).toContain(
       'function_call_output huge dump',
     );
@@ -2701,7 +2973,7 @@ describe('shipped collector Web viewer behavior', () => {
     });
     await pending;
     const article = ui.node('messages').children[0];
-    expect(article.className).toBe('message user');
+    expect(article.className).toContain('message user');
     const body = article.children.find((child) => child.className === 'body');
     expect(body?.tagName).toBe('DIV');
     expect(body?.textContent).toBe(content);
@@ -2838,8 +3110,10 @@ describe('shipped collector Web viewer behavior', () => {
     await pending;
     expect(ui.requests).toHaveLength(1);
     expect(ui.node('messages').children).toHaveLength(2);
-    expect(ui.node('messages').children[0].className).toBe('message tool');
-    expect(ui.node('messages').children[1].className).toBe('message system');
+    expect(ui.node('messages').children[0].className).toContain('message tool');
+    expect(ui.node('messages').children[1].className).toContain(
+      'message system',
+    );
     expect(
       ui
         .node('messages')
@@ -2921,11 +3195,13 @@ describe('shipped collector Web viewer behavior', () => {
       .node('messages')
       .children[0].children.find((child) => child.className === 'body');
     expect(body?.querySelector('h1')?.textContent).toBe(
-      'Title <img src=x onerror=alert(1)>',
+      'Title <img src=x onerror=alert(1)>#',
     );
     expect(body?.querySelector('img')).toBeNull();
     expect(body?.querySelector('script')).toBeNull();
-    const link = body?.querySelector('a');
+    const link = body
+      ?.querySelectorAll('a')
+      .find((node) => !node.className.includes('heading-link'));
     expect(link?.textContent).toBe('ok');
     expect(link?.getAttribute('href')).toBe('https://example.com/a');
     expect(body?.textContent).toContain('[xss](javascript:alert(1))');
@@ -3361,7 +3637,7 @@ describe('shipped collector Web viewer presentation', () => {
     expect(css).toContain('--bg:#0f172a');
     expect(css).toContain('--accent:#22c55e');
     expect(css).toContain('--panel:#1e293b');
-    expect(css).toMatch(/color-scheme:\s*dark/);
+    expect(css).toMatch(/color-scheme:\s*light dark/);
     expect(css).toMatch(/#workspace\s*\{[^}]*max-width:\s*960px/);
     expect(css).toContain('#workspace:not(.showing-detail) .detail-pane');
     expect(css).not.toMatch(
@@ -3380,7 +3656,10 @@ describe('shipped collector Web viewer presentation', () => {
     expect(css).toMatch(/\.message\.tool[\s\S]*max-width:\s*100%/);
     expect(css).toMatch(/\.message\s+\.body[\s\S]*border-radius:\s*14px/);
     expect(css).toMatch(/\.message\s+\.body[\s\S]*font:\s*inherit/);
-    expect(css).toMatch(/pre\s*\{[^}]*ui-monospace/);
+    expect(css).toMatch(/pre\s*\{[^}]*var\(--mono\)/);
+    expect(css).toContain(
+      '--mono:ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace',
+    );
     expect(css).toMatch(/body\s*\{[^}]*overflow-wrap:\s*anywhere/);
   });
 
@@ -3742,7 +4021,7 @@ describe('shipped collector Web viewer presentation', () => {
     const tools = article.children.find((child) => child.tagName === 'DETAILS');
     expect(tools?.className).toBe('tool-call');
     expect(tools?.children[0]?.textContent).toContain('Read');
-    expect(tools?.children[0]?.textContent).toContain('{"path":"/secret"}');
+    expect(tools?.children[0]?.textContent).toContain('/secret');
     expect(tools?.textContent).toContain('{"path":"/secret"}');
     expect(tools?.textContent).toContain('{"ok":true}');
   });
@@ -3878,7 +4157,7 @@ describe('shipped collector Web viewer presentation', () => {
     await orphan;
     const later = ui.node('messages').children[0];
     expect(later.children[0].textContent).toBe('assistant');
-    expect(later.className).toBe('message assistant');
+    expect(later.className).toContain('message assistant');
     expect(later.textContent).toContain('after logout');
   });
 
@@ -5057,4 +5336,4148 @@ describe('tailnet identity sign-in (design 2026-10-08)', () => {
     expect(ui.node('login').hidden).not.toBe(true);
     expect(ui.node('status').textContent).toBe('');
   });
+});
+
+describe('iteration 1 foundation: rows, chips, feedback and states', () => {
+  const settle = async () => {
+    for (let step = 0; step < 12; step += 1) await Promise.resolve();
+  };
+  const blockTags = ['DIV', 'P', 'SECTION', 'ARTICLE', 'H2', 'H3', 'UL'];
+  const allDescendants = (node: Element): Element[] =>
+    node.children.flatMap((child) => [child, ...allDescendants(child)]);
+
+  it('renders session rows with inline-only children, hidden zero counts and date groups', async () => {
+    const ui = harness();
+    ui.call('Date.now = () => 1789214400000');
+    const pending = ui.call('loadSessions(false)');
+    ui.requests[0].resolve({
+      items: [
+        {
+          sessionId: 'a',
+          title: 'Now',
+          source: 'codex',
+          startedAt: 1789214280,
+          userMessageCount: 0,
+          assistantMessageCount: 3,
+          systemMessageCount: 0,
+        },
+        { sessionId: 'b', title: 'Also today', startedAt: 1789214000 },
+        { sessionId: 'c', title: 'Yesterday', startedAt: 1789214400 - 86400 },
+        { sessionId: 'd', title: 'Week', startedAt: 1789214400 - 3 * 86400 },
+        { sessionId: 'e', title: 'Month', startedAt: 1789214400 - 20 * 86400 },
+        { sessionId: 'f', title: 'Old', startedAt: 1610668800 },
+        { sessionId: 'g', title: 'Undated', startedAt: null },
+      ],
+    });
+    await pending;
+    const rows = ui.node('sessions').children;
+    expect(rows).toHaveLength(7);
+    for (const row of rows) {
+      expect(row.className).toContain('session');
+      expect(
+        allDescendants(row).filter((child) =>
+          blockTags.includes(child.tagName),
+        ),
+      ).toEqual([]);
+    }
+    const heads = rows.map(
+      (row) => row.querySelector('.group-head')?.textContent ?? null,
+    );
+    expect(heads).toEqual([
+      'Today',
+      null,
+      'Yesterday',
+      'Previous 7 days',
+      'Previous 30 days',
+      'January 2021',
+      'Undated',
+    ]);
+    expect(
+      rows[0].querySelector('.group-head')?.getAttribute('aria-hidden'),
+    ).toBe('true');
+    expect(rows[0].querySelector('.message-counts')?.textContent).toBe(
+      '3 assistant',
+    );
+    expect(rows[0].className).toContain('source-codex');
+  });
+
+  it('does not date-group ranked search results', async () => {
+    const ui = harness();
+    await ui.call('activatePage("search")');
+    ui.node('query').value = 'needle';
+    const pending = ui.call('loadRankedSearch()');
+    ui.requestFor('/web/api/search?').resolve({
+      query: 'needle',
+      searchModes: ['keyword'],
+      items: [
+        {
+          session: { sessionId: 'one', title: 'One', startedAt: 1789214280 },
+          snippet: 'a <mark>needle</mark>',
+          matchType: 'keyword',
+        },
+      ],
+      insightResults: [],
+    });
+    await pending;
+    expect(ui.node('sessions').children[0].querySelector('.group-head')).toBe(
+      null,
+    );
+    expect(ui.node('search-result-status').textContent).toMatch(/^1 session ·/);
+  });
+
+  it('renders transcript availability from the detail DTO without requesting messages', async () => {
+    const ui = harness();
+    const pending = ui.call('openDetail("unavailable")');
+    ui.requestFor('/web/api/sessions/').resolve({
+      observedAt: 1789214400,
+      detail: {
+        session: {
+          sessionId: 'unavailable',
+          title: 'No transcript',
+          source: 'codex',
+        },
+        lastParsed: null,
+        lastReady: null,
+        transcriptAvailability: 'unavailable',
+        transcriptGeneration: null,
+        currentAttempt: {
+          publicationSHA256: 'a'.repeat(64),
+          parserRevision: 'codex-r1',
+          collectorEpoch: 'epoch-1',
+          sequence: '1',
+          status: 'quarantined',
+          failureCode: 'parse.noVisibleMessages',
+          recordedAt: 1789214400,
+        },
+        summary: null,
+      },
+    });
+    await pending;
+    expect(ui.node('messages').textContent).toContain('Transcript unavailable');
+    expect(ui.node('messages').textContent).toContain(
+      'Availability: unavailable.',
+    );
+    expect(ui.node('session-actions').hidden).toBe(true);
+    expect(ui.node('detail-view-timeline').disabled).toBe(true);
+    expect(ui.requests).toHaveLength(1);
+  });
+
+  it('shows skeleton rows while the list loads and replaces them with results', async () => {
+    const ui = harness();
+    const pending = ui.call('loadSessions(false)');
+    const sessions = ui.node('sessions');
+    expect(sessions.getAttribute('aria-busy')).toBe('true');
+    expect(ui.node('session-page-status').textContent).toBe(
+      'Loading sessions…',
+    );
+    expect(sessions.children.length).toBeGreaterThan(0);
+    expect(
+      sessions.children.every((child) => child.className === 'skeleton-row'),
+    ).toBe(true);
+    expect(sessions.textContent).toBe('');
+    ui.requests[0].resolve({ items: [{ sessionId: 'one', title: 'One' }] });
+    await pending;
+    expect(sessions.children).toHaveLength(1);
+    expect(sessions.children[0].className).toContain('session');
+    expect(sessions.getAttribute('aria-busy')).toBe('false');
+  });
+
+  it('replaces the skeleton with a retryable error state when the list fails', async () => {
+    const ui = harness();
+    const pending = ui.call('loadSessions(false)').catch(() => undefined);
+    ui.requests[0].resolve({}, 503);
+    await pending;
+    expect(ui.node('status').textContent).toBe('Service unavailable (503)');
+    const sessions = ui.node('sessions');
+    expect(sessions.querySelector('.skeleton-row')).toBeNull();
+    const state = sessions.querySelector('.empty-state');
+    expect(state?.textContent).toContain('Sessions could not be loaded');
+    expect(sessions.getAttribute('aria-busy')).toBe('false');
+    expect(state?.hidden).toBe(false);
+    state?.querySelector('button')?.click();
+    expect(ui.requests).toHaveLength(2);
+    expect(ui.requests[1].path).toBe('/web/api/sessions');
+    ui.requests[1].resolve({ items: [{ sessionId: 'recovered' }] });
+    await settle();
+    expect(ui.node('status').textContent).toBe('signed in');
+    expect(ui.node('status').dataset.tone).toBe('ok');
+  });
+
+  it('lists active filters as removable chips that refetch without the filter', async () => {
+    const ui = harness();
+    ui.node('query').value = 'needle';
+    ui.node('since').value = '2026-09-01';
+    ui.node('hide-tools').checked = true;
+    await ui.call(
+      'facets.source.selected.set("codex", "Codex"); facets.project.selected.set("p.1", "Engram")',
+    );
+    const first = ui.call('refreshLibrary()');
+    ui.requests[0].resolve({ items: [] });
+    await first;
+    const chips = ui.node('active-filters');
+    expect(chips.hidden).toBe(false);
+    const labels = chips
+      .querySelectorAll('.chip')
+      .map((chip) => chip.querySelector('.chip-label')?.textContent);
+    expect(labels).toEqual([
+      '“needle”',
+      'Source: Codex',
+      'Project: Engram',
+      'Since 2026-09-01',
+      'Hiding tool-only',
+    ]);
+    const source = chips
+      .querySelectorAll('.chip')
+      .find((chip) => chip.textContent.includes('Codex'));
+    const remove = source?.querySelector('button');
+    expect(remove?.getAttribute('aria-label')).toBe(
+      'Remove filter Source: Codex',
+    );
+    remove?.click();
+    const query = new URLSearchParams(ui.requests[1].path.split('?')[1]);
+    expect(query.get('sources')).toBeNull();
+    expect(query.get('projectKeys')).toBe('p.1');
+    expect(ui.node('source-summary').textContent).toBe('All sources');
+    ui.requests[1].resolve({ items: [] });
+    await settle();
+    chips
+      .querySelectorAll('button')
+      .find((button) => button.textContent === 'Clear all')
+      ?.click();
+    expect(ui.requests[2].path).toBe('/web/api/sessions');
+    expect(ui.node('query').value).toBe('');
+    expect(ui.node('hide-tools').checked).toBe(false);
+    ui.requests[2].resolve({ items: [] });
+    await settle();
+    expect(chips.hidden).toBe(true);
+  });
+
+  it('offers to clear filters from the empty state only when filters are active', async () => {
+    const ui = harness();
+    ui.node('machineId').value = 'mac-mini';
+    const pending = ui.call('refreshLibrary()');
+    ui.requests[0].resolve({ items: [] });
+    await pending;
+    const state = ui.node('sessions').querySelector('.empty-state');
+    expect(state?.textContent).toContain('No sessions found');
+    expect(state?.hidden).toBe(false);
+    state
+      ?.querySelectorAll('button')
+      .find((button) => button.textContent === 'Clear filters')
+      ?.click();
+    expect(ui.node('machineId').value).toBe('');
+    expect(ui.requests[1].path).toBe('/web/api/sessions');
+  });
+
+  it('confirms copy with a label change and a toast that times out', async () => {
+    const ui = harness();
+    const pending = ui.call('loadMessages(0, "session", "generation", "")');
+    ui.requests[0].resolve({
+      fragments: [
+        {
+          messageOrdinal: 0,
+          payloadSHA256: 'c'.repeat(64),
+          role: 'assistant',
+          payloadFragment: JSON.stringify({ content: '```\nlet x = 1\n```' }),
+          utf8Offset: 0,
+          isLastFragment: true,
+        },
+      ],
+    });
+    await pending;
+    const button = ui.node('messages').querySelector('.copy-btn');
+    button?.click();
+    await settle();
+    expect(ui.copied).toEqual(['let x = 1']);
+    expect(button?.textContent).toBe('Copied ✓');
+    const region = ui.node('toast-region');
+    expect(region.children).toHaveLength(1);
+    expect(region.children[0].dataset.tone).toBe('ok');
+    ui.runTimers();
+    expect(region.children).toHaveLength(0);
+    expect(button?.textContent).toBe('Copy');
+  });
+
+  it('reports a failed copy instead of swallowing it', async () => {
+    const ui = harness();
+    await ui.call(
+      'navigator.clipboard.writeText = function () { return Promise.reject(new Error("denied")); }',
+    );
+    const pending = ui.call('loadMessages(0, "session", "generation", "")');
+    ui.requests[0].resolve({
+      fragments: [
+        {
+          messageOrdinal: 0,
+          payloadSHA256: 'd'.repeat(64),
+          role: 'assistant',
+          payloadFragment: JSON.stringify({ content: '```\ny\n```' }),
+          utf8Offset: 0,
+          isLastFragment: true,
+        },
+      ],
+    });
+    await pending;
+    ui.node('messages').querySelector('.copy-btn')?.click();
+    await settle();
+    const region = ui.node('toast-region');
+    expect(region.children[0].dataset.tone).toBe('danger');
+    expect(region.textContent).toContain('Copy failed');
+  });
+
+  it('maps HTTP failures to words in the global status and a toast', async () => {
+    const ui = harness();
+    const pending = ui.call('showStatsView("usage")');
+    ui.requests[0].resolve({}, 429);
+    await pending;
+    expect(ui.node('status').textContent).toBe('Too many requests (429)');
+    expect(ui.node('status').dataset.tone).toBe('danger');
+    expect(ui.node('toast-region').textContent).toContain(
+      'Too many requests (429)',
+    );
+  });
+
+  it('closes facet popovers on an outside click or Escape but not on an inside click', async () => {
+    const ui = harness();
+    const picker = ui.node('source-picker');
+    const options = ui.node('source-options');
+    picker.appendChild(options);
+    const option = ui.node('fake-option');
+    options.appendChild(option);
+    picker.open = true;
+    ui.dispatchDocument('click', { target: option });
+    expect(picker.open).toBe(true);
+    ui.dispatchDocument('click', { target: ui.node('sessions') });
+    expect(picker.open).toBe(false);
+    picker.open = true;
+    ui.dispatchDocument('keydown', { key: 'Escape' });
+    expect(picker.open).toBe(false);
+    expect(ui.activeElement()).toBe(ui.node('source-summary'));
+  });
+
+  it('draws source dots in facet options and SVG icons in navigation', async () => {
+    const ui = harness();
+    const icon = ui.node('nav-stats').querySelector('svg');
+    expect(icon?.namespaceURI).toBe('http://www.w3.org/2000/svg');
+    expect(icon?.getAttribute('aria-hidden')).toBe('true');
+    expect(icon?.children.length).toBeGreaterThan(0);
+    ui.node('source-picker').open = true;
+    ui.call('loadFacets("source", false)');
+    ui.requestFor('/web/api/facets').resolve({
+      snapshotId: 'facets',
+      items: [{ key: 'claude-code', label: 'claude-code', sessionCount: 4 }],
+    });
+    await settle();
+    const dot = ui.node('source-options').querySelector('.source-dot');
+    expect(dot?.className).toContain('source-claude-code');
+  });
+
+  it('shows liveness and attention pills on Health with a fleet summary', async () => {
+    const ui = harness();
+    ui.call('Date.now = () => 1789214400000');
+    const pending = ui.call('navigate("health")');
+    ui.requests[0].resolve({
+      snapshotId: 'health',
+      observedAt: 1789214400,
+      streams: [
+        {
+          registry: { source: 'codex' },
+          heartbeatAt: 1789214400 - 60,
+          ingest: { taskCounts: { retryableFailure: 0, quarantined: 0 } },
+        },
+        {
+          registry: { source: 'cursor' },
+          heartbeatAt: 1789214400 - 3 * 86400,
+          ingest: { taskCounts: { retryableFailure: 2, quarantined: 0 } },
+        },
+        { registry: { source: 'pi' }, heartbeatAt: null },
+      ],
+    });
+    await pending;
+    const cards = ui.node('health-content').querySelectorAll('.health-card');
+    const pills = cards.map((card) =>
+      card
+        .querySelectorAll('.pill')
+        .map((pill) => [pill.dataset.tone, pill.textContent]),
+    );
+    expect(pills).toEqual([
+      [['ok', 'Live']],
+      [
+        ['danger', 'Offline'],
+        ['warn', 'Needs attention'],
+      ],
+      [['neutral', 'No heartbeat']],
+    ]);
+    expect(
+      ui
+        .node('health-summary')
+        .children.map((node) => [node.dataset.tone, node.textContent]),
+    ).toEqual([
+      ['ok', '1 live'],
+      ['danger', '1 offline'],
+      ['neutral', '1 unknown liveness'],
+      ['warn', '1 needs attention'],
+    ]);
+    const heartbeat = cards[0]
+      .querySelectorAll('dd')
+      .find((dd) => dd.textContent.startsWith('1m ago'));
+    expect(heartbeat?.title).toBe(
+      new Date((1789214400 - 60) * 1000).toLocaleString(),
+    );
+    expect(
+      ui.node('health-content').querySelectorAll('.health-note'),
+    ).toHaveLength(2);
+  });
+
+  it('pluralises counts that can be one', async () => {
+    const ui = harness();
+    const first = ui.call('showStatsView("costs")');
+    ui.requests[0].resolve({
+      snapshotId: 'costs',
+      observedAt: 1,
+      groupBy: 'model',
+      timeZone: 'UTC',
+      totals: { costUsd: 1, sessionCount: 1 },
+      items: [],
+      unpricedUnattributedSessions: 1,
+      unpricedNoPriceSessions: 3,
+    });
+    ui.requests[1].resolve({ observedAt: 1, items: [] });
+    await first;
+    expect(ui.node('costs-unpriced').textContent).toBe(
+      'Unpriced usage: 1 session has no model attribution; 3 sessions have no matching price.',
+    );
+  });
+
+  it('separates every timeline meta part and hides the per-tool Tools column', async () => {
+    const ui = harness();
+    const tools = ui.call('showStatsView("tools")');
+    ui.requests[0].resolve({
+      snapshotId: 'tools',
+      observedAt: 1,
+      groupBy: 'tool',
+      totalCalls: 3,
+      groupCount: 1,
+      items: [
+        {
+          key: 'read',
+          label: 'Read',
+          callCount: 3,
+          sessionCount: 1,
+          toolCount: 1,
+        },
+      ],
+    });
+    await tools;
+    expect(ui.node('tools-col-tools').hidden).toBe(true);
+    expect(ui.node('tools-rows').children[0].children).toHaveLength(3);
+    expect(ui.node('tools-totals').textContent).toBe('3 calls · 1 group');
+    const detail = harness();
+    await detail.call(
+      'detailContextSession = "s"; detailContextGeneration = "g"',
+    );
+    const timeline = detail.call('loadDetailTimeline(false)');
+    detail.requests[0].resolve({
+      sessionId: 's',
+      generation: 'g',
+      totalEntries: 1,
+      entries: [
+        {
+          index: 0,
+          role: 'assistant',
+          type: 'tool_use',
+          toolName: 'Read',
+          preview: 'x',
+        },
+      ],
+    });
+    await timeline;
+    const meta = detail.node('timeline-rows').children[0].children[0];
+    expect(
+      meta.children.filter((child) => child.className === 'sep'),
+    ).toHaveLength(3);
+  });
+});
+
+describe('iteration 1 foundation: shipped CSS and HTML', () => {
+  it('restores a light palette by overriding tokens only, keeping the dark line', () => {
+    const css = shipped('css');
+    expect(css).toContain(
+      ':root { color-scheme: dark; --bg:#0f172a; --panel:#1e293b; --text:#f8fafc; --muted:#94a3b8; --line:#334155; --accent:#22c55e; --code:#0d1117; }',
+    );
+    const light = css.slice(
+      css.indexOf('@media (prefers-color-scheme: light)'),
+    );
+    expect(light).toMatch(/color-scheme:\s*light/);
+    expect(light).toMatch(/--bg:\s*#f8fafc/i);
+    expect(css).toContain('--panel-2');
+    expect(css).toMatch(/color-scheme:\s*light dark/);
+    expect(css).toMatch(/font: 13px\/1\.55 var\(--mono\)/);
+    expect(css).toMatch(/#search-query\s*\{[^}]*flex: 1 1 calc\(100% - 90px\)/);
+    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)/);
+    expect(css).toMatch(/\.health-note\s*\{/);
+    expect(css).toMatch(/\.stats-totals dd\s*\{[^}]*white-space:\s*nowrap/);
+  });
+
+  it.each(['dark', 'light'])(
+    'keeps small primary-button, date-group and health-note text at 4.5:1 in %s mode',
+    (scheme) => {
+      const css = shipped('css');
+      const roots = [...css.matchAll(/:root\s*\{([^}]+)\}/g)];
+      const tokens = new Map<string, string>();
+      for (const root of roots.slice(0, scheme === 'light' ? 3 : 2)) {
+        for (const token of root[1].matchAll(/(--[\w-]+):\s*([^;]+);/g)) {
+          tokens.set(token[1], token[2]);
+        }
+      }
+      const luminance = (hex: string) => {
+        expect(hex).toMatch(/^#[0-9a-f]{6}$/i);
+        const rgb = [1, 3, 5].map((at) => {
+          const value = Number.parseInt(hex.slice(at, at + 2), 16) / 255;
+          return value <= 0.04045
+            ? value / 12.92
+            : ((value + 0.055) / 1.055) ** 2.4;
+        });
+        return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+      };
+      const tokenFor = (rule: string, property: string) => {
+        const token = rule.match(
+          new RegExp(`(?:^|;)\\s*${property}:\\s*var\\((--[\\w-]+)\\)`),
+        )?.[1];
+        expect(token).toBeDefined();
+        return tokens.get(token ?? '') ?? '';
+      };
+      const primary =
+        css.match(
+          /#search > button\[type="submit"\], #login button\[type="submit"\]\s*\{([^}]+)\}/,
+        )?.[1] ?? '';
+      const group = css.match(/\.group-head\s*\{([^}]+)\}/)?.[1] ?? '';
+      const note = css.match(/\.health-note\s*\{([^}]+)\}/)?.[1] ?? '';
+      for (const [foreground, background] of [
+        [tokenFor(primary, 'color'), tokenFor(primary, 'background')],
+        [tokenFor(group, 'color'), tokens.get('--bg') ?? ''],
+        [tokenFor(note, 'color'), tokens.get('--bg') ?? ''],
+      ]) {
+        const a = luminance(foreground),
+          b = luminance(background);
+        expect(
+          (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05),
+        ).toBeGreaterThanOrEqual(4.5);
+      }
+    },
+  );
+
+  it('ships the new chrome hooks without inline styles', () => {
+    const html = shipped('html');
+    for (const id of [
+      'toast-region',
+      'active-filters',
+      'health-summary',
+      'page-nav',
+      'tools-col-tools',
+    ])
+      expect(html).toContain(`id="${id}"`);
+    const js = shipped('javascript');
+    expect(js).toContain('createElementNS');
+    for (const banned of [
+      'innerHTML',
+      'insertAdjacentHTML',
+      'outerHTML',
+      'DOMParser',
+      'new Function',
+      'setAttribute("style"',
+    ])
+      expect(js).not.toContain(banned);
+  });
+});
+
+describe('Dashboard and accessible analytics charts', () => {
+  const totals = {
+    sessionCount: 3,
+    messageCount: 12,
+    userMessageCount: 4,
+    assistantMessageCount: 6,
+    toolMessageCount: 2,
+  };
+  const page = (
+    groupBy = 'day',
+    items: unknown[] = [],
+    nextCursor: string | null = null,
+  ) => ({
+    snapshotId: 'chart-snapshot',
+    observedAt: 1794283200,
+    timeZone: 'Asia/Shanghai',
+    groupBy,
+    totals,
+    items,
+    nextCursor,
+  });
+
+  it('zero-fills exactly 30 ascending calendar days without changing unknown metrics', async () => {
+    const ui = harness();
+    const rows = (await ui.call(
+      'dailySeries([{key:"2026-11-10",sessionCount:2},{key:"2026-10-12",sessionCount:1}], "sessionCount", "2026-11-10", 30)',
+    )) as unknown as { label: string; value: number }[];
+    expect(rows).toHaveLength(30);
+    expect(rows[0]).toEqual({ label: '2026-10-12', value: 1 });
+    expect(rows[1]).toEqual({ label: '2026-10-13', value: 0 });
+    expect(rows[29]).toEqual({ label: '2026-11-10', value: 2 });
+    expect(
+      await ui.call(
+        'dailySeries([{key:"2024-02-29",costUsd:null}], "costUsd", "2024-03-01", 3)',
+      ),
+    ).toEqual([
+      { label: '2024-02-28', value: 0 },
+      { label: '2024-02-29', value: null },
+      { label: '2024-03-01', value: 0 },
+    ]);
+  });
+
+  it('uses finite scales and safe SVG titles/text, preserving ranked sums including Other', async () => {
+    const ui = harness();
+    await ui.call(
+      'renderChart("stats-chart", "<script>sessions</script>", Array.from({length:20}, function (_,i) {return {label:i === 0 ? "<img onerror=x>" : "row " + i, value:i};}), {fullTotal:190, coverage:"All groups"})',
+    );
+    const chart = ui.node('stats-chart');
+    expect(chart.querySelector('svg')?.namespaceURI).toBe(
+      'http://www.w3.org/2000/svg',
+    );
+    expect(chart.querySelector('svg')?.getAttribute('role')).toBe('img');
+    expect(chart.querySelector('svg')?.getAttribute('aria-label')).toContain(
+      '190',
+    );
+    expect(
+      chart
+        .querySelectorAll('rect')
+        .reduce((n, rect) => n + Number(rect.dataset.value), 0),
+    ).toBe(190);
+    expect(chart.querySelector('title')?.textContent).toContain('190');
+    expect(chart.querySelectorAll('script')).toHaveLength(0);
+    expect(chart.querySelectorAll('img')).toHaveLength(0);
+    expect(chart.textContent).toContain('Other loaded groups');
+    expect(chart.querySelector('table')).not.toBeNull();
+    await ui.call(
+      'renderChart("stats-chart", "Zero", [{label:"zero",value:0},{label:"unknown",value:null}], {fullTotal:null,coverage:"Loaded rows"})',
+    );
+    expect(chart.textContent).toContain('Not reported');
+    expect(chart.textContent).toContain('All reported values are zero');
+    expect(
+      chart
+        .querySelectorAll('rect')
+        .every((r) => Number.isFinite(Number(r.getAttribute('width')))),
+    ).toBe(true);
+    await ui.call(
+      'renderChart("stats-chart", "Empty", [], {coverage:"Loaded rows"})',
+    );
+    expect(chart.textContent).toContain('No observations');
+  });
+
+  it('is lazy and reuses the completed overview stream walk, chaining each widget cursor once', async () => {
+    const ui = harness();
+    const overview = ui.call('loadOverview()');
+    ui.requestFor('/web/api/overview').resolve({
+      snapshotId: 'streams',
+      streams: [],
+      nextCursor: null,
+      observedAt: 1794283200,
+    });
+    await overview;
+    expect(ui.requestsFor('/web/api/stats')).toHaveLength(0);
+    expect(ui.requestsFor('/web/api/costs')).toHaveLength(0);
+    const pending = ui.call('navigate("dashboard")');
+    expect(ui.node('dashboard-page').hidden).toBe(false);
+    expect(ui.requestsFor('/web/api/overview')).toHaveLength(1);
+    expect(ui.requestsFor('/web/api/stats')).toHaveLength(3);
+    const daily = ui
+      .requestsFor('/web/api/stats')
+      .find((r) => r.path.includes('groupBy=day'));
+    if (!daily) throw new Error('Missing daily stats');
+    daily.resolve(page('day', [{ key: '2026-11-10', ...totals }], 'next'));
+    await flushAuthWork();
+    const continued = ui.requestFor('/web/api/stats?groupBy=day');
+    expect(continued.path).toContain('snapshotId=chart-snapshot');
+    expect(continued.path).toContain('cursor=next');
+    expect(ui.requestsFor('/web/api/stats?groupBy=day')).toHaveLength(2);
+    continued.resolve(page('day', []));
+    for (const request of ui
+      .requestsFor('/web/api/stats')
+      .filter((r) => !r.settled)) {
+      const group = new URL(
+        request.path,
+        'https://example.test',
+      ).searchParams.get('groupBy');
+      request.resolve(
+        page(group || '', [{ key: 'one', label: '<b>one</b>', ...totals }]),
+      );
+    }
+    ui.requestFor('/web/api/costs').resolve({
+      ...page('day', []),
+      totals: { costUsd: 0, sessionCount: 0 },
+      unpricedNoPriceSessions: 3,
+    });
+    await pending;
+    expect(ui.node('dashboard-kpis').children).toHaveLength(5);
+    expect(ui.node('dashboard-activity').querySelectorAll('rect')).toHaveLength(
+      30,
+    );
+    expect(ui.node('dashboard-cost').textContent).toContain('0');
+    expect(shipped('html')).toContain(
+      'Heatmap counts session starts, not work duration',
+    );
+    expect(ui.node('dashboard-health').textContent).toContain('0 streams');
+  });
+
+  it('cancels cursor chaining and late paints on navigation/logout and isolates failed widgets', async () => {
+    const ui = harness();
+    const pending = ui.call('navigate("dashboard")');
+    const daily = ui.requestFor('/web/api/stats?groupBy=day');
+    const logout = ui.call('logout()');
+    ui.requestFor('/web/api/auth').resolve(null, 204);
+    await logout;
+    daily.resolve(page('day', [], 'late'));
+    for (const request of ui.requests.filter((r) => !r.settled))
+      request.resolve({}, 503);
+    await pending;
+    expect(ui.requestsFor('/web/api/stats?groupBy=day')).toHaveLength(1);
+    expect(ui.node('dashboard-kpis').textContent).toBe('');
+    expect(ui.node('dashboard-activity').textContent).toBe('');
+
+    const retry = ui.call('navigate("dashboard")');
+    for (const request of ui.requests.filter((r) => !r.settled)) {
+      if (request.path.includes('groupBy=source')) request.resolve({}, 503);
+      else if (request.path.includes('/costs')) request.resolve({}, 503);
+      else
+        request.resolve(
+          page(request.path.includes('groupBy=project') ? 'project' : 'day'),
+        );
+    }
+    await retry;
+    expect(ui.node('dashboard-sources').textContent).toContain('unavailable');
+    expect(ui.node('dashboard-activity').querySelector('svg')).not.toBeNull();
+  });
+
+  it.each(['activity', 'cost'])(
+    'does not repaint a resolved %s widget after a parallel 401 clears Dashboard',
+    async (widget) => {
+      // Sweep promise turns to cover the gap after dashboardRead resolves but
+      // before its caller resumes; flushing all work misses this interleaving.
+      for (let ticks = 0; ticks < 16; ticks += 1) {
+        const ui = harness();
+        await ui.call('setSignedIn(true)');
+        const pending = ui.call('navigate("dashboard")');
+        const isCost = widget === 'cost';
+        const values = isCost
+          ? { costUsd: 777 }
+          : { ...totals, sessionCount: 777 };
+        ui.requestFor(
+          isCost ? '/web/api/costs' : '/web/api/stats?groupBy=day',
+        ).resolve({
+          ...page('day', [{ key: '2026-11-10', ...values }]),
+          totals: values,
+        });
+        for (let i = 0; i < ticks; i += 1) await Promise.resolve();
+        ui.requestFor('/web/api/stats?groupBy=source').resolve({}, 401);
+        for (const request of ui.requests.filter((r) => !r.settled))
+          request.resolve({}, 503);
+        await pending;
+        expect(ui.node('workspace').hidden).toBe(true);
+        expect(ui.node('status').textContent).toBe('Session expired');
+        for (const name of [
+          'kpis',
+          'activity',
+          'cost',
+          'sources',
+          'projects',
+          'health',
+        ]) {
+          const node = ui.node(`dashboard-${name}`);
+          expect(node.textContent, `${widget}: ${ticks} turns, ${name}`).toBe(
+            '',
+          );
+          expect(
+            node.children,
+            `${widget}: ${ticks} turns, ${name}`,
+          ).toHaveLength(0);
+        }
+        expect(ui.requests).toHaveLength(4);
+      }
+    },
+  );
+
+  it('rejects repeated cursors and caps sequential dashboard walks with honest partial coverage', async () => {
+    const ui = harness();
+    const pending = ui.call('navigate("dashboard")');
+    for (let i = 0; i < 10; i += 1) {
+      for (const request of ui.requests.filter((r) => !r.settled)) {
+        const by =
+          new URL(request.path, 'https://example.test').searchParams.get(
+            'groupBy',
+          ) || 'day';
+        request.resolve({
+          ...page(by, [{ key: '2026-11-10', label: 'one', ...totals }], 'same'),
+          totals: request.path.includes('/costs') ? { costUsd: 0 } : totals,
+        });
+      }
+      await flushAuthWork();
+    }
+    await pending;
+    expect(ui.requestsFor('/web/api/stats?groupBy=day')).toHaveLength(2);
+    expect(ui.node('dashboard-activity').textContent).toContain('unavailable');
+  });
+
+  it('keeps stats chart loaded totals separate from full totals and updates on More', async () => {
+    const ui = harness();
+    const first = ui.call('loadStats(false)');
+    ui.requestFor('/web/api/stats').resolve(
+      page(
+        'source',
+        [
+          {
+            key: 'claude-code',
+            sessionCount: 1,
+            messageCount: 4,
+            userMessageCount: 1,
+            assistantMessageCount: 2,
+            toolMessageCount: 1,
+          },
+        ],
+        'next',
+      ),
+    );
+    await first;
+    expect(ui.node('stats-chart').textContent).toContain('1 loaded');
+    expect(ui.node('stats-chart').textContent).toContain('3 full');
+    const more = ui.call('loadStats(true)');
+    ui.requestFor('/web/api/stats').resolve(
+      page('source', [
+        {
+          key: 'codex',
+          sessionCount: 2,
+          messageCount: 8,
+          userMessageCount: 3,
+          assistantMessageCount: 4,
+          toolMessageCount: 1,
+        },
+      ]),
+    );
+    await more;
+    expect(ui.node('stats-chart').textContent).toContain('3 loaded');
+    expect(
+      ui
+        .node('stats-chart')
+        .querySelectorAll('rect')
+        .reduce((n, r) => n + Number(r.dataset.value), 0),
+    ).toBe(3);
+    expect(ui.node('stats-rows').children).toHaveLength(2);
+  });
+
+  it('exposes Dashboard hooks without changing the default Sessions landing or reading column', () => {
+    expect(shipped('html')).toContain('id="nav-dashboard"');
+    expect(shipped('html')).toContain('id="dashboard-page"');
+    expect(shipped('css')).toContain('#workspace.data-page');
+    expect(shipped('css')).toContain('max-width: 960px');
+  });
+});
+
+describe('chart data scope, meter math and dashboard bounds', () => {
+  const rectTotal = (node: Element) =>
+    node
+      .querySelectorAll('rect')
+      .reduce((sum, rect) => sum + Number(rect.dataset.value || 0), 0);
+
+  it('renders costs, tools, files and repository charts from the same loaded rows as their retained data views', async () => {
+    const ui = harness();
+    const costs = ui.call('showStatsView("costs")');
+    ui.requestFor('/web/api/costs?').resolve({
+      snapshotId: 'costs',
+      groupBy: 'model',
+      totals: { costUsd: 1.5 },
+      items: [{ key: 'm', label: '<script>model</script>', costUsd: 1.5 }],
+    });
+    ui.requestFor('/web/api/costs/sessions').resolve({ items: [] });
+    await costs;
+    expect(rectTotal(ui.node('costs-chart'))).toBe(1.5);
+    expect(ui.node('costs-chart').textContent).toContain(
+      '$1.50 loaded / $1.50 full',
+    );
+    expect(ui.node('costs-chart').querySelector('script')).toBeNull();
+    expect(ui.node('costs-rows').textContent).toContain('$1.50');
+
+    const tools = ui.call('showStatsView("tools")');
+    ui.requestFor('/web/api/tool-analytics').resolve({
+      snapshotId: 'tools',
+      groupBy: 'tool',
+      totalCalls: 10,
+      groupCount: 2,
+      items: [
+        { key: 'Read', label: 'Read', callCount: 6, sessionCount: 3 },
+        { key: 'Write', label: 'Write', callCount: 4, sessionCount: 2 },
+      ],
+    });
+    await tools;
+    expect(rectTotal(ui.node('tools-chart'))).toBe(10);
+    expect(ui.node('tools-col-tools').hidden).toBe(true);
+
+    const files = ui.call('showStatsView("files")');
+    ui.requestFor('/web/api/file-activity').resolve({
+      snapshotId: 'files',
+      totalFiles: 1,
+      totalOperations: 9,
+      items: [
+        {
+          key: 'a',
+          label: 'a',
+          readCount: 2,
+          editCount: 3,
+          writeCount: 4,
+          sessionCount: 1,
+        },
+      ],
+    });
+    await files;
+    expect(rectTotal(ui.node('files-chart'))).toBe(9);
+    expect(ui.node('files-chart').textContent).toContain('9 loaded / 9 full');
+
+    const repos = ui.call('showStatsView("repos")');
+    ui.requestFor('/web/api/repos').resolve({
+      snapshotId: 'repos',
+      scope: 'serverFilesystem',
+      totalRepos: 7,
+      nextCursor: 'next',
+      items: [{ name: 'Repo', sessionCount: 24 }],
+    });
+    await repos;
+    expect(rectTotal(ui.node('repos-chart'))).toBe(24);
+    expect(ui.node('repos-chart').textContent).toContain('24 loaded');
+    expect(ui.node('repos-chart').textContent).not.toContain('7 full'); // repositories are not sessions
+  });
+
+  it('calculates meter thresholds without adding unrelated units or inventing missing limits', async () => {
+    const ui = harness();
+    const pending = ui.call('showStatsView("usage")');
+    ui.requestFor('/web/api/usage').resolve({
+      scope: 'server',
+      items: [
+        {
+          source: 'codex',
+          metric: 'A',
+          value: 9,
+          limit: 10,
+          unit: 'tokens',
+          basis: 'indexedSessions',
+        },
+        { source: 'pi', metric: 'B', value: 7, limit: 10, unit: 'requests' },
+        { source: 'cursor', metric: 'C', value: 120, limit: 100 },
+        { source: 'unknown', metric: '<img>', value: null, limit: 0 },
+      ],
+    });
+    await pending;
+    const meters = ui.node('usage-chart').querySelectorAll('.usage-meter');
+    expect(meters.map((row) => row.dataset.tone)).toEqual([
+      'danger',
+      'warn',
+      'danger',
+      'ok',
+    ]);
+    expect(meters[0].textContent).toContain('90.0%');
+    expect(meters[0].textContent).toContain('estimate');
+    expect(meters[2].querySelectorAll('rect')[1].getAttribute('width')).toBe(
+      '720',
+    );
+    expect(meters[3].querySelectorAll('rect')).toHaveLength(1);
+    expect(meters[3].textContent).toContain('ratio unavailable');
+    expect(ui.node('usage-chart').querySelector('img')).toBeNull();
+    expect(ui.node('usage-rows').children).toHaveLength(4);
+  });
+
+  it('keeps filtered loaded AI outcomes independent from hourly statistics and preserves detail actions', async () => {
+    const ui = harness();
+    const pending = ui.call('showStatsView("ai")');
+    ui.requestFor('/web/api/ai/audit?').resolve({
+      snapshotId: 'ai',
+      total: 8,
+      nextCursor: 'more',
+      items: [
+        {
+          id: 'one',
+          caller: '<script>',
+          operation: 'chat',
+          hasError: false,
+          totalTokens: 5,
+        },
+        {
+          id: 'two',
+          caller: 'summary',
+          operation: 'chat',
+          hasError: true,
+          totalTokens: null,
+        },
+      ],
+    });
+    await pending;
+    expect(rectTotal(ui.node('ai-chart'))).toBe(2);
+    expect(ui.node('ai-chart').textContent).toContain('2 loaded / 8 full');
+    expect(ui.node('ai-chart').textContent).toContain(
+      'call-history filters only',
+    );
+    expect(
+      ui.node('ai-rows').children.every((row) => row.tagName === 'TR'),
+    ).toBe(true);
+    expect(ui.node('ai-rows').querySelector('script')).toBeNull();
+    expect(ui.requestsFor('/web/api/ai/stats')).toHaveLength(0);
+    ui.node('ai-rows').querySelector('button')?.click();
+    expect(ui.requestFor('/web/api/ai/audit/one').path).toContain('/one');
+    ui.requestFor('/web/api/ai/audit/one').resolve({ item: { id: 'one' } });
+    await flushAuthWork();
+    const stats = ui.call('loadAiStats()');
+    ui.requestFor('/web/api/ai/stats').resolve({
+      totals: { requests: 4 },
+      timeRange: { from: 'A', to: 'B' },
+      byCaller: [],
+      byModel: [],
+      hourly: [
+        { hour: '2026-11-10T02:00', requests: 3 },
+        { hour: '2026-11-10T01:00', requests: 1 },
+      ],
+    });
+    await stats;
+    expect(rectTotal(ui.node('ai-hourly-chart'))).toBe(4);
+    expect(ui.node('ai-hourly-chart').textContent).toContain(
+      'independent of call-history',
+    );
+    expect(rectTotal(ui.node('ai-chart'))).toBe(2);
+  });
+
+  it('stops at 10 cursor pages and labels absent days unknown rather than zero-filling partial data', async () => {
+    const ui = harness();
+    const pending = ui.call('navigate("dashboard")');
+    for (let i = 0; i < 10; i += 1) {
+      for (const request of ui.requests.filter((r) => !r.settled)) {
+        const groupBy = new URL(
+          request.path,
+          'https://example.test',
+        ).searchParams.get('groupBy');
+        request.resolve({
+          snapshotId: groupBy + request.path.split('?')[0],
+          groupBy,
+          timeZone: 'UTC',
+          totals: { sessionCount: 100, costUsd: 10 },
+          items: [
+            {
+              key: `2026-11-${String(i + 1).padStart(2, '0')}`,
+              label: `Day ${i}`,
+              sessionCount: 1,
+              costUsd: 0.1,
+            },
+          ],
+          nextCursor: `page-${i}`,
+        });
+      }
+      await flushAuthWork();
+    }
+    await pending;
+    expect(ui.requests).toHaveLength(40); // 4 independent endpoints x 10 sequential pages
+    expect(ui.node('dashboard-activity').querySelectorAll('rect')).toHaveLength(
+      10,
+    );
+    expect(ui.node('dashboard-activity').textContent).toContain(
+      'absent days unknown',
+    );
+    expect(ui.node('dashboard-activity').textContent).toContain(
+      '10 loaded / 100 full',
+    );
+  });
+
+  it('drops the previous refresh even when the same dashboard remains active', async () => {
+    const ui = harness();
+    const old = ui.call('navigate("dashboard")');
+    const oldRequests = [...ui.requests];
+    const current = ui.call('loadDashboard()');
+    for (const request of ui.requests.filter((r) => !oldRequests.includes(r)))
+      request.resolve({}, 503);
+    await current;
+    for (const request of oldRequests)
+      request.resolve({
+        snapshotId: 'old',
+        groupBy: 'day',
+        timeZone: 'UTC',
+        totals: { sessionCount: 999 },
+        items: [],
+        nextCursor: 'next',
+      });
+    await old;
+    expect(ui.requests).toHaveLength(8);
+    expect(ui.node('dashboard-activity').textContent).toContain('unavailable');
+    expect(ui.node('dashboard-kpis').textContent).not.toContain('999');
+  });
+});
+
+describe('responsive chart refinement', () => {
+  it('zero-fills complete bounded stats day series, but never fills missing partial pages', async () => {
+    const ui = harness();
+    await ui.call(
+      'updateChartRows("stats", [{key:"2024-03-01",label:"2024-03-01",sessionCount:2},{key:"2024-02-28",label:"2024-02-28",sessionCount:1}], "Sessions", "sessionCount", 3, "", "day")',
+    );
+    expect(
+      ui
+        .node('stats-chart')
+        .querySelectorAll('rect')
+        .map((r) => r.dataset.value),
+    ).toEqual(['1', '0', '2']);
+    await ui.call(
+      'clearStats(); updateChartRows("stats", [{key:"2024-03-01",label:"2024-03-01",sessionCount:2},{key:"2024-02-28",label:"2024-02-28",sessionCount:1}], "Sessions", "sessionCount", 3, "more", "day")',
+    );
+    expect(ui.node('stats-chart').querySelectorAll('rect')).toHaveLength(2);
+    expect(ui.node('stats-chart').textContent).toContain('Partial');
+  });
+
+  it('keeps responsive ranked/usage bar viewports from letterboxing and scopes the light-tab contrast repair', async () => {
+    const ui = harness();
+    await ui.call(
+      'renderChart("stats-chart", "Counts", [{label:"A",value:2}], {})',
+    );
+    expect(
+      ui
+        .node('stats-chart')
+        .querySelector('svg')
+        ?.getAttribute('preserveAspectRatio'),
+    ).toBe('none');
+    expect(shipped('css')).toContain(
+      '#stats-page .agent-filters button[aria-pressed="true"] { color:var(--text); }',
+    );
+  });
+});
+
+it('restores detail-return scroll before applying the wider Stats page class', async () => {
+  const ui = harness();
+  await ui.call(
+    'detailReturnPage = "stats"; workspaceNode.className = "showing-detail"; sessionListScrollTop = 123; window.scrollY = 0; showSessionList()',
+  );
+  expect(await ui.call('window.scrollY')).toBe(123);
+  expect(ui.node('workspace').className).toBe('data-page');
+  expect(ui.node('library-page').hidden).toBe(true);
+  expect(ui.node('stats-page').hidden).toBe(false);
+});
+
+it('gives each KPI trend its own equivalent daily-value table instead of claiming unrelated activity scope', async () => {
+  const ui = harness();
+  await ui.call(
+    'dashboardKpis({page:{timeZone:"UTC",totals:{sessionCount:3,messageCount:12,userMessageCount:4,assistantMessageCount:8}},items:[{key:"2026-11-10",sessionCount:3,messageCount:12,userMessageCount:4,assistantMessageCount:8}],complete:true},"2026-11-10",false)',
+  );
+  const tiles = ui.node('dashboard-kpis').children;
+  expect(tiles.every((tile) => tile.querySelector('table'))).toBe(true);
+  const messageRows =
+    tiles[1].querySelector('table')?.querySelectorAll('tr').slice(1) ?? [];
+  expect(messageRows).toHaveLength(30);
+  expect(
+    messageRows.reduce(
+      (sum, row) => sum + Number(row.children[1].textContent),
+      0,
+    ),
+  ).toBe(12);
+  expect(tiles[1].querySelector('svg')?.getAttribute('aria-label')).toContain(
+    '12',
+  );
+});
+
+describe('iteration 3 transcript reading', () => {
+  it('groups consecutive agent messages, keeps actual usage and ordinal permalinks', async () => {
+    const ui = harness();
+    await ui.call(`detailContextSession = 's/unsafe'; detailSource = 'codex';
+      renderMessage('user', {content:'<prompt>', timestamp:'2026-11-10T01:00:00Z'}, 8);
+      renderMessage('assistant', {content:'answer', usage:{inputTokens:12,outputTokens:3}}, 9);
+      renderMessage('assistant', {content:'continued', usage:{inputTokens:4,outputTokens:2}}, 10);`);
+    expect(ui.node('messages').querySelectorAll('.role')).toHaveLength(2);
+    expect(ui.node('messages').textContent).toContain('16 in → 5 out');
+    const link = ui.node('messages').querySelector('a');
+    expect(link?.getAttribute('href')).toBe('#/s/s%2Funsafe/m/8');
+    expect(ui.node('messages').children[0].dataset.ordinal).toBe('8');
+    const pending = [ui.node('messages')];
+    while (pending.length) {
+      const node = pending.pop();
+      expect(node?.getAttribute('id')).toBeNull();
+      pending.push(...(node?.children ?? []));
+    }
+  });
+
+  it('renders DTO string input/output, relative edit diffs, raw view and detected errors safely', async () => {
+    const ui = harness();
+    await ui.call(
+      `renderMessage('assistant', ${JSON.stringify({
+        content: '',
+        toolCalls: [
+          {
+            name: 'Edit',
+            input: JSON.stringify({
+              file_path: '<file>',
+              old_string: 'old\n<script>',
+              new_string: 'new\n<img>',
+            }),
+            output: 'Updated',
+          },
+          {
+            name: 'Bash',
+            input: '{"command":"false"}',
+            output: 'Error: exit code 1',
+          },
+          {
+            name: 'apply_patch',
+            input: '--- a/x\n+++ b/x\n@@ -2,1 +2,1 @@\n-old\n+new',
+            output: 'ok',
+          },
+        ],
+      })}, 4)`,
+    );
+    const tools = ui.node('messages').querySelectorAll('.tool-call');
+    expect(tools).toHaveLength(3);
+    expect(tools[0].children[0].textContent).toContain('<file>');
+    expect(tools[0].textContent).toContain('Input');
+    expect(tools[0].textContent).toContain('Output');
+    expect(tools[0].querySelectorAll('.diff-add').length).toBeGreaterThan(0);
+    expect(tools[0].querySelector('script')).toBeNull();
+    expect(tools[1].className).toContain('tool-error');
+    expect(tools[1].textContent).toContain('Error (detected)');
+    expect(
+      tools[2].querySelector('.diff-add')?.getAttribute('data-line-number'),
+    ).toBe('— / 2');
+    const raw = tools[0].querySelector('.tool-raw');
+    expect(raw?.hidden).toBe(true);
+    tools[0].querySelector('.raw-toggle')?.click();
+    expect(raw?.hidden).toBe(false);
+    expect(raw?.textContent).toContain('old_string');
+  });
+
+  it('detects explicit thinking only and filters tool cards with honest loaded counts', async () => {
+    const ui = harness();
+    await ui.call(`renderMessage('assistant', {content:'<thinking>private <img></thinking>'}, 2);
+      renderMessage('assistant', {content:'I am thinking about it',toolCalls:[{name:'Read',input:'{}'}]}, 3);
+      renderMessage('tool', {content:'result'}, 4);`);
+    expect(ui.node('messages').querySelectorAll('.thinking')).toHaveLength(1);
+    expect(ui.node('messages').querySelector('.thinking')?.open).toBe(false);
+    expect(ui.node('transcript-filters').textContent).toContain('Tools 2');
+    ui.node('transcript-filters')
+      .children.find((n) => n.dataset.type === 'tools')
+      ?.click();
+    expect(ui.node('messages').children[0].hidden).toBe(true);
+    expect(ui.node('messages').querySelector('.body')?.hidden).toBe(true);
+    expect(ui.node('messages').querySelector('.tool-call')?.hidden).toBe(false);
+    expect(ui.node('messages').children[2].hidden).toBe(false);
+  });
+
+  it('preserves code text/data-lang and provides guarded copy failure feedback', async () => {
+    const ui = harness();
+    await ui.call(
+      `renderMessage('assistant', {content:${JSON.stringify('```html\n<img onerror=evil()>\n```')}}, 0)`,
+    );
+    const code = ui.node('messages').querySelector('code');
+    expect(code?.getAttribute('data-lang')).toBe('html');
+    expect(code?.textContent).toBe('<img onerror=evil()>');
+    const copy = ui.node('messages').querySelector('.copy-btn');
+    copy?.click();
+    await flushAuthWork();
+    expect(ui.copied).toEqual(['<img onerror=evil()>']);
+    expect(copy?.textContent).toBe('Copied ✓');
+    await ui.call('navigator.clipboard = undefined');
+    copy?.click();
+    expect(copy?.textContent).toBe('Copy failed');
+  });
+
+  it('lazily reads real per-session cost/model data with agents=all and drops stale info', async () => {
+    const ui = harness();
+    await ui.call(
+      `detailContextSession='agent'; detailContextGeneration='g'; detailInfoDetail={session:{sessionId:'agent'},transcriptGeneration:'g'};`,
+    );
+    expect(ui.requests).toHaveLength(0);
+    const pending = ui.call('showDetailView("info")');
+    const sessions = ui.requestFor('/web/api/costs/sessions');
+    const cost = ui.requestFor('/web/api/costs?');
+    for (const r of [sessions, cost]) {
+      const p = new URL(r.path, 'https://test').searchParams;
+      expect(p.get('agents')).toBe('all');
+      expect(p.get('sessionId')).toBe('agent');
+    }
+    sessions.resolve({
+      items: [
+        {
+          session: { sessionId: 'agent' },
+          model: 'real-model',
+          costUsd: 0.25,
+          inputTokens: 8,
+          outputTokens: 2,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+        },
+      ],
+    });
+    cost.resolve({
+      items: [],
+      totals: {
+        costUsd: 0.25,
+        inputTokens: 8,
+        outputTokens: 2,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      },
+    });
+    await pending;
+    expect(ui.node('detail-info-content').textContent).toContain('real-model');
+    expect(ui.node('detail-info-content').textContent).toContain('$0.25');
+    const stale = ui.call('loadDetailInfo()');
+    await ui.call('clearMessages(); bumpEpoch()');
+    ui.requestFor('/web/api/costs/sessions').resolve({
+      items: [{ session: { sessionId: 'agent' }, model: 'STALE' }],
+    });
+    ui.requestFor('/web/api/costs?').resolve({ items: [] });
+    await stale;
+    expect(ui.node('detail-info-content').textContent).toBe('');
+  });
+
+  it('explicitly reports missing cost/model data and protects parallel 401 success races', async () => {
+    for (const status of [200, 401]) {
+      const ui = harness();
+      await ui.call(
+        `detailContextSession='s'; detailInfoDetail={session:{sessionId:'s'}}`,
+      );
+      const info = ui.call('loadDetailInfo()');
+      ui.requestFor('/web/api/costs?').resolve({ items: [] }, status);
+      await flushAuthWork();
+      ui.requestFor('/web/api/costs/sessions').resolve({ items: [] });
+      await info;
+      if (status === 401)
+        expect(ui.node('detail-info-content').textContent).toBe('');
+      else
+        expect(ui.node('detail-info-content').textContent).toContain(
+          'not reported',
+        );
+    }
+  });
+
+  it('caps lazy outline timeline pages at 500 and chains via nextOffset on interaction', async () => {
+    const ui = harness();
+    await ui.call(
+      `detailContextSession='s'; detailContextGeneration='g'; renderMessage('user',{content:'loaded'},7)`,
+    );
+    const first = ui.call('loadDetailTimeline(false)');
+    expect(
+      new URL(ui.requests[0].path, 'https://test').searchParams.get('limit'),
+    ).toBe('500');
+    ui.requests[0].resolve({
+      sessionId: 's',
+      generation: 'g',
+      totalEntries: 501,
+      entries: Array.from({ length: 500 }, (_, index) => ({
+        index,
+        role: index === 7 ? 'user' : 'assistant',
+        type: 'message',
+        preview: 'entry',
+      })),
+      nextOffset: 500,
+    });
+    await first;
+    const more = ui.call('loadDetailTimeline(true)');
+    expect(
+      new URL(ui.requests[1].path, 'https://test').searchParams.get('offset'),
+    ).toBe('500');
+    ui.requests[1].resolve({
+      sessionId: 's',
+      generation: 'g',
+      totalEntries: 501,
+      entries: [{ index: 500, role: 'user', type: 'message', preview: 'last' }],
+      nextOffset: null,
+    });
+    await more;
+    expect(ui.node('transcript-outline').textContent).toContain('not loaded');
+    expect(ui.node('transcript-outline').children[0].dataset.ordinal).toBe('7');
+    expect(ui.node('messages').children).toHaveLength(1);
+  });
+
+  it('bounds prompt tool tallies by decoded user ordinals beyond the first 500 timeline entries', async () => {
+    const ui = harness();
+    await ui.call(`detailContextSession='s'; detailContextGeneration='g'; messageRequest={};
+      for (let ordinal=0; ordinal<600; ordinal++) {
+        renderMessage(ordinal%2===0?'user':'assistant', {content:'message '+ordinal,
+          toolCalls:ordinal===499||ordinal===501?[{name:ordinal===499?'Read':'Bash',input:'{}',output:'ok'}]:[]}, ordinal);
+      }
+      messageRequest=null; updateTranscript();`);
+    const timeline = (start: number, end: number) => ({
+      sessionId: 's',
+      generation: 'g',
+      totalEntries: 600,
+      entries: Array.from({ length: end - start }, (_, offset) => ({
+        index: start + offset,
+        role: (start + offset) % 2 === 0 ? 'user' : 'assistant',
+        type: 'message',
+        preview: `message ${start + offset}`,
+      })),
+      nextOffset: end === 600 ? null : end,
+    });
+    const first = ui.call('loadDetailTimeline(false)');
+    ui.requestFor('/web/api/sessions/s/timeline').resolve(timeline(0, 500));
+    await first;
+    const prompt = (ordinal: number) =>
+      ui
+        .node('transcript-outline')
+        .children.find((n) => n.dataset.ordinal === String(ordinal))
+        ?.textContent;
+    const before = prompt(498);
+    expect(before).toContain('1 tools in loaded (1 Read)');
+    expect(before).not.toContain('Bash');
+    const more = ui.call('loadDetailTimeline(true)');
+    ui.requestFor('/web/api/sessions/s/timeline').resolve(timeline(500, 600));
+    await more;
+    expect(prompt(498)).toBe(before);
+    expect(prompt(500)).toContain('1 tools in loaded (1 Bash)');
+    expect(ui.node('messages').children).toHaveLength(600);
+  });
+
+  it('refreshes cached Info coverage after message pages and Load all without refetching costs', async () => {
+    const ui = harness();
+    await ui.call(`detailContextSession='s'; detailContextGeneration='g'; messageTotal=4;
+      detailInfoDetail={session:{sessionId:'s'},transcriptGeneration:'g'};`);
+    const fragment = (ordinal: number) => ({
+      messageOrdinal: ordinal,
+      payloadSHA256: 'a'.repeat(64),
+      role: 'user',
+      payloadFragment: JSON.stringify({ content: `message ${ordinal}` }),
+      utf8Offset: 0,
+      isLastFragment: true,
+    });
+    const first = ui.call('loadMessages(0,"s","g","")');
+    ui.requestFor('/web/api/sessions/s/messages').resolve({
+      sessionId: 's',
+      generation: 'g',
+      fragments: [fragment(0), fragment(1)],
+      nextCursor: 'page-2',
+    });
+    await first;
+    const info = ui.call('showDetailView("info")');
+    ui.requestFor('/web/api/costs/sessions').resolve({ items: [] });
+    ui.requestFor('/web/api/costs?').resolve({ items: [] });
+    await info;
+    const field = (label: string) => {
+      const cells =
+        ui.node('detail-info-content').querySelector('dl')?.children ?? [];
+      return cells[
+        cells.findIndex((n) => n.tagName === 'DT' && n.textContent === label) +
+          1
+      ]?.textContent;
+    };
+    expect(field('Loaded messages')).toBe('2');
+    expect(field('Generation message count')).toBe('4');
+    expect(field('Truncation')).toBe('not reported');
+    await ui.call('showDetailView("transcript")');
+    const more = ui.call('loadMessages(0,"s","g","page-2")');
+    await ui.call('showDetailView("info")');
+    expect(ui.requests).toHaveLength(4);
+    ui.requestFor('/web/api/sessions/s/messages').resolve({
+      sessionId: 's',
+      generation: 'g',
+      fragments: [fragment(2)],
+      nextCursor: 'page-3',
+      truncatedAt: 123,
+      parseFailure: 'truncatedJSONL',
+    });
+    await more;
+    expect(field('Loaded messages')).toBe('3');
+    expect(field('Truncation')).toBe('123');
+    expect(field('Parse failure')).toBe('truncatedJSONL');
+    await ui.call('showDetailView("transcript")');
+    const all = ui.call('loadAllMessages()');
+    ui.requestFor('/web/api/sessions/s/messages').resolve({
+      sessionId: 's',
+      generation: 'g',
+      fragments: [fragment(3)],
+      nextCursor: null,
+    });
+    await all;
+    await ui.call('showDetailView("info")');
+    expect(field('Loaded messages')).toBe('4');
+    expect(field('Truncation')).toBe('not reported');
+    expect(field('Parse failure')).toBe('not reported');
+    expect(
+      ui.requests.filter((r) => r.path.startsWith('/web/api/costs')),
+    ).toHaveLength(2);
+    expect(ui.requests).toHaveLength(5);
+  });
+
+  it('keeps 501-message loading bounded and UTF8 fragments intact, resets model on generation switches', async () => {
+    const ui = harness();
+    const first = ui.call('loadMessages(0,"s","g","")');
+    expect(ui.requests[0].path).toContain('maxFragments=100');
+    const fragment = (ordinal: number, content: string) => ({
+      messageOrdinal: ordinal,
+      payloadSHA256: 'a'.repeat(64),
+      role: 'user',
+      payloadFragment: JSON.stringify({ content }),
+      utf8Offset: 0,
+      isLastFragment: true,
+    });
+    ui.requests[0].resolve({
+      generation: 'g',
+      sessionId: 's',
+      fragments: Array.from({ length: 100 }, (_, i) =>
+        fragment(i, `message ${i}`),
+      ),
+      nextCursor: 'page-2',
+    });
+    await first;
+    expect(ui.requests).toHaveLength(1);
+    expect(ui.node('messages').children).toHaveLength(100);
+    const all = ui.call('loadAllMessages()');
+    for (let page = 1; page <= 5; page++) {
+      await flushAuthWork();
+      ui.requests[page].resolve({
+        sessionId: 's',
+        generation: 'g',
+        fragments: Array.from({ length: page === 5 ? 1 : 100 }, (_, i) =>
+          fragment(page * 100 + i, `message ${page * 100 + i} 会话😀`),
+        ),
+        nextCursor: page === 5 ? null : `page-${page + 2}`,
+      });
+    }
+    await all;
+    expect(ui.node('messages').children).toHaveLength(501);
+    expect(ui.node('messages').textContent).toContain('message 500 会话😀');
+    const stale = ui.call('loadMessages(0,"s","g","stale")');
+    await ui.call('clearMessages(); bumpEpoch()');
+    ui.requestFor('/web/api/sessions/s/messages').resolve({
+      fragments: [fragment(999, 'STALE')],
+    });
+    await stale;
+    expect(ui.node('messages').textContent).toBe('');
+    expect(ui.node('transcript-outline').textContent).not.toContain('message');
+  });
+});
+
+describe('iteration 3 transcript edge contracts', () => {
+  it('extends rather than replaces Markdown with safe quotes/nested lists/autolinks/image links', async () => {
+    const ui = harness();
+    await ui.call(
+      `renderMessage('assistant', {content:${JSON.stringify('> quoted <b>text</b>\n\n- outer\n  - inner\n\nVisit https://example.com/page and javascript:alert(1)\n![image](https://example.com/a.png)\n![bad](javascript:alert(1))')}}, 1)`,
+    );
+    const body = ui.node('messages').querySelector('.body');
+    expect(body?.querySelector('blockquote')?.textContent).toContain(
+      'quoted <b>text</b>',
+    );
+    expect(body?.querySelector('ul')?.querySelector('ul')?.textContent).toBe(
+      'inner',
+    );
+    const links = body?.querySelectorAll('a') ?? [];
+    expect(links.map((n) => n.getAttribute('href'))).toEqual([
+      'https://example.com/page',
+      'https://example.com/a.png',
+    ]);
+    expect(
+      links.every((n) => n.getAttribute('rel') === 'noopener noreferrer'),
+    ).toBe(true);
+    expect(body?.querySelector('img')).toBeNull();
+    expect(body?.textContent).toContain('javascript:alert(1)');
+  });
+
+  it('rejects message generation mismatches and does not paint stale outline pages after logout', async () => {
+    const ui = harness();
+    const messages = ui.call('loadMessages(0,"s","g","")');
+    ui.requestFor('/web/api/sessions/s/messages').resolve({
+      sessionId: 's',
+      generation: 'wrong',
+      fragments: [],
+    });
+    await expect(messages).rejects.toThrow('changed generation');
+    await ui.call('detailContextSession="s"; detailContextGeneration="g"');
+    const outline = ui.call('loadDetailTimeline(false)');
+    await ui.call('expireSession()');
+    ui.requestFor('/web/api/sessions/s/timeline').resolve({
+      sessionId: 's',
+      generation: 'g',
+      totalEntries: 1,
+      entries: [{ index: 0, role: 'user', type: 'message', preview: 'STALE' }],
+    });
+    await outline;
+    expect(ui.node('transcript-outline').textContent).not.toContain('STALE');
+    expect(ui.node('timeline-rows').textContent).toBe('');
+  });
+
+  it('keeps MultiEdit changes separate and plain non-diff text intact', async () => {
+    const ui = harness();
+    const input = JSON.stringify({
+      edits: [
+        { old_string: 'a', new_string: 'b' },
+        { old_string: '<bad>', new_string: 'c' },
+      ],
+    });
+    await ui.call(
+      `renderMessage('assistant', {content:'',toolCalls:[{name:'MultiEdit',input:${JSON.stringify(input)},output:'unchanged output'},{name:'apply_patch',input:'not a diff <script>',output:'plain'}]}, 5)`,
+    );
+    expect(ui.node('messages').querySelectorAll('.unified-diff')).toHaveLength(
+      2,
+    );
+    expect(ui.node('messages').querySelector('script')).toBeNull();
+    expect(ui.node('messages').textContent).toContain('not a diff <script>');
+    expect(ui.node('messages').textContent).toContain('unchanged output');
+  });
+});
+
+describe('iteration 3 tool summary coverage', () => {
+  it('shows the actual Grep pattern and path together', async () => {
+    const ui = harness();
+    await ui.call(
+      `renderMessage('assistant',{toolCalls:[{name:'Grep',input:'{"pattern":"CREATE TABLE","path":"macos/Core"}'}]},0)`,
+    );
+    const summary = ui.node('messages').querySelector('.tool-call')
+      ?.children[0];
+    expect(summary?.textContent).toContain('CREATE TABLE');
+    expect(summary?.textContent).toContain('macos/Core');
+  });
+});
+
+describe('iteration 3 reading detail affordances', () => {
+  it('keeps code line numbers out of copied text and diff copy identical to supplied input', async () => {
+    const ui = harness();
+    const diff = '--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new';
+    await ui.call(
+      `renderMessage('assistant',{content:${JSON.stringify('```js\na()\nb()\n```')},toolCalls:[{name:'apply_patch',input:${JSON.stringify(diff)}}]},0)`,
+    );
+    const code = ui.node('messages').querySelector('code');
+    expect(code?.textContent).toBe('a()\nb()');
+    expect(code?.children[1].getAttribute('data-line-number')).toBe('2');
+    const patch = ui.node('messages').querySelector('.unified-diff');
+    expect(patch?.textContent).toBe(diff);
+    ui.node('messages').querySelector('.diff-copy')?.click();
+    await flushAuthWork();
+    expect(ui.copied).toEqual([diff]);
+  });
+
+  it('labels proximity-only tool result association without merging or losing text', async () => {
+    const ui = harness();
+    await ui.call(
+      `renderMessage('assistant',{toolCalls:[{name:'Read',input:'file'}]},0);renderMessage('tool',{content:'unaltered <result>'},1)`,
+    );
+    const result = ui.node('messages').children[1];
+    expect(result.className).toContain('associated-result');
+    expect(result.textContent).toContain('Read (proximity)');
+    expect(result.querySelector('pre')?.textContent).toBe('unaltered <result>');
+  });
+});
+
+describe('iteration 3 unified diff integrity', () => {
+  it('resets file headers and line numbers between hunks and preserves malformed patches as plain text', async () => {
+    const ui = harness();
+    const patch =
+      '--- a/one\n+++ b/one\n@@ -2,1 +2,1 @@\n-a\n+b\n--- a/two\n+++ b/two\n@@ -8,1 +9,1 @@\n-c\n+d';
+    await ui.call(
+      `renderMessage('assistant',{toolCalls:[{name:'apply_patch',input:${JSON.stringify(patch)}},{name:'apply_patch',input:${JSON.stringify('@@ -1,2 +1,2 @@\n-only-one-line')}}]},0)`,
+    );
+    expect(ui.node('messages').querySelectorAll('.unified-diff')).toHaveLength(
+      1,
+    );
+    const rows = ui.node('messages').querySelectorAll('.diff-row');
+    expect(rows[5].getAttribute('data-line-number')).toBeNull();
+    expect(rows[9].getAttribute('data-line-number')).toBe('— / 9');
+    expect(ui.node('messages').textContent).toContain('only-one-line');
+  });
+});
+
+describe('iteration 3 timeline reading', () => {
+  it('uses ordinal links, local timestamps, stripped previews and duration bars from real values only', async () => {
+    const ui = harness();
+    await ui.call('detailContextSession="s"; detailContextGeneration="g"');
+    const pending = ui.call('loadDetailTimeline(false)');
+    ui.requestFor('/web/api/sessions/s/timeline').resolve({
+      sessionId: 's',
+      generation: 'g',
+      totalEntries: 2,
+      entries: [
+        {
+          index: 0,
+          type: 'message',
+          role: 'user',
+          preview: '# **prompt** `code`',
+          timestamp: '2026-11-10T01:00:00Z',
+          durationToNextMs: 4000,
+        },
+        { index: 1, type: 'message', role: 'assistant', preview: 'answer' },
+      ],
+    });
+    await pending;
+    const cards = ui.node('timeline-rows').children;
+    expect(cards[0].querySelector('time')?.title).toBe('2026-11-10T01:00:00Z');
+    expect(cards[0].querySelector('p.timeline-preview')?.textContent).toBe(
+      'prompt code',
+    );
+    expect(cards[0].querySelector('svg')?.getAttribute('aria-label')).toContain(
+      '4 s',
+    );
+    expect(cards[1].querySelector('svg')).toBeNull();
+    expect(cards[0].querySelector('a')?.getAttribute('href')).toBe('#/s/s/m/0');
+  });
+});
+
+describe('iteration 3 unloaded ordinal jumps', () => {
+  it('loads only the bounded pages needed for an unloaded prompt and keeps its real ordinal', async () => {
+    const ui = harness();
+    const fragments = (start: number) =>
+      Array.from({ length: 100 }, (_, i) => ({
+        messageOrdinal: start + i,
+        role: 'user',
+        payloadSHA256: 'a'.repeat(64),
+        utf8Offset: 0,
+        isLastFragment: true,
+        payloadFragment: JSON.stringify({ content: `prompt ${start + i}` }),
+      }));
+    const first = ui.call('loadMessages(0,"s","g","")');
+    ui.requestFor('/web/api/sessions/s/messages').resolve({
+      sessionId: 's',
+      generation: 'g',
+      fragments: fragments(0),
+      nextCursor: 'c1',
+    });
+    await first;
+    const jump = ui.call('jumpToOrdinal(501)');
+    for (let page = 1; page <= 5; page++) {
+      await flushAuthWork();
+      ui.requestFor('/web/api/sessions/s/messages').resolve({
+        sessionId: 's',
+        generation: 'g',
+        fragments: fragments(page * 100),
+        nextCursor: `c${page + 1}`,
+      });
+    }
+    await jump;
+    expect(ui.requests).toHaveLength(6);
+    expect(ui.node('messages').children[501].dataset.ordinal).toBe('501');
+    expect(ui.node('messages').children[501].className).toContain(
+      'jump-target',
+    );
+    expect(ui.node('messages').children).toHaveLength(600);
+    expect(ui.node('more-messages').hidden).toBe(false);
+  });
+});
+
+describe('iteration 3 empty replacement diffs', () => {
+  it('uses zero-based empty ranges instead of inventing a line in an empty supplied replacement', async () => {
+    const ui = harness();
+    await ui.call(
+      `renderMessage('assistant',{toolCalls:[{name:'Edit',input:'{"old_string":"","new_string":"added"}'}]},0)`,
+    );
+    expect(
+      ui.node('messages').querySelector('.unified-diff')?.textContent,
+    ).toContain('@@ -0,0 +1,1 @@');
+  });
+});
+
+describe('iteration 4 navigation, search and keyboard', () => {
+  it('round trips unicode routes, strips non-allowlisted fields and rejects malformed paths', async () => {
+    const ui = harness();
+    expect(
+      await ui.call('routeHref(parseRoute("#/s/%E4%BC%9A%2F%E8%AF%9D/m/42"))'),
+    ).toBe('#/s/%E4%BC%9A%2F%E8%AF%9D/m/42');
+    expect(
+      await ui.call(
+        'routeHref(parseRoute("#/sessions?q=中文&agents=only&credential=secret&cursor=private&mode=oops"))',
+      ),
+    ).toBe('#/sessions?q=%E4%B8%AD%E6%96%87&agents=only');
+    for (const hash of [
+      '#/s/%E0%A4%A',
+      '#/s/a/m/-1',
+      '#/unknown',
+      '#/stats/nope',
+    ]) {
+      expect(
+        await ui.call(`routeHref(parseRoute(${JSON.stringify(hash)}))`),
+      ).toBe('#/sessions');
+    }
+  });
+
+  it('restores an unchanged list, filters, page and scroll on history without a refetch; dedupes paired events', async () => {
+    const ui = harness();
+    await ui.call(
+      'setSignedIn(true); document.getElementById("query").value="kept"',
+    );
+    const list = ui.call('refreshLibrary()');
+    ui.requestFor('/web/api/sessions').resolve({
+      items: [{ sessionId: 's', title: 'Kept row' }],
+      snapshotId: 'snap',
+    });
+    await list;
+    await ui.call(
+      'window.scrollY=321; writeRoute({page:"detail",id:"s"}); workspaceNode.className="showing-detail"; window.scrollY=0; window.location.hash="#/sessions?q=kept"',
+    );
+    ui.dispatchWindow('popstate');
+    ui.dispatchWindow('hashchange');
+    await flushAuthWork();
+    expect(ui.requests).toHaveLength(1);
+    expect(ui.node('workspace').classList.contains('showing-detail')).toBe(
+      false,
+    );
+    expect(ui.node('query').value).toBe('kept');
+    expect(await ui.call('window.scrollY')).toBe(321);
+    expect(ui.node('sessions').textContent).toContain('Kept row');
+  });
+
+  it('debounces by Unicode length, cancels stale requests and preserves explicit semantic mode', async () => {
+    const ui = harness();
+    await ui.call(
+      'setSignedIn(true); activatePage("search"); document.getElementById("search-mode").value="semantic"',
+    );
+    ui.node('query').value = '中';
+    ui.node('query').dispatch('input');
+    ui.runTimers();
+    expect(ui.requests).toHaveLength(0);
+    ui.node('query').value = '中文';
+    ui.node('query').dispatch('input');
+    ui.runTimers();
+    expect(ui.requestFor('/web/api/search?').path).toContain('mode=semantic');
+    const old = ui.requestFor('/web/api/search?');
+    ui.node('query').value = '中文新';
+    ui.node('query').dispatch('input');
+    ui.runTimers();
+    old.resolve({
+      query: '中文',
+      items: [{ session: { sessionId: 'old', title: 'STALE' } }],
+    });
+    ui.requestFor('/web/api/search?').resolve({
+      query: '中文新',
+      items: [{ session: { sessionId: 'new', title: 'Fresh' } }],
+    });
+    for (const request of ui.requestsFor('/web/api/search/status'))
+      request.resolve({
+        keyword: 'available',
+        semantic: 'unavailable',
+        hybrid: 'unavailable',
+      });
+    await flushAuthWork();
+    expect(ui.node('sessions').textContent).toContain('Fresh');
+    expect(ui.node('sessions').textContent).not.toContain('STALE');
+    expect(ui.node('search-mode').value).toBe('semantic');
+    ui.node('query').value = 'next';
+    ui.node('query').dispatch('input');
+    const logout = ui.call('logout()');
+    ui.requestFor('/web/api/auth').resolve({}, 204);
+    await logout;
+    ui.runTimers();
+    expect(ui.requestsFor('/web/api/search?')).toHaveLength(2);
+  });
+
+  it('finds model occurrences and hidden tool/thinking text without rewriting code, raw, links or copy payloads', async () => {
+    const ui = harness();
+    await ui.call(
+      'renderMessage("assistant",{content:"<thinking>needle needle</thinking>"},0); renderMessage("assistant",{content:"```js\\nneedle()\\n```",toolCalls:[{name:"Read",input:"needle",output:"needle"}]},1)',
+    );
+    const before = ui.node('messages').textContent;
+    ui.node('transcript-find-query').value = 'needle';
+    await ui.call('updateTranscriptFind(); moveFind(1)');
+    expect(ui.node('transcript-find-status').textContent).toContain('1 of 5');
+    expect(ui.node('transcript-find-status').textContent).toContain('loaded');
+    expect(ui.node('messages').textContent).toBe(before);
+    await ui.call('moveFind(-1)');
+    expect(ui.node('transcript-find-status').textContent).toContain('5 of 5');
+    expect(ui.node('messages').querySelectorAll('.find-target')).toHaveLength(
+      1,
+    );
+  });
+
+  it('centralizes list and help keys while ignoring editable, composing, modified and dialog events', async () => {
+    const ui = harness();
+    await ui.call(
+      'setSignedIn(true); acceptSessionsPage(false,{items:[{sessionId:"s",title:"row"}]})',
+    );
+    const input = ui.node('query');
+    input.tagName = 'INPUT';
+    for (const init of [
+      { target: input },
+      { isComposing: true },
+      { ctrlKey: true },
+    ]) {
+      expect(
+        ui.dispatchDocument('keydown', { key: '/', ...init }).defaultPrevented,
+      ).toBe(false);
+    }
+    expect(ui.dispatchDocument('keydown', { key: '/' }).defaultPrevented).toBe(
+      true,
+    );
+    expect(ui.activeElement()).toBe(input);
+    ui.dispatchDocument('keydown', { key: '?' });
+    expect(ui.node('shortcuts-dialog').open).toBe(true);
+    ui.dispatchDocument('keydown', { key: 'Escape' });
+    expect(ui.node('shortcuts-dialog').open).toBe(false);
+    ui.dispatchDocument('keydown', { key: 'j' });
+    expect(
+      ui.node('sessions').querySelector('button')?.getAttribute('aria-current'),
+    ).toBe('true');
+  });
+});
+
+describe('iteration 4 route and find fences', () => {
+  const detail = {
+    detail: {
+      session: { sessionId: 's', title: 'Cold session' },
+      transcriptGeneration: 'g',
+    },
+  };
+  const fragment = (ordinal: number, content: string) => ({
+    messageOrdinal: ordinal,
+    role: 'assistant',
+    payloadSHA256: 'a'.repeat(64),
+    utf8Offset: 0,
+    isLastFragment: true,
+    payloadFragment: JSON.stringify({ content }),
+  });
+  it.each(['#/s/s', '#/s/s/m/0'])(
+    'restores Transcript from Info on same-session route %s',
+    async (hash) => {
+      const ui = harness();
+      await ui.call(
+        'setSignedIn(true); detailContextSession="s"; detailContextGeneration="g"; detailInfoLoaded=true; showSessionDetailPane(); renderMessage("assistant",{content:"Visible message"},0); showDetailView("info"); handledRoute="#/s/s/info"',
+      );
+      expect(ui.node('transcript-panel').hidden).toBe(true);
+      await ui.call(
+        `window.location.hash=${JSON.stringify(hash)}; applyRoute(false)`,
+      );
+      expect(ui.node('transcript-panel').hidden).toBe(false);
+      expect(ui.node('detail-info-panel').hidden).toBe(true);
+      expect(
+        ui.node('detail-view-transcript').getAttribute('aria-pressed'),
+      ).toBe('true');
+      expect(ui.requests).toHaveLength(0);
+    },
+  );
+
+  it('cancels pending deep-link Find when the user selects a detail tab', async () => {
+    const ui = harness();
+    await ui.call(
+      'setSignedIn(true); window.location.hash="#/s/s/m/0?find=trigram"',
+    );
+    const cold = ui.call('restoreRequestedPage()');
+    ui.requestFor('/web/api/sessions/s').resolve(detail);
+    await flushAuthWork();
+    const pending = ui.requestFor('/web/api/sessions/s/messages');
+    await ui.call('detailInfoLoaded=true');
+    ui.node('detail-view-info').click();
+    await flushAuthWork();
+    expect(ui.node('transcript-find').hidden).toBe(true);
+    pending.resolve({ fragments: [fragment(0, 'trigram evidence')] });
+    await cold;
+    expect(await ui.call('window.location.hash')).toBe('#/s/s/info');
+    expect(ui.node('detail-info-panel').hidden).toBe(false);
+    expect(ui.node('transcript-find').hidden).toBe(true);
+  });
+
+  it('cancels ordinary search-hit Find continuation after explicit Info navigation', async () => {
+    const ui = harness();
+    await ui.call(
+      'setSignedIn(true); activatePage("search"); document.getElementById("query").value="needle"',
+    );
+    const search = ui.call('loadRankedSearch()');
+    ui.requestFor('/web/api/search?').resolve({
+      query: 'needle',
+      items: [
+        {
+          session: { sessionId: 's', title: 'Search hit' },
+          snippet: '<mark>needle</mark>',
+        },
+      ],
+    });
+    await search;
+    ui.node('sessions').children[0].click();
+    ui.requestFor('/web/api/sessions/s').resolve(detail);
+    await flushAuthWork();
+    const pending = ui.requestFor('/web/api/sessions/s/messages');
+    await ui.call('detailInfoLoaded=true');
+    ui.node('detail-view-info').click();
+    await flushAuthWork();
+    const focus = ui.activeElement();
+    const count = ui.requests.length;
+    pending.resolve({
+      fragments: [fragment(0, 'No matching text')],
+      nextCursor: 'more',
+    });
+    await flushAuthWork();
+    expect(await ui.call('window.location.hash')).toBe('#/s/s/info');
+    expect(ui.node('detail-info-panel').hidden).toBe(false);
+    expect(ui.node('transcript-find').hidden).toBe(true);
+    expect(ui.node('transcript-find-query').value).toBe('');
+    expect(ui.activeElement()).toBe(focus);
+    expect(ui.node('messages').querySelector('.jump-target')).toBe(null);
+    expect(ui.requests).toHaveLength(count);
+  });
+
+  for (const completion of [
+    'before Forward',
+    'during replacement',
+    'after replacement',
+  ]) {
+    it.each(['info', 'timeline', 'children'])(
+      `recovers pending %s panel history when the old read completes ${completion}`,
+      async (view) => {
+        const ui = harness();
+        await ui.call(
+          'setSignedIn(true); detailContextSession="s"; detailContextGeneration="g"; showSessionDetailPane(); writeRoute({page:"detail",id:"s"})',
+        );
+        const prefixes =
+          view === 'info'
+            ? ['/web/api/costs/sessions?', '/web/api/costs?']
+            : [`/web/api/sessions/s/${view}?`];
+        const reads = () =>
+          ui.requests.filter((r) =>
+            prefixes.some((prefix) => r.path.startsWith(prefix)),
+          );
+        const finish = (requests: ReturnType<typeof reads>, label: string) => {
+          for (const request of requests) {
+            if (view === 'info')
+              request.resolve(
+                request.path.startsWith('/web/api/costs/sessions?')
+                  ? { items: [{ session: { sessionId: 's' }, model: label }] }
+                  : { items: [] },
+              );
+            else if (view === 'timeline')
+              request.resolve({
+                sessionId: 's',
+                generation: 'g',
+                totalEntries: 1,
+                entries: [
+                  { index: 0, type: 'message', role: 'user', preview: label },
+                ],
+              });
+            else
+              request.resolve({
+                sessionId: 's',
+                snapshotId: label,
+                items: [
+                  {
+                    session: { sessionId: `child-${label}`, title: label },
+                    relationship: 'confirmed',
+                  },
+                ],
+              });
+          }
+        };
+        const busy = () =>
+          ui.call(
+            view === 'info'
+              ? 'detailInfoBusy'
+              : `detail${view === 'timeline' ? 'Timeline' : 'Children'}.busy`,
+          );
+        const loaded = () =>
+          ui.call(
+            view === 'info'
+              ? 'detailInfoLoaded'
+              : `detail${view === 'timeline' ? 'Timeline' : 'Children'}.loaded`,
+          );
+        const content = () =>
+          ui.node(
+            view === 'info'
+              ? 'detail-info-content'
+              : view === 'timeline'
+                ? 'timeline-rows'
+                : 'detail-children-rows',
+          ).textContent;
+        ui.node(`detail-view-${view}`).click();
+        await flushAuthWork();
+        const old = [...reads()];
+        expect(old).toHaveLength(prefixes.length);
+        await ui.call('window.location.hash="#/s/s"; applyRoute(false)');
+        if (completion === 'before Forward') {
+          finish(old, 'STALE');
+          await flushAuthWork();
+        }
+        const forward = ui.call(
+          `window.location.hash="#/s/s/${view}"; applyRoute(false)`,
+        );
+        await flushAuthWork();
+        const replacement = reads().filter((r) => !old.includes(r));
+        expect(replacement).toHaveLength(prefixes.length);
+        expect(await busy()).toBe(true);
+        if (completion === 'during replacement') {
+          finish(old, 'STALE');
+          await flushAuthWork();
+          expect(await busy()).toBe(true); // An old finally must not unlock the replacement.
+          ui.node(`detail-view-${view}`).click();
+          if (view !== 'info')
+            ui.node(
+              view === 'timeline'
+                ? 'timeline-refresh'
+                : 'detail-children-refresh',
+            ).click();
+          expect(reads()).toHaveLength(2 * prefixes.length);
+        }
+        expect(content()).not.toContain('STALE');
+        finish(replacement, 'CURRENT');
+        await forward;
+        if (completion === 'after replacement') {
+          finish(old, 'STALE');
+          await flushAuthWork();
+        }
+        expect(await busy()).toBe(false);
+        expect(await loaded()).toBe(true);
+        expect(content()).toContain('CURRENT');
+        expect(content()).not.toContain('STALE');
+        expect(
+          ui.node(`detail-view-${view}`).getAttribute('aria-pressed'),
+        ).toBe('true');
+        // Completed panels are reused through history, without rereading the session/messages.
+        await ui.call('window.location.hash="#/s/s"; applyRoute(false)');
+        await ui.call(
+          `window.location.hash="#/s/s/${view}"; applyRoute(false)`,
+        );
+        expect(ui.requests).toHaveLength(2 * prefixes.length);
+      },
+    );
+  }
+
+  it('retains pending message routes across credential login with original login read ordering', async () => {
+    const ui = harness();
+    await ui.call('window.location.hash="#/s/s/m/42"');
+    ui.dispatchWindow('hashchange');
+    expect(ui.requests).toHaveLength(0);
+    const login = ui.call('login({preventDefault(){}})');
+    ui.requests[0].resolve({}, 204);
+    await flushAuthWork();
+    expect(ui.requests[1].path).toBe('/web/api/sessions');
+    ui.requests[1].resolve({ items: [] });
+    await flushAuthWork();
+    expect(ui.requests[2].path).toBe('/web/api/overview?limit=2');
+    ui.requests[2].resolve({ streams: [] });
+    await flushAuthWork();
+    ui.requestFor('/web/api/sessions/s').resolve(detail);
+    await flushAuthWork();
+    ui.requestFor('/web/api/sessions/s/messages').resolve({
+      fragments: [fragment(42, 'Cold evidence')],
+    });
+    await login;
+    expect(ui.node('messages').textContent).toContain('Cold evidence');
+    expect(ui.node('messages').children[0].className).toContain('jump-target');
+  });
+  it('retains the route through identity 401/mint/probe/overview before opening it', async () => {
+    const ui = harness(undefined, { authMode: 'tailscale-serve' });
+    await ui.call('window.location.hash="#/s/s/m/42"');
+    ui.dispatchDocument('DOMContentLoaded');
+    ui.requests[0].resolve({}, 401);
+    await flushAuthWork();
+    expect(ui.requests[1].method).toBe('POST');
+    expect(ui.requests[1].body).toBe('{}');
+    ui.requests[1].resolve({}, 204);
+    await flushAuthWork();
+    ui.requests[2].resolve({ items: [] });
+    await flushAuthWork();
+    ui.requestFor('/web/api/overview').resolve({ streams: [] });
+    await flushAuthWork();
+    ui.requestFor('/web/api/auth').resolve({ login: 'fixture' });
+    await flushAuthWork();
+    ui.requestFor('/web/api/sessions/s').resolve(detail);
+    await flushAuthWork();
+    ui.requestFor('/web/api/sessions/s/messages').resolve({
+      fragments: [fragment(42, 'Identity evidence')],
+    });
+    await flushAuthWork();
+    expect(ui.node('messages').textContent).toContain('Identity evidence');
+    expect(ui.node('messages').children[0].className).toContain('jump-target');
+  });
+  it('normalizes an invalid route even when its fallback is already active without fetching again', async () => {
+    const ui = harness();
+    await ui.call(
+      'setSignedIn(true); handledRoute="#/sessions"; window.location.hash="#/s/%ZZ"',
+    );
+    ui.dispatchWindow('hashchange');
+    await flushAuthWork();
+    expect(await ui.call('window.location.hash')).toBe('#/sessions');
+    expect(ui.requests).toHaveLength(0);
+  });
+  it('restores Stats Costs from browser Back without refetching retained cost data', async () => {
+    const ui = harness();
+    await ui.call(
+      'setSignedIn(true); activatePage("stats"); statsView="costs"; detailReturnRoute={page:"stats",tab:"costs"}; detailReturnPage="stats"; showSessionDetailPane(); window.location.hash="#/stats/costs"',
+    );
+    ui.dispatchWindow('popstate');
+    await flushAuthWork();
+    expect(ui.requests).toHaveLength(0);
+    expect(ui.node('stats-page').hidden).toBe(false);
+    expect(ui.node('workspace').classList.contains('showing-detail')).toBe(
+      false,
+    );
+  });
+  it('drops a cold-route detail arriving after navigation and a jump arriving after logout', async () => {
+    const ui = harness();
+    await ui.call('setSignedIn(true); window.location.hash="#/s/s/m/42"');
+    const cold = ui.call('restoreRequestedPage()');
+    await ui.call('window.location.hash="#/sessions"');
+    ui.dispatchWindow('popstate');
+    expect(ui.requests[1].path).toBe('/web/api/sessions');
+    ui.requests[1].resolve({ items: [] });
+    ui.requestFor('/web/api/sessions/s').resolve(detail);
+    await cold;
+    await flushAuthWork();
+    expect(ui.node('messages').textContent).toBe('');
+    expect(ui.node('detail').textContent).not.toContain('Cold session');
+    await ui.call(
+      'renderMessage("user",{content:"kept"},0); messageCursor="next"; messageSessionId="s"; messageGeneration="g"',
+    );
+    const jump = ui.call('jumpToOrdinal(42)');
+    const logout = ui.call('logout()');
+    ui.requestFor('/web/api/auth').resolve({}, 204);
+    await logout;
+    ui.requestFor('/web/api/sessions/s/messages').resolve({
+      fragments: [fragment(42, 'PRIVATE LATE')],
+    });
+    await jump;
+    expect(ui.node('messages').textContent).toBe('');
+    expect(ui.node('toast-region').textContent).not.toContain('Message');
+  });
+  it('search further adds matches beyond the loaded scope and presents safe model context', async () => {
+    const ui = harness();
+    await ui.call(
+      'renderMessage("user",{content:"needle <script>"},0); messageCursor="next"; messageSessionId="s"; messageGeneration="g"; openTranscriptFind("needle")',
+    );
+    const further = ui.call('searchFurther(true)');
+    ui.requestFor('/web/api/sessions/s/messages').resolve({
+      fragments: [fragment(1, 'next needle')],
+      nextCursor: null,
+    });
+    await further;
+    expect(ui.node('transcript-find-status').textContent).toContain('2 of 2');
+    expect(
+      ui.node('transcript-find-preview').querySelector('mark')?.textContent,
+    ).toBe('needle');
+    expect(
+      ui.node('transcript-find-preview').querySelector('script'),
+    ).toBeNull();
+  });
+  it('caps jump HTTP reads including multi-page UTF8 fragments and reports unloaded versus missing honestly', async () => {
+    const ui = harness();
+    await ui.call(
+      'messageCursor="c0";messageSessionId="s";messageGeneration="g"',
+    );
+    const jump = ui.call('jumpToOrdinal(42)');
+    for (let i = 0; i < 5; i++) {
+      await flushAuthWork();
+      ui.requestFor('/web/api/sessions/s/messages').resolve({
+        fragments: [
+          {
+            ...fragment(0, 'unused'),
+            utf8Offset: i,
+            payloadFragment: 'x',
+            isLastFragment: false,
+          },
+        ],
+        nextCursor: `c${i + 1}`,
+      });
+    }
+    await flushAuthWork();
+    expect(ui.requests).toHaveLength(5);
+    await jump;
+    expect(ui.node('toast-region').textContent).toContain('not loaded');
+    await ui.call('messageCursor="";jumpToOrdinal(42)');
+    expect(ui.node('toast-region').textContent).toContain('missing');
+  });
+});
+
+it('places the keyword field before search options and defaults ranked results to 25', async () => {
+  const html = shipped('html');
+  expect(html.indexOf('id="query"')).toBeLessThan(
+    html.indexOf('id="search-options"'),
+  );
+  const ui = harness();
+  await ui.call(
+    'activatePage("search");document.getElementById("query").value="needle"',
+  );
+  const search = ui.call('loadRankedSearch()');
+  expect(
+    new URLSearchParams(ui.requests[0].path.split('?')[1]).get('limit'),
+  ).toBe('25');
+  ui.requests[0].resolve({ query: 'needle', items: [] });
+  await search;
+});
+
+it('does not adopt a legacy DOM-anchor scroll as the initial list scroll', async () => {
+  const ui = harness();
+  await ui.call(
+    'setSignedIn(true); window.location.hash="#sessions"; window.scrollY=255',
+  );
+  await ui.call('restoreRequestedPage()');
+  expect(await ui.call('window.scrollY')).toBe(0);
+  expect(await ui.call('window.location.hash')).toBe('#/sessions');
+});
+
+it('keeps list metadata separators at the readable muted contrast level', () => {
+  expect(shipped('css')).toContain('.meta .sep { color: var(--muted); }');
+});
+
+it('gives snippet highlights explicit readable text instead of inheriting muted text over a highlight', () => {
+  expect(shipped('css')).toContain(
+    '.search-snippet mark { color: var(--text);',
+  );
+});
+
+it('keeps active light navigation readable over its tinted background', () => {
+  expect(shipped('css')).toContain(
+    '.page-nav a[aria-current="page"] { color: #166534; }',
+  );
+});
+
+it('keeps find controls in the sticky detail header and closes them when switching away from the transcript', async () => {
+  const html = shipped('html');
+  expect(html.indexOf('id="transcript-find"')).toBeLessThan(
+    html.indexOf('id="detail-info-panel"'),
+  );
+  const ui = harness();
+  await ui.call('openTranscriptFind("needle");showDetailView("children")');
+  expect(ui.node('transcript-find').hidden).toBe(true);
+});
+
+it('reports matches hidden inside visible mixed messages by body/tool type filters and restores find-opened folds', async () => {
+  const ui = harness();
+  await ui.call(
+    'renderMessage("assistant",{content:"needle",toolCalls:[{name:"Read",input:"needle",output:"needle"}]},0);openTranscriptFind("needle");transcriptFilter="tools";updateTranscript()',
+  );
+  expect(ui.node('transcript-find-status').textContent).toContain(
+    '1 hidden by type filter',
+  );
+  await ui.call('transcriptFilter="assistant";updateTranscript()');
+  expect(ui.node('transcript-find-status').textContent).toContain(
+    '2 hidden by type filter',
+  );
+  await ui.call('transcriptFilter="all";updateTranscript();moveFind(1)');
+  expect(ui.node('messages').querySelector('details')?.open).toBe(true);
+  await ui.call('closeTranscriptFind()');
+  expect(ui.node('messages').querySelector('details')?.open).toBe(false);
+});
+
+it('clears find context on logout, including hidden preview text', async () => {
+  const ui = harness();
+  await ui.call(
+    'renderMessage("user",{content:"PRIVATE needle"},0);openTranscriptFind("needle");moveFind(1)',
+  );
+  expect(ui.node('transcript-find-preview').textContent).toContain('PRIVATE');
+  const logout = ui.call('logout()');
+  ui.requestFor('/web/api/auth').resolve({}, 204);
+  await logout;
+  expect(ui.node('transcript-find-preview').textContent).toBe('');
+  expect(ui.node('transcript-find-query').value).toBe('');
+});
+
+it('recreates allowlisted list filters from a cold URL with the exact API parameter names', async () => {
+  const ui = harness();
+  await ui.call(
+    'setSignedIn(true); window.location.hash="#/sessions?q=中文&sources=claude-code&projects=p.key&agents=only&since=2026-01-01&until=2026-11-10&tools=hide&machine=fixture&credential=never"',
+  );
+  const route = ui.call('restoreRequestedPage()');
+  const params = new URLSearchParams(
+    ui.requestFor('/web/api/sessions').path.split('?')[1],
+  );
+  expect(Object.fromEntries(params)).toEqual({
+    query: '中文',
+    sources: 'claude-code',
+    projectKeys: 'p.key',
+    agents: 'only',
+    since: '2026-01-01',
+    until: '2026-11-10',
+    tools: 'hide',
+    machineId: 'fixture',
+  });
+  expect(await ui.call('window.location.hash')).not.toContain('credential');
+  ui.requestFor('/web/api/sessions').resolve({ items: [] });
+  await route;
+});
+
+it('manual search cancels the debounce and contenteditable ancestors ignore global shortcuts', async () => {
+  const ui = harness();
+  await ui.call('setSignedIn(true); activatePage("search")');
+  ui.node('query').value = 'needle';
+  ui.node('query').dispatch('input');
+  ui.node('search').dispatch('submit');
+  ui.runTimers();
+  expect(ui.requestsFor('/web/api/search?')).toHaveLength(1);
+  ui.requestFor('/web/api/search?').resolve({ query: 'needle', items: [] });
+  ui.requestFor('/web/api/search/status').resolve({
+    keyword: 'available',
+    semantic: 'available',
+    hybrid: 'available',
+  });
+  await flushAuthWork();
+  const editable = ui.node('editable');
+  editable.setAttribute('contenteditable', 'plaintext-only');
+  const child = ui.node('editable-child');
+  editable.appendChild(child);
+  expect(
+    ui.dispatchDocument('keydown', { key: '/', target: child })
+      .defaultPrevented,
+  ).toBe(false);
+});
+
+it('does not reopen a route find after its awaited jump was cancelled by logout', async () => {
+  const ui = harness();
+  await ui.call(
+    'setSignedIn(true);detailContextSession="s";detailContextGeneration="g";messageSessionId="s";messageGeneration="g";messageCursor="next";workspaceNode.className="showing-detail";window.location.hash="#/s/s/m/42?find=PRIVATE"',
+  );
+  const route = ui.call('restoreRequestedPage()');
+  await flushAuthWork();
+  expect(ui.requestsFor('/web/api/sessions/s/messages')).toHaveLength(1);
+  const logout = ui.call('logout()');
+  ui.requestFor('/web/api/auth').resolve({}, 204);
+  await logout;
+  ui.requestFor('/web/api/sessions/s/messages').resolve({ fragments: [] });
+  await route;
+  expect(ui.node('transcript-find').hidden).toBe(true);
+  expect(ui.node('transcript-find-query').value).toBe('');
+});
+
+it('retains known facet labels while restoring route filter keys instead of replacing labels with opaque keys', async () => {
+  const ui = harness();
+  await ui.call(
+    'facets.project.selected.set("p.key","Known project label");applyRouteFilters({projects:"p.key"});renderActiveFilters()',
+  );
+  expect(ui.node('active-filters').textContent).toContain(
+    'Known project label',
+  );
+});
+
+describe('iteration 5 polish and accessibility', () => {
+  const ticks = async () => {
+    for (let i = 0; i < 24; i++) await Promise.resolve();
+  };
+
+  it('restores identity display on an existing cookie without minting and clears it on expiry', async () => {
+    const ui = harness(undefined, { authMode: 'tailscale-serve' });
+    const pending = ui.call('restoreSession()');
+    ui.requestFor('/web/api/sessions').resolve({ snapshotId: 's', items: [] });
+    await ticks();
+    ui.requestFor('/web/api/overview').resolve({
+      snapshotId: 'o',
+      streams: [],
+    });
+    await ticks();
+    ui.requestFor('/web/api/auth').resolve({
+      canWrite: false,
+      login: 'Reader <safe>@example.com',
+    });
+    await pending;
+    expect(ui.node('identity-status').textContent).toBe(
+      'Signed in as Reader <safe>@example.com',
+    );
+    expect(ui.node('identity-status').querySelector('safe')).toBeNull();
+    await ui.call('activatePage("settings"); setStatus("signed in")');
+    expect(ui.node('identity-status').textContent).toContain('Reader <safe>');
+    expect(ui.requests.filter((r) => r.method === 'POST')).toHaveLength(0);
+    await ui.call('identitySignInAt=Date.now(); expireSession()');
+    expect(ui.node('identity-status').textContent).toBe('');
+  });
+
+  it('fences a late identity display response after expiry', async () => {
+    const ui = harness(undefined, { authMode: 'tailscale-serve' });
+    const pending = ui.call('restoreSession()');
+    ui.requestFor('/web/api/sessions').resolve({ snapshotId: 's', items: [] });
+    await ticks();
+    ui.requestFor('/web/api/overview').resolve({
+      snapshotId: 'o',
+      streams: [],
+    });
+    await ticks();
+    await ui.call('identitySignInAt=Date.now(); expireSession()');
+    ui.requestFor('/web/api/auth').resolve({ canWrite: false, login: 'STALE' });
+    await pending;
+    expect(ui.node('identity-status').textContent).not.toContain('STALE');
+  });
+
+  it('keeps mixed nested list kinds under their actual parent at each indentation', async () => {
+    const ui = harness();
+    await ui.call(
+      `renderMessage('assistant',{content:${JSON.stringify('- parent\n  - child bullet\n  1. child ordered\n    - grandchild\n  - second bullet\n- sibling')}},0)`,
+    );
+    const body = ui.node('messages').querySelector('.body');
+    expect(body?.children).toHaveLength(1);
+    const list = body?.children[0];
+    expect(list?.children).toHaveLength(2);
+    const parent = list?.children[0];
+    expect(
+      parent?.children
+        .filter((n) => ['OL', 'UL'].includes(n.tagName))
+        .map((n) => n.tagName),
+    ).toEqual(['UL', 'OL', 'UL']);
+    expect(
+      parent?.querySelector('ol')?.children[0].querySelector('ul')?.textContent,
+    ).toBe('grandchild');
+    expect(list?.children[1].textContent).toBe('sibling');
+  });
+
+  it('badges standalone tool errors while preserving raw text and error/tools filtering', async () => {
+    const ui = harness();
+    const content = 'Error: exit code 1 <script>not markup</script>';
+    await ui.call(
+      `renderMessage('tool',{content:${JSON.stringify(content)}},17); renderMessage('tool',{content:'ok'},18)`,
+    );
+    const failed = ui.node('messages').children[0];
+    expect(failed.querySelector('.error-label')?.textContent).toBe(
+      'Error (detected)',
+    );
+    expect(failed.querySelector('pre')?.textContent).toBe(content);
+    expect(failed.querySelector('script')).toBeNull();
+    ui.node('transcript-filters')
+      .children.find((n) => n.dataset.type === 'errors')
+      ?.click();
+    expect(failed.hidden).toBe(false);
+    expect(ui.node('messages').children[1].hidden).toBe(true);
+    expect(ui.node('transcript-filters').textContent).not.toContain(
+      'in loaded',
+    );
+    expect(ui.node('transcript-filters').getAttribute('aria-label')).toContain(
+      'loaded',
+    );
+  });
+
+  it('focuses, traps and returns help fallback focus without dispatching background shortcuts', async () => {
+    const ui = harness();
+    await ui.call('setSignedIn(true)');
+    const dialog = ui.node('shortcuts-dialog');
+    const close = ui.node('shortcuts-close');
+    close.tagName = 'BUTTON';
+    dialog.appendChild(close);
+    ui.node('shortcuts-help').focus();
+    ui.node('shortcuts-help').click();
+    expect(ui.activeElement()).toBe(close);
+    expect(dialog.getAttribute('aria-modal')).toBe('true');
+    expect(
+      ui.dispatchDocument('keydown', {
+        key: 'Tab',
+        shiftKey: true,
+        target: close,
+      }).defaultPrevented,
+    ).toBe(true);
+    expect(ui.activeElement()).toBe(close);
+    ui.dispatchDocument('keydown', { key: '/', target: close });
+    expect(ui.activeElement()).toBe(close);
+    ui.dispatchDocument('keydown', { key: 'Escape', target: close });
+    expect(dialog.open).toBe(false);
+    expect(ui.activeElement()).toBe(ui.node('shortcuts-help'));
+  });
+
+  it('returns insight focus on explicit close, not to a hidden opener after sign-out', async () => {
+    const ui = harness();
+    await ui.call('setSignedIn(true)');
+    const close = ui.node('insight-close');
+    close.tagName = 'BUTTON';
+    ui.node('insight-dialog').appendChild(close);
+    const opener = ui.node('insight-opener');
+    opener.focus();
+    const pending = ui.call('loadInsight("i",false)');
+    expect(ui.activeElement()).toBe(close);
+    ui.requestFor('/web/api/insights/i').resolve({
+      id: 'i',
+      revision: 'r',
+      offset: 0,
+      content: 'note',
+      totalLength: 4,
+    });
+    await pending;
+    close.click();
+    expect(ui.activeElement()).toBe(opener);
+    opener.focus();
+    const late = ui.call('loadInsight("i",false)');
+    opener.hidden = true;
+    await ui.call('setSignedIn(false)');
+    ui.requestFor('/web/api/insights/i').resolve({
+      id: 'i',
+      revision: 'r',
+      offset: 0,
+      content: 'late',
+      totalLength: 4,
+    });
+    await late;
+    expect(ui.activeElement()).not.toBe(opener);
+    expect(ui.node('insight-dialog').hidden).toBe(true);
+    expect(ui.node('insight-body').textContent).toBe('');
+  });
+
+  it('returns explicit Find close focus and exposes expanded state', async () => {
+    const ui = harness();
+    await ui.call('openTranscriptFind()');
+    expect(
+      ui.node('transcript-find-toggle').getAttribute('aria-expanded'),
+    ).toBe('true');
+    ui.node('transcript-find-close').click();
+    expect(ui.activeElement()).toBe(ui.node('transcript-find-toggle'));
+    expect(
+      ui.node('transcript-find-toggle').getAttribute('aria-expanded'),
+    ).toBe('false');
+  });
+
+  it('never calls a future heartbeat live or treats absent task counters as zero', async () => {
+    const ui = harness();
+    await ui.call(
+      'Date.now=()=>1800000000000; renderHealth([{registry:{source:"pi"},heartbeatAt:1800003600,lastCapture:{observedAt:1799000000}}],1800000000)',
+    );
+    const card = ui.node('health-content').querySelector('.health-card');
+    expect(card?.querySelector('.pill')?.dataset.tone).toBe('neutral');
+    expect(card?.textContent).toContain('Clock ahead');
+    expect(card?.textContent).toContain('PendingNot reported');
+    expect(card?.querySelectorAll('time').length).toBe(2);
+    expect(card?.textContent).toContain('Capture activity');
+  });
+});
+
+it('retains keyboard focus when message filter chips are rebuilt', async () => {
+  const ui = harness();
+  await ui.call('renderMessage("user",{content:"one"},0)');
+  const chip = ui
+    .node('transcript-filters')
+    .children.find((n) => n.dataset.type === 'user');
+  chip?.focus();
+  chip?.click();
+  expect(ui.activeElement()).toBe(
+    ui
+      .node('transcript-filters')
+      .children.find((n) => n.dataset.type === 'user'),
+  );
+});
+
+it('keeps Settings provenance/retired features and loading/error semantics without new eager calls', async () => {
+  const ui = harness();
+  const pending = ui.call('navigate("settings")');
+  expect(ui.activeElement()).toBe(ui.node('settings-page'));
+  expect(ui.node('settings-content').getAttribute('aria-busy')).toBe('true');
+  ui.requestFor('/web/api/settings').resolve({}, 503);
+  await pending;
+  expect(ui.node('settings-content').getAttribute('aria-busy')).toBe('false');
+  expect(ui.node('settings-status').textContent).toBe(
+    'Settings unavailable. Refresh to retry.',
+  );
+  await ui.call('renderSettings({totalSessions:0,sources:[],aliases:[]})');
+  expect(
+    ui
+      .node('settings-content')
+      .querySelectorAll('details')
+      .map((n) => n.children[0].textContent),
+  ).toEqual(['Capture & sync provenance', 'Not available in this deployment']);
+  expect(ui.node('settings-content').textContent).toContain(
+    'No sources enabled.',
+  );
+  expect(ui.node('settings-content').textContent).toContain(
+    'No visible project aliases.',
+  );
+});
+
+it('keeps Search capability readiness visible while index detail is collapsed', async () => {
+  const ui = harness();
+  const pending = ui.call('loadSearchStatus()');
+  ui.requestFor('/web/api/search/status').resolve({
+    keyword: 'available',
+    semantic: 'unavailable',
+    hybrid: 'unavailable',
+  });
+  await pending;
+  expect(ui.node('search-capability-summary').textContent).toBe(
+    'Search availability · Keyword only',
+  );
+});
+
+it('does not remove the Search input from normal keyboard Tab order on page navigation', async () => {
+  const ui = harness();
+  const pending = ui.call('navigate("sessions")');
+  ui.requestFor('/web/api/sessions').resolve({ snapshotId: 's', items: [] });
+  await pending;
+  expect(ui.node('query').getAttribute('tabindex')).not.toBe('-1');
+});
+
+it('returns detail focus to its opener and keeps mobile nav fully visible by layout contract', async () => {
+  const ui = harness();
+  await ui.call('setSignedIn(true)');
+  const opener = ui.node('session-opener');
+  opener.focus();
+  const pending = ui.call('openDetail("s")');
+  expect(ui.activeElement()).toBe(ui.node('back'));
+  ui.requestFor('/web/api/sessions/s').resolve({
+    detail: { session: { sessionId: 's', title: 'Focus return' } },
+  });
+  await pending;
+  await ui.call('showSessionList()');
+  expect(ui.activeElement()).toBe(opener);
+  expect(shipped('css')).toContain(
+    'grid-template-columns: repeat(3, minmax(0, 1fr))',
+  );
+});
+
+it('uses theme-aware opaque placeholder text instead of low-contrast browser defaults', () => {
+  expect(shipped('css')).toContain(
+    'input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }',
+  );
+});
+
+describe('iteration 5 identity display authentication lifetime', () => {
+  const ticks = async () => {
+    for (let i = 0; i < 24; i++) await Promise.resolve();
+  };
+  const beginRestore = async (ui: ReturnType<typeof harness>) => {
+    const pending = ui.call('restoreSession()');
+    ui.requestFor('/web/api/sessions').resolve({ snapshotId: 's', items: [] });
+    await ticks();
+    return { pending, overview: ui.requestFor('/web/api/overview') };
+  };
+  const finishSettings = async (ui: ReturnType<typeof harness>) => {
+    const navigation = ui.call('navigate("settings")');
+    ui.requestFor('/web/api/settings').resolve({
+      snapshotId: 'settings',
+      totalSessions: 0,
+      sources: [],
+      aliases: [],
+    });
+    ui.requestFor('/web/api/auth').resolve({ canWrite: false });
+    await navigation;
+    return ui.node('status').textContent;
+  };
+
+  it('restores the same identity across Settings navigation while its display response is pending', async () => {
+    const ui = harness(undefined, { authMode: 'tailscale-serve' });
+    const { pending, overview } = await beginRestore(ui);
+    overview.resolve({ snapshotId: 'o', streams: [] });
+    await ticks();
+    const display = ui.requestFor('/web/api/auth');
+    const status = await finishSettings(ui);
+    display.resolve({ canWrite: false, login: 'Reader <safe>@example.com' });
+    await pending;
+    expect(ui.node('identity-status').textContent).toBe(
+      'Signed in as Reader <safe>@example.com',
+    );
+    expect(ui.node('identity-status').querySelector('safe')).toBeNull();
+    expect(ui.node('status').textContent).toBe(status);
+    expect(ui.node('settings-access').textContent).toContain('Read only');
+    expect(ui.requests.filter((r) => r.method !== 'GET')).toHaveLength(0);
+    expect(ui.requestsFor('/web/api/overview')).toHaveLength(1);
+  });
+
+  it('still reads the identity when page navigation supersedes the initial overview request', async () => {
+    const ui = harness(undefined, { authMode: 'tailscale-serve' });
+    const { pending, overview } = await beginRestore(ui);
+    await finishSettings(ui);
+    const before = ui.requestsFor('/web/api/auth').length;
+    overview.resolve({ snapshotId: 'o', streams: [] });
+    await ticks();
+    expect(ui.requestsFor('/web/api/auth')).toHaveLength(before + 1);
+    ui.requestFor('/web/api/auth').resolve({
+      canWrite: false,
+      login: 'reader@example.com',
+    });
+    await pending;
+    expect(ui.node('identity-status').textContent).toBe(
+      'Signed in as reader@example.com',
+    );
+    expect(ui.node('settings-page').hidden).toBe(false);
+  });
+
+  it('discards a delayed identity response after explicit logout', async () => {
+    const ui = harness(undefined, { authMode: 'tailscale-serve' });
+    const { pending, overview } = await beginRestore(ui);
+    overview.resolve({ snapshotId: 'o', streams: [] });
+    await ticks();
+    const display = ui.requestFor('/web/api/auth');
+    const logout = ui.call('logout()');
+    ui.requestFor('/web/api/auth').resolve(undefined, 204);
+    await logout;
+    display.resolve({ canWrite: false, login: 'PRIVATE' });
+    await pending;
+    expect(ui.node('identity-status').textContent).toBe('');
+    expect(ui.node('workspace').hidden).toBe(true);
+    expect(ui.node('status').textContent).toBe('signed out');
+  });
+
+  it.each([204, 403])(
+    'invalidates pending display at auth replacement intent, even when the write returns %s',
+    async (status) => {
+      const ui = harness(undefined, { authMode: 'tailscale-serve' });
+      const { pending, overview } = await beginRestore(ui);
+      overview.resolve({ snapshotId: 'o', streams: [] });
+      await ticks();
+      const display = ui.requestFor('/web/api/auth');
+      const replace = ui.call('authWrite("POST","{}")').catch(() => {});
+      // The old GET may finish while the replacement POST is still pending.
+      display.resolve({ canWrite: false, login: 'PRIVATE' });
+      await pending;
+      expect(ui.node('identity-status').textContent).toBe('');
+      ui.requestFor('/web/api/auth').resolve(undefined, status);
+      await replace;
+      expect(ui.node('identity-status').textContent).toBe('');
+    },
+  );
+
+  it('does not overwrite a renewed identity when an old pre-expiry display response arrives last', async () => {
+    const ui = harness(undefined, { authMode: 'tailscale-serve' });
+    const first = await beginRestore(ui);
+    first.overview.resolve({ snapshotId: 'old', streams: [] });
+    await ticks();
+    const old = ui.requestFor('/web/api/auth');
+    await ui.call('identitySignInAt=Date.now(); expireSession()');
+    const renewed = await beginRestore(ui);
+    renewed.overview.resolve({ snapshotId: 'new', streams: [] });
+    await ticks();
+    ui.requestFor('/web/api/auth').resolve({ canWrite: false, login: 'NEW' });
+    await renewed.pending;
+    old.resolve({ canWrite: false, login: 'OLD' });
+    await first.pending;
+    expect(ui.node('identity-status').textContent).toBe('Signed in as NEW');
+    expect(ui.node('status').textContent).toBe('Signed in as NEW');
+  });
+});
+
+describe('iteration 6 bounded syntax and ordinal minimap', () => {
+  const samples = [
+    [
+      'json',
+      '{"safe":"<img onerror=alert(1)>","n":12,"ok":true}',
+      ['string', 'number', 'keyword'],
+    ],
+    ['diff', '@@ -1 +1 @@\n-old\n+new\n context', ['keyword', 'delete', 'add']],
+    [
+      'bash',
+      '# comment\nif true; then echo "safe" 12; fi',
+      ['comment', 'keyword', 'string', 'number'],
+    ],
+    ['sh', 'echo \'a "quote"\' # safe', ['string', 'comment']],
+    [
+      'shell',
+      'for x in 12; do echo "$x"; done',
+      ['keyword', 'number', 'string'],
+    ],
+    [
+      'swift',
+      '/* comment */\nlet x = "safe"\nreturn 12',
+      ['comment', 'keyword', 'string', 'number'],
+    ],
+    [
+      'ts',
+      '// comment\nconst x: number = 12; return "safe";',
+      ['comment', 'keyword', 'string', 'number'],
+    ],
+    ['typescript', 'interface X { n: number }', ['keyword']],
+    ['js', 'const x = `safe`; // comment', ['keyword', 'string', 'comment']],
+    ['javascript', 'function x() { return 12; }', ['keyword', 'number']],
+    [
+      'py',
+      '# comment\ndef x():\n  return "safe", 12',
+      ['comment', 'keyword', 'string', 'number'],
+    ],
+    ['python', 'x = """multi\nline"""\nreturn True', ['string', 'keyword']],
+  ] as const;
+  for (const [lang, text, types] of samples)
+    it(`colors ${lang} losslessly via inert spans`, async () => {
+      const ui = harness();
+      const content = '```' + lang + '\n' + text + '\n```';
+      await ui.call(
+        `renderMessage('assistant',{content:${JSON.stringify(content)}},7)`,
+      );
+      const code = ui.node('messages').querySelector('code');
+      expect(code?.textContent).toBe(text);
+      for (const type of types)
+        expect(
+          code?.querySelectorAll('.syntax-' + type).length,
+        ).toBeGreaterThan(0);
+      expect(code?.querySelector('img')).toBeNull();
+      expect(code?.querySelector('script')).toBeNull();
+      ui.node('messages').querySelector('.copy-btn')?.click();
+      expect(ui.copied).toEqual([text]);
+    });
+  for (const [lang, text] of [
+    ['html', '<script>alert(1)</script>'],
+    ['json', '{"bad":}'],
+    ['js', 'const s = "unterminated'],
+    ['swift', '/* unterminated'],
+    ['python', 'x = ' + String.fromCharCode(39).repeat(3) + 'unterminated'],
+    ['js', 'const x = `a ${value}`;'],
+    ['js', 'const x = /[a-z]+/g;'],
+    ['ts', 'const x=1;\n'.repeat(4000)],
+    ['py', 'x=1\n'.repeat(401)],
+    ['js', '1+'.repeat(1500)],
+    ['bash', "echo 'unterminated"],
+    ['__proto__', 'const x=12;'],
+  ])
+    it(`falls back losslessly and bounds nodes for ${lang}/${text.length}`, async () => {
+      const ui = harness();
+      await ui.call(
+        `renderMessage('assistant',{content:${JSON.stringify('```' + lang + '\n' + text + '\n```')}},0)`,
+      );
+      const code = ui.node('messages').querySelector('code');
+      expect(code?.textContent).toBe(text);
+      expect(
+        code
+          ?.querySelectorAll('span')
+          .some((n) => n.className.startsWith('syntax-')),
+      ).toBe(false);
+      expect(code?.querySelectorAll('span').length).toBeLessThanOrEqual(400);
+    });
+  it('retains newlines, line numbering, wrap, copy and syntax node identity through model Find', async () => {
+    const ui = harness(),
+      text = 'const x = "<b>safe</b>";\n\nreturn 12;\n';
+    await ui.call(
+      `renderMessage('assistant',{content:${JSON.stringify('```js\n' + text + '\n```')}},8)`,
+    );
+    const code = ui.node('messages').querySelector('code'),
+      token = code?.querySelector('.syntax-string');
+    expect(
+      code
+        ?.querySelectorAll('.code-line')
+        .map((n) => n.getAttribute('data-line-number')),
+    ).toEqual(['1', '2', '3', '4']);
+    await ui.call(
+      `openTranscriptFind(); document.getElementById('transcript-find-query').value='safe'; updateTranscriptFind(); moveFind(1)`,
+    );
+    expect(code?.querySelector('.syntax-string')).toBe(token);
+    expect(code?.textContent).toBe(text);
+    expect(ui.node('transcript-find-preview').textContent).toContain('safe');
+    ui.node('messages').querySelector('.copy-btn')?.click();
+    expect(ui.copied).toEqual([text]);
+  });
+  it('maps sparse real ordinals, not array indexes; opens without any eager read', async () => {
+    const ui = harness();
+    await ui.call(
+      `messageTotal=10; renderMessage('user',{content:'first'},2);renderMessage('assistant',{content:'last'},8)`,
+    );
+    ui.node('transcript-minimap-toggle').click();
+    expect(ui.requests).toHaveLength(0);
+    const marks = ui.node('transcript-minimap').children;
+    expect(marks).toHaveLength(10);
+    expect(marks[2].dataset.loaded).toBe('1');
+    expect(marks[0].dataset.loaded).toBe('0');
+    expect(marks[8].dataset.loaded).toBe('1');
+    expect(ui.node('transcript-minimap-status').textContent).toContain(
+      '2 / 10 loaded',
+    );
+    marks[8].click();
+    await flushAuthWork();
+    expect(
+      ui.node('messages').children[1].classList.contains('jump-target'),
+    ).toBe(true);
+    expect(
+      ui.node('transcript-minimap').children[8].getAttribute('aria-current'),
+    ).toBe('true');
+    await ui.call(`transcriptFilter='user';updateTranscript()`);
+    expect(ui.node('transcript-minimap-status').textContent).toContain(
+      '1 visible',
+    );
+    expect(ui.node('transcript-minimap').children[8].dataset.loaded).toBe('1');
+    await ui.call('clearMessages()');
+    expect(ui.node('transcript-minimap').children).toHaveLength(0);
+    expect(ui.node('transcript-minimap-box').hidden).toBe(true);
+  });
+  it('caps huge coverage at 120 explicit contiguous ordinal ranges including the last safe ordinal', async () => {
+    const ui = harness();
+    await ui.call(
+      `messageTotal=Number.MAX_SAFE_INTEGER; renderMessage('user',{content:'tail'},Number.MAX_SAFE_INTEGER-1);minimapOpen=true;renderTranscriptMinimap()`,
+    );
+    const marks = ui.node('transcript-minimap').children;
+    expect(marks).toHaveLength(120);
+    expect(marks[0].dataset.start).toBe('0');
+    for (let i = 1; i < marks.length; i++)
+      expect(Number(marks[i].dataset.start)).toBe(
+        Number(marks[i - 1].dataset.end) + 1,
+      );
+    expect(Number(marks[119].dataset.end)).toBe(Number.MAX_SAFE_INTEGER - 1);
+    expect(marks[119].dataset.loaded).toBe('1');
+    expect(marks[119].getAttribute('aria-label')).toContain('Jump to #');
+    expect(marks[119].getAttribute('aria-label')).toContain('range');
+  });
+  it('counts only complete decoded fragments as loaded and retains the five-page jump fence', async () => {
+    const ui = harness();
+    await ui.call(
+      `detailContextSession='s';detailContextGeneration='g';messageSessionId='s';messageGeneration='g';messageTotal=100;messageCursor='p0';minimapOpen=true;renderTranscriptMinimap()`,
+    );
+    const pending = ui.call('jumpToOrdinal(99)');
+    for (let i = 0; i < 5; i++) {
+      ui.requestFor('/web/api/sessions/s/messages').resolve({
+        sessionId: 's',
+        generation: 'g',
+        fragments: [],
+        nextCursor: 'p' + (i + 1),
+      });
+      await flushAuthWork();
+    }
+    await pending;
+    expect(ui.requestsFor('/web/api/sessions/s/messages')).toHaveLength(5);
+    expect(ui.node('transcript-minimap-position').textContent).toContain(
+      'not loaded',
+    );
+    const payload = JSON.stringify({ content: 'fragmented 星' }),
+      prefix = payload.slice(0, 10);
+    await ui.call(
+      `acceptFragment(${JSON.stringify({ messageOrdinal: 9, payloadSHA256: 'a'.repeat(64), role: 'user', payloadFragment: prefix, utf8Offset: 0, isLastFragment: false })});renderTranscriptMinimap()`,
+    );
+    expect(ui.node('transcript-minimap').children[9].dataset.loaded).toBe('0');
+    await ui.call(
+      `acceptFragment(${JSON.stringify({ messageOrdinal: 9, payloadSHA256: 'a'.repeat(64), role: 'user', payloadFragment: payload.slice(10), utf8Offset: new TextEncoder().encode(prefix).length, isLastFragment: true })})`,
+    );
+    expect(ui.node('transcript-minimap').children[9].dataset.loaded).toBe('1');
+  });
+  it('reuses lazy paged outline entries without counting known timeline as loaded and rejects stale generations', async () => {
+    const ui = harness();
+    await ui.call(
+      `detailContextSession='s';detailContextGeneration='g';minimapOpen=true;renderTranscriptMinimap()`,
+    );
+    const timeline = ui.call('loadDetailTimeline(false)');
+    ui.requestFor('/web/api/sessions/s/timeline').resolve({
+      sessionId: 's',
+      generation: 'g',
+      totalEntries: 600,
+      entries: [{ index: 9, role: 'user', type: 'message', preview: 'known' }],
+      nextOffset: 500,
+    });
+    await timeline;
+    expect(ui.node('transcript-minimap-status').textContent).toContain(
+      '1 timeline known',
+    );
+    expect(ui.node('transcript-minimap-status').textContent).toContain(
+      '0 / 600 loaded',
+    );
+    expect(ui.node('transcript-minimap').children[1].dataset.known).toBe('1');
+    const more = ui.call('loadDetailTimeline(true)');
+    await ui.call('expireSession()');
+    ui.requestFor('/web/api/sessions/s/timeline').resolve({
+      sessionId: 's',
+      generation: 'g',
+      totalEntries: 600,
+      entries: [
+        { index: 500, role: 'user', type: 'message', preview: 'stale' },
+      ],
+    });
+    await more;
+    expect(ui.node('transcript-minimap').children).toHaveLength(0);
+    await ui.call(
+      `detailContextSession='s';detailContextGeneration='new';minimapOpen=true`,
+    );
+    const wrong = ui.call('loadDetailTimeline(false)');
+    ui.requestFor('/web/api/sessions/s/timeline').resolve({
+      sessionId: 's',
+      generation: 'g',
+      totalEntries: 600,
+      entries: [],
+    });
+    await wrong;
+    expect(ui.node('transcript-minimap').children).toHaveLength(0);
+  });
+});
+
+describe('iteration 6 minimap interactions and lexical boundaries', () => {
+  it('moves map focus with arrows/Home/End without fetching or IME interference', async () => {
+    const ui = harness();
+    await ui.call(`messageTotal=4;minimapOpen=true;renderTranscriptMinimap()`);
+    const map = ui.node('transcript-minimap'),
+      buttons = map.children;
+    buttons[0].focus();
+    map.dispatch('keydown', { target: buttons[0], key: 'End' });
+    expect(ui.activeElement()).toBe(buttons[3]);
+    map.dispatch('keydown', { target: buttons[3], key: 'ArrowLeft' });
+    expect(ui.activeElement()).toBe(buttons[2]);
+    map.dispatch('keydown', {
+      target: buttons[2],
+      key: 'Home',
+      isComposing: true,
+    });
+    expect(ui.activeElement()).toBe(buttons[2]);
+    map.dispatch('keydown', { target: buttons[2], key: 'Home' });
+    expect(ui.activeElement()).toBe(buttons[0]);
+    expect(ui.requests).toHaveLength(0);
+  });
+  it('marks only actual visible filtered ordinals and keeps selection distinct from viewport', async () => {
+    const ui = harness();
+    await ui.call(`window.innerHeight=900;messageTotal=4;minimapOpen=true;
+   renderMessage('user',{content:'a'},1);renderMessage('assistant',{content:'b'},3);
+   transcriptMessages[0].article.getBoundingClientRect=()=>({top:250,bottom:500});
+   transcriptMessages[1].article.getBoundingClientRect=()=>({top:950,bottom:1100});
+   minimapSelected=3;updateMinimapViewport()`);
+    expect(
+      ui.node('transcript-minimap').children[1].getAttribute('data-viewport'),
+    ).toBe('true');
+    expect(
+      ui.node('transcript-minimap').children[3].getAttribute('data-viewport'),
+    ).toBe('false');
+    expect(
+      ui.node('transcript-minimap').children[3].getAttribute('aria-current'),
+    ).toBe('true');
+    await ui.call(`transcriptFilter='assistant';updateTranscript()`);
+    expect(
+      ui.node('transcript-minimap').children[1].getAttribute('data-viewport'),
+    ).toBe('false');
+    expect(ui.node('transcript-minimap-position').textContent).toContain(
+      'no transcript messages in view',
+    );
+  });
+  it('reports optional timeline loading/failure locally with retry and never calls loaded coverage complete', async () => {
+    const ui = harness();
+    await ui.call(
+      `detailContextSession='s';detailContextGeneration='g';minimapOpen=true;renderTranscriptMinimap()`,
+    );
+    ui.node('transcript-minimap-more').click();
+    expect(ui.node('transcript-minimap-status').textContent).toContain(
+      'Loading map timeline',
+    );
+    ui.requestFor('/web/api/sessions/s/timeline').reject();
+    await flushAuthWork();
+    expect(ui.node('transcript-minimap-status').textContent).toContain(
+      'Map timeline unavailable',
+    );
+    expect(ui.node('transcript-minimap-more').disabled).toBe(false);
+  });
+  it('keeps CRLF and escaped/triple/nested-comment boundaries lossless and rejects invalid diff lexing', async () => {
+    const ui = harness();
+    for (const [lang, text] of [
+      ['swift', '/* outer /* inner */ outer */\r\nlet x = "safe\\"quote"'],
+      ['py', 'x = """line\nnext"""\r\n# end'],
+      ['js', 'const x = "safe\\\\";\r\n// end'],
+    ]) {
+      await ui.call(
+        `renderSyntaxCode(document.getElementById('code-${lang}'),${JSON.stringify(text)},${JSON.stringify(lang)})`,
+      );
+      expect(ui.node('code-' + lang).textContent).toBe(text);
+    }
+    await ui.call(
+      `renderSyntaxCode(document.getElementById('bad-diff'),'not a diff <script>','diff')`,
+    );
+    expect(ui.node('bad-diff').querySelector('.syntax-comment')).toBeNull();
+  });
+});
+
+describe('iteration 7 command palette', () => {
+  async function flush() {
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+  }
+  async function ready() {
+    const ui = harness();
+    await ui.call('setSignedIn(true)');
+    return ui;
+  }
+  function query(ui: ReturnType<typeof harness>, value: string) {
+    ui.node('command-query').value = value;
+    ui.node('command-query').dispatch('input');
+  }
+  const options = (ui: ReturnType<typeof harness>) =>
+    ui.node('command-results').children;
+
+  it('opens via touch or Cmd/Ctrl+K without eager reads and returns fallback focus', async () => {
+    const ui = await ready();
+    ui.node('command-trigger').focus();
+    ui.node('command-trigger').click();
+    expect(ui.node('command-dialog').open).toBe(true);
+    expect(ui.activeElement()).toBe(ui.node('command-query'));
+    expect(ui.requests).toHaveLength(0);
+    ui.dispatchDocument('keydown', { key: 'Escape' });
+    expect(ui.activeElement()).toBe(ui.node('command-trigger'));
+    expect(ui.node('command-dialog').hidden).toBe(true);
+    for (const modifier of ['ctrlKey', 'metaKey']) {
+      expect(
+        ui.dispatchDocument('keydown', { key: 'k', [modifier]: true })
+          .defaultPrevented,
+      ).toBe(true);
+      expect(ui.node('command-dialog').open).toBe(true);
+      ui.node('command-dialog').dispatch('cancel');
+    }
+  });
+
+  it('ranks exact, prefix, substring then fuzzy matches stably with inert labels and loaded scope', async () => {
+    const ui = await ready();
+    await ui.call(`acceptSessionsPage(false, {items:[
+      {sessionId:'a',title:'Dashboard'}, {sessionId:'b',title:'Dashboard notes'},
+      {sessionId:'c',title:'My Dashboard'}, {sessionId:'d',title:'Danger board'},
+      {sessionId:'e',title:'<img onerror=alert(1)>'}
+    ]})`);
+    ui.node('command-trigger').click();
+    query(ui, 'dashboard');
+    expect(options(ui).map((n) => n.textContent)).toEqual([
+      'DashboardPage',
+      'DashboardLoaded session',
+      'Dashboard notesLoaded session',
+      'My DashboardLoaded session',
+    ]);
+    query(ui, 'dbrd');
+    expect(options(ui)[0].textContent).toBe('DashboardPage');
+    query(ui, '<img');
+    expect(options(ui)[0].textContent).toContain('<img onerror=alert(1)>');
+    expect(options(ui)[0].querySelector('img')).toBeNull();
+    expect(options(ui)[0].getAttribute('id')).toMatch(/^command-option-\d+$/);
+    expect(ui.node('command-scope').textContent).toContain('5 loaded sessions');
+    expect(ui.node('command-scope').textContent).toContain('not global search');
+    query(ui, 'nonexistent-command');
+    expect(options(ui)).toHaveLength(0);
+    expect(ui.node('command-status').textContent).toContain('No commands');
+    expect(
+      ui.node('command-query').getAttribute('aria-activedescendant'),
+    ).toBeNull();
+    ui.dispatchDocument('keydown', {
+      key: 'Enter',
+      target: ui.node('command-query'),
+    });
+    expect(ui.node('command-dialog').open).toBe(true);
+  });
+
+  it('uses keyboard selection, Enter and lazy real page/session routes', async () => {
+    const ui = await ready();
+    await ui.call(
+      'acceptSessionsPage(false,{items:[{sessionId:"session /雪",title:"Unique session"}]})',
+    );
+    ui.node('command-trigger').click();
+    query(ui, 'Unique');
+    ui.dispatchDocument('keydown', {
+      key: 'ArrowDown',
+      target: ui.node('command-query'),
+    });
+    expect(options(ui)[0].getAttribute('aria-selected')).toBe('true');
+    ui.dispatchDocument('keydown', {
+      key: 'Enter',
+      target: ui.node('command-query'),
+    });
+    expect(ui.node('command-dialog').hidden).toBe(true);
+    expect(
+      ui.requestFor('/web/api/sessions/session%20%2F%E9%9B%AA').method,
+    ).toBe('GET');
+    ui.requestFor('/web/api/sessions/').resolve({ detail: null });
+    await flush();
+    ui.node('command-trigger').click();
+    query(ui, 'Health');
+    ui.dispatchDocument('keydown', { key: 'ArrowUp' });
+    ui.dispatchDocument('keydown', { key: 'Enter' });
+    expect(ui.node('health-page').hidden).toBe(false);
+    expect(ui.requestFor('/web/api/overview').method).toBe('GET');
+  });
+
+  it('respects IME, password/editable ancestors, modifiers, signed-out and other modals', async () => {
+    const ui = await ready();
+    ui.node('credential').tagName = 'INPUT';
+    const editor = new Element(),
+      child = new Element();
+    editor.setAttribute('contenteditable', 'true');
+    editor.appendChild(child);
+    for (const init of [
+      { isComposing: true },
+      { keyCode: 229 },
+      { target: ui.node('credential') },
+      { target: child },
+      { altKey: true },
+      { shiftKey: true },
+    ]) {
+      expect(
+        ui.dispatchDocument('keydown', { key: 'k', ctrlKey: true, ...init })
+          .defaultPrevented,
+      ).toBe(false);
+      expect(ui.node('command-dialog').open).toBe(false);
+    }
+    ui.node('shortcuts-help').click();
+    ui.node('command-trigger').click();
+    expect(ui.node('command-dialog').open).toBe(false);
+    ui.dispatchDocument('keydown', { key: 'Escape' });
+    await ui.call('setSignedIn(false)');
+    ui.node('command-trigger').click();
+    expect(ui.node('command-trigger').hidden).toBe(true);
+    expect(ui.node('command-dialog').open).toBe(false);
+    ui.dispatchDocument('keydown', { key: 'k', ctrlKey: true });
+    expect(ui.node('command-dialog').open).toBe(false);
+  });
+
+  it('traps fallback focus and keeps composing Enter inert', async () => {
+    const ui = await ready();
+    const dialog = ui.node('command-dialog'),
+      input = ui.node('command-query'),
+      close = ui.node('command-close');
+    input.tagName = 'INPUT';
+    close.tagName = 'BUTTON';
+    dialog.appendChild(input);
+    dialog.appendChild(close);
+    ui.node('command-trigger').click();
+    expect(
+      ui.dispatchDocument('keydown', {
+        key: 'Tab',
+        shiftKey: true,
+        target: input,
+      }).defaultPrevented,
+    ).toBe(true);
+    expect(ui.activeElement()).toBe(close);
+    ui.dispatchDocument('keydown', { key: 'Tab', target: close });
+    expect(ui.activeElement()).toBe(input);
+    ui.dispatchDocument('keydown', {
+      key: 'Enter',
+      isComposing: true,
+      target: input,
+    });
+    expect(dialog.open).toBe(true);
+    expect(ui.requests).toHaveLength(0);
+  });
+
+  it('offers only current authorized context actions, reviewing writes in the existing UI', async () => {
+    const ui = await ready();
+    await ui.call(
+      'workspaceNode.className="showing-detail";detailContextSession="s";detailContextGeneration="g"',
+    );
+    ui.node('command-trigger').click();
+    query(ui, 'Review summary');
+    expect(options(ui)).toHaveLength(0);
+    await ui.call('closeCommandPalette(); sessionActionCanWrite=true');
+    ui.node('command-trigger').click();
+    query(ui, 'Review summary');
+    expect(options(ui)).toHaveLength(1);
+    options(ui)[0].click();
+    await flush();
+    expect(ui.requests.some((r) => r.method === 'POST')).toBe(false);
+    expect(ui.node('session-actions').open).toBe(true);
+    ui.requestFor('/web/api/auth').resolve({ canWrite: false });
+    await flush();
+    expect(ui.node('session-generate-summary').disabled).toBe(true);
+    ui.node('command-trigger').click();
+    query(ui, 'Review summary');
+    expect(options(ui)).toHaveLength(0);
+  });
+
+  it.each(['logout', 'switch', 'generation', 'capability', 'hidden', 'query'])(
+    'rejects stale option dispatch after %s',
+    async (change) => {
+      const ui = await ready();
+      await ui.call(
+        'workspaceNode.className="showing-detail";detailContextSession="s";detailContextGeneration="g";sessionActionCanWrite=true',
+      );
+      ui.node('command-trigger').click();
+      query(ui, 'Review summary');
+      const stale = options(ui)[0];
+      expect(stale).toBeDefined();
+      if (change === 'logout') await ui.call('setSignedIn(false)');
+      if (change === 'switch')
+        await ui.call('bumpEpoch();detailContextSession="other"');
+      if (change === 'generation')
+        await ui.call('detailContextGeneration="new"');
+      if (change === 'capability') await ui.call('sessionActionCanWrite=false');
+      if (change === 'hidden') ui.node('command-dialog').hidden = true;
+      if (change === 'query') query(ui, 'Health');
+      stale.click();
+      await flush();
+      expect(ui.requests).toHaveLength(0);
+      if (['logout', 'switch'].includes(change)) {
+        expect(ui.node('command-dialog').open).toBe(false);
+        expect(ui.node('command-query').value).toBe('');
+        expect(options(ui)).toHaveLength(0);
+      }
+    },
+  );
+
+  it('does not steal focus after a delayed access review and explicit tab navigation', async () => {
+    const ui = await ready();
+    await ui.call(
+      'workspaceNode.className="showing-detail";detailContextSession="s";detailContextGeneration="g";sessionActionCanWrite=true',
+    );
+    ui.node('command-trigger').click();
+    query(ui, 'Review summary');
+    options(ui)[0].click();
+    ui.node('detail-view-transcript').click();
+    ui.node('detail-view-transcript').focus();
+    ui.requestFor('/web/api/auth').resolve({ canWrite: true });
+    await flush();
+    expect(ui.activeElement()).toBe(ui.node('detail-view-transcript'));
+  });
+
+  it('wraps active selection and executes safe Find, minimap and copy actions without fetching', async () => {
+    const ui = await ready();
+    await ui.call(
+      'workspaceNode.className="showing-detail";detailContextSession="s /雪";detailContextGeneration="g"',
+    );
+    ui.node('command-trigger').click();
+    const first = ui
+      .node('command-query')
+      .getAttribute('aria-activedescendant');
+    ui.dispatchDocument('keydown', { key: 'ArrowDown' });
+    expect(
+      ui.node('command-query').getAttribute('aria-activedescendant'),
+    ).not.toBe(first);
+    ui.dispatchDocument('keydown', { key: 'ArrowUp' });
+    expect(ui.node('command-query').getAttribute('aria-activedescendant')).toBe(
+      first,
+    );
+    ui.dispatchDocument('keydown', { key: 'ArrowUp' });
+    expect(options(ui).at(-1)?.getAttribute('aria-selected')).toBe('true');
+    query(ui, 'Find in loaded');
+    options(ui)[0].click();
+    expect(ui.node('transcript-find').hidden).toBe(false);
+    ui.node('command-trigger').click();
+    query(ui, 'minimap');
+    options(ui)[0].click();
+    expect(ui.node('transcript-minimap-box').hidden).toBe(false);
+    ui.node('command-trigger').click();
+    query(ui, 'Copy session');
+    options(ui)[0].click();
+    await flush();
+    expect(ui.copied).toEqual(['s /雪']);
+    expect(ui.requests).toHaveLength(0);
+  });
+
+  it('caps result DOM, refreshes composition safely and drops all context on expiry', async () => {
+    const ui = await ready();
+    await ui.call(
+      'acceptSessionsPage(false,{items:Array.from({length:200},(_,i)=>({sessionId:String(i),title:"Session "+i}))})',
+    );
+    ui.node('command-trigger').click();
+    expect(options(ui)).toHaveLength(60);
+    expect(ui.node('command-status').textContent).toContain('showing first 60');
+    const stale = options(ui)[0];
+    ui.node('command-query').dispatch('compositionstart');
+    stale.click();
+    expect(ui.requests).toHaveLength(0);
+    ui.node('command-query').value = 'Session 199';
+    ui.node('command-query').dispatch('compositionend');
+    expect(options(ui)[0].textContent).toBe('Session 199Loaded session');
+    await ui.call('expireSession()');
+    stale.click();
+    expect(ui.node('command-dialog').open).toBe(false);
+    expect(options(ui)).toHaveLength(0);
+    expect(ui.node('command-scope').textContent).toBe('');
+    expect(ui.node('command-trigger').hidden).toBe(true);
+    expect(ui.requests).toHaveLength(0);
+  });
+
+  it('drops old loaded sessions on replacement and logout, deduplicating paged IDs', async () => {
+    const ui = await ready();
+    await ui.call(
+      'acceptSessionsPage(false,{items:[{sessionId:"a",title:"Old private"}]});acceptSessionsPage(true,{items:[{sessionId:"a",title:"New title"}]})',
+    );
+    ui.node('command-trigger').click();
+    query(ui, 'New title');
+    expect(options(ui)).toHaveLength(1);
+    await ui.call('acceptSessionsPage(false,{items:[]})');
+    expect(ui.node('command-dialog').open).toBe(false);
+    ui.node('command-trigger').click();
+    query(ui, 'New title');
+    expect(options(ui)).toHaveLength(0);
+    await ui.call('setSignedIn(false);setSignedIn(true)');
+    ui.node('command-trigger').click();
+    query(ui, 'New title');
+    expect(options(ui)).toHaveLength(0);
+  });
+});
+
+it('keeps selected command scope text on the high-contrast foreground token', () => {
+  // Browser measured muted/panel-3 at 4.335:1 in dark mode; scope is normal text too.
+  expect(shipped('css')).toContain(
+    '.command-option[aria-selected="true"] .meta { color: var(--text); }',
+  );
+});
+
+describe('iteration 7 coordinated session action access', () => {
+  async function flush() {
+    for (let i = 0; i < 24; i += 1) await Promise.resolve();
+  }
+  async function ready() {
+    const ui = harness();
+    await ui.call(
+      'setSignedIn(true);workspaceNode.className="showing-detail";detailContextSession="s";detailContextGeneration="g"',
+    );
+    return ui;
+  }
+  const outcomes = [
+    'denied',
+    'unknown',
+    'null',
+    'nonboolean',
+    'malformed',
+    'unavailable',
+  ] as const;
+  function resolveAccess(
+    ui: ReturnType<typeof harness>,
+    outcome: (typeof outcomes)[number],
+  ) {
+    const request = ui.requestFor('/web/api/auth');
+    if (outcome === 'malformed') request.resolveMalformed();
+    else if (outcome === 'unavailable') request.resolve({}, 503);
+    else
+      request.resolve(
+        outcome === 'null'
+          ? null
+          : outcome === 'unknown'
+            ? {}
+            : { canWrite: outcome === 'nonboolean' ? 'true' : false },
+      );
+  }
+  function expectReadOnly(ui: ReturnType<typeof harness>) {
+    expect(ui.node('session-generate-summary').disabled).toBe(true);
+    expect(ui.node('session-generate-title').disabled).toBe(true);
+    ui.node('command-trigger').click();
+    ui.node('command-query').value = 'Review summary';
+    ui.node('command-query').dispatch('input');
+    expect(ui.node('command-results').children).toHaveLength(0);
+  }
+
+  it.each(outcomes)(
+    'coalesces explicit palette review with the asynchronous disclosure toggle and fails closed for %s',
+    async (outcome) => {
+      const ui = await ready();
+      ui.node('command-trigger').click();
+      ui.node('command-query').value = 'Session actions & edit access';
+      ui.node('command-query').dispatch('input');
+      ui.node('command-results').children[0].click();
+      expect(ui.node('session-actions').open).toBe(true);
+      // The fake DOM does not auto-queue native details toggle; deliver the real
+      // listener explicitly after the palette's synchronous review has started.
+      await flush();
+      ui.node('session-actions').dispatch('toggle');
+      expect(ui.requestsFor('/web/api/auth')).toHaveLength(1);
+      resolveAccess(ui, outcome);
+      await flush();
+      expectReadOnly(ui);
+      expect(ui.requests.some((r) => r.method === 'POST')).toBe(false);
+      await ui.call('closeCommandPalette()');
+      const retry = ui.call('loadSessionActionAccess()');
+      expect(ui.requestsFor('/web/api/auth')).toHaveLength(2);
+      ui.requestFor('/web/api/auth').resolve({ canWrite: true });
+      await retry;
+      expect(ui.node('session-generate-summary').disabled).toBe(false);
+    },
+  );
+
+  it.each(outcomes)(
+    'ignores an older granted read after a new epoch returns %s',
+    async (outcome) => {
+      const ui = await ready();
+      const older = ui.call('loadSessionActionAccess()');
+      const oldRequest = ui.requestFor('/web/api/auth');
+      await ui.call('bumpEpoch()');
+      const newer = ui.call('loadSessionActionAccess()');
+      resolveAccess(ui, outcome);
+      await newer;
+      const status = ui.node('session-action-status').textContent;
+      oldRequest.resolve({ canWrite: true });
+      await older;
+      expect(ui.node('session-action-status').textContent).toBe(status);
+      expectReadOnly(ui);
+      await ui.call('generateSessionText("summary")');
+      expect(ui.requests.some((r) => r.method === 'POST')).toBe(false);
+    },
+  );
+
+  it('does not let an obsolete completion clear a newer coalesced operation', async () => {
+    const ui = await ready();
+    const older = ui.call('loadSessionActionAccess()');
+    const oldRequest = ui.requestFor('/web/api/auth');
+    await ui.call('bumpEpoch()');
+    const newer = ui.call('loadSessionActionAccess()');
+    oldRequest.resolve({ canWrite: true });
+    await older;
+    expect(ui.node('session-generate-summary').disabled).toBe(true);
+    expect(ui.node('session-action-status').textContent).toContain('Checking');
+    const shared = ui.call('loadSessionActionAccess()');
+    expect(ui.requestsFor('/web/api/auth')).toHaveLength(2);
+    ui.requestFor('/web/api/auth').resolve({ canWrite: false });
+    await Promise.all([newer, shared]);
+    expectReadOnly(ui);
+  });
+
+  it.each(['session', 'generation'])(
+    'keys pending access on the actual %s as well as the epoch',
+    async (change) => {
+      const ui = await ready();
+      const older = ui.call('loadSessionActionAccess()');
+      const oldRequest = ui.requestFor('/web/api/auth');
+      await ui.call(
+        change === 'session'
+          ? 'detailContextSession="other"'
+          : 'detailContextGeneration="next"',
+      );
+      const newer = ui.call('loadSessionActionAccess()');
+      expect(ui.requestsFor('/web/api/auth')).toHaveLength(2);
+      ui.requestFor('/web/api/auth').resolve({ canWrite: false });
+      await newer;
+      oldRequest.resolve({ canWrite: true });
+      await older;
+      expectReadOnly(ui);
+    },
+  );
+
+  it('ignores an old error after a newer grant and clears pending access on logout', async () => {
+    const ui = await ready();
+    const older = ui.call('loadSessionActionAccess()');
+    const oldRequest = ui.requestFor('/web/api/auth');
+    await ui.call('bumpEpoch()');
+    const newer = ui.call('loadSessionActionAccess()');
+    ui.requestFor('/web/api/auth').resolve({ canWrite: true });
+    await newer;
+    const status = ui.node('session-action-status').textContent;
+    oldRequest.reject();
+    await older;
+    expect(ui.node('session-generate-summary').disabled).toBe(false);
+    expect(ui.node('session-action-status').textContent).toBe(status);
+    const pending = ui.call('loadSessionActionAccess()');
+    const stale = ui.requestFor('/web/api/auth');
+    const signout = ui.call('logout()');
+    ui.requestFor('/web/api/auth').resolve(undefined, 204);
+    await signout;
+    stale.resolve({ canWrite: true });
+    await pending;
+    expect(ui.node('session-generate-summary').disabled).toBe(true);
+    expect(ui.node('session-action-status').textContent).toBe('');
+    expect(ui.node('command-dialog').open).toBe(false);
+  });
+});
+
+describe('It8 genuine session-start heatmap and ordering', () => {
+  it('does not invent unloaded bins and reports unknown starts separately', () => {
+    const ui = harness();
+    ui.call(
+      'renderHourOfWeek("stats-chart", [{key:"h.0.09",sessionCount:3},{key:"u.date",sessionCount:2}], "UTC", false, 5)',
+    );
+    expect(ui.node('stats-chart').textContent).toContain('Session starts');
+    expect(ui.node('stats-chart').textContent).toContain('Partial');
+    expect(ui.node('stats-chart').textContent).toContain(
+      'Unknown start dates: 2',
+    );
+    expect(ui.node('stats-chart').querySelectorAll('rect')).toHaveLength(1);
+    expect(
+      ui.node('stats-chart').querySelectorAll('rect')[0].dataset.value,
+    ).toBe('3');
+  });
+  it('pins stats filters and session sort in routes without changing defaults', () => {
+    const ui = harness();
+    expect(ui.call('sessionQuery(false)')).toBe('');
+    ui.node('session-sort').value = 'lastActivity';
+    expect(ui.call('sessionQuery(false)')).toBe('?sort=lastActivity');
+    expect(ui.call('routeHref(libraryRoute())')).toContain('sort=lastActivity');
+    ui.node('stats-group').value = 'hourOfWeek';
+    ui.node('stats-source').value = 'codex';
+    ui.node('stats-project').value = `p.${'a'.repeat(64)}`;
+    const href = ui.call('routeHref(statsRoute())');
+    expect(href).toContain('group=hourOfWeek');
+    expect(href).toContain('sources=codex');
+    expect(href).toContain('projects=p.');
+    ui.call(`applyStatsRoute(parseRoute(${JSON.stringify(href)}).filters)`);
+    expect(ui.node('stats-group').value).toBe('hourOfWeek');
+  });
+  it('sends new stats options only when selected and freezes them during More', async () => {
+    const ui = harness();
+    ui.node('stats-group').value = 'hourOfWeek';
+    ui.node('stats-source').value = 'codex';
+    const pending = ui.call('loadStats(false)');
+    const query = new URLSearchParams(ui.requests[0].path.split('?')[1]);
+    expect(query.get('sources')).toBe('codex');
+    expect(query.get('limit')).toBe('100');
+    ui.requests[0].resolve({
+      snapshotId: 'hours',
+      groupBy: 'hourOfWeek',
+      timeZone: 'UTC',
+      totals: {
+        sessionCount: 1,
+        messageCount: 0,
+        userMessageCount: 0,
+        assistantMessageCount: 0,
+        toolMessageCount: 0,
+      },
+      items: [
+        {
+          key: 'h.0.00',
+          label: 'Monday 00:00',
+          sessionCount: 1,
+          messageCount: 0,
+          userMessageCount: 0,
+          assistantMessageCount: 0,
+          toolMessageCount: 0,
+        },
+      ],
+      nextCursor: 'next',
+    });
+    await pending;
+    expect(ui.node('stats-chart').textContent).toContain('Partial');
+    ui.node('stats-source').value = 'claude-code';
+    const more = ui.call('loadStats(true)');
+    expect(
+      new URLSearchParams(ui.requests[1].path.split('?')[1]).get('sources'),
+    ).toBe('codex');
+    ui.requests[1].reject();
+    await more;
+    expect(ui.node('stats-status').textContent).toContain('legacy');
+  });
+});
+
+describe('It9 user-facing copy', () => {
+  it('does not ship internal iteration labels or stale deferral notes', () => {
+    const js = shipped('javascript');
+    expect(js).not.toMatch(/deferred It\d|\bIt[0-9]\b/);
+    expect(js).toContain(
+      'Model comes only from recorded session cost data; it is never inferred from the source.',
+    );
+  });
+});
+
+describe('It8 readable hour-of-week labels', () => {
+  const counts = {
+    messageCount: 0,
+    userMessageCount: 0,
+    assistantMessageCount: 0,
+    toolMessageCount: 0,
+  };
+  it('labels stats and dashboard hour rows by weekday/time instead of raw keys', async () => {
+    const ui = harness();
+    ui.node('stats-group').value = 'hourOfWeek';
+    const key = `p.${'b'.repeat(64)}`;
+    ui.call(
+      `applyStatsRoute({group:"hourOfWeek",projects:${JSON.stringify(key)}})`,
+    );
+    const option = ui
+      .node('stats-project')
+      .children.find((item: { value: string }) => item.value === key);
+    if (!option) throw new Error('restored project option missing');
+    option.textContent = 'engram';
+    ui.node('stats-project').value = key;
+    const pending = ui.call('loadStats(false)');
+    ui.requestFor('/web/api/stats').resolve({
+      snapshotId: 'hours',
+      groupBy: 'hourOfWeek',
+      timeZone: 'UTC',
+      totals: { sessionCount: 3, ...counts },
+      items: [
+        { key: 'h.3.14', label: 'h.3.14', sessionCount: 2, ...counts },
+        { key: 'u.date', label: 'Unknown', sessionCount: 1, ...counts },
+      ],
+      nextCursor: null,
+    });
+    await pending;
+    const rows = ui.node('stats-rows').textContent;
+    expect(rows).toContain('Thu 14:00');
+    expect(rows).toContain('Unknown start date');
+    expect(rows).not.toContain('h.3.14');
+    expect(ui.node('stats-chart').textContent).toContain('3 sessions in scope');
+    expect(ui.node('stats-chart').textContent).not.toContain('full sessions');
+    expect(ui.node('stats-chart').textContent).toContain('projects: engram');
+    expect(ui.node('stats-chart').textContent).not.toContain(key);
+
+    ui.call('activePage = "dashboard"');
+    const hours = ui.call('loadDashboardHours()');
+    ui.requests[ui.requests.length - 1].resolve({
+      snapshotId: 'd',
+      groupBy: 'hourOfWeek',
+      timeZone: 'UTC',
+      totals: { sessionCount: 2 },
+      items: [{ key: 'h.6.09', sessionCount: 2 }],
+      nextCursor: null,
+    });
+    await hours;
+    const dashboard = ui.node('dashboard-hours').textContent;
+    expect(dashboard).toContain('Sun 09:00');
+    expect(dashboard).not.toContain('h.6.09');
+  });
+});
+
+describe('It8 activity scope and async fences', () => {
+  it('keeps explicit all-time dashboard scope separate from the 30-day daily charts', () => {
+    expect(shipped('javascript')).toContain('All start dates · agents hidden');
+    expect(shipped('javascript')).toContain(
+      'hoursVersion !== dashboardHoursVersion',
+    );
+  });
+  it('clears authorized stats choice labels on auth loss', () => {
+    const ui = harness();
+    ui.call('applyStatsRoute({sources:"codex",projects:"private-opaque-key"})');
+    expect(ui.node('stats-project').textContent).toContain(
+      'private-opaque-key',
+    );
+    ui.call('expireSession()');
+    expect(ui.node('stats-project').textContent).not.toContain(
+      'private-opaque-key',
+    );
+  });
+});
+
+describe('It8 new request ownership', () => {
+  it('does not publish old dashboard-hour responses after a newer load', async () => {
+    const ui = harness();
+    ui.call('activePage = "dashboard"');
+    const old = ui.call('loadDashboardHours()');
+    const fresh = ui.call('loadDashboardHours()');
+    const page = (n: number) => ({
+      snapshotId: `h${n}`,
+      groupBy: 'hourOfWeek',
+      timeZone: 'UTC',
+      totals: { sessionCount: n },
+      items: [{ key: 'h.0.00', sessionCount: n }],
+      nextCursor: null,
+    });
+    ui.requests[1].resolve(page(2));
+    await fresh;
+    expect(ui.node('dashboard-hours').textContent).toContain(
+      '2 sessions in scope',
+    );
+    ui.requests[0].resolve(page(1));
+    await old;
+    expect(ui.node('dashboard-hours').textContent).toContain(
+      '2 sessions in scope',
+    );
+    expect(ui.node('dashboard-hours').textContent).not.toContain(
+      '1 sessions in scope',
+    );
+  });
+  it('does not publish facet labels after expiry and preserves edits during choice loading', async () => {
+    const ui = harness();
+    ui.call('activePage = "stats"');
+    const pending = ui.call('loadStatsChoices()');
+    ui.node('stats-source').value = 'codex';
+    ui.requests[0].resolve({
+      snapshotId: 's',
+      items: [{ key: 'codex', label: 'Codex' }],
+      nextCursor: null,
+    });
+    await flushAuthWork();
+    expect(ui.node('stats-source').value).toBe('codex');
+    ui.call('expireSession()');
+    ui.requests[1].resolve({
+      snapshotId: 'p',
+      items: [{ key: 'p.private', label: 'Private label' }],
+      nextCursor: null,
+    });
+    await pending;
+    expect(ui.node('stats-project').textContent).not.toContain('Private label');
+    expect(ui.node('stats-source').value).toBe('');
+  });
+});
+
+describe('It8 corrected cross-page sort routes', () => {
+  it('preserves lastActivity across Sessions → Search → Sessions and route restoration', async () => {
+    const ui = harness();
+    ui.node('session-sort').value = 'lastActivity';
+    const search = ui.call('navigate("search")');
+    const searchList = ui.requestFor('/web/api/sessions');
+    expect(searchList.path).not.toContain('sort=');
+    searchList.resolve({ snapshotId: 'search', items: [] });
+    ui.requestFor('/web/api/search/status').resolve({ keyword: 'available' });
+    await search;
+    const sessions = ui.call('navigate("sessions")');
+    const sessionList = ui.requestFor('/web/api/sessions');
+    expect(sessionList.path).toContain('sort=lastActivity');
+    sessionList.resolve({ snapshotId: 'sessions', items: [] });
+    await sessions;
+    const hash = ui.call('window.location.hash');
+    expect(hash).toContain('sort=lastActivity');
+    ui.node('session-sort').value = 'started';
+    ui.call(`applyRouteFilters(parseRoute(${JSON.stringify(hash)}).filters)`);
+    expect(ui.node('session-sort').value).toBe('lastActivity');
+  });
+  it('generates the Search route for its target without a session-only sort', async () => {
+    const ui = harness();
+    ui.node('session-sort').value = 'lastActivity';
+    const search = ui.call('navigate("search")');
+    ui.requestFor('/web/api/sessions').resolve({
+      snapshotId: 'search',
+      items: [],
+    });
+    ui.requestFor('/web/api/search/status').resolve({ keyword: 'available' });
+    await search;
+    expect(ui.call('window.location.hash')).not.toContain('sort=');
+    expect(ui.call('window.location.hash')).toContain('mode=keyword');
+  });
+});
+
+describe('It8 restored opaque stats selector layout', () => {
+  it('bounds flex labels and native selects without shortening cold-route values or loading choices', () => {
+    const ui = harness();
+    const key = `p.${'a'.repeat(64)}`;
+    ui.call(
+      `applyStatsRoute({group:"hourOfWeek",projects:${JSON.stringify(key)}})`,
+    );
+    expect(ui.node('stats-project').value).toBe(key);
+    expect(
+      ui.node('stats-project').children.map((option) => option.value),
+    ).toContain(key);
+    ui.call('applyStatsRoute({})');
+    expect(ui.node('stats-project').value).toBe('');
+    expect(
+      ui.node('stats-project').children.map((option) => option.value),
+    ).toContain(key);
+    expect(ui.requests).toHaveLength(0);
+    const css = shipped('css');
+    const label = css.match(/\.stats-filters label \{([^}]+)\}/)?.[1] ?? '';
+    expect(label).toContain('min-width: 0');
+    expect(label).toContain('max-width: 100%');
+    const controls =
+      css.match(
+        /\.stats-filters input, \.stats-filters select \{([^}]+)\}/,
+      )?.[1] ?? '';
+    expect(controls).toContain('min-width: 0');
+    expect(controls).toContain('max-width: 100%');
+  });
+});
+
+describe('It9 B2 summary metadata and lazy nesting', () => {
+  it('shows only proven optional metadata and fetches children only on disclosure', async () => {
+    const ui = harness();
+    ui.call(
+      'acceptSessionsPage(false,{items:[{sessionId:"parent",title:"Parent",model:"<model>",costUsd:0,toolMessageCount:7,lastActivityAt:1789214400,childCount:2},{sessionId:"old",title:"Old"}]})',
+    );
+    const row = ui.node('sessions').children[0];
+    expect(row.textContent).toContain('<model>');
+    expect(row.textContent).toContain('$0.00');
+    expect(row.textContent).toContain('7 tool');
+    expect(row.textContent).toContain('Activity:');
+    expect(ui.node('sessions').children[1].textContent).not.toMatch(
+      /Activity:|\$|tool|children/i,
+    );
+    expect(ui.requests).toHaveLength(0);
+    const disclosure = row.querySelector('details')!;
+    expect(disclosure).not.toBeNull();
+    expect(disclosure.textContent).toContain('(2)');
+    disclosure.open = true;
+    disclosure.dispatch('toggle');
+    expect(ui.requests[0].path).toBe(
+      '/web/api/sessions/parent/children?limit=50',
+    );
+    ui.requests[0].resolve({
+      sessionId: 'parent',
+      snapshotId: 'snap',
+      nextCursor: 'cursor',
+      items: [
+        {
+          relationship: 'confirmed',
+          session: {
+            sessionId: 'child',
+            title: 'Child',
+            parentSessionId: 'parent',
+            toolMessageCount: 0,
+          },
+        },
+      ],
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(disclosure.textContent).toContain('Child');
+    expect(disclosure.textContent).toContain('0 tool');
+    expect(disclosure.textContent).toContain('Parent session');
+    disclosure.open = false;
+    disclosure.dispatch('toggle');
+    disclosure.open = true;
+    disclosure.dispatch('toggle');
+    expect(ui.requests).toHaveLength(1);
+    disclosure.querySelector('.nested-more')!.click();
+    const next = new URLSearchParams(ui.requests[1].path.split('?')[1]);
+    expect(next.get('cursor')).toBe('cursor');
+    expect(next.get('snapshotId')).toBe('snap');
+    ui.requests[1].resolve({
+      sessionId: 'parent',
+      snapshotId: 'snap',
+      items: [
+        {
+          relationship: 'suggested',
+          session: { sessionId: 'maybe', title: 'Maybe' },
+        },
+      ],
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(disclosure.textContent).toContain('Suggested');
+    expect(disclosure.querySelectorAll('.parent-link')).toHaveLength(1);
+    expect(disclosure.querySelectorAll('.nested-session')).toHaveLength(2);
+  });
+  it('does not publish stale nesting after replacement and reports unsupported old servers', async () => {
+    const ui = harness();
+    ui.call(
+      'acceptSessionsPage(false,{items:[{sessionId:"parent",childCount:1}]})',
+    );
+    const old = ui.node('sessions').querySelector('details')!;
+    old.open = true;
+    old.dispatch('toggle');
+    ui.call(
+      'acceptSessionsPage(false,{items:[{sessionId:"new",childCount:1}]})',
+    );
+    ui.requests[0].resolve({
+      sessionId: 'parent',
+      snapshotId: 's',
+      items: [
+        {
+          relationship: 'confirmed',
+          session: { sessionId: 'secret', title: 'STALE' },
+        },
+      ],
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(old.textContent).not.toContain('STALE');
+    const current = ui.node('sessions').querySelector('details')!;
+    current.open = true;
+    current.dispatch('toggle');
+    ui.requests[1].resolve({}, 404);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(current.textContent).toContain('older server');
+    expect(current.textContent).toContain('Retry');
+  });
+});
+
+describe('It9 B3 search cohort and proven match landing', () => {
+  it('loads more against the original query snapshot and displays both membership', async () => {
+    const ui = harness();
+    await ui.call('activatePage("search")');
+    ui.node('query').value = 'needle';
+    const first = ui.call('loadRankedSearch()');
+    ui.requests[0].resolve({
+      query: 'needle',
+      snapshotId: 'snapshot',
+      nextCursor: 'next',
+      hasMore: true,
+      truncated: true,
+      coverage: 'Frozen capped cohort',
+      items: [
+        { session: { sessionId: 'a', title: 'First' }, matchType: 'both' },
+      ],
+    });
+    await first;
+    expect(ui.node('sessions').textContent).toContain('Keyword + semantic');
+    expect(ui.node('search-more').hidden).toBe(false);
+    ui.node('query').value = 'edited-but-not-submitted';
+    const next = ui.call('loadRankedSearch(true)');
+    const params = new URLSearchParams(ui.requests[1].path.split('?')[1]);
+    expect(params.get('query')).toBe('needle');
+    expect(params.get('snapshotId')).toBe('snapshot');
+    expect(params.get('cursor')).toBe('next');
+    ui.requests[1].resolve({
+      query: 'needle',
+      snapshotId: 'snapshot',
+      hasMore: false,
+      coverage: 'Frozen capped cohort',
+      items: [
+        { session: { sessionId: 'b', title: 'Second' }, matchType: 'keyword' },
+      ],
+    });
+    await next;
+    expect(ui.node('sessions').textContent).toContain('First');
+    expect(ui.node('sessions').textContent).toContain('Second');
+    expect(ui.node('sessions').children.every((n) => !n.hidden)).toBe(true);
+    expect(ui.node('search-more').hidden).toBe(true);
+  });
+  it.each([3, null])(
+    'uses only a resolver-proven ordinal (%s), otherwise prefills Find',
+    async (ordinal) => {
+      const ui = harness();
+      await ui.call('activatePage("search")');
+      ui.node('query').value = 'needle';
+      const generation = 'a'.repeat(64);
+      const work = ui.call('openDetail("s",null,false,{q:"needle"})');
+      ui.requests[0].resolve({
+        detail: {
+          session: { sessionId: 's' },
+          transcriptGeneration: generation,
+        },
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(ui.requests[1].path).toContain('/web/api/sessions/s/match?');
+      ui.requests[1].resolve({
+        sessionId: 's',
+        generation,
+        messageOrdinal: ordinal,
+        reason: ordinal === null ? 'summaryOnly' : null,
+        matchScope: ordinal === null ? null : 'allTerms',
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      ui.requests[2].resolve({
+        fragments: Array.from({ length: 4 }, (_, i) => ({
+          messageOrdinal: i,
+          fragmentIndex: 0,
+          utf8Offset: 0,
+          role: 'assistant',
+          payloadSHA256: 'hash',
+          isLastFragment: true,
+          payloadFragment: JSON.stringify({ content: 'needle ' + i }),
+        })),
+      });
+      await work;
+      if (ordinal === null) {
+        expect(ui.node('transcript-find-query').value).toBe('needle');
+        expect(ui.node('toast-region').textContent).toContain(
+          'Exact match position unavailable',
+        );
+      } else {
+        expect(await ui.call('window.location.hash')).toContain('/m/3');
+        expect(
+          ui.node('messages').children[3].classList.contains('jump-target'),
+        ).toBe(true);
+      }
+    },
+  );
+});
+
+it('uses the resolver-issued opaque cursor for a deep match without sequential page chasing', async () => {
+  const ui = harness(),
+    generation = 'a'.repeat(64);
+  const work = ui.call('openDetail("s",null,false,{q:"deepneedle"})');
+  ui.requests[0].resolve({
+    detail: { session: { sessionId: 's' }, transcriptGeneration: generation },
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  ui.requests[1].resolve({
+    sessionId: 's',
+    generation,
+    messageOrdinal: 1100,
+    matchScope: 'allTerms',
+    messageCursor: 'opaque-proven',
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(
+    new URLSearchParams(ui.requests[2].path.split('?')[1]).get('cursor'),
+  ).toBe('opaque-proven');
+  ui.requests[2].resolve({
+    fragments: [
+      {
+        messageOrdinal: 1100,
+        fragmentIndex: 0,
+        utf8Offset: 0,
+        role: 'user',
+        payloadSHA256: 'hash',
+        isLastFragment: true,
+        payloadFragment: JSON.stringify({ content: 'deepneedle' }),
+      },
+    ],
+  });
+  await work;
+  expect(await ui.call('window.location.hash')).toContain('/m/1100');
+  expect(ui.node('messages').textContent).toContain('Loaded prompt #1');
+  expect(ui.requests).toHaveLength(3);
+});
+
+describe('It9 B4 lazy authorized Insights page', () => {
+  it('routes to Insights lazily, pages on its snapshot, and renders literal previews', async () => {
+    const ui = harness();
+    expect(ui.requests).toHaveLength(0);
+    expect(await ui.call('parseRoute("#/insights").page')).toBe('insights');
+    const work = ui.call('navigate("insights")');
+    expect(ui.requests).toHaveLength(1);
+    expect(ui.requests[0].path).toBe('/web/api/insights?limit=25');
+    ui.requests[0].resolve({
+      snapshotId: 'snap',
+      items: [
+        {
+          id: 'a',
+          content: '<script>literal preview</script>',
+          revision: 'r',
+          sourceSessionId: 's',
+        },
+      ],
+      nextCursor: 'next',
+    });
+    await work;
+    expect(ui.node('insights-rows').textContent).toContain(
+      '<script>literal preview</script>',
+    );
+    const next = ui.call('loadInsightsPage(true)');
+    expect(ui.requests[1].path).toContain('snapshotId=snap');
+    expect(ui.requests[1].path).toContain('cursor=next');
+    ui.requests[1].resolve({
+      snapshotId: 'snap',
+      items: [{ id: 'b', content: 'global note', revision: 'r' }],
+    });
+    await next;
+    expect(ui.node('insights-rows').textContent).toContain('global note');
+    expect(ui.node('insights-rows').textContent).toContain('literal preview');
+  });
+  it('discards a late list after leaving Insights', async () => {
+    const ui = harness();
+    const old = ui.call('navigate("insights")');
+    await ui.call('bumpEpoch();activatePage("sessions")');
+    ui.requests[0].resolve({
+      snapshotId: 'old',
+      items: [{ id: 'late', content: 'must not render', revision: 'r' }],
+    });
+    await old;
+    expect(ui.node('insights-rows').textContent).not.toContain(
+      'must not render',
+    );
+  });
+});
+
+it('closes an Insights detail read when navigating to Search and discards its late payload', async () => {
+  const ui = harness();
+  const pending = ui.call('activatePage("insights");loadInsight("a",false)');
+  await ui.call('activatePage("search")');
+  expect(ui.node('insight-dialog').hidden).toBe(true);
+  ui.requests[0].resolve({
+    id: 'a',
+    revision: 'r',
+    offset: 0,
+    totalLength: 4,
+    content: 'late',
+  });
+  await pending;
+  expect(ui.node('insight-body').textContent).not.toContain('late');
 });

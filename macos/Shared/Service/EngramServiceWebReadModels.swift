@@ -276,7 +276,7 @@ enum EngramServiceWebFacetKind: String, Codable, Equatable, Sendable {
 }
 
 enum EngramServiceWebStatsGroupBy: String, Codable, Equatable, Sendable {
-    case source, project, day, week
+    case source, project, day, week, hourOfWeek
 }
 
 struct EngramServiceWebOverviewRequest: Codable, Equatable, Sendable {
@@ -292,10 +292,14 @@ struct EngramServiceWebOverviewRequest: Codable, Equatable, Sendable {
     }
 }
 
+enum EngramServiceWebSessionSort: String, Codable, Equatable, Sendable {
+    case started, lastActivity
+}
+
 struct EngramServiceWebSessionsRequest: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case query, source, sources, machineId, sourceInstanceId, projectKey, projectKeys
-        case sessionId, agents, since, until, tools, limit, snapshotId, cursor
+        case sessionId, agents, since, until, tools, sort, limit, snapshotId, cursor
     }
 
     let query: String?
@@ -310,6 +314,7 @@ struct EngramServiceWebSessionsRequest: Codable, Equatable, Sendable {
     let since: String?
     let until: String?
     let tools: EngramServiceWebToolFilter
+    let sort: EngramServiceWebSessionSort
     let limit: Int
     let snapshotId: String?
     let cursor: String?
@@ -322,7 +327,7 @@ struct EngramServiceWebSessionsRequest: Codable, Equatable, Sendable {
          projectKey: String? = nil, projectKeys: [String]? = nil,
          sessionId: String? = nil, agents: EngramServiceWebAgentFilter = .hide,
          since: String? = nil, until: String? = nil,
-         tools: EngramServiceWebToolFilter = .all,
+         tools: EngramServiceWebToolFilter = .all, sort: EngramServiceWebSessionSort = .started,
          limit: Int = 50, snapshotId: String? = nil, cursor: String? = nil) throws {
         try EngramServiceWebMetadataValidation.pageRequest(limit: limit, snapshotId: snapshotId, cursor: cursor)
         try EngramServiceWebMetadataValidation.dateRange(since: since, until: until)
@@ -347,6 +352,7 @@ struct EngramServiceWebSessionsRequest: Codable, Equatable, Sendable {
         self.since = since
         self.until = until
         self.tools = tools
+        self.sort = sort
         self.limit = limit
         self.snapshotId = snapshotId
         self.cursor = cursor
@@ -399,6 +405,8 @@ struct EngramServiceWebFacetsResponse: Codable, Equatable, Sendable {
 
 struct EngramServiceWebStatsRequest: Codable, Equatable, Sendable {
     let groupBy: EngramServiceWebStatsGroupBy
+    let sources: [String]?
+    let projectKeys: [String]?
     let since: String?
     let until: String?
     let excludeNoise: Bool
@@ -407,12 +415,14 @@ struct EngramServiceWebStatsRequest: Codable, Equatable, Sendable {
     let snapshotId: String?
     let cursor: String?
 
-    init(groupBy: EngramServiceWebStatsGroupBy = .source, since: String? = nil, until: String? = nil,
+    init(groupBy: EngramServiceWebStatsGroupBy = .source, sources: [String]? = nil, projectKeys: [String]? = nil, since: String? = nil, until: String? = nil,
          excludeNoise: Bool = false, agents: EngramServiceWebAgentFilter = .hide, limit: Int = 50,
          snapshotId: String? = nil, cursor: String? = nil) throws {
         try EngramServiceWebMetadataValidation.pageRequest(limit: limit, snapshotId: snapshotId, cursor: cursor)
         try EngramServiceWebMetadataValidation.dateRange(since: since, until: until)
         self.groupBy = groupBy
+        self.sources = try sources.map { try EngramServiceWebMetadataValidation.sourceList($0) }
+        self.projectKeys = try projectKeys.map { try EngramServiceWebMetadataValidation.projectKeyList($0) }
         self.since = since
         self.until = until
         self.excludeNoise = excludeNoise
@@ -580,17 +590,24 @@ struct EngramServiceWebSessionSummary: Codable, Equatable, Sendable {
     let projectKey: String?
     let projectLabel: String?
     let startedAt: Int64?
+    let lastActivityAt: Int64?
     let isAgent: Bool?
     let userMessageCount: Int?
     let assistantMessageCount: Int?
     let systemMessageCount: Int?
     let nativeId: String?
+    let toolMessageCount: Int?
+    let model: String?
+    let costUsd: Double?
+    let parentSessionId: String?
+    let childCount: Int?
 
     init(sessionId: String, source: String, captureIdentity: EngramServiceWebCaptureIdentity?,
          metadataGeneration: String?, title: String?, projectKey: String?, projectLabel: String?,
-         startedAt: Int64?, isAgent: Bool? = nil, userMessageCount: Int? = nil,
+         startedAt: Int64?, lastActivityAt: Int64? = nil, isAgent: Bool? = nil, userMessageCount: Int? = nil,
          assistantMessageCount: Int? = nil, systemMessageCount: Int? = nil,
-         nativeId: String? = nil) {
+         nativeId: String? = nil, toolMessageCount: Int? = nil, model: String? = nil,
+         costUsd: Double? = nil, parentSessionId: String? = nil, childCount: Int? = nil) {
         self.sessionId = sessionId
         self.source = source
         self.captureIdentity = captureIdentity
@@ -599,11 +616,17 @@ struct EngramServiceWebSessionSummary: Codable, Equatable, Sendable {
         self.projectKey = projectKey
         self.projectLabel = projectLabel
         self.startedAt = startedAt
+        self.lastActivityAt = lastActivityAt
         self.isAgent = isAgent
         self.userMessageCount = userMessageCount
         self.assistantMessageCount = assistantMessageCount
         self.systemMessageCount = systemMessageCount
         self.nativeId = nativeId
+        self.toolMessageCount = toolMessageCount
+        self.model = model
+        self.costUsd = costUsd
+        self.parentSessionId = parentSessionId
+        self.childCount = childCount
     }
 }
 
@@ -639,7 +662,7 @@ enum EngramServiceWebSearchMode: String, Codable, Equatable, Sendable {
 struct EngramServiceWebSearchRequest: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case query, source, sources, machineId, sourceInstanceId, projectKey, projectKeys
-        case sessionId, agents, since, until, tools, mode, limit
+        case sessionId, agents, since, until, tools, mode, limit, snapshotId, cursor
     }
 
     let query: String
@@ -655,6 +678,8 @@ struct EngramServiceWebSearchRequest: Codable, Equatable, Sendable {
     let until: String?
     let tools: EngramServiceWebToolFilter
     let mode: EngramServiceWebSearchMode
+    let snapshotId: String?
+    let cursor: String?
     let limit: Int
 
     var resolvedSources: [String]? { sources ?? source.map { [$0] } }
@@ -666,7 +691,8 @@ struct EngramServiceWebSearchRequest: Codable, Equatable, Sendable {
          sessionId: String? = nil, agents: EngramServiceWebAgentFilter = .hide,
          since: String? = nil, until: String? = nil,
          tools: EngramServiceWebToolFilter = .all,
-         mode: EngramServiceWebSearchMode = .keyword, limit: Int = 10) throws {
+         mode: EngramServiceWebSearchMode = .keyword, limit: Int = 10,
+         snapshotId: String? = nil, cursor: String? = nil) throws {
         try EngramServiceWebMetadataValidation.searchLimit(limit)
         try EngramServiceWebMetadataValidation.dateRange(since: since, until: until)
         try EngramServiceWebMetadataValidation.text(query, maximumBytes: 1024)
@@ -678,6 +704,9 @@ struct EngramServiceWebSearchRequest: Codable, Equatable, Sendable {
         try EngramServiceWebMetadataValidation.require(sourceInstanceId == nil || machineId != nil)
         try EngramServiceWebMetadataValidation.require(source == nil || sources == nil)
         try EngramServiceWebMetadataValidation.require(projectKey == nil || projectKeys == nil)
+        try EngramServiceWebMetadataValidation.pageRequest(limit: limit, snapshotId: snapshotId, cursor: cursor)
+        self.snapshotId = snapshotId
+        self.cursor = cursor
         self.query = query
         self.source = source
         self.sources = try sources.map { try EngramServiceWebMetadataValidation.sourceList($0) }
@@ -762,9 +791,15 @@ struct EngramServiceWebSearchInsight: Codable, Equatable, Sendable {
 
 struct EngramServiceWebSearchResponse: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
-        case observedAt, query, items, insightResults, searchModes, warning, warningCode
+        case observedAt, query, items, insightResults, searchModes, warning, warningCode, snapshotId, nextCursor, hasMore, truncated, cohortSize, coverage
     }
 
+    let snapshotId: String?
+    let nextCursor: String?
+    let hasMore: Bool?
+    let truncated: Bool?
+    let cohortSize: Int?
+    let coverage: String?
     let observedAt: Int64
     let query: String
     let items: [EngramServiceWebSearchHit]
@@ -775,7 +810,14 @@ struct EngramServiceWebSearchResponse: Codable, Equatable, Sendable {
 
     init(observedAt: Int64, query: String, items: [EngramServiceWebSearchHit],
          insightResults: [EngramServiceWebSearchInsight] = [], searchModes: [String],
-         warning: String?, warningCode: String?) {
+         warning: String?, warningCode: String?,
+         snapshotId: String? = nil, nextCursor: String? = nil, hasMore: Bool? = nil, truncated: Bool? = nil, cohortSize: Int? = nil, coverage: String? = nil) {
+        self.snapshotId = snapshotId
+        self.nextCursor = nextCursor
+        self.hasMore = hasMore
+        self.truncated = truncated
+        self.cohortSize = cohortSize
+        self.coverage = coverage
         self.observedAt = observedAt
         self.query = query
         self.items = items
@@ -1328,6 +1370,15 @@ internal enum EngramServiceWebMetadataValidation {
         case .project:
             if value.utf8.elementsEqual(unknownProjectKey.utf8) { return }
             try projectIdentity(value)
+        case .hourOfWeek:
+            if value.utf8.elementsEqual(unknownDateKey.utf8) { return }
+            let parts = value.split(separator: ".", omittingEmptySubsequences: false)
+            try require(parts.count == 3 && parts[0] == "h")
+            guard let day = Int(parts[1]), let hour = Int(parts[2]) else {
+                throw EngramServiceWebReadError.invalidField("hourOfWeek")
+            }
+            try require((0...6).contains(day) && (0...23).contains(hour)
+                && value == String(format: "h.%d.%02d", day, hour))
         case .day, .week:
             if value.utf8.elementsEqual(unknownDateKey.utf8) { return }
             try calendarDate(value)
@@ -1549,6 +1600,7 @@ extension EngramServiceWebSessionsRequest {
             since: try c.decodeIfPresent(String.self, forKey: .since),
             until: try c.decodeIfPresent(String.self, forKey: .until),
             tools: try c.decodeIfPresent(EngramServiceWebToolFilter.self, forKey: .tools) ?? .all,
+            sort: try c.decodeIfPresent(EngramServiceWebSessionSort.self, forKey: .sort) ?? .started,
             limit: try c.decode(Int.self, forKey: .limit),
             snapshotId: try c.decodeIfPresent(String.self, forKey: .snapshotId),
             cursor: try c.decodeIfPresent(String.self, forKey: .cursor)
@@ -1569,6 +1621,7 @@ extension EngramServiceWebSessionsRequest {
         try c.encodeIfPresent(since, forKey: .since)
         try c.encodeIfPresent(until, forKey: .until)
         if tools != .all { try c.encode(tools, forKey: .tools) }
+        if sort != .started { try c.encode(sort, forKey: .sort) }
         try c.encode(limit, forKey: .limit)
         try c.encodeIfPresent(snapshotId, forKey: .snapshotId)
         try c.encodeIfPresent(cursor, forKey: .cursor)
@@ -1592,7 +1645,9 @@ extension EngramServiceWebSearchRequest {
             until: try c.decodeIfPresent(String.self, forKey: .until),
             tools: try c.decodeIfPresent(EngramServiceWebToolFilter.self, forKey: .tools) ?? .all,
             mode: try c.decodeIfPresent(EngramServiceWebSearchMode.self, forKey: .mode) ?? .keyword,
-            limit: try c.decodeIfPresent(Int.self, forKey: .limit) ?? 10
+            limit: try c.decodeIfPresent(Int.self, forKey: .limit) ?? 10,
+            snapshotId: try c.decodeIfPresent(String.self, forKey: .snapshotId),
+            cursor: try c.decodeIfPresent(String.self, forKey: .cursor)
         )
     }
 
@@ -1612,6 +1667,8 @@ extension EngramServiceWebSearchRequest {
         if tools != .all { try c.encode(tools, forKey: .tools) }
         if mode != .keyword { try c.encode(mode, forKey: .mode) }
         try c.encode(limit, forKey: .limit)
+        try c.encodeIfPresent(snapshotId, forKey: .snapshotId)
+        try c.encodeIfPresent(cursor, forKey: .cursor)
     }
 }
 
@@ -1660,14 +1717,25 @@ extension EngramServiceWebSearchResponse {
             insightResults: try c.decodeIfPresent([EngramServiceWebSearchInsight].self, forKey: .insightResults) ?? [],
             searchModes: try c.decode([String].self, forKey: .searchModes),
             warning: try c.decodeIfPresent(String.self, forKey: .warning),
-            warningCode: try c.decodeIfPresent(String.self, forKey: .warningCode)
+            warningCode: try c.decodeIfPresent(String.self, forKey: .warningCode),
+            snapshotId: try c.decodeIfPresent(String.self, forKey: .snapshotId),
+            nextCursor: try c.decodeIfPresent(String.self, forKey: .nextCursor),
+            hasMore: try c.decodeIfPresent(Bool.self, forKey: .hasMore),
+            truncated: try c.decodeIfPresent(Bool.self, forKey: .truncated),
+            cohortSize: try c.decodeIfPresent(Int.self, forKey: .cohortSize),
+            coverage: try c.decodeIfPresent(String.self, forKey: .coverage)
         )
+        if let snapshotId { try V.uuid(snapshotId) }
+        if let nextCursor { try V.token(nextCursor, maximumBytes: 1024); try V.require(snapshotId != nil && hasMore == true) }
+        if let hasMore { try V.require(hasMore == (nextCursor != nil)) }
+        if let cohortSize { try V.require((0...99).contains(cohortSize)) }
+        if let coverage { try V.text(coverage, maximumBytes: 1024, allowEmpty: false) }
         try V.time(observedAt)
         try V.text(query, maximumBytes: 1024)
         try V.require(items.count <= 50)
         try V.require(Set(items.map { Data($0.session.sessionId.utf8) }).count == items.count)
         for hit in items {
-            try V.require(hit.matchType == "keyword" || hit.matchType == "semantic")
+            try V.require(hit.matchType == "keyword" || hit.matchType == "semantic" || hit.matchType == "both")
         }
         try V.require(insightResults.count <= 5)
         try V.require(Set(insightResults.map { Data($0.id.utf8) }).count == insightResults.count)
@@ -1684,6 +1752,12 @@ extension EngramServiceWebSearchResponse {
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(snapshotId, forKey: .snapshotId)
+        try c.encodeIfPresent(nextCursor, forKey: .nextCursor)
+        try c.encodeIfPresent(hasMore, forKey: .hasMore)
+        try c.encodeIfPresent(truncated, forKey: .truncated)
+        try c.encodeIfPresent(cohortSize, forKey: .cohortSize)
+        try c.encodeIfPresent(coverage, forKey: .coverage)
         try c.encode(observedAt, forKey: .observedAt)
         try c.encode(query, forKey: .query)
         try c.encode(items, forKey: .items)
@@ -1867,6 +1941,8 @@ extension EngramServiceWebStatsRequest {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         try self.init(
             groupBy: try c.decodeIfPresent(EngramServiceWebStatsGroupBy.self, forKey: .groupBy) ?? .source,
+            sources: try c.decodeIfPresent([String].self, forKey: .sources),
+            projectKeys: try c.decodeIfPresent([String].self, forKey: .projectKeys),
             since: try c.decodeIfPresent(String.self, forKey: .since),
             until: try c.decodeIfPresent(String.self, forKey: .until),
             excludeNoise: try c.decodeIfPresent(Bool.self, forKey: .excludeNoise) ?? false,
@@ -2190,11 +2266,17 @@ extension EngramServiceWebSessionSummary {
             projectKey: try c.decodeIfPresent(String.self, forKey: .projectKey),
             projectLabel: try c.decodeIfPresent(String.self, forKey: .projectLabel),
             startedAt: try c.decodeIfPresent(Int64.self, forKey: .startedAt),
+            lastActivityAt: try c.decodeIfPresent(Int64.self, forKey: .lastActivityAt),
             isAgent: try c.decodeIfPresent(Bool.self, forKey: .isAgent),
             userMessageCount: try c.decodeIfPresent(Int.self, forKey: .userMessageCount),
             assistantMessageCount: try c.decodeIfPresent(Int.self, forKey: .assistantMessageCount),
             systemMessageCount: try c.decodeIfPresent(Int.self, forKey: .systemMessageCount),
-            nativeId: try c.decodeIfPresent(String.self, forKey: .nativeId)
+            nativeId: try c.decodeIfPresent(String.self, forKey: .nativeId),
+            toolMessageCount: try c.decodeIfPresent(Int.self, forKey: .toolMessageCount),
+            model: try c.decodeIfPresent(String.self, forKey: .model),
+            costUsd: try c.decodeIfPresent(Double.self, forKey: .costUsd),
+            parentSessionId: try c.decodeIfPresent(String.self, forKey: .parentSessionId),
+            childCount: try c.decodeIfPresent(Int.self, forKey: .childCount)
         )
         try V.sessionID(sessionId)
         try V.source(source)
@@ -2203,10 +2285,15 @@ extension EngramServiceWebSessionSummary {
         if let projectKey { try V.projectIdentity(projectKey) }
         if let projectLabel { try V.text(projectLabel, maximumBytes: 256) }
         if let startedAt { try V.time(startedAt) }
-        for count in [userMessageCount, assistantMessageCount, systemMessageCount] {
+        if let lastActivityAt { try V.time(lastActivityAt) }
+        for count in [userMessageCount, assistantMessageCount, systemMessageCount, toolMessageCount] {
             if let count { try V.require((0...EngramServiceWebReadLimits.maximumMessages).contains(count)) }
         }
         if let nativeId { try V.sessionID(nativeId) }
+        if let model { try V.text(model, maximumBytes: 1024, allowEmpty: false) }
+        if let costUsd { try V.money(costUsd) }
+        if let parentSessionId { try V.sessionID(parentSessionId) }
+        if let childCount { try V.count(Int64(childCount)) }
     }
 }
 
@@ -3191,5 +3278,84 @@ struct EngramServiceWebAiStatsResponse: Codable, Equatable, Sendable {
             try V.utcHour(row.hour)
             try V.count(row.requests); try V.count(row.tokens)
         }
+    }
+}
+
+// Match positions are generation-proven original normalized ordinals, not FTS msg_seq.
+struct EngramServiceWebMatchRequest: Codable, Equatable, Sendable {
+    let sessionId: String
+    let generation: String
+    let q: String
+    init(sessionId: String, generation: String, q: String) throws {
+        try EngramServiceWebMetadataValidation.sessionID(sessionId)
+        try EngramServiceWebMetadataValidation.hash(generation)
+        try EngramServiceWebMetadataValidation.text(q, maximumBytes: 1024, allowEmpty: false)
+        self.sessionId = sessionId; self.generation = generation; self.q = q
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(sessionId: c.decode(String.self, forKey: .sessionId), generation: c.decode(String.self, forKey: .generation), q: c.decode(String.self, forKey: .q))
+    }
+}
+enum EngramServiceWebMatchReason: String, Codable, Sendable { case summaryOnly, unverified, semanticOnly, notCaptureIndexed, noMatch }
+enum EngramServiceWebMatchScope: String, Codable, Sendable { case allTerms, firstTerm }
+struct EngramServiceWebMatchResponse: Codable, Equatable, Sendable {
+    let sessionId: String
+    let generation: String
+    let messageOrdinal: Int?
+    let reason: EngramServiceWebMatchReason?
+    let matchScope: EngramServiceWebMatchScope?
+    var messageCursor: String? = nil
+}
+
+// Authorized active library notes, independent of session/project search filters.
+struct EngramServiceWebInsightsRequest: Codable, Equatable, Sendable {
+    let limit: Int
+    let snapshotId: String?
+    let cursor: String?
+    init(limit: Int = 50, snapshotId: String? = nil, cursor: String? = nil) throws {
+        try EngramServiceWebMetadataValidation.pageRequest(limit: limit, snapshotId: snapshotId, cursor: cursor)
+        self.limit = limit; self.snapshotId = snapshotId; self.cursor = cursor
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(limit: c.decodeIfPresent(Int.self, forKey: .limit) ?? 50,
+            snapshotId: c.decodeIfPresent(String.self, forKey: .snapshotId), cursor: c.decodeIfPresent(String.self, forKey: .cursor))
+    }
+}
+struct EngramServiceWebInsightItem: Codable, Equatable, Sendable {
+    let id: String
+    let content: String
+    let sourceSessionId: String?
+    let createdAt: Int64?
+    let revision: String
+    init(id: String, content: String, sourceSessionId: String?, createdAt: Int64?, revision: String) throws {
+        typealias V = EngramServiceWebMetadataValidation
+        try V.token(id, maximumBytes: 128); try V.text(content, maximumBytes: 2400, allowEmpty: false)
+        try V.require(content.unicodeScalars.count <= 600); try V.hash(revision)
+        if let sourceSessionId { try V.sessionID(sourceSessionId) }
+        if let createdAt { try V.time(createdAt) }
+        self.id = id; self.content = content; self.sourceSessionId = sourceSessionId; self.createdAt = createdAt; self.revision = revision
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(id: c.decode(String.self, forKey: .id), content: c.decode(String.self, forKey: .content),
+            sourceSessionId: c.decodeIfPresent(String.self, forKey: .sourceSessionId), createdAt: c.decodeIfPresent(Int64.self, forKey: .createdAt), revision: c.decode(String.self, forKey: .revision))
+    }
+}
+struct EngramServiceWebInsightsResponse: Codable, Equatable, Sendable {
+    let snapshotId: String
+    let observedAt: Int64
+    let items: [EngramServiceWebInsightItem]
+    let nextCursor: String?
+    init(snapshotId: String, observedAt: Int64, items: [EngramServiceWebInsightItem], nextCursor: String?) {
+        self.snapshotId = snapshotId; self.observedAt = observedAt; self.items = items; self.nextCursor = nextCursor
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(snapshotId: try c.decode(String.self, forKey: .snapshotId), observedAt: try c.decode(Int64.self, forKey: .observedAt), items: try c.decode([EngramServiceWebInsightItem].self, forKey: .items), nextCursor: try c.decodeIfPresent(String.self, forKey: .nextCursor))
+        typealias V = EngramServiceWebMetadataValidation
+        try V.page(snapshotId: snapshotId, count: items.count, nextCursor: nextCursor); try V.time(observedAt)
+        try V.require(Set(items.map { Data($0.id.utf8) }).count == items.count)
     }
 }

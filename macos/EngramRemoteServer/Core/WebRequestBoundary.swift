@@ -70,7 +70,8 @@ struct WebRequestBoundary: Sendable {
         return values.count == 1 ? values[0] : nil
     }
 
-    private static func isWritePath(_ path: String) -> Bool {
+    private static func isWritePath(_ path: String, method: HTTPRequest.Method) -> Bool {
+        if path == "/web/api/insights", method == .get { return false }
         if path == "/web/api/settings/aliases"
             || path == "/web/api/insights"
             || path == "/web/api/titles/regenerate"
@@ -129,7 +130,7 @@ struct WebRequestBoundary: Sendable {
     }
 
     private static func isReadPath(_ path: String) -> Bool {
-        if path == "/web/api/overview" || path == "/web/api/sessions"
+        if path == "/web/api/insights" || path == "/web/api/overview" || path == "/web/api/sessions"
             || path == "/web/api/facets" || path == "/web/api/stats"
             || path == "/web/api/settings" || path == "/web/api/search"
             || path == "/web/api/search/status" || path == "/web/api/costs"
@@ -145,7 +146,7 @@ struct WebRequestBoundary: Sendable {
               !sessionID.isEmpty, sessionID != ".", sessionID != "..",
               !sessionID.contains("/"), !sessionID.contains("\\"),
               !sessionID.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return false }
-        return parts.count == 5 || parts[5] == "messages" || parts[5] == "children" || parts[5] == "timeline"
+        return parts.count == 5 || parts[5] == "messages" || parts[5] == "children" || parts[5] == "timeline" || parts[5] == "match"
     }
 
     private static func isInsightDetailPath(_ path: String) -> Bool {
@@ -239,7 +240,7 @@ struct WebRequestBoundary: Sendable {
                     } else {
                         return boundary.decorate(Response(status: .methodNotAllowed))
                     }
-                } else if WebRequestBoundary.isWritePath(path) {
+                } else if WebRequestBoundary.isWritePath(path, method: request.method) {
                     guard WebRequestBoundary.allowsWriteMethod(path, method: request.method) else {
                         return boundary.decorate(Response(status: .methodNotAllowed))
                     }

@@ -333,6 +333,62 @@ final class WebNormalizedTranscriptSnapshotProviderTests: XCTestCase {
         await denied { try await fixture.snapshot(request: request) }
     }
 
+    func testIt9B3MatchProvesOriginalOrdinalScopeAndHash() async throws {
+        let fixture = try makeFixture(messages: [.init(role: .system, content: "ignore"), .init(role: .tool, content: "needle"),
+            .init(role: .user, content: "  "), .init(role: .assistant, content: "needle alpha"), .init(role: .user, content: "beta")])
+        let first = try await fixture.match("needle alpha")
+        XCTAssertEqual(first.messageOrdinal, 3); XCTAssertEqual(first.matchScope, .allTerms); XCTAssertNil(first.reason)
+        let split = try await fixture.match("alpha beta")
+        XCTAssertEqual(split.messageOrdinal, 3); XCTAssertEqual(split.matchScope, .firstTerm)
+        try fixture.mutate("UPDATE fts_map SET content_hash = CAST(CAST(content_hash AS BLOB) || X'0078' AS TEXT) WHERE msg_seq = 0")
+        let nul = try await fixture.match("needle")
+        XCTAssertNil(nul.messageOrdinal); XCTAssertEqual(nul.reason, .unverified, "Never truncate a corrupt hash at NUL")
+        try fixture.mutate("UPDATE fts_map SET content_hash = 'bad' WHERE msg_seq = 0")
+        let bad = try await fixture.match("needle")
+        XCTAssertNil(bad.messageOrdinal); XCTAssertEqual(bad.reason, .unverified)
+        let none = try await fixture.match("absent")
+        XCTAssertNil(none.messageOrdinal); XCTAssertEqual(none.reason, .noMatch)
+        try fixture.mutate("UPDATE sessions SET hidden_at = 'now'")
+        do { _ = try await fixture.match("needle"); XCTFail("hidden match") } catch { }
+    }
+
+    func testIt9B3MatchSummaryOnlyStaleGenerationAndCompletedProof() async throws {
+        let fixture = try makeFixture(messages: [.init(role: .tool, content: "tool-only"), .init(role: .user, content: "alpha")])
+        try fixture.writer.write { db in
+            try db.execute(sql: "INSERT INTO sessions_fts(session_id,content) VALUES (?, 'summaryneedle')", arguments: [fixture.receipt.sessionID])
+            try db.execute(sql: "INSERT OR REPLACE INTO fts_map(session_id,msg_seq,fts_rowid,content_hash) VALUES (?, -1, last_insert_rowid(), 'summary')", arguments: [fixture.receipt.sessionID])
+        }
+        let summary = try await fixture.match("summaryneedle"); XCTAssertNil(summary.messageOrdinal); XCTAssertEqual(summary.reason, .summaryOnly)
+        let short = try await fixture.match("al"); XCTAssertEqual(short.messageOrdinal, 1)
+        do { _ = try await fixture.match("alpha", generation: String(repeating: "f", count: 64)); XCTFail("wrong generation") } catch { }
+        try fixture.mutate("UPDATE session_index_jobs SET status = 'pending' WHERE job_kind = 'fts'")
+        let unverified = try await fixture.match("alpha"); XCTAssertNil(unverified.messageOrdinal); XCTAssertEqual(unverified.reason, .unverified)
+        fixture.policy.value = nil
+        do { _ = try await fixture.match("alpha"); XCTFail("disabled policy") } catch { }
+    }
+
+    func testIt9B3DeepMatchCarriesExistingBoundedTranscriptCursor() async throws {
+        let messages = (0..<1200).map { NormalizedMessage(role: .user, content: $0 == 1100 ? "deepneedle" : "context") }
+        let fixture = try makeFixture(messages: messages)
+        let match = try await fixture.match("deepneedle")
+        XCTAssertEqual(match.messageOrdinal, 1100)
+        let cursor = try XCTUnwrap(match.messageCursor)
+        let request = try EngramServiceWebMessagesRequest(sessionId: fixture.receipt.sessionID, generation: fixture.receipt.generationID, cursor: cursor, maxFragments: 50)
+        let snapshot = try await fixture.snapshot(request: request)
+        let page = try ServiceTranscriptContinuation.page(snapshot: snapshot, request: request, requestId: "deep-match")
+        XCTAssertEqual(page.fragments.first?.messageOrdinal, 1100)
+        XCTAssertLessThanOrEqual(page.fragments.count, 50)
+    }
+
+    func testIt9B3MatchLiveRevalidatesFTSProofBeforePublishing() async throws {
+        let fixture = try makeFixture(messages: [.init(role: .user, content: "needle"), .init(role: .assistant, content: "response")])
+        fixture.policy.arm { call in
+            if call == 2 { XCTAssertNoThrow(try fixture.mutate("UPDATE session_index_jobs SET status = 'pending' WHERE job_kind = 'fts'")) }
+        }
+        do { _ = try await fixture.match("needle"); XCTFail("FTS proof changed before publication") }
+        catch { XCTAssertTrue(error is EngramServiceWebReadError || error is ServiceWebTranscriptSnapshotError) }
+    }
+
     private func makeFixture(ready: Bool = true, messages: [NormalizedMessage]? = nil) throws -> TranscriptSQLFixture {
         let fixture = try TranscriptSQLFixture(ready: ready, messages: messages)
         addTeardownBlock { try fixture.close() }
@@ -489,6 +545,10 @@ private final class TranscriptSQLFixture: @unchecked Sendable {
                 sessionId: receipt.sessionID, generation: generation ?? receipt.generationID,
                 offset: offset, limit: limit),
             deadline: deadline)
+    }
+
+    func match(_ q: String, generation: String? = nil) async throws -> EngramServiceWebMatchResponse {
+        try await XCTUnwrap(provider).match(request: .init(sessionId: receipt.sessionID, generation: generation ?? receipt.generationID, q: q), deadline: ContinuousClock.now + .seconds(2))
     }
 
     func mutate(_ sql: String) throws { try writer.write { try $0.execute(sql: sql) } }

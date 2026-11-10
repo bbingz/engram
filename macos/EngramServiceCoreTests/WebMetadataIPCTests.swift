@@ -8,6 +8,50 @@ import XCTest
 // A5d TEST-DRAFT. The production adapter is deliberately unavailable until
 // these real-dispatch tests have been independently reviewed and run RED.
 final class WebMetadataIPCTests: XCTestCase {
+    func testIt9B4InsightsCommandIsTypedReadOnlyAndRejectsUnknownKeys() async throws {
+        let fixture = try makeHarness(realProducer: true)
+        let before = await fixture.gate.currentDatabaseGeneration()
+        XCTAssertFalse(ServiceCapabilityToken.requiresToken("webInsights"))
+        let result = try await fixture.client.insights(.init())
+        XCTAssertTrue(result.items.isEmpty); XCTAssertNil(result.nextCursor)
+        XCTAssertEqual(fixture.trace.requests.map(\.command), ["webInsights"])
+        XCTAssertTrue(fixture.trace.requests.allSatisfy { !$0.hasCapability })
+        let rejected = try await fixture.exchange(command: "webInsights", payload: Data(#"{"source":"claude-code"}"#.utf8))
+        assertFailure(rejected.envelope, name: "InvalidRequest", retry: "never")
+        let after = await fixture.gate.currentDatabaseGeneration(); XCTAssertEqual(before, after)
+    }
+
+    func testIt9B3KeywordLeaseAndMatchCommandsUseReadOnlyIPC() async throws {
+        let fixture = try makeHarness(realProducer: true)
+        let before = await fixture.gate.currentDatabaseGeneration()
+        let page = try await fixture.client.search(.init(query: "needle"))
+        XCTAssertNotNil(page.snapshotId); XCTAssertEqual(page.hasMore, false); XCTAssertEqual(page.cohortSize, 0)
+        do {
+            _ = try await fixture.client.match(.init(sessionId: "missing", generation: String(repeating: "a", count: 64), q: "needle"))
+            XCTFail("missing match must be concealed")
+        } catch { XCTAssertEqual(error as? EngramServiceWebReadClientError, .notFound) }
+        XCTAssertEqual(fixture.trace.requests.map(\.command), ["webSearch", "webMatch"])
+        XCTAssertTrue(fixture.trace.requests.allSatisfy { !$0.hasCapability })
+        let after = await fixture.gate.currentDatabaseGeneration(); XCTAssertEqual(before, after)
+    }
+
+    func testIt8RealMigratedProducerStatsAndSortAcrossIPC() async throws {
+        let fixture = try makeHarness(realProducer: true)
+        var request = try EngramServiceWebStatsRequest(groupBy: .hourOfWeek, sources: ["claude-code"], projectKeys: ["project_1"], limit: 100)
+        let first = try await fixture.client.stats(request)
+        XCTAssertEqual(first.items.count, 100)
+        XCTAssertEqual(first.totals.sessionCount, 0)
+        request = try .init(groupBy: .hourOfWeek, sources: ["claude-code"], projectKeys: ["project_1"], limit: 100, snapshotId: first.snapshotId, cursor: first.nextCursor)
+        let second = try await fixture.client.stats(request)
+        XCTAssertEqual(second.items.count, 68)
+        XCTAssertNil(second.nextCursor)
+        XCTAssertTrue((first.items + second.items).allSatisfy { $0.sessionCount == 0 && $0.messageCount == 0 })
+        let sessions = try await fixture.client.sessions(.init(sort: .lastActivity))
+        XCTAssertEqual(sessions.items.count, 0)
+        XCTAssertEqual(fixture.trace.requests.map(\.command), ["webStats", "webStats", "webSessions"])
+        XCTAssertTrue(fixture.trace.requests.allSatisfy { !$0.hasCapability })
+    }
+
     func testTypedClientRoutesAllThreeCommandsWithoutCapabilityOrWriterMutation() async throws {
         let provider = MetadataIPCProvider()
         let fixture = try makeHarness(provider: provider)
