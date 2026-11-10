@@ -130,6 +130,50 @@ Claude audited the 2026-11-09/10 cutover work. Antigravity recorded none of it h
 
 **Resume point:** owner authorization to `launchctl bootout` both cron jobs and to stop the old hq receiver after `lsof -i :18787` shows no clients. Then fix or revert the credential mirror and the x86_64 caches, and decide on a recovery path for the 1,437 stuck publications.
 
+## Web viewer nine-iteration upgrade deployed to HQ (2026-11-11)
+
+Owner authorization: "后续都好了，CI 都过了，就部署好", then a plan agreed with the HQ ops agent at the owner's request. Web stays on HQ: the central index is the HQ `service-index`, and the archive-replica hosts run no index.
+
+**Merged to main.** PR #505 merged as `22c6e125` and PR #506 as `29c11ff8`, both after all required CI passed. #506 fixes a defect found by the post-deploy smoke test: `GET /web/api/sessions/:id/match` did not percent-decode the session ID, so real capture IDs containing `:` returned 404.
+
+**Deploy line.** HQ runs the `fb9538a` lineage, which carries a migration the live DB already has, so main could not be deployed.
+- Built from the local-only branch `deploy/web-ui-hq-20261110`:
+  - `ed068488` = `b6215ab6` (the running service-index source) + this work. Only the search ranking/value-band conflict in `EngramServiceReadProvider` needed hand resolution.
+  - `4b5b3e00` = `ed068488` + the #506 fix.
+- The patch on the deploy line differs from the main-line patch only in those conflict hunks.
+- Local gates on the deploy tree:
+  - At `ed068488`: RemoteServerCore 543/543, ServiceCore 1,674 (58 skipped, 0 failures, isolated HOME), MCPTests 271/271, Debug app build, Vitest 383, typecheck, lint, diff check.
+  - At `4b5b3e00`: RemoteServerCore 544/544.
+- Release arm64 packages were built from the clean tree, then checked with `--dry-run`/`--verify-only` and `codesign --verify --deep --strict`.
+- The service binary contains the `web_alias_audit_log` migration from `fb9538a`.
+
+**HQ changes.** For each job: a new sibling package, a plist backup, only `ProgramArguments[0]` changed (normalized JSON diff), then bootout/bootstrap, one job at a time. The HQ ops agent confirmed ingest health before and after each step.
+
+| Job | Package | Binary sha256 | Bootstrap (UTC) | PID |
+|---|---|---|---|---|
+| `com.engram.service-index` | `service-index-web-ui-ed068488-20261110` | `ce50a20f…eabef` | 2026-11-10 17:16:30 | 9935 |
+| `com.engram.capture-core.receiver` | `remote-server-web-ui-ed068488-20261110` | `95bb0cd8…d383` | 17:18:17 | 10414 |
+| receiver (match fix) | `remote-server-web-ui-4b5b3e00-20261111` | `bfe3b5c2…4161` | 17:53:31 | 19042 |
+
+- **Health.** service-index stderr stays at 0 bytes. The receiver's stderr gained only its listening lines. `/v1/health` returns 200. Ingest kept moving: ledger pending 0, FTS pending 0, end-to-end gap 0.
+- **Rollback.**
+  - service-index: restore `state/service-index/persistent/web-ui-ed068488-20261110-job-before.plist` (points at `service-index-fb9538a-ftsfix-20261110`).
+  - receiver: restore `state/remote-server/persistent/web-ui-4b5b3e00-20261111-job-before.plist` (points at `remote-server-web-ui-ed068488-20261110`), or the earlier `web-ui-ed068488-20261110-job-before.plist` (points at `remote-server-fb9538a-20261024`).
+  - Old packages are kept.
+
+**Read-only Web smoke through Tailscale Serve.**
+- Login returned 204, and the new JS/CSS are served (290,933 and 45,681 bytes).
+- Sessions carry `lastActivityAt`, `toolMessageCount`, `childCount` and `model`. `sort=lastActivity` stays ordered across pages.
+- `hourOfWeek` returns 168 bins totalling 16,125, equal to the by-source total, timezone Asia/Shanghai.
+- Keyword search pages twice with no overlap.
+- The match resolver returned ordinals 9/9/0/13/53 for five real hits, and each landed on a message containing the term. Insights GET returns 200; DELETE returns 405.
+
+**Observations.**
+- 24,191 of 54,303 `session_costs` rows have a NULL price, so many rows correctly show no cost.
+- HQ currently has no visible confirmed parent/child pairs, so nesting disclosures do not appear yet.
+- HQ has no active insights.
+- The deploy line is local-only, like `b6215ab6`. Converging back to main still depends on #496.
+
 ## Web viewer nine-iteration upgrade — all nine iterations verified (2026-11-10)
 
 - Work is isolated on `feat/web-ui-iteration-20261110` at `.worktrees/web-ui-iteration`; the unrelated dirty main checkout is untouched. Iteration 1 restores system light mode, design tokens and SVG/source icons, compact date-grouped sessions, active-filter chips, skeleton/empty/toast feedback and Health status indicators. The legacy dark palette, 960px reading column, list/detail toggle, safe DOM rendering and auth/cursor fences are retained.
