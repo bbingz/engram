@@ -498,6 +498,7 @@ enum WebUIRoutes {
         .match-badge[data-match="semantic"] { background: color-mix(in srgb, #14b8a6 16%, transparent); color: light-dark(#0f766e, #5eead4); }
         input, select { margin: 0; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--input-bg); color: var(--text); transition: border-color 0.12s ease, background 0.12s ease; }
         input:hover, select:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+        input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
         input:focus, select:focus { border-color: var(--accent); background: var(--bg); outline: none; }
         button { margin: 0; padding: 7px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); font-weight: 550; cursor: pointer; transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease; }
         button:hover { border-color: var(--accent); color: var(--accent); }

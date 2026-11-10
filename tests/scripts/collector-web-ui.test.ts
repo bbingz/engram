@@ -7984,3 +7984,9 @@ it('returns detail focus to its opener and keeps mobile nav fully visible by lay
     'grid-template-columns: repeat(3, minmax(0, 1fr))',
   );
 });
+
+it('uses theme-aware opaque placeholder text instead of low-contrast browser defaults', () => {
+  expect(shipped('css')).toContain(
+    'input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }',
+  );
+});

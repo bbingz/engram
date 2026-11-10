@@ -176,6 +176,7 @@ final class WebUIRoutesTests: XCTestCase {
             XCTAssertTrue(js.contains(contract), contract)
         }
         XCTAssertTrue(css.contains(".sign-in-card"))
+        XCTAssertTrue(css.contains("input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }"))
         XCTAssertTrue(css.contains("@media (prefers-reduced-motion: reduce)"))
         XCTAssertTrue(css.contains("max-width: 960px"))
         XCTAssertLessThanOrEqual(js.utf8.count, 360_000)
