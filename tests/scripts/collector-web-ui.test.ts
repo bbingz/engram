@@ -5405,6 +5405,43 @@ describe('iteration 1 foundation: rows, chips, feedback and states', () => {
     expect(ui.node('search-result-status').textContent).toMatch(/^1 session ·/);
   });
 
+  it('renders transcript availability from the detail DTO without requesting messages', async () => {
+    const ui = harness();
+    const pending = ui.call('openDetail("unavailable")');
+    ui.requestFor('/web/api/sessions/').resolve({
+      observedAt: 1789214400,
+      detail: {
+        session: {
+          sessionId: 'unavailable',
+          title: 'No transcript',
+          source: 'codex',
+        },
+        lastParsed: null,
+        lastReady: null,
+        transcriptAvailability: 'unavailable',
+        transcriptGeneration: null,
+        currentAttempt: {
+          publicationSHA256: 'a'.repeat(64),
+          parserRevision: 'codex-r1',
+          collectorEpoch: 'epoch-1',
+          sequence: '1',
+          status: 'quarantined',
+          failureCode: 'parse.noVisibleMessages',
+          recordedAt: 1789214400,
+        },
+        summary: null,
+      },
+    });
+    await pending;
+    expect(ui.node('messages').textContent).toContain('Transcript unavailable');
+    expect(ui.node('messages').textContent).toContain(
+      'Availability: unavailable.',
+    );
+    expect(ui.node('session-actions').hidden).toBe(true);
+    expect(ui.node('detail-view-timeline').disabled).toBe(true);
+    expect(ui.requests).toHaveLength(1);
+  });
+
   it('shows skeleton rows while the list loads and replaces them with results', async () => {
     const ui = harness();
     const pending = ui.call('loadSessions(false)');
@@ -5760,6 +5797,52 @@ describe('iteration 1 foundation: shipped CSS and HTML', () => {
     expect(css).toMatch(/\.health-note\s*\{/);
     expect(css).toMatch(/\.stats-totals dd\s*\{[^}]*white-space:\s*nowrap/);
   });
+
+  it.each(['dark', 'light'])(
+    'keeps small primary-button and date-group text at 4.5:1 in %s mode',
+    (scheme) => {
+      const css = shipped('css');
+      const roots = [...css.matchAll(/:root\s*\{([^}]+)\}/g)];
+      const tokens = new Map<string, string>();
+      for (const root of roots.slice(0, scheme === 'light' ? 3 : 2)) {
+        for (const token of root[1].matchAll(/(--[\w-]+):\s*([^;]+);/g)) {
+          tokens.set(token[1], token[2]);
+        }
+      }
+      const luminance = (hex: string) => {
+        expect(hex).toMatch(/^#[0-9a-f]{6}$/i);
+        const rgb = [1, 3, 5].map((at) => {
+          const value = Number.parseInt(hex.slice(at, at + 2), 16) / 255;
+          return value <= 0.04045
+            ? value / 12.92
+            : ((value + 0.055) / 1.055) ** 2.4;
+        });
+        return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+      };
+      const tokenFor = (rule: string, property: string) => {
+        const token = rule.match(
+          new RegExp(`(?:^|;)\\s*${property}:\\s*var\\((--[\\w-]+)\\)`),
+        )?.[1];
+        expect(token).toBeDefined();
+        return tokens.get(token ?? '') ?? '';
+      };
+      const primary =
+        css.match(
+          /#search > button\[type="submit"\], #login button\[type="submit"\]\s*\{([^}]+)\}/,
+        )?.[1] ?? '';
+      const group = css.match(/\.group-head\s*\{([^}]+)\}/)?.[1] ?? '';
+      for (const [foreground, background] of [
+        [tokenFor(primary, 'color'), tokenFor(primary, 'background')],
+        [tokenFor(group, 'color'), tokens.get('--bg') ?? ''],
+      ]) {
+        const a = luminance(foreground),
+          b = luminance(background);
+        expect(
+          (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05),
+        ).toBeGreaterThanOrEqual(4.5);
+      }
+    },
+  );
 
   it('ships the new chrome hooks without inline styles', () => {
     const html = shipped('html');

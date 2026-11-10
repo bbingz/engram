@@ -362,7 +362,7 @@ enum WebUIRoutes {
         :root { color-scheme: light dark; --bg-sunken:#0b1222; --panel-2:#273548; --panel-3:#2d3c55; --line-soft:rgba(148,163,184,0.12); --text-dim:#64748b; --text-faint:#475569; --accent-dim:rgba(34,197,94,0.12); --accent-strong:#4ade80; --accent-ink:#052e16; --ok:#4ade80; --ok-bg:rgba(34,197,94,0.14); --warn:#fbbf24; --warn-bg:rgba(245,158,11,0.15); --danger:#f87171; --danger-bg:rgba(239,68,68,0.15); --info:#60a5fa; --info-bg:rgba(59,130,246,0.15); --agent:#c084fc; --agent-bg:rgba(168,85,247,0.15); --mark-bg:rgba(250,204,21,0.28); --mark-line:#facc15; --topbar-bg:rgba(15,23,42,0.82); --input-bg:color-mix(in srgb, var(--bg) 55%, var(--panel)); --shadow-1:0 1px 2px rgba(0,0,0,0.25); --shadow-2:0 8px 24px rgba(0,0,0,0.45); --shadow-3:0 24px 64px rgba(0,0,0,0.6); --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:20px; --s6:24px; --s8:32px; --r-xs:4px; --r-sm:6px; --r-md:8px; --r-lg:12px; --r-xl:14px; --r-pill:999px; --fs-cap:11px; --fs-meta:12px; --fs-ui:13px; --fs-body:14px; --font:-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; --mono:ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace; --dur-1:120ms; --ease:cubic-bezier(.2,.8,.2,1); }
         /* Legacy light tokens from 76706332:src/web/views.ts. */
         @media (prefers-color-scheme: light) {
-          :root { color-scheme: light; --bg:#f8fafc; --panel:#ffffff; --text:#0f172a; --muted:#475569; --line:#e2e8f0; --accent:#16a34a; --code:#f1f5f9; --bg-sunken:#f1f5f9; --panel-2:#f1f5f9; --panel-3:#e2e8f0; --line-soft:rgba(15,23,42,0.07); --text-dim:#64748b; --text-faint:#94a3b8; --accent-dim:rgba(22,163,74,0.10); --accent-strong:#15803d; --accent-ink:#ffffff; --ok:#15803d; --ok-bg:#dcfce7; --warn:#b45309; --warn-bg:#fef3c7; --danger:#b91c1c; --danger-bg:#fee2e2; --info:#1d4ed8; --info-bg:#dbeafe; --agent:#7e22ce; --agent-bg:#f3e8ff; --mark-bg:rgba(250,204,21,0.45); --mark-line:#ca8a04; --topbar-bg:rgba(248,250,252,0.86); --input-bg:#ffffff; --shadow-1:0 1px 2px rgba(15,23,42,0.06); --shadow-2:0 8px 24px rgba(15,23,42,0.12); --shadow-3:0 24px 64px rgba(15,23,42,0.18); }
+          :root { color-scheme: light; --bg:#f8fafc; --panel:#ffffff; --text:#0f172a; --muted:#475569; --line:#e2e8f0; --accent:#15803d; --code:#f1f5f9; --bg-sunken:#f1f5f9; --panel-2:#f1f5f9; --panel-3:#e2e8f0; --line-soft:rgba(15,23,42,0.07); --text-dim:#64748b; --text-faint:#94a3b8; --accent-dim:rgba(22,163,74,0.10); --accent-strong:#15803d; --accent-ink:#ffffff; --ok:#15803d; --ok-bg:#dcfce7; --warn:#b45309; --warn-bg:#fef3c7; --danger:#b91c1c; --danger-bg:#fee2e2; --info:#1d4ed8; --info-bg:#dbeafe; --agent:#7e22ce; --agent-bg:#f3e8ff; --mark-bg:rgba(250,204,21,0.45); --mark-line:#ca8a04; --topbar-bg:rgba(248,250,252,0.86); --input-bg:#ffffff; --shadow-1:0 1px 2px rgba(15,23,42,0.06); --shadow-2:0 8px 24px rgba(15,23,42,0.12); --shadow-3:0 24px 64px rgba(15,23,42,0.18); }
         }
         * { box-sizing: border-box; }
         html { font-family: var(--font); }
@@ -581,7 +581,7 @@ enum WebUIRoutes {
         .session:hover::before, .session:focus-visible::before { opacity: 1; }
         .session:active { background: var(--panel-2); }
         .session.group-start { margin-top: 30px; }
-        .group-head { position: absolute; left: 12px; top: -25px; color: var(--text-dim); font-size: 11px; font-weight: 650; letter-spacing: 0.07em; line-height: 16px; text-transform: uppercase; white-space: nowrap; pointer-events: none; }
+        .group-head { position: absolute; left: 12px; top: -25px; color: var(--muted); font-size: 11px; font-weight: 650; letter-spacing: 0.07em; line-height: 16px; text-transform: uppercase; white-space: nowrap; pointer-events: none; }
         #sessions > .group-start:first-child { margin-top: 24px; }
         .title { color: var(--text); font-weight: 600; font-size: 14px; letter-spacing: -0.012em; line-height: 1.45; margin-bottom: 3px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
         .meta { color: var(--muted); display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; line-height: 18px; align-items: center; }
@@ -3418,7 +3418,7 @@ enum WebUIRoutes {
             document.getElementById("detail-view-timeline").disabled = !generation;
             showDetailView("transcript");
             if (!generation) {
-              const reason = typeof session.transcriptAvailability === "string" && session.transcriptAvailability !== "available" ? "Availability: " + session.transcriptAvailability + "." : "";
+              const reason = typeof detail.transcriptAvailability === "string" && detail.transcriptAvailability !== "available" ? "Availability: " + detail.transcriptAvailability + "." : "";
               messagesNode.appendChild(emptyState("inbox", "Transcript unavailable", ("The service has not admitted a readable transcript for this session. " + reason).trim()));
               return;
             }
