@@ -492,7 +492,7 @@ enum WebUIRoutes {
         .health-card .attention { margin: 8px 0 0; color: var(--warn); font-size: 13px; }
         .health-summary { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
         .health-summary:empty { display: none; }
-        .health-note { grid-column: 1 / -1; margin: 2px 0 0; color: var(--text-dim); font-size: 12px; }
+        .health-note { grid-column: 1 / -1; margin: 2px 0 0; color: var(--muted); font-size: 12px; }
         .pills { display: inline-flex; flex-wrap: wrap; gap: 6px; }
         .pill { display: inline-flex; align-items: center; gap: 6px; padding: 1px 9px 1px 8px; border-radius: var(--r-pill); background: var(--panel-2); color: var(--muted); font-size: 11.5px; font-weight: 600; line-height: 18px; white-space: nowrap; }
         .pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }

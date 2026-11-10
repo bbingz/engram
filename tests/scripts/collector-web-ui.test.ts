@@ -5799,7 +5799,7 @@ describe('iteration 1 foundation: shipped CSS and HTML', () => {
   });
 
   it.each(['dark', 'light'])(
-    'keeps small primary-button and date-group text at 4.5:1 in %s mode',
+    'keeps small primary-button, date-group and health-note text at 4.5:1 in %s mode',
     (scheme) => {
       const css = shipped('css');
       const roots = [...css.matchAll(/:root\s*\{([^}]+)\}/g)];
@@ -5831,9 +5831,11 @@ describe('iteration 1 foundation: shipped CSS and HTML', () => {
           /#search > button\[type="submit"\], #login button\[type="submit"\]\s*\{([^}]+)\}/,
         )?.[1] ?? '';
       const group = css.match(/\.group-head\s*\{([^}]+)\}/)?.[1] ?? '';
+      const note = css.match(/\.health-note\s*\{([^}]+)\}/)?.[1] ?? '';
       for (const [foreground, background] of [
         [tokenFor(primary, 'color'), tokenFor(primary, 'background')],
         [tokenFor(group, 'color'), tokens.get('--bg') ?? ''],
+        [tokenFor(note, 'color'), tokens.get('--bg') ?? ''],
       ]) {
         const a = luminance(foreground),
           b = luminance(background);

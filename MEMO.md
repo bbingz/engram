@@ -2,6 +2,10 @@
 
 ## Changelog Memo
 
+### 2026-11-10
+
+- [变更] Web 九轮升级在隔离分支 `feat/web-ui-iteration-20261110` 推进；第 1 轮已核验：明暗主题、紧凑会话、筛选 chips、反馈状态、Health 指示；保留 960px 阅读布局和安全边界。Vitest 200 项、Swift 10 项及浏览器布局/对比度通过，最后脚注对比度缺陷已修复。第 2–9 轮及最终集成尚待完成；未部署、未 push。详见 `CHANGELOG.md` 的 2026-11-10 条目。
+
 ### 2026-10-20
 
 - [部署] Web 视觉精修已上 HQ：Release/arm64 从 main `881d3ffa` 打包为 `remote-server-main-881d3ffa-20261020`（verify-only 通过），receiver 只改 `ProgramArguments[0]`，plist 已备份。第一次 bootstrap 报 `5: Input/output error` 且任务被卸下，03:36:24Z 重试成功，新 PID 79714。`/v1/health` 200，新 CSS 已在线上，调色板未变，本地渲染确认徽标、卡片和转录气泡生效。回滚：用备份 plist bootstrap，旧包保留。详见 `CHANGELOG.md`。

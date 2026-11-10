@@ -3,6 +3,14 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## Web viewer nine-iteration upgrade — foundation verified (2026-11-10)
+
+- Work is isolated on `feat/web-ui-iteration-20261110` at `.worktrees/web-ui-iteration`; the unrelated dirty main checkout is untouched. Iteration 1 restores system light mode, design tokens and SVG/source icons, compact date-grouped sessions, active-filter chips, skeleton/empty/toast feedback and Health status indicators. The legacy dark palette, 960px reading column, list/detail toggle, safe DOM rendering and auth/cursor fences are retained.
+- Foundation commits: `83e4e86a`, `9fd2d116`, `17c26ddb`. Lead reproduced and fixed the last visual-review blocker: Health footnotes now use `--muted`, with permanent dark/light contrast coverage. Unavailable-transcript reasons use the actual detail DTO field.
+- Verified after the final correction: 200 focused Vitest tests, Biome, 10 Swift `WebUIRoutesTests`, `git diff --check`, and an independent browser probe covering 88 layouts, four interaction flows and dark/light computed contrast. Lead opened corrected mobile-dark and desktop-light Health screenshots. Existing complete foundation captures cover 76 states per scheme; six local identity/read-only cases and harness cleanup failure tests were independently reviewed. Raw local-only evidence: `output/web-ui-iteration/recovery/lead-v3-*`, `code-review-2.md`, `visual-review-2.md`, and `it1-fix-*`.
+- The original Claude workflow failed on an upstream `organization_on_hold` and incorrectly advanced on null results; no later iteration was implemented by that run. Recovery explicitly uses the current OpenAI model and treats missing implementation/review results as failures.
+- Iterations 2–9 remain required: dashboard/charts, transcript, navigation/search, polish/accessibility, minimap/highlighter, command palette, stats/sort backend, and session/search/insights backend. Full integration and final requirement-to-artifact audit are pending. No push, PR, deployment, Docker or production change occurred.
+
 ## Web viewer polish deployed to the HQ receiver (2026-10-20)
 
 Owner pointed out the session was already running on HQ (`Bing-HuaQiao`,
