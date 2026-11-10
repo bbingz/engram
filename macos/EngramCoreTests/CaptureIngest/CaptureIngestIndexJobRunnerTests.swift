@@ -228,7 +228,7 @@ final class CaptureIngestIndexJobRunnerTests: XCTestCase {
         XCTAssertEqual(try state(), before)
     }
 
-    // Central FTS readiness livelock (2026-11-10): the deadline must bound job
+    // PR #504, central FTS readiness livelock (2026-11-10): the deadline must bound job
     // admission, not an admitted job. A 929 MB session's FTS insert outlasted the
     // 5 s readiness budget, the post-commit checkpoint rolled it back on every
     // cycle, and the job stayed at the head of the queue, blocking every later
@@ -252,7 +252,7 @@ final class CaptureIngestIndexJobRunnerTests: XCTestCase {
         XCTAssertEqual(try ledgerStatus(waiting), "parsed")
     }
 
-    // Same incident, single-job batch: the admitted job commits, and the expired
+    // PR #504, same incident, single-job batch: the admitted job commits, and the expired
     // deadline still stops post-batch finalization instead of running it with
     // capture eligibility hidden.
     func testOnlyAdmittedJobOutlastingDeadlineCommitsAndSkipsFinalization_repro() async throws {
