@@ -6033,6 +6033,54 @@ describe('Dashboard and accessible analytics charts', () => {
     expect(ui.node('dashboard-activity').querySelector('svg')).not.toBeNull();
   });
 
+  it.each(['activity', 'cost'])(
+    'does not repaint a resolved %s widget after a parallel 401 clears Dashboard',
+    async (widget) => {
+      // Sweep promise turns to cover the gap after dashboardRead resolves but
+      // before its caller resumes; flushing all work misses this interleaving.
+      for (let ticks = 0; ticks < 16; ticks += 1) {
+        const ui = harness();
+        await ui.call('setSignedIn(true)');
+        const pending = ui.call('navigate("dashboard")');
+        const isCost = widget === 'cost';
+        const values = isCost
+          ? { costUsd: 777 }
+          : { ...totals, sessionCount: 777 };
+        ui.requestFor(
+          isCost ? '/web/api/costs' : '/web/api/stats?groupBy=day',
+        ).resolve({
+          ...page('day', [{ key: '2026-11-10', ...values }]),
+          totals: values,
+        });
+        for (let i = 0; i < ticks; i += 1) await Promise.resolve();
+        ui.requestFor('/web/api/stats?groupBy=source').resolve({}, 401);
+        for (const request of ui.requests.filter((r) => !r.settled))
+          request.resolve({}, 503);
+        await pending;
+        expect(ui.node('workspace').hidden).toBe(true);
+        expect(ui.node('status').textContent).toBe('Session expired');
+        for (const name of [
+          'kpis',
+          'activity',
+          'cost',
+          'sources',
+          'projects',
+          'health',
+        ]) {
+          const node = ui.node(`dashboard-${name}`);
+          expect(node.textContent, `${widget}: ${ticks} turns, ${name}`).toBe(
+            '',
+          );
+          expect(
+            node.children,
+            `${widget}: ${ticks} turns, ${name}`,
+          ).toHaveLength(0);
+        }
+        expect(ui.requests).toHaveLength(4);
+      }
+    },
+  );
+
   it('rejects repeated cursors and caps sequential dashboard walks with honest partial coverage', async () => {
     const ui = harness();
     const pending = ui.call('navigate("dashboard")');

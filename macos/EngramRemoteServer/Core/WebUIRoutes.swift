@@ -2020,7 +2020,7 @@ enum WebUIRoutes {
             const node = document.getElementById("dashboard-" + widget[0]); setText(node,"Loading " + widget[4].toLowerCase() + "…");
             try {
               const result = await dashboardRead(widget[1],{groupBy:widget[2], since:since, until:end},token,version);
-              if (!result) return;
+              if (!result || token !== requestEpoch || version !== dashboardVersion || activePage !== "dashboard") return;
               const currency = widget[3] === "costUsd", daily = widget[2] === "day";
               const rows = daily && result.complete ? dailySeries(result.items,widget[3],end,30) : result.items.map(function (item) { return {label:widget[2] === "source" ? sourceLabel(item.key) : item.label || item.key, value:item[widget[3]], source:widget[2] === "source" ? item.key : null}; });
               if (daily) rows.sort(function (a,b) {return a.label.localeCompare(b.label);});
