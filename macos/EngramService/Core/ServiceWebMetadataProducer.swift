@@ -4036,9 +4036,14 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                     let redacted = TranscriptRedactionPolicy.redact(model)
                     if !redacted.isEmpty, redacted.utf8.count <= 1024 { result[key]?.model = redacted }
                 }
-                let known = try ["input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"]
-                    .contains { try Self.integer(row, $0) > 0 }
-                if known { result[key]?.cost = try Self.money(try Self.double(row, "cost_usd")) }
+                // Optional metadata: NULL/unexpected token or cost storage (for
+                // example unpriced models stored as cost_usd NULL) is "not
+                // reported", never a failure of the whole summary page.
+                let known = ["input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"]
+                    .contains { ((try? Self.optionalInteger(row, $0)) ?? nil).map { $0 > 0 } ?? false }
+                if known, let cost = (try? Self.optionalDouble(row, "cost_usd")) ?? nil {
+                    result[key]?.cost = try? Self.money(cost)
+                }
             }
         }
         // Never let GRDB TEXT/NUL truncation turn a stored link into a different parent.

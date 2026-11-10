@@ -109,6 +109,36 @@ final class WebMetadataProducerTests: XCTestCase {
         XCTAssertEqual(page.cohortSize, 99); XCTAssertEqual(page.truncated, true); XCTAssertEqual(page.hasMore, true)
     }
 
+    // Real capture ingest stores unpriced models as cost_usd NULL with known
+    // tokens; legacy rows may also carry NULL token columns. Optional summary
+    // metadata must report "not reported", never fail the whole list.
+    func testIt9B2UnpricedAndNullCostColumnsStayNilWithoutFailingSummaries() async throws {
+        let fixture = try MetadataSQLFixture(); defer { fixture.remove() }
+        try fixture.migrate(); try fixture.seedRegistry()
+        for id in ["unpriced", "null-tokens", "priced"] {
+            try fixture.seedBoundSession(id: id, start: "2026-09-03 12:00:00", nativeID: id, title: id)
+        }
+        try fixture.seedSessionCost(id: "priced", model: "priced-model", cost: 0.25, input: 2)
+        try fixture.write { db in
+            try db.execute(sql: """
+                INSERT INTO session_costs(session_id, model, input_tokens, output_tokens,
+                    cache_read_tokens, cache_creation_tokens, cost_usd, computed_at)
+                VALUES ('unpriced', 'claude-unknown', 100, 40, 0, 0, NULL, '2026-09-07T00:00:00.000Z'),
+                       ('null-tokens', 'legacy-model', NULL, NULL, NULL, NULL, NULL, '2026-09-07T00:00:00.000Z')
+                """)
+        }
+        let producer = try fixture.producer(); defer { try? producer.stop() }
+        let page = try await producer.sessions(.init(agents: .all, limit: 50), requestId: requestId, deadline: fixture.deadline())
+        let byID = Dictionary(uniqueKeysWithValues: page.items.map { ($0.sessionId, $0) })
+        XCTAssertEqual(byID["unpriced"]?.model, "claude-unknown")
+        XCTAssertNil(byID["unpriced"]?.costUsd, "unpriced known-token usage is not $0")
+        XCTAssertEqual(byID["null-tokens"]?.model, "legacy-model")
+        XCTAssertNil(byID["null-tokens"]?.costUsd)
+        XCTAssertEqual(byID["priced"]?.costUsd, 0.25)
+        let detail = try await producer.sessionDetail(.init(sessionId: "unpriced"), requestId: requestId, deadline: fixture.deadline())
+        XCTAssertNil(try XCTUnwrap(detail.detail).session.costUsd)
+    }
+
     // B2 asserts the wire fields so RED runs before the DTO exists.
     func testIt9B2SharedSummaryAdmissionAndUnknownCosts() async throws {
         let fixture = try MetadataSQLFixture(); defer { fixture.remove() }
