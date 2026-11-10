@@ -3008,7 +3008,8 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             args.append(limit)
             let rows = try Row.fetchAll(db, sql: """
                 SELECT s.id, s.source, s.authoritative_node, s.sync_version, s.snapshot_hash, s.tier,
-                    s.agent_role, s.parent_session_id, s.suggested_parent_id,
+                    s.agent_role, s.suggested_parent_id,
+                    typeof(s.parent_session_id) AS parent_session_id_storage, CAST(s.parent_session_id AS BLOB) AS parent_session_id_bytes,
                     s.user_message_count, s.assistant_message_count, s.system_message_count, s.tool_message_count,
                     typeof(s.generated_title) AS generated_title_storage, CAST(s.generated_title AS BLOB) AS generated_title_bytes,
                     typeof(s.custom_name) AS custom_name_storage, CAST(s.custom_name AS BLOB) AS custom_name_bytes,
@@ -3035,7 +3036,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                 let project = try Self.metadataText(row, "project")
                 let generatedTitle = try Self.metadataText(row, "generated_title")
                 let customName = try Self.metadataText(row, "custom_name")
-                let parent = try Self.optionalString(row, "parent_session_id")
+                let parent = try Self.metadataText(row, "parent_session_id")
                 let suggested = try Self.optionalString(row, "suggested_parent_id")
                 let role = try Self.optionalString(row, "agent_role")
                 let summary = try sessionSummary(from: row, metadata: metadata[ByteKey(id)])
@@ -3096,7 +3097,8 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             args.append(limit)
             let rows = try Row.fetchAll(db, sql: """
                 SELECT s.id, s.source, s.authoritative_node, s.sync_version, s.snapshot_hash, s.tier,
-                    s.agent_role, s.parent_session_id, s.suggested_parent_id,
+                    s.agent_role, s.suggested_parent_id,
+                    typeof(s.parent_session_id) AS parent_session_id_storage, CAST(s.parent_session_id AS BLOB) AS parent_session_id_bytes,
                     s.user_message_count, s.assistant_message_count, s.system_message_count, s.tool_message_count,
                     typeof(s.generated_title) AS generated_title_storage, CAST(s.generated_title AS BLOB) AS generated_title_bytes,
                     typeof(s.custom_name) AS custom_name_storage, CAST(s.custom_name AS BLOB) AS custom_name_bytes,
@@ -3120,7 +3122,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                 guard let binding = try cachedBinding(db, row: row, policy: policy, cache: &bindings) else {
                     continue
                 }
-                let parent = try Self.optionalString(row, "parent_session_id")
+                let parent = try Self.metadataText(row, "parent_session_id")
                 let relationship: EngramServiceWebChildRelationship =
                     parent.map { $0.utf8.elementsEqual(parentID.utf8) } == true ? .confirmed : .suggested
                 let summary = try sessionSummary(from: row, metadata: metadata[ByteKey(try Self.string(row, "id"))])
@@ -3957,7 +3959,8 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
         args.append(limit)
         let rows = try Row.fetchAll(db, sql: """
             SELECT s.id, s.source, s.authoritative_node, s.sync_version, s.snapshot_hash, s.tier,
-                s.agent_role, s.parent_session_id, s.suggested_parent_id,
+                s.agent_role, s.suggested_parent_id,
+                typeof(s.parent_session_id) AS parent_session_id_storage, CAST(s.parent_session_id AS BLOB) AS parent_session_id_bytes,
                 s.user_message_count, s.assistant_message_count, s.system_message_count, s.tool_message_count,
                 typeof(s.generated_title) AS generated_title_storage, CAST(s.generated_title AS BLOB) AS generated_title_bytes,
                 typeof(s.custom_name) AS custom_name_storage, CAST(s.custom_name AS BLOB) AS custom_name_bytes,
@@ -4038,7 +4041,15 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                 if known { result[key]?.cost = try Self.money(try Self.double(row, "cost_usd")) }
             }
         }
-        let parents = Array(Set(try rows.compactMap { try Self.optionalString($0, "parent_session_id").map(ByteKey.init) })).map(\.string)
+        // Never let GRDB TEXT/NUL truncation turn a stored link into a different parent.
+        var confirmedParents: [ByteKey: String] = [:]
+        for row in rows {
+            guard let parent = try Self.metadataText(row, "parent_session_id"), !parent.isEmpty,
+                  parent.utf8.count <= EngramServiceWebReadLimits.maximumSessionIDBytes,
+                  !parent.utf8.contains(0) else { continue }
+            confirmedParents[ByteKey(try Self.string(row, "id"))] = parent
+        }
+        let parents = Array(Set(confirmedParents.values.map(ByteKey.init))).map(\.string)
         var bindings: [StreamKey: CaptureIngestSourceBinding?] = [:]
         var admittedParents = Set<ByteKey>()
         if !parents.isEmpty, let filter = try sessionFilter(db, request: .init(agents: agents), policy: policy, sessionIDs: parents) {
@@ -4056,10 +4067,8 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                 }
             }
         }
-        for row in rows {
-            if let parent = try Self.optionalString(row, "parent_session_id"), admittedParents.contains(ByteKey(parent)) {
-                result[ByteKey(try Self.string(row, "id"))]?.parent = parent
-            }
+        for (child, parent) in confirmedParents where admittedParents.contains(ByteKey(parent)) {
+            result[child]?.parent = parent
         }
         let sources = policy.enabledSources.map(\.rawValue).sorted()
         let counts = try Row.fetchAll(db, sql: """
@@ -4092,7 +4101,7 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
         let generatedTitle = try Self.metadataText(row, "generated_title")
         let customName = try Self.metadataText(row, "custom_name")
         let title = customName ?? generatedTitle
-        let parent = try Self.optionalString(row, "parent_session_id")
+        let parent = try Self.metadataText(row, "parent_session_id")
         let suggested = try Self.optionalString(row, "suggested_parent_id")
         let role = try Self.optionalString(row, "agent_role")
         let native = try Self.optionalString(row, "native_id")
@@ -4679,8 +4688,8 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
 
     private static func metadataText(_ row: Row, _ column: String) throws -> String? {
         // GRDB's TEXT decoder uses String(cString:) and loses bytes after NUL.
-        // Only these display fields use byte projections; preserve TEXT/NULL
-        // storage checks and the full UTF-8 string before redaction and fences.
+        // Byte projections preserve TEXT/NULL storage checks and the full UTF-8
+        // string before display redaction or parent-identity admission/freshness.
         switch (try string(row, column + "_storage"), (row[column + "_bytes"] as DatabaseValue).storage) {
         case ("null", .null): return nil
         case ("text", .blob(let bytes)):

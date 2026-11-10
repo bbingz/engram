@@ -177,6 +177,82 @@ final class WebMetadataProducerTests: XCTestCase {
         }
     }
 
+    func testIt9Correction1ParentIdentityNeverAliasesNULPrefixAcrossSummaries() async throws {
+        let fixture = try MetadataSQLFixture(); defer { fixture.remove() }
+        try fixture.migrate(); try fixture.seedRegistry()
+        for id in ["parent", "broken", "suggested", "confirmed"] {
+            try fixture.seedBoundSession(id: id, start: nil, nativeID: id, title: id,
+                                         parent: id == "confirmed" ? "parent" : nil)
+            try fixture.seedSessionCost(id: id, model: "fixture-model", cost: 1, input: 1)
+        }
+        try fixture.write { db in
+            // Bind-free SQL preserves the corrupt bytes that GRDB TEXT decoding truncates.
+            try db.execute(sql: "UPDATE sessions SET parent_session_id = CAST(X'706172656e740068696464656e' AS TEXT) WHERE id IN ('broken','suggested')")
+            try db.execute(sql: "UPDATE sessions SET suggested_parent_id = 'parent' WHERE id = 'suggested'")
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT hex(CAST(parent_session_id AS BLOB)) FROM sessions WHERE id = 'broken'"), "706172656E740068696464656E")
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions p JOIN sessions c ON p.id = c.parent_session_id COLLATE BINARY WHERE c.id = 'broken'"), 0)
+        }
+        let producer = try fixture.producer(); defer { try? producer.stop() }
+        func check(_ summary: EngramServiceWebSessionSummary, _ caller: String) {
+            XCTAssertEqual(summary.parentSessionId, summary.sessionId == "confirmed" ? "parent" : nil,
+                           "\(caller): full stored identity must be proven, not an admitted prefix")
+            if summary.sessionId != "parent" { XCTAssertEqual(summary.isAgent, true, "malformed links must not promote agents") }
+        }
+        let list = try await producer.sessions(.init(agents: .all), requestId: requestId, deadline: fixture.deadline())
+        XCTAssertEqual(list.items.count, 4)
+        for summary in list.items { check(summary, "list") }
+        for id in ["broken", "suggested", "confirmed"] {
+            let detail = try await producer.sessionDetail(.init(sessionId: id), requestId: requestId, deadline: fixture.deadline())
+            check(try XCTUnwrap(detail.detail).session, "detail")
+        }
+        let children = try await producer.children(.init(sessionId: "parent"), requestId: requestId, deadline: fixture.deadline())
+        XCTAssertEqual(Set(children.items.map(\.session.sessionId)), ["confirmed", "suggested"])
+        XCTAssertEqual(list.items.first { $0.sessionId == "parent" }?.childCount, children.items.count)
+        for child in children.items {
+            check(child.session, "children")
+            XCTAssertEqual(child.relationship, child.session.sessionId == "confirmed" ? .confirmed : .suggested)
+        }
+        let costs = try await producer.costSessions(.init(agents: .all), requestId: requestId, deadline: fixture.deadline())
+        XCTAssertEqual(costs.items.count, 4)
+        for item in costs.items { check(item.session, "cost") }
+        let search = try await producer.admitSearch(.init(query: "fixture", agents: .all),
+            ranked: .init(items: list.items.map { .init(id: $0.sessionId) }), requestId: requestId, deadline: fixture.deadline())
+        XCTAssertEqual(search.items.count, 4)
+        for item in search.items { check(item.session, "search") }
+        let hiddenAgents = try await producer.sessions(.init(), requestId: requestId, deadline: fixture.deadline())
+        XCTAssertEqual(hiddenAgents.items.map(\.sessionId), ["parent"])
+    }
+
+    func testIt9Correction1ParentNULMutationFailsLivePublicationAcrossSummaries() async throws {
+        for operation in [ServiceWebMetadataOperation.sessions, .detail, .children, .costSessions, .search] {
+            let fixture = try MetadataSQLFixture(); defer { fixture.remove() }
+            try fixture.migrate(); try fixture.seedRegistry()
+            try fixture.seedBoundSession(id: "parent", start: nil, nativeID: "parent")
+            try fixture.seedBoundSession(id: "child", start: nil, nativeID: "child", parent: "parent")
+            try fixture.seedSessionCost(id: "child", model: "fixture-model", cost: 1, input: 1)
+            try fixture.write { try $0.execute(sql: "UPDATE sessions SET suggested_parent_id = 'parent' WHERE id = 'child'") }
+            let mutation = MetadataPreparationMutation(operation: operation) {
+                try fixture.write { try $0.execute(sql: "UPDATE sessions SET parent_session_id = CAST(X'706172656e740068696464656e' AS TEXT) WHERE id = 'child'") }
+            }
+            mutation.arm()
+            let producer = try fixture.producer(hooks: .init(afterPreparation: { try mutation.run($0) }))
+            defer { try? producer.stop() }
+            if operation == .detail {
+                let detail = try await producer.sessionDetail(.init(sessionId: "child"), requestId: requestId, deadline: fixture.deadline())
+                XCTAssertNil(detail.detail, "changed parent provenance must not publish prepared detail")
+            } else {
+                await assertStale(deadline: fixture.deadline()) {
+                    switch operation {
+                    case .sessions: _ = try await producer.sessions(.init(agents: .all), requestId: self.requestId, deadline: fixture.deadline())
+                    case .children: _ = try await producer.children(.init(sessionId: "parent"), requestId: self.requestId, deadline: fixture.deadline())
+                    case .costSessions: _ = try await producer.costSessions(.init(agents: .all), requestId: self.requestId, deadline: fixture.deadline())
+                    default: _ = try await producer.admitSearch(.init(query: "fixture", agents: .all), ranked: .init(items: [.init(id: "child")]), requestId: self.requestId, deadline: fixture.deadline())
+                    }
+                }
+            }
+        }
+    }
+
     func testIt9B2SummaryChangesFailPublishTimeRevalidation() async throws {
         for operation in [ServiceWebMetadataOperation.sessions, .children, .costSessions] {
             for sql in ["UPDATE session_costs SET model = 'changed' WHERE session_id = 'child'",
