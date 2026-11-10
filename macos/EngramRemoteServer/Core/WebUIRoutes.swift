@@ -582,8 +582,8 @@ enum WebUIRoutes {
         .pill[data-tone="danger"] { background: var(--danger-bg); color: var(--danger); }
         .pill[data-tone="info"] { background: var(--info-bg); color: var(--info); }
         .stats-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; margin: 16px 0; }
-        .stats-filters label { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
-        .stats-filters input { max-width: 100%; }
+        .stats-filters label { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; max-width: 100%; color: var(--muted); font-size: 12px; }
+        .stats-filters input, .stats-filters select { min-width: 0; max-width: 100%; }
         #repos-status, #usage-status, #files-status, #tools-status, #stats-status, #costs-status, #costs-unpriced, #costs-sessions-status { color: var(--muted); }
         #costs-more { margin-top: 12px; }
         #tools-rows button, #costs-sessions button { max-width: 280px; text-align: left; white-space: normal; overflow-wrap: anywhere; }

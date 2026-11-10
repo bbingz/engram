@@ -9082,3 +9082,33 @@ describe('It8 corrected cross-page sort routes', () => {
     expect(ui.call('window.location.hash')).toContain('mode=keyword');
   });
 });
+
+describe('It8 restored opaque stats selector layout', () => {
+  it('bounds flex labels and native selects without shortening cold-route values or loading choices', () => {
+    const ui = harness();
+    const key = `p.${'a'.repeat(64)}`;
+    ui.call(
+      `applyStatsRoute({group:"hourOfWeek",projects:${JSON.stringify(key)}})`,
+    );
+    expect(ui.node('stats-project').value).toBe(key);
+    expect(
+      ui.node('stats-project').children.map((option) => option.value),
+    ).toContain(key);
+    ui.call('applyStatsRoute({})');
+    expect(ui.node('stats-project').value).toBe('');
+    expect(
+      ui.node('stats-project').children.map((option) => option.value),
+    ).toContain(key);
+    expect(ui.requests).toHaveLength(0);
+    const css = shipped('css');
+    const label = css.match(/\.stats-filters label \{([^}]+)\}/)?.[1] ?? '';
+    expect(label).toContain('min-width: 0');
+    expect(label).toContain('max-width: 100%');
+    const controls =
+      css.match(
+        /\.stats-filters input, \.stats-filters select \{([^}]+)\}/,
+      )?.[1] ?? '';
+    expect(controls).toContain('min-width: 0');
+    expect(controls).toContain('max-width: 100%');
+  });
+});
