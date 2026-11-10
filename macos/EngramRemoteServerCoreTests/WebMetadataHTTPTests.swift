@@ -57,6 +57,29 @@ final class WebMetadataHTTPTests: XCTestCase {
         }
     }
 
+    // Real capture session IDs contain ':' (and base64url bytes); the viewer
+    // sends encodeURIComponent(sessionId) like every other session sub-route.
+    func testMatchRouteDecodesPercentEncodedCaptureSessionID_repro() async throws {
+        let captureID = "remote:capture-v1.AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA.BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB:WyJjb2RleCIsImlkIl0"
+        let seen = SeenSessionIDs()
+        var surface = recordingSurface(recorders: A5bRouteRecorders())
+        surface.match = { request in
+            seen.append(request.sessionId)
+            return .init(sessionId: request.sessionId, generation: request.generation, messageOrdinal: 9, reason: nil, matchScope: .allTerms)
+        }
+        try await withServer(surface: surface) { server in
+            let cookie = try await Self.login(server), headers = Self.originHeaders + [("Cookie", cookie)]
+            let encoded = try XCTUnwrap(captureID.addingPercentEncoding(withAllowedCharacters: .alphanumerics))
+            XCTAssertTrue(encoded.contains("%3A"))
+            let path = "/web/api/sessions/\(encoded)/match?generation=\(String(repeating: "a", count: 64))&q=engram"
+            let match = try await server.request("GET", path, headers: headers)
+            XCTAssertEqual(match.status, 200)
+            let invalid = try await server.request("GET", "/web/api/sessions/%E0%A4%A/match?generation=\(String(repeating: "a", count: 64))&q=engram", headers: headers)
+            XCTAssertNotEqual(invalid.status, 200, "malformed escapes never reach the service")
+        }
+        XCTAssertEqual(seen.values, [captureID])
+    }
+
     func testOverviewDefaultQueryReturnsTypedDTO() async throws {
         let fixture = try fixture()
         defer { fixture.stop() }
@@ -1843,4 +1866,11 @@ private final class A5bSocketFixture: @unchecked Sendable {
         do { try FileManager.default.removeItem(atPath: path) }
         catch { XCTFail("Cannot remove task-owned service fixture: \(error)") }
     }
+}
+
+private final class SeenSessionIDs: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [String] = []
+    func append(_ value: String) { lock.lock(); stored.append(value); lock.unlock() }
+    var values: [String] { lock.lock(); defer { lock.unlock() }; return stored }
 }

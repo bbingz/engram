@@ -172,8 +172,12 @@ enum WebReadRoutes {
             let input: EngramServiceWebMatchRequest
             do {
                 let fields = try queryFields(request, names: ["generation", "q"])
-                guard let id = context.parameters.get("id"), let generation = fields["generation"], let q = fields["q"] else { throw EngramServiceWebReadError.invalidField("match") }
-                input = try .init(sessionId: id, generation: generation, q: q)
+                // Same raw-ID bound and percent decoding as the other session sub-routes.
+                guard let raw = context.parameters.get("id"),
+                      raw.utf8.count <= EngramServiceWebReadLimits.maximumSessionIDBytes * 3,
+                      !request.uri.string.contains("#"),
+                      let generation = fields["generation"], let q = fields["q"] else { throw EngramServiceWebReadError.invalidField("match") }
+                input = try .init(sessionId: try decodedComponent(raw), generation: generation, q: q)
             } catch { return Response(status: .badRequest) }
             return try await respond(surface.match, input)
         }
