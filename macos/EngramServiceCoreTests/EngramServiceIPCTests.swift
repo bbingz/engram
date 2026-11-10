@@ -3606,7 +3606,7 @@ final class EngramServiceIPCTests: XCTestCase {
 
         XCTAssertEqual(hybrid.items.map(\.id), ["s2"])
         XCTAssertEqual(hybrid.items.first?.origin, "m1")
-        XCTAssertEqual(hybrid.items.first?.matchType, "semantic")
+        XCTAssertEqual(hybrid.items.first?.matchType, "both")
         XCTAssertEqual(hybrid.searchModes, ["keyword", "semantic"])
     }
 
@@ -4242,7 +4242,7 @@ final class EngramServiceIPCTests: XCTestCase {
 
     func testKeywordSearchSubTrigramHitsAreRecencyBounded_repro() async throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceReadProvider.swift")
-        let start = try XCTUnwrap(source.range(of: "private func shortTokenHitsCTE("))
+        let start = try XCTUnwrap(source.range(of: "private static func shortTokenHitsCTE("))
         let end = try XCTUnwrap(source.range(of: "private func indexExists(", range: start.lowerBound..<source.endIndex))
         let body = String(source[start.lowerBound..<end.lowerBound])
         XCTAssertTrue(body.contains("INDEXED BY idx_sessions_activity_time"), body)
