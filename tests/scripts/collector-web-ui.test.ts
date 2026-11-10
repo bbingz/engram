@@ -8979,6 +8979,65 @@ describe('It8 genuine session-start heatmap and ordering', () => {
   });
 });
 
+describe('It8 readable hour-of-week labels', () => {
+  const counts = {
+    messageCount: 0,
+    userMessageCount: 0,
+    assistantMessageCount: 0,
+    toolMessageCount: 0,
+  };
+  it('labels stats and dashboard hour rows by weekday/time instead of raw keys', async () => {
+    const ui = harness();
+    ui.node('stats-group').value = 'hourOfWeek';
+    const key = `p.${'b'.repeat(64)}`;
+    ui.call(
+      `applyStatsRoute({group:"hourOfWeek",projects:${JSON.stringify(key)}})`,
+    );
+    const option = ui
+      .node('stats-project')
+      .children.find((item: { value: string }) => item.value === key);
+    if (!option) throw new Error('restored project option missing');
+    option.textContent = 'engram';
+    ui.node('stats-project').value = key;
+    const pending = ui.call('loadStats(false)');
+    ui.requestFor('/web/api/stats').resolve({
+      snapshotId: 'hours',
+      groupBy: 'hourOfWeek',
+      timeZone: 'UTC',
+      totals: { sessionCount: 3, ...counts },
+      items: [
+        { key: 'h.3.14', label: 'h.3.14', sessionCount: 2, ...counts },
+        { key: 'u.date', label: 'Unknown', sessionCount: 1, ...counts },
+      ],
+      nextCursor: null,
+    });
+    await pending;
+    const rows = ui.node('stats-rows').textContent;
+    expect(rows).toContain('Thu 14:00');
+    expect(rows).toContain('Unknown start date');
+    expect(rows).not.toContain('h.3.14');
+    expect(ui.node('stats-chart').textContent).toContain('3 sessions in scope');
+    expect(ui.node('stats-chart').textContent).not.toContain('full sessions');
+    expect(ui.node('stats-chart').textContent).toContain('projects: engram');
+    expect(ui.node('stats-chart').textContent).not.toContain(key);
+
+    ui.call('activePage = "dashboard"');
+    const hours = ui.call('loadDashboardHours()');
+    ui.requests[ui.requests.length - 1].resolve({
+      snapshotId: 'd',
+      groupBy: 'hourOfWeek',
+      timeZone: 'UTC',
+      totals: { sessionCount: 2 },
+      items: [{ key: 'h.6.09', sessionCount: 2 }],
+      nextCursor: null,
+    });
+    await hours;
+    const dashboard = ui.node('dashboard-hours').textContent;
+    expect(dashboard).toContain('Sun 09:00');
+    expect(dashboard).not.toContain('h.6.09');
+  });
+});
+
 describe('It8 activity scope and async fences', () => {
   it('keeps explicit all-time dashboard scope separate from the 30-day daily charts', () => {
     expect(shipped('javascript')).toContain('All start dates · agents hidden');
@@ -9015,12 +9074,16 @@ describe('It8 new request ownership', () => {
     });
     ui.requests[1].resolve(page(2));
     await fresh;
-    expect(ui.node('dashboard-hours').textContent).toContain('2 full sessions');
+    expect(ui.node('dashboard-hours').textContent).toContain(
+      '2 sessions in scope',
+    );
     ui.requests[0].resolve(page(1));
     await old;
-    expect(ui.node('dashboard-hours').textContent).toContain('2 full sessions');
+    expect(ui.node('dashboard-hours').textContent).toContain(
+      '2 sessions in scope',
+    );
     expect(ui.node('dashboard-hours').textContent).not.toContain(
-      '1 full sessions',
+      '1 sessions in scope',
     );
   });
   it('does not publish facet labels after expiry and preserves edits during choice loading', async () => {

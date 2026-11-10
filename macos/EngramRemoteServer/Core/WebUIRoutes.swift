@@ -2303,7 +2303,7 @@ enum WebUIRoutes {
         function updateChartRows(name, items, title, field, fullTotal, cursor, groupBy) {
           chartRows[name].push(...items);
           const columns = groupBy === "day" || groupBy === "week";
-          let rows = chartRows[name].map(function (item) { return {label:groupBy === "source" ? sourceLabel(item.key) : item.label || item.key, value:item[field], source:groupBy === "source" ? item.key : null}; });
+          let rows = chartRows[name].map(function (item) { return {label:groupBy === "source" ? sourceLabel(item.key) : groupBy === "hourOfWeek" ? hourOfWeekLabel(item.key) : item.label || item.key, value:item[field], source:groupBy === "source" ? item.key : null}; });
           let bins = columns ? " · returned buckets only" : "";
           if (columns) rows.sort(function (a,b) { return String(a.label).localeCompare(String(b.label)); });
           if (groupBy === "day" && !cursor && rows.length && chartRows[name].every(function (item) { return /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(item.key); })) {
@@ -2460,13 +2460,23 @@ enum WebUIRoutes {
             setText(status,complete ? "Authorized choices loaded" : "Partial choices: 1,000-group cap. Existing route selection retained.");
           } catch (error) { if (version === statsChoicesVersion && epoch === requestEpoch) setText(status,"Choices unavailable. Retry loading choices."); }
         }
+        function choiceLabel(id, value) {
+          if (!value) return "all";
+          const option = Array.from(document.getElementById(id).children).find(function (item) { return item.value === value; });
+          return option && option.textContent ? option.textContent : value;
+        }
+        function hourOfWeekLabel(key) {
+          if (key === "u.date") return "Unknown start date";
+          const match = /^h[.]([0-6])[.](0[0-9]|1[0-9]|2[0-3])$/.exec(key);
+          return match ? ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][Number(match[1])] + " " + match[2] + ":00" : key;
+        }
         function renderHourOfWeek(id, items, timeZone, complete, total, scope) {
           const node = document.getElementById(id); setText(node,""); node.className = "chart";
           const days = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"], bins = new Map(), unknown = items.find(function (item) { return item.key === "u.date"; });
           items.forEach(function (item) { if (/^h[.][0-6][.](0[0-9]|1[0-9]|2[0-3])$/.test(item.key) && Number.isSafeInteger(item.sessionCount) && item.sessionCount >= 0) bins.set(item.key,item.sessionCount); });
           const full = complete && bins.size === 168, title = document.createElement("h3"), note = document.createElement("p");
           setText(title,"Session starts by weekday / hour"); node.appendChild(title);
-          setText(note,(full ? "Complete: 168 bins" : "Partial: " + bins.size + "/168 bins loaded; missing bins unknown") + " · " + timeZone + " · " + chartAmount(total,false) + " full sessions · Unknown start dates: " + (unknown ? unknown.sessionCount : complete ? "0" : "not yet known") + ". Counts starts, not work duration or message activity. " + (scope || "All start dates · agents hidden · all sources/projects · includes lightweight sessions")); node.appendChild(note);
+          setText(note,(full ? "Complete: 168 bins" : "Partial: " + bins.size + "/168 bins loaded; missing bins unknown") + " · " + timeZone + " · " + chartAmount(total,false) + (total === 1 ? " session" : " sessions") + " in scope · Unknown start dates: " + (unknown ? unknown.sessionCount : complete ? "0" : "not yet known") + ". Counts starts, not work duration or message activity. " + (scope || "All start dates · agents hidden · all sources/projects · includes lightweight sessions")); node.appendChild(note);
           const image = svg("svg",{viewBox:"0 0 780 260",role:"img","aria-label":"Session starts, Monday first, server timezone " + timeZone + (full ? ", complete" : ", partial")});
           const maximum = Math.max(1,...Array.from(bins.values()));
           for (let hour = 0; hour < 24; hour += 3) { const text = svg("text",{x:68+hour*29,y:18,fill:"var(--text)","font-size":13}); setText(text,String(hour).padStart(2,"0")); image.appendChild(text); }
@@ -2492,7 +2502,7 @@ enum WebUIRoutes {
               renderHourOfWeek("dashboard-hours",result.items,result.page.timeZone,result.complete,result.page.totals.sessionCount);
               const details = document.createElement("details"), summary = document.createElement("summary"), table = document.createElement("table");
               setText(summary,"Loaded hourly values"); details.appendChild(summary);
-              result.items.forEach(function (item) { const row = document.createElement("tr"); [item.key,String(item.sessionCount)].forEach(function (value) { const cell = document.createElement("td"); setText(cell,value); row.appendChild(cell); }); table.appendChild(row); });
+              result.items.forEach(function (item) { const row = document.createElement("tr"); [hourOfWeekLabel(item.key),String(item.sessionCount)].forEach(function (value) { const cell = document.createElement("td"); setText(cell,value); row.appendChild(cell); }); table.appendChild(row); });
               details.appendChild(table); node.appendChild(details);
             }
           } catch (error) { if (hoursVersion === dashboardHoursVersion && epoch === requestEpoch && version === dashboardVersion && activePage === "dashboard") setText(node,"Session-start heatmap unavailable. Older servers may not support hourOfWeek. Daily charts remain available."); }
@@ -2547,7 +2557,7 @@ enum WebUIRoutes {
             statsTotals = page.totals;
             updateChartRows("stats", page.items, "Session counts", "sessionCount", page.totals.sessionCount, statsCursor, page.groupBy);
             if (page.groupBy === "hourOfWeek") renderHourOfWeek("stats-chart",chartRows.stats,page.timeZone,!statsCursor,page.totals.sessionCount,
-              "Start dates: " + (params.get("since") || "unbounded") + " → " + (params.get("until") || "unbounded") + " · agents " + (params.get("agents") || "hide") + " · sources: " + (params.get("sources") || "all") + " · projects: " + (params.get("projectKeys") || "all") + (params.get("excludeNoise") === "true" ? " · excludes lightweight sessions" : " · includes lightweight sessions"));
+              "Start dates: " + (params.get("since") || "unbounded") + " → " + (params.get("until") || "unbounded") + " · agents " + (params.get("agents") || "hide") + " · sources: " + choiceLabel("stats-source",params.get("sources")) + " · projects: " + choiceLabel("stats-project",params.get("projectKeys")) + (params.get("excludeNoise") === "true" ? " · excludes lightweight sessions" : " · includes lightweight sessions"));
             const totals = document.getElementById("stats-totals");
             setText(totals, "");
             statsFields.forEach(function (field) {
@@ -2563,7 +2573,7 @@ enum WebUIRoutes {
             page.items.forEach(function (item) {
               const row = document.createElement("tr");
               const label = document.createElement("td");
-              setText(label, page.groupBy === "source" ? sourceLabel(item.key) : item.label);
+              setText(label, page.groupBy === "source" ? sourceLabel(item.key) : page.groupBy === "hourOfWeek" ? hourOfWeekLabel(item.key) : item.label);
               row.appendChild(label);
               statsFields.forEach(function (field) {
                 const value = document.createElement("td");
