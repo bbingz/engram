@@ -882,6 +882,8 @@ enum WebUIRoutes {
         const identityMode = !!(document.body && document.body.dataset && document.body.dataset.authMode === "tailscale-serve");
         let identitySignInPending = false;
         let identitySignInAt = 0;
+        // Identity display follows authentication lifetime, not page navigation.
+        let identityDisplayVersion = 0;
         if (identityMode) {
           document.getElementById("login").hidden = true;
           document.getElementById("logout").hidden = true;
@@ -1118,6 +1120,7 @@ enum WebUIRoutes {
         function setSignedIn(signedIn) {
           document.getElementById("shortcuts-help").hidden = !signedIn;
           if (!signedIn) {
+            identityDisplayVersion += 1;
             setText(document.getElementById("identity-status"), "");
             routeVersion += 1; listRouteKey = ""; detailReturnRoute = null; cancelSearchTimer(); closeShortcuts();
             clearFacets();
@@ -3380,6 +3383,9 @@ enum WebUIRoutes {
           return null;
         }
         async function authWrite(method, body) {
+          // Invalidate before waiting on another auth write, even if this write fails.
+          identityDisplayVersion += 1;
+          setText(document.getElementById("identity-status"), "");
           const predecessor = authWriteTail;
           let release;
           const completion = new Promise(resolve => { release = resolve; });
@@ -4011,7 +4017,7 @@ enum WebUIRoutes {
           sessionsNode.appendChild(emptyState("alert", "Sessions could not be loaded", "Check the connection, then retry.", [["Retry", function () { refreshLibrary().catch(function () {}); }]]));
         }
         async function restoreSession() {
-          const token = requestEpoch;
+          const token = requestEpoch, displayVersion = identityDisplayVersion;
           async function probe() {
             return fetch("/web/api/sessions" + sessionQuery(false), {
               method: "GET",
@@ -4060,12 +4066,13 @@ enum WebUIRoutes {
           acceptSessionsPage(false, page);
           if (token !== requestEpoch) return;
           await loadOverview();
-          if (identityMode && token === requestEpoch) {
+          if (identityMode && displayVersion === identityDisplayVersion && !workspaceNode.hidden) {
             try {
               const access = await api("GET", "/web/api/auth");
-              if (token === requestEpoch && !workspaceNode.hidden && access && typeof access.login === "string") {
+              if (displayVersion === identityDisplayVersion && !workspaceNode.hidden && access && typeof access.login === "string") {
                 const label = "Signed in as " + access.login;
-                setText(document.getElementById("identity-status"), label); setStatus(label);
+                setText(document.getElementById("identity-status"), label);
+                if (token === requestEpoch) setStatus(label);
               }
             } catch (error) {} // Auth display is optional; authorization remains server-owned.
           }

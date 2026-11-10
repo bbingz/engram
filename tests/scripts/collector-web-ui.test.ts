@@ -7990,3 +7990,118 @@ it('uses theme-aware opaque placeholder text instead of low-contrast browser def
     'input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }',
   );
 });
+
+describe('iteration 5 identity display authentication lifetime', () => {
+  const ticks = async () => {
+    for (let i = 0; i < 24; i++) await Promise.resolve();
+  };
+  const beginRestore = async (ui: ReturnType<typeof harness>) => {
+    const pending = ui.call('restoreSession()');
+    ui.requestFor('/web/api/sessions').resolve({ snapshotId: 's', items: [] });
+    await ticks();
+    return { pending, overview: ui.requestFor('/web/api/overview') };
+  };
+  const finishSettings = async (ui: ReturnType<typeof harness>) => {
+    const navigation = ui.call('navigate("settings")');
+    ui.requestFor('/web/api/settings').resolve({
+      snapshotId: 'settings',
+      totalSessions: 0,
+      sources: [],
+      aliases: [],
+    });
+    ui.requestFor('/web/api/auth').resolve({ canWrite: false });
+    await navigation;
+    return ui.node('status').textContent;
+  };
+
+  it('restores the same identity across Settings navigation while its display response is pending', async () => {
+    const ui = harness(undefined, { authMode: 'tailscale-serve' });
+    const { pending, overview } = await beginRestore(ui);
+    overview.resolve({ snapshotId: 'o', streams: [] });
+    await ticks();
+    const display = ui.requestFor('/web/api/auth');
+    const status = await finishSettings(ui);
+    display.resolve({ canWrite: false, login: 'Reader <safe>@example.com' });
+    await pending;
+    expect(ui.node('identity-status').textContent).toBe(
+      'Signed in as Reader <safe>@example.com',
+    );
+    expect(ui.node('identity-status').querySelector('safe')).toBeNull();
+    expect(ui.node('status').textContent).toBe(status);
+    expect(ui.node('settings-access').textContent).toContain('Read only');
+    expect(ui.requests.filter((r) => r.method !== 'GET')).toHaveLength(0);
+    expect(ui.requestsFor('/web/api/overview')).toHaveLength(1);
+  });
+
+  it('still reads the identity when page navigation supersedes the initial overview request', async () => {
+    const ui = harness(undefined, { authMode: 'tailscale-serve' });
+    const { pending, overview } = await beginRestore(ui);
+    await finishSettings(ui);
+    const before = ui.requestsFor('/web/api/auth').length;
+    overview.resolve({ snapshotId: 'o', streams: [] });
+    await ticks();
+    expect(ui.requestsFor('/web/api/auth')).toHaveLength(before + 1);
+    ui.requestFor('/web/api/auth').resolve({
+      canWrite: false,
+      login: 'reader@example.com',
+    });
+    await pending;
+    expect(ui.node('identity-status').textContent).toBe(
+      'Signed in as reader@example.com',
+    );
+    expect(ui.node('settings-page').hidden).toBe(false);
+  });
+
+  it('discards a delayed identity response after explicit logout', async () => {
+    const ui = harness(undefined, { authMode: 'tailscale-serve' });
+    const { pending, overview } = await beginRestore(ui);
+    overview.resolve({ snapshotId: 'o', streams: [] });
+    await ticks();
+    const display = ui.requestFor('/web/api/auth');
+    const logout = ui.call('logout()');
+    ui.requestFor('/web/api/auth').resolve(undefined, 204);
+    await logout;
+    display.resolve({ canWrite: false, login: 'PRIVATE' });
+    await pending;
+    expect(ui.node('identity-status').textContent).toBe('');
+    expect(ui.node('workspace').hidden).toBe(true);
+    expect(ui.node('status').textContent).toBe('signed out');
+  });
+
+  it.each([204, 403])(
+    'invalidates pending display at auth replacement intent, even when the write returns %s',
+    async (status) => {
+      const ui = harness(undefined, { authMode: 'tailscale-serve' });
+      const { pending, overview } = await beginRestore(ui);
+      overview.resolve({ snapshotId: 'o', streams: [] });
+      await ticks();
+      const display = ui.requestFor('/web/api/auth');
+      const replace = ui.call('authWrite("POST","{}")').catch(() => {});
+      // The old GET may finish while the replacement POST is still pending.
+      display.resolve({ canWrite: false, login: 'PRIVATE' });
+      await pending;
+      expect(ui.node('identity-status').textContent).toBe('');
+      ui.requestFor('/web/api/auth').resolve(undefined, status);
+      await replace;
+      expect(ui.node('identity-status').textContent).toBe('');
+    },
+  );
+
+  it('does not overwrite a renewed identity when an old pre-expiry display response arrives last', async () => {
+    const ui = harness(undefined, { authMode: 'tailscale-serve' });
+    const first = await beginRestore(ui);
+    first.overview.resolve({ snapshotId: 'old', streams: [] });
+    await ticks();
+    const old = ui.requestFor('/web/api/auth');
+    await ui.call('identitySignInAt=Date.now(); expireSession()');
+    const renewed = await beginRestore(ui);
+    renewed.overview.resolve({ snapshotId: 'new', streams: [] });
+    await ticks();
+    ui.requestFor('/web/api/auth').resolve({ canWrite: false, login: 'NEW' });
+    await renewed.pending;
+    old.resolve({ canWrite: false, login: 'OLD' });
+    await first.pending;
+    expect(ui.node('identity-status').textContent).toBe('Signed in as NEW');
+    expect(ui.node('status').textContent).toBe('Signed in as NEW');
+  });
+});
