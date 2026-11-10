@@ -52,36 +52,20 @@ enum WebUIRoutes {
         <button type="submit">Log in</button>
         </form>
         <button id="logout" type="button" hidden>Log out</button>
+        <button id="shortcuts-help" type="button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)" hidden>?</button>
         <p id="status" role="status"></p>
         </header>
         <p id="signed-out" class="empty">Sign in to browse your session library.</p>
+        <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title">
+        <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+        <p>/ — focus search (find in a transcript) · j/k — select session · Enter — open selected session</p>
+        <p>Esc — close help, find or filters, then return to list · ? — show this help</p>
+        <p>In transcript find: Enter / Shift+Enter — next / previous. Searches only the loaded message model; Search further loads up to 5 pages.</p>
+        <button id="shortcuts-close" type="button">Close help</button></dialog>
         <main id="workspace" hidden>
         <section id="library-page">
         <aside class="list-pane">
         <section id="overview"></section>
-        <section id="search-options" hidden>
-        <div class="search-mode-controls">
-        <label>Search mode <select id="search-mode"><option id="mode-keyword" value="keyword">Keyword</option><option id="mode-semantic" value="semantic" disabled>Semantic</option><option id="mode-hybrid" value="hybrid" disabled>Hybrid</option></select></label>
-        <label>Results <select id="search-limit"><option value="10">10</option><option value="25">25</option><option value="50">50</option></select></label>
-        </div>
-        <p id="search-capabilities" role="status"></p>
-        <p id="search-result-status" role="status"></p>
-        <details id="insight-compose" class="advanced-filters">
-        <summary>Save an insight</summary>
-        <p id="insight-write-status" role="status"></p>
-        <form id="insight-save-form" hidden>
-        <label>Insight <textarea id="insight-content-input" rows="6" maxlength="50000" placeholder="A lesson or note to find again…" required></textarea></label>
-        <div class="search-mode-controls">
-        <label>Category <input id="insight-wing-input" maxlength="200" placeholder="Optional"></label>
-        <label>Topic <input id="insight-room-input" maxlength="200" placeholder="Optional"></label>
-        <label>Importance <select id="insight-importance-input"><option value="5">5 — High</option><option value="4">4</option><option value="3">3</option><option value="2">2</option><option value="1">1</option><option value="0">0 — Low</option></select></label>
-        </div>
-        <label>Source session ID <input id="insight-source-input" maxlength="4096" placeholder="Optional; leave blank for a library note"></label>
-        <button id="insight-save-button" type="submit">Save insight</button>
-        </form>
-        <button id="insight-saved-read" type="button" hidden>Read saved insight</button>
-        </details>
-        </section>
         <form id="search">
         <label id="search-query"><span class="visually-hidden">Search</span> <input id="query" name="query" type="search" placeholder="Keywords"></label>
         <details id="source-picker" class="facet-picker">
@@ -116,6 +100,29 @@ enum WebUIRoutes {
         </details>
         <button type="submit">Search</button>
         </form>
+        <section id="search-options" hidden>
+        <div class="search-mode-controls">
+        <label>Search mode <select id="search-mode"><option id="mode-keyword" value="keyword">Keyword</option><option id="mode-semantic" value="semantic" disabled>Semantic</option><option id="mode-hybrid" value="hybrid" disabled>Hybrid</option></select></label>
+        <label>Results <select id="search-limit"><option value="10">10</option><option value="25" selected>25</option><option value="50">50</option></select></label>
+        </div>
+        <p id="search-capabilities" role="status"></p>
+        <p id="search-result-status" role="status"></p>
+        <details id="insight-compose" class="advanced-filters">
+        <summary>Save an insight</summary>
+        <p id="insight-write-status" role="status"></p>
+        <form id="insight-save-form" hidden>
+        <label>Insight <textarea id="insight-content-input" rows="6" maxlength="50000" placeholder="A lesson or note to find again…" required></textarea></label>
+        <div class="search-mode-controls">
+        <label>Category <input id="insight-wing-input" maxlength="200" placeholder="Optional"></label>
+        <label>Topic <input id="insight-room-input" maxlength="200" placeholder="Optional"></label>
+        <label>Importance <select id="insight-importance-input"><option value="5">5 — High</option><option value="4">4</option><option value="3">3</option><option value="2">2</option><option value="1">1</option><option value="0">0 — Low</option></select></label>
+        </div>
+        <label>Source session ID <input id="insight-source-input" maxlength="4096" placeholder="Optional; leave blank for a library note"></label>
+        <button id="insight-save-button" type="submit">Save insight</button>
+        </form>
+        <button id="insight-saved-read" type="button" hidden>Read saved insight</button>
+        </details>
+        </section>
         <div id="active-filters" class="active-filters" aria-label="Active filters" hidden></div>
         <div class="list-toolbar">
         <div class="agent-filters segmented" role="group" aria-label="Agent sessions">
@@ -145,7 +152,15 @@ enum WebUIRoutes {
         <button id="detail-view-timeline" type="button" aria-pressed="false">Timeline</button>
         <button id="detail-view-children" type="button" aria-pressed="false">Child sessions</button>
         <button id="detail-view-info" type="button" aria-pressed="false">Info</button>
-        </nav></div>
+        </nav>
+        <form id="transcript-find" class="agent-filters" hidden>
+        <label>Find in loaded messages <input id="transcript-find-query" type="search" maxlength="500" autocomplete="off"></label>
+        <button type="submit">Next</button><button id="transcript-find-prev" type="button">Previous</button>
+        <button id="transcript-find-more" type="button">Search further (up to 5 pages)</button>
+        <button id="transcript-find-close" type="button">Close find</button>
+        <p id="transcript-find-status" role="status" aria-live="polite"></p><p id="transcript-find-preview" class="find-preview"></p>
+        </form>
+        </div>
         <section id="detail-info-panel" hidden><div id="detail-info-content"></div>
         <section id="session-summary" class="settings-section" hidden><h3>Summary</h3><div id="session-summary-text"></div></section>
         <details id="session-actions" class="advanced-filters" hidden>
@@ -159,6 +174,7 @@ enum WebUIRoutes {
         <div id="transcript-filters" class="agent-filters" aria-label="Message types"></div>
         <p class="meta">Counts cover loaded messages; Tools counts call/result cards. Categories can overlap.</p>
         <div class="agent-filters"><span id="transcript-loaded" role="status"></span>
+        <button id="transcript-find-toggle" type="button">Find in loaded</button>
         <button id="transcript-outline-toggle" type="button" aria-expanded="false">Outline</button>
         <button id="transcript-load-all" type="button">Load all</button>
         <button id="transcript-end" type="button">Jump to end</button>
@@ -417,6 +433,7 @@ enum WebUIRoutes {
         #status[data-tone="danger"]::before { background: var(--danger); }
         #status:empty { display: none; }
         #logout { order: 5; }
+        #shortcuts-help { order: 6; font-size: 12px; padding: 6px 9px; }
         .page-nav { display: flex; flex: 1 1 auto; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
         .page-nav a { display: inline-flex; align-items: center; gap: 7px; padding: 6px 11px; border-radius: var(--r-md); color: var(--muted); font-weight: 550; font-size: 13px; letter-spacing: -0.01em; white-space: nowrap; transition: color var(--dur-1) ease, background var(--dur-1) ease; }
         .page-nav a .icon { flex: none; opacity: 0.85; }
@@ -619,7 +636,7 @@ enum WebUIRoutes {
         #sessions > .group-start:first-child { margin-top: 24px; }
         .title { color: var(--text); font-weight: 600; font-size: 14px; letter-spacing: -0.012em; line-height: 1.45; margin-bottom: 3px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
         .meta { color: var(--muted); display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; line-height: 18px; align-items: center; }
-        .meta .sep { color: var(--text-faint); }
+        .meta .sep { color: var(--muted); }
         .meta time, .message-counts { font-variant-numeric: tabular-nums; }
         .badge { display: inline-block; color: white; background: var(--source-color, #64748b); border-radius: 999px; padding: 1px 8px; font-size: 10.5px; font-weight: 650; letter-spacing: 0.02em; }
         .meta .badge { display: inline-flex; align-items: center; gap: 6px; padding: 0; border-radius: 0; background: none; color: var(--text); font-size: 12px; font-weight: 550; letter-spacing: 0; }
@@ -781,6 +798,15 @@ enum WebUIRoutes {
           #files-rows td:first-child, #usage-rows td:nth-child(3) { grid-column: 1 / -1; }
           #files-rows td[data-label]::before, #usage-rows td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 4px; color: var(--muted); font-size: 11px; }
         }
+        @media (prefers-color-scheme: light) { .page-nav a[aria-current="page"] { color: #166534; } }
+        #shortcuts-dialog { max-width: min(620px, calc(100vw - 32px)); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); color: var(--text); }
+        #shortcuts-dialog::backdrop { background: rgba(0,0,0,.65); }
+        #transcript-find { padding: 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--panel); }
+        #transcript-find label { min-width: 0; } #transcript-find input { max-width: 100%; }
+        .find-preview { flex-basis: 100%; overflow-wrap: anywhere; white-space: pre-wrap; margin: 0; }
+        #transcript-find-status { flex-basis: 100%; margin: 0; color: var(--muted); }
+        .message.find-target, .session[aria-current="true"] { outline: 2px solid var(--accent); outline-offset: -2px; }
+        mark, .search-snippet mark { color: var(--text); background: var(--accent-dim); font-weight: 600; }
         /* Charts scale by viewBox, without observers, runtime CSS injection or animation. */
         #workspace.data-page { max-width: 1200px; }
         #stats-page .agent-filters button[aria-pressed="true"] { color:var(--text); }
@@ -910,7 +936,18 @@ enum WebUIRoutes {
         let aliasProjectSnapshot = "";
         let aliasProjectCursor = "";
         let aliasProjectQuery = "";
+        let searchTimer = null, searchInputVersion = 0, routeVersion = 0, handledRoute = null;
+        let listRouteKey = "", cachedListScroll = 0, detailReturnRoute = null, selectedSessionIndex = -1;
+        let findMatches = [], findIndex = -1, findVersion = 0;
+        const routeFilterKeys = ["q", "sources", "projects", "agents", "since", "until", "tools", "machine", "mode", "limit"];
+        const statsTabs = ["sessions", "costs", "tools", "files", "usage", "repos", "ai"];
+        function cancelSearchTimer() {
+          searchInputVersion += 1;
+          if (searchTimer !== null && typeof clearTimeout === "function") clearTimeout(searchTimer);
+          searchTimer = null;
+        }
         function bumpEpoch() {
+          cancelSearchTimer();
           requestEpoch += 1;
           return requestEpoch;
         }
@@ -1047,7 +1084,9 @@ enum WebUIRoutes {
           }
         }
         function setSignedIn(signedIn) {
+          document.getElementById("shortcuts-help").hidden = !signedIn;
           if (!signedIn) {
+            routeVersion += 1; listRouteKey = ""; detailReturnRoute = null; cancelSearchTimer(); closeShortcuts();
             clearFacets();
             setText(healthContent, "");
             setText(healthStatus, "");
@@ -1149,7 +1188,10 @@ enum WebUIRoutes {
             document.getElementById("nav-" + name).setAttribute("aria-current", name === activePage ? "page" : "false");
           });
         }
-        async function navigate(page) {
+        async function navigate(page, routed, tab) {
+          routeVersion += routed ? 0 : 1;
+          if (!routed) writeRoute(page === "stats" ? {page:"stats",tab:tab || "sessions"} : ["sessions","search"].includes(page) ? Object.assign(libraryRoute(), {page:page}) : {page:page});
+          workspaceNode.classList.remove("showing-detail"); backNode.hidden = true;
           detailReturnPage = null;
           bumpEpoch();
           clearMessages();
@@ -1163,21 +1205,131 @@ enum WebUIRoutes {
             setText(healthStatus, "Loading…");
             await loadOverview();
           } else if (activePage === "search") {
-            await refreshLibrary();
+            await refreshLibrary(true);
           } else if (activePage === "settings") {
             await loadSettings(false);
           } else if (activePage === "stats") {
-            await showStatsView("sessions");
+            await showStatsView(tab || "sessions", true);
           } else {
             await loadSessions(false);
           }
         }
-        function restoreRequestedPage() {
-          if (workspaceNode.hidden || !window.location.hash) return;
-          const page = window.location.hash.slice(1);
-          if (page === "stats" || page === "settings" || page === "dashboard") return navigate(page);
-          activatePage(page);
-          if (page === "search") return loadSearchStatus();
+        // Routes never serialize auth, snapshots, cursors or arbitrary form fields.
+        function parseRoute(hash) {
+          const fallback = {page:"sessions", filters:{}};
+          try {
+            let value = String(hash || "").replace(/^#/, "");
+            if (!value.startsWith("/")) value = "/" + (value || "sessions");
+            if (/%(?![0-9a-f]{2})/i.test(value)) return fallback;
+            decodeURIComponent(value); // Reject invalid UTF-8, including in the query.
+            const split = value.split("?"), parts = split[0].split("/").slice(1);
+            const params = new URLSearchParams(split[1] || ""), filters = {};
+            routeFilterKeys.forEach(function (key) {
+              const v = params.get(key);
+              if (v && v.length <= 4096) filters[key] = v;
+            });
+            if (!["all", "only"].includes(filters.agents)) delete filters.agents;
+            if (!["keyword", "semantic", "hybrid"].includes(filters.mode)) delete filters.mode;
+            if (!["10", "25", "50"].includes(filters.limit)) delete filters.limit;
+            if (filters.tools !== "hide") delete filters.tools;
+            ["since", "until"].forEach(function (key) { if (filters[key] && !/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(filters[key])) delete filters[key]; });
+            if (parts[0] === "s" && parts[1]) {
+              const id = decodeURIComponent(parts[1]);
+              if (id.length > 4096) return fallback;
+              const route = {page:"detail", id:id};
+              if (parts.length === 4 && parts[2] === "m" && /^[0-9]+$/.test(parts[3]) && Number.isSafeInteger(Number(parts[3]))) route.ordinal = Number(parts[3]);
+              else if (parts.length === 3 && ["timeline", "children", "info"].includes(parts[2])) route.view = parts[2];
+              else if (parts.length !== 2) return fallback;
+              if (params.get("find")) route.find = params.get("find").slice(0,500);
+              return route;
+            }
+            if (parts[0] === "stats" && parts.length <= 2 && (!parts[1] || statsTabs.includes(parts[1]))) return {page:"stats", tab:parts[1] || "sessions"};
+            if (["sessions", "search", "dashboard", "health", "settings"].includes(parts[0]) && parts.length === 1) return {page:parts[0], filters:filters};
+          } catch (error) {}
+          return fallback;
+        }
+        function routeHref(route) {
+          if (route.page === "detail") return "#/s/" + encodeURIComponent(route.id) + (route.ordinal != null ? "/m/" + route.ordinal : route.view ? "/" + route.view : "") + (route.find ? "?" + new URLSearchParams({find:route.find}).toString() : "");
+          if (route.page === "stats") return "#/stats/" + (statsTabs.includes(route.tab) ? route.tab : "sessions");
+          const page = ["sessions", "search", "dashboard", "health", "settings"].includes(route.page) ? route.page : "sessions";
+          const params = new URLSearchParams();
+          if (["sessions", "search"].includes(page)) routeFilterKeys.forEach(function (key) { if (route.filters && route.filters[key]) params.set(key, route.filters[key]); });
+          return "#/" + page + (params.toString() ? "?" + params.toString().replaceAll("+", "%20") : "");
+        }
+        function libraryRoute() {
+          const savedFilters = sessionFilters;
+          const query = new URLSearchParams(sessionQuery(false).slice(1)), filters = {};
+          sessionFilters = savedFilters;
+          [["q","query"],["sources","sources"],["projects","projectKeys"],["agents","agents"],["since","since"],["until","until"],["tools","tools"],["machine","machineId"]].forEach(function (pair) { if (query.get(pair[1])) filters[pair[0]] = query.get(pair[1]); });
+          if (activePage === "search") { filters.mode = document.getElementById("search-mode").value || "keyword"; filters.limit = document.getElementById("search-limit").value || "25"; }
+          return {page:activePage === "search" ? "search" : "sessions", filters:filters};
+        }
+        function writeRoute(route, replace) {
+          const href = routeHref(route);
+          if (!replace && !workspaceNode.classList.contains("showing-detail") && ["sessions", "search"].includes(activePage)) cachedListScroll = window.scrollY;
+          handledRoute = href;
+          if (window.location.hash === href) return;
+          if (window.history && typeof window.history[replace ? "replaceState" : "pushState"] === "function") window.history[replace ? "replaceState" : "pushState"](null, "", href);
+          else window.location.hash = href;
+        }
+        function applyRouteFilters(filters) {
+          const f = filters || {};
+          [["query","q"],["machineId","machine"],["since","since"],["until","until"]].forEach(function (pair) { document.getElementById(pair[0]).value = f[pair[1]] || ""; });
+          document.getElementById("hide-tools").checked = f.tools === "hide";
+          setAgentFilter(f.agents || "hide");
+          [["source","sources"],["project","projects"]].forEach(function (pair) {
+            const state = facets[pair[0]], known = new Map(state.selected);
+            state.selected.clear();
+            (f[pair[1]] || "").split(",").filter(Boolean).forEach(function (key) { state.selected.set(key,known.get(key) || (state.items.get(key) || {}).label || key); });
+            updateFacetSummary(pair[0]); renderFacets(pair[0]);
+          });
+          document.getElementById("search-mode").value = f.mode || "keyword";
+          document.getElementById("search-limit").value = f.limit || "25";
+        }
+        async function applyRoute(initial) {
+          if (workspaceNode.hidden) return; // Leave the pending URL intact until either auth flow resolves.
+          const raw = window.location.hash, route = parseRoute(raw), key = routeHref(route);
+          if (initial) cachedListScroll = 0;
+          if (!initial && handledRoute === key) { writeRoute(route, true); return; }
+          handledRoute = key;
+          const version = ++routeVersion;
+          jumpVersion += 1; findVersion += 1;
+          const returningStats = workspaceNode.classList.contains("showing-detail") && detailReturnRoute && detailReturnRoute.page === "stats" && route.tab === statsView;
+          writeRoute(route, true);
+          if (route.page === "detail") {
+            if (detailContextSession !== route.id || !workspaceNode.classList.contains("showing-detail")) await openDetail(route.id, null, true);
+            else { bumpEpoch(); messageRequest = null; }
+            if (version !== routeVersion || workspaceNode.hidden || !workspaceNode.classList.contains("showing-detail")) return;
+            if (route.view) await showDetailView(route.view);
+            if (route.ordinal != null) await jumpToOrdinal(route.ordinal, true);
+            if (version !== routeVersion || workspaceNode.hidden || !workspaceNode.classList.contains("showing-detail")) return;
+            if (route.find) { openTranscriptFind(route.find); await searchFurther(); }
+            return;
+          }
+          bumpEpoch(); clearMessages();
+          workspaceNode.classList.remove("showing-detail"); backNode.hidden = true; detailReturnPage = null;
+          if (["sessions", "search"].includes(route.page)) {
+            activatePage(route.page); applyRouteFilters(route.filters); renderActiveFilters();
+            if (key === listRouteKey || (initial && !Object.keys(route.filters || {}).length && route.page === "sessions")) {
+              window.scrollTo({top:cachedListScroll, behavior:"instant"}); return;
+            }
+            await refreshLibrary(true); return;
+          }
+          if (route.page === "health" && initial) { activatePage("health"); return; }
+          if (route.page === "stats" && (activePage === "stats" || returningStats) && statsView === route.tab) { activatePage("stats"); window.scrollTo({top:sessionListScrollTop,behavior:"instant"}); return; }
+          await navigate(route.page, true, route.tab);
+        }
+        function restoreRequestedPage() { return applyRoute(true); }
+        function historyChanged() {
+          const legacy = window.location.hash && !window.location.hash.startsWith("#/");
+          if (!workspaceNode.hidden) applyRoute(false).then(function () {
+            if (!legacy || !["sessions","search"].includes(activePage) || workspaceNode.classList.contains("showing-detail")) return;
+            const version = routeVersion, top = cachedListScroll;
+            function restore() { if (version === routeVersion && !workspaceNode.hidden && !workspaceNode.classList.contains("showing-detail")) window.scrollTo({top:top,behavior:"instant"}); }
+            // Native legacy fragment scrolling can run after hashchange. Restore after that browser step.
+            if (typeof requestAnimationFrame === "function") requestAnimationFrame(restore);
+            else if (typeof setTimeout === "function") setTimeout(restore,0);
+          }).catch(function () { setStatus("Route unavailable. Try opening it again."); });
         }
         function clearSearchData() {
           clearInsights();
@@ -1281,7 +1433,10 @@ enum WebUIRoutes {
           }
           host.hidden = !list.length;
         }
-        function refreshLibrary() {
+        function refreshLibrary(routed) {
+          cancelSearchTimer();
+          const route = libraryRoute();
+          if (!routed) writeRoute(route);
           renderActiveFilters();
           if (activePage !== "search") return loadSessions(false);
           setText(document.getElementById("search-result-status"), "");
@@ -1292,6 +1447,7 @@ enum WebUIRoutes {
         async function loadRankedSearch() {
           clearInsights();
           const token = bumpEpoch();
+          listRouteKey = "";
           clearSessionPaging();
           showListSkeleton();
           showSessionList();
@@ -1301,7 +1457,7 @@ enum WebUIRoutes {
           const params = new URLSearchParams(sessionQuery(false).slice(1));
           const mode = document.getElementById("search-mode").value || "keyword";
           if (mode !== "keyword") params.set("mode", mode);
-          params.set("limit", document.getElementById("search-limit").value || "10");
+          params.set("limit", document.getElementById("search-limit").value || "25");
           setText(status, "Searching…");
           try {
             const page = await api("GET", "/web/api/search?" + params.toString().replaceAll("+", "%20"));
@@ -2188,7 +2344,8 @@ enum WebUIRoutes {
             if (token === requestEpoch) moreButton.disabled = false;
           }
         }
-        async function showStatsView(view) {
+        async function showStatsView(view, routed) {
+          if (!routed && activePage === "stats") { routeVersion += 1; writeRoute({page:"stats",tab:view}); }
           statsView = view;
           ["sessions", "costs", "tools", "files", "usage", "repos", "ai"].forEach(function (name) {
             document.getElementById(name === "sessions" ? "stats-content" : name + "-content").hidden = view !== name;
@@ -2818,6 +2975,7 @@ enum WebUIRoutes {
         document.getElementById("session-generate-title").addEventListener("click", function () { generateSessionText("title"); });
         document.getElementById("batch-title-button").addEventListener("click", generateMissingTitles);
         async function showDetailView(view) {
+          if (view !== "transcript") closeTranscriptFind();
           if (!detailContextSession || !["transcript", "timeline", "children", "info"].includes(view)) return;
           if (view === "timeline" && !detailContextGeneration) return;
           ["transcript", "timeline", "children", "info"].forEach(function (name) {
@@ -3020,7 +3178,91 @@ enum WebUIRoutes {
             }
           }
         }
+        // Find indexes decoded payload fields, not rendered DOM text. Original rich/code/raw/copy nodes stay untouched.
+        let findOpened = [];
+        function closeTranscriptFind() {
+          findVersion += 1; findMatches = []; findIndex = -1;
+          document.getElementById("transcript-find").hidden = true;
+          document.getElementById("transcript-find-query").value = "";
+          transcriptMessages.forEach(function (item) { item.article.classList.remove("find-target"); });
+          findOpened.forEach(function (node) { node.open = false; }); findOpened = [];
+          setText(document.getElementById("transcript-find-status"), "");
+          setText(document.getElementById("transcript-find-preview"), "");
+        }
+        function openTranscriptFind(value) {
+          document.getElementById("transcript-find").hidden = false;
+          const input = document.getElementById("transcript-find-query");
+          if (value != null) input.value = value;
+          if (typeof input.focus === "function") input.focus();
+          updateTranscriptFind();
+        }
+        function updateTranscriptFind() {
+          const query = document.getElementById("transcript-find-query").value.toLocaleLowerCase();
+          const previous = findMatches[findIndex]; findMatches = [];
+          if (query) transcriptMessages.forEach(function (item) {
+            const fields = [item.content];
+            (item.payload.toolCalls || []).forEach(function (call) { fields.push(call.name || "", toolJSON(call.input), toolJSON(call.output)); });
+            fields.forEach(function (value, field) {
+              const text = String(value).toLocaleLowerCase(); let from = 0, at;
+              while ((at = text.indexOf(query, from)) >= 0 && findMatches.length < 10000) { findMatches.push({item:item,field:field,offset:at,text:String(value)}); from = at + query.length; }
+            });
+          });
+          findIndex = previous ? findMatches.findIndex(function (match) { return match.item === previous.item && match.field === previous.field && match.offset === previous.offset; }) : -1;
+          renderFindStatus();
+        }
+        function findMatchHidden(match) {
+          if (match.item.article.hidden) return true;
+          if (match.field === 0) return !!(match.item.body && match.item.body.hidden);
+          const tool = match.item.tools[Math.floor((match.field - 1) / 3)];
+          return !!(tool && tool.hidden);
+        }
+        function renderFindStatus() {
+          const preview = document.getElementById("transcript-find-preview"); setText(preview, "");
+          const current = findMatches[findIndex];
+          if (current) {
+            const length = document.getElementById("transcript-find-query").value.length;
+            preview.appendChild(textSpan("#" + current.item.ordinal + " · " + current.text.slice(Math.max(0,current.offset - 70),current.offset)));
+            const mark = document.createElement("mark"); setText(mark,current.text.slice(current.offset,current.offset + length)); preview.appendChild(mark);
+            preview.appendChild(textSpan(current.text.slice(current.offset + length,current.offset + length + 100)));
+          }
+          const hidden = findMatches.filter(findMatchHidden).length;
+          setText(document.getElementById("transcript-find-status"), (findIndex < 0 ? "0" : findIndex + 1) + " of " + findMatches.length + (findMatches.length >= 10000 ? "+ (match cap)" : "") + " matches in " + transcriptMessages.length + " loaded messages" + (hidden ? " · " + hidden + " hidden by type filter" : "") + (messageCursor ? " · more not searched" : " · end of available transcript"));
+          document.getElementById("transcript-find-more").hidden = !messageCursor;
+        }
+        function moveFind(direction) {
+          if (!findMatches.length) { renderFindStatus(); return; }
+          findIndex = findIndex < 0 ? (direction < 0 ? findMatches.length - 1 : 0) : (findIndex + direction + findMatches.length) % findMatches.length;
+          const match = findMatches[findIndex];
+          transcriptMessages.forEach(function (item) { item.article.classList.toggle("find-target", item === match.item); });
+          if (!findMatchHidden(match)) {
+            match.item.article.querySelectorAll("details").forEach(function (node) { if (!node.open) { findOpened.push(node); node.open = true; } });
+            if (typeof match.item.article.scrollIntoView === "function") match.item.article.scrollIntoView({block:"center",behavior:"instant"});
+          }
+          renderFindStatus();
+        }
+        async function searchFurther(more) {
+          const token = requestEpoch, version = ++findVersion, budget = {remaining:5};
+          updateTranscriptFind();
+          const count = more ? findMatches.length : 0;
+          while (findMatches.length <= count && messageCursor && budget.remaining > 0 && token === requestEpoch && version === findVersion) {
+            if (messageRequest) break;
+            const cursor = messageCursor;
+            await loadMessages(token, messageSessionId, messageGeneration, cursor, budget);
+            if (cursor === messageCursor) break;
+          }
+          if (token !== requestEpoch || version !== findVersion) return;
+          if (findMatches.length) { findIndex = Math.min(count,findMatches.length - 1) - 1; moveFind(1); }
+          else renderFindStatus();
+        }
+        document.getElementById("transcript-find-toggle").addEventListener("click", function () { openTranscriptFind(); });
+        document.getElementById("transcript-find-query").addEventListener("input", function () { findVersion += 1; findIndex = -1; updateTranscriptFind(); });
+        document.getElementById("transcript-find").addEventListener("submit", function (event) { event.preventDefault(); moveFind(1); });
+        document.getElementById("transcript-find-query").addEventListener("keydown", function (event) { if (event.key === "Enter" && event.shiftKey && !event.isComposing) { event.preventDefault(); moveFind(-1); } });
+        document.getElementById("transcript-find-prev").addEventListener("click", function () { moveFind(-1); });
+        document.getElementById("transcript-find-close").addEventListener("click", closeTranscriptFind);
+        document.getElementById("transcript-find-more").addEventListener("click", function () { searchFurther(true).catch(function () { toast("Find could not load more messages.","danger"); }); });
         function clearMessages() {
+          closeTranscriptFind();
           clearDetailExtras();
           messageSessionId = "";
           messageGeneration = "";
@@ -3590,6 +3832,7 @@ enum WebUIRoutes {
           return date.toLocaleDateString("en-US", { year: "numeric", month: "long" });
         }
         function acceptSessionsPage(more, page) {
+          if (!more) { listRouteKey = routeHref(libraryRoute()); selectedSessionIndex = -1; }
           sessionsNode.setAttribute("aria-busy", "false");
           sessionSnapshotId = page.snapshotId || "";
           sessionCursor = page.nextCursor || "";
@@ -3662,6 +3905,7 @@ enum WebUIRoutes {
         async function loadSessions(more) {
           const token = bumpEpoch();
           if (!more) {
+            listRouteKey = "";
             clearSessionPaging();
             showListSkeleton();
             showSessionList();
@@ -3737,8 +3981,13 @@ enum WebUIRoutes {
           if (token !== requestEpoch) return;
           await loadOverview();
         }
-        async function openDetail(sessionId, returnPage) {
-          detailReturnPage = returnPage || null;
+        async function openDetail(sessionId, returnPage, routed) {
+          if (!workspaceNode.classList.contains("showing-detail") || returnPage === "stats") detailReturnRoute = (returnPage === "stats" || activePage === "stats") ? {page:"stats",tab:statsView} : libraryRoute();
+          if (!routed) {
+            routeVersion += 1;
+            writeRoute({page:"detail",id:sessionId,find:activePage === "search" ? document.getElementById("query").value.trim() : ""});
+          }
+          detailReturnPage = returnPage || (detailReturnRoute && detailReturnRoute.page === "stats" ? "stats" : null);
           const token = bumpEpoch();
           sessionPagingBusy = false;
           updateSessionMore();
@@ -3792,6 +4041,9 @@ enum WebUIRoutes {
               return;
             }
             await loadMessages(token, session.sessionId, generation, "");
+            if (!routed && token === requestEpoch && activePage === "search") {
+              openTranscriptFind(document.getElementById("query").value.trim()); await searchFurther();
+            }
           } catch (error) {
             if (token !== requestEpoch) return;
             throw error;
@@ -4217,7 +4469,7 @@ enum WebUIRoutes {
           if (payload.timestamp) meta.appendChild(textSpan(payload.timestamp));
           const link = document.createElement("a"); link.setAttribute("href", "#/s/" + encodeURIComponent(detailContextSession) + "/m/" + ordinal); setText(link, "#" + ordinal);
           link.setAttribute("aria-label", "Message " + ordinal + " permalink");
-          // It4 will own hash navigation. Today a click jumps locally, while the href can be copied.
+          // Addressable ordinal permalink; the jump is fenced and bounded.
           link.addEventListener("click", function (event) { event.preventDefault(); jumpToOrdinal(ordinal); }); meta.appendChild(link);
           if (start) { const copyLink = copyTextButton("Copy link", window.location.origin + "/web" + link.getAttribute("href")); copyLink.className = "permalink-copy"; meta.appendChild(copyLink); }
           if (kind === "assistant") {
@@ -4277,7 +4529,7 @@ enum WebUIRoutes {
           document.getElementById("transcript-load-all").hidden = !messageCursor;
           document.getElementById("transcript-load-all").disabled = transcriptAllBusy;
           if (messageCursor) setText(moreMessagesNode, "Load more (" + transcriptMessages.length + " loaded)");
-          renderTranscriptOutline(); updateDetailInfoCoverage();
+          renderTranscriptOutline(); updateDetailInfoCoverage(); updateTranscriptFind();
         }
         function renderTranscriptOutline() {
           const root = document.getElementById("transcript-outline"); setText(root, "");
@@ -4297,15 +4549,21 @@ enum WebUIRoutes {
             button.addEventListener("click", function () { jumpToOrdinal(entry.index); }); root.appendChild(button);
           });
         }
-        async function jumpToOrdinal(ordinal) {
-          const token = requestEpoch; let pages = 0;
-          while (!transcriptMessages.some(function (item) { return item.ordinal === ordinal; }) && messageCursor && pages < 5 && token === requestEpoch) {
+        let jumpVersion = 0;
+        async function jumpToOrdinal(ordinal, routed) {
+          if (!Number.isSafeInteger(ordinal) || ordinal < 0) return;
+          const version = ++jumpVersion;
+          if (!routed && detailContextSession) writeRoute({page:"detail",id:detailContextSession,ordinal:ordinal});
+          const token = requestEpoch, budget = {remaining:5};
+          while (!transcriptMessages.some(function (item) { return item.ordinal === ordinal; }) && messageCursor && budget.remaining > 0 && token === requestEpoch && version === jumpVersion) {
             if (messageRequest) break;
-            await loadMessages(token, messageSessionId, messageGeneration, messageCursor); pages += 1;
+            try { await loadMessages(token, messageSessionId, messageGeneration, messageCursor, budget); }
+            catch (error) { if (token === requestEpoch && version === jumpVersion) toast("Message could not be loaded. Try the link again.", "danger"); return; }
           }
           if (token !== requestEpoch) return;
+          if (version !== jumpVersion) return;
           const item = transcriptMessages.find(function (candidate) { return candidate.ordinal === ordinal; });
-          if (!item) { toast("Message not loaded. Use Load more or click the outline again.", "warning"); return; }
+          if (!item) { toast(messageCursor ? "Message not loaded. Use Load more or try the link again (5-page jump limit)." : "Message missing from the available transcript.", "warning"); return; }
           transcriptFilter = "all"; activeOutlineOrdinal = ordinal; updateTranscript();
           if (typeof item.article.scrollIntoView === "function") item.article.scrollIntoView({ block: "start", behavior: "instant" });
           item.article.classList.add("jump-target");
@@ -4448,7 +4706,8 @@ enum WebUIRoutes {
             messageBuf = null;
           }
         }
-        async function loadMessages(token, sessionId, generation, cursor) {
+        async function loadMessages(token, sessionId, generation, cursor, budget) {
+          if (budget && budget.remaining <= 0) return;
           if (messageRequest && messageRequest.token === token && messageRequest.sessionId === sessionId
               && messageRequest.generation === generation && messageRequest.cursor === cursor) return;
           const pending = { token: token, sessionId: sessionId, generation: generation, cursor: cursor };
@@ -4458,6 +4717,7 @@ enum WebUIRoutes {
           let path = "/web/api/sessions/" + encodeURIComponent(sessionId) + "/messages?generation=" + encodeURIComponent(generation) + "&maxFragments=100";
           if (cursor) path += "&cursor=" + encodeURIComponent(cursor);
           try {
+            if (budget) budget.remaining -= 1;
             const page = await api("GET", path);
             if (token !== requestEpoch) return;
             if ((page.sessionId != null && page.sessionId !== sessionId) || (page.generation != null && page.generation !== generation)) throw new Error("changed generation");
@@ -4469,7 +4729,7 @@ enum WebUIRoutes {
             if (messageBuf && !messageCursor) setStatus("incomplete message");
             if (messageBuf && messageCursor) {
               if (messageRequest === pending) messageRequest = null;
-              await loadMessages(token, sessionId, generation, messageCursor);
+              await loadMessages(token, sessionId, generation, messageCursor, budget);
             }
           } finally {
             if (messageRequest === pending) messageRequest = null;
@@ -4483,6 +4743,26 @@ enum WebUIRoutes {
         });
         document.getElementById("session-jump").addEventListener("submit", function (event) {
           jumpToSession(event).catch(function () {});
+        });
+        document.getElementById("query").addEventListener("input", function (event) {
+          bumpEpoch();
+          if (event.isComposing || workspaceNode.hidden || !["sessions","search"].includes(activePage)) return;
+          const input = document.getElementById("query"), value = input.value.trim(), version = searchInputVersion;
+          const length = Array.from(value).length, minimum = activePage === "search" ? 2 : 3;
+          if (length && length < minimum) {
+            setStatus("Short query: submit manually, or open Search for short terms.");
+            setText(document.getElementById("search-result-status"), "Short query: submit manually" + (activePage === "sessions" ? " or use Search for 1–2 character terms." : " to search this term."));
+            return;
+          }
+          if (typeof setTimeout === "function") searchTimer = setTimeout(function () {
+            searchTimer = null;
+            if (version === searchInputVersion && !workspaceNode.hidden && !workspaceNode.classList.contains("showing-detail")) refreshLibrary().catch(function () {});
+          },350);
+        });
+        document.getElementById("query").addEventListener("compositionend", function () {
+          // A final input normally follows compositionend; scheduling again simply replaces the timer.
+          const input = document.getElementById("query");
+          if (typeof Event === "function" && typeof input.dispatchEvent === "function") input.dispatchEvent(new Event("input", {bubbles:true}));
         });
         document.getElementById("search").addEventListener("submit", function (event) {
           event.preventDefault();
@@ -4516,18 +4796,60 @@ enum WebUIRoutes {
             if (picker.open && typeof picker.contains === "function" && !picker.contains(target)) picker.open = false;
           });
         });
+        function editableTarget(target) {
+          let node = target;
+          while (node) {
+            if (["INPUT","TEXTAREA","SELECT"].includes(node.tagName) || node.isContentEditable || (typeof node.getAttribute === "function" && ["", "true", "plaintext-only"].includes(node.getAttribute("contenteditable")))) return true;
+            node = node.parentNode;
+          }
+          return false;
+        }
+        function closeShortcuts() { const dialog = document.getElementById("shortcuts-dialog"); if (typeof dialog.close === "function" && dialog.open) dialog.close(); else dialog.open = false; }
+        function openShortcuts() { const dialog = document.getElementById("shortcuts-dialog"); if (typeof dialog.showModal === "function") dialog.showModal(); else dialog.open = true; }
+        document.getElementById("shortcuts-help").addEventListener("click", openShortcuts);
+        document.getElementById("shortcuts-close").addEventListener("click", closeShortcuts);
         document.addEventListener("keydown", function (event) {
-          if (!event || event.key !== "Escape") return;
-          ["source", "project"].forEach(function (kind) {
-            const picker = document.getElementById(kind + "-picker");
-            if (!picker.open) return;
-            picker.open = false;
-            const summary = document.getElementById(kind + "-summary");
-            if (typeof summary.focus === "function") summary.focus();
-          });
+          if (!event || event.isComposing || event.keyCode === 229 || event.metaKey || event.ctrlKey || event.altKey) return;
+          const help = document.getElementById("shortcuts-dialog"), insight = document.getElementById("insight-dialog");
+          if (help.open) { if (event.key === "Escape") { event.preventDefault(); closeShortcuts(); } return; }
+          if (insight.open || (typeof document.querySelector === "function" && document.querySelector("dialog[open]"))) return;
+          const typing = editableTarget(event.target);
+          if (event.key === "Escape") {
+            let closed = false;
+            ["source", "project"].forEach(function (kind) {
+              const picker = document.getElementById(kind + "-picker");
+              if (!picker.open) return;
+              picker.open = false; closed = true;
+              const summary = document.getElementById(kind + "-summary");
+              if (typeof summary.focus === "function") summary.focus();
+            });
+            if (!closed && !document.getElementById("transcript-find").hidden) { closeTranscriptFind(); closed = true; }
+            if (typing && !closed) return;
+            if (!closed && workspaceNode.classList.contains("showing-detail")) { backNode.click(); closed = true; }
+            if (closed) event.preventDefault();
+            return;
+          }
+          if (typing || workspaceNode.hidden) return;
+          if (event.key === "?") { event.preventDefault(); openShortcuts(); return; }
+          if (event.key === "/") {
+            event.preventDefault();
+            if (workspaceNode.classList.contains("showing-detail")) openTranscriptFind();
+            else { if (!["sessions","search"].includes(activePage)) navigate("search").catch(function () {}); const q = document.getElementById("query"); if (typeof q.focus === "function") q.focus(); }
+            return;
+          }
+          if (!["sessions","search"].includes(activePage) || workspaceNode.classList.contains("showing-detail")) return;
+          const rows = Array.from(sessionsNode.querySelectorAll("button.session")).filter(function (row) { return !row.hidden; });
+          if (!rows.length) return;
+          if (event.key === "j" || event.key === "k") {
+            event.preventDefault(); selectedSessionIndex = Math.max(0, Math.min(rows.length - 1, selectedSessionIndex + (event.key === "j" ? 1 : -1)));
+            rows.forEach(function (row,i) { row.setAttribute("aria-current",String(i === selectedSessionIndex)); });
+            if (typeof rows[selectedSessionIndex].focus === "function") rows[selectedSessionIndex].focus();
+          } else if (event.key === "Enter" && selectedSessionIndex >= 0 && rows[selectedSessionIndex]) { event.preventDefault(); rows[selectedSessionIndex].click(); }
         });
         ["sessions", "search", "dashboard", "stats", "health", "settings"].forEach(function (name) {
           const link = document.getElementById("nav-" + name);
+          link.setAttribute("href", routeHref({page:name}));
+          link.addEventListener("click", function (event) { event.preventDefault(); navigate(name).catch(function () {}); });
           link.insertBefore(icon(name), link.firstChild);
         });
         document.getElementById("search-query").appendChild(icon("search"));
@@ -4536,7 +4858,9 @@ enum WebUIRoutes {
           if (event.key === "Enter") { event.preventDefault(); loadFacets("project", false); }
         });
         backNode.addEventListener("click", function () {
-          showSessionList();
+          routeVersion += 1; bumpEpoch(); clearMessages();
+          const route = detailReturnRoute || {page:"sessions",filters:{}};
+          writeRoute(route); showSessionList();
         });
         document.getElementById("session-previous").addEventListener("click", function () { changeSessionPage(-1).catch(function () {}); });
         moreNode.addEventListener("click", function () { changeSessionPage(1).catch(function () {}); });
@@ -4549,14 +4873,14 @@ enum WebUIRoutes {
             return restoreRequestedPage();
           }).catch(function () {});
         });
-        window.addEventListener("hashchange", function () {
-          if (!workspaceNode.hidden) navigate(window.location.hash.slice(1)).catch(function () {});
-        });
+        if (window.history && "scrollRestoration" in window.history) window.history.scrollRestoration = "manual";
+        window.addEventListener("hashchange", historyChanged);
+        window.addEventListener("popstate", historyChanged);
         ["search-mode", "search-limit"].forEach(function (id) {
           document.getElementById(id).addEventListener("change", function () { if (activePage === "search") refreshLibrary().catch(function () {}); });
         });
         ["transcript", "timeline", "children", "info"].forEach(function (view) {
-          document.getElementById("detail-view-" + view).addEventListener("click", function () { showDetailView(view); });
+          document.getElementById("detail-view-" + view).addEventListener("click", function () { jumpVersion += 1; findVersion += 1; writeRoute({page:"detail",id:detailContextSession,view:view === "transcript" ? null : view}); showDetailView(view); });
         });
         document.getElementById("timeline-more").addEventListener("click", function () { loadDetailTimeline(true); });
         document.getElementById("timeline-refresh").addEventListener("click", function () { loadDetailTimeline(false); });

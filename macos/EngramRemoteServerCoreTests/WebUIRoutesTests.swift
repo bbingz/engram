@@ -138,6 +138,28 @@ final class WebUIRoutesTests: XCTestCase {
         XCTAssertLessThanOrEqual(css.utf8.count, 80_000)
     }
 
+    func testNavigationSearchAndFindAssetsKeepSafeAddressableContracts() async throws {
+        let harness = try UIHarness(configuration: configuration())
+        let html = try await bodyText(try await harness.respond(request(path: "/web", headers: [("Host", "viewer.example")])))
+        let js = try await bodyText(try await harness.respond(request(path: "/web/app.js", headers: [("Host", "viewer.example")])))
+        for hook in ["shortcuts-dialog", "shortcuts-help", "transcript-find", "transcript-find-query", "transcript-find-status", "transcript-find-preview", "transcript-find-more"] {
+            XCTAssertTrue(html.contains("id=\"\(hook)\""), hook)
+        }
+        for contract in ["function parseRoute(", "function routeHref(", "pushState", "replaceState",
+                         "addEventListener(\"popstate\", historyChanged)", "addEventListener(\"hashchange\", historyChanged)",
+                         "decodeURIComponent", "catch (error)", "budget.remaining", "function updateTranscriptFind()",
+                         "event.isComposing", "function editableTarget(", "},350)"] {
+            XCTAssertTrue(js.contains(contract), contract)
+        }
+        // Find searches decoded model fields and provides a safe, separate highlighted context.
+        XCTAssertTrue(js.contains("fields.push(call.name"))
+        XCTAssertFalse(js.contains("createTreeWalker"))
+        XCTAssertFalse(js.contains("NodeFilter"))
+        XCTAssertTrue(js.contains("routeFilterKeys"))
+        XCTAssertTrue(js.contains("workspaceNode.hidden) return; // Leave the pending URL"))
+        XCTAssertLessThanOrEqual(js.utf8.count, 360_000)
+    }
+
     func testJavaScriptUsesTextContentAndExistingAPIsForLoginLogoutAndPaging() async throws {
         let harness = try UIHarness(configuration: configuration())
         let js = try await bodyText(try await harness.respond(request(path: "/web/app.js", headers: [("Host", "viewer.example")])))

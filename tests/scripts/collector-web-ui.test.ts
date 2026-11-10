@@ -317,6 +317,14 @@ function harness(
   const context = createContext({
     window: {
       location: { hash: '', origin: 'https://viewer.example' },
+      history: {
+        pushState(_state: unknown, _title: string, href: string) {
+          runInContext(`window.location.hash=${JSON.stringify(href)}`, context);
+        },
+        replaceState(_state: unknown, _title: string, href: string) {
+          runInContext(`window.location.hash=${JSON.stringify(href)}`, context);
+        },
+      },
       addEventListener: (type: string, fn: Listener) =>
         windowListeners.push({ type, fn }),
       scrollY: 0,
@@ -7046,4 +7054,465 @@ describe('iteration 3 empty replacement diffs', () => {
       ui.node('messages').querySelector('.unified-diff')?.textContent,
     ).toContain('@@ -0,0 +1,1 @@');
   });
+});
+
+describe('iteration 4 navigation, search and keyboard', () => {
+  it('round trips unicode routes, strips non-allowlisted fields and rejects malformed paths', async () => {
+    const ui = harness();
+    expect(
+      await ui.call('routeHref(parseRoute("#/s/%E4%BC%9A%2F%E8%AF%9D/m/42"))'),
+    ).toBe('#/s/%E4%BC%9A%2F%E8%AF%9D/m/42');
+    expect(
+      await ui.call(
+        'routeHref(parseRoute("#/sessions?q=中文&agents=only&credential=secret&cursor=private&mode=oops"))',
+      ),
+    ).toBe('#/sessions?q=%E4%B8%AD%E6%96%87&agents=only');
+    for (const hash of [
+      '#/s/%E0%A4%A',
+      '#/s/a/m/-1',
+      '#/unknown',
+      '#/stats/nope',
+    ]) {
+      expect(
+        await ui.call(`routeHref(parseRoute(${JSON.stringify(hash)}))`),
+      ).toBe('#/sessions');
+    }
+  });
+
+  it('restores an unchanged list, filters, page and scroll on history without a refetch; dedupes paired events', async () => {
+    const ui = harness();
+    await ui.call(
+      'setSignedIn(true); document.getElementById("query").value="kept"',
+    );
+    const list = ui.call('refreshLibrary()');
+    ui.requestFor('/web/api/sessions').resolve({
+      items: [{ sessionId: 's', title: 'Kept row' }],
+      snapshotId: 'snap',
+    });
+    await list;
+    await ui.call(
+      'window.scrollY=321; writeRoute({page:"detail",id:"s"}); workspaceNode.className="showing-detail"; window.scrollY=0; window.location.hash="#/sessions?q=kept"',
+    );
+    ui.dispatchWindow('popstate');
+    ui.dispatchWindow('hashchange');
+    await flushAuthWork();
+    expect(ui.requests).toHaveLength(1);
+    expect(ui.node('workspace').classList.contains('showing-detail')).toBe(
+      false,
+    );
+    expect(ui.node('query').value).toBe('kept');
+    expect(await ui.call('window.scrollY')).toBe(321);
+    expect(ui.node('sessions').textContent).toContain('Kept row');
+  });
+
+  it('debounces by Unicode length, cancels stale requests and preserves explicit semantic mode', async () => {
+    const ui = harness();
+    await ui.call(
+      'setSignedIn(true); activatePage("search"); document.getElementById("search-mode").value="semantic"',
+    );
+    ui.node('query').value = '中';
+    ui.node('query').dispatch('input');
+    ui.runTimers();
+    expect(ui.requests).toHaveLength(0);
+    ui.node('query').value = '中文';
+    ui.node('query').dispatch('input');
+    ui.runTimers();
+    expect(ui.requestFor('/web/api/search?').path).toContain('mode=semantic');
+    const old = ui.requestFor('/web/api/search?');
+    ui.node('query').value = '中文新';
+    ui.node('query').dispatch('input');
+    ui.runTimers();
+    old.resolve({
+      query: '中文',
+      items: [{ session: { sessionId: 'old', title: 'STALE' } }],
+    });
+    ui.requestFor('/web/api/search?').resolve({
+      query: '中文新',
+      items: [{ session: { sessionId: 'new', title: 'Fresh' } }],
+    });
+    for (const request of ui.requestsFor('/web/api/search/status'))
+      request.resolve({
+        keyword: 'available',
+        semantic: 'unavailable',
+        hybrid: 'unavailable',
+      });
+    await flushAuthWork();
+    expect(ui.node('sessions').textContent).toContain('Fresh');
+    expect(ui.node('sessions').textContent).not.toContain('STALE');
+    expect(ui.node('search-mode').value).toBe('semantic');
+    ui.node('query').value = 'next';
+    ui.node('query').dispatch('input');
+    const logout = ui.call('logout()');
+    ui.requestFor('/web/api/auth').resolve({}, 204);
+    await logout;
+    ui.runTimers();
+    expect(ui.requestsFor('/web/api/search?')).toHaveLength(2);
+  });
+
+  it('finds model occurrences and hidden tool/thinking text without rewriting code, raw, links or copy payloads', async () => {
+    const ui = harness();
+    await ui.call(
+      'renderMessage("assistant",{content:"<thinking>needle needle</thinking>"},0); renderMessage("assistant",{content:"```js\\nneedle()\\n```",toolCalls:[{name:"Read",input:"needle",output:"needle"}]},1)',
+    );
+    const before = ui.node('messages').textContent;
+    ui.node('transcript-find-query').value = 'needle';
+    await ui.call('updateTranscriptFind(); moveFind(1)');
+    expect(ui.node('transcript-find-status').textContent).toContain('1 of 5');
+    expect(ui.node('transcript-find-status').textContent).toContain('loaded');
+    expect(ui.node('messages').textContent).toBe(before);
+    await ui.call('moveFind(-1)');
+    expect(ui.node('transcript-find-status').textContent).toContain('5 of 5');
+    expect(ui.node('messages').querySelectorAll('.find-target')).toHaveLength(
+      1,
+    );
+  });
+
+  it('centralizes list and help keys while ignoring editable, composing, modified and dialog events', async () => {
+    const ui = harness();
+    await ui.call(
+      'setSignedIn(true); acceptSessionsPage(false,{items:[{sessionId:"s",title:"row"}]})',
+    );
+    const input = ui.node('query');
+    input.tagName = 'INPUT';
+    for (const init of [
+      { target: input },
+      { isComposing: true },
+      { ctrlKey: true },
+    ]) {
+      expect(
+        ui.dispatchDocument('keydown', { key: '/', ...init }).defaultPrevented,
+      ).toBe(false);
+    }
+    expect(ui.dispatchDocument('keydown', { key: '/' }).defaultPrevented).toBe(
+      true,
+    );
+    expect(ui.activeElement()).toBe(input);
+    ui.dispatchDocument('keydown', { key: '?' });
+    expect(ui.node('shortcuts-dialog').open).toBe(true);
+    ui.dispatchDocument('keydown', { key: 'Escape' });
+    expect(ui.node('shortcuts-dialog').open).toBe(false);
+    ui.dispatchDocument('keydown', { key: 'j' });
+    expect(
+      ui.node('sessions').querySelector('button')?.getAttribute('aria-current'),
+    ).toBe('true');
+  });
+});
+
+describe('iteration 4 route and find fences', () => {
+  const detail = {
+    detail: {
+      session: { sessionId: 's', title: 'Cold session' },
+      transcriptGeneration: 'g',
+    },
+  };
+  const fragment = (ordinal: number, content: string) => ({
+    messageOrdinal: ordinal,
+    role: 'assistant',
+    payloadSHA256: 'a'.repeat(64),
+    utf8Offset: 0,
+    isLastFragment: true,
+    payloadFragment: JSON.stringify({ content }),
+  });
+  it('retains pending message routes across credential login with original login read ordering', async () => {
+    const ui = harness();
+    await ui.call('window.location.hash="#/s/s/m/42"');
+    ui.dispatchWindow('hashchange');
+    expect(ui.requests).toHaveLength(0);
+    const login = ui.call('login({preventDefault(){}})');
+    ui.requests[0].resolve({}, 204);
+    await flushAuthWork();
+    expect(ui.requests[1].path).toBe('/web/api/sessions');
+    ui.requests[1].resolve({ items: [] });
+    await flushAuthWork();
+    expect(ui.requests[2].path).toBe('/web/api/overview?limit=2');
+    ui.requests[2].resolve({ streams: [] });
+    await flushAuthWork();
+    ui.requestFor('/web/api/sessions/s').resolve(detail);
+    await flushAuthWork();
+    ui.requestFor('/web/api/sessions/s/messages').resolve({
+      fragments: [fragment(42, 'Cold evidence')],
+    });
+    await login;
+    expect(ui.node('messages').textContent).toContain('Cold evidence');
+    expect(ui.node('messages').children[0].className).toContain('jump-target');
+  });
+  it('retains the route through identity 401/mint/probe/overview before opening it', async () => {
+    const ui = harness(undefined, { authMode: 'tailscale-serve' });
+    await ui.call('window.location.hash="#/s/s/m/42"');
+    ui.dispatchDocument('DOMContentLoaded');
+    ui.requests[0].resolve({}, 401);
+    await flushAuthWork();
+    expect(ui.requests[1].method).toBe('POST');
+    expect(ui.requests[1].body).toBe('{}');
+    ui.requests[1].resolve({}, 204);
+    await flushAuthWork();
+    ui.requests[2].resolve({ items: [] });
+    await flushAuthWork();
+    ui.requestFor('/web/api/overview').resolve({ streams: [] });
+    await flushAuthWork();
+    ui.requestFor('/web/api/auth').resolve({ login: 'fixture' });
+    await flushAuthWork();
+    ui.requestFor('/web/api/sessions/s').resolve(detail);
+    await flushAuthWork();
+    ui.requestFor('/web/api/sessions/s/messages').resolve({
+      fragments: [fragment(42, 'Identity evidence')],
+    });
+    await flushAuthWork();
+    expect(ui.node('messages').textContent).toContain('Identity evidence');
+    expect(ui.node('messages').children[0].className).toContain('jump-target');
+  });
+  it('normalizes an invalid route even when its fallback is already active without fetching again', async () => {
+    const ui = harness();
+    await ui.call(
+      'setSignedIn(true); handledRoute="#/sessions"; window.location.hash="#/s/%ZZ"',
+    );
+    ui.dispatchWindow('hashchange');
+    await flushAuthWork();
+    expect(await ui.call('window.location.hash')).toBe('#/sessions');
+    expect(ui.requests).toHaveLength(0);
+  });
+  it('restores Stats Costs from browser Back without refetching retained cost data', async () => {
+    const ui = harness();
+    await ui.call(
+      'setSignedIn(true); activatePage("stats"); statsView="costs"; detailReturnRoute={page:"stats",tab:"costs"}; detailReturnPage="stats"; showSessionDetailPane(); window.location.hash="#/stats/costs"',
+    );
+    ui.dispatchWindow('popstate');
+    await flushAuthWork();
+    expect(ui.requests).toHaveLength(0);
+    expect(ui.node('stats-page').hidden).toBe(false);
+    expect(ui.node('workspace').classList.contains('showing-detail')).toBe(
+      false,
+    );
+  });
+  it('drops a cold-route detail arriving after navigation and a jump arriving after logout', async () => {
+    const ui = harness();
+    await ui.call('setSignedIn(true); window.location.hash="#/s/s/m/42"');
+    const cold = ui.call('restoreRequestedPage()');
+    await ui.call('window.location.hash="#/sessions"');
+    ui.dispatchWindow('popstate');
+    expect(ui.requests[1].path).toBe('/web/api/sessions');
+    ui.requests[1].resolve({ items: [] });
+    ui.requestFor('/web/api/sessions/s').resolve(detail);
+    await cold;
+    await flushAuthWork();
+    expect(ui.node('messages').textContent).toBe('');
+    expect(ui.node('detail').textContent).not.toContain('Cold session');
+    await ui.call(
+      'renderMessage("user",{content:"kept"},0); messageCursor="next"; messageSessionId="s"; messageGeneration="g"',
+    );
+    const jump = ui.call('jumpToOrdinal(42)');
+    const logout = ui.call('logout()');
+    ui.requestFor('/web/api/auth').resolve({}, 204);
+    await logout;
+    ui.requestFor('/web/api/sessions/s/messages').resolve({
+      fragments: [fragment(42, 'PRIVATE LATE')],
+    });
+    await jump;
+    expect(ui.node('messages').textContent).toBe('');
+    expect(ui.node('toast-region').textContent).not.toContain('Message');
+  });
+  it('search further adds matches beyond the loaded scope and presents safe model context', async () => {
+    const ui = harness();
+    await ui.call(
+      'renderMessage("user",{content:"needle <script>"},0); messageCursor="next"; messageSessionId="s"; messageGeneration="g"; openTranscriptFind("needle")',
+    );
+    const further = ui.call('searchFurther(true)');
+    ui.requestFor('/web/api/sessions/s/messages').resolve({
+      fragments: [fragment(1, 'next needle')],
+      nextCursor: null,
+    });
+    await further;
+    expect(ui.node('transcript-find-status').textContent).toContain('2 of 2');
+    expect(
+      ui.node('transcript-find-preview').querySelector('mark')?.textContent,
+    ).toBe('needle');
+    expect(
+      ui.node('transcript-find-preview').querySelector('script'),
+    ).toBeNull();
+  });
+  it('caps jump HTTP reads including multi-page UTF8 fragments and reports unloaded versus missing honestly', async () => {
+    const ui = harness();
+    await ui.call(
+      'messageCursor="c0";messageSessionId="s";messageGeneration="g"',
+    );
+    const jump = ui.call('jumpToOrdinal(42)');
+    for (let i = 0; i < 5; i++) {
+      await flushAuthWork();
+      ui.requestFor('/web/api/sessions/s/messages').resolve({
+        fragments: [
+          {
+            ...fragment(0, 'unused'),
+            utf8Offset: i,
+            payloadFragment: 'x',
+            isLastFragment: false,
+          },
+        ],
+        nextCursor: `c${i + 1}`,
+      });
+    }
+    await flushAuthWork();
+    expect(ui.requests).toHaveLength(5);
+    await jump;
+    expect(ui.node('toast-region').textContent).toContain('not loaded');
+    await ui.call('messageCursor="";jumpToOrdinal(42)');
+    expect(ui.node('toast-region').textContent).toContain('missing');
+  });
+});
+
+it('places the keyword field before search options and defaults ranked results to 25', async () => {
+  const html = shipped('html');
+  expect(html.indexOf('id="query"')).toBeLessThan(
+    html.indexOf('id="search-options"'),
+  );
+  const ui = harness();
+  await ui.call(
+    'activatePage("search");document.getElementById("query").value="needle"',
+  );
+  const search = ui.call('loadRankedSearch()');
+  expect(
+    new URLSearchParams(ui.requests[0].path.split('?')[1]).get('limit'),
+  ).toBe('25');
+  ui.requests[0].resolve({ query: 'needle', items: [] });
+  await search;
+});
+
+it('does not adopt a legacy DOM-anchor scroll as the initial list scroll', async () => {
+  const ui = harness();
+  await ui.call(
+    'setSignedIn(true); window.location.hash="#sessions"; window.scrollY=255',
+  );
+  await ui.call('restoreRequestedPage()');
+  expect(await ui.call('window.scrollY')).toBe(0);
+  expect(await ui.call('window.location.hash')).toBe('#/sessions');
+});
+
+it('keeps list metadata separators at the readable muted contrast level', () => {
+  expect(shipped('css')).toContain('.meta .sep { color: var(--muted); }');
+});
+
+it('gives snippet highlights explicit readable text instead of inheriting muted text over a highlight', () => {
+  expect(shipped('css')).toContain(
+    '.search-snippet mark { color: var(--text);',
+  );
+});
+
+it('keeps active light navigation readable over its tinted background', () => {
+  expect(shipped('css')).toContain(
+    '.page-nav a[aria-current="page"] { color: #166534; }',
+  );
+});
+
+it('keeps find controls in the sticky detail header and closes them when switching away from the transcript', async () => {
+  const html = shipped('html');
+  expect(html.indexOf('id="transcript-find"')).toBeLessThan(
+    html.indexOf('id="detail-info-panel"'),
+  );
+  const ui = harness();
+  await ui.call('openTranscriptFind("needle");showDetailView("children")');
+  expect(ui.node('transcript-find').hidden).toBe(true);
+});
+
+it('reports matches hidden inside visible mixed messages by body/tool type filters and restores find-opened folds', async () => {
+  const ui = harness();
+  await ui.call(
+    'renderMessage("assistant",{content:"needle",toolCalls:[{name:"Read",input:"needle",output:"needle"}]},0);openTranscriptFind("needle");transcriptFilter="tools";updateTranscript()',
+  );
+  expect(ui.node('transcript-find-status').textContent).toContain(
+    '1 hidden by type filter',
+  );
+  await ui.call('transcriptFilter="assistant";updateTranscript()');
+  expect(ui.node('transcript-find-status').textContent).toContain(
+    '2 hidden by type filter',
+  );
+  await ui.call('transcriptFilter="all";updateTranscript();moveFind(1)');
+  expect(ui.node('messages').querySelector('details')?.open).toBe(true);
+  await ui.call('closeTranscriptFind()');
+  expect(ui.node('messages').querySelector('details')?.open).toBe(false);
+});
+
+it('clears find context on logout, including hidden preview text', async () => {
+  const ui = harness();
+  await ui.call(
+    'renderMessage("user",{content:"PRIVATE needle"},0);openTranscriptFind("needle");moveFind(1)',
+  );
+  expect(ui.node('transcript-find-preview').textContent).toContain('PRIVATE');
+  const logout = ui.call('logout()');
+  ui.requestFor('/web/api/auth').resolve({}, 204);
+  await logout;
+  expect(ui.node('transcript-find-preview').textContent).toBe('');
+  expect(ui.node('transcript-find-query').value).toBe('');
+});
+
+it('recreates allowlisted list filters from a cold URL with the exact API parameter names', async () => {
+  const ui = harness();
+  await ui.call(
+    'setSignedIn(true); window.location.hash="#/sessions?q=中文&sources=claude-code&projects=p.key&agents=only&since=2026-01-01&until=2026-11-10&tools=hide&machine=fixture&credential=never"',
+  );
+  const route = ui.call('restoreRequestedPage()');
+  const params = new URLSearchParams(
+    ui.requestFor('/web/api/sessions').path.split('?')[1],
+  );
+  expect(Object.fromEntries(params)).toEqual({
+    query: '中文',
+    sources: 'claude-code',
+    projectKeys: 'p.key',
+    agents: 'only',
+    since: '2026-01-01',
+    until: '2026-11-10',
+    tools: 'hide',
+    machineId: 'fixture',
+  });
+  expect(await ui.call('window.location.hash')).not.toContain('credential');
+  ui.requestFor('/web/api/sessions').resolve({ items: [] });
+  await route;
+});
+
+it('manual search cancels the debounce and contenteditable ancestors ignore global shortcuts', async () => {
+  const ui = harness();
+  await ui.call('setSignedIn(true); activatePage("search")');
+  ui.node('query').value = 'needle';
+  ui.node('query').dispatch('input');
+  ui.node('search').dispatch('submit');
+  ui.runTimers();
+  expect(ui.requestsFor('/web/api/search?')).toHaveLength(1);
+  ui.requestFor('/web/api/search?').resolve({ query: 'needle', items: [] });
+  ui.requestFor('/web/api/search/status').resolve({
+    keyword: 'available',
+    semantic: 'available',
+    hybrid: 'available',
+  });
+  await flushAuthWork();
+  const editable = ui.node('editable');
+  editable.setAttribute('contenteditable', 'plaintext-only');
+  const child = ui.node('editable-child');
+  editable.appendChild(child);
+  expect(
+    ui.dispatchDocument('keydown', { key: '/', target: child })
+      .defaultPrevented,
+  ).toBe(false);
+});
+
+it('does not reopen a route find after its awaited jump was cancelled by logout', async () => {
+  const ui = harness();
+  await ui.call(
+    'setSignedIn(true);detailContextSession="s";detailContextGeneration="g";messageSessionId="s";messageGeneration="g";messageCursor="next";workspaceNode.className="showing-detail";window.location.hash="#/s/s/m/42?find=PRIVATE"',
+  );
+  const route = ui.call('restoreRequestedPage()');
+  const logout = ui.call('logout()');
+  ui.requestFor('/web/api/auth').resolve({}, 204);
+  await logout;
+  ui.requestFor('/web/api/sessions/s/messages').resolve({ fragments: [] });
+  await route;
+  expect(ui.node('transcript-find').hidden).toBe(true);
+  expect(ui.node('transcript-find-query').value).toBe('');
+});
+
+it('retains known facet labels while restoring route filter keys instead of replacing labels with opaque keys', async () => {
+  const ui = harness();
+  await ui.call(
+    'facets.project.selected.set("p.key","Known project label");applyRouteFilters({projects:"p.key"});renderActiveFilters()',
+  );
+  expect(ui.node('active-filters').textContent).toContain(
+    'Known project label',
+  );
 });
