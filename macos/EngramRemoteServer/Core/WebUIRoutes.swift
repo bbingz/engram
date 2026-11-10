@@ -1300,7 +1300,8 @@ enum WebUIRoutes {
             if (detailContextSession !== route.id || !workspaceNode.classList.contains("showing-detail")) await openDetail(route.id, null, true);
             else { bumpEpoch(); messageRequest = null; }
             if (version !== routeVersion || workspaceNode.hidden || !workspaceNode.classList.contains("showing-detail")) return;
-            if (route.view) await showDetailView(route.view);
+            await showDetailView(route.view || "transcript");
+            if (version !== routeVersion || workspaceNode.hidden || !workspaceNode.classList.contains("showing-detail")) return;
             if (route.ordinal != null) await jumpToOrdinal(route.ordinal, true);
             if (version !== routeVersion || workspaceNode.hidden || !workspaceNode.classList.contains("showing-detail")) return;
             if (route.find) { openTranscriptFind(route.find); await searchFurther(); }
@@ -4880,7 +4881,7 @@ enum WebUIRoutes {
           document.getElementById(id).addEventListener("change", function () { if (activePage === "search") refreshLibrary().catch(function () {}); });
         });
         ["transcript", "timeline", "children", "info"].forEach(function (view) {
-          document.getElementById("detail-view-" + view).addEventListener("click", function () { jumpVersion += 1; findVersion += 1; writeRoute({page:"detail",id:detailContextSession,view:view === "transcript" ? null : view}); showDetailView(view); });
+          document.getElementById("detail-view-" + view).addEventListener("click", function () { routeVersion += 1; jumpVersion += 1; findVersion += 1; writeRoute({page:"detail",id:detailContextSession,view:view === "transcript" ? null : view}); showDetailView(view); });
         });
         document.getElementById("timeline-more").addEventListener("click", function () { loadDetailTimeline(true); });
         document.getElementById("timeline-refresh").addEventListener("click", function () { loadDetailTimeline(false); });

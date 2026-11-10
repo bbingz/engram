@@ -7213,6 +7213,46 @@ describe('iteration 4 route and find fences', () => {
     isLastFragment: true,
     payloadFragment: JSON.stringify({ content }),
   });
+  it.each(['#/s/s', '#/s/s/m/0'])(
+    'restores Transcript from Info on same-session route %s',
+    async (hash) => {
+      const ui = harness();
+      await ui.call(
+        'setSignedIn(true); detailContextSession="s"; detailContextGeneration="g"; detailInfoLoaded=true; showSessionDetailPane(); renderMessage("assistant",{content:"Visible message"},0); showDetailView("info"); handledRoute="#/s/s/info"',
+      );
+      expect(ui.node('transcript-panel').hidden).toBe(true);
+      await ui.call(
+        `window.location.hash=${JSON.stringify(hash)}; applyRoute(false)`,
+      );
+      expect(ui.node('transcript-panel').hidden).toBe(false);
+      expect(ui.node('detail-info-panel').hidden).toBe(true);
+      expect(
+        ui.node('detail-view-transcript').getAttribute('aria-pressed'),
+      ).toBe('true');
+      expect(ui.requests).toHaveLength(0);
+    },
+  );
+
+  it('cancels pending deep-link Find when the user selects a detail tab', async () => {
+    const ui = harness();
+    await ui.call(
+      'setSignedIn(true); window.location.hash="#/s/s/m/0?find=trigram"',
+    );
+    const cold = ui.call('restoreRequestedPage()');
+    ui.requestFor('/web/api/sessions/s').resolve(detail);
+    await flushAuthWork();
+    const pending = ui.requestFor('/web/api/sessions/s/messages');
+    await ui.call('detailInfoLoaded=true');
+    ui.node('detail-view-info').click();
+    await flushAuthWork();
+    expect(ui.node('transcript-find').hidden).toBe(true);
+    pending.resolve({ fragments: [fragment(0, 'trigram evidence')] });
+    await cold;
+    expect(await ui.call('window.location.hash')).toBe('#/s/s/info');
+    expect(ui.node('detail-info-panel').hidden).toBe(false);
+    expect(ui.node('transcript-find').hidden).toBe(true);
+  });
+
   it('retains pending message routes across credential login with original login read ordering', async () => {
     const ui = harness();
     await ui.call('window.location.hash="#/s/s/m/42"');
@@ -7498,6 +7538,8 @@ it('does not reopen a route find after its awaited jump was cancelled by logout'
     'setSignedIn(true);detailContextSession="s";detailContextGeneration="g";messageSessionId="s";messageGeneration="g";messageCursor="next";workspaceNode.className="showing-detail";window.location.hash="#/s/s/m/42?find=PRIVATE"',
   );
   const route = ui.call('restoreRequestedPage()');
+  await flushAuthWork();
+  expect(ui.requestsFor('/web/api/sessions/s/messages')).toHaveLength(1);
   const logout = ui.call('logout()');
   ui.requestFor('/web/api/auth').resolve({}, 204);
   await logout;
