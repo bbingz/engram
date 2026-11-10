@@ -129,6 +129,10 @@ public final class IndexJobRunner: StartupIndexJobRunning {
             }
         }
 
+        // An admitted capture job may finish after the deadline. Post-batch
+        // finalization is new work: past the deadline, capture eligibility is
+        // nil and would hide still-pending capture jobs from the rebuild check.
+        try CaptureIngestNormalizedStore.checkpoint(capturePolicy()?.deadline)
         try writeCheckingCancellation { db in
             try FTSRebuildPolicy.finalizeRebuildIfReady(db, enabledSources: enabledSources, capturePolicy: capturePolicy())
         }
@@ -231,8 +235,13 @@ public final class IndexJobRunner: StartupIndexJobRunning {
     private func processCapture(
         _ job: PendingJob, authority: FTSRebuildPolicy.CaptureJobAuthority
     ) async throws -> JobOutcome {
-        guard let policy = capturePolicy() else { return .retryable }
-        try CaptureIngestNormalizedStore.checkpoint(policy.deadline)
+        guard let admission = capturePolicy() else { return .retryable }
+        // The readiness deadline bounds admission of a job, not an admitted job.
+        // Checking it mid-job rolled back an oversized session's FTS insert on
+        // every cycle and left it at the head of the queue (2026-11-10 central
+        // livelock). Past this point only cancellation and policy fences apply.
+        try CaptureIngestNormalizedStore.checkpoint(admission.deadline)
+        guard let policy = inFlightCapturePolicy() else { return .retryable }
         guard try readCheckingCancellation({ db in
             try FTSRebuildPolicy.captureJobAuthority(db, jobID: job.id, policy: policy)?.matches(authority) == true
         }) else { return .retryable }
@@ -269,7 +278,7 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         try Task.checkCancellation()
         do {
             return try writeCheckingCancellation { db in
-                guard let currentPolicy = capturePolicy() else { return .retryable }
+                guard let currentPolicy = inFlightCapturePolicy() else { return .retryable }
                 try CaptureIngestNormalizedStore.checkpoint(currentPolicy.deadline)
                 guard try FTSRebuildPolicy.captureJobAuthority(db, jobID: job.id, policy: currentPolicy)?.matches(authority) == true else {
                     return .retryable
@@ -315,13 +324,19 @@ public final class IndexJobRunner: StartupIndexJobRunning {
     // A source/parser revocation during synchronous readiness or finalization
     // invalidates the entire outer transaction, including embedding requeue.
     private func freshCapturePolicy(matching expected: CaptureFTSReadinessPolicy) throws -> CaptureFTSReadinessPolicy {
-        guard let current = capturePolicy(),
+        guard let current = inFlightCapturePolicy(),
               current.parserRevision.utf8.elementsEqual(expected.parserRevision.utf8),
               current.enabledSources == expected.enabledSources else {
             throw CaptureIngestReadinessError.sourceDisabled
         }
         try CaptureIngestNormalizedStore.checkpoint(current.deadline)
         return current
+    }
+
+    /// The current trusted capture policy without its admission deadline, for a
+    /// job that was already admitted (see `processCapture`).
+    private func inFlightCapturePolicy() -> CaptureFTSReadinessPolicy? {
+        capturePolicy().map { CaptureFTSReadinessPolicy(parserRevision: $0.parserRevision, enabledSources: $0.enabledSources) }
     }
 
     private func process(_ job: PendingJob) async throws -> JobOutcome {

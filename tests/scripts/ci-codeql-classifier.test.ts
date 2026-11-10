@@ -68,6 +68,8 @@ describe('CodeQL path classifier', () => {
     ['macos/project.yml', false, true, true],
     ['.github/workflows/codeql.yml', true, true, true],
     ['scripts/ci/install-xcodegen.sh', true, true, true],
+    ['scripts/ci/prepare-xcode-ci.py', true, true, true],
+    ['scripts/check-xcodeproj-drift.sh', true, true, true],
   ])('classifies %s', (path, typescript, swiftProduct, swiftRemoteServer) => {
     expect(classify(path)).toEqual({
       typescript: String(typescript),

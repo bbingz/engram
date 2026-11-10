@@ -1011,6 +1011,51 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
         )
     }
 
+    func testRunAutomaticallyRefreshesExpiredOrStaleRecoveryLeases_repro() async throws {
+        let projectsRoot = try makeProjectsRoot(
+            parent: homeDirectory.appendingPathComponent(".claude", isDirectory: true)
+        )
+        try writeSettings(customProjectsRoots: [])
+        let fixture = try addEligibleBinding(
+            seed: "auto-drill-refresh",
+            source: "claude-code",
+            projectsRoot: projectsRoot
+        )
+        try await replicate([fixture])
+
+        // Start with no recovery leases recorded; runAutomatically must invoke
+        // recoveryDrillRunner for both replicas and then reclaim the source file.
+        actor DrillTracker {
+            var drilledReplicas: [String] = []
+            func record(_ replicaID: String) {
+                drilledReplicas.append(replicaID)
+            }
+        }
+        let tracker = DrillTracker()
+        let catalogRef = catalog!
+        let verifiedAt = nowString
+        let manifestSHA = fixture.binding.manifestSHA256
+        let rawBytes = fixture.capture.rawByteCount
+        let coordinator = try makeCoordinator(
+            recoveryDrillRunner: { replicaID in
+                await tracker.record(replicaID)
+                return try catalogRef.recordRecoveryLeaseAndAdvanceCursor(
+                    replicaID: replicaID,
+                    manifestSHA256: manifestSHA,
+                    verifiedAt: verifiedAt,
+                    verifiedBytes: rawBytes
+                )
+            }
+        )
+
+        await coordinator.runAutomatically(now: now)
+        let drilled = await tracker.drilledReplicas.sorted()
+        XCTAssertEqual(drilled, ["hq", "m1"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.sourceURL.path))
+        let status = await coordinator.status(now: now)
+        XCTAssertTrue(status.recoveryLeaseCurrent)
+    }
+
     private struct BindingFixture {
         let sourceURL: URL
         let bytes: Data
@@ -1022,6 +1067,7 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
     private func makeCoordinator(
         remoteReplicationEnabled: Bool = true,
         remoteBackendsLive: Bool = true,
+        recoveryDrillRunner: (@Sendable (String) async throws -> ArchiveRecoveryLease)? = nil,
         testHooks: ArchiveReclamationCoordinatorTestHooks = .init()
     ) throws -> ArchiveReclamationCoordinator {
         try ArchiveReclamationCoordinator(
@@ -1036,6 +1082,7 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
             ),
             remoteReplicationEnabled: remoteReplicationEnabled,
             remoteAvailability: { remoteBackendsLive },
+            recoveryDrillRunner: recoveryDrillRunner,
             testHooks: testHooks
         )
     }

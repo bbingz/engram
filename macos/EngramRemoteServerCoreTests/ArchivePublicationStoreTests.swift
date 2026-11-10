@@ -329,6 +329,44 @@ final class ArchivePublicationStoreTests: XCTestCase {
         XCTAssertEqual(try accept(secondStore, next).record.ack.arrivalOrdinal, 2)
     }
 
+    // 2026-11-10 review of the 10.0.0.9 storage-only cutover: the x86_64 startup
+    // cache once trusted any non-empty plaintext file, so an append lost between
+    // the durable publish and the cache write hid a record and the next ACK
+    // reused its arrival ordinal under the same journalID.
+    func testX86StartupCacheWithLostAppendFallsBackToDiskAndKeepsOrdinalsUnique_repro() throws {
+        #if arch(x86_64)
+        let manifestDigest: String
+        do {
+            let store = try makeStore()
+            manifestDigest = try publishManifest(store: store)
+            try store.warmPublicationIndex()
+            for sequence in 1...2 {
+                let ack = try accept(store, makePublication(manifestDigest: manifestDigest, sequence: Int64(sequence)))
+                XCTAssertEqual(ack.record.ack.arrivalOrdinal, Int64(sequence))
+            }
+        }
+        let publications = root.appendingPathComponent("publications", isDirectory: true)
+        let cacheName = try XCTUnwrap(
+            try FileManager.default.contentsOfDirectory(atPath: publications.path)
+                .first { $0.hasPrefix(".publications-cache") }
+        )
+        let cacheURL = publications.appendingPathComponent(cacheName)
+        let lines = try Data(contentsOf: cacheURL).split(separator: UInt8(ascii: "\n"))
+        XCTAssertEqual(lines.count, 2)
+        XCTAssertFalse(String(decoding: try Data(contentsOf: cacheURL), as: UTF8.self).contains(machineID))
+        // Drop the second line in place (mode preserved), as if the append was lost.
+        try (Data(lines[0]) + Data("\n".utf8)).write(to: cacheURL)
+
+        let reopened = try makeStore()
+        try reopened.warmPublicationIndex()
+        XCTAssertEqual(try reopened.listPublications(cursor: nil, limit: 50).items.count, 2)
+        let next = try accept(reopened, makePublication(manifestDigest: manifestDigest, sequence: 3))
+        XCTAssertEqual(next.record.ack.arrivalOrdinal, 3)
+        #else
+        throw XCTSkip("x86_64-only startup cache")
+        #endif
+    }
+
     func testConcurrentCopiesPublishOneACKForIdenticalInputAndAllocateUniqueOrdinals() throws {
         let store = try makeStore()
         let copy = store

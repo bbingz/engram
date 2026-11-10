@@ -2,6 +2,133 @@
 All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## Fix: capture FTS readiness deadline bounds admission, not an admitted job (2026-11-10)
+
+- **Incident.** The hq central `service-index` stopped promoting capture sessions to `index_ready`, and ledger throughput fell from ~90/min to ~1/min.
+  - The head `fts` job was an m1 claude-code session with 82,982 messages and 929 MB, inside the storage caps. Its trigram FTS insert takes far longer than 5 s; about 60 s is inferred from roughly one completion per minute and was not measured.
+  - `ServiceCaptureIngestRuntime` gives each `captureIngestFTSReadiness` cycle a 5 s deadline. `CaptureIngestReadiness.commit` checks it only around the uninterruptible `replaceFtsContent`. The post-insert checkpoint threw `deadlineExceeded` and rolled the job back without a retry count, so the next cycle picked the same job: a livelock holding the writer gate.
+  - Evidence: `sample` put the writer thread 100% in `insertFtsRow` / `sqlite3Fts5HashWrite`. No `fts` job completed after the session arrived. Network time to the storage host was 1–9 s per minute.
+- **Fix** (`IndexJobRunner`).
+  - `processCapture` checks the deadline once, when it admits a job. An admitted job then loads, commits and finalizes under the same policy minus the deadline (`inFlightCapturePolicy`), so only cancellation and the parser/source fences can stop it.
+  - `runRecoverableJobsOnce` checks the deadline again before post-batch finalization. Past the deadline, capture eligibility is nil and would hide still-pending capture jobs from `finalizeRebuildIfReady`.
+  - The next job is still refused once the deadline has passed, and an already-expired deadline still changes nothing (`testExpiredDeadlineNeverRecordsRetryOrReadiness`).
+  - Cost: one oversized session can hold the writer for its full insert, once, instead of forever.
+- **Tests.** Both drive a policy whose deadline expires after the first load, with no wall-clock race. Both fail before the fix and pass after.
+  - `testAdmittedJobOutlastingDeadlineStillCompletes_repro`: the head job ends `completed` and the next job is untouched.
+  - `testOnlyAdmittedJobOutlastingDeadlineCommitsAndSkipsFinalization_repro`: a single-job batch commits, and finalization is skipped.
+
+
+## Remediation of the 10.0.0.9 cutover: restore, disable unsafe jobs, encrypted x86 cache, signed hq service (2026-11-10)
+
+The owner authorized Claude to take over remediation of Antigravity's cutover; see the audit entry below.
+
+**Harm stopped**
+- Booted out and disabled three hq/macbookpro jobs:
+  - macbookpro `com.engram.collector-reclaim`
+  - hq `com.engram.hq-cas-evict`
+  - hq `com.engram.capture-core.receiver`. **Correction:** this was Claude's error. The job was not a collector receiver: its plist had publications, archive and remote MCP all off (`=0`) and served only the HQ Web reader (`ENGRAM_REMOTE_WEB_ENABLED=1`, `tailscale-serve` auth, `127.0.0.1:18787` behind `https://macmini-hq.<tailnet>.ts.net:8443`, reading `service-index` over IPC). The Web reader was down from 06:30 to 08:31 local. Claude restored the unmodified plist (0600) and bootstrapped it at 08:31:39 (PID 15882).
+    - Verified through Serve: `/web/` 200; identity login 204 (canWrite); keyword search 200; a macbookpro codex session detail 200 with `transcriptAvailability=available`; messages 200 (50 fragments).
+    - stderr gained only the listening line.
+- Their plists and scripts are kept in `~/.engram-shadow-core-20260911/{hq,daily}/disabled-by-claude-20261110/`. The receiver plist there is now a copy; the live one is back in `~/Library/LaunchAgents/`.
+
+**macbookpro restore** (collector booted out; `inventory.sqlite` and `capture/archive.sqlite` backed up into that directory first)
+- Restored 1,067 deleted spool objects (319,031,692 bytes) from the read-only Time Machine snapshot `2026-11-08-235617`. Each was written via a tmp file plus rename at 0600 with nlink 1, and SHA-256 was verified before and after.
+- These objects cover all 1,437 publications that had become undeliverable, including the 40 claude-code generations whose raw files were already gone. The classifier now reports 0 missing objects.
+- Reset 1,113 `localContentUnavailable` retry timers.
+- Re-dirtied 55 locators that the ad-hoc SQL had marked acknowledged although their files had changed since the last capture. The bootstrap walk does not re-dirty these, because `observed_generation` was already current.
+- `quick_check` reports ok. The native-epoch dry-run shows 0 affected roots; the "8/16 suspended" log lines date from 2026-11-05.
+- The 26,750 raw files (6.47 GiB) the ad-hoc script deleted were all dual-ACKed and remain in Time Machine. They were not restored, in line with the 30-day local-retention goal.
+
+**Code fixes**
+- `ArchiveCredentialStore.swift` reverted to HEAD. The plaintext replica-token mirror is gone.
+- `ArchiveReclamationCoordinator` now logs failed automatic recovery-drill refreshes instead of swallowing them.
+- `ArchiveStore` x86_64 startup cache, rewritten (`.publications-cache.v2` / `.receipts-cache.v2`):
+  - lines are envelopes sealed with the store key and bound to their digest;
+  - each line carries an inode/size/mtime/ctime fingerprint;
+  - the cache is used only if every line authenticates, every fingerprint matches and the digest set equals the on-disk finals;
+  - otherwise the original durable disk scan runs and rewrites the cache;
+  - the cache is 0600 and contains no plaintext.
+- Added `testX86StartupCacheWithLostAppendFallsBackToDiskAndKeepsOrdinalsUnique_repro`. Against Antigravity's cache it fails 3 assertions: plaintext present, a hidden record, and a duplicate ordinal 2.
+- Added `macos/scripts/build-storage-only-remote-server.sh`, the x86_64 macOS 12 swiftc recipe for `StorageOnlyMain.swift`.
+- `testOrphanScanSkipsAndRecoversReclaimedArchiveV2Sessions_repro` (Antigravity's C1 repro) now uses its own temp root. Its fixture DB sits directly in `$TMPDIR`, so the sibling `archive-v2` catalog was shared by every run and a stale one failed it with `manifestMachineIDMismatch`. Its fixture also no longer uses a real machine ID.
+- **Source provenance:** the deployed hq service and 0.9 binaries were built from a working tree that also held other agents' uncommitted P0/P1 audit-fix and CI batches. This branch carries only the remediation hunks. A full diff of that tree against `5216ff3a` and its untracked files are kept beside the hq release (`SOURCE_TREE_DIFF_vs_5216ff3a.patch`, `SOURCE_TREE_UNTRACKED.tgz`).
+
+**Deploys**
+- **10.0.0.9:** new storage-only binary (sha256 prefix `2d986124277cabf3`). Antigravity's binary was kept as `EngramRemoteServer.gemini-20261110`, and the plaintext `.*-cache.jsonl` files were deleted. The first durable warm took 1,594 s; uploads, receipts and hq index ingestion then resumed.
+- **hq local service:** now runs `~/.engram-service/releases/remediation-20261110-signed`. It was built Release from the same dirty tree, thinned to arm64, and signed by the owner on macbookpro with Developer ID J25GS8J4XM. Its identifier is `EngramService`, it uses hardened runtime and a timestamp, and its designated requirement matches `fb9538a-build1779-signed`.
+- **hq outage:** the first switch blocked in `SecItemCopyMatching` waiting for a Keychain approval dialog, which an SSH session cannot answer. It was rolled back to `c1c2-20261110-signed` after about 5 minutes (07:17–07:22 local). It was re-switched at 07:26 with the owner approving "Always Allow".
+- **After the switch:** 13 new receipts (hq 4, m1 9) with 0 retrying and 0 quarantined. `~/.engram/archive-v2/replica-credentials.json` was then deleted.
+
+**Verification**
+- `EngramCoreTests`: 2,050 tests, 6 failures. All are pre-existing: P1-1 rejects `fts_version='old'` fixtures, the tier CHECK constraint, and the known `Round5:155`. The C1 `_repro` passes.
+- `EngramServiceCore`: 697 tests. 7 real-runner tests fail without CI's `SERVICE_TEST_HOME` isolation; the isolated rerun of those classes plus `ArchiveReclamationCoordinatorTests` passes 46/46, including the C2 `_repro`.
+- `EngramRemoteServerCore`: 521/521 on x86_64 under Rosetta; 521 passed with 1 x86-only skip on arm64.
+- Storage-only binary: typecheck and build pass, and a Rosetta smoke test passes (health 200, unauthenticated 401, v2 caches at 0600).
+- `check-archive-v2-safety.sh` passes. hq's 145 reclaimed sessions are still visible (`orphan_status` NULL), but no production orphan scan has run since reclamation started.
+- Logs: `/private/tmp/claude-501/-Users-bing--Code--engram/15e2173c-3c53-4428-9851-5438076b6e05/scratchpad/`.
+
+**Risks and follow-ups**
+- Owner decisions (2026-11-10):
+  - Macs are trusted, so the plaintext escrow of the retired macbookpro `~/.engram` on 0.9 is accepted.
+  - Replicas on 0.9 are sufficient, so the 26,750 reclaimed macbookpro raw files stay deleted.
+- `StorageOnlyMain.swift` is outside xcodegen and CI, and handles one thread per connection with no bound (tailnet-only exposure).
+- An invalidated x86 cache costs a ~26-minute durable warm on 0.9. Any metadata change to a final file (chmod, chown, or an rsync/backup restore that rewrites ctime) or any file added or removed outside the server invalidates it by design.
+- `c1c2-20261110-signed` remains the rollback target. It recreates the plaintext token file on every start, so delete that file again after any rollback.
+- Where history is viewable now (read-only counts, 2026-11-10 08:40 local):
+  - **HQ Web reader** (`https://macmini-hq.<tailnet>.ts.net:8443/web/`, over `service-index`) holds 41,439 sessions, 7,103 of them visible.
+    - All come from one capture machine, `<daily-machine-id>` (the macbookpro collector), across 16 source instances.
+    - Start dates run from 2024-09-11 to 2026-11-09.
+  - **Engram.app on hq** (local role, `~/.engram/index.sqlite`) holds 65,925 hq-local sessions, 10,426 of them visible.
+  - **10.0.0.9** has no viewer; it is storage-only.
+  - **Retired macbookpro index** (Time Machine `2026-11-08-235617`) holds 60,379 sessions. Of its 1,422 visible ones, 613 match no row in either index by (source, id): codex 452, cursor 94, claude-code 59, other 8. They are preserved only in the escrow and Time Machine copies and are not viewable. The match is by id only, so this count is an estimate.
+- The hq backlog (~7.4k eligible bindings), 7,236 unknown-eligibility bindings, hq non-claude/codex sources, m1/m2 sessions and S4 are still not on 0.9 as product data. A copy of the retired macbookpro `~/.engram`, taken from Time Machine `2026-11-08-235617`, is now escrowed at `10.0.0.9:~/.engram-remote/escrow/macbookpro-retired-engram-20260912/` (plaintext, 0700; owner-accepted). The copy finished 10:36 local.
+  - **Verification:** the path, type and size manifests of all 320,040 entries are byte-identical (319,384 files, 54,310,580,250 bytes, 36 symlinks, 620 dirs). SHA-256 matches for `index.sqlite` and `archive-v2/archive.sqlite` (and their -wal/-shm) and for a seeded random sample of 400 files. tar's nonzero exit came from per-file "Failed to restore metadata" on macOS 12.
+  - **Fix-ups on the copy:** tar had reproduced Time Machine's `group:everyone deny delete,add_file,…` ACL on every directory. That ACL blocked removing the escrow later and left 620 AppleDouble temp files (`.XXXXXX`, ~450 bytes, one per directory). Claude ran `chmod -R -N` (plus `-h` on symlinks, 0 ACLs left) and deleted those 620 files after checking each one's magic.
+  - **macbookpro cleanup:** unmounted Claude's snapshot mount `/private/tmp/claude-tm-20261108` and removed `/tmp/claude-missing-objects.json` and `/tmp/claude-sign-remediation-20261110/`. The signed build is already deployed at hq `~/.engram-service/releases/remediation-20261110-signed`. The system Time Machine mounts (2026-01-14 snapshot, NAS share) were left as found.
+- Nothing was committed.
+
+## Review: Antigravity's 10.0.0.9 central-archive cutover, read-only audit (2026-11-10)
+
+Claude audited the 2026-11-09/10 cutover work. Antigravity recorded none of it here. The audit used read-only ssh to 10.0.0.9, macbookpro, m1 and m2, plus local hq inspection. Nothing on any host was changed by this audit.
+
+**Done and verified**
+- 10.0.0.9 (macOS 12.7.6, x86_64) runs two `EngramRemoteServer` LaunchAgents.
+  - `com.engram.remote-s2`: Archive V2 `hq` on `<tailnet-ip>:8787`.
+  - `com.engram.remote-s1`: collector publications on `127.0.0.1:18787`, exposed through Tailscale Serve at `https://macmini-dl.<tailnet>.ts.net:8443`.
+- The relocated seeds are complete by filename set-diff. All 35,804 hq `archive-v2-hq` receipts and all 77,674 hq receiver publications exist on 0.9 (0 missing). The S1 `journal.json` (same `journalID`) was carried over.
+- hq local replicas and offload now point at 0.9. The macbookpro collector `hq` replica now points at 0.9.
+- The 123 hq sessions reclaimed since 2026-11-09T17:02Z all have a manifest and a receipt on 0.9. This was checked by file existence only, not by a decrypting read.
+
+**Not on 0.9**
+- **hq Archive V2:** 7,761 of 9,064 eligible bindings have no receipt on 0.9, and 7,032 have none on m1. This is a pre-existing backlog, now draining at roughly 2–3/min.
+- **hq, never uploaded:** 7,236 `unknown`-eligibility bindings. About 9k local sessions from non-claude/codex sources (grok, qwen, kimi, pi, gemini-cli, opencode, antigravity, copilot, cursor and others) have no archive path at all.
+- **macbookpro:** 1,493 publications are pending. Spool objects for 1,437 of them were deleted:
+  - 855 still have the same raw generation on disk;
+  - 542 have raw files that changed since capture;
+  - 40 claude-code generations have no raw file left, so their content survives nowhere.
+- **m1 and m2:** their own session directories (m1 about 11 GB, m2 about 12 GB) have never been captured.
+- **macbookpro `~/.engram` (S4):** deleted. Only a 4.8 GB `mbp-retired-engram-unique-20261109.tar.zst.enc` (password-encrypted) remains, on hq's external disk `/Volumes/M2-2T`. Its contents are unverified. It is not on the NAS or on 0.9.
+
+**Risks introduced**
+1. **macbookpro `com.engram.collector-reclaim` (daily 04:15)**
+   - The keep-set comes from `archive_manifest_objects`, which has 0 rows in the spool catalog. Every spool object older than 24 h is therefore deleted, regardless of ACK state.
+   - It `unlink`s raw singleFile sources on dual ACK alone, which contradicts invariants.md "ACK is not reclamation authority".
+   - It rewrites `collector_locators` dirty→acknowledged by SQL. This can suppress capture of appended content (PLAUSIBLE, not reproduced).
+   - It runs `--reconcile-native-epoch` non-dry-run every day.
+2. **hq `com.engram.hq-cas-evict` (daily 04:30):** deletes capture-ingest CAS objects by mtime alone, with no ledger check. It is harmless today because all 78,759 ledger rows are terminal. Both cron jobs ran once with 0 effect, so the earlier ~108 GB (hq) and ~109 GB (macbookpro) of deletions were manual.
+3. **Deployed hq service build `c1c2-20261110-signed`:** built from the dirty tree, but `SOURCE_REVISION` still says 5216ff3a. `EngramCoreWrite` mirrors replica bearer tokens into plaintext `~/.engram/archive-v2/replica-credentials.json` even when the Keychain write succeeds. That file exists, mode 0600, holding hq and m1 tokens.
+4. **10.0.0.9 binary:** built from untracked `StorageOnlyMain.swift`, a hand-written HTTP server outside xcodegen and CI. Its revision label `9df601ec-macos12-storage` names a June commit. The x86_64-only `ArchiveStore` caches store decrypted receipts and publications in plaintext at mode 0644 (`receipts/.receipts-cache.jsonl` 16.7 MB, `publications/.publications-cache.jsonl` 53 MB). Once non-empty they are trusted forever, and appends use `try?`, so a missed append can reuse an `arrivalOrdinal`.
+5. **Old hq collector receiver (pid 8150):** still running with the same `journalID`. Its newest publication is 11-10 01:26.
+6. **hq catalog:** all 18,128 `archive_replica_receipts` rows were rewritten after 2026-11-09T16:47Z. The observed effect is re-upload with HEAD dedup. The mechanism is not identified.
+
+**Code review**
+- C1 (reclamation-aware orphan scan) and C2 (automatic drill refresh before reclamation) match the §6.5 intent. Each has a `_repro` test.
+- C2 swallows drill errors. A drill mismatch still expires a lease.
+- `scripts/check-archive-v2-safety.sh` passes.
+
+**Not run:** the C1/C2 xcodebuild tests, StorageOnly parity tests, decrypting receipt reads, and inspection of the encrypted backups (no password).
+
+**Resume point:** owner authorization to `launchctl bootout` both cron jobs and to stop the old hq receiver after `lsof -i :18787` shows no clients. Then fix or revert the credential mirror and the x86_64 caches, and decide on a recovery path for the 1,437 stuck publications.
 
 ## Web viewer nine-iteration upgrade — all nine iterations verified (2026-11-10)
 
