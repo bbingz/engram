@@ -178,6 +178,7 @@ enum WebUIRoutes {
         <p class="meta">Counts cover loaded messages; Tools counts call/result cards. Categories can overlap.</p>
         <div class="agent-filters"><span id="transcript-loaded" role="status"></span>
         <button id="transcript-find-toggle" type="button" aria-controls="transcript-find" aria-expanded="false">Find in loaded</button>
+        <button id="transcript-minimap-toggle" type="button" aria-controls="transcript-minimap-box" aria-expanded="false">Minimap</button>
         <button id="transcript-outline-toggle" type="button" aria-controls="transcript-outline-box" aria-expanded="false">Outline</button>
         <button id="transcript-load-all" type="button">Load all</button>
         <button id="transcript-end" type="button">Jump to end</button>
@@ -185,6 +186,13 @@ enum WebUIRoutes {
         <button id="transcript-copy" type="button">Copy loaded Markdown</button>
         <button id="transcript-previous" type="button">↑ Previous</button><button id="transcript-next" type="button">↓ Next</button></div>
         </div>
+        <section id="transcript-minimap-box" aria-label="Transcript minimap" hidden>
+        <p id="transcript-minimap-status" role="status"></p>
+        <p class="meta">Ordinal coverage: solid = loaded · dashed = partial · hollow = not loaded. Ring = selected jump · underline = viewport. Arrow keys/Home/End move focus; Enter jumps.</p>
+        <nav id="transcript-minimap" aria-label="Ordinal ranges"></nav>
+        <p id="transcript-minimap-position" role="status"></p>
+        <button id="transcript-minimap-more" type="button">Load map timeline (optional)</button>
+        </section>
         <details id="transcript-outline-box" hidden><summary>Prompt outline · loaded coverage</summary>
         <p id="transcript-outline-status" role="status"></p><nav id="transcript-outline" aria-label="Prompt outline"></nav>
         <button id="transcript-outline-more" type="button" hidden>More outline entries</button></details>
@@ -767,6 +775,17 @@ enum WebUIRoutes {
         #transcript-toolbar { padding: 12px 0; border-bottom: 1px solid var(--line); }
         #transcript-toolbar .agent-filters { flex-wrap: wrap; gap: 6px; margin: 6px 0; }
         #transcript-toolbar button { font-size: 12px; padding: 5px 8px; }
+        #transcript-minimap-box { padding: 12px; border: 1px solid var(--line); border-radius: 8px; margin: 12px 0; }
+        #transcript-minimap-box p { margin: 4px 0 8px; font-size: 12px; }
+        #transcript-minimap { display: grid; grid-template-columns: repeat(auto-fit, minmax(38px, 1fr)); gap: 4px; max-height: 180px; overflow-y: auto; padding: 4px; }
+        #transcript-minimap button { padding: 4px 1px; min-width: 0; min-height: 28px; overflow: hidden; font-size: 10px; color: var(--text); border: 1px solid var(--muted); }
+        #transcript-minimap .map-loaded { background: var(--accent-dim); border-color: var(--accent); }
+        #transcript-minimap .map-partial { background: var(--accent-dim); border-style: dashed; }
+        #transcript-minimap .map-unloaded { background: var(--bg); }
+        #transcript-minimap button[aria-current="true"] { outline: 2px solid var(--accent); outline-offset: 0; }
+        #transcript-minimap button[data-viewport="true"] { box-shadow: inset 0 -3px var(--info); }
+        .syntax-keyword { color: var(--agent); } .syntax-string, .syntax-add { color: var(--ok); }
+        .syntax-comment { color: var(--muted); } .syntax-number { color: var(--info); } .syntax-delete { color: var(--danger); }
         #transcript-outline-box { padding: 12px; border: 1px solid var(--line); border-radius: 8px; margin: 12px 0; }
         #transcript-outline { display: grid; max-height: 300px; overflow-y: auto; gap: 4px; }
         #transcript-outline button { text-align: left; overflow-wrap: anywhere; white-space: normal; }
@@ -933,6 +952,7 @@ enum WebUIRoutes {
         let transcriptMessages = [], transcriptFilter = "all", transcriptStep = -1, transcriptAllBusy = false;
         let detailInfoDetail = null, detailInfoLoaded = false, detailInfoBusy = false, detailInfoEpoch = -1, detailMessageCoverage = null;
         let outlineEntries = [], outlineOpen = false;
+        let minimapOpen = false, minimapSelected = null;
         let turnUsageNode = null, turnUsage = null, promptNumber = 0, messageTotal = null, activeOutlineOrdinal = null;
         let detailSource = "";
         let detailContextSession = "";
@@ -3196,6 +3216,8 @@ enum WebUIRoutes {
           const offset = more ? state.next : 0;
           const params = new URLSearchParams({ generation: generation, offset: String(offset), limit: "500" });
           state.busy = true; state.busyEpoch = token; setText(status, "Loading timeline…");
+          document.getElementById("transcript-minimap-more").disabled = true;
+          if (minimapOpen) setText(document.getElementById("transcript-minimap-status"), "Loading map timeline… Loaded coverage is unchanged.");
           try {
             const page = await api("GET", "/web/api/sessions/" + encodeURIComponent(sessionId) + "/timeline?" + params);
             if (version !== detailExtrasVersion || token !== requestEpoch) return;
@@ -3209,7 +3231,6 @@ enum WebUIRoutes {
                 }) || (page.nextOffset != null && (!Number.isSafeInteger(page.nextOffset) || page.nextOffset <= offset || page.nextOffset <= previous || page.nextOffset >= page.totalEntries || !page.entries.length))) throw new Error("Invalid timeline page");
             if (!more) { setText(rows, ""); state.count = 0; outlineEntries = []; }
             outlineEntries = outlineEntries.concat(page.entries);
-            renderTranscriptOutline();
             const durationMax = Math.max(1, ...page.entries.map(function (entry) { return Number.isFinite(entry.durationToNextMs) ? entry.durationToNextMs : 0; }));
             page.entries.forEach(function (entry) {
               const card = document.createElement("article"); card.className = "message";
@@ -3235,15 +3256,22 @@ enum WebUIRoutes {
             });
             state.count += page.entries.length; state.lastIndex = previous; state.total = page.totalEntries;
             state.next = page.nextOffset == null ? null : page.nextOffset; state.loaded = true;
+            renderTranscriptOutline(); renderTranscriptMinimap();
             setText(status, state.count + " / " + state.total + " messages");
             document.getElementById("transcript-outline-more").hidden = state.next == null;
             setText(document.getElementById("transcript-outline-status"), state.count + " / " + state.total + " timeline entries. Unloaded prompts load at most 5 pages per jump; click again to continue.");
           } catch (error) {
-            if (version === detailExtrasVersion && token === requestEpoch) setText(status, "Timeline unavailable. Refresh the session if its transcript changed.");
+            if (version === detailExtrasVersion && token === requestEpoch) {
+              setText(status, "Timeline unavailable. Refresh the session if its transcript changed.");
+              if (minimapOpen) setText(document.getElementById("transcript-minimap-status"), "Map timeline unavailable. Loaded messages are unchanged. Retry Load map timeline, or refresh the session if its transcript changed.");
+            }
           } finally {
             if (version === detailExtrasVersion && state.busyEpoch === token) {
               state.busy = false;
-              if (token === requestEpoch) document.getElementById("timeline-more").hidden = state.next == null;
+              if (token === requestEpoch) {
+                document.getElementById("timeline-more").hidden = state.next == null;
+                document.getElementById("transcript-minimap-more").disabled = false;
+              }
             }
           }
         }
@@ -3345,6 +3373,12 @@ enum WebUIRoutes {
           setText(messagesNode, "");
           transcriptMessages = []; transcriptFilter = "all"; transcriptStep = -1; transcriptAllBusy = false;
           turnUsage = null; turnUsageNode = null; promptNumber = 0; messageTotal = null; activeOutlineOrdinal = null; outlineEntries = []; outlineOpen = false;
+          minimapOpen = false; minimapSelected = null;
+          document.getElementById("transcript-minimap-more").disabled = false;
+          document.getElementById("transcript-minimap-box").hidden = true;
+          document.getElementById("transcript-minimap-toggle").setAttribute("aria-expanded", "false");
+          setText(document.getElementById("transcript-minimap-status"), "");
+          setText(document.getElementById("transcript-minimap-position"), "");
           document.getElementById("transcript-outline-box").hidden = true;
           document.getElementById("transcript-outline-toggle").setAttribute("aria-expanded", "false");
           setText(document.getElementById("transcript-outline-status"), "");
@@ -4355,10 +4389,7 @@ enum WebUIRoutes {
               const pre = document.createElement("pre");
               const code = document.createElement("code");
               code.setAttribute("data-lang", language);
-              if (codeLines.length <= 400) codeLines.forEach(function (line, index) {
-                const row = document.createElement("span"); row.className = "code-line"; row.setAttribute("data-line-number", String(index + 1));
-                setText(row, line + (index < codeLines.length - 1 ? String.fromCharCode(10) : "")); code.appendChild(row);
-              }); else setText(code, codeLines.join(String.fromCharCode(10)));
+              renderSyntaxCode(code, codeLines.join(String.fromCharCode(10)), language);
               pre.appendChild(code);
               block.appendChild(header);
               block.appendChild(pre);
@@ -4544,6 +4575,102 @@ enum WebUIRoutes {
           toggle.addEventListener("click", function () { raw.hidden = !raw.hidden; formatted.hidden = !raw.hidden; setText(toggle, raw.hidden ? "Raw" : "Formatted"); });
           body.appendChild(formatted); body.appendChild(raw); tools.appendChild(body); return tools;
         }
+        // Deliberately lexical, not a compiler. Unsupported/ambiguous constructs fail plain, never partially color.
+        function tokenizeCode(text, language) {
+          const aliases = {json:"json",diff:"diff",patch:"diff",sh:"sh",bash:"sh",shell:"sh",swift:"swift",ts:"js",typescript:"js",js:"js",javascript:"js",py:"py",python:"py"};
+          const name = String(language).toLowerCase();
+          if (!Object.prototype.hasOwnProperty.call(aliases, name) || text.length > 32768) return null;
+          const lang = aliases[name], nl = String.fromCharCode(10), slash = String.fromCharCode(92);
+          if (text.split(nl).length > 400) return null;
+          if (lang === "json") { try { JSON.parse(text); } catch (error) { return null; } }
+          const words = {
+            json:"true false null",
+            sh:"if then else elif fi for in do done case esac while until function select time true false",
+            swift:"let var func return if else guard switch case default for in while repeat break continue class struct enum protocol extension import public private internal static async await throws throw try catch do true false nil self init defer as is some actor",
+            js:"const let var function return if else switch case default for in of while do break continue class extends new import export from async await throw try catch finally true false null undefined interface type number string boolean public private static typeof instanceof void this yield",
+            py:"def class return if else elif for in while break continue import from as try except finally raise with lambda pass yield async await and or not is None True False global nonlocal"
+          };
+          const keywords = new Set((words[lang] || "").split(" ")), tokens = [];
+          function emit(start, end, type) {
+            if (end > start) tokens.push({text:text.slice(start,end), type:type || ""});
+            return tokens.length <= 2000;
+          }
+          if (lang === "diff") {
+            let start = 0;
+            while (start < text.length) {
+              let end = text.indexOf(nl, start); end = end < 0 ? text.length : end + 1;
+              const c = text.charAt(start), line = text.slice(start,end);
+              if (line.trim() && !["+","-"," ",String.fromCharCode(92)].includes(c) && !["@@","diff ","index ","new file ","deleted file ","rename ","similarity ","old mode ","new mode "].some(function (prefix) { return line.indexOf(prefix) === 0; })) return null;
+              const type = line.indexOf("@@") === 0 ? "keyword" : c === "+" ? "add" : c === "-" ? "delete" : c === " " ? "" : "comment";
+              if (!emit(start,end,type)) return null; start = end;
+            }
+            return tokens;
+          }
+          const digit = c => c >= "0" && c <= "9";
+          const letter = c => !!c && ((c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || c === "_" || c === "$");
+          let i = 0, plain = 0;
+          while (i < text.length) {
+            const start = i, c = text.charAt(i), next = text.charAt(i + 1);
+            let type = "";
+            if ((lang === "sh" || lang === "py") && c === "#" || (lang === "js" || lang === "swift") && c === "/" && next === "/") {
+              i = text.indexOf(nl,i); if (i < 0) i = text.length; type = "comment";
+            } else if ((lang === "js" || lang === "swift") && c === "/" && next === "*") {
+              i += 2; let depth = 1;
+              while (i < text.length && depth) {
+                if (lang === "swift" && text.slice(i,i + 2) === "/*") { depth += 1; i += 2; }
+                else if (text.slice(i,i + 2) === "*/") { depth -= 1; i += 2; } else i += 1;
+              }
+              if (depth) return null; type = "comment";
+            } else if (c === '"' || (lang !== "json" && c === "'") || (lang === "js" && c === "`")) {
+              const triple = (lang === "py" || lang === "swift") && text.slice(i,i + 3) === c.repeat(3);
+              const delimiter = triple ? c.repeat(3) : c;
+              i += delimiter.length; let closed = false;
+              while (i < text.length) {
+                if (text.slice(i,i + delimiter.length) === delimiter) { i += delimiter.length; closed = true; break; }
+                if (c === "`" && text.slice(i,i + 2) === "${") return null;
+                if (text.charAt(i) === nl && !triple && c !== "`" && lang !== "sh") return null;
+                if (text.charAt(i) === slash && !(lang === "sh" && c === "'")) i += 2; else i += 1;
+              }
+              if (!closed) return null; type = "string";
+            } else if (digit(c) && (i === 0 || !letter(text.charAt(i - 1)))) {
+              i += 1;
+              while (i < text.length && (digit(text.charAt(i)) || "abcdefABCDEFxXoObBeE._".includes(text.charAt(i)))) i += 1;
+              type = "number";
+            } else if (letter(c)) {
+              i += 1; while (letter(text.charAt(i)) || digit(text.charAt(i))) i += 1;
+              if (keywords.has(text.slice(start,i))) type = "keyword";
+            } else if (lang === "js" && c === "/") {
+              // Slash can introduce a regex or division. Avoid pretending to parse the grammar.
+              return null;
+            } else i += 1;
+            if (type) {
+              if (!emit(plain,start,"") || !emit(start,i,type)) return null;
+              plain = i;
+            }
+          }
+          return emit(plain,text.length,"") ? tokens : null;
+        }
+        function renderSyntaxCode(code, text, language) {
+          const nl = String.fromCharCode(10), lines = text.split(nl);
+          // Keep oversized fallback a single text node; neither tokens nor line wrappers grow without bound.
+          if (text.length > 32768 || lines.length > 400) { setText(code,text); return; }
+          const tokens = tokenizeCode(text,language);
+          const rows = lines.map(function (line,index) {
+            const row = document.createElement("span"); row.className = "code-line"; row.setAttribute("data-line-number",String(index + 1));
+            if (!tokens) setText(row,line + (index < lines.length - 1 ? nl : ""));
+            code.appendChild(row); return row;
+          });
+          if (!tokens) return;
+          let line = 0;
+          tokens.forEach(function (token) {
+            const parts = token.text.split(nl);
+            parts.forEach(function (part,index) {
+              const text = part + (index < parts.length - 1 ? nl : "");
+              if (text) { const span = document.createElement("span"); if (token.type) span.className = "syntax-" + token.type; setText(span,text); rows[line].appendChild(span); }
+              if (index < parts.length - 1) line += 1;
+            });
+          });
+        }
         function renderMessage(role, payload, messageOrdinal) {
           const kind = role === "user" ? "user" : (role === "tool" || role === "system" ? role : "assistant");
           const ordinal = Number.isSafeInteger(messageOrdinal) && messageOrdinal >= 0 ? messageOrdinal : transcriptMessages.length;
@@ -4634,7 +4761,7 @@ enum WebUIRoutes {
           document.getElementById("transcript-load-all").hidden = !messageCursor;
           document.getElementById("transcript-load-all").disabled = transcriptAllBusy;
           if (messageCursor) setText(moreMessagesNode, "Load more (" + transcriptMessages.length + " loaded)");
-          renderTranscriptOutline(); updateDetailInfoCoverage(); updateTranscriptFind();
+          renderTranscriptOutline(); renderTranscriptMinimap(); updateDetailInfoCoverage(); updateTranscriptFind();
         }
         function renderTranscriptOutline() {
           const root = document.getElementById("transcript-outline"); setText(root, "");
@@ -4654,10 +4781,75 @@ enum WebUIRoutes {
             button.addEventListener("click", function () { jumpToOrdinal(entry.index); }); root.appendChild(button);
           });
         }
+        // An ordinal coverage strip, not a fabricated pixel-density thumbnail. At most 120 range buttons.
+        function renderTranscriptMinimap() {
+          const root = document.getElementById("transcript-minimap");
+          const focused = root.contains(document.activeElement) ? document.activeElement.dataset.start : null;
+          setText(root, "");
+          if (!minimapOpen) return;
+          const loaded = new Set(transcriptMessages.map(function (item) { return item.ordinal; }));
+          const known = new Set(outlineEntries.map(function (entry) { return entry.index; }));
+          let extent = 0;
+          loaded.forEach(function (ordinal) { extent = Math.max(extent,ordinal + 1); });
+          known.forEach(function (ordinal) { extent = Math.max(extent,ordinal + 1); });
+          const reported = Number.isSafeInteger(messageTotal) ? messageTotal : detailTimeline.total;
+          const total = Math.max(extent, Number.isSafeInteger(reported) ? reported : 0);
+          const count = Math.min(total,120), quotient = Math.floor(total / (count || 1)), remainder = total % (count || 1);
+          const groups = [];
+          for (let i = 0, start = 0; i < count; i += 1) {
+            const size = quotient + (i < remainder ? 1 : 0);
+            groups.push({start:start,end:start + size - 1,loaded:0,known:0}); start += size;
+          }
+          function groupFor(ordinal) {
+            // Bounded binary search avoids a total-sized array even for sparse, huge sessions.
+            let lo = 0, hi = groups.length - 1;
+            while (lo <= hi) { const mid = Math.floor((lo + hi) / 2), g = groups[mid]; if (ordinal < g.start) hi = mid - 1; else if (ordinal > g.end) lo = mid + 1; else return g; }
+            return null;
+          }
+          loaded.forEach(function (ordinal) { const group = groupFor(ordinal); if (group) group.loaded += 1; });
+          known.forEach(function (ordinal) { const group = groupFor(ordinal); if (group) group.known += 1; });
+          groups.forEach(function (group) {
+            const button = document.createElement("button"); button.type = "button";
+            button.setAttribute("data-start",String(group.start)); button.setAttribute("data-end",String(group.end));
+            button.dataset.loaded = String(group.loaded); button.dataset.known = String(group.known);
+            const size = group.end - group.start + 1;
+            button.className = group.loaded === size ? "map-loaded" : group.loaded ? "map-partial" : "map-unloaded";
+            const label = "Jump to #" + group.start + (size > 1 ? " · range #" + group.start + "–#" + group.end : "") + " · " + group.loaded + " / " + size + " loaded · " + group.known + " timeline known" + (group.loaded < size ? " · not loaded in part or whole" : "");
+            button.title = label; button.setAttribute("aria-label", label); setText(button, String(group.start));
+            button.addEventListener("click", function () { jumpToOrdinal(group.start); });
+            root.appendChild(button);
+            if (focused === String(group.start)) focusVisible(button);
+          });
+          const visible = transcriptMessages.filter(function (item) { return !item.article.hidden; }).length;
+          setText(document.getElementById("transcript-minimap-status"), loaded.size + " / " + (reported == null ? total + "+ known ordinal extent (total unknown)" : total) + " loaded · " + visible + " visible · " + known.size + " timeline known. " + (total > 120 ? "Grouped ordinal ranges; jumps target each range start. " : "") + "Unloaded targets: at most 5 pages per jump; try again to continue.");
+          document.getElementById("transcript-minimap-more").hidden = detailTimeline.loaded && detailTimeline.next == null;
+          setText(document.getElementById("transcript-minimap-more"), detailTimeline.loaded ? "More map timeline" : "Load map timeline (optional)");
+          updateMinimapViewport();
+        }
+        function updateMinimapViewport() {
+          if (!minimapOpen) return;
+          const visible = [];
+          if (!document.getElementById("transcript-panel").hidden) transcriptMessages.forEach(function (item) {
+            if (item.article.hidden || typeof item.article.getBoundingClientRect !== "function") return;
+            const rect = item.article.getBoundingClientRect();
+            const height = window.innerHeight;
+            const header = document.getElementById("detail-header");
+            const top = typeof header.getBoundingClientRect === "function" ? header.getBoundingClientRect().bottom : 0;
+            if (Number.isFinite(height) && rect.bottom > Math.max(0,top) && rect.top < height) visible.push(item.ordinal);
+          });
+          const inView = new Set(visible);
+          document.getElementById("transcript-minimap").querySelectorAll("button").forEach(function (button) {
+            const start = Number(button.dataset.start), end = Number(button.dataset.end);
+            button.setAttribute("aria-current",String(minimapSelected != null && minimapSelected >= start && minimapSelected <= end));
+            button.setAttribute("data-viewport",String(visible.some(function (ordinal) { return ordinal >= start && ordinal <= end; })));
+          });
+          setText(document.getElementById("transcript-minimap-position"), (minimapSelected == null ? "No jump selected" : "Selected #" + minimapSelected + (transcriptMessages.some(function (item) { return item.ordinal === minimapSelected; }) ? " · loaded" : " · not loaded")) + " · Viewport: " + (inView.size ? "#" + visible[0] + "–#" + visible[visible.length - 1] + " (" + inView.size + " visible messages)" : "no transcript messages in view"));
+        }
         let jumpVersion = 0;
         async function jumpToOrdinal(ordinal, routed) {
           if (!Number.isSafeInteger(ordinal) || ordinal < 0) return;
           const version = ++jumpVersion;
+          minimapSelected = ordinal; updateMinimapViewport();
           if (!routed && detailContextSession) writeRoute({page:"detail",id:detailContextSession,ordinal:ordinal});
           const token = requestEpoch, budget = {remaining:5};
           while (!transcriptMessages.some(function (item) { return item.ordinal === ordinal; }) && messageCursor && budget.remaining > 0 && token === requestEpoch && version === jumpVersion) {
@@ -4667,6 +4859,7 @@ enum WebUIRoutes {
           }
           if (token !== requestEpoch) return;
           if (version !== jumpVersion) return;
+          updateMinimapViewport();
           const item = transcriptMessages.find(function (candidate) { return candidate.ordinal === ordinal; });
           if (!item) { toast(messageCursor ? "Message not loaded. Use Load more or try the link again (5-page jump limit)." : "Message missing from the available transcript.", "warning"); return; }
           transcriptFilter = "all"; activeOutlineOrdinal = ordinal; updateTranscript();
@@ -4676,9 +4869,11 @@ enum WebUIRoutes {
         }
         let outlineScrollScheduled = false;
         window.addEventListener("scroll", function () {
-          if (!outlineOpen || outlineScrollScheduled) return;
+          if ((!outlineOpen && !minimapOpen) || outlineScrollScheduled) return;
           function update() {
             outlineScrollScheduled = false;
+            updateMinimapViewport();
+            if (!outlineOpen) return;
             let ordinal = null;
             transcriptMessages.forEach(function (item) {
               if (item.kind === "user" && typeof item.article.getBoundingClientRect === "function" && item.article.getBoundingClientRect().top <= 210) ordinal = item.ordinal;
@@ -4760,6 +4955,19 @@ enum WebUIRoutes {
             detailInfoLoaded = true;
           } finally { if (detailInfoEpoch === token && version === detailExtrasVersion) detailInfoBusy = false; }
         }
+        document.getElementById("transcript-minimap-toggle").addEventListener("click", function () {
+          minimapOpen = !minimapOpen; document.getElementById("transcript-minimap-box").hidden = !minimapOpen;
+          this.setAttribute("aria-expanded",String(minimapOpen)); renderTranscriptMinimap();
+        });
+        document.getElementById("transcript-minimap-more").addEventListener("click", function () { loadDetailTimeline(detailTimeline.loaded); });
+        document.getElementById("transcript-minimap").addEventListener("keydown", function (event) {
+          if (!event || event.isComposing || event.metaKey || event.ctrlKey || event.altKey) return;
+          const buttons = Array.from(this.querySelectorAll("button")), index = buttons.indexOf(event.target);
+          if (index < 0) return;
+          const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : ["ArrowRight","ArrowDown"].includes(event.key) ? Math.min(index + 1,buttons.length - 1) : ["ArrowLeft","ArrowUp"].includes(event.key) ? Math.max(0,index - 1) : -1;
+          if (next >= 0) { event.preventDefault(); focusVisible(buttons[next]); }
+        });
+        window.addEventListener("resize", function () { updateMinimapViewport(); });
         document.getElementById("transcript-outline-toggle").addEventListener("click", function () {
           outlineOpen = !outlineOpen; document.getElementById("transcript-outline-box").hidden = !outlineOpen; document.getElementById("transcript-outline-box").open = outlineOpen;
           this.setAttribute("aria-expanded", String(outlineOpen));

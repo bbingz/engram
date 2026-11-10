@@ -183,6 +183,12 @@ class Element {
 
   setAttribute(name: string, value: string): void {
     this.attrs.set(name, String(value));
+    if (name.startsWith('data-')) {
+      const key = name
+        .slice(5)
+        .replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+      this.dataset[key] = String(value);
+    }
   }
 
   getAttribute(name: string): string | null {
@@ -8103,5 +8109,320 @@ describe('iteration 5 identity display authentication lifetime', () => {
     await first.pending;
     expect(ui.node('identity-status').textContent).toBe('Signed in as NEW');
     expect(ui.node('status').textContent).toBe('Signed in as NEW');
+  });
+});
+
+describe('iteration 6 bounded syntax and ordinal minimap', () => {
+  const samples = [
+    [
+      'json',
+      '{"safe":"<img onerror=alert(1)>","n":12,"ok":true}',
+      ['string', 'number', 'keyword'],
+    ],
+    ['diff', '@@ -1 +1 @@\n-old\n+new\n context', ['keyword', 'delete', 'add']],
+    [
+      'bash',
+      '# comment\nif true; then echo "safe" 12; fi',
+      ['comment', 'keyword', 'string', 'number'],
+    ],
+    ['sh', 'echo \'a "quote"\' # safe', ['string', 'comment']],
+    [
+      'shell',
+      'for x in 12; do echo "$x"; done',
+      ['keyword', 'number', 'string'],
+    ],
+    [
+      'swift',
+      '/* comment */\nlet x = "safe"\nreturn 12',
+      ['comment', 'keyword', 'string', 'number'],
+    ],
+    [
+      'ts',
+      '// comment\nconst x: number = 12; return "safe";',
+      ['comment', 'keyword', 'string', 'number'],
+    ],
+    ['typescript', 'interface X { n: number }', ['keyword']],
+    ['js', 'const x = `safe`; // comment', ['keyword', 'string', 'comment']],
+    ['javascript', 'function x() { return 12; }', ['keyword', 'number']],
+    [
+      'py',
+      '# comment\ndef x():\n  return "safe", 12',
+      ['comment', 'keyword', 'string', 'number'],
+    ],
+    ['python', 'x = """multi\nline"""\nreturn True', ['string', 'keyword']],
+  ] as const;
+  for (const [lang, text, types] of samples)
+    it(`colors ${lang} losslessly via inert spans`, async () => {
+      const ui = harness();
+      const content = '```' + lang + '\n' + text + '\n```';
+      await ui.call(
+        `renderMessage('assistant',{content:${JSON.stringify(content)}},7)`,
+      );
+      const code = ui.node('messages').querySelector('code');
+      expect(code?.textContent).toBe(text);
+      for (const type of types)
+        expect(
+          code?.querySelectorAll('.syntax-' + type).length,
+        ).toBeGreaterThan(0);
+      expect(code?.querySelector('img')).toBeNull();
+      expect(code?.querySelector('script')).toBeNull();
+      ui.node('messages').querySelector('.copy-btn')?.click();
+      expect(ui.copied).toEqual([text]);
+    });
+  for (const [lang, text] of [
+    ['html', '<script>alert(1)</script>'],
+    ['json', '{"bad":}'],
+    ['js', 'const s = "unterminated'],
+    ['swift', '/* unterminated'],
+    ['python', 'x = ' + String.fromCharCode(39).repeat(3) + 'unterminated'],
+    ['js', 'const x = `a ${value}`;'],
+    ['js', 'const x = /[a-z]+/g;'],
+    ['ts', 'const x=1;\n'.repeat(4000)],
+    ['py', 'x=1\n'.repeat(401)],
+    ['js', '1+'.repeat(1500)],
+    ['bash', "echo 'unterminated"],
+    ['__proto__', 'const x=12;'],
+  ])
+    it(`falls back losslessly and bounds nodes for ${lang}/${text.length}`, async () => {
+      const ui = harness();
+      await ui.call(
+        `renderMessage('assistant',{content:${JSON.stringify('```' + lang + '\n' + text + '\n```')}},0)`,
+      );
+      const code = ui.node('messages').querySelector('code');
+      expect(code?.textContent).toBe(text);
+      expect(
+        code
+          ?.querySelectorAll('span')
+          .some((n) => n.className.startsWith('syntax-')),
+      ).toBe(false);
+      expect(code?.querySelectorAll('span').length).toBeLessThanOrEqual(400);
+    });
+  it('retains newlines, line numbering, wrap, copy and syntax node identity through model Find', async () => {
+    const ui = harness(),
+      text = 'const x = "<b>safe</b>";\n\nreturn 12;\n';
+    await ui.call(
+      `renderMessage('assistant',{content:${JSON.stringify('```js\n' + text + '\n```')}},8)`,
+    );
+    const code = ui.node('messages').querySelector('code'),
+      token = code?.querySelector('.syntax-string');
+    expect(
+      code
+        ?.querySelectorAll('.code-line')
+        .map((n) => n.getAttribute('data-line-number')),
+    ).toEqual(['1', '2', '3', '4']);
+    await ui.call(
+      `openTranscriptFind(); document.getElementById('transcript-find-query').value='safe'; updateTranscriptFind(); moveFind(1)`,
+    );
+    expect(code?.querySelector('.syntax-string')).toBe(token);
+    expect(code?.textContent).toBe(text);
+    expect(ui.node('transcript-find-preview').textContent).toContain('safe');
+    ui.node('messages').querySelector('.copy-btn')?.click();
+    expect(ui.copied).toEqual([text]);
+  });
+  it('maps sparse real ordinals, not array indexes; opens without any eager read', async () => {
+    const ui = harness();
+    await ui.call(
+      `messageTotal=10; renderMessage('user',{content:'first'},2);renderMessage('assistant',{content:'last'},8)`,
+    );
+    ui.node('transcript-minimap-toggle').click();
+    expect(ui.requests).toHaveLength(0);
+    const marks = ui.node('transcript-minimap').children;
+    expect(marks).toHaveLength(10);
+    expect(marks[2].dataset.loaded).toBe('1');
+    expect(marks[0].dataset.loaded).toBe('0');
+    expect(marks[8].dataset.loaded).toBe('1');
+    expect(ui.node('transcript-minimap-status').textContent).toContain(
+      '2 / 10 loaded',
+    );
+    marks[8].click();
+    await flushAuthWork();
+    expect(
+      ui.node('messages').children[1].classList.contains('jump-target'),
+    ).toBe(true);
+    expect(
+      ui.node('transcript-minimap').children[8].getAttribute('aria-current'),
+    ).toBe('true');
+    await ui.call(`transcriptFilter='user';updateTranscript()`);
+    expect(ui.node('transcript-minimap-status').textContent).toContain(
+      '1 visible',
+    );
+    expect(ui.node('transcript-minimap').children[8].dataset.loaded).toBe('1');
+    await ui.call('clearMessages()');
+    expect(ui.node('transcript-minimap').children).toHaveLength(0);
+    expect(ui.node('transcript-minimap-box').hidden).toBe(true);
+  });
+  it('caps huge coverage at 120 explicit contiguous ordinal ranges including the last safe ordinal', async () => {
+    const ui = harness();
+    await ui.call(
+      `messageTotal=Number.MAX_SAFE_INTEGER; renderMessage('user',{content:'tail'},Number.MAX_SAFE_INTEGER-1);minimapOpen=true;renderTranscriptMinimap()`,
+    );
+    const marks = ui.node('transcript-minimap').children;
+    expect(marks).toHaveLength(120);
+    expect(marks[0].dataset.start).toBe('0');
+    for (let i = 1; i < marks.length; i++)
+      expect(Number(marks[i].dataset.start)).toBe(
+        Number(marks[i - 1].dataset.end) + 1,
+      );
+    expect(Number(marks[119].dataset.end)).toBe(Number.MAX_SAFE_INTEGER - 1);
+    expect(marks[119].dataset.loaded).toBe('1');
+    expect(marks[119].getAttribute('aria-label')).toContain('Jump to #');
+    expect(marks[119].getAttribute('aria-label')).toContain('range');
+  });
+  it('counts only complete decoded fragments as loaded and retains the five-page jump fence', async () => {
+    const ui = harness();
+    await ui.call(
+      `detailContextSession='s';detailContextGeneration='g';messageSessionId='s';messageGeneration='g';messageTotal=100;messageCursor='p0';minimapOpen=true;renderTranscriptMinimap()`,
+    );
+    const pending = ui.call('jumpToOrdinal(99)');
+    for (let i = 0; i < 5; i++) {
+      ui.requestFor('/web/api/sessions/s/messages').resolve({
+        sessionId: 's',
+        generation: 'g',
+        fragments: [],
+        nextCursor: 'p' + (i + 1),
+      });
+      await flushAuthWork();
+    }
+    await pending;
+    expect(ui.requestsFor('/web/api/sessions/s/messages')).toHaveLength(5);
+    expect(ui.node('transcript-minimap-position').textContent).toContain(
+      'not loaded',
+    );
+    const payload = JSON.stringify({ content: 'fragmented 星' }),
+      prefix = payload.slice(0, 10);
+    await ui.call(
+      `acceptFragment(${JSON.stringify({ messageOrdinal: 9, payloadSHA256: 'a'.repeat(64), role: 'user', payloadFragment: prefix, utf8Offset: 0, isLastFragment: false })});renderTranscriptMinimap()`,
+    );
+    expect(ui.node('transcript-minimap').children[9].dataset.loaded).toBe('0');
+    await ui.call(
+      `acceptFragment(${JSON.stringify({ messageOrdinal: 9, payloadSHA256: 'a'.repeat(64), role: 'user', payloadFragment: payload.slice(10), utf8Offset: new TextEncoder().encode(prefix).length, isLastFragment: true })})`,
+    );
+    expect(ui.node('transcript-minimap').children[9].dataset.loaded).toBe('1');
+  });
+  it('reuses lazy paged outline entries without counting known timeline as loaded and rejects stale generations', async () => {
+    const ui = harness();
+    await ui.call(
+      `detailContextSession='s';detailContextGeneration='g';minimapOpen=true;renderTranscriptMinimap()`,
+    );
+    const timeline = ui.call('loadDetailTimeline(false)');
+    ui.requestFor('/web/api/sessions/s/timeline').resolve({
+      sessionId: 's',
+      generation: 'g',
+      totalEntries: 600,
+      entries: [{ index: 9, role: 'user', type: 'message', preview: 'known' }],
+      nextOffset: 500,
+    });
+    await timeline;
+    expect(ui.node('transcript-minimap-status').textContent).toContain(
+      '1 timeline known',
+    );
+    expect(ui.node('transcript-minimap-status').textContent).toContain(
+      '0 / 600 loaded',
+    );
+    expect(ui.node('transcript-minimap').children[1].dataset.known).toBe('1');
+    const more = ui.call('loadDetailTimeline(true)');
+    await ui.call('expireSession()');
+    ui.requestFor('/web/api/sessions/s/timeline').resolve({
+      sessionId: 's',
+      generation: 'g',
+      totalEntries: 600,
+      entries: [
+        { index: 500, role: 'user', type: 'message', preview: 'stale' },
+      ],
+    });
+    await more;
+    expect(ui.node('transcript-minimap').children).toHaveLength(0);
+    await ui.call(
+      `detailContextSession='s';detailContextGeneration='new';minimapOpen=true`,
+    );
+    const wrong = ui.call('loadDetailTimeline(false)');
+    ui.requestFor('/web/api/sessions/s/timeline').resolve({
+      sessionId: 's',
+      generation: 'g',
+      totalEntries: 600,
+      entries: [],
+    });
+    await wrong;
+    expect(ui.node('transcript-minimap').children).toHaveLength(0);
+  });
+});
+
+describe('iteration 6 minimap interactions and lexical boundaries', () => {
+  it('moves map focus with arrows/Home/End without fetching or IME interference', async () => {
+    const ui = harness();
+    await ui.call(`messageTotal=4;minimapOpen=true;renderTranscriptMinimap()`);
+    const map = ui.node('transcript-minimap'),
+      buttons = map.children;
+    buttons[0].focus();
+    map.dispatch('keydown', { target: buttons[0], key: 'End' });
+    expect(ui.activeElement()).toBe(buttons[3]);
+    map.dispatch('keydown', { target: buttons[3], key: 'ArrowLeft' });
+    expect(ui.activeElement()).toBe(buttons[2]);
+    map.dispatch('keydown', {
+      target: buttons[2],
+      key: 'Home',
+      isComposing: true,
+    });
+    expect(ui.activeElement()).toBe(buttons[2]);
+    map.dispatch('keydown', { target: buttons[2], key: 'Home' });
+    expect(ui.activeElement()).toBe(buttons[0]);
+    expect(ui.requests).toHaveLength(0);
+  });
+  it('marks only actual visible filtered ordinals and keeps selection distinct from viewport', async () => {
+    const ui = harness();
+    await ui.call(`window.innerHeight=900;messageTotal=4;minimapOpen=true;
+   renderMessage('user',{content:'a'},1);renderMessage('assistant',{content:'b'},3);
+   transcriptMessages[0].article.getBoundingClientRect=()=>({top:250,bottom:500});
+   transcriptMessages[1].article.getBoundingClientRect=()=>({top:950,bottom:1100});
+   minimapSelected=3;updateMinimapViewport()`);
+    expect(
+      ui.node('transcript-minimap').children[1].getAttribute('data-viewport'),
+    ).toBe('true');
+    expect(
+      ui.node('transcript-minimap').children[3].getAttribute('data-viewport'),
+    ).toBe('false');
+    expect(
+      ui.node('transcript-minimap').children[3].getAttribute('aria-current'),
+    ).toBe('true');
+    await ui.call(`transcriptFilter='assistant';updateTranscript()`);
+    expect(
+      ui.node('transcript-minimap').children[1].getAttribute('data-viewport'),
+    ).toBe('false');
+    expect(ui.node('transcript-minimap-position').textContent).toContain(
+      'no transcript messages in view',
+    );
+  });
+  it('reports optional timeline loading/failure locally with retry and never calls loaded coverage complete', async () => {
+    const ui = harness();
+    await ui.call(
+      `detailContextSession='s';detailContextGeneration='g';minimapOpen=true;renderTranscriptMinimap()`,
+    );
+    ui.node('transcript-minimap-more').click();
+    expect(ui.node('transcript-minimap-status').textContent).toContain(
+      'Loading map timeline',
+    );
+    ui.requestFor('/web/api/sessions/s/timeline').reject();
+    await flushAuthWork();
+    expect(ui.node('transcript-minimap-status').textContent).toContain(
+      'Map timeline unavailable',
+    );
+    expect(ui.node('transcript-minimap-more').disabled).toBe(false);
+  });
+  it('keeps CRLF and escaped/triple/nested-comment boundaries lossless and rejects invalid diff lexing', async () => {
+    const ui = harness();
+    for (const [lang, text] of [
+      ['swift', '/* outer /* inner */ outer */\r\nlet x = "safe\\"quote"'],
+      ['py', 'x = """line\nnext"""\r\n# end'],
+      ['js', 'const x = "safe\\\\";\r\n// end'],
+    ]) {
+      await ui.call(
+        `renderSyntaxCode(document.getElementById('code-${lang}'),${JSON.stringify(text)},${JSON.stringify(lang)})`,
+      );
+      expect(ui.node('code-' + lang).textContent).toBe(text);
+    }
+    await ui.call(
+      `renderSyntaxCode(document.getElementById('bad-diff'),'not a diff <script>','diff')`,
+    );
+    expect(ui.node('bad-diff').querySelector('.syntax-comment')).toBeNull();
   });
 });
