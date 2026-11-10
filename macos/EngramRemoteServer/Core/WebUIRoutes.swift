@@ -1287,7 +1287,7 @@ enum WebUIRoutes {
         }
         async function navigate(page, routed, tab) {
           routeVersion += routed ? 0 : 1;
-          if (!routed) writeRoute(page === "stats" ? statsRoute(tab || "sessions") : ["sessions","search"].includes(page) ? Object.assign(libraryRoute(), {page:page}) : {page:page});
+          if (!routed) writeRoute(page === "stats" ? statsRoute(tab || "sessions") : ["sessions","search"].includes(page) ? libraryRoute(page) : {page:page});
           workspaceNode.classList.remove("showing-detail"); backNode.hidden = true;
           detailReturnPage = null;
           bumpEpoch();
@@ -1364,13 +1364,17 @@ enum WebUIRoutes {
           if (["sessions", "search"].includes(page)) routeFilterKeys.forEach(function (key) { if (route.filters && route.filters[key]) params.set(key, route.filters[key]); });
           return "#/" + page + (params.toString() ? "?" + params.toString().replaceAll("+", "%20") : "");
         }
-        function libraryRoute() {
+        function libraryRoute(page) {
+          page = page || activePage;
           const savedFilters = sessionFilters;
           const query = new URLSearchParams(sessionQuery(false).slice(1)), filters = {};
           sessionFilters = savedFilters;
+          // Navigation builds the target route before activatePage changes the current page.
+          query.delete("sort");
+          if (page !== "search" && document.getElementById("session-sort").value === "lastActivity") query.set("sort", "lastActivity");
           [["q","query"],["sources","sources"],["projects","projectKeys"],["agents","agents"],["since","since"],["until","until"],["tools","tools"],["machine","machineId"],["sort","sort"]].forEach(function (pair) { if (query.get(pair[1])) filters[pair[0]] = query.get(pair[1]); });
-          if (activePage === "search") { filters.mode = document.getElementById("search-mode").value || "keyword"; filters.limit = document.getElementById("search-limit").value || "25"; }
-          return {page:activePage === "search" ? "search" : "sessions", filters:filters};
+          if (page === "search") { filters.mode = document.getElementById("search-mode").value || "keyword"; filters.limit = document.getElementById("search-limit").value || "25"; }
+          return {page:page === "search" ? "search" : "sessions", filters:filters};
         }
         function writeRoute(route, replace) {
           const href = routeHref(route);

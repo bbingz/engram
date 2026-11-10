@@ -3460,12 +3460,28 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
                 }
             } }
         }
+        // Every hourly page publishes full-range totals, even when all of its
+        // buckets are zero. Bind those buckets to every contributing stream,
+        // not just streams with an occupied bucket on this page.
+        var scopeAuthority: [String?] = []
+        if request.groupBy == .hourOfWeek {
+            let streams = bindings.values.compactMap { $0 }.sorted {
+                if $0.machineID != $1.machineID { return $0.machineID.utf8.lexicographicallyPrecedes($1.machineID.utf8) }
+                return $0.sourceInstanceID.utf8.lexicographicallyPrecedes($1.sourceInstanceID.utf8)
+            }
+            var digest = SHA256()
+            for stream in streams {
+                try relay.check()
+                Self.absorb(&digest, Self.bindingFields(stream))
+            }
+            scopeAuthority = [Data(digest.finalize()).base64EncodedString()]
+        }
         return try totals.values.map { entry in
             let label = entry.key == EngramServiceWebMetadataValidation.unknownDateKey ? "Unknown" : entry.key
             return StatsRecord(
                 item: Self.statsItem(key: entry.key, label: label, counts: entry.counts),
                 authority: try Self.bindingKey([request.groupBy.rawValue, entry.key]
-                    + Self.countFields(entry.counts) + entry.fields))
+                    + Self.countFields(entry.counts) + entry.fields + scopeAuthority))
         }
     }
 
@@ -4201,13 +4217,12 @@ final class ServiceWebMetadataProducer: ServiceWebMetadataProviding, @unchecked 
             ORDER BY CAST(s.project AS BLOB), i.machine_id COLLATE BINARY, i.source_instance_id COLLATE BINARY
             """, arguments: StatementArguments(arguments))
         var totals: [Data: (raw: String, published: String, count: Int64, fields: [String?])] = [:]
+        var bindings: [StreamKey: CaptureIngestSourceBinding?] = [:]
         for row in rows {
             try checkpoint()
             guard let raw = try Self.metadataText(row, "project"),
                   let published = Self.publishedProjectKey(raw) else { continue }
-            guard let binding = try binding(db, machineID: try Self.string(row, "machine_id"),
-                                           instanceID: try Self.string(row, "source_instance_id"),
-                                           policy: policy) else { continue }
+            guard let binding = try cachedBinding(db, row: row, policy: policy, cache: &bindings) else { continue }
             let id = Data(published.utf8)
             if let existing = totals[id], !existing.raw.utf8.elementsEqual(raw.utf8) {
                 throw ServiceWebMetadataError.unavailable

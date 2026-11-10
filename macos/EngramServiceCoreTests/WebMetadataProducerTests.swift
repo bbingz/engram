@@ -255,6 +255,58 @@ final class WebMetadataProducerTests: XCTestCase {
         XCTAssertEqual(observer.productionDenials, 0)
     }
 
+    func testIt8ZeroHourlyPagesRevalidateAllContributingStreamAuthorities() async throws {
+        for continued in [false, true] {
+            let fixture = try MetadataSQLFixture(); defer { fixture.remove() }
+            try fixture.migrate(); try fixture.seedRegistry()
+            // Put the sole contribution on the other page, so this page is all genuine zeros.
+            try fixture.seedBoundSession(id: "keep", start: Self.sqliteUTC(localDate: continued ? "2026-09-07" : "2026-09-13"))
+            let mutation = MetadataPreparationMutation(operation: .stats) {
+                try fixture.write { try $0.execute(sql: "UPDATE capture_ingest_source_registry SET configured_root = '/revoked'") }
+            }
+            let producer = try fixture.producer(hooks: .init(afterPreparation: { try mutation.run($0) }))
+            defer { try? producer.stop() }
+            let first = try await producer.stats(.init(groupBy: .hourOfWeek, limit: 100), requestId: requestId, deadline: fixture.deadline())
+            let request = try EngramServiceWebStatsRequest(groupBy: .hourOfWeek, limit: 100,
+                snapshotId: continued ? first.snapshotId : nil, cursor: continued ? first.nextCursor : nil)
+            let baseline = try await producer.stats(request, requestId: requestId, deadline: fixture.deadline())
+            XCTAssertEqual(baseline.totals.sessionCount, 1)
+            XCTAssertEqual(baseline.items.count, continued ? 68 : 100)
+            XCTAssertTrue(baseline.items.allSatisfy { $0.sessionCount == 0 })
+            mutation.arm()
+            await assertStale(deadline: fixture.deadline()) {
+                try await producer.stats(request, requestId: self.requestId, deadline: fixture.deadline())
+            }
+        }
+    }
+
+    func testIt8ProjectFilteredStatsDoNotQueryRegistryPerUnrelatedProject() async throws {
+        let fixture = try MetadataSQLFixture(); defer { fixture.remove() }
+        try fixture.migrate(); try fixture.seedRegistry()
+        let project = "/private/opaque selected project"
+        try fixture.seedBoundSession(id: "keep", start: "2026-09-07T00:00:00Z", project: project)
+        let key = "p." + ArchiveV2Hash.sha256(Data(project.utf8))
+        let observer = MetadataSQLObserver()
+        let producer = try fixture.producer(hooks: .init(prepareDatabase: { try observer.install($0) }))
+        defer { try? producer.stop() }
+        var previous = 1
+        var baseline = 0
+        for count in [1, 24, 100] {
+            for i in previous..<count {
+                try fixture.seedBoundSession(id: "other-\(i)", start: "2026-09-07T00:00:00Z", nativeID: "other-\(i)", project: "other-\(i)")
+            }
+            previous = count
+            let before = observer.productionStatements
+            let page = try await producer.stats(.init(groupBy: .hourOfWeek, sources: ["claude-code"], projectKeys: [key], limit: 100), requestId: requestId, deadline: fixture.deadline())
+            let statements = observer.productionStatements - before
+            if count == 1 { baseline = statements }
+            print("It8 projectKeys regression: projects=\(count), selected=\(page.totals.sessionCount), statements=\(statements)")
+            XCTAssertEqual(page.totals.sessionCount, 1)
+            XCTAssertLessThanOrEqual(statements, baseline + 8, "Unrelated projects must not add registry SQL")
+        }
+        XCTAssertEqual(observer.productionDenials, 0)
+    }
+
     // MARK: - Provider / policy / pool
 
     func testUnavailableProducerNeverReturnsEmptySuccess() async {

@@ -9046,3 +9046,39 @@ describe('It8 new request ownership', () => {
     expect(ui.node('stats-source').value).toBe('');
   });
 });
+
+describe('It8 corrected cross-page sort routes', () => {
+  it('preserves lastActivity across Sessions → Search → Sessions and route restoration', async () => {
+    const ui = harness();
+    ui.node('session-sort').value = 'lastActivity';
+    const search = ui.call('navigate("search")');
+    const searchList = ui.requestFor('/web/api/sessions');
+    expect(searchList.path).not.toContain('sort=');
+    searchList.resolve({ snapshotId: 'search', items: [] });
+    ui.requestFor('/web/api/search/status').resolve({ keyword: 'available' });
+    await search;
+    const sessions = ui.call('navigate("sessions")');
+    const sessionList = ui.requestFor('/web/api/sessions');
+    expect(sessionList.path).toContain('sort=lastActivity');
+    sessionList.resolve({ snapshotId: 'sessions', items: [] });
+    await sessions;
+    const hash = ui.call('window.location.hash');
+    expect(hash).toContain('sort=lastActivity');
+    ui.node('session-sort').value = 'started';
+    ui.call(`applyRouteFilters(parseRoute(${JSON.stringify(hash)}).filters)`);
+    expect(ui.node('session-sort').value).toBe('lastActivity');
+  });
+  it('generates the Search route for its target without a session-only sort', async () => {
+    const ui = harness();
+    ui.node('session-sort').value = 'lastActivity';
+    const search = ui.call('navigate("search")');
+    ui.requestFor('/web/api/sessions').resolve({
+      snapshotId: 'search',
+      items: [],
+    });
+    ui.requestFor('/web/api/search/status').resolve({ keyword: 'available' });
+    await search;
+    expect(ui.call('window.location.hash')).not.toContain('sort=');
+    expect(ui.call('window.location.hash')).toContain('mode=keyword');
+  });
+});
