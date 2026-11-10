@@ -6674,6 +6674,115 @@ describe('iteration 3 transcript reading', () => {
     expect(ui.node('messages').children).toHaveLength(1);
   });
 
+  it('bounds prompt tool tallies by decoded user ordinals beyond the first 500 timeline entries', async () => {
+    const ui = harness();
+    await ui.call(`detailContextSession='s'; detailContextGeneration='g'; messageRequest={};
+      for (let ordinal=0; ordinal<600; ordinal++) {
+        renderMessage(ordinal%2===0?'user':'assistant', {content:'message '+ordinal,
+          toolCalls:ordinal===499||ordinal===501?[{name:ordinal===499?'Read':'Bash',input:'{}',output:'ok'}]:[]}, ordinal);
+      }
+      messageRequest=null; updateTranscript();`);
+    const timeline = (start: number, end: number) => ({
+      sessionId: 's',
+      generation: 'g',
+      totalEntries: 600,
+      entries: Array.from({ length: end - start }, (_, offset) => ({
+        index: start + offset,
+        role: (start + offset) % 2 === 0 ? 'user' : 'assistant',
+        type: 'message',
+        preview: `message ${start + offset}`,
+      })),
+      nextOffset: end === 600 ? null : end,
+    });
+    const first = ui.call('loadDetailTimeline(false)');
+    ui.requestFor('/web/api/sessions/s/timeline').resolve(timeline(0, 500));
+    await first;
+    const prompt = (ordinal: number) =>
+      ui
+        .node('transcript-outline')
+        .children.find((n) => n.dataset.ordinal === String(ordinal))
+        ?.textContent;
+    const before = prompt(498);
+    expect(before).toContain('1 tools in loaded (1 Read)');
+    expect(before).not.toContain('Bash');
+    const more = ui.call('loadDetailTimeline(true)');
+    ui.requestFor('/web/api/sessions/s/timeline').resolve(timeline(500, 600));
+    await more;
+    expect(prompt(498)).toBe(before);
+    expect(prompt(500)).toContain('1 tools in loaded (1 Bash)');
+    expect(ui.node('messages').children).toHaveLength(600);
+  });
+
+  it('refreshes cached Info coverage after message pages and Load all without refetching costs', async () => {
+    const ui = harness();
+    await ui.call(`detailContextSession='s'; detailContextGeneration='g'; messageTotal=4;
+      detailInfoDetail={session:{sessionId:'s'},transcriptGeneration:'g'};`);
+    const fragment = (ordinal: number) => ({
+      messageOrdinal: ordinal,
+      payloadSHA256: 'a'.repeat(64),
+      role: 'user',
+      payloadFragment: JSON.stringify({ content: `message ${ordinal}` }),
+      utf8Offset: 0,
+      isLastFragment: true,
+    });
+    const first = ui.call('loadMessages(0,"s","g","")');
+    ui.requestFor('/web/api/sessions/s/messages').resolve({
+      sessionId: 's',
+      generation: 'g',
+      fragments: [fragment(0), fragment(1)],
+      nextCursor: 'page-2',
+    });
+    await first;
+    const info = ui.call('showDetailView("info")');
+    ui.requestFor('/web/api/costs/sessions').resolve({ items: [] });
+    ui.requestFor('/web/api/costs?').resolve({ items: [] });
+    await info;
+    const field = (label: string) => {
+      const cells =
+        ui.node('detail-info-content').querySelector('dl')?.children ?? [];
+      return cells[
+        cells.findIndex((n) => n.tagName === 'DT' && n.textContent === label) +
+          1
+      ]?.textContent;
+    };
+    expect(field('Loaded messages')).toBe('2');
+    expect(field('Generation message count')).toBe('4');
+    expect(field('Truncation')).toBe('not reported');
+    await ui.call('showDetailView("transcript")');
+    const more = ui.call('loadMessages(0,"s","g","page-2")');
+    await ui.call('showDetailView("info")');
+    expect(ui.requests).toHaveLength(4);
+    ui.requestFor('/web/api/sessions/s/messages').resolve({
+      sessionId: 's',
+      generation: 'g',
+      fragments: [fragment(2)],
+      nextCursor: 'page-3',
+      truncatedAt: 123,
+      parseFailure: 'truncatedJSONL',
+    });
+    await more;
+    expect(field('Loaded messages')).toBe('3');
+    expect(field('Truncation')).toBe('123');
+    expect(field('Parse failure')).toBe('truncatedJSONL');
+    await ui.call('showDetailView("transcript")');
+    const all = ui.call('loadAllMessages()');
+    ui.requestFor('/web/api/sessions/s/messages').resolve({
+      sessionId: 's',
+      generation: 'g',
+      fragments: [fragment(3)],
+      nextCursor: null,
+    });
+    await all;
+    await ui.call('showDetailView("info")');
+    expect(field('Loaded messages')).toBe('4');
+    expect(field('Truncation')).toBe('not reported');
+    expect(field('Parse failure')).toBe('not reported');
+    expect(
+      ui.requests.filter((r) => r.path.startsWith('/web/api/costs')),
+    ).toHaveLength(2);
+    expect(ui.requests).toHaveLength(5);
+  });
+
   it('keeps 501-message loading bounded and UTF8 fragments intact, resets model on generation switches', async () => {
     const ui = harness();
     const first = ui.call('loadMessages(0,"s","g","")');

@@ -2824,7 +2824,9 @@ enum WebUIRoutes {
             document.getElementById("detail-view-" + name).setAttribute("aria-pressed", String(name === view));
             document.getElementById((name === "children" ? "detail-children" : name === "info" ? "detail-info" : name) + "-panel").hidden = name !== view;
           });
-          if (view === "info" && !detailInfoLoaded) await loadDetailInfo();
+          if (view === "info") {
+            if (!detailInfoLoaded) await loadDetailInfo(); else updateDetailInfoCoverage();
+          }
           if (view === "children" && !detailChildren.loaded) await loadDetailChildren(false);
           if (view === "timeline" && !detailTimeline.loaded) await loadDetailTimeline(false);
         }
@@ -4275,7 +4277,7 @@ enum WebUIRoutes {
           document.getElementById("transcript-load-all").hidden = !messageCursor;
           document.getElementById("transcript-load-all").disabled = transcriptAllBusy;
           if (messageCursor) setText(moreMessagesNode, "Load more (" + transcriptMessages.length + " loaded)");
-          renderTranscriptOutline();
+          renderTranscriptOutline(); updateDetailInfoCoverage();
         }
         function renderTranscriptOutline() {
           const root = document.getElementById("transcript-outline"); setText(root, "");
@@ -4284,8 +4286,11 @@ enum WebUIRoutes {
             if (entry.role !== "user") return;
             const loaded = transcriptMessages.find(function (item) { return item.ordinal === entry.index; });
             const next = entries.slice(i + 1).find(function (candidate) { return candidate.role === "user"; });
+            // Timeline pages can lag behind decoded messages. Use either source's next real prompt.
+            const nextLoaded = transcriptMessages.find(function (item) { return item.kind === "user" && item.ordinal > entry.index; });
+            const end = Math.min(next ? next.index : Infinity, nextLoaded ? nextLoaded.ordinal : Infinity);
             const toolNames = new Map();
-            const tools = transcriptMessages.filter(function (item) { return item.ordinal >= entry.index && (!next || item.ordinal < next.index); }).reduce(function (sum, item) { (item.payload.toolCalls || []).forEach(function (call) { const name = call.name || "Tool"; toolNames.set(name, (toolNames.get(name) || 0) + 1); }); return sum + item.tools.length; }, 0);
+            const tools = transcriptMessages.filter(function (item) { return item.ordinal >= entry.index && item.ordinal < end; }).reduce(function (sum, item) { (item.payload.toolCalls || []).forEach(function (call) { const name = call.name || "Tool"; toolNames.set(name, (toolNames.get(name) || 0) + 1); }); return sum + item.tools.length; }, 0);
             const button = document.createElement("button"); button.type = "button"; button.dataset.ordinal = String(entry.index);
             setText(button, "#" + entry.index + " · " + clipPreview(entry.preview) + " · " + tools + " tools in loaded" + (toolNames.size ? " (" + Array.from(toolNames).map(function (pair) { return pair[1] + " " + pair[0]; }).join(" · ") + ")" : "") + (entry.timestamp ? " · " + recordedTime(entry.timestamp) : "") + (loaded ? "" : " · not loaded"));
             button.setAttribute("aria-current", String(activeOutlineOrdinal === entry.index));
@@ -4336,6 +4341,16 @@ enum WebUIRoutes {
           } catch (error) { if (token === requestEpoch) toast("Could not load more messages. Retry Load more.", "danger"); }
           finally { if (token === requestEpoch && version === detailExtrasVersion) { transcriptAllBusy = false; updateTranscript(); } }
         }
+        function detailInfoCoverage() {
+          return { "Loaded messages": transcriptMessages.length, "Generation message count": messageTotal,
+            "Truncation": detailMessageCoverage && detailMessageCoverage.truncatedAt, "Parse failure": detailMessageCoverage && detailMessageCoverage.parseFailure };
+        }
+        function updateDetailInfoCoverage() {
+          const values = detailInfoCoverage();
+          document.getElementById("detail-info-content").querySelectorAll(".info-coverage").forEach(function (node) {
+            const value = values[node.dataset.coverage]; setText(node, value == null || value === "" ? "not reported" : String(value));
+          });
+        }
         async function loadDetailInfo() {
           if (!detailContextSession || detailInfoBusy) return;
           const id = detailContextSession, token = requestEpoch, version = detailExtrasVersion;
@@ -4372,7 +4387,8 @@ enum WebUIRoutes {
             ["inputTokens", "outputTokens", "cacheReadTokens", "cacheCreationTokens"].forEach(function (key) { field(key, perSession && Number.isFinite(perSession[key]) ? perSession[key] : totals && Number.isFinite(totals[key]) ? totals[key] : null); });
             if (costs && Array.isArray(costs.items)) costs.items.forEach(function (item) { field("Model usage · " + item.label, Number.isFinite(item.inputTokens) && Number.isFinite(item.outputTokens) ? item.inputTokens + " in → " + item.outputTokens + " out" : null); });
             field("Unpriced coverage", costs ? (costs.unpricedUnattributedSessions == null ? "not reported" : costs.unpricedUnattributedSessions + " unattributed sessions") + " · " + (costs.unpricedNoPriceSessions == null ? "not reported" : costs.unpricedNoPriceSessions + " sessions without price") : null);
-            field("Loaded messages", transcriptMessages.length); field("Generation message count", messageTotal); field("Truncation", detailMessageCoverage && detailMessageCoverage.truncatedAt); field("Parse failure", detailMessageCoverage && detailMessageCoverage.parseFailure);
+            const coverage = detailInfoCoverage();
+            Object.keys(coverage).forEach(function (label) { const node = field(label, coverage[label]); node.className = "info-coverage"; node.dataset.coverage = label; });
             const note = document.createElement("p"); setText(note, "Missing values are not reported, not zero. Parent/model metadata in the summary is deferred It9; no model is inferred from the source."); root.appendChild(note);
             if (!results[0] || !results[1]) {
               const missing = document.createElement("p"); setText(missing, "Cost data unavailable. Missing values are not reported."); root.appendChild(missing);
