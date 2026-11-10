@@ -39,6 +39,13 @@ enum WebUIRoutes {
         <header class="top-nav">
         <h1>Engram</h1>
         <p id="lede" class="lede">Browse your session library.</p>
+        <nav id="page-nav" class="page-nav" aria-label="Main navigation" hidden>
+        <a id="nav-sessions" href="#sessions" aria-current="page">Sessions</a>
+        <a id="nav-search" href="#search">Search</a>
+        <a id="nav-stats" href="#stats">Stats</a>
+        <a id="nav-health" href="#health">Health</a>
+        <a id="nav-settings" href="#settings">Settings</a>
+        </nav>
         <form id="login">
         <label>Credential <input id="credential" name="credential" type="password" autocomplete="current-password"></label>
         <button type="submit">Log in</button>
@@ -48,13 +55,6 @@ enum WebUIRoutes {
         </header>
         <p id="signed-out" class="empty">Sign in to browse your session library.</p>
         <main id="workspace" hidden>
-        <nav class="page-nav" aria-label="Main navigation">
-        <a id="nav-sessions" href="#sessions" aria-current="page">Sessions</a>
-        <a id="nav-search" href="#search">Search</a>
-        <a id="nav-stats" href="#stats">Stats</a>
-        <a id="nav-health" href="#health">Health</a>
-        <a id="nav-settings" href="#settings">Settings</a>
-        </nav>
         <section id="library-page">
         <aside class="list-pane">
         <section id="overview"></section>
@@ -115,7 +115,9 @@ enum WebUIRoutes {
         </details>
         <button type="submit">Search</button>
         </form>
-        <div class="agent-filters" role="group" aria-label="Agent sessions">
+        <div id="active-filters" class="active-filters" aria-label="Active filters" hidden></div>
+        <div class="list-toolbar">
+        <div class="agent-filters segmented" role="group" aria-label="Agent sessions">
         <button id="agents-hide" type="button" aria-pressed="true">Hide Agents</button>
         <button id="agents-all" type="button" aria-pressed="false">All</button>
         <button id="agents-only" type="button" aria-pressed="false">Agents Only</button>
@@ -125,6 +127,7 @@ enum WebUIRoutes {
         <input id="session-id" name="sessionId" placeholder="Session ID…" maxlength="4096" autocomplete="off">
         <button type="submit">Go to session</button>
         </form>
+        </div>
         <section id="insight-results" hidden><h2>Insights across your library</h2><div id="insight-rows"></div></section>
         <section id="sessions"></section>
         <div class="session-pagination" aria-label="Session pages">
@@ -174,6 +177,7 @@ enum WebUIRoutes {
         <div class="page-heading"><h2>Health</h2><button id="health-refresh" type="button">Refresh</button></div>
         <p>Capture and indexing observations from the service.</p>
         <p id="health-status" role="status"></p>
+        <p id="health-summary" class="health-summary"></p>
         <div id="health-content" class="health-grid"></div>
         </section>
         <section id="settings-page" hidden>
@@ -293,7 +297,7 @@ enum WebUIRoutes {
         </form>
         <p id="tools-status" role="status"></p>
         <p id="tools-totals"></p>
-        <div class="stats-table"><table aria-label="Tool activity"><thead><tr><th>Group</th><th>Calls</th><th>Sessions</th><th>Tools</th></tr></thead><tbody id="tools-rows"></tbody></table></div>
+        <div class="stats-table"><table aria-label="Tool activity"><thead><tr><th>Group</th><th>Calls</th><th>Sessions</th><th id="tools-col-tools">Tools</th></tr></thead><tbody id="tools-rows"></tbody></table></div>
         <button id="tools-more" type="button" hidden>More groups</button>
         </div>
         <div id="files-content" hidden>
@@ -344,6 +348,7 @@ enum WebUIRoutes {
         <p id="insight-detail-status" role="status"></p>
         <div id="insight-body"></div><button id="insight-more" type="button" hidden>Read more</button>
         </dialog>
+        <div id="toast-region" class="toast-region" aria-live="polite"></div>
         <script src="/web/app.js"></script>
         </body>
         </html>
@@ -353,35 +358,58 @@ enum WebUIRoutes {
         [hidden] { display: none !important; }
         /* Preserve the legacy Web palette from 5013bab7:src/web/views.ts. */
         :root { color-scheme: dark; --bg:#0f172a; --panel:#1e293b; --text:#f8fafc; --muted:#94a3b8; --line:#334155; --accent:#22c55e; --code:#0d1117; }
+        /* Design tokens derived from the palette above; light mode overrides tokens only. */
+        :root { color-scheme: light dark; --bg-sunken:#0b1222; --panel-2:#273548; --panel-3:#2d3c55; --line-soft:rgba(148,163,184,0.12); --text-dim:#64748b; --text-faint:#475569; --accent-dim:rgba(34,197,94,0.12); --accent-strong:#4ade80; --accent-ink:#052e16; --ok:#4ade80; --ok-bg:rgba(34,197,94,0.14); --warn:#fbbf24; --warn-bg:rgba(245,158,11,0.15); --danger:#f87171; --danger-bg:rgba(239,68,68,0.15); --info:#60a5fa; --info-bg:rgba(59,130,246,0.15); --agent:#c084fc; --agent-bg:rgba(168,85,247,0.15); --mark-bg:rgba(250,204,21,0.28); --mark-line:#facc15; --topbar-bg:rgba(15,23,42,0.82); --input-bg:color-mix(in srgb, var(--bg) 55%, var(--panel)); --shadow-1:0 1px 2px rgba(0,0,0,0.25); --shadow-2:0 8px 24px rgba(0,0,0,0.45); --shadow-3:0 24px 64px rgba(0,0,0,0.6); --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:20px; --s6:24px; --s8:32px; --r-xs:4px; --r-sm:6px; --r-md:8px; --r-lg:12px; --r-xl:14px; --r-pill:999px; --fs-cap:11px; --fs-meta:12px; --fs-ui:13px; --fs-body:14px; --font:-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; --mono:ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace; --dur-1:120ms; --ease:cubic-bezier(.2,.8,.2,1); }
+        /* Legacy light tokens from 76706332:src/web/views.ts. */
+        @media (prefers-color-scheme: light) {
+          :root { color-scheme: light; --bg:#f8fafc; --panel:#ffffff; --text:#0f172a; --muted:#475569; --line:#e2e8f0; --accent:#16a34a; --code:#f1f5f9; --bg-sunken:#f1f5f9; --panel-2:#f1f5f9; --panel-3:#e2e8f0; --line-soft:rgba(15,23,42,0.07); --text-dim:#64748b; --text-faint:#94a3b8; --accent-dim:rgba(22,163,74,0.10); --accent-strong:#15803d; --accent-ink:#ffffff; --ok:#15803d; --ok-bg:#dcfce7; --warn:#b45309; --warn-bg:#fef3c7; --danger:#b91c1c; --danger-bg:#fee2e2; --info:#1d4ed8; --info-bg:#dbeafe; --agent:#7e22ce; --agent-bg:#f3e8ff; --mark-bg:rgba(250,204,21,0.45); --mark-line:#ca8a04; --topbar-bg:rgba(248,250,252,0.86); --input-bg:#ffffff; --shadow-1:0 1px 2px rgba(15,23,42,0.06); --shadow-2:0 8px 24px rgba(15,23,42,0.12); --shadow-3:0 24px 64px rgba(15,23,42,0.18); }
+        }
         * { box-sizing: border-box; }
-        html { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-        body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; overflow-wrap: anywhere; letter-spacing: -0.006em; }
+        html { font-family: var(--font); }
+        body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.6 var(--font); overflow-wrap: anywhere; letter-spacing: -0.006em; -webkit-font-smoothing: antialiased; }
         :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
         ::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); }
         a { color: inherit; text-decoration: none; }
         .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-        .top-nav { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; min-height: 52px; padding: 12px 20px; margin-bottom: 20px; border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 20; background: rgba(15,23,42,0.82); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
-        h1 { margin: 0; font-size: 17px; line-height: 1.25; letter-spacing: -0.03em; font-weight: 650; }
+        .top-nav { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; min-height: 56px; padding: 10px 20px; margin-bottom: 18px; border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 20; background: var(--topbar-bg); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
+        h1 { display: flex; align-items: center; gap: 9px; margin: 0; font-size: 17px; line-height: 1.25; letter-spacing: -0.03em; font-weight: 680; }
+        h1::before { content: ""; width: 10px; height: 10px; border-radius: 3px; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
         .lede, #status { margin: 0; color: var(--muted); font-size: 12px; }
         .lede { flex: 1; }
+        #status { order: 4; display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border: 1px solid var(--line); border-radius: var(--r-pill); white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+        #status::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); }
+        #status[data-tone="ok"]::before { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-bg); }
+        #status[data-tone="danger"] { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--line)); background: var(--danger-bg); }
+        #status[data-tone="danger"]::before { background: var(--danger); }
         #status:empty { display: none; }
-        #logout { margin-left: auto; }
+        #logout { order: 5; }
+        .page-nav { display: flex; flex: 1 1 auto; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+        .page-nav a { display: inline-flex; align-items: center; gap: 7px; padding: 6px 11px; border-radius: var(--r-md); color: var(--muted); font-weight: 550; font-size: 13px; letter-spacing: -0.01em; white-space: nowrap; transition: color var(--dur-1) ease, background var(--dur-1) ease; }
+        .page-nav a .icon { flex: none; opacity: 0.85; }
+        .page-nav a:hover { color: var(--text); background: var(--panel); }
+        .page-nav a[aria-current="page"] { color: var(--accent-strong); background: var(--accent-dim); }
         .top-nav #login { margin: 0; }
         #login { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: end; margin: 12px 0; }
         #login label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; font-weight: 700; }
         #search { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
-        #search-query { flex: 1 1 100%; min-width: 0; }
-        #search-query input { width: 100%; min-width: 0; }
+        #search-query { position: relative; flex: 1 1 100%; min-width: 0; }
+        #search-query input { width: 100%; min-width: 0; padding-left: 34px; }
+        #search-query .icon { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--text-dim); pointer-events: none; }
         #search > .advanced-filters { flex: 1 1 100%; min-width: 0; order: 3; }
         .advanced-filters label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; font-weight: 700; }
         .facet-picker { position: relative; flex: 1 1 10rem; min-width: 0; margin: 0; }
-        .facet-picker > summary { cursor: pointer; color: var(--text); border: 1px solid var(--line); border-radius: 6px; background: var(--panel); padding: 6px 10px; }
-        .facet-menu { position: absolute; left: 0; top: calc(100% + 4px); width: min(320px, calc(100vw - 32px)); min-width: 100%; z-index: 10; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); box-shadow: 0 8px 24px #0002; }
+        .facet-picker > summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; list-style: none; cursor: pointer; color: var(--text); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--input-bg); padding: 7px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: border-color var(--dur-1) ease; }
+        .facet-picker > summary::-webkit-details-marker { display: none; }
+        .facet-picker > summary::after { content: ""; flex: none; width: 6px; height: 6px; margin: -3px 2px 0 0; border-right: 1.5px solid var(--text-dim); border-bottom: 1.5px solid var(--text-dim); transform: rotate(45deg); }
+        .facet-picker > summary:hover, .facet-picker[open] > summary { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+        .facet-menu { position: absolute; left: 0; top: calc(100% + 4px); width: min(320px, calc(100vw - 32px)); min-width: 100%; z-index: 30; padding: 10px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); box-shadow: var(--shadow-2); }
         #project-picker .facet-menu { left: auto; right: 0; }
         .facet-options { max-height: 240px; overflow-y: auto; margin: 8px 0; }
-        .facet-options label { display: flex; align-items: baseline; gap: 8px; padding: 5px 0; color: var(--text); cursor: pointer; }
+        .facet-options label { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: var(--r-sm); color: var(--text); cursor: pointer; }
+        .facet-options label:hover { background: var(--panel-2); }
         .facet-options input { flex: 0 0 auto; accent-color: var(--accent); }
-        .facet-options .facet-count { margin-left: auto; color: var(--muted); }
+        .facet-options .facet-count { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+        .source-dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--source-color, #64748b); }
         .facet-menu p { margin: 4px 0; }
         .facet-menu p:empty { display: none; }
         .facet-search { display: flex; gap: 6px; }
@@ -392,20 +420,37 @@ enum WebUIRoutes {
         .session-jump input { flex: 1 1 16rem; min-width: 0; }
         .agent-filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
         .agent-filters button { border-radius: 999px; font-size: 12px; padding: 5px 12px; }
-        .agent-filters button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--panel)); font-weight: 650; }
-        .agent-label { color: light-dark(#7e22ce, #c084fc); font-weight: 600; }
-        input, select { margin: 0; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: color-mix(in srgb, var(--bg) 55%, var(--panel)); color: var(--text); transition: border-color 0.12s ease, background 0.12s ease; }
+        .agent-filters button[aria-pressed="true"] { color: var(--accent-strong); border-color: var(--accent); background: var(--accent-dim); font-weight: 650; }
+        .list-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin: 6px 0 12px; }
+        .list-toolbar .agent-filters, .list-toolbar .session-jump { margin: 0; }
+        .list-toolbar .session-jump { flex: 0 1 360px; flex-wrap: nowrap; }
+        .list-toolbar .session-jump input { flex: 1 1 auto; padding-top: 5px; padding-bottom: 5px; font-size: 13px; }
+        .list-toolbar .session-jump button { padding: 5px 10px; font-size: 13px; white-space: nowrap; }
+        .segmented { display: inline-flex; flex-wrap: nowrap; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--input-bg); }
+        .segmented button, .segmented button:active { border: 1px solid transparent; border-radius: var(--r-sm); background: transparent; color: var(--muted); padding: 4px 12px; font-weight: 550; }
+        .segmented button:hover { color: var(--text); border-color: transparent; }
+        .segmented button[aria-pressed="true"] { color: var(--text); background: var(--panel-2); border-color: var(--line); box-shadow: var(--shadow-1); font-weight: 600; }
+        .active-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 2px 0 8px; }
+        .chip { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; padding: 2px 3px 2px 10px; border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)); border-radius: var(--r-pill); background: var(--accent-dim); color: var(--text); font-size: 12px; line-height: 18px; }
+        .chip-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .chip-remove, .chip-remove:active { display: inline-flex; padding: 2px; border: 0; border-radius: var(--r-pill); background: transparent; color: var(--muted); }
+        .chip-remove:hover { color: var(--text); background: color-mix(in srgb, var(--text) 12%, transparent); }
+        .chip-remove .icon { width: 12px; height: 12px; }
+        .chip-clear, .chip-clear:active { border: 0; padding: 2px 6px; background: transparent; color: var(--muted); font-size: 12px; font-weight: 500; text-decoration: underline; text-underline-offset: 2px; }
+        .agent-label { padding: 0 7px; border-radius: var(--r-pill); background: var(--agent-bg); color: var(--agent); font-size: 11px; font-weight: 650; line-height: 17px; }
+        .match-badge { padding: 0 7px; border-radius: var(--r-pill); background: var(--info-bg); color: var(--info); font-size: 11px; font-weight: 600; line-height: 17px; }
+        .match-badge[data-match="semantic"] { background: color-mix(in srgb, #14b8a6 16%, transparent); color: light-dark(#0f766e, #5eead4); }
+        input, select { margin: 0; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--input-bg); color: var(--text); transition: border-color 0.12s ease, background 0.12s ease; }
         input:hover, select:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
         input:focus, select:focus { border-color: var(--accent); background: var(--bg); outline: none; }
         button { margin: 0; padding: 7px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); font-weight: 550; cursor: pointer; transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease; }
         button:hover { border-color: var(--accent); color: var(--accent); }
         button:active { background: color-mix(in srgb, var(--accent) 12%, var(--panel)); }
         button:disabled { opacity: 0.45; cursor: default; }
+        #search > button[type="submit"], #login button[type="submit"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 650; }
+        #search > button[type="submit"]:hover, #login button[type="submit"]:hover { color: var(--accent-ink); background: color-mix(in srgb, var(--accent) 85%, var(--text)); }
+        .icon { flex: none; vertical-align: middle; }
         #workspace { width: 100%; max-width: 960px; margin: 0 auto; padding: 0 20px 40px; }
-        .page-nav { display: flex; gap: 2px; padding-bottom: 14px; margin-bottom: 18px; border-bottom: 1px solid var(--line); overflow-x: auto; }
-        .page-nav a { padding: 6px 12px; border-radius: 8px; color: var(--muted); font-weight: 550; font-size: 13px; letter-spacing: -0.01em; white-space: nowrap; transition: color 0.12s ease, background 0.12s ease; }
-        .page-nav a:hover { color: var(--text); background: var(--panel); }
-        .page-nav a[aria-current="page"] { color: var(--accent); background: rgba(34,197,94,0.12); }
         .advanced-filters label.tool-filter { display: flex; flex-direction: row; align-items: center; gap: 6px; padding: 8px 0; }
         .advanced-filters .tool-filter input { width: auto; margin: 0; }
         .search-mode-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0; }
@@ -417,7 +462,7 @@ enum WebUIRoutes {
         #insight-save-form { display: grid; gap: 12px; margin: 12px 0; }
         #insight-save-form label { display: grid; gap: 5px; }
         #insight-save-form textarea { width: 100%; resize: vertical; padding: 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
-        .insight-card { padding: 14px 16px; margin: 10px 0; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: 0 1px 2px #0004; }
+        .insight-card { padding: 14px 16px; margin: 10px 0; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: var(--shadow-1); }
         .insight-card p { white-space: pre-wrap; }
         #insight-dialog { width: min(760px, calc(100vw - 32px)); max-height: 85vh; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); overflow-wrap: anywhere; }
         #insight-dialog::backdrop { background: rgba(0,0,0,.65); }
@@ -427,22 +472,34 @@ enum WebUIRoutes {
         #insight-detail-status { color: var(--muted); }
         #session-summary-text p { color: var(--text); font-size: 14px; }
         .search-snippet { color: var(--muted); font-weight: 400; margin: 8px 0 0; line-height: 1.5; max-height: 4.5em; overflow: hidden; white-space: pre-wrap; }
-        .search-snippet mark { background: var(--accent); color: var(--bg); padding: 0 2px; border-radius: 2px; }
+        .search-snippet mark { background: var(--mark-bg); color: inherit; padding: 0 1px; border-radius: 2px; box-shadow: inset 0 -1px 0 var(--mark-line); }
         .session-pagination { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 12px; padding: 12px 0; }
         #session-page-status { color: var(--muted); font-size: 12px; }
         .page-heading { display: flex; gap: 12px; align-items: center; justify-content: space-between; }
         .page-heading h2 { margin: 0; font-size: 20px; }
         #health-page > p { color: var(--muted); }
         .health-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 12px; }
-        .health-card { padding: 16px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); min-width: 0; box-shadow: 0 1px 2px #0004; }
+        .health-card { padding: 16px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); min-width: 0; box-shadow: var(--shadow-1); }
         #usage-content table { font-size: 12px; }
         #usage-rows td:first-child, #usage-rows td:nth-child(5) { white-space: nowrap; }
         #repos-rows p, #repos-rows h3 { overflow-wrap: anywhere; }
         .health-card h3 { margin: 0 0 6px; }
-        .health-card dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px 12px; margin: 12px 0; font-size: 12px; }
-        .health-card dt { color: var(--muted); }
-        .health-card dd { margin: 0; text-align: right; }
-        .health-card .attention { color: light-dark(#9a3412, #fdba74); }
+        .health-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; }
+        .health-head h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 15px; }
+        .health-card dl { display: grid; grid-template-columns: minmax(6.5em, 1fr) auto; gap: 6px 12px; margin: 12px 0; font-size: 12px; }
+        .health-card dt { color: var(--muted); overflow-wrap: normal; }
+        .health-card dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+        .health-card .attention { margin: 8px 0 0; color: var(--warn); font-size: 13px; }
+        .health-summary { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
+        .health-summary:empty { display: none; }
+        .health-note { grid-column: 1 / -1; margin: 2px 0 0; color: var(--text-dim); font-size: 12px; }
+        .pills { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+        .pill { display: inline-flex; align-items: center; gap: 6px; padding: 1px 9px 1px 8px; border-radius: var(--r-pill); background: var(--panel-2); color: var(--muted); font-size: 11.5px; font-weight: 600; line-height: 18px; white-space: nowrap; }
+        .pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+        .pill[data-tone="ok"] { background: var(--ok-bg); color: var(--ok); }
+        .pill[data-tone="warn"] { background: var(--warn-bg); color: var(--warn); }
+        .pill[data-tone="danger"] { background: var(--danger-bg); color: var(--danger); }
+        .pill[data-tone="info"] { background: var(--info-bg); color: var(--info); }
         .stats-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; margin: 16px 0; }
         .stats-filters label { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
         .stats-filters input { max-width: 100%; }
@@ -457,9 +514,9 @@ enum WebUIRoutes {
         .ai-counts dt { color: var(--muted); }
         .ai-counts dd { margin: 0; text-align: right; }
         .stats-totals { display: flex; flex-wrap: wrap; gap: 12px; margin: 16px 0; }
-        .stats-totals > div { flex: 1 1 120px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: 0 1px 2px #0004; }
+        .stats-totals > div { flex: 1 1 auto; min-width: 140px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: var(--shadow-1); }
         .stats-totals dt { font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
-        .stats-totals dd { margin: 6px 0 0; font-size: 26px; font-weight: 650; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+        .stats-totals dd { margin: 6px 0 0; font-size: 26px; font-weight: 650; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; white-space: nowrap; overflow-wrap: normal; }
         .stats-table { max-width: 100%; overflow-x: auto; }
         .stats-table table { width: 100%; min-width: 580px; border-collapse: collapse; }
         .stats-table th, .stats-table td { padding: 10px 12px; text-align: right; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
@@ -468,7 +525,7 @@ enum WebUIRoutes {
         .stats-table th:first-child, .stats-table td:first-child { text-align: left; }
         #stats-more, #settings-more { margin-top: 12px; }
         #settings-status { color: var(--muted); }
-        .settings-section { padding: 18px; margin-top: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: 0 1px 2px #0004; }
+        .settings-section { padding: 18px; margin-top: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: var(--shadow-1); }
         #ai-config > summary { color: var(--text); font-size: 16px; font-weight: 600; cursor: pointer; }
         .ai-config-group { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 14px; border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin: 16px 0; min-width: 0; }
         .ai-config-group legend { color: var(--text); font-size: 14px; padding: 0 6px; }
@@ -487,18 +544,23 @@ enum WebUIRoutes {
         .settings-section table { width: 100%; table-layout: fixed; border-collapse: collapse; }
         .settings-section th, .settings-section td { text-align: left; padding: 8px 4px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
         #workspace:not(.showing-detail) .detail-pane, #workspace.showing-detail .list-pane { display: none; }
-        #back { margin: 0 0 10px; }
+        #back { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 10px; }
+        #back::before { content: ""; width: 6px; height: 6px; margin-left: 2px; border-left: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); }
         .sticky h2 { margin: 0 0 8px; font-size: 20px; line-height: 1.3; font-weight: 650; letter-spacing: -0.02em; }
         .sticky .meta { margin: 0; }
 
         @media (min-width: 880px) {
           .top-nav { padding-left: max(20px, calc((100% - 920px) / 2)); padding-right: max(20px, calc((100% - 920px) / 2)); }
+          .session .title { white-space: nowrap; text-overflow: ellipsis; display: block; }
           #search-query { flex: 1 1 20rem; }
           .facet-picker { flex: 0 1 10rem; }
         }
         @media (max-width: 879px) {
-          .top-nav { padding: 10px 16px; gap: 8px; }
+          .top-nav { padding: 10px 16px 6px; gap: 6px 10px; }
           .top-nav .lede { display: none; }
+          .top-nav h1 { flex: 1 1 auto; }
+          .page-nav { order: 10; flex: 1 1 100%; margin: 0 -6px; }
+          .list-toolbar .session-jump { flex: 1 1 100%; }
           #workspace { padding: 0 16px 24px; }
           #search input, #search select { max-width: 100%; }
           #detail h2 {
@@ -512,12 +574,23 @@ enum WebUIRoutes {
           }
         }
         .list-pane, .detail-pane { min-width: 0; }
-        .session { display: block; width: 100%; text-align: left; border: 1px solid color-mix(in srgb, var(--line) 55%, transparent); border-radius: 12px; padding: 12px 14px; margin: 6px 0; background: color-mix(in srgb, var(--panel) 35%, transparent); cursor: pointer; transition: border-color 0.12s ease, background 0.12s ease, transform 0.12s ease; }
-        .session:hover, .session:focus-visible { border-color: var(--accent); background: var(--panel); color: var(--text); transform: translateY(-1px); }
-        .title { color: var(--text); font-weight: 600; font-size: 14.5px; letter-spacing: -0.012em; line-height: 1.4; margin-bottom: 6px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-        .meta { color: var(--muted); display: flex; gap: 7px; flex-wrap: wrap; font-size: 12px; align-items: center; }
-        .meta .sep { color: color-mix(in srgb, var(--muted) 55%, transparent); }
+        #sessions { display: flex; flex-direction: column; gap: 1px; padding-top: 2px; }
+        .session { position: relative; display: block; width: 100%; text-align: left; border: 1px solid transparent; border-radius: var(--r-md); padding: 8px 12px 9px 16px; margin: 0; background: transparent; font-weight: 400; cursor: pointer; transition: border-color var(--dur-1) ease, background var(--dur-1) ease; }
+        .session::before { content: ""; position: absolute; left: 5px; top: 10px; bottom: 10px; width: 3px; border-radius: 3px; background: var(--source-color, var(--line)); opacity: 0.35; transition: opacity var(--dur-1) ease; }
+        .session:hover, .session:focus-visible { border-color: var(--line); background: var(--panel); color: var(--text); }
+        .session:hover::before, .session:focus-visible::before { opacity: 1; }
+        .session:active { background: var(--panel-2); }
+        .session.group-start { margin-top: 30px; }
+        .group-head { position: absolute; left: 12px; top: -25px; color: var(--text-dim); font-size: 11px; font-weight: 650; letter-spacing: 0.07em; line-height: 16px; text-transform: uppercase; white-space: nowrap; pointer-events: none; }
+        #sessions > .group-start:first-child { margin-top: 24px; }
+        .title { color: var(--text); font-weight: 600; font-size: 14px; letter-spacing: -0.012em; line-height: 1.45; margin-bottom: 3px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .meta { color: var(--muted); display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; line-height: 18px; align-items: center; }
+        .meta .sep { color: var(--text-faint); }
+        .meta time, .message-counts { font-variant-numeric: tabular-nums; }
         .badge { display: inline-block; color: white; background: var(--source-color, #64748b); border-radius: 999px; padding: 1px 8px; font-size: 10.5px; font-weight: 650; letter-spacing: 0.02em; }
+        .meta .badge { display: inline-flex; align-items: center; gap: 6px; padding: 0; border-radius: 0; background: none; color: var(--text); font-size: 12px; font-weight: 550; letter-spacing: 0; }
+        .meta .badge::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--source-color, #64748b); }
+        .search-snippet { display: block; }
         .source-codex { --source-color: #237a43; }
         .source-claude-code { --source-color: #a65b20; }
         .source-copilot, .source-vscode { --source-color: #64748b; }
@@ -544,7 +617,7 @@ enum WebUIRoutes {
         .role { color: var(--muted); font-size: 11px; font-weight: 650; letter-spacing: 0.01em; margin: 0 10px 4px; }
         .user .role { text-align: right; }
         .message.assistant .role { color: var(--source-color, var(--muted)); }
-        .message .body { min-width: 0; overflow-wrap: anywhere; margin: 0; padding: 12px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); font: inherit; line-height: 1.65; box-shadow: 0 1px 2px #0003; }
+        .message .body { min-width: 0; overflow-wrap: anywhere; margin: 0; padding: 12px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); font: inherit; line-height: 1.65; box-shadow: var(--shadow-1); }
         .message .body > * { margin: 0; }
         .message .body > * + * { margin-top: 0.55em; }
         .message .body p { overflow-wrap: anywhere; }
@@ -557,15 +630,16 @@ enum WebUIRoutes {
         .message .body table { width: auto; max-width: none; border-collapse: collapse; font-size: 0.92em; overflow-wrap: normal; }
         .message .body th, .message .body td { border: 1px solid var(--line); padding: 0.25em 0.5em; }
         .message .body a { color: var(--accent); text-decoration: underline; }
-        .message .body code { font: 0.88em/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 0.1em 0.35em; border-radius: 4px; background: var(--code); }
+        .message .body code { font: 0.88em/1.5 var(--mono); padding: 0.1em 0.35em; border-radius: 4px; background: var(--code); }
         .message .body .code-block { margin: 0.15em 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--code); }
         .message .body .code-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 0.35em 0.75em; font-size: 11px; color: var(--muted); border-bottom: 1px solid var(--line); }
         .message .body .copy-btn { margin: 0; padding: 2px 8px; }
+        .message .body .copy-btn[data-state="copied"] { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 50%, var(--line)); }
         .message .body .code-block pre { margin: 0; padding: 0.75em; border: 0; border-radius: 0; background: transparent; white-space: pre; overflow-x: auto; }
-        .message .body .code-block code { padding: 0; background: transparent; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
+        .message .body .code-block code { padding: 0; background: transparent; font: 13px/1.55 var(--mono); }
         .user .body { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); background: color-mix(in srgb, var(--accent) 13%, var(--panel)); border-bottom-right-radius: 4px; }
         .message.assistant .body { border-bottom-left-radius: 4px; border-color: color-mix(in srgb, var(--source-color, var(--line)) 30%, var(--line)); }
-        pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
+        pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); font: 13px/1.55 var(--mono); }
         .user pre { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: color-mix(in srgb, var(--accent) 10%, var(--panel)); }
         details { margin-top: 6px; color: var(--muted); font-size: 12px; }
         details pre { margin-top: 6px; }
@@ -576,8 +650,39 @@ enum WebUIRoutes {
         .message details .preview { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; }
         #more, #more-messages { display: block; margin: 0.35rem 0; }
         .empty { max-width: 960px; margin: 24px 20px; color: var(--muted); }
-        .overview-summary { margin: 0 0 8px; color: var(--muted); }
+        #overview { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; margin: 0 0 8px; }
+        #overview details { margin: 0; }
+        #overview details[open] { flex-basis: 100%; }
+        #overview .empty { margin: 0; }
+        .empty-state { display: flex; flex-direction: column; align-items: center; gap: 6px; margin: 12px 0; padding: 36px 16px; border: 1px dashed var(--line); border-radius: var(--r-lg); color: var(--muted); text-align: center; }
+        .empty-state .icon { width: 26px; height: 26px; margin-bottom: 4px; color: var(--text-dim); }
+        .empty-state strong { color: var(--text); font-size: 15px; font-weight: 600; }
+        .empty-state p { max-width: 48ch; margin: 0; font-size: 13px; }
+        .empty-state button { margin-top: 8px; }
+        .skeleton-row { display: flex; flex-direction: column; gap: 9px; padding: 13px 16px 12px; }
+        .skeleton-line { display: block; width: 34%; height: 10px; border-radius: var(--r-xs); background: linear-gradient(90deg, var(--panel) 25%, var(--panel-2) 50%, var(--panel) 75%); background-size: 200% 100%; animation: shimmer 1.3s linear infinite; }
+        .skeleton-line.wide { width: 68%; height: 12px; }
+        @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+        .toast-region { position: fixed; right: 16px; bottom: 16px; z-index: 40; display: flex; flex-direction: column; gap: 8px; width: min(380px, calc(100vw - 32px)); pointer-events: none; }
+        .toast { display: flex; align-items: center; gap: 10px; padding: 9px 8px 9px 12px; border: 1px solid var(--line); border-left: 3px solid var(--info); border-radius: var(--r-md); background: var(--panel); color: var(--text); box-shadow: var(--shadow-2); font-size: 13px; line-height: 1.45; pointer-events: auto; animation: toast-in 180ms var(--ease); }
+        .toast > span { flex: 1; min-width: 0; }
+        .toast > .icon { color: var(--info); }
+        .toast[data-tone="ok"] { border-left-color: var(--ok); } .toast[data-tone="ok"] > .icon { color: var(--ok); }
+        .toast[data-tone="warn"] { border-left-color: var(--warn); } .toast[data-tone="warn"] > .icon { color: var(--warn); }
+        .toast[data-tone="danger"] { border-left-color: var(--danger); } .toast[data-tone="danger"] > .icon { color: var(--danger); }
+        .toast-close, .toast-close:active { display: inline-flex; padding: 4px; border: 0; background: transparent; color: var(--muted); }
+        @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
+        @media (prefers-reduced-motion: reduce) {
+          *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+        }
+        .overview-summary { margin: 0; color: var(--muted); font-size: 13px; }
         @media (max-width: 600px) {
+          .page-nav a .icon { display: none; }
+          .page-nav a { padding: 6px 9px; }
+          #search-query { flex: 1 1 calc(100% - 90px); }
+          #search > button[type="submit"] { order: 0; }
+          #search > .facet-picker { order: 1; }
+          .session .message-counts, .session .sep:has(+ .message-counts) { display: none; }
           #files-content table, #usage-content table { min-width: 0; }
           #files-content thead, #usage-content thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
           #files-rows, #usage-rows { display: grid; gap: 12px; font-size: 14px; }
@@ -714,11 +819,117 @@ enum WebUIRoutes {
             rest = rest.slice(end + close.length);
           }
         }
+        // --- UI primitives: SVG icons, plurals, status words, toasts, empty states.
+        const svgNS = "http://www.w3.org/2000/svg";
+        function svg(tag, attrs) {
+          const node = document.createElementNS(svgNS, tag);
+          Object.keys(attrs || {}).forEach(function (name) { node.setAttribute(name, String(attrs[name])); });
+          return node;
+        }
+        const iconPaths = {
+          sessions: ["M8 6h13", "M8 12h13", "M8 18h13", "M3.5 6h.01", "M3.5 12h.01", "M3.5 18h.01"],
+          search: ["M11 18a7 7 0 1 1 0-14 7 7 0 0 1 0 14z", "M20 20l-4-4"],
+          stats: ["M4 4v16h16", "M8 16v-5", "M12.5 16V8", "M17 16v-3"],
+          health: ["M22 12h-4l-3 8-6-16-3 8H2"],
+          settings: ["M4 21v-7", "M4 10V3", "M12 21v-9", "M12 8V3", "M20 21v-5", "M20 12V3", "M1.5 14h5", "M9.5 8h5", "M17.5 16h5"],
+          x: ["M18 6L6 18", "M6 6l12 12"],
+          check: ["M20 6L9 17l-5-5"],
+          alert: ["M12 3.5l9.5 16.5h-19z", "M12 10v4", "M12 17h.01"],
+          info: ["M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18z", "M12 16v-4", "M12 8h.01"],
+          inbox: ["M22 12h-6l-2 3h-4l-2-3H2", "M5.5 5h13l3.5 7v7H2v-7z"],
+          filter: ["M3 5h18l-7 8v6l-4 2v-8z"]
+        };
+        function icon(name) {
+          const node = svg("svg", { viewBox: "0 0 24 24", width: 16, height: 16, fill: "none", stroke: "currentColor", "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", focusable: "false", class: "icon" });
+          (iconPaths[name] || []).forEach(function (d) { node.appendChild(svg("path", { d: d })); });
+          return node;
+        }
+        function plural(count, singular, pluralForm) {
+          const value = Number(count);
+          const shown = Number.isFinite(value) ? value.toLocaleString("en-US") : String(count);
+          return shown + " " + (value === 1 ? singular : pluralForm || singular + "s");
+        }
+        const httpStatusWords = {
+          400: "Bad request", 401: "Not authorized", 403: "Access denied", 404: "Not found", 408: "Request timed out",
+          409: "Conflict", 413: "Request too large", 422: "Invalid request", 429: "Too many requests",
+          500: "Server error", 502: "Bad gateway", 503: "Service unavailable", 504: "Gateway timeout"
+        };
+        function httpStatusText(status) {
+          return (httpStatusWords[status] || (status >= 500 ? "Server error" : "Request failed")) + " (" + status + ")";
+        }
+        function setStatus(value) {
+          const text = value == null ? "" : String(value);
+          setText(statusNode, text);
+          if (!statusNode.dataset) return;
+          statusNode.dataset.tone = !text ? "" : /^signed in$|^Signed in as /.test(text) ? "ok"
+            : /^signed out$|^Finding session/.test(text) ? "neutral" : "danger";
+        }
+        function toast(message, tone) {
+          const region = document.getElementById("toast-region");
+          const item = document.createElement("div");
+          item.className = "toast";
+          item.dataset.tone = tone || "info";
+          item.setAttribute("role", tone === "danger" ? "alert" : "status");
+          item.appendChild(icon(tone === "ok" ? "check" : tone === "danger" || tone === "warn" ? "alert" : "info"));
+          const text = document.createElement("span");
+          setText(text, message);
+          item.appendChild(text);
+          const close = document.createElement("button");
+          close.type = "button";
+          close.className = "toast-close";
+          close.setAttribute("aria-label", "Dismiss notification");
+          close.appendChild(icon("x"));
+          function dismiss() { if (item.parentNode === region) region.removeChild(item); }
+          close.addEventListener("click", dismiss);
+          item.appendChild(close);
+          while (region.children.length >= 3) region.removeChild(region.children[0]);
+          region.appendChild(item);
+          if (typeof setTimeout === "function") setTimeout(dismiss, tone === "danger" ? 8000 : 4000);
+          return item;
+        }
+        function emptyState(iconName, title, body, actions) {
+          const box = document.createElement("div");
+          box.className = "empty-state";
+          box.appendChild(icon(iconName));
+          const heading = document.createElement("strong");
+          setText(heading, title);
+          box.appendChild(heading);
+          if (body) {
+            const text = document.createElement("p");
+            setText(text, body);
+            box.appendChild(text);
+          }
+          (actions || []).forEach(function (action) {
+            const button = document.createElement("button");
+            button.type = "button";
+            setText(button, action[0]);
+            button.addEventListener("click", action[1]);
+            box.appendChild(button);
+          });
+          return box;
+        }
+        function showListSkeleton() {
+          setText(sessionsNode, "");
+          sessionsNode.setAttribute("aria-busy", "true");
+          setText(document.getElementById("session-page-status"), "Loading sessions…");
+          for (let i = 0; i < 6; i += 1) {
+            const row = document.createElement("div");
+            row.className = "skeleton-row";
+            row.setAttribute("aria-hidden", "true");
+            ["skeleton-line wide", "skeleton-line"].forEach(function (name) {
+              const line = document.createElement("span");
+              line.className = name;
+              row.appendChild(line);
+            });
+            sessionsNode.appendChild(row);
+          }
+        }
         function setSignedIn(signedIn) {
           if (!signedIn) {
             clearFacets();
             setText(healthContent, "");
             setText(healthStatus, "");
+            setText(document.getElementById("health-summary"), "");
             clearStats();
             clearCosts();
             clearTools();
@@ -735,6 +946,7 @@ enum WebUIRoutes {
           document.getElementById("login").hidden = signedIn || identityMode;
           document.getElementById("logout").hidden = !signedIn || identityMode;
           document.getElementById("lede").hidden = signedIn;
+          document.getElementById("page-nav").hidden = !signedIn;
         }
         function expireSession() {
           setSignedIn(false);
@@ -744,7 +956,7 @@ enum WebUIRoutes {
           setText(detailNode, "");
           clearSessionPaging();
           clearMessages();
-          setText(statusNode, "Session expired");
+          setStatus("Session expired");
           bumpEpoch();
           // One silent re-mint per expiry; the 5 s floor stops a mint/401 loop.
           if (identityMode && Date.now() - identitySignInAt > 5000) identitySignIn(true).catch(function () {});
@@ -759,7 +971,7 @@ enum WebUIRoutes {
           } catch (error) {
             identitySignInPending = false;
             if (token !== requestEpoch) return false;
-            setText(statusNode, error.status === 403 ? "Your tailnet login is not permitted for this Web origin." : "Tailnet sign-in unavailable");
+            setStatus(error.status === 403 ? "Your tailnet login is not permitted for this Web origin." : "Tailnet sign-in unavailable");
             return false;
           }
           if (token !== requestEpoch) { identitySignInPending = false; return false; }
@@ -771,7 +983,7 @@ enum WebUIRoutes {
           if (token !== requestEpoch) return false;
           try {
             const access = await api("GET", "/web/api/auth");
-            if (token === requestEpoch && access && access.login) setText(statusNode, "Signed in as " + access.login);
+            if (token === requestEpoch && access && access.login) setStatus("Signed in as " + access.login);
           } catch (error) {}
           if (restorePage && token === requestEpoch) await restoreRequestedPage();
           return true;
@@ -816,8 +1028,10 @@ enum WebUIRoutes {
           bumpEpoch();
           clearMessages();
           activatePage(page);
+          window.scrollTo({ top: 0, behavior: "instant" });
           if (activePage === "health") {
             setText(healthContent, "");
+            setText(document.getElementById("health-summary"), "");
             setText(healthStatus, "Loading…");
             await loadOverview();
           } else if (activePage === "search") {
@@ -875,7 +1089,72 @@ enum WebUIRoutes {
             }
           }
         }
+        function activeFilterList() {
+          const list = [];
+          const query = document.getElementById("query");
+          if (query.value.trim() && activePage !== "search") list.push(["“" + query.value.trim() + "”", function () { query.value = ""; }]);
+          ["source", "project"].forEach(function (kind) {
+            facets[kind].selected.forEach(function (label, key) {
+              list.push([(kind === "source" ? "Source: " : "Project: ") + label, function () {
+                facets[kind].selected.delete(key);
+                updateFacetSummary(kind);
+                renderFacets(kind);
+              }]);
+            });
+          });
+          [["since", "Since "], ["until", "Until "]].forEach(function (pair) {
+            const input = document.getElementById(pair[0]);
+            if (input.value) list.push([pair[1] + input.value, function () { input.value = ""; }]);
+          });
+          const tools = document.getElementById("hide-tools");
+          if (tools.checked) list.push(["Hiding tool-only", function () { tools.checked = false; }]);
+          const machine = document.getElementById("machineId");
+          if (machine.value.trim()) list.push(["Machine: " + machine.value.trim(), function () { machine.value = ""; }]);
+          if (agentFilter !== "hide") list.push([agentFilter === "only" ? "Agents only" : "Including agents", function () { setAgentFilter("hide"); }]);
+          return list;
+        }
+        function hasActiveFilters() {
+          return activeFilterList().length > 0;
+        }
+        function clearAllFilters() {
+          activeFilterList().forEach(function (entry) { entry[1](); });
+          refreshLibrary().catch(function () {});
+        }
+        function renderActiveFilters() {
+          const host = document.getElementById("active-filters");
+          setText(host, "");
+          const list = activeFilterList();
+          list.forEach(function (entry) {
+            const chip = document.createElement("span");
+            chip.className = "chip";
+            const label = document.createElement("span");
+            label.className = "chip-label";
+            setText(label, entry[0]);
+            chip.appendChild(label);
+            const remove = document.createElement("button");
+            remove.type = "button";
+            remove.className = "chip-remove";
+            remove.setAttribute("aria-label", "Remove filter " + entry[0]);
+            remove.appendChild(icon("x"));
+            remove.addEventListener("click", function () {
+              entry[1]();
+              refreshLibrary().catch(function () {});
+            });
+            chip.appendChild(remove);
+            host.appendChild(chip);
+          });
+          if (list.length > 1) {
+            const clear = document.createElement("button");
+            clear.type = "button";
+            clear.className = "chip-clear";
+            setText(clear, "Clear all");
+            clear.addEventListener("click", clearAllFilters);
+            host.appendChild(clear);
+          }
+          host.hidden = !list.length;
+        }
         function refreshLibrary() {
+          renderActiveFilters();
           if (activePage !== "search") return loadSessions(false);
           setText(document.getElementById("search-result-status"), "");
           if (!document.getElementById("query").value.trim()) clearInsights();
@@ -886,7 +1165,7 @@ enum WebUIRoutes {
           clearInsights();
           const token = bumpEpoch();
           clearSessionPaging();
-          setText(sessionsNode, "");
+          showListSkeleton();
           showSessionList();
           showDetailEmpty();
           clearMessages();
@@ -905,12 +1184,16 @@ enum WebUIRoutes {
               return Object.assign({}, hit.session, { snippet: hit.snippet, matchType: hit.matchType });
             });
             acceptSessionsPage(false, { items: items });
+            setStatus("signed in");
             const modes = Array.isArray(page.searchModes) ? page.searchModes.join(" + ") : mode;
             const insightCount = renderInsights(page.insightResults || []);
-            const counts = page.items.length + " sessions" + (insightCount ? " · " + insightCount + " insight" + (insightCount === 1 ? "" : "s") : "");
+            const counts = plural(page.items.length, "session") + (insightCount ? " · " + plural(insightCount, "insight") : "");
             setText(status, counts + " · " + (page.warning || modes));
           } catch (error) {
-            if (token === requestEpoch) setText(status, "Search unavailable. Submit again to retry.");
+            if (token === requestEpoch) {
+              setText(status, "Search unavailable. Submit again to retry.");
+              showListError();
+            }
           }
         }
         function updateInsightWriteControls() {
@@ -1221,7 +1504,7 @@ enum WebUIRoutes {
             if (!page || !Array.isArray(page.sources) || !Array.isArray(page.aliases)
                 || (more && page.snapshotId !== settingsSnapshot)) throw new Error("changed settings");
             if (!more) renderSettings(page);
-            setText(statusNode, "signed in");
+            setStatus("signed in");
             page.aliases.forEach(function (alias) {
               const row = document.createElement("tr");
               [alias.aliasLabel || alias.alias, alias.canonicalLabel || alias.canonical].forEach(function (text) {
@@ -1412,7 +1695,7 @@ enum WebUIRoutes {
             setText(status, result.sources.length ? "" : "No sources reported.");
             if (!settingsSnapshot && result.sources.length && result.sources.every(function (item) { return !item.enabled; })) {
               setText(document.getElementById("settings-status"), "All sources are disabled. Enable a source below to show sessions.");
-              setText(statusNode, "signed in");
+              setStatus("signed in");
             }
             updateAliasControls();
           } catch (error) {
@@ -1663,7 +1946,7 @@ enum WebUIRoutes {
                 || (aiTotal !== null && page.total !== aiTotal)) throw new Error("changed AI observations");
             aiSnapshot = page.snapshotId; aiCursor = page.nextCursor || ""; aiTotal = page.total;
             page.items.forEach(function (item) { document.getElementById("ai-rows").appendChild(aiCard(item, false)); });
-            setText(status, page.total ? page.total.toLocaleString("en-US") + " calls · Observed: " + healthTime(page.observedAt) : "No recorded AI calls for these filters.");
+            setText(status, page.total ? plural(page.total, "call") + " · Observed: " + healthTime(page.observedAt) : "No recorded AI calls for these filters.");
             button.hidden = !aiCursor;
           } catch (error) { if (token === requestEpoch) setText(status, "AI call history unavailable. Find calls to retry."); }
           finally { if (token === requestEpoch) button.disabled = false; }
@@ -1740,7 +2023,7 @@ enum WebUIRoutes {
               const observed = document.createElement("p"); observed.className = "meta"; setText(observed, "Probed: " + healthTime(item.probedAt)); card.appendChild(observed);
               document.getElementById("repos-rows").appendChild(card);
             });
-            setText(status, page.totalRepos.toLocaleString("en-US") + " repositories · Observations from this server’s filesystem.");
+            setText(status, plural(page.totalRepos, "repository", "repositories") + " · Observations from this server’s filesystem.");
             moreButton.hidden = !reposCursor;
           } catch (error) {
             if (token === requestEpoch) setText(status, "Repository observations unavailable. Reload observations to retry.");
@@ -1805,7 +2088,7 @@ enum WebUIRoutes {
                 || (filesTotals && (filesTotals.files !== page.totalFiles || filesTotals.operations !== page.totalOperations))) throw new Error("changed file activity");
             filesSnapshot = page.snapshotId; filesCursor = page.nextCursor || "";
             filesTotals = {files: page.totalFiles, operations: page.totalOperations};
-            setText(document.getElementById("files-totals"), page.totalFiles.toLocaleString("en-US") + " files · " + page.totalOperations.toLocaleString("en-US") + " operations");
+            setText(document.getElementById("files-totals"), plural(page.totalFiles, "file") + " · " + plural(page.totalOperations, "operation"));
             page.items.forEach(function (item) {
               const row = document.createElement("tr"), label = document.createElement("td"); setText(label, item.label); row.appendChild(label);
               ["readCount", "editCount", "writeCount", "sessionCount"].forEach(function (field, index) {
@@ -1849,7 +2132,9 @@ enum WebUIRoutes {
                 || (toolsTotals && (toolsTotals.calls !== page.totalCalls || toolsTotals.groups !== page.groupCount))) throw new Error("changed tool activity");
             toolsSnapshot = page.snapshotId; toolsCursor = page.nextCursor || "";
             toolsTotals = {calls: page.totalCalls, groups: page.groupCount};
-            setText(document.getElementById("tools-totals"), page.totalCalls.toLocaleString("en-US") + " calls · " + page.groupCount.toLocaleString("en-US") + " groups");
+            // Grouped by tool, every row is exactly one tool, so the column carries no information.
+            document.getElementById("tools-col-tools").hidden = page.groupBy === "tool";
+            setText(document.getElementById("tools-totals"), plural(page.totalCalls, "call") + " · " + plural(page.groupCount, "group"));
             page.items.forEach(function (item) {
               const row = document.createElement("tr"), label = document.createElement("td");
               if (page.groupBy === "session" && item.sessionId) {
@@ -1858,7 +2143,7 @@ enum WebUIRoutes {
                 label.appendChild(button);
               } else setText(label, item.label);
               row.appendChild(label);
-              ["callCount", "sessionCount", "toolCount"].forEach(function (field) {
+              (page.groupBy === "tool" ? ["callCount", "sessionCount"] : ["callCount", "sessionCount", "toolCount"]).forEach(function (field) {
                 const cell = document.createElement("td"); setText(cell, costValue(item[field], field)); row.appendChild(cell);
               });
               document.getElementById("tools-rows").appendChild(row);
@@ -1933,8 +2218,8 @@ enum WebUIRoutes {
                 document.getElementById("costs-rows").appendChild(row);
               });
               const unpriced = [];
-              if (Number.isSafeInteger(page.unpricedUnattributedSessions)) unpriced.push(page.unpricedUnattributedSessions.toLocaleString("en-US") + " sessions have no model attribution");
-              if (Number.isSafeInteger(page.unpricedNoPriceSessions)) unpriced.push(page.unpricedNoPriceSessions.toLocaleString("en-US") + " sessions have no matching price");
+              if (Number.isSafeInteger(page.unpricedUnattributedSessions)) unpriced.push(plural(page.unpricedUnattributedSessions, "session has", "sessions have") + " no model attribution");
+              if (Number.isSafeInteger(page.unpricedNoPriceSessions)) unpriced.push(plural(page.unpricedNoPriceSessions, "session has", "sessions have") + " no matching price");
               setText(document.getElementById("costs-unpriced"), unpriced.length ? "Unpriced usage: " + unpriced.join("; ") + "." : "Unpriced usage: not reported.");
               setText(status, "Grouped by " + page.groupBy + " · " + page.timeZone + (page.totals.sessionCount === 0 ? " · No cost records in this range" : ""));
               moreButton.hidden = !costsCursor;
@@ -1986,10 +2271,11 @@ enum WebUIRoutes {
           previous.disabled = sessionPagingBusy;
           const start = sessionPageSizes.slice(0, sessionPage).reduce(function (sum, count) { return sum + count; }, 0);
           const size = sessionPageSizes[sessionPage] || 0;
-          Array.from(sessionsNode.children).forEach(function (row, index) { row.hidden = index < start || index >= start + size; });
+          // Only paged session rows are hidden; skeleton, empty and error states have no page.
+          if (sessionPageSizes.length) Array.from(sessionsNode.children).forEach(function (row, index) { row.hidden = index < start || index >= start + size; });
           const range = size ? (start + 1) + "–" + (start + size) : "";
           const total = sessionTotal !== null ? sessionTotal.toLocaleString("en-US") : null;
-          setText(document.getElementById("session-page-status"), range ? range + (total !== null ? " of " + total : "") + " sessions" : total === "0" ? "0 sessions" : "");
+          setText(document.getElementById("session-page-status"), range ? range + (total !== null ? " of " + total : "") + (sessionTotal === 1 || (sessionTotal === null && size === 1) ? " session" : " sessions") : total === "0" ? "0 sessions" : "");
         }
         async function changeSessionPage(direction) {
           if (sessionPagingBusy) return;
@@ -2068,6 +2354,7 @@ enum WebUIRoutes {
           return fields;
         }
         function clearSessionPaging() {
+          sessionsNode.setAttribute("aria-busy", "false");
           sessionSnapshotId = "";
           sessionCursor = "";
           sessionFilters = "";
@@ -2174,7 +2461,7 @@ enum WebUIRoutes {
             const result = await api("POST", "/web/api/titles/regenerate", JSON.stringify({}));
             if (version !== settingsAccessVersion || activePage !== "settings") return;
             if (!result || !["started", "running"].includes(result.status)) throw new Error("invalid generation status");
-            const count = Number.isSafeInteger(result.total) && result.total >= 0 ? " (" + result.total + " sessions)" : "";
+            const count = Number.isSafeInteger(result.total) && result.total >= 0 ? " (" + plural(result.total, "session") + ")" : "";
             setText(status, (result.status === "started" ? "Generation started" : "Generation is already running") + count + ". Reload Sessions to see updated titles.");
           } catch (error) {
             if (version !== settingsAccessVersion || activePage !== "settings") return;
@@ -2317,7 +2604,7 @@ enum WebUIRoutes {
             await loadDetailChildren(false);
             if (version !== detailExtrasVersion || token !== requestEpoch) return;
             const labels = { link: "Child session linked.", unlink: "Child session unlinked.", confirmSuggestion: "Suggestion confirmed.", dismissSuggestion: "Suggestion dismissed." };
-            setText(status, labels[action]); setText(statusNode, "signed in");
+            setText(status, labels[action]); setStatus("signed in");
             if (action === "link") document.getElementById("relationship-child-id").value = "";
           } catch (error) {
             if (version !== detailExtrasVersion || token !== requestEpoch) return;
@@ -2357,7 +2644,7 @@ enum WebUIRoutes {
             page.entries.forEach(function (entry) {
               const card = document.createElement("article"); card.className = "message";
               const meta = document.createElement("p"); meta.className = "meta";
-              setText(meta, "#" + (entry.index + 1) + " · " + entry.role + " · " + entry.type);
+              ["#" + (entry.index + 1), entry.role, entry.type].forEach(function (part) { appendMetaPart(meta, textSpan(part)); });
               if (entry.timestamp) appendMetaPart(meta, textSpan(entry.timestamp));
               if (entry.toolName) appendMetaPart(meta, textSpan(entry.toolName));
               if (entry.tokens) appendMetaPart(meta, textSpan("Tokens: " + entry.tokens.input + " in / " + entry.tokens.output + " out"));
@@ -2398,13 +2685,16 @@ enum WebUIRoutes {
               body: body
             });
           } catch (error) {
-            if (token === requestEpoch) setText(statusNode, "Network unavailable");
+            if (token === requestEpoch) setStatus("Network unavailable");
             throw error;
           }
           if (!response.ok) {
             if (token === requestEpoch) {
               if (response.status === 401 && method === "GET") expireSession();
-              else setText(statusNode, String(response.status));
+              else {
+                setStatus(httpStatusText(response.status));
+                if (method === "GET") toast(httpStatusText(response.status), "danger");
+              }
             }
             const error = new Error("request failed");
             error.status = response.status;
@@ -2436,7 +2726,7 @@ enum WebUIRoutes {
           await authWrite("POST", JSON.stringify({ credential: credential }));
           if (token !== requestEpoch) return;
           document.getElementById("credential").value = "";
-          setText(statusNode, "signed in");
+          setStatus("signed in");
           setSignedIn(true);
           clearSessionPaging();
           clearMessages();
@@ -2456,9 +2746,9 @@ enum WebUIRoutes {
           clearMessages();
           try {
             await authWrite("DELETE", "{}");
-            if (token === requestEpoch) setText(statusNode, "signed out");
+            if (token === requestEpoch) setStatus("signed out");
           } catch (error) {
-            if (token === requestEpoch) setText(statusNode, "Sign-out failed; local view cleared. Retry to revoke the server session.");
+            if (token === requestEpoch) setStatus("Sign-out failed; local view cleared. Retry to revoke the server session.");
             throw error;
           }
         }
@@ -2486,6 +2776,17 @@ enum WebUIRoutes {
           const encoded = params.toString().replaceAll("+", "%20");
           return encoded ? ("?" + encoded) : "";
         }
+        function setAgentFilter(choice) {
+          agentFilter = choice;
+          ["hide", "all", "only"].forEach(function (value) {
+            document.getElementById("agents-" + value).setAttribute("aria-pressed", String(value === choice));
+          });
+          ["source", "project"].forEach(function (kind) {
+            facets[kind].version += 1;
+            facets[kind].loaded = false;
+            if (document.getElementById(kind + "-picker").open) loadFacets(kind, false);
+          });
+        }
         function updateFacetSummary(kind) {
           const selected = facets[kind].selected;
           const label = !selected.size ? "All " + kind + "s" : selected.size === 1 ? Array.from(selected.values())[0] : selected.size + " " + kind + "s";
@@ -2509,6 +2810,8 @@ enum WebUIRoutes {
             updateFacetSummary(kind);
           });
           document.getElementById("project-query").value = "";
+          setText(document.getElementById("active-filters"), "");
+          document.getElementById("active-filters").hidden = true;
         }
         function renderFacets(kind) {
           const state = facets[kind];
@@ -2533,6 +2836,13 @@ enum WebUIRoutes {
               refreshLibrary().catch(function () {});
             });
             label.appendChild(input);
+            if (kind === "source") {
+              const dot = document.createElement("span");
+              const tint = sourceClass(item.key);
+              dot.className = tint ? "source-dot " + tint : "source-dot";
+              dot.setAttribute("aria-hidden", "true");
+              label.appendChild(dot);
+            }
             const name = document.createElement("span");
             setText(name, itemLabel);
             label.appendChild(name);
@@ -2596,7 +2906,7 @@ enum WebUIRoutes {
           event.preventDefault();
           const id = document.getElementById("session-id").value.trim();
           if (!id) {
-            setText(statusNode, "Enter a session ID.");
+            setStatus("Enter a session ID.");
             return;
           }
           const token = bumpEpoch();
@@ -2605,17 +2915,17 @@ enum WebUIRoutes {
           clearMessages();
           clearSessionPaging();
           setText(sessionsNode, "");
-          setText(statusNode, "Finding session…");
+          setStatus("Finding session…");
           sessionFilters = new URLSearchParams({ sessionId: id }).toString().replaceAll("+", "%20");
           const page = await api("GET", "/web/api/sessions?" + sessionFilters);
           if (token !== requestEpoch) return;
           acceptSessionsPage(false, page);
           const items = page.items || [];
           if (items.length === 1 && !page.nextCursor) {
-            setText(statusNode, "");
+            setStatus("");
             await openDetail(items[0].sessionId);
           } else {
-            setText(statusNode, items.length ? "Several sessions share this ID. Select the matching session." : "Session not found.");
+            setStatus(items.length ? "Several sessions share this ID. Select the matching session." : "Session not found.");
           }
         }
         function countValue(value) {
@@ -2624,6 +2934,7 @@ enum WebUIRoutes {
         }
         function showOverviewUnavailable() {
           setText(healthContent, "");
+          setText(document.getElementById("health-summary"), "");
           setText(healthStatus, "Health is temporarily unavailable.");
           setText(overviewNode, "");
           const note = document.createElement("p");
@@ -2692,8 +3003,8 @@ enum WebUIRoutes {
           const names = Object.keys(sources).map(sourceLabel);
           const summary = document.createElement("p");
           summary.className = "overview-summary";
-          const sourceText = names.length ? names.length + " sources" : "No sources yet";
-          setText(summary, "Session library · " + sourceText + " · " + ready.toLocaleString("en-US") + " ready sessions");
+          const sourceText = names.length ? plural(names.length, "source") : "No sources yet";
+          setText(summary, "Session library · " + sourceText + " · " + plural(ready, "ready session"));
           overviewNode.appendChild(summary);
           if (streams.length) {
             const identities = document.createElement("details");
@@ -2701,7 +3012,7 @@ enum WebUIRoutes {
             setText(caption, "Technical details");
             identities.appendChild(caption);
             const counts = document.createElement("p");
-            setText(counts, publications + " captured files");
+            setText(counts, plural(publications, "captured file"));
             identities.appendChild(counts);
             streams.forEach(function (stream) {
               const line = document.createElement("p");
@@ -2713,34 +3024,82 @@ enum WebUIRoutes {
           }
           return token;
         }
+        // Relative age for Health rows; the exact local time stays in the title.
+        function healthAgo(value) {
+          if (!(Number.isSafeInteger(value) && value >= 0 && value <= 253402300799)) return "Not reported";
+          const seconds = Math.floor(Date.now() / 1000 - value);
+          if (seconds < 0) return healthTime(value);
+          if (seconds < 60) return seconds + "s ago";
+          if (seconds < 3600) return Math.floor(seconds / 60) + "m ago";
+          if (seconds < 86400) return Math.floor(seconds / 3600) + "h " + Math.floor((seconds % 3600) / 60) + "m ago";
+          return Math.floor(seconds / 86400) + "d ago";
+        }
         function healthTime(value) {
           return Number.isSafeInteger(value) && value >= 0 && value <= 253402300799
             ? new Date(value * 1000).toLocaleString() : "Not reported";
         }
+        // Liveness comes from the collector heartbeat only; capture activity and
+        // task attention are reported separately.
+        function healthLiveness(heartbeatAt) {
+          if (!Number.isSafeInteger(heartbeatAt) || heartbeatAt < 0 || heartbeatAt > 253402300799) return ["neutral", "No heartbeat"];
+          const age = Date.now() / 1000 - heartbeatAt;
+          if (age < 15 * 60) return ["ok", "Live"];
+          if (age < 24 * 3600) return ["warn", "Quiet"];
+          return ["danger", "Offline"];
+        }
+        function pill(tone, text) {
+          const node = document.createElement("span");
+          node.className = "pill";
+          node.dataset.tone = tone;
+          setText(node, text);
+          return node;
+        }
         function renderHealth(streams, observedAt) {
           setText(healthContent, "");
           setText(healthStatus, streams.length ? "Observed: " + healthTime(observedAt) : "No registered sources reported.");
+          const fleet = { ok: 0, warn: 0, danger: 0, neutral: 0, attention: 0 };
           streams.forEach(function (stream) {
             const card = document.createElement("section");
             card.className = "health-card";
+            const head = document.createElement("div");
+            head.className = "health-head";
             const heading = document.createElement("h3");
-            setText(heading, sourceLabel(stream.registry && stream.registry.source));
-            card.appendChild(heading);
+            const source = stream.registry && stream.registry.source;
+            const dot = document.createElement("span");
+            const tint = sourceClass(source);
+            dot.className = tint ? "source-dot " + tint : "source-dot";
+            dot.setAttribute("aria-hidden", "true");
+            heading.appendChild(dot);
+            heading.appendChild(textSpan(sourceLabel(source)));
+            head.appendChild(heading);
+            const pills = document.createElement("span");
+            pills.className = "pills";
+            const live = healthLiveness(stream.heartbeatAt);
+            fleet[live[0]] += 1;
+            pills.appendChild(pill(live[0], live[1]));
+            head.appendChild(pills);
+            card.appendChild(head);
             const tasks = stream.ingest && stream.ingest.taskCounts;
             if (tasks && (tasks.retryableFailure > 0 || tasks.quarantined > 0)) {
+              fleet.attention += 1;
+              pills.appendChild(pill("warn", "Needs attention"));
               const note = document.createElement("p");
               note.className = "attention";
               setText(note, "Some captures need attention.");
               card.appendChild(note);
             }
             const metrics = document.createElement("dl");
-            function row(label, value) {
+            function row(label, value, exact) {
               const name = document.createElement("dt");
               const detail = document.createElement("dd");
               setText(name, label);
               setText(detail, value);
+              if (exact) detail.title = exact;
               metrics.appendChild(name);
               metrics.appendChild(detail);
+            }
+            function timeRow(label, value) {
+              row(label, healthAgo(value), healthTime(value));
             }
             function count(label, value) {
               row(label, Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString("en-US") : "Not reported");
@@ -2753,22 +3112,15 @@ enum WebUIRoutes {
             });
             count("Parse failures", stream.ingest && stream.ingest.parseFailureTasks);
             count("Search-ready sessions", stream.fts && stream.fts.readyLogicalSessions);
-            row("Heartbeat", healthTime(stream.heartbeatAt));
-            row("Last capture", healthTime(stream.lastCapture && stream.lastCapture.observedAt));
-            row("Oldest pending", healthTime(stream.ingest && stream.ingest.oldestPendingAt));
+            timeRow("Heartbeat", stream.heartbeatAt);
+            timeRow("Last capture", stream.lastCapture && stream.lastCapture.observedAt);
+            timeRow("Oldest pending", stream.ingest && stream.ingest.oldestPendingAt);
             row("AI state", stream.ai ? stream.ai.state : "Not reported");
             row("Replica acknowledgements", Array.isArray(stream.replicaACKs)
-              ? stream.replicaACKs.map(function (ack) { return ack.serverId + ": " + healthTime(ack.observedAt); }).join("; ") || "None reported"
-              : "Not reported");
+              ? stream.replicaACKs.map(function (ack) { return ack.serverId + ": " + healthAgo(ack.observedAt); }).join("; ") || "None reported"
+              : "Not reported", Array.isArray(stream.replicaACKs)
+              ? stream.replicaACKs.map(function (ack) { return ack.serverId + ": " + healthTime(ack.observedAt); }).join("; ") : "");
             card.appendChild(metrics);
-            const parsedNote = document.createElement("p");
-            parsedNote.className = "health-note";
-            setText(parsedNote, "Skip-tier sessions stay Parsed and are not a search backlog.");
-            card.appendChild(parsedNote);
-            const quarantineNote = document.createElement("p");
-            quarantineNote.className = "health-note";
-            setText(quarantineNote, "Quarantined counts include empty transcripts (parse.noVisibleMessages), not a Cursor-only parser failure.");
-            card.appendChild(quarantineNote);
             const identity = document.createElement("details");
             const caption = document.createElement("summary");
             setText(caption, "Source identity");
@@ -2779,6 +3131,23 @@ enum WebUIRoutes {
             card.appendChild(identity);
             healthContent.appendChild(card);
           });
+          const summaryNode = document.getElementById("health-summary");
+          setText(summaryNode, "");
+          [["ok", fleet.ok, " live"], ["warn", fleet.warn, " quiet"], ["danger", fleet.danger, " offline"],
+            ["neutral", fleet.neutral, " without heartbeat"]].forEach(function (entry) {
+            if (entry[1]) summaryNode.appendChild(pill(entry[0], entry[1].toLocaleString("en-US") + entry[2]));
+          });
+          if (fleet.attention) summaryNode.appendChild(pill("warn", plural(fleet.attention, "needs attention", "need attention")));
+          if (streams.length) {
+            // Shared footnotes, shown once instead of on every card.
+            ["Skip-tier sessions stay Parsed and are not a search backlog.",
+              "Quarantined counts include empty transcripts (parse.noVisibleMessages), not a Cursor-only parser failure."].forEach(function (text) {
+              const note = document.createElement("p");
+              note.className = "health-note";
+              setText(note, text);
+              healthContent.appendChild(note);
+            });
+          }
         }
         function projectText(item) {
           return item.projectLabel || item.projectKey || "";
@@ -2830,7 +3199,7 @@ enum WebUIRoutes {
           }
           if (showCounts) {
             const counts = [["user", item.userMessageCount], ["assistant", item.assistantMessageCount], ["system", item.systemMessageCount]]
-              .filter(function (entry) { return Number.isSafeInteger(entry[1]) && entry[1] >= 0; })
+              .filter(function (entry) { return Number.isSafeInteger(entry[1]) && entry[1] > 0; })
               .map(function (entry) { return entry[1].toLocaleString("en-US") + " " + entry[0]; });
             if (counts.length) {
               const label = document.createElement("span");
@@ -2840,7 +3209,21 @@ enum WebUIRoutes {
             }
           }
         }
+        function sessionDateGroup(startedAt) {
+          if (!Number.isSafeInteger(startedAt) || startedAt < 0 || startedAt > 253402300799) return "Undated";
+          const date = new Date(startedAt * 1000);
+          const now = new Date(Date.now());
+          const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+          const day = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+          const days = Math.round((today - day) / 86400000);
+          if (days <= 0) return "Today";
+          if (days === 1) return "Yesterday";
+          if (days < 7) return "Previous 7 days";
+          if (days < 30) return "Previous 30 days";
+          return date.toLocaleDateString("en-US", { year: "numeric", month: "long" });
+        }
         function acceptSessionsPage(more, page) {
+          sessionsNode.setAttribute("aria-busy", "false");
           sessionSnapshotId = page.snapshotId || "";
           sessionCursor = page.nextCursor || "";
           if (!more) {
@@ -2854,30 +3237,53 @@ enum WebUIRoutes {
             sessionPageSizes.push(size);
             sessionPage = sessionPageSizes.length - 1;
           }
-          if (!more && !(page.items || []).length) setText(sessionsNode, page.warning || "No sessions found");
+          if (!more) setText(sessionsNode, "");
+          if (!more && !(page.items || []).length) {
+            sessionsNode.appendChild(emptyState("inbox", page.warning || "No sessions found", "", hasActiveFilters() ? [["Clear filters", clearAllFilters]] : []));
+          }
+          // Date groups restart on every page; ranked search results stay ungrouped.
+          const grouped = !(page.items || []).some(function (item) { return item.matchType || item.snippet; });
+          let previousGroup = null;
           (page.items || []).forEach(function (item) {
             const button = document.createElement("button");
             button.type = "button";
-            button.className = "session";
-            const title = document.createElement("div");
+            const tint = sourceClass(item.source);
+            button.className = tint ? "session " + tint : "session";
+            const title = document.createElement("span");
             title.className = "title";
             setText(title, sessionTitle(item));
             title.title = title.textContent;
             button.appendChild(title);
-            const meta = document.createElement("div");
+            const meta = document.createElement("span");
             meta.className = "meta";
             appendSessionMetadata(meta, item, true);
             if (item.matchType) {
               const match = document.createElement("span");
+              match.className = "match-badge";
+              match.dataset.match = item.matchType === "semantic" ? "semantic" : "keyword";
               setText(match, item.matchType === "semantic" ? "Semantic match" : "Keyword match");
               appendMetaPart(meta, match);
             }
             button.appendChild(meta);
             if (item.snippet) {
-              const snippet = document.createElement("p");
+              const snippet = document.createElement("span");
               snippet.className = "search-snippet";
               setHighlightedText(snippet, item.snippet);
               button.appendChild(snippet);
+            }
+            if (grouped) {
+              const group = sessionDateGroup(item.startedAt);
+              if (group !== previousGroup) {
+                // Decorative: the visible header is absolutely positioned above
+                // the row, so #sessions keeps one child per session for paging.
+                const head = document.createElement("span");
+                head.className = "group-head";
+                head.setAttribute("aria-hidden", "true");
+                setText(head, group);
+                button.appendChild(head);
+                button.className += " group-start";
+                previousGroup = group;
+              }
             }
             button.addEventListener("click", function () {
               openDetail(item.sessionId).catch(function () {});
@@ -2890,15 +3296,28 @@ enum WebUIRoutes {
           const token = bumpEpoch();
           if (!more) {
             clearSessionPaging();
-            setText(sessionsNode, "");
+            showListSkeleton();
             showSessionList();
             showDetailEmpty();
             clearMessages();
           }
-          const page = await api("GET", "/web/api/sessions" + sessionQuery(more));
+          let page;
+          try {
+            page = await api("GET", "/web/api/sessions" + sessionQuery(more));
+          } catch (error) {
+            if (!more && token === requestEpoch) showListError();
+            throw error;
+          }
           if (token !== requestEpoch) return;
           acceptSessionsPage(more, page);
+          setStatus("signed in");
           return token;
+        }
+        function showListError() {
+          sessionsNode.setAttribute("aria-busy", "false");
+          setText(document.getElementById("session-page-status"), "");
+          setText(sessionsNode, "");
+          sessionsNode.appendChild(emptyState("alert", "Sessions could not be loaded", "Check the connection, then retry.", [["Retry", function () { refreshLibrary().catch(function () {}); }]]));
         }
         async function restoreSession() {
           const token = requestEpoch;
@@ -2913,7 +3332,7 @@ enum WebUIRoutes {
           try {
             response = await probe();
           } catch (error) {
-            if (token === requestEpoch) setText(statusNode, "Network unavailable");
+            if (token === requestEpoch) setStatus("Network unavailable");
             return;
           }
           if (token !== requestEpoch) return;
@@ -2922,14 +3341,14 @@ enum WebUIRoutes {
             try {
               response = await probe();
             } catch (error) {
-              if (token === requestEpoch) setText(statusNode, "Network unavailable");
+              if (token === requestEpoch) setStatus("Network unavailable");
               return;
             }
             if (token !== requestEpoch) return;
             if (response.status === 401) { await identitySignIn(false); return; }
           }
           if (!response.ok) {
-            if (token === requestEpoch) setText(statusNode, "Temporarily unavailable");
+            if (token === requestEpoch) setStatus("Temporarily unavailable");
             return;
           }
           let page;
@@ -2937,11 +3356,11 @@ enum WebUIRoutes {
             const type = response.headers.get("content-type") || "";
             page = type.indexOf("application/json") >= 0 ? await response.json() : { items: [] };
           } catch (error) {
-            if (token === requestEpoch) setText(statusNode, "Temporarily unavailable");
+            if (token === requestEpoch) setStatus("Temporarily unavailable");
             return;
           }
           if (token !== requestEpoch) return;
-          setText(statusNode, "signed in");
+          setStatus("signed in");
           setSignedIn(true);
           setText(sessionsNode, "");
           showSessionList();
@@ -2983,7 +3402,7 @@ enum WebUIRoutes {
             });
             if (shownGeneration && Number.isSafeInteger(shownGeneration.normalizedMessageCount) && shownGeneration.normalizedMessageCount >= 0) {
               const count = document.createElement("span");
-              setText(count, shownGeneration.normalizedMessageCount.toLocaleString("en-US") + " messages");
+              setText(count, plural(shownGeneration.normalizedMessageCount, "message"));
               appendMetaPart(meta, count);
             }
             heading.appendChild(meta);
@@ -2999,9 +3418,8 @@ enum WebUIRoutes {
             document.getElementById("detail-view-timeline").disabled = !generation;
             showDetailView("transcript");
             if (!generation) {
-              const note = document.createElement("p");
-              setText(note, "transcript unavailable");
-              messagesNode.appendChild(note);
+              const reason = typeof session.transcriptAvailability === "string" && session.transcriptAvailability !== "available" ? "Availability: " + session.transcriptAvailability + "." : "";
+              messagesNode.appendChild(emptyState("inbox", "Transcript unavailable", ("The service has not admitted a readable transcript for this session. " + reason).trim()));
               return;
             }
             await loadMessages(token, session.sessionId, generation, "");
@@ -3118,7 +3536,16 @@ enum WebUIRoutes {
           const block = button.closest(".code-block");
           const pre = block && block.querySelector("pre");
           const text = pre ? pre.textContent : "";
-          if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text);
+          function failed() { toast("Copy failed. Select the code and copy it manually.", "danger"); }
+          if (!(typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function")) { failed(); return; }
+          let pending;
+          try { pending = Promise.resolve(navigator.clipboard.writeText(text)); } catch (error) { failed(); return; }
+          pending.then(function () {
+            setText(button, "Copied");
+            button.dataset.state = "copied";
+            toast("Copied to clipboard", "ok");
+            if (typeof setTimeout === "function") setTimeout(function () { setText(button, "Copy"); button.dataset.state = ""; }, 1600);
+          }, failed);
         }
         function renderRichText(root, raw) {
           const lines = String(raw == null ? "" : raw).split(String.fromCharCode(10));
@@ -3357,17 +3784,17 @@ enum WebUIRoutes {
           const hash = fragment.payloadSHA256;
           if (!messageBuf || messageBuf.ordinal !== ordinal || messageBuf.hash !== hash) {
             if (messageBuf) {
-              setText(statusNode, "incomplete message");
+              setStatus("incomplete message");
               return;
             }
             if (fragment.utf8Offset !== 0) {
-              setText(statusNode, "invalid fragment offset");
+              setStatus("invalid fragment offset");
               return;
             }
             messageBuf = { ordinal: ordinal, hash: hash, chunks: [piece], bytes: piece.length, role: fragment.role };
           } else {
             if (fragment.utf8Offset !== messageBuf.bytes) {
-              setText(statusNode, "invalid fragment offset");
+              setStatus("invalid fragment offset");
               return;
             }
             messageBuf.chunks.push(piece);
@@ -3400,7 +3827,7 @@ enum WebUIRoutes {
             (page.fragments || []).forEach(acceptFragment);
             messageCursor = page.nextCursor || "";
             updateMessageMore();
-            if (messageBuf && !messageCursor) setText(statusNode, "incomplete message");
+            if (messageBuf && !messageCursor) setStatus("incomplete message");
             if (messageBuf && messageCursor) {
               if (messageRequest === pending) messageRequest = null;
               await loadMessages(token, sessionId, generation, messageCursor);
@@ -3425,15 +3852,7 @@ enum WebUIRoutes {
         });
         ["hide", "all", "only"].forEach(function (choice) {
           document.getElementById("agents-" + choice).addEventListener("click", function () {
-            agentFilter = choice;
-            ["hide", "all", "only"].forEach(function (value) {
-              document.getElementById("agents-" + value).setAttribute("aria-pressed", String(value === choice));
-            });
-            ["source", "project"].forEach(function (kind) {
-              facets[kind].version += 1;
-              facets[kind].loaded = false;
-              if (document.getElementById(kind + "-picker").open) loadFacets(kind, false);
-            });
+            setAgentFilter(choice);
             refreshLibrary().catch(function () {});
           });
         });
@@ -3449,6 +3868,30 @@ enum WebUIRoutes {
             refreshLibrary().catch(function () {});
           });
         });
+        // Facet popovers close on an outside click or Escape (focus returns to the summary).
+        document.addEventListener("click", function (event) {
+          const target = event && event.target;
+          if (!target) return;
+          ["source", "project"].forEach(function (kind) {
+            const picker = document.getElementById(kind + "-picker");
+            if (picker.open && typeof picker.contains === "function" && !picker.contains(target)) picker.open = false;
+          });
+        });
+        document.addEventListener("keydown", function (event) {
+          if (!event || event.key !== "Escape") return;
+          ["source", "project"].forEach(function (kind) {
+            const picker = document.getElementById(kind + "-picker");
+            if (!picker.open) return;
+            picker.open = false;
+            const summary = document.getElementById(kind + "-summary");
+            if (typeof summary.focus === "function") summary.focus();
+          });
+        });
+        ["sessions", "search", "stats", "health", "settings"].forEach(function (name) {
+          const link = document.getElementById("nav-" + name);
+          link.insertBefore(icon(name), link.firstChild);
+        });
+        document.getElementById("search-query").appendChild(icon("search"));
         document.getElementById("project-find").addEventListener("click", function () { loadFacets("project", false); });
         document.getElementById("project-query").addEventListener("keydown", function (event) {
           if (event.key === "Enter") { event.preventDefault(); loadFacets("project", false); }

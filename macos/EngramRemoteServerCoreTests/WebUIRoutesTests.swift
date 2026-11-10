@@ -72,6 +72,27 @@ final class WebUIRoutesTests: XCTestCase {
         XCTAssertTrue(cssText.contains("showing-detail"))
     }
 
+    func testFoundationAssetsKeepSafeDOMThemeTokensAndPayloadBudget() async throws {
+        let harness = try UIHarness(configuration: configuration())
+        let html = try await bodyText(try await harness.respond(request(path: "/web", headers: [("Host", "viewer.example")])))
+        let js = try await bodyText(try await harness.respond(request(path: "/web/app.js", headers: [("Host", "viewer.example")])))
+        let css = try await bodyText(try await harness.respond(request(path: "/web/app.css", headers: [("Host", "viewer.example")])))
+        for hook in ["page-nav", "active-filters", "toast-region", "health-summary", "tools-col-tools"] {
+            XCTAssertTrue(html.contains("id=\"\(hook)\""), hook)
+        }
+        XCTAssertTrue(html.contains("aria-live=\"polite\""))
+        XCTAssertTrue(js.contains("createElementNS"))
+        for banned in ["insertAdjacentHTML", "outerHTML", "DOMParser", "new Function", "setAttribute(\"style\""] {
+            XCTAssertFalse(js.contains(banned), banned)
+        }
+        XCTAssertTrue(css.contains("color-scheme: light dark"))
+        XCTAssertTrue(css.contains("@media (prefers-color-scheme: light)"))
+        XCTAssertTrue(css.contains("@media (prefers-reduced-motion: reduce)"))
+        XCTAssertTrue(css.contains("var(--mono)"))
+        XCTAssertLessThanOrEqual(js.utf8.count, 360_000)
+        XCTAssertLessThanOrEqual(css.utf8.count, 80_000)
+    }
+
     func testJavaScriptUsesTextContentAndExistingAPIsForLoginLogoutAndPaging() async throws {
         let harness = try UIHarness(configuration: configuration())
         let js = try await bodyText(try await harness.respond(request(path: "/web/app.js", headers: [("Host", "viewer.example")])))

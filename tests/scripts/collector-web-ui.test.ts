@@ -848,9 +848,7 @@ describe('legacy session paging and search filters', () => {
     await replacement;
     expect(ui.node('sessions').children).toHaveLength(1);
     expect(ui.node('sessions').children[0].hidden).toBe(false);
-    expect(ui.node('session-page-status').textContent).toBe(
-      '1–1 of 1 sessions',
-    );
+    expect(ui.node('session-page-status').textContent).toBe('1–1 of 1 session');
     expect(ui.node('session-previous').hidden).toBe(true);
   });
 
@@ -885,7 +883,7 @@ describe('legacy session paging and search filters', () => {
       items: [{ sessionId: 'one' }],
     });
     await first;
-    expect(ui.node('session-page-status').textContent).toBe('1–1 sessions');
+    expect(ui.node('session-page-status').textContent).toBe('1–1 session');
     const logout = ui.call('logout()');
     ui.requests[1].resolve(undefined, 204);
     await logout;
@@ -2521,7 +2519,7 @@ describe('legacy agent filters and session metadata', () => {
     const first = ui.node('sessions').children[0];
     expect(first.querySelector('.agent-label')?.textContent).toBe('agent');
     expect(first.querySelector('.message-counts')?.textContent).toBe(
-      '0 user · 1,234 assistant · 2 system',
+      '1,234 assistant · 2 system',
     );
     const second = ui.node('sessions').children[1];
     expect(second.querySelector('.agent-label')).toBeNull();
@@ -2761,7 +2759,7 @@ describe('shipped collector Web viewer behavior', () => {
       .catch(() => undefined);
     ui.requests[0].resolve({}, 401);
     await pending;
-    expect(ui.node('status').textContent).toBe('401');
+    expect(ui.node('status').textContent).toBe('Not authorized (401)');
     expect(ui.node('status').textContent).not.toBe('Session expired');
     expect(ui.node('workspace').hidden).toBe(true);
     expect(ui.node('login').hidden).toBe(false);
@@ -3619,7 +3617,7 @@ describe('shipped collector Web viewer presentation', () => {
     expect(css).toContain('--bg:#0f172a');
     expect(css).toContain('--accent:#22c55e');
     expect(css).toContain('--panel:#1e293b');
-    expect(css).toMatch(/color-scheme:\s*dark/);
+    expect(css).toMatch(/color-scheme:\s*light dark/);
     expect(css).toMatch(/#workspace\s*\{[^}]*max-width:\s*960px/);
     expect(css).toContain('#workspace:not(.showing-detail) .detail-pane');
     expect(css).not.toMatch(
@@ -3638,7 +3636,10 @@ describe('shipped collector Web viewer presentation', () => {
     expect(css).toMatch(/\.message\.tool[\s\S]*max-width:\s*100%/);
     expect(css).toMatch(/\.message\s+\.body[\s\S]*border-radius:\s*14px/);
     expect(css).toMatch(/\.message\s+\.body[\s\S]*font:\s*inherit/);
-    expect(css).toMatch(/pre\s*\{[^}]*ui-monospace/);
+    expect(css).toMatch(/pre\s*\{[^}]*var\(--mono\)/);
+    expect(css).toContain(
+      '--mono:ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace',
+    );
     expect(css).toMatch(/body\s*\{[^}]*overflow-wrap:\s*anywhere/);
   });
 
@@ -5314,5 +5315,472 @@ describe('tailnet identity sign-in (design 2026-10-08)', () => {
     expect(ui.requests).toHaveLength(1);
     expect(ui.node('login').hidden).not.toBe(true);
     expect(ui.node('status').textContent).toBe('');
+  });
+});
+
+describe('iteration 1 foundation: rows, chips, feedback and states', () => {
+  const settle = async () => {
+    for (let step = 0; step < 12; step += 1) await Promise.resolve();
+  };
+  const blockTags = ['DIV', 'P', 'SECTION', 'ARTICLE', 'H2', 'H3', 'UL'];
+  const allDescendants = (node: Element): Element[] =>
+    node.children.flatMap((child) => [child, ...allDescendants(child)]);
+
+  it('renders session rows with inline-only children, hidden zero counts and date groups', async () => {
+    const ui = harness();
+    ui.call('Date.now = () => 1789214400000');
+    const pending = ui.call('loadSessions(false)');
+    ui.requests[0].resolve({
+      items: [
+        {
+          sessionId: 'a',
+          title: 'Now',
+          source: 'codex',
+          startedAt: 1789214280,
+          userMessageCount: 0,
+          assistantMessageCount: 3,
+          systemMessageCount: 0,
+        },
+        { sessionId: 'b', title: 'Also today', startedAt: 1789214000 },
+        { sessionId: 'c', title: 'Yesterday', startedAt: 1789214400 - 86400 },
+        { sessionId: 'd', title: 'Week', startedAt: 1789214400 - 3 * 86400 },
+        { sessionId: 'e', title: 'Month', startedAt: 1789214400 - 20 * 86400 },
+        { sessionId: 'f', title: 'Old', startedAt: 1610668800 },
+        { sessionId: 'g', title: 'Undated', startedAt: null },
+      ],
+    });
+    await pending;
+    const rows = ui.node('sessions').children;
+    expect(rows).toHaveLength(7);
+    for (const row of rows) {
+      expect(row.className).toContain('session');
+      expect(
+        allDescendants(row).filter((child) =>
+          blockTags.includes(child.tagName),
+        ),
+      ).toEqual([]);
+    }
+    const heads = rows.map(
+      (row) => row.querySelector('.group-head')?.textContent ?? null,
+    );
+    expect(heads).toEqual([
+      'Today',
+      null,
+      'Yesterday',
+      'Previous 7 days',
+      'Previous 30 days',
+      'January 2021',
+      'Undated',
+    ]);
+    expect(
+      rows[0].querySelector('.group-head')?.getAttribute('aria-hidden'),
+    ).toBe('true');
+    expect(rows[0].querySelector('.message-counts')?.textContent).toBe(
+      '3 assistant',
+    );
+    expect(rows[0].className).toContain('source-codex');
+  });
+
+  it('does not date-group ranked search results', async () => {
+    const ui = harness();
+    await ui.call('activatePage("search")');
+    ui.node('query').value = 'needle';
+    const pending = ui.call('loadRankedSearch()');
+    ui.requestFor('/web/api/search?').resolve({
+      query: 'needle',
+      searchModes: ['keyword'],
+      items: [
+        {
+          session: { sessionId: 'one', title: 'One', startedAt: 1789214280 },
+          snippet: 'a <mark>needle</mark>',
+          matchType: 'keyword',
+        },
+      ],
+      insightResults: [],
+    });
+    await pending;
+    expect(ui.node('sessions').children[0].querySelector('.group-head')).toBe(
+      null,
+    );
+    expect(ui.node('search-result-status').textContent).toMatch(/^1 session ·/);
+  });
+
+  it('shows skeleton rows while the list loads and replaces them with results', async () => {
+    const ui = harness();
+    const pending = ui.call('loadSessions(false)');
+    const sessions = ui.node('sessions');
+    expect(sessions.getAttribute('aria-busy')).toBe('true');
+    expect(ui.node('session-page-status').textContent).toBe(
+      'Loading sessions…',
+    );
+    expect(sessions.children.length).toBeGreaterThan(0);
+    expect(
+      sessions.children.every((child) => child.className === 'skeleton-row'),
+    ).toBe(true);
+    expect(sessions.textContent).toBe('');
+    ui.requests[0].resolve({ items: [{ sessionId: 'one', title: 'One' }] });
+    await pending;
+    expect(sessions.children).toHaveLength(1);
+    expect(sessions.children[0].className).toContain('session');
+    expect(sessions.getAttribute('aria-busy')).toBe('false');
+  });
+
+  it('replaces the skeleton with a retryable error state when the list fails', async () => {
+    const ui = harness();
+    const pending = ui.call('loadSessions(false)').catch(() => undefined);
+    ui.requests[0].resolve({}, 503);
+    await pending;
+    expect(ui.node('status').textContent).toBe('Service unavailable (503)');
+    const sessions = ui.node('sessions');
+    expect(sessions.querySelector('.skeleton-row')).toBeNull();
+    const state = sessions.querySelector('.empty-state');
+    expect(state?.textContent).toContain('Sessions could not be loaded');
+    expect(sessions.getAttribute('aria-busy')).toBe('false');
+    expect(state?.hidden).toBe(false);
+    state?.querySelector('button')?.click();
+    expect(ui.requests).toHaveLength(2);
+    expect(ui.requests[1].path).toBe('/web/api/sessions');
+    ui.requests[1].resolve({ items: [{ sessionId: 'recovered' }] });
+    await settle();
+    expect(ui.node('status').textContent).toBe('signed in');
+    expect(ui.node('status').dataset.tone).toBe('ok');
+  });
+
+  it('lists active filters as removable chips that refetch without the filter', async () => {
+    const ui = harness();
+    ui.node('query').value = 'needle';
+    ui.node('since').value = '2026-09-01';
+    ui.node('hide-tools').checked = true;
+    await ui.call(
+      'facets.source.selected.set("codex", "Codex"); facets.project.selected.set("p.1", "Engram")',
+    );
+    const first = ui.call('refreshLibrary()');
+    ui.requests[0].resolve({ items: [] });
+    await first;
+    const chips = ui.node('active-filters');
+    expect(chips.hidden).toBe(false);
+    const labels = chips
+      .querySelectorAll('.chip')
+      .map((chip) => chip.querySelector('.chip-label')?.textContent);
+    expect(labels).toEqual([
+      '“needle”',
+      'Source: Codex',
+      'Project: Engram',
+      'Since 2026-09-01',
+      'Hiding tool-only',
+    ]);
+    const source = chips
+      .querySelectorAll('.chip')
+      .find((chip) => chip.textContent.includes('Codex'));
+    const remove = source?.querySelector('button');
+    expect(remove?.getAttribute('aria-label')).toBe(
+      'Remove filter Source: Codex',
+    );
+    remove?.click();
+    const query = new URLSearchParams(ui.requests[1].path.split('?')[1]);
+    expect(query.get('sources')).toBeNull();
+    expect(query.get('projectKeys')).toBe('p.1');
+    expect(ui.node('source-summary').textContent).toBe('All sources');
+    ui.requests[1].resolve({ items: [] });
+    await settle();
+    chips
+      .querySelectorAll('button')
+      .find((button) => button.textContent === 'Clear all')
+      ?.click();
+    expect(ui.requests[2].path).toBe('/web/api/sessions');
+    expect(ui.node('query').value).toBe('');
+    expect(ui.node('hide-tools').checked).toBe(false);
+    ui.requests[2].resolve({ items: [] });
+    await settle();
+    expect(chips.hidden).toBe(true);
+  });
+
+  it('offers to clear filters from the empty state only when filters are active', async () => {
+    const ui = harness();
+    ui.node('machineId').value = 'mac-mini';
+    const pending = ui.call('refreshLibrary()');
+    ui.requests[0].resolve({ items: [] });
+    await pending;
+    const state = ui.node('sessions').querySelector('.empty-state');
+    expect(state?.textContent).toContain('No sessions found');
+    expect(state?.hidden).toBe(false);
+    state
+      ?.querySelectorAll('button')
+      .find((button) => button.textContent === 'Clear filters')
+      ?.click();
+    expect(ui.node('machineId').value).toBe('');
+    expect(ui.requests[1].path).toBe('/web/api/sessions');
+  });
+
+  it('confirms copy with a label change and a toast that times out', async () => {
+    const ui = harness();
+    const pending = ui.call('loadMessages(0, "session", "generation", "")');
+    ui.requests[0].resolve({
+      fragments: [
+        {
+          messageOrdinal: 0,
+          payloadSHA256: 'c'.repeat(64),
+          role: 'assistant',
+          payloadFragment: JSON.stringify({ content: '```\nlet x = 1\n```' }),
+          utf8Offset: 0,
+          isLastFragment: true,
+        },
+      ],
+    });
+    await pending;
+    const button = ui.node('messages').querySelector('.copy-btn');
+    button?.click();
+    await settle();
+    expect(ui.copied).toEqual(['let x = 1']);
+    expect(button?.textContent).toBe('Copied');
+    const region = ui.node('toast-region');
+    expect(region.children).toHaveLength(1);
+    expect(region.children[0].dataset.tone).toBe('ok');
+    ui.runTimers();
+    expect(region.children).toHaveLength(0);
+    expect(button?.textContent).toBe('Copy');
+  });
+
+  it('reports a failed copy instead of swallowing it', async () => {
+    const ui = harness();
+    await ui.call(
+      'navigator.clipboard.writeText = function () { return Promise.reject(new Error("denied")); }',
+    );
+    const pending = ui.call('loadMessages(0, "session", "generation", "")');
+    ui.requests[0].resolve({
+      fragments: [
+        {
+          messageOrdinal: 0,
+          payloadSHA256: 'd'.repeat(64),
+          role: 'assistant',
+          payloadFragment: JSON.stringify({ content: '```\ny\n```' }),
+          utf8Offset: 0,
+          isLastFragment: true,
+        },
+      ],
+    });
+    await pending;
+    ui.node('messages').querySelector('.copy-btn')?.click();
+    await settle();
+    const region = ui.node('toast-region');
+    expect(region.children[0].dataset.tone).toBe('danger');
+    expect(region.textContent).toContain('Copy failed');
+  });
+
+  it('maps HTTP failures to words in the global status and a toast', async () => {
+    const ui = harness();
+    const pending = ui.call('showStatsView("usage")');
+    ui.requests[0].resolve({}, 429);
+    await pending;
+    expect(ui.node('status').textContent).toBe('Too many requests (429)');
+    expect(ui.node('status').dataset.tone).toBe('danger');
+    expect(ui.node('toast-region').textContent).toContain(
+      'Too many requests (429)',
+    );
+  });
+
+  it('closes facet popovers on an outside click or Escape but not on an inside click', async () => {
+    const ui = harness();
+    const picker = ui.node('source-picker');
+    const options = ui.node('source-options');
+    picker.appendChild(options);
+    const option = ui.node('fake-option');
+    options.appendChild(option);
+    picker.open = true;
+    ui.dispatchDocument('click', { target: option });
+    expect(picker.open).toBe(true);
+    ui.dispatchDocument('click', { target: ui.node('sessions') });
+    expect(picker.open).toBe(false);
+    picker.open = true;
+    ui.dispatchDocument('keydown', { key: 'Escape' });
+    expect(picker.open).toBe(false);
+    expect(ui.activeElement()).toBe(ui.node('source-summary'));
+  });
+
+  it('draws source dots in facet options and SVG icons in navigation', async () => {
+    const ui = harness();
+    const icon = ui.node('nav-stats').querySelector('svg');
+    expect(icon?.namespaceURI).toBe('http://www.w3.org/2000/svg');
+    expect(icon?.getAttribute('aria-hidden')).toBe('true');
+    expect(icon?.children.length).toBeGreaterThan(0);
+    ui.node('source-picker').open = true;
+    ui.call('loadFacets("source", false)');
+    ui.requestFor('/web/api/facets').resolve({
+      snapshotId: 'facets',
+      items: [{ key: 'claude-code', label: 'claude-code', sessionCount: 4 }],
+    });
+    await settle();
+    const dot = ui.node('source-options').querySelector('.source-dot');
+    expect(dot?.className).toContain('source-claude-code');
+  });
+
+  it('shows liveness and attention pills on Health with a fleet summary', async () => {
+    const ui = harness();
+    ui.call('Date.now = () => 1789214400000');
+    const pending = ui.call('navigate("health")');
+    ui.requests[0].resolve({
+      snapshotId: 'health',
+      observedAt: 1789214400,
+      streams: [
+        {
+          registry: { source: 'codex' },
+          heartbeatAt: 1789214400 - 60,
+          ingest: { taskCounts: { retryableFailure: 0, quarantined: 0 } },
+        },
+        {
+          registry: { source: 'cursor' },
+          heartbeatAt: 1789214400 - 3 * 86400,
+          ingest: { taskCounts: { retryableFailure: 2, quarantined: 0 } },
+        },
+        { registry: { source: 'pi' }, heartbeatAt: null },
+      ],
+    });
+    await pending;
+    const cards = ui.node('health-content').querySelectorAll('.health-card');
+    const pills = cards.map((card) =>
+      card
+        .querySelectorAll('.pill')
+        .map((pill) => [pill.dataset.tone, pill.textContent]),
+    );
+    expect(pills).toEqual([
+      [['ok', 'Live']],
+      [
+        ['danger', 'Offline'],
+        ['warn', 'Needs attention'],
+      ],
+      [['neutral', 'No heartbeat']],
+    ]);
+    expect(
+      ui
+        .node('health-summary')
+        .children.map((node) => [node.dataset.tone, node.textContent]),
+    ).toEqual([
+      ['ok', '1 live'],
+      ['danger', '1 offline'],
+      ['neutral', '1 without heartbeat'],
+      ['warn', '1 needs attention'],
+    ]);
+    const heartbeat = cards[0]
+      .querySelectorAll('dd')
+      .find((dd) => dd.textContent === '1m ago');
+    expect(heartbeat?.title).toBe(
+      new Date((1789214400 - 60) * 1000).toLocaleString(),
+    );
+    expect(
+      ui.node('health-content').querySelectorAll('.health-note'),
+    ).toHaveLength(2);
+  });
+
+  it('pluralises counts that can be one', async () => {
+    const ui = harness();
+    const first = ui.call('showStatsView("costs")');
+    ui.requests[0].resolve({
+      snapshotId: 'costs',
+      observedAt: 1,
+      groupBy: 'model',
+      timeZone: 'UTC',
+      totals: { costUsd: 1, sessionCount: 1 },
+      items: [],
+      unpricedUnattributedSessions: 1,
+      unpricedNoPriceSessions: 3,
+    });
+    ui.requests[1].resolve({ observedAt: 1, items: [] });
+    await first;
+    expect(ui.node('costs-unpriced').textContent).toBe(
+      'Unpriced usage: 1 session has no model attribution; 3 sessions have no matching price.',
+    );
+  });
+
+  it('separates every timeline meta part and hides the per-tool Tools column', async () => {
+    const ui = harness();
+    const tools = ui.call('showStatsView("tools")');
+    ui.requests[0].resolve({
+      snapshotId: 'tools',
+      observedAt: 1,
+      groupBy: 'tool',
+      totalCalls: 3,
+      groupCount: 1,
+      items: [
+        {
+          key: 'read',
+          label: 'Read',
+          callCount: 3,
+          sessionCount: 1,
+          toolCount: 1,
+        },
+      ],
+    });
+    await tools;
+    expect(ui.node('tools-col-tools').hidden).toBe(true);
+    expect(ui.node('tools-rows').children[0].children).toHaveLength(3);
+    expect(ui.node('tools-totals').textContent).toBe('3 calls · 1 group');
+    const detail = harness();
+    await detail.call(
+      'detailContextSession = "s"; detailContextGeneration = "g"',
+    );
+    const timeline = detail.call('loadDetailTimeline(false)');
+    detail.requests[0].resolve({
+      sessionId: 's',
+      generation: 'g',
+      totalEntries: 1,
+      entries: [
+        {
+          index: 0,
+          role: 'assistant',
+          type: 'tool_use',
+          toolName: 'Read',
+          preview: 'x',
+        },
+      ],
+    });
+    await timeline;
+    const meta = detail.node('timeline-rows').children[0].children[0];
+    expect(
+      meta.children.filter((child) => child.className === 'sep'),
+    ).toHaveLength(3);
+  });
+});
+
+describe('iteration 1 foundation: shipped CSS and HTML', () => {
+  it('restores a light palette by overriding tokens only, keeping the dark line', () => {
+    const css = shipped('css');
+    expect(css).toContain(
+      ':root { color-scheme: dark; --bg:#0f172a; --panel:#1e293b; --text:#f8fafc; --muted:#94a3b8; --line:#334155; --accent:#22c55e; --code:#0d1117; }',
+    );
+    const light = css.slice(
+      css.indexOf('@media (prefers-color-scheme: light)'),
+    );
+    expect(light).toMatch(/color-scheme:\s*light/);
+    expect(light).toMatch(/--bg:\s*#f8fafc/i);
+    expect(css).toContain('--panel-2');
+    expect(css).toMatch(/color-scheme:\s*light dark/);
+    expect(css).toMatch(/font: 13px\/1\.55 var\(--mono\)/);
+    expect(css).toMatch(/#search-query\s*\{[^}]*flex: 1 1 calc\(100% - 90px\)/);
+    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)/);
+    expect(css).toMatch(/\.health-note\s*\{/);
+    expect(css).toMatch(/\.stats-totals dd\s*\{[^}]*white-space:\s*nowrap/);
+  });
+
+  it('ships the new chrome hooks without inline styles', () => {
+    const html = shipped('html');
+    for (const id of [
+      'toast-region',
+      'active-filters',
+      'health-summary',
+      'page-nav',
+      'tools-col-tools',
+    ])
+      expect(html).toContain(`id="${id}"`);
+    const js = shipped('javascript');
+    expect(js).toContain('createElementNS');
+    for (const banned of [
+      'innerHTML',
+      'insertAdjacentHTML',
+      'outerHTML',
+      'DOMParser',
+      'new Function',
+      'setAttribute("style"',
+    ])
+      expect(js).not.toContain(banned);
   });
 });
