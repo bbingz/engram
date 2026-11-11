@@ -2891,6 +2891,52 @@ final class CollectorPublicationWorkerTests: XCTestCase {
         } catch { await replicas.stop(); throw error }
     }
 
+    func testCursorNewCompanionCannotBypassPrimaryRecaptureCooldown_repro() async throws {
+        let f = try PublicationFixture(sourceName: .cursor)
+        var budget = EngramCollectorCore.CollectorPublicationBudget()
+        budget.maxCaptureFiles = 1
+        budget.recaptureCooldownMinimumBytes = 1
+        let endpoints: [EngramCollectorCore.CollectorReplicaEndpoint] = [
+            .init(replicaID: "hq", baseURL: URL(string: "http://127.0.0.1:1")!, bearerToken: "synthetic-hq-cooldown"),
+            .init(replicaID: "m1", baseURL: URL(string: "http://127.0.0.1:2")!, bearerToken: "synthetic-m1-cooldown"),
+        ]
+        let worker = try f.worker(endpoints, budget: budget)
+        let now = Int64(Date().timeIntervalSince1970)
+        let first = try await worker.captureOnce(now: now)
+        XCTAssertEqual(first.captured, 1)
+        let original = try XCTUnwrap(f.owner.publicationIntents(limit: 8).first)
+        let capture = try XCTUnwrap(f.catalog.capture(captureID: original.captureID))
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let due = Int64(try XCTUnwrap(formatter.date(from: capture.capturedAt)).timeIntervalSince1970) + 600
+
+        // A companion-only native event must still use the primary's last capture.
+        try f.writeTranscript(text: "changed during cooldown")
+        let companion = f.source.deletingLastPathComponent().appendingPathComponent("meta.json")
+        try Data("{}".utf8).write(to: companion)
+        XCTAssertEqual(chmod(companion.path, 0o600), 0)
+        try f.markDirty(relativePath: "chats/ws/native-one/meta.json")
+        let cooling = try await worker.captureOnce(now: now + 1)
+        XCTAssertEqual(cooling.captured, 0, "a new companion must not force a cooling primary to re-capture")
+        XCTAssertEqual(try f.owner.publicationIntents(limit: 8).count, 1)
+        // Native Cursor events normalize companions to the selected primary;
+        // they must not introduce a second independent locator.
+        XCTAssertEqual(try f.integer("""
+            SELECT count(*) FROM collector_locators WHERE dirty_revision > acknowledged_revision
+                AND last_error = 'recaptureCooldown' AND retry_not_before = \(due)
+            """), 1)
+        XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_locators"), 1)
+
+        try f.reopenOwnerAndCatalog()
+        let reopened = try f.worker(endpoints, budget: budget)
+        let stillCooling = try await reopened.captureOnce(now: due - 1)
+        XCTAssertEqual(stillCooling.captured, 0, "restart cannot bypass the persisted cooldown")
+        let latest = try await reopened.captureOnce(now: due)
+        XCTAssertEqual(latest.captured, 1)
+        XCTAssertEqual(try f.owner.publicationIntents(limit: 8).count, 2)
+        XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_locators WHERE dirty_revision > acknowledged_revision"), 0)
+    }
+
     func testCursorRootlessModernPublishesWithoutInventingProject_repro() async throws {
         let f = try PublicationFixture(sourceName: .cursor)
         try f.writeTranscript(cwd: "")

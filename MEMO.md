@@ -4,6 +4,10 @@
 
 ### 2026-11-11
 
+- [变更] K6 大文件重采冷却已由 PR #509 合入 main（`b6cfbf9d`，CI 全绿）：上次捕获 ≥8 MiB 的 locator 10 分钟内延期，保留脏版本，到期采最新内容；首次/小文件不延迟，OpenCode/Cursor legacy 保留现有节奏。无删除、GC 或保留策略变更。详见 `CHANGELOG.md` 的 K6 条目。
+- [部署] 四台 collector 已顺序换为 `collector-k6-5c4b9772-20261111`（HQ 部署线 `4b5b3e00` 的后代，不从 main 构建）；校验哈希/签名、停机 epoch dry-run 全为 0、只改二进制路径，旧包与 plist 备份保留。service-index/Web 未动。详见 `CHANGELOG.md`。
+- [验证] 主线 Collector 705/705、Service 相关 219/219；部署线 705/705 和 221/221。真实 Release 隔离 600 秒窗口通过：跨进程保持冷却/脏版本，到期最新 SHA-256 一致；补充 Cursor 伴随文件归一与重启边界测试后相关套件 220/220。macbookpro 9129/9130 已双副本 ACK，原进程未重启，后续持续上传；11:00 中央/FTS 待处理与端到端差额均为 0。精确延迟原因尚未确认，生产减量比例待活跃 Cursor 负载测量。证据与限制见 `CHANGELOG.md`。
+
 - [部署] Web 九轮升级已上 HQ：PR #505（`22c6e125`）与 #506（`29c11ff8`，match 路由 ID 解码修复）CI 全绿后合入 main；因 HQ 跑 fb9538a 系（含线上已有迁移），从本地部署线 `deploy/web-ui-hq-20261110` 构建。service-index→`ed068488`（PID 9935），receiver→`4b5b3e00`（PID 19042），只改 `ProgramArguments[0]`，与 HQ 运维 Claude 逐步确认 ingest 正常；旧包与 plist 备份保留可回滚。#496 合入前，HQ 后续部署必须从 `4b5b3e00` 或其后代构建，不能从 main 构建。Tailnet 冒烟：热力图 168 格合计与按来源一致、活动排序两页有序、搜索分页无重叠、命中跳转 5/5 落在含词消息。详见 `CHANGELOG.md`。
 
 ### 2026-11-10
