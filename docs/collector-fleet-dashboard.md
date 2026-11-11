@@ -5,6 +5,32 @@ from session analytics and the existing ingest Health page. `GET /web/api/fleet`
 requires a Web **editor** session (anonymous: 401; viewer: 403). Fleet-wide counts
 and host capacity are deliberately not ordinary viewer metadata.
 
+## Overview and expanded details
+
+The table-first presentation uses one overview row per machine. Desktop columns
+compare sampled service state/attention notes, central sessions, captured/dirty/
+unavailable files, upload tasks, central index tasks, free disk, and observation
+freshness. The summary is a compact definition list, not five large cards.
+**Sampled** means telemetry was obtained recently; it is not a service-health
+verdict. Process state, capture gaps, retry errors, and low disk remain separate.
+
+Select a machine name (keyboard: Enter/Space) to expand its metric, process,
+replica, and source-inventory tables. Expanded machines and keyboard focus are
+retained across refresh/reordering, and cleared on navigation, logout or access
+denial. On small screens, the overview retains machine, service/attention, and
+free-disk columns; the other values remain in expanded details. Wide detail
+tables scroll within their own focusable regions, not the page.
+
+**Upload tasks** sums pending/in-flight publication-replica states across targets,
+not distinct capture generations. The replica detail table preserves each target's
+ACK, privacy-withheld, and retry counts. Missing queues/process observations remain
+**Not reported**, never healthy zeroes. Central values are labeled stale separately
+from host observation freshness. PIDs are identifiers and retain ungrouped digits.
+
+This presentation update is verified locally on `feat/web-fleet-table-20261111`;
+it has not been deployed. The dated rollout record below describes the earlier
+`d83dcdd1` release, not proof that this table-first change is live.
+
 ## Data flow and guarantees
 
 1. An opt-in operations exporter, `scripts/collector-fleet-status.py`, probes a

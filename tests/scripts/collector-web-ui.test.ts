@@ -539,6 +539,297 @@ describe('fleet operations dashboard', () => {
     expect(ui.call('parseRoute("#/fleet").page')).toBe('fleet');
   });
 
+  it('renders one compact overview row per machine and semantic detail tables', async () => {
+    const ui = harness();
+    const data = sample();
+    data.machines = Array.from({ length: 5 }, (_, i) => ({
+      ...data.machines[0],
+      id: `host-${i}`,
+      label: `<Host ${i}>`,
+      processes: [{ ...data.machines[0].processes[0], pid: 12345 }],
+    }));
+    await ui.call(`renderFleet(${JSON.stringify(data)})`);
+    const overview = ui
+      .node('fleet-content')
+      .querySelector('table.fleet-overview');
+    expect(overview).not.toBeNull();
+    expect(overview?.querySelectorAll('tr.fleet-machine-row')).toHaveLength(5);
+    expect(
+      overview?.querySelectorAll('tr.fleet-detail-row').every((r) => r.hidden),
+    ).toBe(true);
+    expect(overview?.querySelector('th')?.getAttribute('scope')).toBe('col');
+    expect(
+      overview
+        ?.querySelector('tr.fleet-machine-row')
+        ?.querySelector('th')
+        ?.getAttribute('scope'),
+    ).toBe('row');
+    expect(
+      ui.node('fleet-summary').querySelectorAll('.health-card'),
+    ).toHaveLength(0);
+    expect(
+      ui
+        .node('fleet-content')
+        .querySelectorAll('caption')
+        .map((n) => n.textContent),
+    ).toContain('Sampled processes');
+    const processTable = ui
+      .node('fleet-content')
+      .querySelectorAll('table')
+      .find(
+        (t) => t.querySelector('caption')?.textContent === 'Sampled processes',
+      );
+    expect(
+      processTable?.querySelector('tbody')?.children[0].children[2].textContent,
+    ).toBe('12345');
+    expect(ui.node('fleet-content').querySelector('img')).toBeNull();
+    expect(ui.node('fleet-content').textContent).toContain('<Host 0>');
+    expect(ui.node('fleet-content').textContent).not.toContain('Observed');
+    expect(ui.node('fleet-content').textContent).toContain('Sampled');
+  });
+
+  it('scopes overview cell rules away from nested detail tables and gives wide details their own scrolling area', () => {
+    const css = shipped('css');
+    expect(css).not.toMatch(/\.fleet-overview\s+(?:th|td)\b/);
+    for (const name of ['process', 'replica', 'source']) {
+      expect(css).toMatch(
+        new RegExp(`\\.fleet-${name}-table \\{ min-width: \\d+px; \\}`),
+      );
+    }
+    expect(css).toContain(
+      '.fleet-table-wrap { min-width: 0; max-width: 100%; overflow-x: auto; }',
+    );
+  });
+
+  it('retains expanded machines and keyboard focus across refresh/reordering, then clears on logout', async () => {
+    const ui = harness();
+    ui.call('setSignedIn(true);activatePage("fleet")');
+    const data = sample();
+    const first = ui.call('loadFleet()');
+    ui.requests[0].resolve(data);
+    await first;
+    const toggle = ui
+      .node('fleet-content')
+      .querySelector('button.fleet-toggle');
+    expect(toggle).not.toBeNull();
+    toggle?.click();
+    toggle?.focus();
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true');
+    const detail = ui
+      .node('fleet-content')
+      .querySelector('tr.fleet-detail-row');
+    expect(detail?.hidden).toBe(false);
+    expect(toggle?.getAttribute('aria-controls')).toBe(
+      detail?.getAttribute('id'),
+    );
+    const refresh = ui.call('loadFleet()');
+    ui.requests[1].resolve({
+      ...data,
+      machines: [
+        { ...data.machines[0], id: 'other', label: 'Other' },
+        ...data.machines,
+      ],
+    });
+    await refresh;
+    const buttons = ui
+      .node('fleet-content')
+      .querySelectorAll('button.fleet-toggle');
+    expect(buttons[0].getAttribute('aria-expanded')).toBe('false');
+    expect(buttons[1].getAttribute('aria-expanded')).toBe('true');
+    expect(ui.activeElement()).toBe(buttons[1]);
+    buttons[1].click();
+    expect(buttons[1].getAttribute('aria-expanded')).toBe('false');
+    buttons[1].click();
+    ui.call('setSignedIn(false)');
+    expect(ui.node('fleet-content').textContent).toBe('');
+    expect(ui.call('fleetExpanded.size')).toBe(0);
+  });
+
+  it('retains detail-region focus when central telemetry becomes stale and prunes removed machines', async () => {
+    const ui = harness();
+    ui.call('activatePage("fleet")');
+    const base = sample();
+    const data = {
+      ...base,
+      central: {
+        observedAt: base.generatedAt,
+        ftsPending: 0,
+        ftsFailed: 0,
+        machines: [
+          {
+            machineId: base.machines[0].machineId,
+            sessions: 42,
+            visibleSessions: 40,
+            publications: 12,
+            pending: 0,
+            processing: 0,
+            parsed: 4,
+            indexReady: 5,
+            retryable: 0,
+            quarantined: 1,
+          },
+        ],
+      },
+    };
+    const first = ui.call('loadFleet()');
+    ui.requests[0].resolve(data);
+    await first;
+    ui.node('fleet-content').querySelector('button.fleet-toggle')?.click();
+    ui.node('fleet-content')
+      .querySelector('.fleet-metrics')
+      ?.querySelector('.fleet-table-wrap')
+      ?.focus();
+    const refresh = ui.call('loadFleet()');
+    ui.requests[1].resolve({
+      ...data,
+      central: { ...data.central, observedAt: 1 },
+    });
+    await refresh;
+    const region = ui
+      .node('fleet-content')
+      .querySelector('.fleet-metrics')
+      ?.querySelector('.fleet-table-wrap');
+    expect(ui.activeElement()).toBe(region);
+    expect(region?.textContent).toContain('stale');
+    await ui.call(`renderFleet(${JSON.stringify({ ...data, machines: [] })})`);
+    expect(ui.call('fleetExpanded.size')).toBe(0);
+  });
+
+  it('keeps capture, per-replica upload states and central tasks distinct', async () => {
+    const ui = harness();
+    const data = sample();
+    const enriched = {
+      ...data,
+      central: {
+        observedAt: data.generatedAt,
+        ftsPending: 0,
+        ftsFailed: 0,
+        machines: [
+          {
+            machineId: data.machines[0].machineId,
+            sessions: 42,
+            visibleSessions: 40,
+            publications: 12,
+            pending: 2,
+            processing: 3,
+            parsed: 4,
+            indexReady: 5,
+            retryable: 0,
+            quarantined: 1,
+          },
+        ],
+      },
+      machines: [
+        {
+          ...data.machines[0],
+          capture: {
+            publications: 12,
+            capturedLocators: 5,
+            dirtyLocators: 2,
+            coolingLocators: 1,
+            unavailableLocators: 1,
+          },
+          roots: [
+            {
+              id: 'cursor',
+              source: 'cursor',
+              locators: 8,
+              captured: 5,
+              dirty: 2,
+              cooling: 1,
+              unavailable: 1,
+              scanning: false,
+              scanLag: 0,
+              scanFailed: false,
+              epochStatus: 'match',
+            },
+          ],
+          replicas: [
+            {
+              id: 'a',
+              pending: 2,
+              inflight: 3,
+              acknowledged: 4,
+              withheld: 1,
+              failed: 0,
+            },
+            {
+              id: 'b',
+              pending: 7,
+              inflight: 11,
+              acknowledged: 4,
+              withheld: 1,
+              failed: 0,
+            },
+          ],
+        },
+      ],
+    };
+    await ui.call(`renderFleet(${JSON.stringify(enriched)})`);
+    const row = ui.node('fleet-content').querySelector('tr.fleet-machine-row');
+    expect(row?.children[2].textContent).toBe('42');
+    expect(row?.children[3].textContent).toContain('Captured 5');
+    expect(row?.children[4].textContent).toContain('Pending 9');
+    expect(row?.children[4].textContent).toContain('In flight 14');
+    expect(row?.children[5].textContent).toContain('Pending 2');
+    const captions = ui
+      .node('fleet-content')
+      .querySelectorAll('caption')
+      .map((n) => n.textContent);
+    expect(captions).toContain('Replica publication states');
+    expect(captions).toContain('Sources & inventory coverage');
+    expect(row?.children[1].textContent).toContain('Capture gaps');
+  });
+
+  it('does not turn absent processes or replica queues into healthy zeroes, and labels stale central totals', async () => {
+    const ui = harness();
+    const data = sample();
+    data.machines[0].processes = [];
+    await ui.call(`renderFleet(${JSON.stringify(data)})`);
+    let row = ui.node('fleet-content').querySelector('tr.fleet-machine-row');
+    expect(row?.children[1].textContent).toContain('Not reported');
+    expect(row?.children[4].textContent).toBe('Not reported');
+    const stale = {
+      ...data,
+      central: {
+        observedAt: 1,
+        ftsPending: 0,
+        ftsFailed: 0,
+        machines: [
+          {
+            machineId: data.machines[0].machineId,
+            sessions: 42,
+            pending: 0,
+            processing: 0,
+          },
+        ],
+      },
+    };
+    await ui.call(`renderFleet(${JSON.stringify(stale)})`);
+    row = ui.node('fleet-content').querySelector('tr.fleet-machine-row');
+    expect(row?.children[2].textContent).toContain('Stale');
+    expect(row?.children[5].textContent).toContain('Stale');
+    expect(ui.node('fleet-summary').textContent).toContain('Stale');
+  });
+
+  it('keeps sampled freshness separate from stopped/stale/unreachable services', async () => {
+    const ui = harness();
+    const data = sample();
+    data.machines[0].processes[0].state = 'stopped';
+    await ui.call(`renderFleet(${JSON.stringify(data)})`);
+    let row = ui.node('fleet-content').querySelector('tr.fleet-machine-row');
+    expect(row?.children[1].textContent).toContain('Stopped process');
+    expect(row?.children[7].textContent).toContain('Sampled');
+    data.machines[0].observedAt = 1;
+    await ui.call(`renderFleet(${JSON.stringify(data)})`);
+    row = ui.node('fleet-content').querySelector('tr.fleet-machine-row');
+    expect(row?.children[1].textContent).toContain('Stale');
+    data.machines[0].status = 'unreachable';
+    await ui.call(`renderFleet(${JSON.stringify(data)})`);
+    row = ui.node('fleet-content').querySelector('tr.fleet-machine-row');
+    expect(row?.children[1].textContent).toContain('Unreachable');
+  });
+
   it('refreshes only while open, cancels on logout, and discards a superseded refresh', async () => {
     const ui = harness();
     ui.call('setSignedIn(true);activatePage("fleet")');
