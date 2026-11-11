@@ -10,6 +10,11 @@ private struct Options {
     let initialize: Bool
     let reconcileNativeEpoch: Bool
     let dryRun: Bool
+    let spoolGC: Bool
+    let spoolRoot: URL?
+    let centralEvidence: URL?
+    let previewBytes: Int64
+    let previewObjects: Int
 
     init(arguments: [String]) throws {
         var settings: String?
@@ -18,20 +23,45 @@ private struct Options {
         var initialize = false
         var reconcileNativeEpoch = false
         var dryRun = false
+        var spoolGC = false
+        var spoolRoot: String?
+        var centralEvidence: String?
+        var previewBytes: Int64?
+        var previewObjects: Int?
         var index = 0
         while index < arguments.count {
             let argument = arguments[index]
             switch argument {
-            case "--settings", "--credentials-file":
+            case "--settings", "--credentials-file", "--spool-root", "--central-evidence":
                 guard index + 1 < arguments.count else { throw ArgumentsError.invalid }
                 let value = arguments[index + 1]
                 guard Self.validAbsolutePath(value) else { throw ArgumentsError.invalid }
                 if argument == "--settings" {
                     guard settings == nil else { throw ArgumentsError.invalid }
                     settings = value
-                } else {
+                } else if argument == "--credentials-file" {
                     guard credentials == nil else { throw ArgumentsError.invalid }
                     credentials = value
+                } else if argument == "--spool-root" {
+                    guard spoolRoot == nil else { throw ArgumentsError.invalid }
+                    spoolRoot = value
+                } else {
+                    guard centralEvidence == nil else { throw ArgumentsError.invalid }
+                    centralEvidence = value
+                }
+                index += 2
+            case "--spool-gc":
+                guard !spoolGC else { throw ArgumentsError.invalid }
+                spoolGC = true
+                index += 1
+            case "--max-preview-bytes", "--max-preview-objects":
+                guard index + 1 < arguments.count, let value = Int64(arguments[index + 1]), value >= 0 else { throw ArgumentsError.invalid }
+                if argument == "--max-preview-bytes" {
+                    guard previewBytes == nil else { throw ArgumentsError.invalid }
+                    previewBytes = value
+                } else {
+                    guard previewObjects == nil, let count = Int(exactly: value) else { throw ArgumentsError.invalid }
+                    previewObjects = count
                 }
                 index += 2
             case "--once":
@@ -54,19 +84,25 @@ private struct Options {
                 throw ArgumentsError.invalid
             }
         }
-        // --initialize and --reconcile-native-epoch are exclusive operator modes:
-        // neither runs a cycle, neither needs credentials, and --dry-run belongs
-        // only to the reconcile mode.
-        guard let settings,
+        // Operator modes never run a collection cycle. Preview also rejects
+        // credentials; --dry-run is valid only for reconciliation or preview.
+        guard let input = settings ?? spoolRoot,
+              !spoolGC || (!once && !initialize && !reconcileNativeEpoch && credentials == nil && (settings == nil) != (spoolRoot == nil)),
+              spoolGC || (spoolRoot == nil && centralEvidence == nil && previewBytes == nil && previewObjects == nil),
               !initialize || (!once && credentials == nil && !reconcileNativeEpoch),
               !reconcileNativeEpoch || (!once && credentials == nil),
-              !dryRun || reconcileNativeEpoch else { throw ArgumentsError.invalid }
-        self.settings = URL(fileURLWithPath: settings)
+              !dryRun || reconcileNativeEpoch || spoolGC else { throw ArgumentsError.invalid }
+        self.settings = URL(fileURLWithPath: input)
         self.credentials = credentials.map { URL(fileURLWithPath: $0) }
         self.once = once
         self.initialize = initialize
         self.reconcileNativeEpoch = reconcileNativeEpoch
         self.dryRun = dryRun
+        self.spoolGC = spoolGC
+        self.spoolRoot = spoolRoot.map { URL(fileURLWithPath: $0) }
+        self.centralEvidence = centralEvidence.map { URL(fileURLWithPath: $0) }
+        self.previewBytes = previewBytes ?? 256 * 1024 * 1024
+        self.previewObjects = previewObjects ?? 128
     }
 
     static func validAbsolutePath(_ path: String) -> Bool {
@@ -84,6 +120,8 @@ usage: EngramCollector --settings ABS [--credentials-file ABS] [--once]
        EngramCollector --settings ABS --initialize
        EngramCollector --settings ABS --reconcile-native-epoch [--dry-run]
        EngramCollector --initialize-identity ABS
+       EngramCollector --spool-gc (--spool-root ABS | --settings ABS) [--central-evidence ABS]
+           [--max-preview-bytes N] [--max-preview-objects N] [--dry-run]
        EngramCollector --help
 --once runs one bounded cycle; it does not wait for bootstrap or replica acknowledgements.
 --initialize creates a new private spool using the configured existing machine identity; it never starts collection.
@@ -91,6 +129,9 @@ usage: EngramCollector --settings ABS [--credentials-file ABS] [--once]
   "source roots suspended for native epoch change"): with the collector stopped it records each
   affected root's transition, clears its stored event checkpoint and forces a full walk; --dry-run only reports.
 --initialize-identity creates a new identity catalog only; use only after confirming this host has no existing identity.
+--spool-gc only previews existing spool references as JSON on stdout. No locks, credentials, network or writes.
+  Potential bytes remain conditional on proof, escrow and other unverified gates; actionableBytes is always zero.
+  Apply, restore and finalize are not implemented. Byte/object budgets only bound the reported potential subset.
 """
 
 let arguments = Array(CommandLine.arguments.dropFirst())
@@ -134,6 +175,21 @@ termination.attach(collectorTask)
 withExtendedLifetime(termination) { dispatchMain() }
 
 private func runCollector(_ options: Options) async -> Int32 {
+    if options.spoolGC {
+        do {
+            let root = try options.spoolRoot ?? CollectorSpoolGCPreview.spoolRoot(settingsURL: options.settings)
+            let report = try CollectorSpoolGCPreview.run(spoolRoot: root, centralEvidence: options.centralEvidence,
+                maxBytes: options.previewBytes, maxObjects: options.previewObjects)
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            print(String(decoding: try encoder.encode(report), as: UTF8.self))
+            return 0
+        } catch {
+            // Never print SQL, paths, evidence contents or configuration payloads.
+            let reason = (error as? CollectorSpoolGCPreview.Failure)?.rawValue ?? "readOnlyInputUnavailable"
+            FileHandle.standardError.write(Data("engram-collector: spool preview failed: \(reason)\n".utf8))
+            return 70
+        }
+    }
     if options.initialize {
         do {
             try CollectorRuntime.initialize(settingsURL: options.settings)

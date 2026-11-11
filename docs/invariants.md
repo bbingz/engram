@@ -267,6 +267,14 @@ Invariants are properties that must survive every change; each entry names where
 - **Verified by** - `macos/EngramCollectorCoreTests/CollectorRecaptureCooldownTests.swift`.
 - **Gate** - `none`.
 
+## Collector Spool Reclamation Authority (Draft)
+
+- **Status** - Draft K5 contract. B1 implements only the read-only preview graph/keep-set/report; no executor or production reclamation is implemented.
+- **Statement** - ACK alone is never reclamation authority; keep-set fails closed. Collector spool reclamation must derive the complete object-reference graph from every `archive_captures.unbound_manifest_bytes`, including unpublished and old-revision captures, never from legacy bound-manifest tables. Empty source/graph/keep-set, unparsable data, an incomplete graph or missing protected bytes prohibits mutation. Every referencing capture must satisfy dual ACK, current instance-bound replica read-back proof, verified central terminal state and clean superseded-locator eligibility; latest/live, withheld, pending, inflight, localContentUnavailable and escrow-missing content remains protected. Apply/finalize require the stopped collector and existing owner lock, explicit byte/count budgets, durable residency, same-volume quarantine, hold and verified restore. GC-aware admission must restore/pin kept objects before reads and must never turn a kept capture into localContentUnavailable because of K5. Preview is read-only and token-free; apply without a valid proof lease is blocked. GC never rewinds source identity, epochs, sequence numbers or inventory snapshots.
+- **Preview enforcement** - `CollectorSpoolGCPreview.swift` and the exclusive Collector CLI preview use strict read-only SQLite opens and fail-closed reference/keep-set checks, with actionable bytes fixed at zero. Inventory journal, residency-aware readers/startup and fenced executor remain planned B2 work. See [K5 design](superpowers/specs/2026-11-11-collector-spool-gc-design.md). Executor components remain proposals, not existing enforcement claims.
+- **Planned verification** - The design's named RED list covers the 11-09 empty-set regression, shared chunks, missing/withheld content, late writers, crash/restore, dirty/K6 locators, budgets, lock contention, proof expiry and restart/epoch identity. B1 preview/strict-reader regressions are in `CollectorSpoolGCPreviewTests.swift`, `CollectorMachineIdentityReaderTests.swift`, and `tests/scripts/collector_spool_gc_export_test.py`; executor/crash/restore cases remain unimplemented. Results: `/tmp/engram-k5-phaseB1.md`.
+- **Planned gate** - Extend `scripts/check-archive-v2-safety.sh` to collector/ingest mutation paths and the storage-only manual v2 DELETE guard; gate code remains unchanged in B1; no executor allowlist was added.
+
 ## Unverified Anchors
 
 None.

@@ -4,6 +4,13 @@
 
 ### 2026-11-11
 
+- [修复] K5 B1 独立评审两项已修：`/private` 路径解析、全引用双 ACK 的既有缺失字节单列；非双 ACK 缺失仍拒绝。Swift 31/31；额外 CLI suite 42 通过/10 既有错误文本契约失败，详见 `CHANGELOG.md`。B2 仅获隔离代码/测试授权，生产/token/pilot 仍禁止。
+
+- [变更] K5 B1 只读预览已本地实现：完整 unbound 引用图、保守 keep-set、唯一字节阻塞分类与中央 exporter；`actionableBytes=0`，K9/escrow 未完成，B2 执行器仍未获授权。详见 `CHANGELOG.md` 与 `/tmp/engram-k5-phaseB1.md`。
+- [验证] focused Swift 29/29（含原生 CLI、活跃 WAL、锁占用、只读 DB/sidecar 无改写）、exporter 6/6、Debug 构建与 pinned drift 通过；未跑生产预览。t11 复核并结合 K6 增长决定 B2；输入漂移会拒绝估计，复制 helper 需携带两个 framework。
+
+- [新增] K5 spool GC Phase A 设计草案与 draft invariant 已写入，含 28 项 RED 清单；规定 M2 首试、完整 unbound 引用图、双副本读回证明与隔离恢复门槛。仅文档，未实现/部署，token 使用尚未获授权；停在设计 gate，详见 `CHANGELOG.md` 与 `/tmp/engram-k5-phaseA.md`。
+
 - [修复] Grok 原生 child/resume/fork 以受限目录、匹配 ID 和 kind/audience 识别为 subagent→skip；本地父链仅接受唯一有效 meta，capture 仅用声明的 child 文件。headless/未知保持原分类；补齐 sidecar 枚举与复合输入身份。详见 `CHANGELOG.md`。
 - [验证] RED→GREEN，Swift focused 53/53；中央只读重计：可见 normal/premium 中确认 4,222 child、1,009 headless、2,925 unknown。仅本地分支修复，未写真实库/回填/重启/推送；中央 CAS 缺口与 Web skip 子项访问留待后续授权，独立评审待 coordinator。详见 `CHANGELOG.md`。
 
